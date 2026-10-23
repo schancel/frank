@@ -2689,6 +2689,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               } finally { invalidateBalanceRead(); }
             },
             async ensureLegacySubAccount(ref) {
+              return transactionOwner.runLifetime(async () => {
+              requireOpenWallet(wallet);
               const persona = deriveDappPersona(keyring.masterNode, ref);
               const address = persona.address.toLowerCase();
               const latest = coinList.latestOf(address);
@@ -2711,6 +2713,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 throw new Error('Persona address belongs to another wallet coin origin');
               }
               return { raw: persona.address };
+              });
             },
             async reconcileLegacySubAccountAttempt(params) {
               requireOpenWallet(wallet);

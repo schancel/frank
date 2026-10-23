@@ -758,7 +758,7 @@ export function mountApprovalPage(
       const amount = el(doc, 'input', 'approval-funding-input')
       amount.type = 'text'
       amount.inputMode = 'decimal'
-      amount.placeholder = 'Amount (optional)'
+      amount.placeholder = 'Amount for a new address'
       amount.value = fundingAmount
       amount.dataset.testid = 'approval-funding-amount'
       amount.addEventListener('input', () => {
@@ -770,7 +770,7 @@ export function mountApprovalPage(
           doc,
           'span',
           'approval-persona-hint',
-          'Enter an amount to move into this site address now. Leave blank to connect without funds; transactions from this address will need a top-up.',
+          'A new address needs an initial amount before connecting. For an already funded address, leave this blank. Further top-ups belong in Wallet.',
         ),
       )
       root.append(funding)

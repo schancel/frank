@@ -261,6 +261,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           id: 'frank-test-ext',
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
+            if (msg?.type === 'fund-dapp-persona') {
+              cb?.({ ok: true, result: { address: msg.address } })
+              return
+            }
+            if (msg?.type === 'read-only-evm-rpc') {
+              cb?.(null)
+              return
+            }
+            if (msg?.type === 'execute-approved-dapp-request') {
+              cb?.(null)
+              return
+            }
             for (const fn of listeners) {
               fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
@@ -870,6 +882,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           id: 'frank-test-ext',
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
+            if (msg?.type === 'fund-dapp-persona') {
+              cb?.({ ok: true, result: { address: msg.address } })
+              return
+            }
+            if (msg?.type === 'read-only-evm-rpc') {
+              cb?.(null)
+              return
+            }
+            if (msg?.type === 'execute-approved-dapp-request') {
+              cb?.(null)
+              return
+            }
             for (const fn of listeners) {
               fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
@@ -1064,6 +1088,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           id: 'frank-test-ext',
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
+            if (msg?.type === 'fund-dapp-persona') {
+              cb?.({ ok: true, result: { address: msg.address } })
+              return
+            }
+            if (msg?.type === 'read-only-evm-rpc') {
+              cb?.(null)
+              return
+            }
+            if (msg?.type === 'execute-approved-dapp-request') {
+              cb?.(null)
+              return
+            }
             for (const fn of listeners) {
               fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
@@ -1204,6 +1240,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           id: 'frank-test-ext',
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
+            if (msg?.type === 'fund-dapp-persona') {
+              cb?.({ ok: true, result: { address: msg.address } })
+              return
+            }
+            if (msg?.type === 'read-only-evm-rpc') {
+              cb?.(null)
+              return
+            }
+            if (msg?.type === 'execute-approved-dapp-request') {
+              cb?.(null)
+              return
+            }
             for (const fn of listeners) {
               fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)
@@ -1412,6 +1460,18 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
           id: 'frank-test-ext',
           getURL: (p: string) => `chrome-extension://frank-test-ext/${p}`,
           sendMessage: (msg: any, cb?: (res: any) => void) => {
+            if (msg?.type === 'fund-dapp-persona') {
+              cb?.({ ok: true, result: { address: msg.address } })
+              return
+            }
+            if (msg?.type === 'read-only-evm-rpc') {
+              cb?.(null)
+              return
+            }
+            if (msg?.type === 'execute-approved-dapp-request') {
+              cb?.(null)
+              return
+            }
             for (const fn of listeners) {
               fn(msg, mockSenderFor(msg), (res: any) => {
                 if (cb) cb(res)

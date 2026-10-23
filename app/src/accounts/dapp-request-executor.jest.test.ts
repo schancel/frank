@@ -5,6 +5,7 @@ import { deriveDappPersona } from '@frank/wallet/dapp-bridge/persona-keys'
 import {
   executeApprovedDappRequest,
   fundDappPersona,
+  recoverPriorDappAttemptsOnUnlock,
 } from './dapp-request-executor'
 
 const ORIGIN = 'https://dapp.example'
@@ -40,6 +41,59 @@ function fakeSession() {
 }
 
 describe('approved dApp request executor', () => {
+  it('reconciles old signed attempts on unlock without a new site request', async () => {
+    const previousChrome = (globalThis as any).chrome
+    const transactionHash = '0x' + 'ab'.repeat(32)
+    ;(globalThis as any).chrome = {
+      runtime: { id: 'frank-test' },
+      storage: {
+        local: {
+          get: jest.fn(async () => ({
+            frankDappEvmAttemptsV1: [
+              {
+                requestId: 'lost-reply',
+                chainIdentifier: 'ethereum-mainnet',
+                account: EVM_PERSONA.address,
+                nonce: 0,
+                intentHash: '0x' + 'cd'.repeat(32),
+                signedTransaction: '0x1234',
+                transactionHash,
+              },
+            ],
+            frankDappOriginPersonas: {
+              [ORIGIN]: {
+                address: EVM_PERSONA.address,
+                isBurner: true,
+                index: 1,
+              },
+            },
+          })),
+        },
+      },
+    }
+    const reconcileLegacySubAccountAttempt = jest.fn(async () => ({
+      status: 'pending',
+      transactionHash,
+    }))
+    const openEvmWallet = jest.fn(async () => ({
+      wallet: {
+        chainIdentifier: 'ethereum-mainnet',
+        reconcileLegacySubAccountAttempt,
+      },
+    })) as any
+    try {
+      expect(await recoverPriorDappAttemptsOnUnlock({ openEvmWallet })).toBe(1)
+      expect(reconcileLegacySubAccountAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: REF,
+          account: EVM_PERSONA.address,
+          transactionHash,
+        }),
+      )
+    } finally {
+      ;(globalThis as any).chrome = previousChrome
+    }
+  })
   it('funds the approved persona through ordinary legacy send with a stable operation ID', async () => {
     const sendLegacy = jest.fn(async () => ({ txHash: '0x' + 'ab'.repeat(32) }))
     const openEvmWallet = jest.fn(async () => ({
@@ -74,6 +128,35 @@ describe('approved dApp request executor', () => {
         { openEvmWallet },
       ),
     ).rejects.toThrow('does not belong')
+  })
+
+  it('requires an initial top-up for an empty persona and allows a funded reconnect without a new send', async () => {
+    const getBalance = jest.fn(async () => 0n)
+    const sendLegacy = jest.fn()
+    const openEvmWallet = jest.fn(async () => ({
+      wallet: {
+        chainIdentifier: 'ethereum-mainnet',
+        sendLegacy,
+        provider: { getBalance },
+        ensureLegacySubAccount: jest.fn(async () => ({
+          raw: EVM_PERSONA.address,
+        })),
+      },
+    })) as any
+    const params = {
+      chainIdentifier: 'ethereum-mainnet',
+      source: REF,
+      expectedAddress: EVM_PERSONA.address,
+      amountAtomic: 0n,
+    }
+    await expect(fundDappPersona(params, { openEvmWallet })).rejects.toThrow(
+      'new dApp address',
+    )
+    getBalance.mockResolvedValue(1n)
+    expect(await fundDappPersona(params, { openEvmWallet })).toEqual({
+      address: EVM_PERSONA.address,
+    })
+    expect(sendLegacy).not.toHaveBeenCalled()
   })
   it('signs EVM personal messages with the site persona and returns a verifiable signature', async () => {
     const signature = (await executeApprovedDappRequest(

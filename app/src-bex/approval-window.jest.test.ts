@@ -81,6 +81,10 @@ function createExtensionScope() {
             })
             if (keepOpen) pending = true
           }
+          if (!answered && !pending && msg?.type === 'fund-dapp-persona') {
+            cb?.({ ok: true, result: { address: msg.address } })
+            return
+          }
           if (!answered && !pending) cb?.(null)
         },
         onMessage: {
@@ -689,6 +693,38 @@ describe('approval window page', () => {
     await decide(state, scope, 'funding-failed', false)
     await pending
     page.dispose()
+    bg.dispose()
+  })
+
+  it('serializes a connect approval while wallet funding is still pending', async () => {
+    const { scope } = createExtensionScope()
+    const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
+    const bg = installBackgroundBridge(scope, state)
+    let answerFunding!: (value: unknown) => void
+    const funding = jest.fn()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type !== 'fund-dapp-persona') return undefined
+        funding(message)
+        answerFunding = respond
+        return true
+      },
+    )
+    const pending = rpc(state, scope, 'single-decision', 'eth_requestAccounts')
+    await tick()
+    await provideSitePersona(state, scope)
+    const first = decide(state, scope, 'single-decision', true, {
+      fundingAmountAtomic: '1',
+    })
+    await tick()
+    expect(
+      (await decide(state, scope, 'single-decision', false)).error?.code,
+    ).toBe(4090)
+    expect(state.pendingApprovals.has('single-decision')).toBe(true)
+    answerFunding({ ok: true, result: '0x' + 'ab'.repeat(32) })
+    expect((await first).ok).toBe(true)
+    expect(await pending).toEqual({ ok: true, result: [SITE] })
+    expect(funding).toHaveBeenCalledTimes(1)
     bg.dispose()
   })
 

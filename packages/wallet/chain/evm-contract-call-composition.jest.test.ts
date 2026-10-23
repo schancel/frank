@@ -225,7 +225,35 @@ test('the existing legacy send funds a persona once under a stable operation ID'
     expect(count).toBeGreaterThan(0)
     expect(await wallet.sendLegacy!(request)).toMatchObject({ txHash: first.txHash })
     expect(node.broadcast).toHaveBeenCalledTimes(count)
-    expect(await wallet.getBalance()).toBeGreaterThan(0n)
+    expect((await wallet.getBalanceParts!()).sending).toBeGreaterThanOrEqual(10n ** 18n)
+    const fromSite = await wallet.sendLegacyFromSubAccount!({
+      operationId: 'site-funded-followup',
+      source: { kind: 'site', origin: 'https://app.uniswap.org' },
+      expectedSourceAddress: address.raw,
+      recipient: { raw: ROUTER },
+      value: 1_000n,
+    })
+    expect(fromSite.txHash).toMatch(/^0x[0-9a-f]{64}$/i)
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('a funded persona does not inflate ordinary stealth payment capacity', async () => {
+  const wallet = (await createEvmChain(config).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 0n)
+    const address = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    node.fund(address.raw, 1_000_000n)
+    const quote = await wallet.stealthPayments!.quote!({
+      operationId: 'quote-excludes-persona',
+      chainIdentifier: 'monad-testnet',
+      asset: { kind: 'native' },
+      recipientSpendPublicKey: wallet.identity!.compressedPubKey,
+      amountAtomic: 1_000n,
+    })
+    expect(quote.nativeBalanceAtomic).toBe(0n)
+    expect(quote.assetBalanceAtomic).toBe(0n)
   } finally {
     await wallet.close()
   }

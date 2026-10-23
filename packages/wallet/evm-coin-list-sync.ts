@@ -324,7 +324,9 @@ export class EvmCoinListSync {
     )
       return
     if (balance <= 0n) {
-      if (live?.state === 'unspent')
+      // A persona is a durable owned deposit address. Keep its zero-value coin so a
+      // later top-up remains discoverable after refresh and restart.
+      if (live?.state === 'unspent' && live.origin !== 'legacy-subaccount')
         await this.mutate(() => list.recordGone(live))
       if (
         !this.stopped &&

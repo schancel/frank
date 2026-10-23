@@ -58,6 +58,71 @@ async function priorDappAttempts(): Promise<readonly PriorDappEvmAttempt[]> {
   return rows as PriorDappEvmAttempt[]
 }
 
+/** On unlock, reconcile every prior signed extension attempt even if its site never opens
+ * again. The old origin binding supplies the private derivation reference, while the wallet
+ * verifies the signed source account and exact bytes before any rebroadcast. */
+export async function recoverPriorDappAttemptsOnUnlock(
+  options: DappRequestExecutorOptions = {},
+): Promise<number> {
+  const attempts = await priorDappAttempts()
+  if (!attempts.length) return 0
+  const storage = getRawExtensionApi()?.storage?.local
+  if (typeof storage?.get !== 'function')
+    throw new Error('Previous dApp recovery storage is unavailable')
+  const stored = await storage.get([
+    'frankDappOriginPersonas',
+    'frankDappSitePersonas',
+  ])
+  const bindings = stored?.frankDappOriginPersonas
+  const sites = stored?.frankDappSitePersonas
+  if (
+    (bindings !== undefined && (typeof bindings !== 'object' || !bindings)) ||
+    (sites !== undefined && (typeof sites !== 'object' || !sites))
+  )
+    throw new Error('Previous dApp account bindings are invalid')
+  for (const attempt of attempts) {
+    const binding = Object.entries(
+      (bindings ?? {}) as Record<string, unknown>,
+    ).find(
+      ([, value]) =>
+        value &&
+        typeof value === 'object' &&
+        typeof (value as { address?: unknown }).address === 'string' &&
+        (value as { address: string }).address.toLowerCase() ===
+          attempt.account.toLowerCase(),
+    )
+    const site = Object.entries((sites ?? {}) as Record<string, unknown>).find(
+      ([, value]) =>
+        typeof value === 'string' &&
+        value.toLowerCase() === attempt.account.toLowerCase(),
+    )
+    const source: DappPersonaRef | undefined = binding
+      ? (binding[1] as { isBurner?: unknown }).isBurner === false
+        ? { kind: 'shared', slot: 0 }
+        : { kind: 'site', origin: binding[0] }
+      : site
+      ? { kind: 'site', origin: site[0] }
+      : undefined
+    if (!source)
+      throw new Error(
+        `Previous dApp transaction needs its account binding restored: ${attempt.transactionHash}`,
+      )
+    const wallet = (
+      await (options.openEvmWallet ?? openEvmWallet)(attempt.chainIdentifier)
+    ).wallet as EvmChainWalletHandle
+    if (wallet.chainIdentifier !== attempt.chainIdentifier)
+      throw new Error('Previous dApp transaction chain changed')
+    await wallet.reconcileLegacySubAccountAttempt({
+      source,
+      account: attempt.account,
+      nonce: attempt.nonce,
+      signedTransaction: attempt.signedTransaction,
+      transactionHash: attempt.transactionHash,
+    })
+  }
+  return attempts.length
+}
+
 function priorIntentValue(value: unknown): string | null {
   if (value === undefined || value === null) return null
   if (
@@ -111,8 +176,8 @@ export interface DappRequestExecutorOptions {
   readonly openEvmWallet?: typeof openEvmWallet
 }
 
-/** A user-chosen top-up on connection uses the ordinary wallet send. The deterministic ID
- * means retrying the same approval cannot authorize a second transfer after a lost reply. */
+/** A first top-up uses ordinary wallet send. The deterministic ID replays an uncertain first
+ * funding operation; a completed first top-up cannot silently masquerade as a new transfer. */
 export async function fundDappPersona(
   params: {
     chainIdentifier: string
@@ -121,13 +186,13 @@ export async function fundDappPersona(
     amountAtomic: bigint
   },
   options: DappRequestExecutorOptions = {},
-): Promise<string> {
+): Promise<{ address: string; txHash?: string }> {
   const entry = PROTOCOL_CHAINS[params.chainIdentifier]
   if (
     !entry ||
     entry.family !== 'evm' ||
     !entry.wallet ||
-    params.amountAtomic <= 0n
+    params.amountAtomic < 0n
   )
     throw new Error('Invalid dApp persona funding request')
   const wallet = (await (options.openEvmWallet ?? openEvmWallet)(entry.id))
@@ -155,15 +220,35 @@ export async function fundDappPersona(
         'An earlier transaction from this address is still pending; funding is paused',
       )
   }
+  if (params.amountAtomic === 0n) {
+    if ((await wallet.provider.getBalance(address.raw)) <= 0n)
+      throw new Error(
+        'Enter an amount to fund this new dApp address before connecting',
+      )
+    return { address: address.raw }
+  }
   const operationId = `legacy-dappfund-${keccak256(
     toUtf8Bytes(JSON.stringify([entry.id, address.raw.toLowerCase()])),
   ).slice(2)}`
+  const previous = await wallet.transactionSetPreparer?.readOperation(
+    operationId,
+  )
+  if (
+    previous &&
+    previous.members.every(
+      member => member.observation.state === 'included-success',
+    )
+  )
+    throw new Error(
+      'This address was funded on its first connection. Clear the amount to reconnect; use Wallet for another top-up.',
+    )
   const result = await wallet.sendLegacy({
     operationId,
     recipient: address,
     value: params.amountAtomic,
   })
-  return result.txHash
+  await wallet.ensureLegacySubAccount(params.source)
+  return { address: address.raw, txHash: result.txHash }
 }
 
 function paramsArray(params: unknown): any[] {

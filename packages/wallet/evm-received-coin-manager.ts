@@ -1622,7 +1622,7 @@ export function createEvmReceivedCoinAndContactManager(
         const coins = evmWalletInternals(wallet).coinList;
         if (!preparer || !coins) throw new Error("Shared native transaction preparation is unavailable");
         const policy = preparer.transactionSetPolicy();
-        const available = coins.all().filter(coin => coin.state === "unspent" && (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= policy.head));
+        const available = coins.all().filter(coin => coin.origin !== "legacy-subaccount" && coin.state === "unspent" && (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= policy.head));
         const balance = available.reduce((sum, coin) => sum + coin.valueWei, 0n);
         const maximumFee = BigInt(available.length) * (policy.paymentGasLimit("0x") + BigInt(policy.maxChangeOutputs) * policy.changeGasLimit) * policy.gasPriceWei;
         return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: maximumFee };

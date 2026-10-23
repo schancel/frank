@@ -1,4 +1,14 @@
 <template>
+  <q-banner
+    v-if="dappRecoveryError"
+    class="bg-negative text-white"
+    data-test="dapp-recovery-error"
+  >
+    A previous dApp transaction still needs recovery: {{ dappRecoveryError }}
+    <template #action
+      ><q-btn flat label="Retry" @click="retryDappRecovery"
+    /></template>
+  </q-banner>
   <q-dialog v-model="contactBookOpen">
     <contact-book-dialog :contact-click="contactClicked" />
   </q-dialog>
@@ -88,6 +98,7 @@ import type { PendingDappApproval } from '../src-bex/background'
 import {
   executeApprovedDappRequest,
   fundDappPersona,
+  recoverPriorDappAttemptsOnUnlock,
   type ApprovedDappRequest,
 } from './accounts/dapp-request-executor'
 import { openEvmWallet } from './accounts/evm-wallets'
@@ -242,9 +253,21 @@ export default defineComponent({
     } = storeToRefs(chatStore)
 
     const router = useRouter()
+    const dappRecoveryError = ref('')
+    const retryDappRecovery = async () => {
+      if (!isBrowserExtensionRuntime() || accountStatus.status !== 'ready')
+        return
+      try {
+        await recoverPriorDappAttemptsOnUnlock()
+        dappRecoveryError.value = ''
+      } catch (error) {
+        dappRecoveryError.value =
+          error instanceof Error ? error.message : String(error)
+      }
+    }
     // A site waiting on a connect decision gets its custody-derived persona address.
     const offApprovalsChanged = isBrowserExtensionRuntime()
-      ? onRuntimeMessage(async (message, sender) => {
+      ? onRuntimeMessage((message, sender) => {
           const m = message as {
             channel?: unknown
             type?: unknown
@@ -348,20 +371,20 @@ export default defineComponent({
                   typeof funding.origin !== 'string' ||
                   typeof funding.address !== 'string' ||
                   typeof funding.amountAtomic !== 'string' ||
-                  !/^[1-9][0-9]*$/.test(funding.amountAtomic)
+                  !/^(?:0|[1-9][0-9]*)$/.test(funding.amountAtomic)
                 )
                   throw new Error('Invalid dApp funding request')
                 const source =
                   funding.useBurnerPersona === false
                     ? { kind: 'shared' as const, slot: 0 }
                     : { kind: 'site' as const, origin: funding.origin }
-                const txHash = await fundDappPersona({
+                const result = await fundDappPersona({
                   chainIdentifier: funding.chainIdentifier,
                   source,
                   expectedAddress: funding.address,
                   amountAtomic: BigInt(funding.amountAtomic),
                 })
-                return { ok: true, result: txHash }
+                return { ok: true, result }
               } catch (error) {
                 return {
                   ok: false,
@@ -582,6 +605,7 @@ export default defineComponent({
       status => {
         if (status === 'ready') {
           void syncActivePersonaToExtension()
+          void retryDappRecovery()
           const runCuratedSync = () => {
             fetchCuratedDefaultContacts({
               relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -661,6 +685,8 @@ export default defineComponent({
       totalUnread,
       getRelayData: myProfile,
       tabCoordinator,
+      dappRecoveryError,
+      retryDappRecovery,
       takeoverHere,
       handleBlindWakeupSyncEvent,
       consumeInitialNotificationClickParam,

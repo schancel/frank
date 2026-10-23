@@ -673,7 +673,8 @@ export class EvmStampPayer {
       // coin once the chain shows that spend. A sub-account is spent once (its first nonce):
       // nothing comes back to wait for.
       const comesBack = (coin: EvmListCoin) =>
-        coin.origin !== 'deterministic' && allowed(stampSourceOf(coin.origin))
+        coin.origin !== 'deterministic' && coin.origin !== 'legacy-subaccount' &&
+        allowed(stampSourceOf(coin.origin))
       const heldByOthers = all.filter(
         coin =>
           (coin.state === 'spend_pending' || coin.state === 'pending_receipt') &&

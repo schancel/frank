@@ -101,6 +101,7 @@ export interface BackgroundBridgeState {
   sitePersonaAddresses: Record<string, string>
   announceMode: DappProviderAnnounceMode
   pendingApprovals: Map<string, PendingDappApproval>
+  pendingApprovalClaims: Set<string>
   pendingRpcWaiters: Map<string, PendingRpcWaiter>
   syncPairing: PendingSyncPairing
   /** The user's toolbar click choice (see FRANK_EXT_LAUNCH_MODE_KEY). */
@@ -449,6 +450,7 @@ export function createBackgroundBridgeState(
     announceMode: overrides.announceMode ?? 'always',
     pendingApprovals:
       overrides.pendingApprovals ?? new Map<string, PendingDappApproval>(),
+    pendingApprovalClaims: overrides.pendingApprovalClaims ?? new Set<string>(),
     pendingRpcWaiters:
       overrides.pendingRpcWaiters ?? new Map<string, PendingRpcWaiter>(),
     syncPairing: overrides.syncPairing ?? {
@@ -2131,236 +2133,248 @@ export async function handleBackgroundMessage(
         },
       }
     }
-    const approved = Boolean(decision.approved ?? message.approved)
-    const isConnectMethod =
-      pending.kind === 'connect' ||
-      pending.kind === 'permissions' ||
-      pending.method === 'eth_requestAccounts' ||
-      pending.method === 'wallet_requestPermissions' ||
-      SOLANA_CONNECT_METHODS.has(pending.method)
-
-    const rawUseBurner = decision.useBurnerPersona ?? message.useBurnerPersona
-    const useBurnerPersona =
-      decision.personaIndex === 0 || message.personaIndex === 0
-        ? false
-        : rawUseBurner !== undefined
-        ? Boolean(rawUseBurner)
-        : true
-    const suppliedPersonaAddress =
-      decision.personaAddress ?? message.personaAddress
-    // Approving a connection needs a custody-derived address for the chosen persona. Until
-    // Frank provides it the request stays queued and the decision fails explicitly.
-    if (
-      approved &&
-      isConnectMethod &&
-      !SOLANA_CONNECT_METHODS.has(pending.method) &&
-      !connectPersonaAddress(
-        state,
-        normalizeBridgeOrigin(pending.origin) ||
-          pending.origin.trim().toLowerCase(),
-        useBurnerPersona,
-        suppliedPersonaAddress,
-      )
-    ) {
-      return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
-    }
-
-    const fundingAmountAtomic =
-      decision.fundingAmountAtomic ?? message.fundingAmountAtomic
-    if (
-      approved &&
-      isConnectMethod &&
-      !SOLANA_CONNECT_METHODS.has(pending.method) &&
-      fundingAmountAtomic !== undefined
-    ) {
-      if (
-        typeof fundingAmountAtomic !== 'string' ||
-        !/^[1-9][0-9]*$/.test(fundingAmountAtomic)
-      )
-        return {
-          ok: false,
-          error: { code: -32602, message: 'Invalid site funding amount.' },
-        }
-      const chainId = BigInt(pending.chainIdHex ?? state.chainIdHex)
-      const chain = Object.values(PROTOCOL_CHAINS).find(
-        entry =>
-          entry.family === 'evm' &&
-          entry.nativeChainId !== undefined &&
-          BigInt(entry.nativeChainId) === chainId,
-      )
-      if (
-        !chain ||
-        (pending.chainIdentifier && pending.chainIdentifier !== chain.id)
-      )
-        return {
-          ok: false,
-          error: { code: 4901, message: 'The approved chain changed.' },
-        }
-      const address = connectPersonaAddress(
-        state,
-        normalizeBridgeOrigin(pending.origin) ||
-          pending.origin.trim().toLowerCase(),
-        useBurnerPersona,
-        suppliedPersonaAddress,
-      )
-      try {
-        const funded: any = await sendRuntimeMessage(
-          {
-            channel: FRANK_DAPP_BRIDGE_CHANNEL,
-            type: 'fund-dapp-persona',
-            chainIdentifier: chain.id,
-            origin: pending.origin,
-            useBurnerPersona,
-            address,
-            amountAtomic: fundingAmountAtomic,
-          },
-          runtimeScope,
-        )
-        if (funded?.ok !== true)
-          return {
-            ok: false,
-            error: funded?.error ?? {
-              code: 4900,
-              message: 'Unlock Frank to fund this address.',
-            },
-          }
-      } catch (error) {
-        return {
-          ok: false,
-          error: {
-            code: 4900,
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Frank wallet is unavailable.',
-          },
-        }
-      }
-    }
-
-    state.pendingApprovals.delete(requestId)
-    state.pendingRpcWaiters.delete(requestId)
-    notifyExtensionViewsOfApprovals(runtimeScope)
-    if (state.pendingApprovals.size === 0) {
-      void approvalWindowFor(state, runtimeScope)
-        .close()
-        .catch(() => undefined)
-    }
-
-    if (!approved) {
-      const rejectionError = { ...USER_REJECTED }
-      if (waiter) {
-        waiter.reject(rejectionError)
-      }
+    if (state.pendingApprovalClaims.has(requestId))
       return {
         ok: false,
-        error: rejectionError,
-        result: {
-          ok: false,
-          requestId,
-          approvalId: requestId,
-          approved: false,
-          origin: pending.origin,
+        error: {
+          code: 4090,
+          message: 'This approval is already being processed.',
         },
       }
-    }
+    state.pendingApprovalClaims.add(requestId)
+    try {
+      const approved = Boolean(decision.approved ?? message.approved)
+      const isConnectMethod =
+        pending.kind === 'connect' ||
+        pending.kind === 'permissions' ||
+        pending.method === 'eth_requestAccounts' ||
+        pending.method === 'wallet_requestPermissions' ||
+        SOLANA_CONNECT_METHODS.has(pending.method)
 
-    if (isConnectMethod) {
-      if (SOLANA_CONNECT_METHODS.has(pending.method)) {
-        const result = await executeApprovedDappRequest(pending, runtimeScope)
-        if (!result.ok) {
-          waiter?.reject(result.error)
-          return { ok: false, error: result.error }
-        }
-        const connection = result.result as {
-          address: string
-          publicKey: number[]
-        }
-        if (
-          !connection ||
-          !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(connection.address) ||
-          !Array.isArray(connection.publicKey) ||
-          connection.publicKey.length !== 32 ||
-          connection.address !== pending.solanaAccountAddress
-        ) {
-          const error = {
-            code: -32603,
-            message: 'Frank returned an invalid Solana account.',
-          }
-          waiter?.reject(error)
-          return { ok: false, error }
-        }
-        state.solanaConnectedOrigins.add(
-          normalizeBridgeOrigin(pending.origin) || pending.origin,
+      const rawUseBurner = decision.useBurnerPersona ?? message.useBurnerPersona
+      const useBurnerPersona =
+        decision.personaIndex === 0 || message.personaIndex === 0
+          ? false
+          : rawUseBurner !== undefined
+          ? Boolean(rawUseBurner)
+          : true
+      const suppliedPersonaAddress =
+        decision.personaAddress ?? message.personaAddress
+      // Approving a connection needs a custody-derived address for the chosen persona. Until
+      // Frank provides it the request stays queued and the decision fails explicitly.
+      if (
+        approved &&
+        isConnectMethod &&
+        !SOLANA_CONNECT_METHODS.has(pending.method) &&
+        !connectPersonaAddress(
+          state,
+          normalizeBridgeOrigin(pending.origin) ||
+            pending.origin.trim().toLowerCase(),
+          useBurnerPersona,
+          suppliedPersonaAddress,
         )
-        await persistSolanaOrigins(state, runtimeScope)
-        waiter?.resolve(connection)
-        return { ok: true, result: connection }
+      ) {
+        return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
       }
-      const binding = assignOriginPersona(state, pending.origin, {
-        useBurnerPersona,
-        personaAddress: suppliedPersonaAddress,
-        personaIndex: decision.personaIndex ?? message.personaIndex,
-        label: decision.label ?? message.label,
-      })
 
-      await persistOriginStateToStorage(state, runtimeScope)
-      broadcastProviderEventToTabs(
-        'accountsChanged',
-        [binding.address],
-        pending.origin,
-      )
-      broadcastPrivacyConfigToTabs(true)
-
-      const rpcValue =
-        pending.method === 'wallet_requestPermissions'
-          ? [
-              {
-                invoker: pending.origin,
-                parentCapability: 'eth_accounts',
-                caveats: [
-                  {
-                    type: 'restrictReturnedAccounts',
-                    value: [binding.address],
-                  },
-                ],
+      const fundingAmountAtomic =
+        decision.fundingAmountAtomic ?? message.fundingAmountAtomic ?? '0'
+      if (
+        approved &&
+        isConnectMethod &&
+        !SOLANA_CONNECT_METHODS.has(pending.method)
+      ) {
+        if (
+          typeof fundingAmountAtomic !== 'string' ||
+          !/^(?:0|[1-9][0-9]*)$/.test(fundingAmountAtomic)
+        )
+          return {
+            ok: false,
+            error: { code: -32602, message: 'Invalid site funding amount.' },
+          }
+        const chainId = BigInt(pending.chainIdHex ?? state.chainIdHex)
+        const chain = Object.values(PROTOCOL_CHAINS).find(
+          entry =>
+            entry.family === 'evm' &&
+            entry.nativeChainId !== undefined &&
+            BigInt(entry.nativeChainId) === chainId,
+        )
+        if (
+          !chain ||
+          (pending.chainIdentifier && pending.chainIdentifier !== chain.id)
+        )
+          return {
+            ok: false,
+            error: { code: 4901, message: 'The approved chain changed.' },
+          }
+        const address = connectPersonaAddress(
+          state,
+          normalizeBridgeOrigin(pending.origin) ||
+            pending.origin.trim().toLowerCase(),
+          useBurnerPersona,
+          suppliedPersonaAddress,
+        )
+        try {
+          const funded: any = await sendRuntimeMessage(
+            {
+              channel: FRANK_DAPP_BRIDGE_CHANNEL,
+              type: 'fund-dapp-persona',
+              chainIdentifier: chain.id,
+              origin: pending.origin,
+              useBurnerPersona,
+              address,
+              amountAtomic: fundingAmountAtomic,
+            },
+            runtimeScope,
+          )
+          if (funded?.ok !== true)
+            return {
+              ok: false,
+              error: funded?.error ?? {
+                code: 4900,
+                message: 'Unlock Frank to fund this address.',
               },
-            ]
-          : [binding.address]
-
-      if (waiter) {
-        waiter.resolve(rpcValue)
+            }
+        } catch (error) {
+          return {
+            ok: false,
+            error: {
+              code: 4900,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : 'Frank wallet is unavailable.',
+            },
+          }
+        }
       }
 
-      return {
-        ok: true,
-        result: {
+      state.pendingApprovals.delete(requestId)
+      state.pendingRpcWaiters.delete(requestId)
+      notifyExtensionViewsOfApprovals(runtimeScope)
+      if (state.pendingApprovals.size === 0) {
+        void approvalWindowFor(state, runtimeScope)
+          .close()
+          .catch(() => undefined)
+      }
+
+      if (!approved) {
+        const rejectionError = { ...USER_REJECTED }
+        if (waiter) {
+          waiter.reject(rejectionError)
+        }
+        return {
+          ok: false,
+          error: rejectionError,
+          result: {
+            ok: false,
+            requestId,
+            approvalId: requestId,
+            approved: false,
+            origin: pending.origin,
+          },
+        }
+      }
+
+      if (isConnectMethod) {
+        if (SOLANA_CONNECT_METHODS.has(pending.method)) {
+          const result = await executeApprovedDappRequest(pending, runtimeScope)
+          if (!result.ok) {
+            waiter?.reject(result.error)
+            return { ok: false, error: result.error }
+          }
+          const connection = result.result as {
+            address: string
+            publicKey: number[]
+          }
+          if (
+            !connection ||
+            !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(connection.address) ||
+            !Array.isArray(connection.publicKey) ||
+            connection.publicKey.length !== 32 ||
+            connection.address !== pending.solanaAccountAddress
+          ) {
+            const error = {
+              code: -32603,
+              message: 'Frank returned an invalid Solana account.',
+            }
+            waiter?.reject(error)
+            return { ok: false, error }
+          }
+          state.solanaConnectedOrigins.add(
+            normalizeBridgeOrigin(pending.origin) || pending.origin,
+          )
+          await persistSolanaOrigins(state, runtimeScope)
+          waiter?.resolve(connection)
+          return { ok: true, result: connection }
+        }
+        const binding = assignOriginPersona(state, pending.origin, {
+          useBurnerPersona,
+          personaAddress: suppliedPersonaAddress,
+          personaIndex: decision.personaIndex ?? message.personaIndex,
+          label: decision.label ?? message.label,
+        })
+
+        await persistOriginStateToStorage(state, runtimeScope)
+        broadcastProviderEventToTabs(
+          'accountsChanged',
+          [binding.address],
+          pending.origin,
+        )
+        broadcastPrivacyConfigToTabs(true)
+
+        const rpcValue =
+          pending.method === 'wallet_requestPermissions'
+            ? [
+                {
+                  invoker: pending.origin,
+                  parentCapability: 'eth_accounts',
+                  caveats: [
+                    {
+                      type: 'restrictReturnedAccounts',
+                      value: [binding.address],
+                    },
+                  ],
+                },
+              ]
+            : [binding.address]
+
+        if (waiter) {
+          waiter.resolve(rpcValue)
+        }
+
+        return {
           ok: true,
+          result: {
+            ok: true,
+            requestId,
+            approvalId: requestId,
+            approved: true,
+            origin: pending.origin,
+            accounts: [binding.address],
+            persona: binding,
+            result: rpcValue,
+          },
+        }
+      }
+
+      const execution = await executeApprovedDappRequest(pending, runtimeScope)
+      if (execution.ok) waiter?.resolve(execution.result)
+      else waiter?.reject(execution.error)
+      return {
+        ok: execution.ok,
+        ...(execution.ok ? {} : { error: execution.error }),
+        result: {
+          ok: execution.ok,
           requestId,
           approvalId: requestId,
-          approved: true,
+          approved: execution.ok,
           origin: pending.origin,
-          accounts: [binding.address],
-          persona: binding,
-          result: rpcValue,
+          ...(execution.ok ? { result: execution.result } : {}),
         },
       }
-    }
-
-    const execution = await executeApprovedDappRequest(pending, runtimeScope)
-    if (execution.ok) waiter?.resolve(execution.result)
-    else waiter?.reject(execution.error)
-    return {
-      ok: execution.ok,
-      ...(execution.ok ? {} : { error: execution.error }),
-      result: {
-        ok: execution.ok,
-        requestId,
-        approvalId: requestId,
-        approved: execution.ok,
-        origin: pending.origin,
-        ...(execution.ok ? { result: execution.result } : {}),
-      },
+    } finally {
+      state.pendingApprovalClaims.delete(requestId)
     }
   }
 
@@ -2587,9 +2601,33 @@ export function installBackgroundBridge(
     })
   }
 
-  const unsubscribe = onRuntimeMessage(async (message: any, sender: any) => {
-    await restored
-    return await handleBackgroundMessage(message, sender, state, runtimeScope)
+  const backgroundMessageTypes = new Set([
+    'get-bridge-state',
+    'get-provider-privacy',
+    'set-announce-mode',
+    'set-provider-privacy',
+    'disconnect-origin',
+    FRANK_DAPP_PROVISION_SITE_PERSONAS,
+    'set-active-persona',
+    'update-persona-state',
+    'set-dapp-chain',
+    'get-launch-mode',
+    'set-launch-mode',
+    'open-extension-window',
+    'dapp-rpc-request',
+    'resolve-approval',
+    'companion-resolve-approval',
+  ])
+  const unsubscribe = onRuntimeMessage((message: any, sender: any) => {
+    if (
+      message?.channel !== FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+      (message?.channel !== FRANK_DAPP_BRIDGE_CHANNEL ||
+        !backgroundMessageTypes.has(message?.type))
+    )
+      return undefined
+    return restored.then(() =>
+      handleBackgroundMessage(message, sender, state, runtimeScope),
+    )
   }, runtimeScope)
 
   return {

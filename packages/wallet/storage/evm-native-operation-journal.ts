@@ -1,6 +1,6 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
-import { getAddress, keccak256, Transaction } from 'ethers'
+import { getAddress, keccak256, toUtf8Bytes, Transaction } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
@@ -222,6 +222,41 @@ export interface EvmNativeOperation {
    */
   record?: EvmContractCallRecord
 }
+/** The composing owner checkpoints its obligations before requesting archival. This is
+ * evidence of local completion bookkeeping, never atomicity of external chain/relay steps. */
+export interface EvmNativeCompletionReceipt {
+  expectedOperationHash: string
+  ownerReference: string
+  sync: 'complete' | 'not-required'
+  delivery: 'complete' | 'not-required'
+  dependencies: 'complete'
+}
+
+/** Pins the exact validated snapshot, including observations and the complete signed graph. */
+export function evmNativeOperationDigest(operation: EvmNativeOperation): string {
+  return keccak256(toUtf8Bytes(JSON.stringify(operation)))
+}
+
+function validateCompletionReceipt(value: unknown): EvmNativeCompletionReceipt {
+  const receipt = object(value, ['expectedOperationHash', 'ownerReference', 'sync', 'delivery', 'dependencies'])
+  hash(receipt.expectedOperationHash)
+  if (typeof receipt.ownerReference !== 'string' || !receipt.ownerReference.length ||
+      receipt.ownerReference.length > 1024 ||
+      !['complete', 'not-required'].includes(receipt.sync as string) ||
+      !['complete', 'not-required'].includes(receipt.delivery as string) ||
+      receipt.dependencies !== 'complete') fail()
+  return clone(receipt) as unknown as EvmNativeCompletionReceipt
+}
+
+function completedForHistory(row: EvmNativeOperation): boolean {
+  // The original cancellation validator proves these bytes were never exposed and removed
+  // signed members. The exact cancelled tombstone remains authoritative in history.
+  if (row.cancelled) return row.members.every(member => !member.signed && !member.exposed)
+  // Other operation kinds need their owner's completion contract before they can retire.
+  return row.kind === 'transaction-set' && row.members.every(member =>
+    terminalInventoryEvidence(member) && member.transactionSet?.inventoryApplied === true)
+}
+
 export interface EvmNativePlan {
   transactionSetStages?: EvmTransactionSetStage[]
   kind: EvmNativeOperationKind
@@ -755,6 +790,11 @@ export class EvmNativeOperationJournal {
   private database?: LevelDB
   private rows = new Map<string, EvmNativeOperation>()
   private nextSequence = 1
+  private archivedCount = 0
+  /** Test-only backing storage. Production history stays on disk, never in a hot map. */
+  private readonly ephemeralHistory = new Map<string, { row: EvmNativeOperation; receipt: EvmNativeCompletionReceipt }>()
+  private readonly ephemeralPreparations = new Map<string, string>()
+  private readonly ephemeralConsumed = new Map<string, string>()
   private lifecycle: 'closed' | 'open' | 'uncertain' = 'closed'
   private closing = false
   private readonly signatures = new NativeSignatureValidationCache()
@@ -815,25 +855,20 @@ export class EvmNativeOperationJournal {
   private async reloadRows(initialize: boolean): Promise<void> {
     if (!this.database) return
     const rows = new Map<string, EvmNativeOperation>()
-    let manifest: unknown
-    for await (const [key, value] of this.database.iterator()) {
-      const name = String(key),
-        text = String(value)
+    const manifestText = await this.stored('manifest')
+    const manifest: unknown = manifestText === undefined ? undefined : JSON.parse(manifestText)
+    // Only active rows participate in recovery scans. Completed history is read through
+    // bounded indexed lookups; opening never materializes lifetime history.
+    for await (const [key, value] of this.database.iterator({ gte: 'operation:', lt: 'operation;' })) {
+      const name = String(key), text = String(value)
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
-      if (name === 'manifest') manifest = JSON.parse(text) as unknown
-      else if (name.startsWith('operation:')) {
-        const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
-        if (
-          name !== `operation:${row.operationId}` ||
-          rows.has(row.operationId)
-        )
-          fail()
-        rows.set(row.operationId, row)
-      } else fail()
+      const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+      if (name !== `operation:${row.operationId}` || rows.has(row.operationId)) fail()
+      rows.set(row.operationId, row)
     }
     let nextSequence = 1
     if (manifest !== undefined) {
-      const m = object(manifest, ['version', 'binding', 'nextSequence'])
+      const m = object(manifest, ['version', 'binding', 'nextSequence', ...('archivedCount' in (manifest as object) ? ['archivedCount'] : [])])
       if (m.version !== 1) fail()
       if (
         JSON.stringify(validateBinding(m.binding)) !==
@@ -843,8 +878,10 @@ export class EvmNativeOperationJournal {
       integer(m.nextSequence)
       if (m.nextSequence < 1) fail()
       nextSequence = m.nextSequence
+      if (m.archivedCount !== undefined) integer(m.archivedCount)
+      this.archivedCount = m.archivedCount === undefined ? 0 : m.archivedCount as number
     } else if (rows.size || !initialize) fail()
-    if (rows.size !== nextSequence - 1) fail()
+    if (rows.size + this.archivedCount !== nextSequence - 1) fail()
     const pairs = new Set<string>(),
       preparations = new Set<string>()
     for (const row of rows.values()) {
@@ -904,21 +941,197 @@ export class EvmNativeOperationJournal {
       this.coordinated(async () => {
         await this.reloadRows(false)
         this.assertOpen()
-        return this.list().find(row => row.preparationId === preparationId)
+        return this.findPreparation(preparationId)
       }),
     )
   }
+  private async stored(key: string): Promise<string | undefined> {
+    if (!this.database) return undefined
+    try {
+      const value = String(await this.database.get(key))
+      if (Buffer.byteLength(value) > MAX_ROW) fail('capacity')
+      return value
+    } catch (error) {
+      if ((error as { notFound?: boolean }).notFound === true) return undefined
+      throw error
+    }
+  }
+
+  private operationId(id: string): void {
+    if (!/^evm-native-v1:[0-9a-f]{16}$/.test(id)) fail()
+  }
+
+  private pairKey(account: string, nonce: number): string {
+    return `consumed:${account}:${nonce}`
+  }
+
+  private async readArchived(id: string): Promise<EvmNativeOperation | undefined> {
+    const memory = this.database ? undefined : this.ephemeralHistory.get(id)
+    const text = this.database ? await this.stored(`history:${id}`) : memory && JSON.stringify(memory.row)
+    if (text === undefined) return undefined
+    const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+    if (row.operationId !== id || !completedForHistory(row)) fail()
+    const receiptText = this.database ? await this.stored(`completion:${id}`) : memory && JSON.stringify(memory.receipt)
+    if (receiptText === undefined) fail()
+    const receipt = validateCompletionReceipt(JSON.parse(receiptText))
+    if (receipt.expectedOperationHash !== evmNativeOperationDigest(row)) fail()
+    if (row.preparationId !== undefined) {
+      const indexed = this.database ? await this.stored(`preparation:${row.preparationId}`) : this.ephemeralPreparations.get(row.preparationId)
+      if (indexed !== id) fail()
+    }
+    if (!row.cancelled)
+      for (const member of row.members) {
+        const key = this.pairKey(member.source.address, Transaction.from(member.unsignedTransaction).nonce)
+        const indexed = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
+        if (indexed !== id) fail()
+      }
+    return clone(row)
+  }
+
+  private async consumedBy(account: string, nonce: number): Promise<string | undefined> {
+    const key = this.pairKey(account, nonce)
+    const id = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
+    if (id === undefined) return undefined
+    this.operationId(id)
+    const row = await this.readArchived(id)
+    if (!row || row.cancelled || !row.members.some(member =>
+      member.source.address === account && Transaction.from(member.unsignedTransaction).nonce === nonce)) fail()
+    return id
+  }
+
+  private async findPreparation(preparationId: string): Promise<EvmNativeOperation | undefined> {
+    const active = [...this.rows.values()].find(row => row.preparationId === preparationId)
+    const id = this.database ? await this.stored(`preparation:${preparationId}`) : this.ephemeralPreparations.get(preparationId)
+    if (active) {
+      if (id !== undefined) fail('conflict')
+      return clone(active)
+    }
+    if (id === undefined) return undefined
+    this.operationId(id)
+    const row = await this.readArchived(id)
+    if (!row || row.preparationId !== preparationId) fail()
+    return row
+  }
+
+  /** Exact active or completed evidence; required missing/corrupt history fails visibly. */
+  readOperation(id: string): Promise<EvmNativeOperation | undefined> {
+    this.operationId(id)
+    return this.exclusive(() => this.coordinated(async () => {
+      await this.reloadRows(false)
+      const active = this.rows.get(id)
+      if (active) return clone(active)
+      const archived = await this.readArchived(id)
+      if (!archived && parseInt(id.split(':')[1]!, 16) < this.nextSequence) fail()
+      return archived
+    }))
+  }
+
+  /** Bounded exact-history enumeration. The cursor is an exclusive operation ID. */
+  historyPage(input: { after?: string; limit: number }): Promise<{ operations: EvmNativeOperation[]; next?: string }> {
+    const { after, limit } = input
+    integer(limit)
+    if (limit < 1 || limit > 100) fail('capacity')
+    if (after !== undefined) this.operationId(after)
+    return this.exclusive(() => this.coordinated(async () => {
+      const operations: EvmNativeOperation[] = []
+      let bytes = 0
+      const append = async (id: string): Promise<boolean> => {
+        const row = await this.readArchived(id)
+        if (!row) fail()
+        const size = encodedBytes(row)
+        if (operations.length >= limit || bytes + size > MAX_BYTES) return false
+        operations.push(row)
+        bytes += size
+        return true
+      }
+      if (this.database) {
+        for await (const [key] of this.database.iterator({
+          ...(after === undefined ? { gte: 'history:' } : { gt: `history:${after}` }),
+          lt: 'history;', limit: limit + 1,
+        })) {
+          if (!await append(String(key).slice('history:'.length)))
+            return { operations, next: operations.at(-1)!.operationId }
+        }
+      } else {
+        for (const id of [...this.ephemeralHistory.keys()].sort()) {
+          if (after !== undefined && id <= after) continue
+          if (!await append(id)) return { operations, next: operations.at(-1)!.operationId }
+        }
+      }
+      return { operations }
+    }))
+  }
+
+  /** Retire local recovery state only after the composing owner durably finishes every
+   * delivery, sync and external dependency obligation. The row itself is never rewritten.
+   * One Level batch commits history, indexes and active retirement; external steps remain
+   * separately checkpointed and may have had partial effects before this call. */
+  archiveCompleted(id: string, input: EvmNativeCompletionReceipt): Promise<void> {
+    this.operationId(id)
+    const receipt = validateCompletionReceipt(input)
+    return this.exclusive(() => this.coordinated(async () => {
+      await this.reloadRows(false)
+      const row = this.rows.get(id)
+      if (!row) {
+        const archived = await this.readArchived(id)
+        if (!archived || evmNativeOperationDigest(archived) !== receipt.expectedOperationHash) fail('conflict')
+        const previous = this.database
+          ? JSON.parse((await this.stored(`completion:${id}`))!) as unknown
+          : this.ephemeralHistory.get(id)!.receipt
+        if (JSON.stringify(previous) !== JSON.stringify(receipt)) fail('conflict')
+        return
+      }
+      if (evmNativeOperationDigest(row) !== receipt.expectedOperationHash || !completedForHistory(row)) fail('conflict')
+      if (await this.readArchived(id)) fail('conflict')
+      const operations: Parameters<typeof durableBatch>[1][number][] = [
+        { type: 'put', key: `history:${id}`, value: JSON.stringify(row) },
+        { type: 'put', key: `completion:${id}`, value: JSON.stringify(receipt) },
+        { type: 'del', key: `operation:${id}` },
+        { type: 'put', key: 'manifest', value: JSON.stringify({ ...this.manifest(), archivedCount: this.archivedCount + 1 }) },
+      ]
+      if (row.preparationId !== undefined) {
+        const previous = this.database ? await this.stored(`preparation:${row.preparationId}`) : this.ephemeralPreparations.get(row.preparationId)
+        if (previous !== undefined) fail('conflict')
+        operations.push({ type: 'put', key: `preparation:${row.preparationId}`, value: id })
+      }
+      if (!row.cancelled)
+        for (const member of row.members) {
+          const nonce = Transaction.from(member.unsignedTransaction).nonce
+          if (await this.consumedBy(member.source.address, nonce)) fail('conflict')
+          operations.push({ type: 'put', key: this.pairKey(member.source.address, nonce), value: id })
+        }
+      try {
+        if (this.database) await durableBatch(this.database, operations)
+        else {
+          this.ephemeralHistory.set(id, { row: clone(row), receipt: clone(receipt) })
+          if (row.preparationId !== undefined) this.ephemeralPreparations.set(row.preparationId, id)
+          if (!row.cancelled)
+            for (const member of row.members)
+              this.ephemeralConsumed.set(this.pairKey(member.source.address, Transaction.from(member.unsignedTransaction).nonce), id)
+        }
+      } catch (error) {
+        this.lifecycle = 'uncertain'
+        throw error
+      }
+      this.rows.delete(id)
+      this.archivedCount++
+    }))
+  }
+
   private manifest() {
     return {
       version: 1,
       binding: this.binding,
       nextSequence: this.nextSequence,
+      archivedCount: this.archivedCount,
     }
   }
+  /** Active journal records only. Use indexed async reads for completed history. */
   list(): EvmNativeOperation[] {
     this.assertOpen()
     return [...this.rows.values()].map(clone)
   }
+  /** Active record only; absence must not be interpreted as a never-created operation. */
   get(operationId: string): EvmNativeOperation {
     this.assertOpen()
     const row = this.rows.get(operationId)
@@ -988,9 +1201,7 @@ export class EvmNativeOperationJournal {
       this.coordinated(async () => {
         await this.reloadRows(false)
         if (frozen.preparationId !== undefined) {
-          const existing = [...this.rows.values()].find(
-            row => row.preparationId === frozen.preparationId,
-          )
+          const existing = await this.findPreparation(frozen.preparationId)
           if (existing) {
             if (
               existing.cancelled ||
@@ -1106,6 +1317,7 @@ export class EvmNativeOperationJournal {
           fail('capacity')
         for (const m of row.members)
           if (
+            (await this.consumedBy(m.source.address, Transaction.from(m.unsignedTransaction).nonce)) !== undefined ||
             !this.canSelect(
               m.source.address,
               Transaction.from(m.unsignedTransaction).nonce,
@@ -1156,7 +1368,7 @@ export class EvmNativeOperationJournal {
     signedTransactions: readonly string[],
   ): Promise<EvmNativeOperation> {
     const input = clone({ stage, members, signedTransactions })
-    return this.mutate(id, row => {
+    return this.mutate(id, async row => {
       if (row.kind !== 'transaction-set' || row.cancelled || row.submissionAuthorized || !input.stage.stageId ||
           row.members.some(member => member.exposed || !member.signed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) fail('conflict')
       const known = row.transactionSetStages?.find(item => item.stageId === input.stage.stageId)
@@ -1168,6 +1380,8 @@ export class EvmNativeOperationJournal {
       if (!row.transactionSetStages || input.stage.startIndex !== row.members.length ||
           input.stage.memberCount !== input.members.length || !input.members.length ||
           input.members.length !== input.signedTransactions.length) fail('conflict')
+      for (const member of input.members)
+        if (await this.consumedBy(member.source.address, Transaction.from(member.unsignedTransaction).nonce)) fail('conflict')
       for (const member of input.members)
         for (const other of this.rows.values())
           if (other.operationId !== id && !other.cancelled && other.members.some(candidate =>
@@ -1187,14 +1401,14 @@ export class EvmNativeOperationJournal {
 
   private async mutate(
     id: string,
-    change: (row: EvmNativeOperation) => void | boolean,
+    change: (row: EvmNativeOperation) => void | boolean | Promise<void | boolean>,
   ): Promise<EvmNativeOperation> {
     return this.exclusive(() =>
       this.coordinated(async () => {
         // Mutation owns only its changed fields; the current durable row owns all other facts.
         await this.reloadRows(false)
         const row = this.get(id)
-        if (change(row) === false) return row
+        if (await change(row) === false) return row
         const validated = validateRow(row, this.binding, this.signatures)
         try {
           if (this.database)

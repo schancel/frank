@@ -103,6 +103,24 @@ function minesNativeTransfers(wallet: EvmChainWalletHandle) {
     })
 }
 
+// Resolve the original signed transaction across the active-to-history handoff.
+async function operationForTransaction(wallet: EvmChainWalletHandle, txHash: string) {
+  let rows = wallet.getNativeOperations!().filter(row =>
+    row.members.some(member => member.signed?.transactionHash === txHash),
+  )
+  if (rows.length === 0) {
+    const history = await wallet.getNativeOperationHistory!({ limit: 100 })
+    expect(history.next).toBeUndefined()
+    rows = history.operations.filter(row =>
+      row.members.some(member => member.signed?.transactionHash === txHash),
+    )
+  }
+  expect(rows).toHaveLength(1)
+  const row = await wallet.readNativeOperation!(rows[0].operationId)
+  expect(row).toBeDefined()
+  return row!
+}
+
 describe("a wallet's sync note to itself", () => {
   jest.setTimeout(120_000)
   let one: Fixture
@@ -281,7 +299,7 @@ describe("a wallet's sync note to itself", () => {
       await sender.reobserveNativeOperations!()
       await sender.flushNativeSync!()
       expect(mailbox).toHaveLength(1)
-      expect(sender.getNativeOperations!()[0]!.members[0]!.signed!.transactionHash).toBe(sent.txHash)
+      expect((await operationForTransaction(sender, sent.txHash)).members[0]!.signed!.transactionHash).toBe(sent.txHash)
       one.setMailbox(undefined)
       await sender.close()
       const other = await otherDevice()
@@ -496,11 +514,9 @@ describe("a wallet's sync note to itself", () => {
         value: 1_000n,
       })
     /** What the app's Wallet and Send pages read (`inspectNativeTransferOperations`). */
-    const status = () => {
-      const [row, ...more] = one.alice.getNativeOperations!().filter(
-        operation => operation.transactionSetStages?.some(stage => stage.legacy),
-      )
-      expect(more).toEqual([])
+    const status = async (txHash: string) => {
+      const row = await operationForTransaction(one.alice, txHash)
+      expect(row.transactionSetStages?.some(stage => stage.legacy)).toBe(true)
       return {
         row,
         ...summarizeEvmNativeOperation(
@@ -510,14 +526,14 @@ describe("a wallet's sync note to itself", () => {
       }
     }
     /** The note is sent after the send has resolved: wait for what it leaves behind. */
-    const until = async (done: () => boolean) => {
-      for (let waited = 0; !done() && waited < 10_000; waited += 10)
+    const until = async (done: () => Promise<boolean>) => {
+      for (let waited = 0; !(await done()) && waited < 10_000; waited += 10)
         await new Promise(resolve => setTimeout(resolve, 10))
-      expect(done()).toBe(true)
+      expect(await done()).toBe(true)
     }
-    const nothingPaid = async () => {
+    const nothingPaid = async (txHash: string) => {
       expect(mockFunded).toHaveLength(0)
-      expect(providerBroadcasts).toHaveLength(status().row.members.length)
+      expect(providerBroadcasts).toHaveLength((await status(txHash)).row.members.length)
       expect(
         await one.chain.directMessages.unattributedAttempts({
           wallet: one.alice,
@@ -530,9 +546,14 @@ describe("a wallet's sync note to itself", () => {
       minesNativeTransfers(one.alice)
       one.setMailbox(mailbox)
       const sent = await send(one)
-      expect(status().payment).toBe('included')
-      await until(() => status().sharing === 'shared')
-      const { row } = status()
+      // Force completion before reading status: sharing may already have archived the graph.
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      expect(one.alice.getNativeOperations!().some(row =>
+        row.members.some(member => member.signed?.transactionHash === sent.txHash),
+      )).toBe(false)
+      expect((await status(sent.txHash)).payment).toBe('included')
+      await until(async () => (await status(sent.txHash)).sharing === 'shared')
+      const { row } = await status(sent.txHash)
       const payments = row.members.filter(member => member.transactionSet?.role === 'payment')
       expect(payments).toHaveLength(1)
       expect(sent.txHash).toBe(payments[0].signed!.transactionHash)
@@ -553,7 +574,7 @@ describe("a wallet's sync note to itself", () => {
         expect(delivery.schemaVersion).toBe(2)
         expect(delivery.typed.payments).toEqual([])
       }
-      await nothingPaid()
+      await nothingPaid(sent.txHash)
       // This device recorded its own spend in the send; the note is for the others.
       expect(applied).not.toHaveBeenCalled()
       // Asking again sends nothing more.
@@ -591,7 +612,7 @@ describe("a wallet's sync note to itself", () => {
       mockBalances.set(identity, 10n ** 17n)
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
-      const [row] = one.alice.getNativeOperations!()
+      const row = await operationForTransaction(one.alice, sent.txHash)
       expect(summarizeEvmNativeOperation(row).payment).toBe('included')
       expect(row.members.length).toBeGreaterThan(1)
       expect(row.members.every(member => Transaction.from(member.signed!.rawTransaction).from!.toLowerCase() === identity)).toBe(true)
@@ -631,23 +652,33 @@ describe("a wallet's sync note to itself", () => {
       // Relay still down: the send resolves on inclusion, and says the note did not get through.
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
-      expect(status().payment).toBe('included')
-      const nativeOperationId = status().row.operationId
-      const nativeBytes = status().row.members.map(member => member.signed!.rawTransaction)
+      const nativeStatus = await status(sent.txHash)
+      expect(nativeStatus.payment).toBe('included')
+      const nativeOperationId = nativeStatus.row.operationId
+      const nativeBytes = nativeStatus.row.members.map(member => member.signed!.rawTransaction)
       expect(nativeOperationId).not.toBe(chatOperation.operationId)
       expect(one.alice.getNativeOperations!().find(row => row.operationId === chatOperation.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
-      await until(() => status().sharing === 'failed')
-      expect(status().payment).toBe('included')
+      await until(async () => (await status(sent.txHash)).sharing === 'failed')
+      expect((await status(sent.txHash)).payment).toBe('included')
       expect(mockFunded).toHaveLength(funded)
       expect(mailbox).toHaveLength(0)
 
-      // The relay is back. A later flush sends the note; the unresolved chat message is not
-      // re-sent, finished or touched by it.
+      // The relay is back. A later flush shares settled movements; chat delivery stays unresolved.
       one.setPhase('delivered')
       one.setMailbox(mailbox)
-      await one.alice.resumeLegacySend!(status().row.operationId)
-      await until(() => status().sharing === 'shared')
-      expect(mailbox).toHaveLength(status().row.members.length)
+      await one.alice.resumeLegacySend!(nativeOperationId)
+      await until(async () => (await status(sent.txHash)).sharing === 'shared')
+      // The unresolved chat's payment can settle before delivery and also needs a self-note.
+      // Flush both original graphs and account for every signed member, without paying again.
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      const sharedOperations = await Promise.all([chatOperation.operationId, nativeOperationId]
+        .map(id => one.alice.readNativeOperation!(id)))
+      const sharedMembers = sharedOperations.flatMap(row => row!.members)
+      expect(sharedMembers.every(member => member.syncApplied)).toBe(true)
+      expect(sharedOperations[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
+      expect(sharedOperations[1]!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes)
+      expect(mailbox).toHaveLength(sharedMembers.length)
+      expect(new Set(mailbox.map(record => record.submissionIdentity)).size).toBe(sharedMembers.length)
       expect(bobMailbox).toHaveLength(0)
       expect(mockFunded).toHaveLength(funded)
       const noted = parseFrame(mailbox[0].delivery)

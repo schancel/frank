@@ -632,7 +632,9 @@ describe("a wallet's sync note to itself", () => {
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
       expect(status().payment).toBe('included')
-      expect(status().row.operationId).not.toBe(chatOperation.operationId)
+      const nativeOperationId = status().row.operationId
+      const nativeBytes = status().row.members.map(member => member.signed!.rawTransaction)
+      expect(nativeOperationId).not.toBe(chatOperation.operationId)
       expect(one.alice.getNativeOperations!().find(row => row.operationId === chatOperation.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
       await until(() => status().sharing === 'failed')
       expect(status().payment).toBe('included')
@@ -653,9 +655,11 @@ describe("a wallet's sync note to itself", () => {
 
       // The unresolved chat message is delivered as it was, and the next one goes out.
       one.setMailbox(bobMailbox)
-      await one.chain.directMessages.send({
+      const nextMessageId = '00000000-0000-4000-8000-000000000043'
+      const next = await one.chain.directMessages.send({
         wallet: one.alice,
         recipient: one.bob.identity.address,
+        messageId: nextMessageId,
         items: [{ type: 'text', text: 'again' }],
         stampValue: STAMP,
       })
@@ -675,9 +679,36 @@ describe("a wallet's sync note to itself", () => {
         expect(request.parts.transactions.length).toBeGreaterThan(0)
       }
       await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
-      const members = one.alice.getNativeOperations!().flatMap(row => row.members)
-        .filter(member => member.observation.state === 'included-success')
+      // Successful sharing retires active rows. Resolve the three original operations from
+      // their immutable history, rather than treating an empty active queue as no payment.
+      const history = await one.alice.getNativeOperationHistory!({ limit: 100 })
+      expect(history.next).toBeUndefined()
+      expect(history.operations).toHaveLength(3)
+      const nextOperation = history.operations.find(row =>
+        row.preparationId === `evm-transaction-set:stamp-${nextMessageId.replace(/-/g, '')}`,
+      )!
+      expect(nextOperation).toBeDefined()
+      const operationIds = [chatOperation.operationId, nativeOperationId, nextOperation.operationId]
+      expect(new Set(history.operations.map(row => row.operationId))).toEqual(new Set(operationIds))
+      const operations = await Promise.all(operationIds.map(id => one.alice.readNativeOperation!(id)))
+      expect(operations.every(row => row !== undefined)).toBe(true)
+      expect(operations[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
+      expect(operations[1]!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes)
+      expect(operations[2]!.members.filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed!.transactionHash)).toEqual(next.stampPayments.map(payment => payment.txHash))
+      const members = operations.flatMap(row => row!.members)
+      expect(members.every(member => member.observation.state === 'included-success')).toBe(true)
+      expect(new Set(members.map(member => member.signed!.transactionHash)).size).toBe(members.length)
+      expect(new Set(mailbox.map(record => record.submissionIdentity)).size).toBe(members.length)
       expect(members.every(member => member.syncApplied)).toBe(true)
+      expect(mailbox).toHaveLength(members.length)
+      const submissions = one.requests.length
+      const broadcasts = providerBroadcasts.length
+      // Repeated retirement/recovery must neither pay again nor duplicate self-notes.
+      for (const operationId of operationIds) await one.alice.resumeNativeOperation!(operationId)
+      await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
+      expect(one.requests).toHaveLength(submissions)
+      expect(providerBroadcasts).toHaveLength(broadcasts)
       expect(mailbox).toHaveLength(members.length)
       const other = await otherDevice()
       one.setMailbox(undefined)

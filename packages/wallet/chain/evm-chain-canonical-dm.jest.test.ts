@@ -2481,6 +2481,14 @@ describe('two typed wallets on the open directory', () => {
       timestampMs,
     }
   }
+  /** Select the intended message, not an interleaved wallet self-sync submission. */
+  const inboxRecordForMessage = (digest: string, timestampMs: number) => {
+    const indexes = f.requests.flatMap((request, index) =>
+      restoreCanonicalRequest(request).identity.payload_hash === digest ? [index] : [],
+    )
+    expect(indexes).toHaveLength(1)
+    return inboxRecord(indexes[0]!, timestampMs)
+  }
   /** What the relay would echo to the sender's mailbox for the n-th accepted submission. */
   const outboundRecord = (index: number, timestampMs: number) => {
     const request = restoreCanonicalRequest(f.requests[index])
@@ -3182,16 +3190,15 @@ describe('two typed wallets on the open directory', () => {
     expect(atBob[0].senderAddress.raw.toLowerCase()).toBe(
       f.alice.identity.address.raw.toLowerCase(),
     )
-    // Bob's wallet notes the stamp it received to itself (a free message of its own) before
-    // his reply goes out; the reply is the last request the relay served.
+    // Received-coin and outgoing-history notes share the relay with the actual reply.
     await f.bob.noteReceivedCoins!()
-    await f.chain.directMessages.send({
+    const reply = await f.chain.directMessages.send({
       wallet: f.bob,
       recipient: atBob[0].senderAddress,
       items: text('hello alice'),
     })
     inboxPage.mockResolvedValue({
-      records: [inboxRecord(f.requests.length - 1, 9)],
+      records: [inboxRecordForMessage(reply.payloadDigest, 9)],
     })
     const atAlice = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
@@ -3906,7 +3913,7 @@ describe('two typed wallets on the open directory', () => {
       (await f.alice.getReceiveAddress()).raw.toLowerCase(),
       10n ** 18n,
     )
-    await f.chain.directMessages.send({
+    const second = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('second'),
@@ -3915,7 +3922,7 @@ describe('two typed wallets on the open directory', () => {
     // The first message stands in for a sender whose entry cannot be read right now: only the
     // first directory lookup of each read fails.
     const stuck = inboxRecord(0, 5),
-      good = inboxRecord(1, 9)
+      good = inboxRecordForMessage(second.payloadDigest, 9)
     inboxPage.mockResolvedValue({ records: [stuck, good] })
     const real = bobDirectory.peerCurrent
     let lookups = 0
@@ -4047,16 +4054,18 @@ describe('two typed wallets on the open directory', () => {
   it('reports a forged ciphertext as terminal so the read position passes it, and still delivers the next message', async () => {
     await online('alice', f.alice)
     await online('bob', f.bob)
+    const messages: string[] = []
     for (const body of ['forged over', 'genuine']) {
       mockBalances.set(
         (await f.alice.getReceiveAddress()).raw.toLowerCase(),
         10n ** 18n,
       )
-      await f.chain.directMessages.send({
+      const sent = await f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
         items: text(body),
       })
+      messages.push(sent.payloadDigest)
     }
     // Everything a forger can copy is right (sender, recipient, entries, context); only the
     // ciphertext is not what the key holders sealed, so it cannot be opened now or later.
@@ -4090,7 +4099,7 @@ describe('two typed wallets on the open directory', () => {
     const context = new Uint8Array(mismatched.context)
     context[context.length - 1] ^= 1
     inboxPage.mockResolvedValue({
-      records: [forged, { ...mismatched, context }, inboxRecord(1, 9)],
+      records: [forged, { ...mismatched, context }, inboxRecordForMessage(messages[1]!, 9)],
     })
     const quarantined: [number, string][] = [], incomplete: number[] = []
     const received = await f.chain.directMessages.fetchSince({
@@ -4113,25 +4122,27 @@ describe('two typed wallets on the open directory', () => {
     ) {
       await online('alice', f.alice)
       const bobDirectory = await online('bob', f.bob)
+      const messages: string[] = []
       for (const body of ['first', 'second', 'third']) {
         mockBalances.set(
           (await f.alice.getReceiveAddress()).raw.toLowerCase(),
           10n ** 18n,
         )
-        await f.chain.directMessages.send({
+        const sent = await f.chain.directMessages.send({
           wallet: f.alice,
           recipient: f.bob.identity.address,
           items: text(body),
         })
+        messages.push(sent.payloadDigest)
       }
-      const original = inboxRecord(1, 7)
+      const original = inboxRecordForMessage(messages[1]!, 7)
       const delivered = parseFrame(original.delivery)
       if (delivered.kind !== 'parsed' || delivered.typed?.type !== 1)
         throw new Error('fixture')
       const records: ServedRecord[] = [
-        inboxRecord(0, 5),
+        inboxRecordForMessage(messages[0]!, 5),
         { ...original, ...spoil(original), submissionIdentity: 'ab'.repeat(32) },
-        inboxRecord(2, 9),
+        inboxRecordForMessage(messages[2]!, 9),
       ]
       return {
         records,
@@ -4275,13 +4286,61 @@ describe('two typed wallets on the open directory', () => {
     it('is sent through the own relay once that relay says it forwards', async () => {
       relay.infoOverride = { forwarding: true }
       await online('alice', f.alice)
-      await f.chain.directMessages.send({
+      const sent = await f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
         items: text('across relays'),
       })
       // Submitted to Alice's own relay, sealed to the key in Bob's entry on the other relay.
-      expect(f.requests).toHaveLength(1)
+      inboxRecordForMessage(sent.payloadDigest, 1)
+      const submissions = f.requests.map(request =>
+        restoreCanonicalRequest(request),
+      )
+      const userSubmission = submissions.find(
+        request => request.identity.payload_hash === sent.payloadDigest,
+      )!
+      expect(userSubmission.identity.recipient.toLowerCase()).toBe(
+        f.bob.identity.address.raw.toLowerCase(),
+      )
+      const sync = submissions.filter(
+        request => request.identity.payload_hash !== sent.payloadDigest,
+      )
+      expect(sync.length).toBeGreaterThan(0)
+      for (const request of sync) {
+        expect(request.identity.recipient.toLowerCase()).toBe(
+          f.alice.identity.address.raw.toLowerCase(),
+        )
+        expect(request.parts.transactions).toEqual([])
+      }
+      // Authenticate and decode every additional envelope on its actual recipient wallet.
+      mailboxPage.mockResolvedValueOnce({
+        records: sync.map((request, index) => ({
+          delivery: request.parts.delivery,
+          context: request.parts.context,
+          submissionIdentity: request.identity.submission_identity,
+          timestampMs: index + 2,
+        })),
+      })
+      const scanned = await f.chain.directMessages
+        .scanAuthenticatedMailbox!({ wallet: f.alice, sinceMs: 0 })
+      expect(scanned.records).toHaveLength(sync.length)
+      expect(
+        scanned.records.every(
+          record =>
+            record.items.length > 0 &&
+            record.items.every(
+              item =>
+                item.type === 'wallet-sync' ||
+                item.type === 'outbox-message',
+            ),
+        ),
+      ).toBe(true)
+      expect(
+        scanned.records
+          .flatMap(record => record.items)
+          .some(item => item.type === 'wallet-sync'),
+      ).toBe(true)
+      expect(userSubmission.parts.transactions.length).toBeGreaterThan(0)
     })
 
   })

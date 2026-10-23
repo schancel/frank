@@ -13,7 +13,7 @@ import type {
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
-import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import type {
   ConstructEvmTransactionSetRequest,
   EvmTransactionSetPreparerOptions,
@@ -167,9 +167,21 @@ export class EvmTransactionSetPreparer {
     )
   }
 
+  private async archivedMemberComplete(operationId: string, memberIndex: number): Promise<boolean> {
+    const row = await this.readOperation(operationId)
+    if (!row || this.getOperation(operationId) || row.cancelled) return false
+    const member = row.members[memberIndex]
+    return !!member && member.transactionSet?.inventoryApplied === true &&
+      (member.observation.state === 'included-success' ||
+       member.observation.state === 'included-revert' || nativeMemberSuperseded(member))
+  }
+
   async markExposed(operationId: string, memberIndex: number): Promise<void> {
     const row = this.getOperation(operationId)
-    if (!row) throw new Error('Unknown transaction-set operation')
+    if (!row) {
+      if (await this.archivedMemberComplete(operationId, memberIndex)) return
+      throw new Error('Unknown transaction-set operation')
+    }
     const member = row.members[memberIndex]
     if (!member) throw new Error('Unknown transaction-set member')
     const wait = member.transactionSet?.predecessorWaitBlocks
@@ -187,7 +199,12 @@ export class EvmTransactionSetPreparer {
       const prior = row.members[index]!
       return prior.observation.state !== 'included-success' || this.options.policy().head < prior.observation.blockNumber + member.transactionSet!.fundingWaitBlocks!
     })) throw new Error('Transaction-set funding maturity is not satisfied')
-    await this.options.journal.markExposed(row.operationId, memberIndex)
+    try {
+      await this.options.journal.markExposed(row.operationId, memberIndex)
+    } catch (error) {
+      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex)) return
+      throw error
+    }
   }
 
   async recordObservation(
@@ -198,21 +215,29 @@ export class EvmTransactionSetPreparer {
   ): Promise<boolean> {
     const row = this.getOperation(operationId)
     const member = row?.members[memberIndex]
-    if (!member) throw new Error('Unknown transaction-set member')
+    if (!member) {
+      if (await this.archivedMemberComplete(operationId, memberIndex)) return false
+      throw new Error('Unknown transaction-set member')
+    }
     const frozenObservation = { ...observation }
     const frozenAccount = account === null ? null : { ...account }
-    return this.options.coins.projectTransactionSetAccount(
-      member.source.address,
-      `${row!.operationId}:${memberIndex}`,
-      writer =>
-        this.applyObservation(
-          operationId,
-          memberIndex,
-          frozenObservation,
-          frozenAccount,
-          writer,
-        ),
-    )
+    try {
+      return await this.options.coins.projectTransactionSetAccount(
+        member.source.address,
+        `${row!.operationId}:${memberIndex}`,
+        writer =>
+          this.applyObservation(
+            operationId,
+            memberIndex,
+            frozenObservation,
+            frozenAccount,
+            writer,
+          ),
+      )
+    } catch (error) {
+      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex)) return false
+      throw error
+    }
   }
 
   private async applyObservation(
@@ -224,7 +249,10 @@ export class EvmTransactionSetPreparer {
   ): Promise<boolean> {
     const { journal, coins } = this.options
     const row = this.getOperation(operationId)
-    if (!row) throw new Error('Unknown transaction-set operation')
+    if (!row) {
+      if (await this.archivedMemberComplete(operationId, memberIndex)) return false
+      throw new Error('Unknown transaction-set operation')
+    }
     const capture = await journal.beginCapture(row.operationId, memberIndex)
     const recorded = await journal.recordObservation(
       capture,

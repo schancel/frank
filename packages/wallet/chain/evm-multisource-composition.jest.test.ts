@@ -774,3 +774,42 @@ test('an exposed singleton waiting for RPC does not serialize another fixed paym
   }
   expect(state.broadcast).toHaveBeenCalledWith(first.members[0]!.rawTransaction)
 })
+
+test.each([1, 2])('late native receipt with %i members refreshes spendable inventory after empty observation', async count => {
+  const derived = deriveEvmStealthAddress({
+    recipientSpendPubKey: wallet.identity!.compressedPubKey,
+  })
+  const address = derived.stealthAddress.toLowerCase()
+  const raws = await Promise.all([external, contact].slice(0, count).map(sender =>
+    sender.signTransaction({ type: 2, chainId: 10143n, nonce: 0,
+      to: address, value: 1000000n, gasLimit: 21000n,
+      maxFeePerGas: 1n, maxPriorityFeePerGas: 1n }),
+  ))
+  const claim: StealthPaymentReceiptClaim = {
+    chainIdentifier: 'monad-testnet', asset: { kind: 'native' },
+    recipientDestination: getBytes(address), ephemeralPublicKey: derived.ephemeralPubKey,
+    amountAtomic: BigInt(count) * 1000000n,
+    rawTransactions: raws.map(raw => raw.slice(2)), payloadDigest: 'ef'.repeat(32),
+  }
+  await wallet.stealthReceipts!.record(claim)
+  expect(await wallet.stealthReceipts!.observe(claim)).toMatchObject({ status: 'pending' })
+  const build = (operationId: string, amountWei: bigint) => wallet.constructTransactionSet!({
+    operationId, amountAtomic: amountWei, kdf: () => getBytes(contact.address),
+  })
+  // This public construction caches the received account's empty chain observation.
+  await expect(build('empty-receipt', 100000n)).rejects.toThrow('Insufficient available EVM coins')
+  for (let index = 0; index < count; index++) {
+    state.mine(raws[index]!)
+    const total = BigInt(index + 1) * 1000000n
+    expect(await wallet.stealthReceipts!.observe(claim)).toMatchObject({
+      status: index + 1 === count ? 'succeeded' : 'partial',
+      verifiedReceivedAmountAtomic: total,
+    })
+    // The second amount exceeds the first partial receipt. Ordinary construction must
+    // reread the increased chain balance, without a full scan or reopening the wallet.
+    const operationId = `included-receipt-${index}`
+    const prepared = await build(operationId, total - 100000n)
+    expect(prepared).toBeDefined()
+    await wallet.transactionSetPreparer!.releaseUnexposed(operationId)
+  }
+})

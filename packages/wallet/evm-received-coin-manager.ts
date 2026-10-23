@@ -311,7 +311,9 @@ export interface EvmReceivedCoinAndContactManagerParams {
   readonly getTopicOwner: () => EvmWalletPersistenceBundle;
   readonly getSources: () => Promise<EvmNativeSource[]>;
   readonly coinSource: (coin: EvmCoin) => EvmNativeSource;
-  readonly invalidateBalanceRead: () => void;
+  /** Invalidate display reads and, for an observed/imported account, its spendable inventory read.
+   * The inventory owner must reread chain balance/nonce; receipt amounts are not spend authority. */
+  readonly invalidateBalanceRead: (affectedAddress?: string) => void;
   readonly requireOpenWallet: (wallet: EvmChainWalletHandle) => void;
   readonly canonicalMessagingFor: (wallet: EvmChainWalletHandle) => unknown;
   readonly directMessages: DirectMessageClient;
@@ -528,6 +530,7 @@ export function createEvmReceivedCoinAndContactManager(
     if (!result.applied) {
       throw new Error("Native receipt observation changed; retry original set");
     }
+    invalidateBalanceRead(coin.address);
     if (retryFailure !== undefined) throw retryFailure;
     return result;
   };
@@ -653,7 +656,6 @@ export function createEvmReceivedCoinAndContactManager(
       : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
     const targets = [...probed, ...counted];
     const BATCH_SIZE = 16;
-    let anyBalanceChanged = false;
     for (let offset = 0; offset < targets.length; offset += BATCH_SIZE) {
       if (evmWalletInternals(wallet).closed) return;
       const batch = targets.slice(offset, offset + BATCH_SIZE);
@@ -662,15 +664,7 @@ export function createEvmReceivedCoinAndContactManager(
           if (evmWalletInternals(wallet).closed) return;
           try {
             if (nativeSet(coin)) {
-              const before = coinStore.get(coin.address);
               await refreshNativeSetCoin(coin, true);
-              const after = coinStore.get(coin.address);
-              if (
-                before?.state !== after?.state ||
-                before?.amountWei !== after?.amountWei
-              ) {
-                anyBalanceChanged = true;
-              }
               return;
             }
             const [read, balanceWei] = await Promise.all([
@@ -683,7 +677,7 @@ export function createEvmReceivedCoinAndContactManager(
             if (current === undefined || evmWalletInternals(wallet).closed) {
               return;
             }
-            const updated = await applyStoredNativeCoinObservation(
+            await applyStoredNativeCoinObservation(
               coinStore,
               coin.address,
               {
@@ -693,21 +687,13 @@ export function createEvmReceivedCoinAndContactManager(
                 atMs: Date.now(),
               }
             );
-            if (
-              current.state !== updated.state ||
-              current.amountWei !== updated.amountWei
-            ) {
-              anyBalanceChanged = true;
-            }
+            invalidateBalanceRead(coin.address);
           } catch (error) {
             if (options.strict) throw error;
             hadError = true;
           }
         })
       );
-    }
-    if (anyBalanceChanged) {
-      invalidateBalanceRead();
     }
     if (!hadError && !options.pendingOnly && options.only === undefined) {
       coinsReadAtMs = Date.now();
@@ -727,7 +713,7 @@ export function createEvmReceivedCoinAndContactManager(
   const recordCoin = async (coin: EvmCoin): Promise<void> => {
     await recordStoredEvmCoin(coinStore, coin);
     coinsReadAtMs = 0;
-    invalidateBalanceRead();
+    invalidateBalanceRead(coin.address);
   };
 
   const nativeOwner = (): EvmLegacyConsolidator => {
@@ -1833,7 +1819,7 @@ export function createEvmReceivedCoinAndContactManager(
     ): Promise<void> => {
       const claim = snapshotReceiptClaim(input);
       const coin = verifyReceiptClaim(claim);
-      await recordStoredEvmCoin(coinStore, coin);
+      await recordCoin(coin);
       assertFinancialActive();
       if (claim.asset.kind === "native") {
         await registerStoredEvmNativePaymentSet(coinStore, coin.address, {
@@ -1995,6 +1981,7 @@ export function createEvmReceivedCoinAndContactManager(
               ...(received === undefined ? {} : { transferValueWei: received }),
               atMs: Date.now(),
             });
+            invalidateBalanceRead(address);
             return {
               status:
                 received === undefined

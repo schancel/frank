@@ -444,3 +444,28 @@ test('renders loading indicator when account status is loading and hides choice 
   expect(mockPush).toHaveBeenCalledWith('/wallet')
   view.unmount()
 })
+
+test.each(['wallet-open', 'application-restore'] as const)(
+  '%s failure explains the successful key opening and offers retry without a storage reset',
+  async failureStage => {
+    Object.assign(mockAccount, {
+      status: 'unavailable',
+      error: 'unavailable',
+      failureStage,
+    })
+    const view = render()
+    const message =
+      failureStage === 'wallet-open'
+        ? en.accountRecovery.wallet_state_open_failed
+        : en.accountRecovery.application_restore_failed
+    expect(view.text()).toContain(message)
+    expect(view.find('[data-test="reset-account-storage"]').exists()).toBe(
+      false,
+    )
+    await view.get('[data-test="retry-account"]').trigger('click')
+    expect(mockSession.retry).toHaveBeenCalledTimes(1)
+    expect(mockSession.reset).not.toHaveBeenCalled()
+    view.unmount()
+    mockAccount.failureStage = null
+  },
+)

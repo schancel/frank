@@ -28,6 +28,8 @@ export interface StealthPaymentIntent {
 }
 
 export interface PreparedStealthPayment {
+  /** Stamp authorization belongs to this operation, not merely its wallet capability. */
+  readonly messageStamp?: StealthPaymentIntent['messageStamp']
   readonly operationId: string
   readonly chainIdentifier: string
   readonly asset: StealthPaymentAsset

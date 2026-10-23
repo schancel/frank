@@ -23,6 +23,7 @@ function owner(reference: (typeof refs)[number]) {
         chainIdentifier: string
         operationId: string
         asset?: { kind: 'native' }
+        messageStamp?: { amountAtomic: bigint; maxNativeFeeAtomic: bigint }
       }> => ({ ...reference }),
     ),
     expose: jest.fn(async () => undefined),
@@ -113,6 +114,7 @@ test('captures the original same-wallet native operation for the message stamp w
   first.capability.get.mockResolvedValue({
     ...reference,
     asset: { kind: 'native' },
+    messageStamp: { amountAtomic: 100n, maxNativeFeeAtomic: 21000n },
   })
   mockGetWallet.mockResolvedValue(wallet)
   mockCreateContext.mockResolvedValue({
@@ -141,6 +143,7 @@ test('does not combine a native operation from another captured wallet', async (
   first.capability.get.mockResolvedValue({
     ...reference,
     asset: { kind: 'native' },
+    messageStamp: { amountAtomic: 100n, maxNativeFeeAtomic: 21000n },
   })
   mockCreateContext.mockResolvedValue({
     captureWallet: async () => first.binding,
@@ -162,6 +165,7 @@ test('rejects multiple combined native owners before exposing any of them', asyn
     chainIdentifier: 'monad-testnet',
     operationId,
     asset: { kind: 'native' },
+    messageStamp: { amountAtomic: 100n, maxNativeFeeAtomic: 21000n },
   }))
   const wallet = {
     chainIdentifier: 'monad-testnet',
@@ -175,5 +179,35 @@ test('rejects multiple combined native owners before exposing any of them', asyn
     captureOutgoingFinancialOperations(wallet, references),
   ).rejects.toThrow('multiple native payment')
   expect(first.capability.expose).not.toHaveBeenCalled()
+  expect(first.capability.prepare).not.toHaveBeenCalled()
+})
+
+test('retained native payment without its own stamp authorization keeps separate delivery and original submission', async () => {
+  const reference = {
+    chainIdentifier: 'monad-testnet',
+    operationId: 'retained-v2',
+  }
+  const first = owner(reference)
+  const wallet = {
+    chainIdentifier: reference.chainIdentifier,
+    stealthPayments: { ...first.capability, supportsCombinedStamp: true },
+  } as unknown as WalletHandle
+  first.capability.get.mockResolvedValue({
+    ...reference,
+    asset: { kind: 'native' },
+  })
+  mockGetWallet.mockResolvedValue(wallet)
+  mockCreateContext.mockResolvedValue({
+    captureWallet: async () => ({ ...first.binding, wallet }),
+  })
+  const captured = await captureOutgoingFinancialOperations(wallet, [reference])
+  expect(captured.paymentOperationId).toBeUndefined()
+  await captured.expose('a'.repeat(64))
+  await captured.submit()
+  expect(first.capability.expose).toHaveBeenCalledWith({
+    operationId: reference.operationId,
+    payloadDigest: 'a'.repeat(64),
+  })
+  expect(first.capability.submit).toHaveBeenCalledWith(reference.operationId)
   expect(first.capability.prepare).not.toHaveBeenCalled()
 })

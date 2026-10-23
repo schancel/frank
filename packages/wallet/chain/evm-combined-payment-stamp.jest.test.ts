@@ -34,6 +34,8 @@ async function setup() {
     recipientSpendPublicKey: f.bob.identity.compressedPubKey, amountAtomic: 300000n,
     maxNativeFeeAtomic: 400000n, messageStamp: { amountAtomic: stamp, maxNativeFeeAtomic: 100000n } }
   const prepared = await f.alice.stealthPayments!.prepare(intent)
+  expect(prepared.messageStamp).toEqual(intent.messageStamp)
+  expect((await f.alice.stealthPayments!.get(paymentId))!.messageStamp).toEqual(intent.messageStamp)
   return { ...f, directory, prepared, intent }
 }
 afterEach(() => { jest.restoreAllMocks(); useProviderStandIns(false) })

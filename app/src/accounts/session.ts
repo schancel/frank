@@ -109,6 +109,53 @@ export type SessionStatus =
   | 'unavailable'
   | 'ready'
   | 'standby'
+export type AccountStartupStage =
+  | 'custody-open'
+  | 'custody-snapshot'
+  | 'account-unlock'
+  | 'wallet-open'
+  | 'application-restore'
+  | 'final-snapshot'
+  | 'runtime-release'
+
+export type AccountStartupFailureCategory =
+  | `custody-${CustodyError['code']}`
+  | `native-journal-${EvmNativeJournalError['code']}`
+  | 'unknown'
+
+function startupFailureCategory(error: unknown): AccountStartupFailureCategory {
+  if (error instanceof CustodyError) {
+    const code = (
+      [
+        'invalid-input',
+        'unavailable',
+        'locked',
+        'conflict',
+        'storage-failed',
+        'closed',
+        'capacity',
+        'profile-unreachable',
+        'outdated-attempt',
+      ] as const
+    ).find(code => code === error.code)
+    if (code) return `custody-${code}`
+  }
+  if (error instanceof EvmNativeJournalError) {
+    const code = (
+      [
+        'invalid',
+        'binding',
+        'capacity',
+        'conflict',
+        'closed',
+        'uncertain',
+      ] as const
+    ).find(code => code === error.code)
+    if (code) return `native-journal-${code}`
+  }
+  return 'unknown'
+}
+
 export interface AccountSessionState {
   status: SessionStatus
   revision: number
@@ -122,6 +169,9 @@ export interface AccountSessionState {
   pendingIdentityAddress: string | null
   pendingError: string | null
   error: string | null
+  /** Fixed public diagnostic; never contains an underlying error or account data. */
+  failureStage?: AccountStartupStage | null
+  failureCategory?: AccountStartupFailureCategory | null
 }
 
 /**
@@ -227,6 +277,8 @@ export function createAccountSession(deps: {
     pendingIdentityAddress: null,
     pendingError: null,
     error: null,
+    failureStage: null,
+    failureCategory: null,
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
@@ -254,7 +306,11 @@ export function createAccountSession(deps: {
     if (!unchanged) state.account = snapshot.active
     state.pending = snapshot.pending
   }
-  const fail = (error: unknown) => {
+  const fail = (error: unknown, stage: AccountStartupStage) => {
+    state.failureStage = stage
+    state.failureCategory = startupFailureCategory(error)
+    // Error objects and even their messages/codes can contain custody or transaction data.
+    console.error('Account startup failed', stage, state.failureCategory)
     const code =
       error instanceof EvmNativeJournalError && error.code === 'binding'
         ? 'wallet-chain-mismatch'
@@ -312,10 +368,15 @@ export function createAccountSession(deps: {
       if (walletToken !== walletGeneration) throw new CustodyError('closed')
     }
   }
-  async function refresh(token: number) {
+  async function refresh(
+    token: number,
+    atStage: (stage: AccountStartupStage) => void,
+  ) {
     check(token)
+    atStage('custody-open')
     custody ??= await deps.open()
     check(token)
+    atStage('custody-snapshot')
     let snapshot = await custody.snapshot()
     check(token)
     if (
@@ -324,6 +385,7 @@ export function createAccountSession(deps: {
         walletRevision !== snapshot.revision)
     ) {
       state.status = 'loading'
+      atStage('runtime-release')
       await release()
       check(token)
     }
@@ -351,6 +413,7 @@ export function createAccountSession(deps: {
           error instanceof CustodyError ? error.code : 'unavailable'
       }
       check(token)
+      atStage('custody-snapshot')
       snapshot = await custody.snapshot()
       check(token)
       publish(snapshot)
@@ -365,10 +428,13 @@ export function createAccountSession(deps: {
       state.pendingError = null
     }
     if (!snapshot.active) {
+      atStage('runtime-release')
       await release()
       check(token)
       state.status = snapshot.pending ? 'pending' : 'fresh'
       state.error = null
+      state.failureStage = null
+      state.failureCategory = null
       return
     }
     if (
@@ -378,6 +444,7 @@ export function createAccountSession(deps: {
     ) {
       if (state.pendingError) {
         // Failed pending cleanup is not evidence that the separate active record is locked.
+        atStage('account-unlock')
         const active = await custody.openActive()
         active.close()
         check(token)
@@ -386,10 +453,14 @@ export function createAccountSession(deps: {
       }
       state.status = 'ready'
       state.error = null
+      state.failureStage = null
+      state.failureCategory = null
       return
     }
+    atStage('runtime-release')
     await release()
     check(token)
+    atStage('account-unlock')
     const capability = await custody.openActive()
     let roots: readonly DomainRoot[] = []
     let bip39Seed: Uint8Array | undefined
@@ -409,22 +480,24 @@ export function createAccountSession(deps: {
         if (!root) throw new CustodyError('locked')
         return root as DomainRoot<P>
       }
-      candidate = await deps.createWallet(
-        bip39Seed
-          ? { derivation: BIP39_DERIVATION, seed: bip39Seed }
-          : {
-              evm: find('evm-wallet'),
-              authentication: find('identity-authentication'),
-              messaging: find('messaging-encryption'),
-            },
-      )
+      const material: MonadRootBundle | HistoricalBip39Seed = bip39Seed
+        ? { derivation: BIP39_DERIVATION, seed: bip39Seed }
+        : {
+            evm: find('evm-wallet'),
+            authentication: find('identity-authentication'),
+            messaging: find('messaging-encryption'),
+          }
+      atStage('wallet-open')
+      candidate = await deps.createWallet(material)
       check(token)
+      atStage('application-restore')
       await deps.restoreApplicationState?.({
         wallet: candidate,
         account: capability.account,
         isCancelled: () => closed || token !== generation,
       })
       check(token)
+      atStage('final-snapshot')
       const latest = await custody.snapshot()
       check(token)
       if (
@@ -440,25 +513,37 @@ export function createAccountSession(deps: {
       publish(latest)
       state.status = 'ready'
       state.error = null
+      state.failureStage = null
+      state.failureCategory = null
     } finally {
       roots.forEach(root => root.bytes.fill(0))
       bip39Seed?.fill(0)
       capability.close()
-      if (candidate) await candidate.close()
+      if (candidate) {
+        await candidate.close().catch(error => {
+          atStage('runtime-release')
+          throw error
+        })
+      }
     }
   }
   let walletAccount: string | undefined
   let walletRevision = -1
   async function runRefresh() {
     const token = generation
+    let stage: AccountStartupStage = 'custody-open'
+    state.failureStage = null
+    state.failureCategory = null
     try {
-      await refresh(token)
+      await refresh(token, current => {
+        stage = current
+      })
     } catch (error) {
       if (!closed && token === generation) {
         try {
           await release()
         } finally {
-          fail(error)
+          fail(error, stage)
         }
       }
     }
@@ -483,7 +568,7 @@ export function createAccountSession(deps: {
         await releasing
         await runRefresh()
       } catch (error) {
-        if (!closed) fail(error)
+        if (!closed) fail(error, 'runtime-release')
       }
     })
     // Schedule teardown before reactive consumers can enqueue another acquisition.
@@ -505,12 +590,16 @@ export function createAccountSession(deps: {
       if (closed) return
       state.status = 'standby'
       state.error = null
+      state.failureStage = null
+      state.failureCategory = null
     },
     async yieldCustody(): Promise<void> {
       if (closed) return
       ++generation
       state.status = 'standby'
       state.error = null
+      state.failureStage = null
+      state.failureCategory = null
       await exclusive(async () => {
         try {
           await release()
@@ -522,6 +611,8 @@ export function createAccountSession(deps: {
     },
     retry() {
       state.status = 'loading'
+      state.failureStage = null
+      state.failureCategory = null
       return exclusive(runRefresh)
     },
     async getWallet(): Promise<RuntimeWallet> {
@@ -1623,6 +1714,8 @@ export function createAccountSession(deps: {
         ++generation
         state.status = 'loading'
         state.error = null
+        state.failureStage = null
+        state.failureCategory = null
         state.account = null
         state.pending = null
         state.pendingReady = false

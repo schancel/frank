@@ -37,6 +37,11 @@ export const en = {
   frank_account: 'Frank account',
   saved_account_data_could_not_be_opened:
     'Saved account data could not be opened. It has not been replaced. This preview requires encrypted browser storage; native apps are not supported.',
+  account_startup_incomplete: 'Account startup incomplete.',
+  wallet_state_open_failed:
+    'Account keys opened, but saved wallet state could not be loaded. Your saved account has not been replaced. Retry opening the account.',
+  application_restore_failed:
+    'Account keys and wallet opened, but application data could not be restored. Your saved account has not been replaced. Retry opening the account.',
   retry_opening_account: 'Retry',
   reset_account_storage: 'Reset storage',
   reset_account_storage_confirm:
@@ -249,6 +254,11 @@ export const fr = {
   frank_account: 'Compte Frank',
   saved_account_data_could_not_be_opened:
     'Impossible d’ouvrir les données enregistrées du compte. Elles n’ont pas été remplacées. Cet aperçu nécessite le stockage chiffré du navigateur ; les applications natives ne sont pas prises en charge.',
+  account_startup_incomplete: 'Ouverture du compte incomplète.',
+  wallet_state_open_failed:
+    'Les clés du compte ont été ouvertes, mais les données du portefeuille n’ont pas pu être chargées. Votre compte enregistré n’a pas été remplacé. Réessayez d’ouvrir le compte.',
+  application_restore_failed:
+    'Les clés et le portefeuille ont été ouverts, mais les données de l’application n’ont pas pu être restaurées. Votre compte enregistré n’a pas été remplacé. Réessayez d’ouvrir le compte.',
   retry_opening_account: 'Réessayer',
   reset_account_storage: 'Réinitialiser le stockage',
   reset_account_storage_confirm:

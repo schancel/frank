@@ -49,7 +49,8 @@ export async function captureOutgoingFinancialOperations(
       binding.wallet === wallet &&
       reference.chainIdentifier === wallet.chainIdentifier &&
       capability.supportsCombinedStamp === true &&
-      prepared.asset.kind === 'native'
+      prepared.asset.kind === 'native' &&
+      prepared.messageStamp !== undefined
     ) {
       if (paymentOperationId !== undefined)
         throw new Error(

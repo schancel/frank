@@ -1,5 +1,7 @@
 # Wallet messaging recovery and architecture plan
 
+> **Planning snapshot (2026-10-08), not a live status report.** Its proposed sequence, dependency graph, work limits, and dispatch packets describe that planning checkpoint. Current architecture is governed by [AGENTS.md](../../../AGENTS.md). Verify issue, PR, branch, and worktree state before dispatch; do not infer that an item is still open or ready from this snapshot. Later recorded evidence is in [execution progress](execution-progress.md).
+
 Restore reliable app-to-bot and email conversations first, then make the boundaries clear enough that future fixes have one owner. Chrome measurements and deterministic failure tests guide the work; a new abstraction is not a substitute for reproducing the broken flow.
 
 ## Status and authority

@@ -4,8 +4,8 @@ Adapted from `~/repos/finch`'s equivalent tooling (2026-09-26) — copied in who
 genericized (Finch-specific naming only; the mechanism is project-agnostic), not reimplemented,
 since it already has a real history of edge cases worked out (see each script's own comments).
 
-This monorepo's ticket-dispatch pattern gives every ticket its own `git worktree` under
-`../frank-worktrees/<ticket>-<slug>`. Without this tooling, each worktree's `cargo` invocation
+The issue worktree helper creates each ticket workspace under `.worktrees/issue-<number>`.
+Without this tooling, each worktree's `cargo` invocation
 either recompiles the entire dependency tree from scratch (slow — `backend/bitcoinsuite` alone
 pulls in rocksdb, hyper, axum, and other heavy native/pure-Rust deps) or requires hand-managing a
 shared `CARGO_TARGET_DIR` (fragile, and multiple concurrent builds in the same repo's worktrees can

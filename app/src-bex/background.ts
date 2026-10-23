@@ -14,6 +14,7 @@ import {
   focusOrOpenMainExtensionWindow,
   openCompanionPanel,
   parseExtensionLaunchMode,
+  sendRuntimeMessage,
 } from './runtime-adapter'
 import { EXTENSION_POPUP_PATH } from './manifests'
 import {
@@ -27,6 +28,7 @@ import {
   type SyncConfirmReply,
 } from '../src/utils/sync-pairing'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
 
@@ -40,13 +42,20 @@ export interface OriginPersonaBinding {
 export interface PendingDappApproval {
   id: string
   kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
+  chainFamily?: 'evm' | 'solana'
   origin: string
   href: string
   method: string
   params?: unknown
+  chainIdHex?: string
+  chainIdentifier?: string
+  solanaAccountAddress?: string
   createdAt: number
   requiresCompanionApproval: boolean
   personaAddress?: string
+  personaRef?:
+    | { kind: 'shared'; slot: number }
+    | { kind: 'site'; origin: string }
   /** Frank's custody-derived per-site persona, once Frank has provided it. */
   suggestedBurnerAddress?: string
   primaryPersonaAddress?: string
@@ -86,6 +95,7 @@ export interface BackgroundBridgeState {
   poolBalanceWeiHex?: string
   approvedOrigins: Set<string>
   connectedOrigins: Set<string>
+  solanaConnectedOrigins: Set<string>
   originPersonas: Record<string, OriginPersonaBinding>
   /** Custody-derived per-site persona addresses Frank provided, by canonical origin. */
   sitePersonaAddresses: Record<string, string>
@@ -118,19 +128,32 @@ const APPROVAL_REQUIRED_METHODS = new Set([
   'eth_signTypedData_v3',
   'eth_signTypedData_v4',
   'eth_sendTransaction',
+  'solana_connect',
+  'solana_signMessage',
+  'solana_signTransaction',
+  'solana_signAndSendTransaction',
 ])
 
-const CHAIN_RPC_URLS: Record<string, string> = {
-  '0x1': 'https://eth.llamarpc.com',
-  '0x279f': 'https://testnet-rpc.monad.xyz',
-  '0x8f': 'https://rpc.monad.xyz',
-  '0xa': 'https://mainnet.optimism.io',
-  '0x89': 'https://polygon-rpc.com',
-  '0x2105': 'https://mainnet.base.org',
-  '0xa4b1': 'https://arb1.arbitrum.io/rpc',
-  '0x38': 'https://bsc-dataseed.binance.org',
-  '0xa86a': 'https://api.avax.network/ext/bc/C/rpc',
-  '0xaa36a7': 'https://ethereum-sepolia-rpc.publicnode.com',
+const SOLANA_CONNECT_METHODS = new Set(['solana_connect'])
+
+async function previewSolanaAccount(
+  runtimeScope?: Record<string, any>,
+): Promise<string | undefined> {
+  try {
+    const response: any = await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'preview-dapp-account',
+        family: 'solana',
+      },
+      runtimeScope,
+    )
+    if (response?.ok === true && typeof response.account?.address === 'string')
+      return response.account.address
+  } catch {
+    // Locked or unavailable sessions cannot provide an account to approve.
+  }
+  return undefined
 }
 
 const READONLY_RPC_METHODS = new Set([
@@ -453,9 +476,29 @@ async function forwardReadOnlyRpc(
   result?: unknown
   error?: { code: number; message: string; data?: unknown }
 }> {
-  const rpcUrl =
-    CHAIN_RPC_URLS[chainIdHex.toLowerCase()] ?? CHAIN_RPC_URLS['0x279f']
-  if (rpcUrl && typeof fetch === 'function') {
+  let nativeId: bigint
+  try {
+    nativeId = BigInt(chainIdHex)
+  } catch {
+    return { ok: false, error: { code: 4901, message: 'Unsupported chain.' } }
+  }
+  const entry = Object.values(PROTOCOL_CHAINS).find(
+    chain =>
+      chain.family === 'evm' &&
+      chain.nativeChainId !== undefined &&
+      BigInt(chain.nativeChainId) === nativeId,
+  )
+  const rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0]
+  if (!entry || !rpcUrl) {
+    return {
+      ok: false,
+      error: {
+        code: 4901,
+        message: 'No configured RPC is available for this chain.',
+      },
+    }
+  }
+  if (typeof fetch === 'function') {
     try {
       const response = await fetch(rpcUrl, {
         method: 'POST',
@@ -548,6 +591,8 @@ export function createBackgroundBridgeState(
     poolBalanceWeiHex: overrides.poolBalanceWeiHex ?? '0x0',
     approvedOrigins: sharedOriginsSet,
     connectedOrigins: sharedOriginsSet,
+    solanaConnectedOrigins:
+      overrides.solanaConnectedOrigins ?? new Set<string>(),
     originPersonas,
     sitePersonaAddresses: { ...(overrides.sitePersonaAddresses ?? {}) },
     announceMode: overrides.announceMode ?? 'always',
@@ -890,6 +935,21 @@ async function persistOriginStateToStorage(
     } catch {
       // Ignore storage errors
     }
+  }
+}
+
+async function persistSolanaOrigins(
+  state: BackgroundBridgeState,
+  runtimeScope?: Record<string, any>,
+) {
+  const extApi = getRawExtensionApi(runtimeScope)
+  if (!extApi?.storage?.local?.set) return
+  try {
+    await extApi.storage.local.set({
+      frankDappSolanaConnectedOrigins: Array.from(state.solanaConnectedOrigins),
+    })
+  } catch {
+    // A failed storage write must not make an uncommitted connection appear durable.
   }
 }
 
@@ -1867,6 +1927,14 @@ export async function handleBackgroundMessage(
       return { ok: true, result: state.chainIdHex }
     }
 
+    if (method === 'solana_disconnect') {
+      if (normalizedOrigin) {
+        state.solanaConnectedOrigins.delete(normalizedOrigin)
+        await persistSolanaOrigins(state, runtimeScope)
+      }
+      return { ok: true, result: null }
+    }
+
     if (method === 'net_version') {
       return { ok: true, result: String(parseInt(state.chainIdHex, 16)) }
     }
@@ -2051,15 +2119,17 @@ export async function handleBackgroundMessage(
         normalizedOrigin || rawOrigin || 'https://dapp.local'
       const isConnectMethod =
         method === 'eth_requestAccounts' ||
-        method === 'wallet_requestPermissions'
+        method === 'wallet_requestPermissions' ||
+        SOLANA_CONNECT_METHODS.has(method)
 
       // Require origin to be connected before signing or sending transactions
-      if (
-        !isConnectMethod &&
+      const isSolanaMethod = method.startsWith('solana_')
+      const authorized =
         normalizedOrigin &&
-        !isOriginConnected(state, normalizedOrigin) &&
-        message.payload?.enforceConnectedOriginForSigning === true
-      ) {
+        (isSolanaMethod
+          ? state.solanaConnectedOrigins.has(normalizedOrigin)
+          : isOriginConnected(state, normalizedOrigin))
+      if (!isConnectMethod && !authorized) {
         return {
           ok: false,
           error: {
@@ -2080,22 +2150,42 @@ export async function handleBackgroundMessage(
           : 'sign'
 
       // Nothing to approve with until Frank has provisioned the shared persona.
-      if (!isPersonaAddress(state.activePersonaAddress)) {
+      if (
+        !method.startsWith('solana_') &&
+        !isPersonaAddress(state.activePersonaAddress)
+      ) {
         return { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
       }
 
       const pending: PendingDappApproval = {
         id,
         kind,
+        ...(method.startsWith('solana_')
+          ? { chainFamily: 'solana' as const }
+          : { chainFamily: 'evm' as const }),
         origin: effectiveOrigin,
         href,
         method,
         params,
+        chainIdHex: state.chainIdHex,
         createdAt: Date.now(),
         requiresCompanionApproval: true,
-        personaAddress: state.originPersonas[effectiveOrigin]?.address,
+        personaAddress: isConnectMethod
+          ? undefined
+          : getOriginPersonaAddress(state, effectiveOrigin),
+        personaRef: state.originPersonas[effectiveOrigin]?.isBurner
+          ? { kind: 'site', origin: effectiveOrigin }
+          : state.originPersonas[effectiveOrigin]
+          ? {
+              kind: 'shared',
+              slot: state.originPersonas[effectiveOrigin]!.index,
+            }
+          : { kind: 'shared', slot: 0 },
         suggestedBurnerAddress: state.sitePersonaAddresses[effectiveOrigin],
         primaryPersonaAddress: state.activePersonaAddress,
+      }
+      if (isSolanaMethod) {
+        pending.solanaAccountAddress = await previewSolanaAccount(runtimeScope)
       }
       state.pendingApprovals.set(id, pending)
       // Hold the RPC Promise open until resolved/rejected via resolve-approval.
@@ -2190,7 +2280,8 @@ export async function handleBackgroundMessage(
       pending.kind === 'connect' ||
       pending.kind === 'permissions' ||
       pending.method === 'eth_requestAccounts' ||
-      pending.method === 'wallet_requestPermissions'
+      pending.method === 'wallet_requestPermissions' ||
+      SOLANA_CONNECT_METHODS.has(pending.method)
 
     const rawUseBurner = decision.useBurnerPersona ?? message.useBurnerPersona
     const useBurnerPersona =
@@ -2206,6 +2297,7 @@ export async function handleBackgroundMessage(
     if (
       approved &&
       isConnectMethod &&
+      !SOLANA_CONNECT_METHODS.has(pending.method) &&
       !connectPersonaAddress(
         state,
         normalizeBridgeOrigin(pending.origin) ||
@@ -2245,6 +2337,37 @@ export async function handleBackgroundMessage(
     }
 
     if (isConnectMethod) {
+      if (SOLANA_CONNECT_METHODS.has(pending.method)) {
+        const result = await executeApprovedDappRequest(pending, runtimeScope)
+        if (!result.ok) {
+          waiter?.reject(result.error)
+          return { ok: false, error: result.error }
+        }
+        const connection = result.result as {
+          address: string
+          publicKey: number[]
+        }
+        if (
+          !connection ||
+          !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(connection.address) ||
+          !Array.isArray(connection.publicKey) ||
+          connection.publicKey.length !== 32 ||
+          connection.address !== pending.solanaAccountAddress
+        ) {
+          const error = {
+            code: -32603,
+            message: 'Frank returned an invalid Solana account.',
+          }
+          waiter?.reject(error)
+          return { ok: false, error }
+        }
+        state.solanaConnectedOrigins.add(
+          normalizeBridgeOrigin(pending.origin) || pending.origin,
+        )
+        await persistSolanaOrigins(state, runtimeScope)
+        waiter?.resolve(connection)
+        return { ok: true, result: connection }
+      }
       const binding = assignOriginPersona(state, pending.origin, {
         useBurnerPersona,
         personaAddress: suppliedPersonaAddress,
@@ -2295,22 +2418,19 @@ export async function handleBackgroundMessage(
       }
     }
 
-    // Signing and transactions are not implemented: approving one must never hand the dApp a
-    // made-up signature or transaction hash. Answer it as unsupported instead.
-    const unsupported = {
-      code: 4200,
-      message: `Frank cannot complete ${pending.method} yet.`,
-    }
-    waiter?.reject(unsupported)
+    const execution = await executeApprovedDappRequest(pending, runtimeScope)
+    if (execution.ok) waiter?.resolve(execution.result)
+    else waiter?.reject(execution.error)
     return {
-      ok: false,
-      error: unsupported,
+      ok: execution.ok,
+      ...(execution.ok ? {} : { error: execution.error }),
       result: {
-        ok: false,
+        ok: execution.ok,
         requestId,
         approvalId: requestId,
-        approved: false,
+        approved: execution.ok,
         origin: pending.origin,
+        ...(execution.ok ? { result: execution.result } : {}),
       },
     }
   }
@@ -2320,6 +2440,50 @@ export async function handleBackgroundMessage(
   }
 
   return undefined
+}
+
+async function executeApprovedDappRequest(
+  pending: PendingDappApproval,
+  runtimeScope?: Record<string, any>,
+): Promise<
+  | { ok: true; result: unknown }
+  | { ok: false; error: { code: number; message: string } }
+> {
+  try {
+    const response: any = await sendRuntimeMessage(
+      {
+        channel: FRANK_DAPP_BRIDGE_CHANNEL,
+        type: 'execute-approved-dapp-request',
+        request: pending,
+      },
+      runtimeScope,
+    )
+    if (response?.ok === true) return { ok: true, result: response.result }
+    return {
+      ok: false,
+      error:
+        response?.error && typeof response.error.message === 'string'
+          ? {
+              code: Number(response.error.code) || 4200,
+              message: response.error.message,
+            }
+          : {
+              code: 4900,
+              message: 'Unlock Frank to complete this dApp request.',
+            },
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: 4900,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Frank session is unavailable.',
+      },
+    }
+  }
 }
 
 /**
@@ -2336,6 +2500,7 @@ export async function restoreStoredBridgeState(
     'frankDappPersonaAddress',
     'frankPoolBalanceWeiHex',
     'frankDappApprovedOrigins',
+    'frankDappSolanaConnectedOrigins',
     'frankDappOriginPersonas',
     'frankDappSitePersonas',
     'frankAnnounceMode',
@@ -2362,6 +2527,14 @@ export async function restoreStoredBridgeState(
         const norm = normalizeBridgeOrigin(orig) || orig
         state.approvedOrigins.add(norm)
         state.connectedOrigins.add(norm)
+      }
+    }
+  }
+  if (Array.isArray(stored.frankDappSolanaConnectedOrigins)) {
+    for (const origin of stored.frankDappSolanaConnectedOrigins) {
+      if (typeof origin === 'string' && origin) {
+        const normalized = normalizeBridgeOrigin(origin)
+        if (normalized) state.solanaConnectedOrigins.add(normalized)
       }
     }
   }

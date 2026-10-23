@@ -378,9 +378,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
     // Subsequent eth_accounts returns the approved account list
     const ethAccounts = await p1!.request<string[]>({ method: 'eth_accounts' })
-    expect(ethAccounts).toEqual([
-      '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed',
-    ])
+    expect(ethAccounts).toEqual(['0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'])
 
     // wallet_switchEthereumChain and read-only RPC methods succeed for dApp compatibility
     const switchRes = await p1!.request({
@@ -393,7 +391,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const perms = await p1!.request<any[]>({ method: 'wallet_getPermissions' })
     expect(perms[0]?.parentCapability).toBe('eth_accounts')
 
-    // Signing is not implemented: approving it never hands the dApp a made-up signature.
+    // The extension cannot sign when no unlocked Frank view can execute the approved request.
     const signPromise = p1!.request<string>({
       method: 'personal_sign',
       params: ['0x48656c6c6f', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed'],
@@ -417,8 +415,8 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       mockExtensionScope,
     )
     expect(resolved.ok).toBe(false)
-    expect(resolved.error.code).toBe(4200)
-    expect(await signOutcome).toBe(4200)
+    expect(resolved.error.code).toBe(4900)
+    expect(await signOutcome).toBe(4900)
 
     // Updating active persona from logged-in Frank wallet updates eth_requestAccounts
     await sendRuntimeMessage<any, any>(
@@ -1114,22 +1112,31 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
     const notReady = { ok: false, error: { ...DAPP_PERSONA_NOT_READY_ERROR } }
     expect(DAPP_PERSONA_NOT_READY_ERROR.code).toBe(4900)
     // Connected origin, nothing provisioned.
-    expect(await rpc('https://app.uniswap.org', 'eth_accounts')).toEqual(notReady)
+    expect(await rpc('https://app.uniswap.org', 'eth_accounts')).toEqual(
+      notReady,
+    )
     expect(await rpc('https://app.uniswap.org', 'eth_requestAccounts')).toEqual(
       notReady,
     )
-    // New origins cannot even queue a connect or signing request.
+    // New origins cannot queue a connect; signing requires prior connection.
     expect(await rpc('https://opensea.io', 'eth_requestAccounts')).toEqual(
       notReady,
     )
     expect(
       await rpc('https://opensea.io', 'personal_sign', ['0x00', '0x00']),
-    ).toEqual(notReady)
+    ).toEqual({
+      ok: false,
+      error: {
+        code: 4100,
+        message:
+          'The requested method and/or account has not been authorized by the user.',
+      },
+    })
     expect(state.pendingApprovals.size).toBe(0)
     // Unconnected origins still learn nothing.
-    expect((await rpc('https://tracker.example.com', 'eth_accounts')).result).toEqual(
-      [],
-    )
+    expect(
+      (await rpc('https://tracker.example.com', 'eth_accounts')).result,
+    ).toEqual([])
 
     // Once Frank provisions the shared persona, a connect is queued; approving a per-site
     // persona without a custody-supplied address still fails explicitly.
@@ -1409,7 +1416,6 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
   })
 
   it('registers no Bitcoin or Cashtab wallet, which Frank cannot back with an account', async () => {
-
     const listeners: Array<
       (msg: any, sender: any, sendResponse: (res: any) => void) => any
     > = []
@@ -1458,7 +1464,10 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
       if (ev.data?.type === 'FROM_CASHTAB') cashtabResponses.push(ev.data)
     }
     window.addEventListener('message', cashtabListener)
-    window.postMessage({ type: 'FROM_PAGE', text: 'Cashtab', addressRequest: true }, '*')
+    window.postMessage(
+      { type: 'FROM_PAGE', text: 'Cashtab', addressRequest: true },
+      '*',
+    )
     await new Promise(resolve => setTimeout(resolve, 15))
     expect(cashtabResponses).toEqual([])
     expect(bgState.pendingApprovals.size).toBe(0)

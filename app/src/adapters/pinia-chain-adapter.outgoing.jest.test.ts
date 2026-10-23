@@ -661,11 +661,15 @@ describe('startOutgoingReconciliation (#270)', () => {
     const { chats } = await pendingMessage()
     const send = jest.spyOn(directMessages, 'send')
     send.mockClear()
-    jest.spyOn(directMessages, 'reconcileAttempts').mockResolvedValue({ [HASH]: 'delivered' })
+    jest
+      .spyOn(directMessages, 'reconcileAttempts')
+      .mockResolvedValue({ [HASH]: 'delivered' })
     const polling = startOutgoingReconciliation({ wallet })
     try {
       await jest.advanceTimersByTimeAsync(0)
-      await jest.advanceTimersByTimeAsync(3 * IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
+      await jest.advanceTimersByTimeAsync(
+        3 * IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
+      )
       expect(chats.chats[PEER]!.messages[0].status).toBe('confirmed')
       expect(send).not.toHaveBeenCalled()
       expect('fundAhead' in directMessages).toBe(false)
@@ -780,6 +784,4 @@ describe('startOutgoingReconciliation (#270)', () => {
       polling.stop()
     })
   })
-
-
 })

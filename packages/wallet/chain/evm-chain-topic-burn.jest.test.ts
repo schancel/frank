@@ -536,14 +536,14 @@ describe('RPC failure after signing the complete Forum graph', () => {
       topic: 'help',
       entries: [ENTRY],
       direction: 'up',
-      voteWeightWei: WEIGHT,
+      voteWeightWei: 120_000_000_000_000n,
     })
   const vote = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.vote({
       wallet: fake.wallet,
       payloadDigest: 'ab'.repeat(32),
       direction: 'up',
-      voteWeightWei: WEIGHT,
+      voteWeightWei: 120_000_000_000_000n,
     })
 
   it.each([
@@ -555,20 +555,31 @@ describe('RPC failure after signing the complete Forum graph', () => {
       const chain = createEvmChain(CONFIG)
       const fake = await makeFakeChain()
       const puts = fakeRelay()
-
+      // Require owned funding predecessors: a direct nonce-zero burn could otherwise be
+      // broadcast successfully by the relay even while this wallet's RPC submit fails.
+      fake.balances.set(fake.mainAddress.toLowerCase(), 0n)
+      for (const record of fake.pool.records())
+        fake.balances.set(record.address.toLowerCase(), 100_000_000_000_000n)
+      await fake.wallet.refreshTransactionSetInventory!()
+      const broadcast = jest.spyOn(fake.wallet.provider, 'broadcastTransaction')
       fake.setSigningDown(true)
       await expect(act(chain, fake)).rejects.toThrow(/retained|pending/i)
-      const exposed = puts.map(put => new Uint8Array(put.body))
+      expect(puts).toHaveLength(0)
+      expect(broadcast).toHaveBeenCalled()
       expect(fake.rpcSubmissions).toHaveLength(0)
       const original = signedGraph(fake.wallet)
-      expect(original.length).toBeGreaterThan(0)
+      expect(original.length).toBeGreaterThan(1)
+      expect(broadcast.mock.calls.every(([raw]) => original.includes(raw))).toBe(true)
       const held = evmWalletInternals(fake.wallet).coinList!.all().filter(coin => coin.holder)
-      expect(held.length).toBeGreaterThan(0)
+      expect(held.map(coin => `${coin.account}:${coin.nonce}`).sort()).toEqual(
+        [...new Set(original.map(raw => { const tx = Transaction.from(raw); return `${tx.from!.toLowerCase()}:${tx.nonce}` }))].sort(),
+      )
+      expect(held.every(coin => coin.nonce === 0 && coin.state === 'pending_receipt')).toBe(true)
       fake.setSigningDown(false)
       await chain.topics.reconcileOperations!({ wallet: fake.wallet })
       expect(puts.length).toBeGreaterThan(0)
       expect(new Set(puts.map(put => Buffer.from(put.body).toString('hex'))).size).toBe(1)
-      if (exposed.length) expect(puts[puts.length - 1].body).toEqual(exposed[0])
+      expect(puts).toHaveLength(1)
       expect(burns(fake)).toHaveLength(1)
       expect(signedGraph(fake.wallet)).toEqual(original)
       expect([...observedBurns.values()].map(tx => tx.serialized).sort()).toEqual([...original].sort())

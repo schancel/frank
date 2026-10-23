@@ -864,7 +864,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
 
     // The encrypted intent precedes signing, so a failed signing attempt retains the same
     // message identity and sealed bytes without pretending a signed payment exists.
-    it('row 2, signing failed after intent persistence: reopen completes the same encrypted construction', async () => {
+    it('row 2, signing failed after intent persistence: explicit reconciliation completes the same encrypted construction after reopen', async () => {
       const signing = jest.spyOn(SigningKey.prototype, 'sign')
       signing.mockImplementationOnce(() => { throw new Error('signing failed') })
       const first = await attempt({ messageId: ID_A })
@@ -884,12 +884,19 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       const [restored] = await rows()
       expect(restored.construction).toEqual(original.construction)
       expect(restored.digest).toBe(original.digest)
-      expect(restored.payments.length).toBeGreaterThan(0)
-      const bytes = signedBytes(ID_A)
-      expect(sign).toHaveBeenCalledTimes(1)
+      expect(restored.payments).toEqual([])
+      expect(sign).not.toHaveBeenCalled()
       expect(await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [original.digest] }))
         .toEqual({ [original.digest]: 'delivered' })
+      const [completed] = await rows()
+      expect(completed.construction).toEqual(original.construction)
+      expect(completed.digest).toBe(original.digest)
+      expect(completed.payments.length).toBeGreaterThan(0)
+      const bytes = signedBytes(ID_A)
+      expect(sign).toHaveBeenCalledTimes(1)
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [original.digest] })
       expect(signedBytes(ID_A)).toEqual(bytes)
+      expect(sign).toHaveBeenCalledTimes(1)
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, original.digest)
       expect(paymentSets()).toBe(1)
       expect((await received()).map(m => m.messageId)).toEqual([ID_A])

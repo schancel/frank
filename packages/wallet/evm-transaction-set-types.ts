@@ -111,3 +111,11 @@ export interface EvmTransactionSetPreparerOptions {
   ) => Promise<EvmChangeDestination>
   readonly random?: () => number
 }
+
+/** Construction found no eligible inputs; no signed operation is created by this refusal. */
+export class EvmTransactionSetInsufficientFundsError extends Error {
+  constructor() {
+    super('Insufficient available EVM coins')
+    this.name = 'EvmTransactionSetInsufficientFundsError'
+  }
+}

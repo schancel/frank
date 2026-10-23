@@ -12,7 +12,7 @@ import type {
   EvmNativeObservation,
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
-import { EVM_TRANSACTION_SET_SOURCE_ORDER } from './evm-transaction-set-types'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
 import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import type {
   ConstructEvmTransactionSetRequest,
@@ -429,7 +429,7 @@ export class EvmTransactionSetPreparer {
     const beforeSelection = coins.all()
     let parts = select(false), fanIn = false
     if (!parts && legacy) { parts = select(true); fanIn = true }
-    if (!parts) throw new Error('Insufficient available EVM coins')
+    if (!parts) throw new EvmTransactionSetInsufficientFundsError()
     let members: LocalMember[]
     try {
       if (fanIn) members = await this.prepareFanIn(request, policy, context(0), parts)

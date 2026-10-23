@@ -1,3 +1,4 @@
+import { EvmTransactionSetInsufficientFundsError } from '../evm-transaction-set-types'
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
  * Canonical (#778) direct messages for a typed Monad wallet: type8 -> type6 -> type5/schema2/suite1
@@ -1365,6 +1366,7 @@ function sharedConstructionPending(row: StoredMessage): boolean {
 async function finishSharedConstruction(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
+  mode: 'construct' | 'restore' = 'construct',
 ): Promise<StoredMessage> {
   if (!sharedConstructionPending(row)) return row
   const intent = row.construction!
@@ -1376,9 +1378,6 @@ async function finishSharedConstruction(
       await shared.resolvePaymentOperation(row.paymentOperationId!, BigInt(intent.amountWei)) !== operationId))
     throw new Error('Stored payment/stamp operation identity mismatch')
   if (!shared) throw new Error('Shared stamp transaction preparation is unavailable')
-  // The list is authoritative but observations are an off-construction view. Refresh the
-  // wallet-owned sources first so deposits since the previous pass are eligible here.
-  await shared.refresh()
   const sealed = { payload: fromHex(intent.payload), context: fromHex(intent.context) }
   const inspected = inspectCanonicalPreparedEnvelope(sealed.payload, sealed.context)
   const network = canonicalNetworkDescriptor(owner.installedNetworkTag).network
@@ -1387,6 +1386,20 @@ async function finishSharedConstruction(
       toHex(inspected.payload.recipient.keyBytes) !== row.recipientSubject ||
       toHex(recipientPayloadDigest(intent.network, sealed.payload)) !== row.digest)
     throw new Error('Stored stamp construction identity mismatch')
+  if (mode === 'restore') {
+    // Opening validates the intent, but must not make its funding availability a condition
+    // of opening the wallet. Only finish the envelope when this exact signed stage exists.
+    const operation = shared.preparer.getOperation(operationId)
+    if (operation?.cancelled)
+      throw new Error('Stored stamp refers to a cancelled transaction set')
+    if (!operation || (row.transactionSetStageId !== undefined &&
+        !operation.transactionSetStages?.some(stage => stage.stageId === row.transactionSetStageId)))
+      return row
+    // The preparer's existing-stage path validates the original intent and reconstructs its
+    // signed bytes from local authority; it does not select inputs, refresh fees or sign.
+  } else {
+    await shared.refresh()
+  }
   const request = {
     operationId,
     amountWei: BigInt(intent.amountWei),
@@ -1801,8 +1814,16 @@ async function resend(
             options.now === true &&
             options.digests?.has(stored.digest) !== false
           let row = owner.messages.get(stored.consumerId)!
-          if (sharedConstructionPending(row))
-            row = await owner.lifetime(() => finishSharedConstruction(owner, row))
+          if (sharedConstructionPending(row)) {
+            try {
+              row = await owner.lifetime(() => finishSharedConstruction(owner, row))
+            } catch (error) {
+              // This intent remains pending for its own retry. Other operations can still
+              // settle and report their status; malformed or uncertain authority still fails.
+              if (error instanceof EvmTransactionSetInsufficientFundsError) return
+              throw error
+            }
+          }
           if (row.exposurePending) {
             if (!options.onEnvelopeDurable || !options.digests?.has(row.digest))
               return
@@ -1876,14 +1897,14 @@ export async function restoreOutgoingClaims(
   for (let row of owner.messages.all()) {
     if (row.version === 2) {
       if (sharedConstructionPending(row))
-        row = await finishSharedConstruction(owner, row)
+        row = await finishSharedConstruction(owner, row, 'restore')
       const operationId = row.transactionSetOperationId
       validateSharedStoredMessage(row)
       if (!operationId) throw new Error('Stored stamp operation identity mismatch')
       const operation = owner.transactionSets?.preparer.getOperation(operationId)
       if (!operation && !sharedConstructionPending(row))
         throw new Error('Stored message is missing its durable signed transaction set')
-      if (operation) {
+      if (operation && !sharedConstructionPending(row)) {
         const roleMembers = (role: 'payment' | 'change') => operation.members
           .filter(member => role === 'payment'
             ? member.transactionSet?.stageId === row.transactionSetStageId && member.transactionSet?.role === 'payment'

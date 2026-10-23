@@ -1,3 +1,4 @@
+import { EvmTransactionSetPreparer } from '../evm-transaction-set'
 /** Real typed wallets, crypto and LevelDB; relay/node effects use the established scripted boundary. */
 import {
   fixture,
@@ -326,6 +327,81 @@ test('a later message spends geometric change after the first spend exhausts the
     const operation = f.alice.transactionSetPreparer!.getOperation(`stamp-${next.replace(/-/g, '')}`)!
     expect(operation.members.every(member => change.some(coin => coin.account === member.source.address))).toBe(true)
     expect(f.alice.pool.records().some(record => record.status === 'funding')).toBe(false)
+  } finally {
+    await f.close()
+  }
+})
+
+test('an unfunded unsigned intent does not block another message status or wallet reopening', async () => {
+  const f = await setup()
+  let active = f.alice
+  const unfundedId = '21111111-2222-4333-8444-555555555555'
+  const operationId = 'stamp-' + unfundedId.replace(/-/g, '')
+  let messages: LevelOutgoingMessageStore | undefined
+  const put = LevelOutgoingMessageStore.prototype.put
+  const capture = jest.spyOn(LevelOutgoingMessageStore.prototype, 'put')
+    .mockImplementation(async function (row) {
+      messages = this
+      return put.call(this, row)
+    })
+  try {
+    const accepted = await f.chain.directMessages.send({
+      wallet: active, recipient: f.bob.identity.address, messageId: id,
+      stampValue: 300000n, items: [{ type: 'text', text: 'funded' }],
+    })
+    await expect(f.chain.directMessages.send({
+      wallet: active, recipient: f.bob.identity.address, messageId: unfundedId,
+      stampValue: 10000000n, items: [{ type: 'text', text: 'retained unfunded intent' }],
+    })).rejects.toThrow('No funds cover a stamp')
+    const original = messages!.all().find(row => row.transactionSetOperationId === operationId)!
+    expect(original.request).toBeUndefined()
+    expect(original.payments).toEqual([])
+    const statuses = await f.chain.directMessages.reconcileAttempts({
+      wallet: active, payloadDigests: [accepted.payloadDigest],
+    })
+    expect(statuses[accepted.payloadDigest]).toBe('delivered')
+    expect(messages!.get(original.consumerId)).toEqual(original)
+    expect(active.transactionSetPreparer!.getOperation(operationId)).toBeUndefined()
+    capture.mockRestore()
+    await active.close()
+    // Reopening must not even enter fresh construction, regardless of current funds/fees.
+    const construct = jest.spyOn(EvmTransactionSetPreparer.prototype, 'constructTransactionSet')
+      .mockRejectedValue(new Error('fresh construction attempted during restoration'))
+    active = await f.chain.createWallet(roots()) as EvmChainWalletHandle
+    expect(construct).not.toHaveBeenCalled()
+    construct.mockRestore()
+    expect(active.transactionSetPreparer!.getOperation(operationId)).toBeUndefined()
+    installCanonicalDirectory(active, f.directory)
+    const afterReopen = await f.chain.directMessages.reconcileAttempts({
+      wallet: active, payloadDigests: [accepted.payloadDigest, original.digest],
+    })
+    expect(afterReopen[accepted.payloadDigest]).toBe('delivered')
+    expect(afterReopen[original.digest]).toBe('live')
+  } finally {
+    await active.close()
+    await f.close()
+  }
+})
+
+test('an invalid unsigned encrypted intent still prevents wallet restoration', async () => {
+  const f = await setup()
+  let messages: LevelOutgoingMessageStore | undefined
+  const put = LevelOutgoingMessageStore.prototype.put
+  const capture = jest.spyOn(LevelOutgoingMessageStore.prototype, 'put')
+    .mockImplementation(async function (row) {
+      messages = this
+      return put.call(this, row)
+    })
+  try {
+    await expect(f.chain.directMessages.send({
+      wallet: f.alice, recipient: f.bob.identity.address, messageId: id,
+      stampValue: 10000000n, items: [{ type: 'text', text: 'unfunded' }],
+    })).rejects.toThrow('No funds cover a stamp')
+    const original = messages!.all()[0]!
+    await messages!.put({ ...original, digest: 'ab'.repeat(32) })
+    capture.mockRestore()
+    await f.alice.close()
+    await expect(f.chain.createWallet(roots())).rejects.toThrow('Stored stamp construction identity mismatch')
   } finally {
     await f.close()
   }

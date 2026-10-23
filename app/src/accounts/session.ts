@@ -520,12 +520,10 @@ export function createAccountSession(deps: {
       bip39Seed?.fill(0)
       capability.close()
       if (candidate) {
-        try {
-          await candidate.close()
-        } catch (error) {
+        await candidate.close().catch(error => {
           atStage('runtime-release')
           throw error
-        }
+        })
       }
     }
   }

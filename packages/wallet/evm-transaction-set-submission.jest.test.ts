@@ -603,3 +603,35 @@ test.each([[false, false], [true, false], [false, true], [true, true]])('reconci
     expect(await wallet.submission.reconcileAuthorized()).toEqual([])
   } finally { await wallet.close() }
 })
+
+test('completed history validates exact wrappers and never replays inventory or broadcasts after reopen', async () => {
+  const { transactionSetFinancialCompletionReceipt } = await import('./evm-operation-completion')
+  const chain = node()
+  let f = await fixture(location, chain)
+  const prepared = await f.construct('retained')
+  expect((await f.submission.sendTransaction(prepared)).status).toBe('confirmed')
+  let row = (await f.preparer.readOperation('retained'))!
+  expect(transactionSetFinancialCompletionReceipt(row)).toBeUndefined()
+  for (let i = 0; i < row.members.length; i++) await f.journal.markSyncApplied(row.operationId, i)
+  row = (await f.preparer.readOperation('retained'))!
+  const receipt = transactionSetFinancialCompletionReceipt(row)!
+  await f.journal.archiveCompleted(row.operationId, receipt)
+  const bytes = JSON.stringify(row)
+  await f.close()
+  f = await fixture(location, chain)
+  try {
+    const broadcastCount = chain.provider.broadcastTransaction.mock.calls.length
+    const observations = chain.provider.getTransactionReceipt.mock.calls.length
+    const inventory = f.coins.all()
+    expect(f.preparer.getOperation('retained')).toBeUndefined()
+    expect(JSON.stringify(await f.preparer.readOperation('retained'))).toBe(bytes)
+    expect(await f.preparer.readTransactionSet('retained')).toEqual(prepared)
+    expect((await f.submission.sendTransaction(prepared)).status).toBe('confirmed')
+    await f.lifecycle.observe('retained', chain.provider as unknown as Provider)
+    await f.lifecycle.replay('retained', { payments: true })
+    expect(chain.provider.broadcastTransaction.mock.calls.length).toBe(broadcastCount)
+    expect(chain.provider.getTransactionReceipt.mock.calls.length).toBe(observations)
+    expect(f.coins.all()).toEqual(inventory)
+    await expect(f.submission.sendTransaction({ ...prepared, bundle: [] })).rejects.toThrow('complete wallet operation')
+  } finally { await f.close() }
+})

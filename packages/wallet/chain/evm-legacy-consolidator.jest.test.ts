@@ -1105,6 +1105,28 @@ describe('wallet-lifetime EVM native operations', () => {
       },
     )
 
+  it('retries completion after a durable sync checkpoint without transporting the note again', async () => {
+    const c = await composed(chain([]), [200000n])
+    let failCompletion = true
+    const checkpoint = jest.fn(async () => {
+      if (journal.list().some(row => row.members.some(member => member.syncApplied)) && failCompletion)
+        throw new Error('completion storage unavailable')
+    })
+    const executor = c.another({ onSyncCheckpoint: checkpoint })
+    await executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
+    const row = journal.list()[0]!
+    await executor.flushSync(row.operationId)
+    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(true)
+    expect(executor.syncTransportFailed(row.operationId)).toBe(true)
+    expect(c.sync).toHaveBeenCalledTimes(1)
+    await expect(executor.flushSync(row.operationId)).rejects.toThrow('completion storage unavailable')
+    failCompletion = false
+    await executor.flushSync(row.operationId)
+    expect(executor.syncTransportFailed(row.operationId)).toBe(false)
+    expect(c.sync).toHaveBeenCalledTimes(1)
+    expect(checkpoint).toHaveBeenCalled()
+  })
+
   it('in-call inclusion: the pass records the row spent with the member checkpoint inside the send, with no signature and no provider call of its own', async () => {
     const state = chain([])
     const c = await composed(state, [200000n, 0n])

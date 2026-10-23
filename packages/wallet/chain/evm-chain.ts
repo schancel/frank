@@ -1,3 +1,4 @@
+import { transactionSetFinancialCompletionReceipt } from '../evm-operation-completion';
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
@@ -2089,6 +2090,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             policy: config.transactionSetPolicy,
           });
           const transactionOwner = topicOwner;
+          // Delivery stays owned by the canonical/host outbox. This retires only the
+          // wallet's settled inventory and successfully checkpointed self-sync work.
+          const archiveCompletedFinancialOperations = async () => {
+            for (const operation of transactionOwner.nativeJournal!.list()) {
+              const receipt = transactionSetFinancialCompletionReceipt(operation);
+              if (receipt) await transactionOwner.runLifetime(lifetime =>
+                nativeAdmissionJournal(transactionOwner.inputAdmission, lifetime)
+                  .archiveCompleted(operation.operationId, receipt));
+            }
+          };
           const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
           const transactionSetSender = createEvmTransactionSetSubmission({
             preparer: transactionSetPreparer, lifecycle: transactionSetLifecycle, provider,
@@ -2097,9 +2108,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
           const transactionSetSubmission = {
             sendTransaction: (prepared: Parameters<typeof transactionSetSender.sendTransaction>[0]) =>
-              transactionSetSender.sendTransaction(prepared).finally(() => invalidateBalanceRead()),
+              transactionSetSender.sendTransaction(prepared).then(async result => {
+                const operation = await transactionSetPreparer.readOperation(prepared.operationId);
+                if (operation && transactionOwner.nativeJournal!.list().some(row => row.operationId === operation.operationId)) {
+                  const owner = nativeOperationOwner(wallet);
+                  retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
+                }
+                return result;
+              }).finally(() => invalidateBalanceRead()),
             reconcileAuthorized: () =>
-              transactionSetSender.reconcileAuthorized().finally(() => invalidateBalanceRead()),
+              transactionSetSender.reconcileAuthorized().then(async results => {
+                const owner = nativeOperationOwner(wallet);
+                const started = await owner.startSync();
+                void started.transported.catch(() => undefined);
+                return results;
+              }).finally(() => invalidateBalanceRead()),
           };
           const publicTransactionSets = evmTransactionSetCapability(transactionSetPreparer, prepared => transactionSetSubmission.sendTransaction(prepared));
           const legacyTransactions = createLegacyTransactionSetPayments({
@@ -2828,6 +2851,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // reports, so a repeat is the same message; applying it twice changes nothing.
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
+              onSyncCheckpoint: archiveCompletedFinancialOperations,
               onSyncTransaction: async (item, swapRecord) => {
                 const messageId = getBytes(
                   keccak256(
@@ -2999,8 +3023,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 lifecycle: transactionSetLifecycle,
                 provider,
                 refresh: () => transactionSetRuntime.refresh(),
-                archiveCompleted: (id, receipt) => topicOwner!.runLifetime(lifetime =>
-                  nativeAdmissionJournal(topicOwner!.inputAdmission, lifetime).archiveCompleted(id, receipt)),
                 sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
                 resolvePaymentOperation: async (id, amount) => {
                   const resolve = walletInternals.resolveMessagePayment;

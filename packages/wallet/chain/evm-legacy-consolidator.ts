@@ -167,6 +167,8 @@ export interface EvmLegacyConsolidatorConfig {
    * wires none, nothing is transported: a locally recorded member stays not sync-applied and the
    * send is not failed for it. A transport that rejects does not fail anything either: the member
    * stays not sync-applied and a later flush sends it again. */
+  /** Retryable local completion after durable sync checkpoints; never a delivery receipt. */
+  onSyncCheckpoint?: () => Promise<void>
   onSyncTransaction?: (
     item: WalletSyncItem,
     /** The swap this transaction made, when its contract call carried a record. */
@@ -1838,6 +1840,13 @@ export class EvmLegacyConsolidator {
         journal.get(unapplied),
         new Error('Native member has no local spend record in this session'),
       )
+    // Also retries a crash/failure between the durable sync mark and archival.
+    await this.config.onSyncCheckpoint?.()
+    for (const id of this.transportFailed) {
+      const row = journal.list().find(candidate => candidate.operationId === id)
+      if (!row || row.members.every(member => member.observation.state !== 'included-success' || member.syncApplied))
+        this.transportFailed.delete(id)
+    }
     return { transported: this.transportTail }
   }
   /** Queues one member's transport, once while it is under way. Delivered: the member is marked
@@ -1860,6 +1869,7 @@ export class EvmLegacyConsolidator {
         await (this.config.runLifetime
           ? this.config.runLifetime(lifetime => mark(lifetime))
           : mark())
+        await this.config.onSyncCheckpoint?.()
         this.transportFailed.delete(operationId)
       })
       .catch(() => {

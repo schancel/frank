@@ -16,11 +16,18 @@ export function transactionSetFinanciallyComplete(operation: EvmNativeOperation)
         nativeMemberSuperseded(member)))
 }
 
-/** The caller supplies a durable owner's positive checkpoint, never an absent-record guess. */
-export function transactionSetCompletionReceipt(
+/** Successful members own a self-sync obligation until its transport checkpoint is
+ * durable. Failed/superseded members have no success note in the existing sync policy.
+ * Delivery remains active in the canonical or host outbox; this receipt does not say
+ * that the user's message was delivered or the full intended payment succeeded. */
+export function transactionSetFinancialCompletionReceipt(
   operation: EvmNativeOperation,
-  checkpoint: Omit<EvmNativeCompletionReceipt, 'expectedOperationHash'>,
 ): EvmNativeCompletionReceipt | undefined {
-  if (!transactionSetFinanciallyComplete(operation)) return undefined
-  return { ...checkpoint, expectedOperationHash: evmNativeOperationDigest(operation) }
+  if (!transactionSetFinanciallyComplete(operation) || operation.members.some(member =>
+    member.observation.state === 'included-success' && !member.syncApplied)) return undefined
+  return {
+    expectedOperationHash: evmNativeOperationDigest(operation),
+    ownerReference: `wallet-financial-sync:${operation.operationId}`,
+    sync: 'complete', delivery: 'not-required', dependencies: 'complete',
+  }
 }

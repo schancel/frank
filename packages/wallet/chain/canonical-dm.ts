@@ -141,7 +141,6 @@ import { InsufficientStampFundsError } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
-import { transactionSetCompletionReceipt } from '../evm-operation-completion'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
 import {
   durableDelete,
@@ -605,7 +604,6 @@ export interface CanonicalMessagingOwner {
     lifecycle: import('../evm-transaction-set-lifecycle').EvmTransactionSetLifecycle
     provider: import('ethers').Provider
     refresh: () => Promise<void>
-    archiveCompleted?: (nativeOperationId: string, receipt: import('../storage/evm-native-operation-journal').EvmNativeCompletionReceipt) => Promise<void>
     resolvePaymentOperation?: (id: string, amount: bigint) => Promise<string>
     sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
@@ -1148,7 +1146,6 @@ async function submitStored(
     owner.messages.get(row.consumerId)!
   const answered: StoredMessage = { ...kept, outcome: 'delivered' }
   await owner.messages.put(answered)
-  await archiveCompletedStamp(owner, answered.consumerId)
   return { row: answered }
 }
 
@@ -1456,29 +1453,6 @@ async function finishSharedConstruction(
   return next
 }
 
-/** Stamp-only sends have no separate contact-payment or self-sync owner. The durable
- * message receipt owns delivery; the native journal owns every signed change obligation. */
-async function archiveCompletedStamp(owner: CanonicalMessagingOwner, consumerId: string): Promise<void> {
-  const shared = owner.transactionSets
-  if (!shared?.archiveCompleted) return
-  const row = owner.messages.get(consumerId)
-  if (!row || row.version !== 2 || !row.transactionSetOperationId ||
-      row.paymentOperationId !== undefined || row.transactionSetStageId !== undefined ||
-      row.exposurePending || row.outcome !== 'delivered' || isUnresolved(row)) return
-  const operation = await shared.preparer.readOperation(row.transactionSetOperationId)
-  if (!operation || operation.transactionSetStages?.length !== 1 ||
-      operation.members.some(member => member.transactionSet?.stageId !== undefined)) return
-  const signed = operation.members.map(member => member.signed?.rawTransaction)
-  const recorded = [...row.payments, ...row.otherTransactions].map(payment => payment.rawTx)
-  if (signed.length !== recorded.length || new Set(recorded).size !== recorded.length ||
-      signed.some(raw => raw === undefined || !recorded.includes(raw)))
-    throw new Error('Completed stamp differs from its durable transaction set')
-  const receipt = transactionSetCompletionReceipt(operation, {
-    ownerReference: row.consumerId, sync: 'not-required', delivery: 'complete', dependencies: 'complete',
-  })
-  if (receipt) await shared.archiveCompleted(operation.operationId, receipt)
-}
-
 async function settleSharedPayments(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
@@ -1505,7 +1479,6 @@ async function settleSharedPayments(
     otherTransactions: row.otherTransactions.map(stateOf),
   }
   if (JSON.stringify(next) !== JSON.stringify(row)) await owner.messages.put(next)
-  await archiveCompletedStamp(owner, next.consumerId)
   return next
 }
 
@@ -1921,8 +1894,6 @@ async function resend(
       }),
   )
   await Promise.all([freeResends, paidResends])
-  for (const row of owner.messages.all())
-    if (row.version === 2 && !isUnresolved(row)) await archiveCompletedStamp(owner, row.consumerId)
 }
 
 /** At open, before the wallet is handed out: the coins every stored message with a pending

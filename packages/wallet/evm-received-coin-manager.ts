@@ -838,7 +838,7 @@ export function createEvmReceivedCoinAndContactManager(
     const operationId = payment.operationId!;
     if (payment.transactionSetOperationId) {
       await wallet.transactionSetSubmission!.sendTransaction(
-        wallet.transactionSetPreparer!.getTransactionSet(payment.transactionSetOperationId)
+        await wallet.transactionSetPreparer!.readTransactionSet(payment.transactionSetOperationId)
       );
     } else {
       await runWalletExclusive(wallet, (admission) =>
@@ -1637,6 +1637,8 @@ export function createEvmReceivedCoinAndContactManager(
         return row;
       },
       operations: () => topicOwner.nativeJournal!.list(),
+      readPreparation: (id) => topicOwner.runLifetime(lifetime =>
+        nativeAdmissionJournal(topicOwner.inputAdmission, lifetime).refreshPreparation(id)),
       signIndependentPayment: (signParams) =>
         topicOwner.runLifetime((lifetime) =>
           owner.signIndependentPayment(signParams, lifetime)
@@ -1666,7 +1668,7 @@ export function createEvmReceivedCoinAndContactManager(
         }),
       release: (id) =>
         topicOwner.runLifetime(async lifetime => {
-          const operation = topicOwner.nativeJournal!.get(id)
+          const operation = await topicOwner.nativeJournal!.readOperation(id)
           if (operation?.kind === 'transaction-set') {
             if (!wallet.transactionSetPreparer)
               throw new Error('Shared transaction-set release is unavailable')

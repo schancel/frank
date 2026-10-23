@@ -1081,6 +1081,10 @@ function blockedBy(
   if (work?.creating || work?.busy) return undefined
   if (row.exposurePending) return new StampBlockedError(row.digest)
   if (row.reason !== undefined) return new StampBlockedError(row.digest, row.reason)
+  // The waiter handed its payment to the node (`settleHolder`) and the node refused it: the
+  // relay has not answered with a refusal, but nothing this wallet can do now lands it either.
+  if (pending.some(payment => refusals.has(payment.rawTx)))
+    return new StampBlockedError(row.digest)
   return undefined
 }
 
@@ -1246,14 +1250,18 @@ export const REPLACED_AFTER_MS = { value: 0 }
 /**
  * One look at the chain for every payment of `row` that is still pending, and the only place a
  * claimed account is let go after its signed bytes left the wallet: on what the chain shows.
- * With `broadcast` (the relay has confirmed it stored the message) a payment the chain has not
- * seen is handed to the chain again, the same bytes. Before the relay has the message this
- * wallet never broadcasts: a payment that lands for a message nobody can fetch is burned.
+ * With `broadcast` a payment the chain has not seen is handed to the chain again, the same
+ * bytes: when the relay has confirmed it stored the message, and when a later payment waits for
+ * the account this one spends (`settleHolder`). Otherwise, before the relay has the message,
+ * this wallet does not broadcast. `resign` (a delivered message only) signs a payment the node
+ * keeps refusing again at its nonce: an undelivered message's relay request carries the
+ * original bytes, so those are the only ones ever offered for it.
  */
 async function settlePayments(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
   broadcast: boolean,
+  resign: boolean = broadcast,
 ): Promise<StoredMessage> {
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
@@ -1286,10 +1294,14 @@ async function settlePayments(
     }),
   )
   // What the node did not know goes back to it as one set.
-  if (resubmit.length > 0)
-    noteHandOver(await payer.submitPaymentSet(resubmit).catch(() => []))
+  if (resubmit.length > 0) {
+    const handed = await payer.submitPaymentSet(resubmit).catch(() => [])
+    noteHandOver(handed)
+    // Taken by the node: in its hands now, as a look would find it in the mempool.
+    for (const one of handed) if (one.error === undefined) knownToNode.add(one.rawTx)
+  }
   if (states.every((state, i) => state === row.payments[i].state))
-    return broadcast ? resignRefused(owner, row) : row
+    return resign ? resignRefused(owner, row) : row
   const next: StoredMessage = {
     ...owner.messages.get(row.consumerId)!,
     payments: row.payments.map((payment, i) => ({
@@ -1416,7 +1428,22 @@ async function settleHolder(
   let ended!: () => void
   work.busy = new Promise<void>(resolve => (ended = resolve))
   try {
-    await settlePayments(owner, row, row.outcome === 'delivered')
+    // A later payment needs the account this message's payment spends, and the account's next
+    // coin exists only once the chain shows that payment. Its bytes may already be out (the relay
+    // was handed them, or may have been): finishing this same authorized payment is what frees
+    // the account, so it is handed to the node now, the same bytes, whether or not the relay has
+    // confirmed the message. The message itself stays as it is: its delivery is retried with
+    // the same request (a relay takes a message whose payment the node already holds), and its
+    // coin is held until the chain shows the payment. Bytes that never left the wallet
+    // (`unexposed`) are not broadcast: the resend pass submits or ends them first. Never signed
+    // again here: an undelivered request carries these exact bytes.
+    const delivered = row.outcome === 'delivered'
+    await settlePayments(
+      owner,
+      row,
+      delivered || (row.outcome === undefined && row.unexposed !== true),
+      delivered,
+    )
   } finally {
     work.busy = undefined
     ended()

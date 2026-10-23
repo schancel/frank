@@ -29,7 +29,13 @@ import { deriveEvmStealthAddress } from '../evm-stealth'
 import { getEvmDexDeployment } from './dex-deployments'
 import { LevelRecordStore } from '../storage/evm-coin-store'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
+import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { applyWalletSyncItem } from '../sync-dispatcher'
+import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
+import {
+  EVM_TRANSACTION_SET_SOURCE_ORDER,
+  type EvmTransactionSetPolicy,
+} from '../evm-transaction-set-types'
 
 import { validateFrame, standaloneItemBudget } from '@frank/codec'
 import {
@@ -37,6 +43,9 @@ import {
   decodeRecipientAssetPaymentItem,
 } from '../message-item-plugins/stealth-asset/codec'
 import type { StealthPaymentReceiptClaim } from '../stealth-payment'
+
+// Inventory refresh plus construction is an asynchronous provider boundary in this suite.
+jest.setTimeout(30_000)
 
 /** Exercise the canonical application codec, whose byte strings project as bare lowercase hex. */
 function receiptFromWire(
@@ -131,6 +140,18 @@ const config: EvmChainConfig = {
   relayBaseUrl: 'http://127.0.0.1:1',
   networkTag: 'MONT',
   stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+  transactionSetPolicy: (): EvmTransactionSetPolicy => ({
+    sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+    gasPriceWei: 1n,
+    paymentGasLimit: () => 21_000n,
+    changeGasLimit: 21_000n,
+    paymentFeeIsExact: true,
+    dustWei: 21_000n,
+    radix: 2,
+    jitterBps: 1_500,
+    maxChangeOutputs: 20,
+    head: 100,
+  }),
   resolveDefaultStamp: fixedStampDefault(1n),
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
@@ -178,6 +199,7 @@ function stubNode(
   jest
     .spyOn(p, 'getBlock')
     .mockResolvedValue({ hash: blockHash, number: 1 } as Block)
+  jest.spyOn(p, 'getBlockNumber').mockResolvedValue(1)
   jest
     .spyOn(p, 'getBalance')
     .mockImplementation(async a => balances.get(String(a).toLowerCase()) ?? 0n)
@@ -258,6 +280,7 @@ test('production native preparation retains exact bytes and claims until bound e
   )) as EvmChainWalletHandle
   try {
     let state = stubNode(wallet, 1_000_000n)
+    await wallet.refreshTransactionSetInventory?.()
     const intent = {
       operationId: 'native-financial-1',
       chainIdentifier: 'monad-testnet',
@@ -265,20 +288,15 @@ test('production native preparation retains exact bytes and claims until bound e
       recipientSpendPublicKey: wallet.identity!.compressedPubKey,
       amountAtomic: 1_000n,
       maxNativeFeeAtomic: 100_000n,
-      sourceAddress: MAIN,
     }
-    const {
-      maxNativeFeeAtomic: _ceiling,
-      sourceAddress: _source,
-      ...unsignedIntent
-    } = intent
+    const { maxNativeFeeAtomic: _ceiling, ...unsignedIntent } = intent
     const quote = await wallet.stealthPayments!.quote!(unsignedIntent)
     expect(quote).toMatchObject({
-      sourceAddress: MAIN.toLowerCase(),
       amountAtomic: 1000n,
+      sources: [],
       nativeBalanceAtomic: 1000000n,
       assetBalanceAtomic: 1000000n,
-      estimatedNativeFeeAtomic: 21000n,
+      estimatedNativeFeeAtomic: 441000n,
     })
     expect(wallet.getNativeOperations!()).toEqual([])
     expect(
@@ -296,6 +314,7 @@ test('production native preparation retains exact bytes and claims until bound e
       roots(),
     )) as EvmChainWalletHandle
     state = stubNode(wallet, 1_000_000n)
+    await wallet.refreshTransactionSetInventory?.()
     expect(await wallet.stealthPayments!.quote!(unsignedIntent)).toEqual(quote)
     expect(wallet.getNativeOperations!()).toEqual([])
     intent.maxNativeFeeAtomic = quote.estimatedNativeFeeAtomic
@@ -337,7 +356,12 @@ test('production native preparation retains exact bytes and claims until bound e
     expect(await wallet.stealthPayments!.get(intent.operationId)).toEqual(
       prepared,
     )
-    expect(wallet.pool.accountClaimedBy(MAIN)).toBeDefined()
+    const restored = wallet.getNativeOperations!().find(
+      row =>
+        row.preparationId ===
+        `evm-transaction-set:${evmStealthTransactionSetOperationId(intent.operationId)}`,
+    )!
+    expect(restored.members.every(member => member.signed !== null)).toBe(true)
     const sign = jest.fn()
     await expect(
       wallet.runOwnTransfer!(sign, { mainAccountWaitMs: 0 }),
@@ -733,6 +757,7 @@ test('a crash after signing before the manifest journal link recovers the origin
     })
   try {
     let state = stubNode(wallet, 1_000_000n)
+    await wallet.refreshTransactionSetInventory?.()
     const intent = {
       operationId: 'interrupted-native',
       chainIdentifier: 'monad-testnet',
@@ -741,13 +766,21 @@ test('a crash after signing before the manifest journal link recovers the origin
       amountAtomic: 1_000n,
       maxNativeFeeAtomic: 100_000n,
     }
+    const { maxNativeFeeAtomic: _initialFee, ...unsignedIntent } = intent
+    intent.maxNativeFeeAtomic = (
+      await wallet.stealthPayments!.quote!(unsignedIntent)
+    ).estimatedNativeFeeAtomic
     await expect(wallet.stealthPayments!.prepare(intent)).rejects.toThrow(
       /interrupted/,
     )
     const signed = wallet.getNativeOperations!().find(
-      row => row.kind === 'native',
+      row =>
+        row.kind === 'transaction-set' &&
+        row.preparationId === `evm-transaction-set:${evmStealthTransactionSetOperationId('interrupted-native')}`,
     )!
-    expect(signed.preparationId).toBe('stealth-payment:interrupted-native')
+    expect(signed.preparationId).toBe(
+      `evm-transaction-set:${evmStealthTransactionSetOperationId('interrupted-native')}`,
+    )
     expect(signed.members[0]!.signed).not.toBeNull()
     expect(state.broadcast).not.toHaveBeenCalled()
     await wallet.close()
@@ -755,16 +788,21 @@ test('a crash after signing before the manifest journal link recovers the origin
       roots(),
     )) as EvmChainWalletHandle
     state = stubNode(wallet, 1_000_000n)
-    expect(wallet.pool.accountClaimedBy(MAIN)).toBeDefined()
+    await wallet.refreshTransactionSetInventory?.()
+    expect(wallet.getNativeOperations!().find(row => row.operationId === signed.operationId))
+      .toEqual(signed)
     const again = await wallet.stealthPayments!.prepare(intent)
-    expect(again.members[0]!.rawTransaction).toBe(
-      signed.members[0]!.signed!.rawTransaction,
+    const expectedPayments = signed.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed!.rawTransaction)
+    expect(again.members.map(member => member.rawTransaction)).toEqual(
+      expectedPayments,
     )
     expect(
-      wallet.getNativeOperations!().filter(row => row.kind === 'native'),
+      wallet.getNativeOperations!().filter(row => row.kind === 'transaction-set'),
     ).toHaveLength(1)
     jest
-      .spyOn(EvmLegacyConsolidator.prototype, 'releaseUnexposed')
+      .spyOn(EvmNativeOperationJournal.prototype, 'discardUnexposed')
       .mockRejectedValueOnce(new Error('interrupted local cancellation'))
     await expect(
       wallet.stealthPayments!.release(intent.operationId),
@@ -801,7 +839,7 @@ test('a crash after signing before the manifest journal link recovers the origin
   }
 })
 
-test('fast-path native quoting queries mainAccount directly and avoids scanning sub-accounts over RPC', async () => {
+test('native quote reads the authoritative inventory without selecting a single source', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-fast-quote-'))
   const cfg: EvmChainConfig = {
     ...config,
@@ -813,7 +851,7 @@ test('fast-path native quoting queries mainAccount directly and avoids scanning 
   )) as EvmChainWalletHandle
   try {
     stubNode(wallet, 5_000_000n)
-    const getBalanceSpy = jest.spyOn(wallet.provider, 'getBalance')
+    await wallet.refreshTransactionSetInventory?.()
 
     const unsignedIntent = {
       operationId: 'fast-quote-op',
@@ -828,20 +866,15 @@ test('fast-path native quoting queries mainAccount directly and avoids scanning 
     const elapsed = performance.now() - start
 
     expect(quote).toMatchObject({
-      sourceAddress: MAIN.toLowerCase(),
       amountAtomic: 10_000n,
       nativeBalanceAtomic: 5_000_000n,
       assetBalanceAtomic: 5_000_000n,
-      estimatedNativeFeeAtomic: 21_000n,
+      estimatedNativeFeeAtomic: 441_000n,
     })
-    expect(quote.sources).toHaveLength(1)
-    expect(quote.sources![0]!.sourceAddress).toBe(MAIN.toLowerCase())
+    expect(quote.sourceAddress).toBeUndefined()
 
     // Must ONLY query mainAccount balance (exactly 1 getBalance call), never 50 sub-accounts!
-    const balanceQueriedAddresses = getBalanceSpy.mock.calls.map(call =>
-      String(call[0]).toLowerCase(),
-    )
-    expect(balanceQueriedAddresses).toEqual([MAIN.toLowerCase()])
+    expect(quote.sources).toEqual([])
     expect(elapsed).toBeLessThan(500)
   } finally {
     await wallet.close()

@@ -29,6 +29,7 @@
  * One list per wallet, and one wallet per chain: a coin carries no chain field.
  */
 import { computeAddress } from 'ethers'
+import type { PreparedEvmTransactionSet } from './evm-transaction-set-types'
 import type { RecordStore } from './storage/evm-coin-store'
 import {
   selectStampAccounts,
@@ -39,6 +40,7 @@ import {
  * account; `deterministic`: an HD sub-account of the keyring; `stealth` / `stamp`: a one-time
  * account whose key came from a received message. */
 export type EvmCoinListOrigin =
+  | 'change'
   | 'root'
   | 'identity'
   | 'deterministic'
@@ -58,15 +60,19 @@ export interface EvmListCoin {
   readonly privateKey: string
   readonly valueWei: bigint
   readonly origin: EvmCoinListOrigin
+  readonly changeIndex?: number
+  readonly after?: { readonly account: string; readonly nonce: number }
   readonly state: EvmCoinListState
   /** The operation that took it (`spend_pending`, `pending_receipt`). */
   readonly holder?: string
-  /** The signed transaction spending it (`pending_receipt`, `spent`). */
+  /** The signed transaction while unresolved (`pending_receipt`); optional after settlement. */
   readonly spendingTx?: string
   /** Not selectable before the chain's head reaches this block. */
   readonly spendableFromBlock?: number
   /** `spent`: the block that included its spending transaction. */
   readonly spentInBlock?: number
+  /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
+  readonly lastSpentInBlock?: number
 }
 
 /** The coin as it is stored: wei as a decimal string. `spend_pending` is never stored. */
@@ -76,11 +82,15 @@ export interface StoredEvmListCoin {
   readonly privateKey: string
   readonly valueWei: string
   readonly origin: EvmCoinListOrigin
+  readonly changeIndex?: number
+  readonly after?: { readonly account: string; readonly nonce: number }
   readonly state: 'unspent' | 'pending_receipt' | 'spent'
   readonly holder?: string
   readonly spendingTx?: string
   readonly spendableFromBlock?: number
   readonly spentInBlock?: number
+  /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
+  readonly lastSpentInBlock?: number
 }
 
 export const EVM_COIN_LIST_NAMESPACE = 'evm-coin-list'
@@ -111,13 +121,22 @@ function toStored(coin: EvmListCoin): StoredEvmListCoin {
     privateKey: coin.privateKey,
     valueWei: coin.valueWei.toString(),
     origin: coin.origin,
+    ...(coin.lastSpentInBlock === undefined
+      ? {}
+      : { lastSpentInBlock: coin.lastSpentInBlock }),
+    ...(coin.changeIndex === undefined
+      ? {}
+      : { changeIndex: coin.changeIndex }),
+    ...(coin.after === undefined ? {} : { after: coin.after }),
     state: coin.state,
     ...(coin.holder === undefined ? {} : { holder: coin.holder }),
     ...(coin.spendingTx === undefined ? {} : { spendingTx: coin.spendingTx }),
     ...(coin.spendableFromBlock === undefined
       ? {}
       : { spendableFromBlock: coin.spendableFromBlock }),
-    ...(coin.spentInBlock === undefined ? {} : { spentInBlock: coin.spentInBlock }),
+    ...(coin.spentInBlock === undefined
+      ? {}
+      : { spentInBlock: coin.spentInBlock }),
   }
 }
 
@@ -129,13 +148,21 @@ function fromStored(row: StoredEvmListCoin): EvmListCoin {
     row.nonce < 0 ||
     !/^(0|[1-9][0-9]*)$/.test(row.valueWei) ||
     !['unspent', 'pending_receipt', 'spent'].includes(row.state) ||
-    (row.state !== 'unspent' && row.spendingTx === undefined)
+    (row.state === 'pending_receipt' && row.spendingTx === undefined) ||
+    (row.lastSpentInBlock !== undefined &&
+      (!Number.isSafeInteger(row.lastSpentInBlock) || row.lastSpentInBlock < 0))
   )
     throw new EvmCoinListError(
-      `Unreadable coin record ${String(row.account)}:${String(row.nonce)}. ` +
+      `Unreadable coin record ${String(row.account)}:${String(row.nonce)} ` +
+        `(state=${String(row.state)}, spendingTx=${String(row.spendingTx)}). ` +
         'Development reset: delete only the evm-coin-list store; it is rebuilt from the keyring and the chain.',
     )
   return { ...row, valueWei: BigInt(row.valueWei) }
+}
+
+export interface EvmCoinAccountProjection {
+  put: EvmCoinList['put']
+  recordMined: EvmCoinList['recordMined']
 }
 
 export class EvmCoinList {
@@ -153,11 +180,12 @@ export class EvmCoinList {
     await store.refresh()
     for (const row of store.all()) {
       const coin = fromStored(row)
-      if (
-        computeAddress(coin.privateKey).toLowerCase() !== coin.account
-      )
+      if (computeAddress(coin.privateKey).toLowerCase() !== coin.account)
         throw new EvmCoinListError(
-          `Coin ${coinKey(coin.account, coin.nonce)} is stored with another account's key`,
+          `Coin ${coinKey(
+            coin.account,
+            coin.nonce,
+          )} is stored with another account's key`,
         )
       list.coinsByKey.set(coinKey(coin.account, coin.nonce), coin)
     }
@@ -190,6 +218,17 @@ export class EvmCoinList {
     )
   }
 
+  /** Account-based maintenance must exclude provisional selections and unfinished inventory
+   * projection. This synchronous observation can be paired with a legacy pool claim without
+   * yielding; shared selection checks that claim in the reciprocal direction. */
+  isAccountReserved(account: string): boolean {
+    const key = account.toLowerCase()
+    return !this.accountSelectable(key) || this.all().some(coin =>
+      coin.account === key &&
+      (coin.state === 'spend_pending' || coin.state === 'pending_receipt'),
+    )
+  }
+
   /** What the unspent coins hold. */
   unspentTotal(filter?: (coin: EvmListCoin) => boolean): bigint {
     return this.all()
@@ -217,18 +256,118 @@ export class EvmCoinList {
     await this.store.put(coinKey(coin.account, coin.nonce), toStored(coin))
   }
 
+  private readonly accountMutations = new Map<string, Promise<unknown>>()
+  private readonly incompleteTransactionSetProjections = new Map<
+    string,
+    Set<string>
+  >()
+
+  private accountMutation<T>(
+    account: string,
+    write: () => Promise<T>,
+  ): Promise<T> {
+    const key = account.toLowerCase()
+    const prior = this.accountMutations.get(key) ?? Promise.resolve()
+    const result = prior.catch(() => undefined).then(write)
+    this.accountMutations.set(key, result)
+    void result
+      .finally(() => {
+        if (this.accountMutations.get(key) === result)
+          this.accountMutations.delete(key)
+      })
+      .catch(() => undefined)
+    return result
+  }
+
+  requireTransactionSetProjection(account: string, reference: string): void {
+    const key = account.toLowerCase(),
+      pending =
+        this.incompleteTransactionSetProjections.get(key) ?? new Set<string>()
+    pending.add(reference)
+    this.incompleteTransactionSetProjections.set(key, pending)
+  }
+  completeTransactionSetProjection(account: string, reference: string): void {
+    const key = account.toLowerCase(),
+      pending = this.incompleteTransactionSetProjections.get(key)
+    pending?.delete(reference)
+    if (pending?.size === 0)
+      this.incompleteTransactionSetProjections.delete(key)
+  }
+
+  /** One authoritative account, including normal sync writes. Only local durable work;
+   * callers perform network reads before entering. Other accounts continue independently.
+   * Preparers share this authoritative list; independent live lists over one store are unsupported. */
+  projectTransactionSetAccount(
+    account: string,
+    reference: string,
+    apply: (writer: EvmCoinAccountProjection) => Promise<boolean>,
+  ): Promise<boolean> {
+    const key = account.toLowerCase()
+    return this.accountMutation(key, async () => {
+      let active = true
+      const check = (target: string) => {
+        if (!active || target.toLowerCase() !== key)
+          throw new EvmCoinListError(
+            'Projection belongs to another account or has completed',
+          )
+      }
+      try {
+        return await apply({
+          put: input => {
+            check(input.account)
+            return this.putAccount(input)
+          },
+          recordMined: (coin, outcome) => {
+            check(coin.account)
+            return this.recordMinedAccount(coin, outcome)
+          },
+        })
+      } catch (error) {
+        this.requireTransactionSetProjection(key, reference)
+        throw error
+      } finally {
+        active = false
+      }
+    })
+  }
+
+  private accountSelectable(account: string): boolean {
+    return (
+      !this.accountMutations.has(account) &&
+      !this.incompleteTransactionSetProjections.has(account)
+    )
+  }
+
   /**
    * Money the wallet holds at `[account, nonce]`, free to spend: a new coin, or the new value of
    * an unspent one (what sync learned from the chain). An account has at most one live coin: an
    * unspent coin at an older nonce of the same account is replaced. A coin some operation holds
    * is never overwritten (the operation, then settlement, decides what became of it).
    */
-  async put(input: {
+  put(input: {
     account: string
     nonce: number
     privateKey: string
     valueWei: bigint
     origin: EvmCoinListOrigin
+    changeIndex?: number
+    lastSpentInBlock?: number
+    spendableFromBlock?: number
+  }): Promise<EvmListCoin> {
+    const snapshot = { ...input }
+    return this.accountMutation(snapshot.account, () =>
+      this.putAccount(snapshot),
+    )
+  }
+
+  private async putAccount(input: {
+    account: string
+    nonce: number
+    privateKey: string
+    valueWei: bigint
+    origin: EvmCoinListOrigin
+    changeIndex?: number
+    lastSpentInBlock?: number
     spendableFromBlock?: number
   }): Promise<EvmListCoin> {
     const account = input.account.toLowerCase()
@@ -236,6 +375,12 @@ export class EvmCoinList {
       throw new EvmCoinListError('A coin is added with its own account key')
     if (!Number.isSafeInteger(input.nonce) || input.nonce < 0)
       throw new EvmCoinListError('A coin nonce is a nonnegative integer')
+    if (
+      input.lastSpentInBlock !== undefined &&
+      (!Number.isSafeInteger(input.lastSpentInBlock) ||
+        input.lastSpentInBlock < 0)
+    )
+      throw new EvmCoinListError('Invalid last-spend block')
     if (input.valueWei < 0n)
       throw new EvmCoinListError('A coin value is not negative')
     const key = coinKey(account, input.nonce)
@@ -261,19 +406,208 @@ export class EvmCoinList {
       privateKey: input.privateKey,
       valueWei: input.valueWei,
       origin: input.origin,
+      ...((input.lastSpentInBlock ?? existing?.lastSpentInBlock) === undefined
+        ? {}
+        : {
+            lastSpentInBlock:
+              input.lastSpentInBlock ?? existing!.lastSpentInBlock,
+          }),
+      ...(input.changeIndex === undefined
+        ? {}
+        : { changeIndex: input.changeIndex }),
       state: 'unspent',
       ...(input.spendableFromBlock === undefined
         ? {}
         : { spendableFromBlock: input.spendableFromBlock }),
     }
     this.coinsByKey.set(key, coin)
-    for (const old of stale) this.coinsByKey.delete(coinKey(old.account, old.nonce))
+    for (const old of stale)
+      this.coinsByKey.delete(coinKey(old.account, old.nonce))
     this.notify()
-    await this.persist(coin)
-    await Promise.all(
-      stale.map(old => this.store.delete(coinKey(old.account, old.nonce))),
-    )
+    try {
+      await this.persist(coin)
+      await Promise.all(
+        stale.map(old => this.store.delete(coinKey(old.account, old.nonce))),
+      )
+    } catch (error) {
+      if (existing) this.coinsByKey.set(key, existing)
+      else this.coinsByKey.delete(key)
+      for (const old of stale)
+        this.coinsByKey.set(coinKey(old.account, old.nonce), old)
+      this.notify()
+      throw error
+    }
     return coin
+  }
+
+  /** Selection and ownership change form one synchronous section; no provider work occurs. */
+  reserveTransactionSetSources(params: {
+    holder: string
+    amountWei: bigint
+    feeWei: bigint | ((paymentIndex: number) => bigint)
+    head: number
+    sourceOrder: readonly EvmCoinListOrigin[]
+    maxCoins?: number
+    canSelect?: (coin: EvmListCoin) => boolean
+    capacityWei?: (coin: EvmListCoin, feeWei: bigint) => bigint
+  }): CoinPart[] | undefined {
+    if (
+      params.amountWei < 0n ||
+      (typeof params.feeWei === 'bigint' && params.feeWei <= 0n)
+    )
+      throw new EvmCoinListError('Invalid transaction-set amount or fee')
+    const rank = new Map(
+      params.sourceOrder.map((origin, index) => [origin, index]),
+    )
+    const free = this.all().filter(
+      coin =>
+        coin.state === 'unspent' &&
+        this.accountSelectable(coin.account) &&
+        rank.has(coin.origin) &&
+        (coin.spendableFromBlock === undefined ||
+          coin.spendableFromBlock <= params.head) &&
+        (params.canSelect?.(coin) ?? coin.after === undefined),
+    )
+    free.sort(
+      (a, b) =>
+        rank.get(a.origin)! - rank.get(b.origin)! ||
+        (a.origin === 'change' && b.origin === 'change'
+          ? (a.changeIndex ?? Number.MAX_SAFE_INTEGER) -
+            (b.changeIndex ?? Number.MAX_SAFE_INTEGER)
+          : 0) ||
+        (a.valueWei > b.valueWei ? -1 : a.valueWei < b.valueWei ? 1 : 0),
+    )
+    let remaining = params.amountWei
+    const picked: CoinPart[] = [],
+      accounts = new Set<string>()
+    for (const coin of free) {
+      if (picked.length >= (params.maxCoins ?? Number.MAX_SAFE_INTEGER)) break
+      if (accounts.has(coin.account)) continue
+      const fee =
+        typeof params.feeWei === 'bigint'
+          ? params.feeWei
+          : params.feeWei(picked.length)
+      if (fee <= 0n) throw new EvmCoinListError('Invalid per-payment fee')
+      if (coin.valueWei < fee) continue
+      const available = coin.valueWei - fee
+      const capacity = params.capacityWei?.(coin, fee) ?? available
+      if (capacity < 0n || capacity > available)
+        throw new EvmCoinListError('Invalid source capacity')
+      if (capacity === 0n && remaining > 0n) continue
+      const paymentValueWei = capacity < remaining ? capacity : remaining
+      picked.push({ coin, paymentValueWei })
+      accounts.add(coin.account)
+      remaining -= paymentValueWei
+      if (remaining === 0n) break
+    }
+    if (remaining > 0n || picked.length === 0) return undefined
+    const reserved = picked.map(part => {
+      const coin: EvmListCoin = {
+        ...part.coin,
+        state: 'spend_pending',
+        holder: params.holder,
+      }
+      this.coinsByKey.set(coinKey(coin.account, coin.nonce), coin)
+      return { ...part, coin }
+    })
+    this.notify()
+    return reserved
+  }
+
+  private readonly transactionSetBuilds = new Map<
+    string,
+    Promise<PreparedEvmTransactionSet>
+  >()
+  constructTransactionSetOnce(
+    operationId: string,
+    build: () => Promise<PreparedEvmTransactionSet>,
+  ): Promise<PreparedEvmTransactionSet> {
+    const pending = this.transactionSetBuilds.get(operationId)
+    if (pending) return pending
+    const result = build()
+    this.transactionSetBuilds.set(operationId, result)
+    void result
+      .finally(() => this.transactionSetBuilds.delete(operationId))
+      .catch(() => undefined)
+    return result
+  }
+
+  private readonly changeTargets = new Map<
+    number,
+    { account: string; operationId: string }
+  >()
+
+  /** Pending destinations are reserved before any async persistence or funding occurs. */
+  reserveChangeTarget(
+    operationId: string,
+    index: number,
+    account: string,
+  ): void {
+    const normalized = account.toLowerCase()
+    const existing = this.changeTargets.get(index)
+    if (
+      existing &&
+      existing.operationId === operationId &&
+      existing.account === normalized
+    )
+      return
+    if (
+      existing ||
+      this.all().some(
+        coin => coin.account === normalized && coin.changeIndex !== index,
+      ) ||
+      [...this.changeTargets.values()].some(
+        target => target.account === normalized,
+      )
+    )
+      throw new EvmCoinListError(
+        'Change destination is already owned or reserved',
+      )
+    this.changeTargets.set(index, { account: normalized, operationId })
+  }
+
+  nextChangeIndex(): number {
+    let index = 0
+    for (const coin of this.coinsByKey.values())
+      if (coin.changeIndex !== undefined)
+        index = Math.max(index, coin.changeIndex + 1)
+    for (const reserved of this.changeTargets.keys())
+      index = Math.max(index, reserved + 1)
+    return index
+  }
+
+  /** Derived checkpoint only: the journal's complete signed set was committed first. */
+  async checkpointTransactionSetReservations(
+    operationId: string,
+  ): Promise<void> {
+    for (const coin of this.heldBy(operationId))
+      if (coin.state !== 'spend_pending') await this.persist(coin)
+  }
+
+  private readonly transactionSetKeyReferences = new Set<string>()
+  settleTransactionSetKeyReference(account: string, nonce: number): void {
+    this.transactionSetKeyReferences.delete(coinKey(account, nonce))
+  }
+
+  /** Journal owns these signed facts; inventory is their derived reservation view. No I/O. */
+  restoreTransactionSetCoin(
+    holder: string,
+    input: EvmListCoin,
+    retainKey = true,
+  ): void {
+    const key = coinKey(input.account, input.nonce),
+      existing = this.coinsByKey.get(key)
+    if (retainKey) this.transactionSetKeyReferences.add(key)
+    else this.transactionSetKeyReferences.delete(key)
+    if (existing?.state === 'spent') return
+    if (
+      existing?.holder &&
+      existing.holder !== holder &&
+      existing.state !== 'unspent'
+    )
+      throw new EvmCoinListError(`Coin ${key} belongs to another operation`)
+    this.coinsByKey.set(key, { ...input, holder })
+    this.notify()
   }
 
   /**
@@ -302,9 +636,11 @@ export class EvmCoinList {
     const free = this.all().filter(
       coin =>
         coin.state === 'unspent' &&
+        this.accountSelectable(coin.account) &&
         coin.valueWei > params.feeReserveWei &&
         (coin.spendableFromBlock === undefined ||
-          (params.head !== undefined && params.head >= coin.spendableFromBlock)) &&
+          (params.head !== undefined &&
+            params.head >= coin.spendableFromBlock)) &&
         (params.filter?.(coin) ?? true),
     )
     const pick = (
@@ -336,7 +672,9 @@ export class EvmCoinList {
         .filter(
           coin => coin.valueWei - params.feeReserveWei >= params.amountWei,
         )
-        .sort((a, b) => (a.valueWei < b.valueWei ? -1 : a.valueWei > b.valueWei ? 1 : 0))[0]
+        .sort((a, b) =>
+          a.valueWei < b.valueWei ? -1 : a.valueWei > b.valueWei ? 1 : 0,
+        )[0]
       selected =
         whole === undefined
           ? undefined
@@ -367,7 +705,10 @@ export class EvmCoinList {
    * Gives back the coins `holder` took and never signed a transaction that left the wallet
    * (default: all of its `spend_pending` coins; `pending_receipt` coins are never given back).
    */
-  abandon(holder: string, coins?: readonly { account: string; nonce: number }[]): void {
+  abandon(
+    holder: string,
+    coins?: readonly { account: string; nonce: number }[],
+  ): void {
     const only =
       coins === undefined
         ? undefined
@@ -406,8 +747,14 @@ export class EvmCoinList {
       (current.state !== 'spend_pending' &&
         !(current.state === 'pending_receipt' && current.spendingTx === rawTx))
     )
-      throw new EvmCoinListError(`Coin ${key} is not being built from by ${holder}`)
-    const next: EvmListCoin = { ...current, state: 'pending_receipt', spendingTx: rawTx }
+      throw new EvmCoinListError(
+        `Coin ${key} is not being built from by ${holder}`,
+      )
+    const next: EvmListCoin = {
+      ...current,
+      state: 'pending_receipt',
+      spendingTx: rawTx,
+    }
     await this.store.put(key, toStored(next))
     this.coinsByKey.set(key, next)
     this.notify()
@@ -437,7 +784,24 @@ export class EvmCoinList {
    * the next nonce. No successor when it holds nothing worth a transfer's fee
    * (`successor.valueWei` 0 or absent). Idempotent.
    */
-  async recordMined(
+  recordMined(
+    coin: { account: string; nonce: number },
+    outcome: {
+      block: number
+      successor?: { valueWei: bigint; spendableFromBlock?: number }
+    },
+  ): Promise<void> {
+    const source = { ...coin },
+      evidence = {
+        ...outcome,
+        ...(outcome.successor ? { successor: { ...outcome.successor } } : {}),
+      }
+    return this.accountMutation(source.account, () =>
+      this.recordMinedAccount(source, evidence),
+    )
+  }
+
+  private async recordMinedAccount(
     coin: { account: string; nonce: number },
     outcome: {
       block: number
@@ -463,6 +827,10 @@ export class EvmCoinList {
             privateKey: current.privateKey,
             valueWei: outcome.successor.valueWei,
             origin: current.origin,
+            lastSpentInBlock: outcome.block,
+            ...(current.changeIndex === undefined
+              ? {}
+              : { changeIndex: current.changeIndex }),
             state: 'unspent',
             ...(outcome.successor.spendableFromBlock === undefined
               ? {}
@@ -484,7 +852,16 @@ export class EvmCoinList {
    * it for a nonce or balance it no longer has. It leaves the list; what the account holds now is
    * added again by the caller's next look (`put`).
    */
-  async recordGone(coin: { account: string; nonce: number }): Promise<void> {
+  recordGone(coin: { account: string; nonce: number }): Promise<void> {
+    const source = { ...coin }
+    return this.accountMutation(source.account, () =>
+      this.recordGoneAccount(source),
+    )
+  }
+  private async recordGoneAccount(coin: {
+    account: string
+    nonce: number
+  }): Promise<void> {
     const key = coinKey(coin.account, coin.nonce)
     if (!this.coinsByKey.has(key)) return
     await this.store.delete(key)
@@ -513,8 +890,15 @@ export class EvmCoinList {
     const key = coinKey(account, coin.nonce)
     const current = this.coinsByKey.get(key)
     if (current?.state === 'spent') return Promise.resolve()
-    if (current !== undefined && current.holder !== undefined && current.holder !== holder && current.state !== 'unspent')
-      throw new EvmCoinListError(`Coin ${key} is held by ${current.holder} and by ${holder}`)
+    if (
+      current !== undefined &&
+      current.holder !== undefined &&
+      current.holder !== holder &&
+      current.state !== 'unspent'
+    )
+      throw new EvmCoinListError(
+        `Coin ${key} is held by ${current.holder} and by ${holder}`,
+      )
     const next: EvmListCoin = {
       ...(current ?? {
         account,
@@ -573,7 +957,10 @@ export class EvmCoinList {
   ): Promise<number> {
     let count = 0
     for (const coin of this.all())
-      if (coin.state === 'pending_receipt' && !referenced(coin.account, coin.nonce)) {
+      if (
+        coin.state === 'pending_receipt' &&
+        !referenced(coin.account, coin.nonce)
+      ) {
         const { holder: _holder, spendingTx: _tx, ...rest } = coin
         const free: EvmListCoin = { ...rest, state: 'unspent' }
         this.coinsByKey.set(coinKey(coin.account, coin.nonce), free)
@@ -586,17 +973,24 @@ export class EvmCoinList {
 
   /** Drops spent coins older than `beforeBlock` (the background worker's cleanup). */
   async prune(beforeBlock: number): Promise<number> {
-    const old = this.all().filter(
-      coin =>
-        coin.state === 'spent' &&
-        coin.spentInBlock !== undefined &&
-        coin.spentInBlock < beforeBlock,
-    )
-    for (const coin of old) {
-      await this.store.delete(coinKey(coin.account, coin.nonce))
-      this.coinsByKey.delete(coinKey(coin.account, coin.nonce))
+    let count = 0
+    for (const coin of this.all()) {
+      await this.accountMutation(coin.account, async () => {
+        const current = this.get(coin.account, coin.nonce)
+        if (
+          current?.state !== 'spent' ||
+          this.incompleteTransactionSetProjections.has(coin.account) ||
+          this.transactionSetKeyReferences.has(
+            coinKey(coin.account, coin.nonce),
+          ) ||
+          current.spentInBlock === undefined ||
+          current.spentInBlock >= beforeBlock
+        )
+          return
+        await this.recordGoneAccount(coin)
+        count++
+      })
     }
-    if (old.length > 0) this.notify()
-    return old.length
+    return count
   }
 }

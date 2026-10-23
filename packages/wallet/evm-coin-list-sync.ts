@@ -24,46 +24,33 @@ export interface CoinListSource {
   /** Lower-case 0x address. */
   readonly account: string
   readonly origin: EvmCoinListOrigin
+  readonly changeIndex?: number
   readonly privateKey: () => string
 }
 
-/** How many accounts one refresh reads at the same time. */
-const READS_AT_ONCE = 6
-const RATE_LIMIT_INITIAL_BACKOFF_MS = 5_000
-const RATE_LIMIT_MAX_BACKOFF_MS = 60_000
-
-/** ethers wraps JSON-RPC errors inside UNKNOWN_ERROR and HTTP failures inside SERVER_ERROR. */
-function isRateLimited(error: unknown, depth = 0): boolean {
-  if (depth > 4 || typeof error !== 'object' || error === null) return false
-  const value = error as {
-    code?: unknown
-    status?: unknown
-    statusCode?: unknown
-    error?: unknown
-    response?: unknown
-  }
-  return (
-    value.code === 429 ||
-    value.code === -32005 ||
-    value.code === -32007 ||
-    value.code === -32016 ||
-    value.status === 429 ||
-    value.statusCode === 429 ||
-    (value.error !== error && isRateLimited(value.error, depth + 1)) ||
-    (value.response !== error && isRateLimited(value.response, depth + 1))
-  )
-}
+import {
+  READS_AT_ONCE,
+  RATE_LIMIT_INITIAL_BACKOFF_MS,
+  RATE_LIMIT_MAX_BACKOFF_MS,
+  isRateLimited,
+} from './evm-rpc-read-budget'
 
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
   private readonly dirty = new Set<string>()
+  /** Retry an unsuccessful observation without withdrawing an otherwise trusted coin. */
+  private readonly failedObservations = new Set<string>()
   /** Accounts read and found empty: not read again until something marks them dirty. */
   private readonly empty = new Set<string>()
+  private stopped = false
+  private readonly writes = new Set<Promise<unknown>>()
   private running: Promise<void> | undefined
   private again = false
-  private againAll = false
   private rateLimit: { until: number; error: unknown } | undefined
   private rateLimitBackoffMs = RATE_LIMIT_INITIAL_BACKOFF_MS
+  private againAll = false
+  private againDue = false
+  private readonly againAccounts = new Set<string>()
   /** Counts the times each account was marked dirty: a read that a later mark overtook does not
    * clear it (what that read saw may predate what the mark announced). */
   private readonly generations = new Map<string, number>()
@@ -78,6 +65,25 @@ export class EvmCoinListSync {
       readonly sources: () => readonly CoinListSource[]
     },
   ) {}
+
+  /** End observation logically. Drain only local mutations already started, never node reads. */
+  async stop(): Promise<void> {
+    this.stopped = true
+    const results = await Promise.allSettled([...this.writes])
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  }
+
+  private async mutate(operation: () => Promise<unknown>): Promise<void> {
+    if (this.stopped) return
+    const write = operation()
+    this.writes.add(write)
+    try {
+      await write
+    } finally {
+      this.writes.delete(write)
+    }
+  }
 
   /** Something outside the list may have spent from `account` (or paid into it): its coin is
    * dropped from selection until the chain has been read again. */
@@ -101,9 +107,21 @@ export class EvmCoinListSync {
     return this.dirty.has(account.toLowerCase())
   }
 
+  /** Derived observation only: a successful accepted read found zero balance. A dirty mark or
+   * failed refresh cannot provide this evidence; CoinList still owns every spendable coin. */
+  hasObservedEmpty(account: string): boolean {
+    const key = account.toLowerCase()
+    return !this.dirty.has(key) && this.empty.has(key)
+  }
+
   /** Whether the accounts that need a look have none pending: the list is all the wallet knows. */
   settled(): boolean {
     return this.dueSources().length === 0
+  }
+
+  /** Observe only these already-owned accounts, sharing the existing refresh queue. */
+  refreshAccounts(accounts: readonly string[]): Promise<void> {
+    return this.refresh({ accounts })
   }
 
   /**
@@ -112,10 +130,21 @@ export class EvmCoinListSync {
    * does not cover, money may have arrived that nothing announced (a deposit to the main
    * account, say).
    */
-  refresh(options: { all?: boolean } = {}): Promise<void> {
+  refresh(
+    options: { all?: boolean; accounts?: readonly string[] } = {},
+  ): Promise<void> {
+    if (this.stopped) return Promise.resolve()
+    // A targeted request invalidates old empty evidence even when a shared cooldown refuses RPC.
+    if (options.accounts !== undefined)
+      for (const account of options.accounts) this.markDirty(account)
     if (this.rateLimit && Date.now() < this.rateLimit.until)
       return Promise.reject(this.rateLimit.error)
     if (options.all === true) this.againAll = true
+    if (options.accounts === undefined) this.againDue = true
+    else
+      for (const account of options.accounts) {
+        this.againAccounts.add(account.toLowerCase())
+      }
     if (this.running) {
       this.again = true
       return this.running
@@ -124,9 +153,13 @@ export class EvmCoinListSync {
       do {
         this.again = false
         const all = this.againAll
+        const due = this.againDue
+        const accounts = new Set(this.againAccounts)
         this.againAll = false
+        this.againDue = false
+        this.againAccounts.clear()
         try {
-          await this.pass(all)
+          await this.pass(all, due ? undefined : accounts)
         } catch (error) {
           if (isRateLimited(error)) {
             this.rateLimit = {
@@ -140,7 +173,7 @@ export class EvmCoinListSync {
           }
           throw error
         }
-      } while (this.again)
+      } while (this.again && !this.stopped)
     })().finally(() => {
       this.running = undefined
     })
@@ -152,7 +185,8 @@ export class EvmCoinListSync {
     const { list } = this.config
     return this.config.sources().filter(source => {
       const account = source.account.toLowerCase()
-      if (this.dirty.has(account)) return true
+      if (this.dirty.has(account) || this.failedObservations.has(account))
+        return true
       const coin = list.latestOf(account)
       if (all)
         return (
@@ -165,21 +199,36 @@ export class EvmCoinListSync {
     })
   }
 
-  private async pass(all: boolean): Promise<void> {
-    const due = this.dueSources(all)
+  private async pass(
+    all: boolean,
+    accounts?: ReadonlySet<string>,
+  ): Promise<void> {
+    const due =
+      accounts === undefined
+        ? this.dueSources(all)
+        : this.config
+            .sources()
+            .filter(source => accounts.has(source.account.toLowerCase()))
     if (due.length === 0) return
     const head = await this.config.watcher.current()
     let cursor = 0
     let limited: { error: unknown } | undefined
     await Promise.all(
       Array.from({ length: Math.min(READS_AT_ONCE, due.length) }, async () => {
-        while (cursor < due.length && !limited) {
+        while (!this.stopped && cursor < due.length && !limited) {
           const source = due[cursor++]!
+          const account = source.account.toLowerCase()
+          const generation = this.generations.get(account) ?? 0
           try {
             await this.readOne(source, head, error => {
               limited ??= { error }
             })
           } catch (error) {
+            if (
+              !this.stopped &&
+              (this.generations.get(account) ?? 0) === generation
+            )
+              this.failedObservations.add(account)
             if (isRateLimited(error)) {
               limited ??= { error }
               continue
@@ -253,9 +302,13 @@ export class EvmCoinListSync {
         throw error
       })
     // Marked dirty while these reads were out: they may predate what the mark announced.
-    if ((this.generations.get(account) ?? 0) !== generation) return
+    if (this.stopped || (this.generations.get(account) ?? 0) !== generation)
+      return
     // Something of this account is in the mempool: no coin until it is mined.
-    if (pending > latest) return
+    if (pending > latest) {
+      this.markDirty(account)
+      return
+    }
     const live = list.latestOf(account)
     // An operation holds the account's coin: settlement decides what became of it.
     if (
@@ -270,10 +323,17 @@ export class EvmCoinListSync {
       (live.nonce > latest || (live.state === 'spent' && live.nonce >= latest))
     )
       return
-    this.dirty.delete(account)
     if (balance <= 0n) {
-      if (live?.state === 'unspent') await list.recordGone(live)
-      this.empty.add(account)
+      if (live?.state === 'unspent')
+        await this.mutate(() => list.recordGone(live))
+      if (
+        !this.stopped &&
+        (this.generations.get(account) ?? 0) === generation
+      ) {
+        this.empty.add(account)
+        this.failedObservations.delete(account)
+        this.dirty.delete(account)
+      }
       return
     }
     let spendableFromBlock: number | undefined
@@ -293,16 +353,37 @@ export class EvmCoinListSync {
       live?.state === 'unspent' &&
       live.nonce === latest &&
       live.valueWei === balance &&
-      live.spendableFromBlock === spendableFromBlock
-    )
+      live.spendableFromBlock === spendableFromBlock &&
+      (latest === 0 || live.lastSpentInBlock !== undefined)
+    ) {
+      this.empty.delete(account)
+      this.failedObservations.delete(account)
+      this.dirty.delete(account)
       return
-    await list.put({
-      account,
-      nonce: latest,
-      privateKey: source.privateKey(),
-      valueWei: balance,
-      origin: source.origin,
-      ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
-    })
+    }
+    await this.mutate(() =>
+      list.put({
+        account,
+        nonce: latest,
+        privateKey: source.privateKey(),
+        valueWei: balance,
+        origin: source.origin,
+        ...(source.changeIndex === undefined
+          ? {}
+          : { changeIndex: source.changeIndex }),
+        ...(latest === 0
+          ? {}
+          : {
+              lastSpentInBlock:
+                live?.nonce === latest ? live.lastSpentInBlock ?? head : head,
+            }),
+        ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
+      }),
+    )
+    if (!this.stopped && (this.generations.get(account) ?? 0) === generation) {
+      this.empty.delete(account)
+      this.failedObservations.delete(account)
+      this.dirty.delete(account)
+    }
   }
 }

@@ -455,13 +455,15 @@ describe('derived EVM input admission', () => {
         Transaction.from(f.plan(1).members[0]!.unsignedTransaction),
       )
       await f.topic.put({
-        version: 1,
+        version: 2,
         kind: 'post',
         requestBytes: [255],
-        leaseIndex: 0,
-        senderAddress: f.plan(1).members[0]!.source.address,
-        rawTx: raw,
-        txHash: Transaction.from(raw).hash!,
+        writeFormat: 'forum-cbor',
+        transactionSetOperationId: 'missing-set',
+        funders: [f.plan(1).members[0]!.source.address.toLowerCase()],
+        rawTransactions: [raw],
+        transactionSetHash: Transaction.from(raw).hash!,
+        intendedValueWei: '32',
         valueWei: '32',
         direction: 'up',
         payloadHashHex: 'ab'.repeat(32),
@@ -472,7 +474,7 @@ describe('derived EVM input admission', () => {
         held: 'binding',
       })
       expect(f.journal.list()).toEqual([])
-      expect(f.topic.getAll()[0]!.rawTx).toBe(raw)
+      expect(f.topic.getAll()[0]!.rawTransactions).toEqual([raw])
     } finally {
       await f.close()
     }
@@ -1410,7 +1412,6 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   it.each([
     'canonical pre-sign intent',
     'cleaned-up canonical attempt',
-    'topic',
     'live-lease',
     'pool-funding',
   ] as const)(
@@ -1486,19 +1487,6 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         retained: journalDouble,
         canonicalBinding: { id: 'hand-built-binding', tuple: '' },
       })
-      if (owner === 'topic')
-        await f.topic.put({
-          version: 1,
-          kind: 'post',
-          requestBytes: [255],
-          leaseIndex: 1,
-          senderAddress: row1,
-          rawTx: canonicalBytes.serialized,
-          txHash: canonicalBytes.hash!,
-          valueWei: '32',
-          direction: 'up',
-          payloadHashHex: 'ab'.repeat(32),
-        })
       if (owner === 'live-lease') f.leases.acquireForIndex(1)
       if (owner === 'pool-funding') {
         const funding = Transaction.from({

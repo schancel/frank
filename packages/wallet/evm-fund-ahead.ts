@@ -2,9 +2,7 @@ import { CANONICAL_DM_MAX_TRANSACTIONS } from "@frank/cashweb/relay/canonical-dm
 import { hexlify, randomBytes, type Provider, type Wallet } from "ethers";
 import {
   DirectMessageStampBelowFeeError,
-  type DirectMessageFundAheadResult,
   type DirectMessagePreparationProgress,
-  type NativeWalletHandle,
 } from "./chain/active-chain";
 import { EvmBlockWatcher } from "./evm-block-watcher";
 import { EvmStampPayer, waitForSpendSpacing } from "./evm-stamp-payer";
@@ -12,13 +10,10 @@ import type { EvmCoinList } from "./evm-coin-list";
 import { EvmCoinListSync, type CoinListSource } from "./evm-coin-list-sync";
 import {
   evmWalletInternals,
-  type CanonicalInventoryFunder,
 } from "./evm-wallet";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
 import { BurnNotSentError } from "./evm-account-lease";
 import {
-  FundAheadRefusedError,
-  STAMP_PAIR_TRANSFERS,
   type EvmSubAccountPool as MonadSubAccountPool,
 } from "./evm-account-pool";
 import { MonadAccountTxSigner } from "./evm-account-tx";
@@ -72,49 +67,6 @@ export class MainAccountBusyError extends Error {
   }
 }
 
-export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
-export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
-
-/** The main account was just read: more money than the last pass saw ends its wait. */
-export function noteMainBalanceForFundAhead(
-  wallet: object,
-  balanceWei: bigint
-): void {
-  const internals = evmWalletInternals(wallet);
-  const waiting = internals.fundAheadBackoff;
-  if (
-    waiting?.mainBalanceWei !== undefined &&
-    balanceWei > waiting.mainBalanceWei
-  ) {
-    internals.fundAheadBackoff = undefined;
-  }
-}
-
-/**
- * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
- * from the wallet's own EVM main account, through the same pool machinery and owner admission as
- * every other inventory preparation. The accounts are left free for whichever message claims
- * them. Returns the funding transaction hashes (empty when inventory already sufficed).
- */
-export function prepareCanonicalStampInventory(
-  wallet: NativeWalletHandle,
-  input: Parameters<CanonicalInventoryFunder>[0]
-): Promise<string[]> {
-  const internals = evmWalletInternals(wallet);
-  const fund = internals.canonicalInventoryFunder;
-  if (!fund || internals.closed) {
-    throw new Error(
-      "Canonical inventory requires live typed persistent custody"
-    );
-  }
-  return fund(input);
-}
-
-/**
- * Preparing the account that will burn a topic post/vote failed before anything was posted. The
- * pool's funding is record-before-broadcast, so retrying resumes an already-sent funding
- * transaction instead of sending another; the message says so because the caller shows it as is.
- */
 export class TopicBurnPreparationError extends Error {
   constructor(
     reason: string,
@@ -452,7 +404,7 @@ export async function prepareEvmTopicBurnAccount(
   }
 }
 
-export interface InstallEvmStampFundAheadCoordinatorParams {
+export interface InstallEvmStampCoordinatorParams {
   readonly wallet: EvmChainWalletHandle;
   readonly topicOwner: EvmWalletPersistenceBundle;
   readonly canonicalRoles: NonNullable<MonadWalletMaterial["canonicalRoles"]>;
@@ -471,7 +423,6 @@ export interface InstallEvmStampFundAheadCoordinatorParams {
   readonly spendSpacingBlocks?: number;
   readonly paymentPollIntervalMs?: number;
   readonly reserveBalanceWei?: bigint;
-  readonly stampFundingTargetWei?: bigint;
   readonly sourceIsHeld: (wallet: object, address: string) => boolean;
   readonly sourceHeldRefusalMessage: string;
   readonly requireOpenWallet: (wallet: EvmChainWalletHandle) => void;
@@ -488,11 +439,10 @@ export interface InstallEvmStampFundAheadCoordinatorParams {
 }
 
 /**
- * Installs canonical stamp client creation, stamp inventory preparation, stamp quoting, and
- * background fund-ahead onto `wallet`'s internals, and returns the created `EvmStampPayer`.
+ * Installs canonical stamp client creation, stamp quoting, and funding-attempt recovery onto `wallet`'s internals, and returns the created `EvmStampPayer`.
  */
-export function installEvmStampFundAheadCoordinator(
-  params: InstallEvmStampFundAheadCoordinatorParams
+export function installEvmStampCoordinator(
+  params: InstallEvmStampCoordinatorParams
 ): EvmStampPayer {
   const {
     wallet,
@@ -512,7 +462,6 @@ export function installEvmStampFundAheadCoordinator(
     spendSpacingBlocks,
     paymentPollIntervalMs,
     reserveBalanceWei,
-    stampFundingTargetWei,
     sourceIsHeld,
     sourceHeldRefusalMessage,
     requireOpenWallet,
@@ -541,106 +490,6 @@ export function installEvmStampFundAheadCoordinator(
         ),
     });
   };
-
-  const defaultGasReserveWei = BigInt(21_000) * BigInt(2_000_000_000);
-  const stampPaymentFeeReserve = async (): Promise<bigint> => {
-    try {
-      const feeData = await provider.getFeeData();
-      const feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice;
-      if (feePerGas !== null && feePerGas !== undefined) {
-        return BigInt(21_000) * feePerGas;
-      }
-    } catch {
-      /* The fixed reserve below is the answer without a quote. */
-    }
-    return defaultGasReserveWei;
-  };
-
-  const transferFeeNow = async () => {
-    const fee = await provider.getFeeData();
-    return 21_000n * (fee.gasPrice ?? fee.maxFeePerGas ?? 0n);
-  };
-
-  const fundStampAccounts = (input: {
-    stampValueWei: bigint;
-    feeReserveWei?: bigint;
-    onProgress?: (progress: DirectMessagePreparationProgress) => void;
-  }) =>
-    topicOwner.runLifetime(async () => {
-      walletInternals.fundAheadBackoff = undefined;
-      const feeReserveWei =
-        input.feeReserveWei ?? (await stampPaymentFeeReserve());
-      let fundingPrivateKey = mainAccount.privateKey;
-      const mainHeld = sourceIsHeld(wallet, mainAccount.address);
-      try {
-        const coinNeedWei =
-          input.stampValueWei +
-          BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
-        const mainBal = mainHeld
-          ? 0n
-          : await provider.getBalance(mainAccount.address);
-        if (
-          mainBal < coinNeedWei &&
-          identity.address.raw.toLowerCase() !==
-            mainAccount.address.toLowerCase()
-        ) {
-          const identBal = await provider.getBalance(identity.address.raw);
-          if (
-            identBal > mainBal &&
-            !sourceIsHeld(wallet, identity.address.raw)
-          ) {
-            fundingPrivateKey = identity.toPrivateKeyHex();
-          }
-        }
-        if (
-          mainBal < coinNeedWei &&
-          fundingPrivateKey === mainAccount.privateKey
-        ) {
-          await readCoins();
-          const funded = spendableCoins(coinStore.all())
-            .filter((coin) => BigInt(coin.amountWei) >= coinNeedWei)
-            .sort((a, b) =>
-              BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
-            );
-          for (const coin of funded) {
-            const nonce = await provider.getTransactionCount(coin.address);
-            if (!topicOwner.nativeJournal!.canSelect(coin.address, nonce)) {
-              continue;
-            }
-            fundingPrivateKey = coin.privateKey;
-            invalidateCoinsRead();
-            break;
-          }
-        }
-      } catch {}
-      if (mainHeld && fundingPrivateKey === mainAccount.privateKey) {
-        throw new Error(sourceHeldRefusalMessage);
-      }
-      const mainAccountSigner = new MonadAccountTxSigner({
-        privateKey: fundingPrivateKey,
-        provider,
-        httpClient,
-      });
-      return runMainAccountExclusive(
-        wallet,
-        async () =>
-          pool.prepareStampInventory({
-            mainAccountSigner,
-            provider,
-            stampValueWei: input.stampValueWei,
-            gasReserveWei: feeReserveWei,
-            minimumPaymentWei: transferFeeNow,
-            onProgress: input.onProgress,
-          }),
-        { ...FUNDING_FROM_MAIN, addresses: [mainAccountSigner.address] }
-      );
-    });
-
-  const prepareInventory: CanonicalInventoryFunder = async ({
-    stampValueWei,
-    onProgress,
-  }) => (await fundStampAccounts({ stampValueWei, onProgress })).fundingTxHashes;
-  walletInternals.canonicalInventoryFunder = prepareInventory;
 
   pool.attachFunderSpacing((address, spendValueWei) =>
     waitForSpendSpacing(provider, address, spendSpacingBlocks, {
@@ -738,9 +587,6 @@ export function installEvmStampFundAheadCoordinator(
     watcher: blockWatcher,
     spendSpacingBlocks,
     reserveBalanceWei,
-    onPoolCoinsClaimed: () => {
-      walletInternals.fundAheadBackoff = undefined;
-    },
     accountHeld: (address) => sourceIsHeld(wallet, address),
     canSelectAccount: (address, nonce) => {
       const selectable =
@@ -781,112 +627,25 @@ export function installEvmStampFundAheadCoordinator(
         : { ...common, status: "insufficient" };
     });
 
-  const stampValueAhead = stampFundingTargetWei ?? 10_000_000_000_000_000n;
-  const reserveCeilingWei =
-    stampValueAhead > defaultGasReserveWei
-      ? stampValueAhead
-      : defaultGasReserveWei;
-  const maxValueAheadWei =
-    stampValueAhead + BigInt(STAMP_PAIR_TRANSFERS) * reserveCeilingWei;
-  const notFunded = (reason: string): DirectMessageFundAheadResult => ({
-    outcome: "not-funded",
-    fundingTxHashes: [],
-    reason,
-  });
-
-  const fundAheadPass = (): Promise<DirectMessageFundAheadResult> =>
-    topicOwner.runLifetime(async () => {
-      let mainBalanceWei: bigint | undefined;
-      let result: DirectMessageFundAheadResult;
-      try {
-        const unresolved = pool
-          .records()
-          .some((record) => record.status === "funding");
-        if (
-          !unresolved &&
-          (await pool.hasStampInventory({
-            provider,
-            stampValueWei: stampValueAhead,
-            feeReserveWei: 0n,
-            maxCacheAgeMs: Infinity,
-          }))
-        ) {
-          return { outcome: "ready", fundingTxHashes: [] };
-        }
-        if (sourceIsHeld(wallet, mainAccount.address)) {
-          return notFunded("source-held");
-        }
-        if (!unresolved) {
-          mainBalanceWei = await provider.getBalance(mainAccount.address);
-        }
-        if (
-          mainBalanceWei !== undefined &&
-          mainBalanceWei < stampValueAhead
-        ) {
-          result = notFunded("insufficient-funds");
-        } else {
-          const mainAccountSigner = new MonadAccountTxSigner({
-            privateKey: mainAccount.privateKey,
-            provider,
-            httpClient,
-          });
-          const preparation = await runMainAccountExclusive(
-            wallet,
-            async () =>
-              pool.fundStampInventoryAhead({
-                mainAccountSigner,
-                provider,
-                stampValueWei: stampValueAhead,
-                gasReserveWei: stampPaymentFeeReserve,
-                maxValueWei: maxValueAheadWei,
-                minimumPaymentWei: transferFeeNow,
-              }),
-            { ...FUNDING_FROM_MAIN, addresses: [mainAccount.address] }
-          );
-          result = {
-            outcome:
-              preparation.fundingTxHashes.length > 0 ? "funded" : "ready",
-            fundingTxHashes: preparation.fundingTxHashes,
-          };
-        }
-      } catch (error) {
-        result = notFunded(
-          error instanceof FundAheadRefusedError
-            ? error.code
-            : error instanceof Error
-            ? error.message
-            : String(error)
-        );
-      }
-      if (result.outcome !== "funded") {
-        const last = walletInternals.fundAheadBackoff;
-        walletInternals.fundAheadBackoff = {
-          result,
-          delayMs:
-            last !== undefined && last.result.reason === result.reason
-              ? Math.min(last.delayMs * 2, FUND_AHEAD_BACKOFF_MAX_MS)
-              : FUND_AHEAD_BACKOFF_MIN_MS,
-          startedAtMs: Date.now(),
-          mainBalanceWei,
-        };
-      } else {
-        walletInternals.fundAheadBackoff = undefined;
-      }
-      return result;
-    });
-
-  let fundingAhead: Promise<DirectMessageFundAheadResult> | undefined;
-  walletInternals.stampFunderAhead = () => {
-    const waiting = walletInternals.fundAheadBackoff;
-    const waited = Date.now() - (waiting?.startedAtMs ?? 0);
-    if (waiting && waited >= 0 && waited < waiting.delayMs) {
-      return Promise.resolve(waiting.result);
+  // Recovery only: finish transactions authorized before proactive funding was removed.
+  // This path cannot derive a destination, prepare a new operation, or sign new bytes.
+  let recovery: Promise<void> | undefined;
+  walletInternals.recoverStampFunding = () => recovery ??= topicOwner.runLifetime(async () => {
+    if (pool.records().some(record => record.status === "funding")) {
+      await pool.recoverLegacyFundingAttempts({
+        mainAccountSigner: new MonadAccountTxSigner({
+          privateKey: mainAccount.privateKey, provider, httpClient,
+        }),
+      });
     }
-    fundingAhead ??= fundAheadPass().finally(() => {
-      fundingAhead = undefined;
-    });
-    return fundingAhead;
-  };
+    const prefix = "evm-transaction-set:stamp-fund-ahead-";
+    for (const row of topicOwner.nativeJournal!.list()) {
+      if (row.cancelled || row.kind !== "transaction-set" || !row.preparationId?.startsWith(prefix)) continue;
+      const id = row.preparationId.slice("evm-transaction-set:".length);
+      await wallet.transactionSetLifecycle!.observe(id, provider);
+      await wallet.transactionSetLifecycle!.replay(id, { payments: true });
+    }
+  }).finally(() => { recovery = undefined; });
 
   return stampPayer;
 }

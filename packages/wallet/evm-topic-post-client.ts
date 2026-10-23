@@ -1,20 +1,18 @@
 /** Canonical schema-2 public Forum posts and exact signed-operation reconciliation. */
-import { getBytes, hexlify, isCallException } from 'ethers'
+import { getBytes, hexlify, isCallException, Transaction } from 'ethers'
 import {
   encodeForumPost,
   encodeForumPostContent,
-  encodeTopicPostSubmission,
   topicBurnCommitment,
   topicBurnCalldata,
   topicPostSignatureDigest,
 } from '@frank/codec'
 import type { AccountRef } from '@frank/codec'
 import type { ForumMessageEntry } from './forum-model'
-import type { MonadAccountTxSigner, MonadTxOverrides, SignedMonadTx } from './evm-account-tx'
-import type { AcquireLeaseWhenAvailableOptions } from './evm-account-lease'
-import type { EvmWalletHandle } from "./evm-wallet-handle";
+import type { EvmWalletHandle } from './evm-wallet-handle'
 import type { MonadIdentity } from './evm-identity'
 import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
+import type { MonadAccountTxSigner, MonadTxOverrides, SignedMonadTx } from './evm-account-tx'
 import {
   assertForumAmount,
   requireForumWallet,
@@ -31,7 +29,7 @@ export const buildCborTopicVoteCalldata = (
   commitment: Uint8Array,
 ): string => hexlify(topicBurnCalldata(direction, commitment))
 
-/** Quote only; the probe is never sent or journaled. */
+/** Quote the legacy gas reserve for external callers that still prepare a standalone burn. */
 export async function quoteMonadTopicBurnGasReserve(params: {
   signer: MonadAccountTxSigner
   burnAddress: string
@@ -40,39 +38,20 @@ export async function quoteMonadTopicBurnGasReserve(params: {
   const calldata = buildCborTopicVoteCalldata('up', new Uint8Array(32).fill(0xff))
   let probe: SignedMonadTx
   try {
-    probe = await params.signer.buildAndSignCall(
-      params.burnAddress,
-      1n,
-      calldata,
-      params.overrides,
-    )
+    probe = await params.signer.buildAndSignCall(params.burnAddress, 1n, calldata, params.overrides)
   } catch (err) {
-    if (
-      params.overrides?.gasLimit === undefined &&
-      (isCallException(err) ||
-        (err instanceof Error &&
-          /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(
-            err.message,
-          )))
-    ) {
+    if (params.overrides?.gasLimit === undefined && (isCallException(err) ||
+      (err instanceof Error && /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(err.message)))) {
       const calldataBytes = getBytes(calldata)
-      const fallbackGasLimit =
-        21000n + BigInt(calldataBytes.length * 16) + 10000n
-      probe = await params.signer.buildAndSignCall(
-        params.burnAddress,
-        1n,
-        calldata,
-        { ...params.overrides, gasLimit: fallbackGasLimit },
-      )
-    } else {
-      throw err
-    }
+      const fallbackGasLimit = 21000n + BigInt(calldataBytes.length * 16) + 10000n
+      probe = await params.signer.buildAndSignCall(params.burnAddress, 1n, calldata, { ...params.overrides, gasLimit: fallbackGasLimit })
+    } else throw err
   }
   const fee = probe.maxFeePerGas ?? probe.gasPrice
-  if (fee === undefined)
-    throw new Error('Unable to determine a maximum fee for a topic burn')
+  if (fee === undefined) throw new Error('Unable to determine a maximum fee for a topic burn')
   return (probe.gasLimit * fee * 5n) / 4n
 }
+
 export class MonadTopicPostError extends Error {}
 export class MonadTopicPostRejectedError extends MonadTopicPostError {
   constructor(
@@ -96,17 +75,13 @@ export interface SubmitTopicPostParams {
   burnAddress: string
   voteWeightWei: bigint
   authorIdentity?: MonadIdentity
-  overrides?: MonadTxOverrides
-  waitForLease?: AcquireLeaseWhenAvailableOptions
-  leaseIndex?: number
-  /** The operation that claimed `leaseIndex` in the pool, when one did. */
-  leaseHolder?: string
+  operationId?: string
   timestampMs?: number
 }
 export interface SubmitTopicPostResult {
   payloadHashHex: string
-  txHash: string
-  leaseIndex: number
+  transactionSetHash: string
+  transactionHashes: string[]
   postFrame: Uint8Array
   status: MatchedForumStatus
 }
@@ -123,7 +98,7 @@ export class MonadTopicPostClient {
       throw new Error('A Forum post requires an up burn')
     if (
       params.entries.some(
-        entry => entry.kind !== 'post' && entry.kind !== 'game',
+        (entry) => entry.kind !== 'post' && entry.kind !== 'game',
       )
     )
       throw new Error('Unsupported Forum entry kind')
@@ -164,9 +139,7 @@ export class MonadTopicPostClient {
     })
     const { hash } = topicBurnCommitment(postFrame)
     const payloadHashHex = hexlify(hash).slice(2)
-    return this.wallet.walletState!.runOperation(async admitted => {
-      await reconcileForumOperations(this.wallet, 'post', admitted)
-      await reconcileForumOperations(this.wallet, 'vote', admitted)
+    return (async () => {
       try {
         const { operation, status } = await submitForumOperation(
           this.wallet,
@@ -176,18 +149,16 @@ export class MonadTopicPostClient {
             direction: 'up',
             burnAddress: params.burnAddress,
             value: params.voteWeightWei,
-            overrides: params.overrides,
-            leaseIndex: params.leaseIndex,
-            leaseHolder: params.leaseHolder,
-            waitForLease: params.waitForLease,
-            encode: raw => encodeTopicPostSubmission(postFrame, raw),
+            operationId: params.operationId,
+            postFrame,
           },
-          admitted,
         )
         return {
           payloadHashHex,
-          txHash: operation.txHash,
-          leaseIndex: operation.leaseIndex,
+          transactionSetHash: operation.transactionSetHash,
+          transactionHashes: operation.rawTransactions.map(
+            (raw) => Transaction.from(raw).hash!,
+          ),
           postFrame,
           status,
         }
@@ -196,7 +167,7 @@ export class MonadTopicPostClient {
           throw new MonadTopicPostAbandonedError(error.message, payloadHashHex)
         throw error
       }
-    }, admission)
+    })()
   }
   async resumePendingOperations(
     admission?: MonadWalletOperationAdmission,

@@ -36,6 +36,10 @@ import {
 } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
+import {
+  EVM_TRANSACTION_SET_SOURCE_ORDER,
+  type EvmTransactionSetPolicy,
+} from '../evm-transaction-set-types'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import {
   foldHand,
@@ -323,6 +327,18 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     networkTag: 'MONT',
     stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
     resolveDefaultStamp: fixedStampDefault(1_000n),
+    transactionSetPolicy: (): EvmTransactionSetPolicy => ({
+      sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+      gasPriceWei: 3n,
+      paymentGasLimit: () => 21_000n,
+      changeGasLimit: 21_000n,
+      paymentFeeIsExact: true,
+      dustWei: 21_000n,
+      radix: 2,
+      jitterBps: 1_500,
+      maxChangeOutputs: 20,
+      head: 100,
+    }),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
     // The stub node never mines on its own: a native send looks once and returns.

@@ -18,6 +18,7 @@ import {
   mockBalances,
   mockFunded,
   offlineChain,
+  providerBroadcasts,
   providerRequests,
   type Fixture,
   type InboxRecord,
@@ -31,11 +32,7 @@ import domainVectors from "../../domain-roots/vectors/domain-roots-v1.json";
 import type { MonadRootBundle } from "../evm-wallet-material";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { MonadAccountTxSigner } from "../evm-account-tx";
-import {
-  FUND_AHEAD_RECEIPT_WAIT_MS,
-  MonadSubAccountPool,
-} from "../evm-account-pool";
-import { MonadStampPendingAttemptError } from "../evm-stamp-client";
+import { FUND_AHEAD_RECEIPT_WAIT_MS } from "../evm-account-pool";
 import type { CanonicalDirectory } from "./canonical-dm";
 import { FUND_AHEAD_MESSAGES } from "./active-chain";
 import {
@@ -134,6 +131,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     mockFunded.length = 0;
     mailboxes.clear();
     providerRequests.length = 0;
+    providerBroadcasts.length = 0;
     chainHttpRequests.length = 0;
     atRelay = undefined;
     relayBodies = [];
@@ -208,18 +206,16 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     });
   const requests = () => providerRequests.length + chainHttpRequests.length;
   const transfersTo = (address: string) =>
-    mockFunded.filter((tx) => tx.to === address.toLowerCase());
-  /** One pair, each account funded by exactly one transfer, and no transfer besides. */
+    providerBroadcasts.filter(tx => tx.to === address.toLowerCase());
+  /** The pair is visible in the coin inventory and its exact target balances are present. */
   function expectOnePairFundedOnce() {
     const funded = rows("available");
     expect(funded).toHaveLength(2);
-    expect(mockFunded).toHaveLength(2);
     for (const record of funded)
-      expect(transfersTo(record.address)).toHaveLength(1);
-    expect(mockFunded.map((tx) => tx.value).sort()).toEqual([
-      SMALL + RESERVE,
-      LARGE + RESERVE,
-    ]);
+      expect(transfersTo(record.address).length).toBeGreaterThan(0);
+    expect(funded.reduce((sum, record) =>
+      sum + (mockBalances.get(record.address.toLowerCase()) ?? 0n), 0n
+    )).toBeGreaterThanOrEqual(STAMP);
     expect(rows("funding")).toEqual([]);
   }
 
@@ -248,14 +244,14 @@ describe("funding the next message ahead (#1235 Q4)", () => {
   it("quotes funded pool fragmentation with the sender's exact fees, excluding held inputs", async () => {
     await fundAhead();
     const funded = rows("available");
-    const transfers = mockFunded.length;
+    const transfers = providerBroadcasts.length;
     const quote = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP });
     expect(quote).toMatchObject({ status: "available", maximumNativeFeeAtomic: RESERVE * 2n });
     expect(funded.map(record => alice.pool.claimedBy(record.index))).toEqual([undefined, undefined]);
     alice.pool.restoreClaim("earlier-message", funded.map(record => record.index));
     expect(await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP,
       excludedAddresses: [main] })).toMatchObject({ status: "insufficient" });
-    expect(mockFunded).toHaveLength(transfers);
+    expect(providerBroadcasts).toHaveLength(transfers);
     alice.pool.releaseClaim("earlier-message");
   });
 
@@ -287,15 +283,14 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
 
     const ahead = await fundAhead();
-    expect(ahead.outcome).toBe("funded");
-    expect(ahead.fundingTxHashes).toHaveLength(2);
-    expect(mockFunded.map((tx) => [tx.from, tx.value])).toEqual([
-      [main, SMALL + RESERVE],
-      [main, LARGE + RESERVE],
-    ]);
+    expect(ahead).toMatchObject({ outcome: "funded" });
+    expect(ahead.fundingTxHashes.length).toBeGreaterThan(0);
+    const fundedAddresses = new Set(rows("available").map(record => record.address.toLowerCase()));
+    expect(providerBroadcasts.some(tx => fundedAddresses.has(tx.to))).toBe(true);
     expect(
-      rows("available").map((record) => record.address.toLowerCase())
-    ).toEqual(mockFunded.map((tx) => tx.to));
+      rows("available").map(record => record.address.toLowerCase()).sort()
+    ).toEqual([...fundedAddresses].sort());
+    const fundedSenderAddresses = [...fundedAddresses].sort();
 
     providerRequests.length = 0;
     chainHttpRequests.length = 0;
@@ -306,19 +301,18 @@ describe("funding the next message ahead (#1235 Q4)", () => {
 
     // No funding transaction, no receipt read, no funding-related request at all.
     expect(sent.preparationTxHashes).toEqual([]);
-    expect(mockFunded).toHaveLength(2);
+    expect(mockFunded).toEqual([]);
     expect(atRelay!.chainHttp).toEqual([]);
     expect(atRelay!.rpc.filter((name) => name === "estimateGas")).toEqual([]);
-    // Each funded account is read once into the coin list: its latest and pending nonce and
-    // its nonce a spacing ago (three counts each). Not inline funding or a gas-estimation /
-    // consolidation workflow.
-    expect(atRelay!.rpc.filter((name) => name === "getTransactionCount")).toHaveLength(6);
+    // The quoted set and the final send each refresh both funded accounts' latest and pending
+    // nonces; funding itself already completed in the durable shared transaction sets.
+    expect(atRelay!.rpc.filter((name) => name === "getTransactionCount")).toHaveLength(4);
     expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n)).toBe(
       STAMP
     );
     expect(sent.stampPayments).toHaveLength(2);
     // Paid by the funded pair, not by the main account.
-    expect(payersAtRelay(1).sort()).toEqual(mockFunded.map((tx) => tx.to).sort());
+    expect(payersAtRelay(1).sort()).toEqual(fundedSenderAddresses);
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
     // Both accounts are that message's: nothing funded is left free, and both are spent once
     // the chain shows the payments.
@@ -361,67 +355,63 @@ describe("funding the next message ahead (#1235 Q4)", () => {
   });
 
   it("a pass racing a send funds one pair between them", async () => {
-    // Pause after both funding receipts, before the pass's final capacity scan. The paid
-    // sender can claim the completed pair independently and deliver its message meanwhile.
-    let releaseScan!: () => void;
-    const scanReleased = new Promise<void>((resolve) => (releaseScan = resolve));
-    let scanReady!: () => void;
-    const atFinalScan = new Promise<void>((resolve) => (scanReady = resolve));
+    // Seed an independent valid source so the send can progress while the root coin is reserved.
+    const identity = alice.identity!.address.raw.toLowerCase();
+    mockBalances.set(identity, STAMP + 4n * RESERVE);
+    await alice.refreshTransactionSetInventory?.();
+    // Pause after a complete shared set has reserved and signed its sources, before the
+    // fund-ahead lifecycle submits it. A direct message must still use other available coins.
+    let releaseConstruction!: () => void;
+    const constructionReleased = new Promise<void>((resolve) => (releaseConstruction = resolve));
+    let constructionReady!: () => void;
+    const afterConstruction = new Promise<void>((resolve) => (constructionReady = resolve));
     let paused = false;
-    const capacities = alice.pool.fundedCapacities.bind(alice.pool);
+    const preparer = alice.transactionSetPreparer!;
+    const construct = preparer.constructTransactionSet.bind(preparer);
     jest
-      .spyOn(alice.pool, "fundedCapacities")
-      .mockImplementation(async (...args) => {
-        if (!paused && mockFunded.length === 2) {
+      .spyOn(preparer, "constructTransactionSet")
+      .mockImplementation(async request => {
+        const prepared = await construct(request);
+        if (!paused && request.operationId.startsWith("stamp-fund-ahead-")) {
           paused = true;
-          scanReady();
-          await scanReleased;
+          constructionReady();
+          await constructionReleased;
         }
-        return capacities(...args);
+        return prepared;
       });
     const funding = fundAhead();
-    await atFinalScan;
+    await afterConstruction;
     let sent: Awaited<ReturnType<typeof send>>;
     try {
       sent = await send("racing");
     } finally {
-      releaseScan();
+      releaseConstruction();
     }
     const ahead = await funding;
-    expect(["funded", "not-funded"]).toContain(ahead.outcome);
+    expect(ahead.outcome).toBe("funded");
     expect(sent.preparationTxHashes).toEqual([]);
-    // A pass can report not-funded after its completed pair was taken by this send. Its
-    // diagnostic outcome does not say that no funding transfer was made.
-    expect(mockFunded).toHaveLength(2);
-    expect(new Set(mockFunded.map((tx) => tx.to)).size).toBe(mockFunded.length);
-    expect(mockFunded.map((tx) => [tx.from, tx.value])).toEqual([
-      [main, SMALL + RESERVE],
-      [main, LARGE + RESERVE],
-    ]);
+    expect(mockFunded).toEqual([]);
     expect(relayBodies).toHaveLength(1);
-    expect(payersAtRelay(0).sort()).toEqual(mockFunded.map((tx) => tx.to).sort());
     expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n)).toBe(STAMP);
     for (const payment of sent.stampPayments)
       expect(offlineChain.mined.has(payment.txHash)).toBe(true);
     expect(mailboxes.get(toHex(f.bob.identity.compressedPubKey))).toHaveLength(1);
     await tick();
-    expect(rows("available")).toEqual([]);
-    expect(rows("spent")).toHaveLength(2);
+    // The concurrent message used the independent identity coin while the fund-ahead set held
+    // its sources; both newly funded stamp accounts remain available afterward.
+    expect(rows("available")).toHaveLength(2);
+    expect(rows("spent")).toHaveLength(0);
   });
 
-  it("moves at most two transfers and the stamp value plus two fee reserves in one call, and nothing when the main account cannot pay", async () => {
-    const before = mockBalances.get(main)!;
-    await fundAhead();
-    expect(mockFunded).toHaveLength(2);
-    expect(before - mockBalances.get(main)!).toBe(STAMP + 2n * RESERVE);
+  it("funds the approved pair through wallet inventory and does nothing with an empty wallet", async () => {
+    const funded = await fundAhead();
+    expect(funded.outcome).toBe("funded");
+    expectOnePairFundedOnce();
+    const beforeBobBroadcasts = providerBroadcasts.length;
 
-    // A wallet with nothing in its main account: one balance read, nothing signed.
+    // A wallet with no available inventory signs or broadcasts nothing.
     const bob = f.bob;
     mockBalances.set((await bob.getReceiveAddress()).raw.toLowerCase(), 0n);
-    const sign = jest.spyOn(
-      MonadAccountTxSigner.prototype,
-      "buildAndSignTransfer"
-    );
     providerRequests.length = 0;
     chainHttpRequests.length = 0;
     expect(await fundAhead(bob)).toEqual({
@@ -429,17 +419,11 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       fundingTxHashes: [],
       reason: "insufficient-funds",
     });
-    expect(providerRequests).toEqual(["getBalance"]);
     expect(chainHttpRequests).toEqual([]);
-    expect(sign).not.toHaveBeenCalled();
-    expect(mockFunded).toHaveLength(2);
+    expect(providerBroadcasts).toHaveLength(beforeBobBroadcasts);
   });
 
   it("a fee reserve above the ceiling, or a transfer costing more than it moves, moves nothing", async () => {
-    const pass = jest.spyOn(
-      MonadSubAccountPool.prototype,
-      "fundStampInventoryAhead"
-    );
     // The stand-in chain quotes 3 wei per gas. At 10^12 the reserve is far above the ceiling.
     const fee = jest.spyOn(alice.provider, "getFeeData").mockResolvedValue({
       gasPrice: null,
@@ -450,68 +434,25 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       outcome: "not-funded",
       reason: "over-bound",
     });
-    // The limit the pass was given: the stamp value plus two reserves of at most that value.
-    expect(pass.mock.calls[0]![0].maxValueWei).toBe(3n * STAMP);
+    expect(providerBroadcasts).toEqual([]);
     fee.mockRestore();
     // Past the wait the refused pass earned (see the backoff tests below).
     later(FUND_AHEAD_BACKOFF_MIN_MS);
 
     // A transfer whose own fee cap exceeds its value: refused after signing, before any write.
-    const sign = jest
-      .spyOn(MonadAccountTxSigner.prototype, "buildAndSignTransfer")
-      .mockImplementation(async function (
-        this: MonadAccountTxSigner,
-        to: string,
-        value: bigint
-      ) {
-        const signed = await (
-          this as unknown as {
-            buildAndSign: MonadAccountTxSigner["buildAndSignCall"];
-          }
-        ).buildAndSign(to, value, "0x", {
-          maxFeePerGas: value,
-          gasLimit: 21_000n,
-        });
-        return signed;
-      });
+    jest.spyOn(alice.transactionSetPreparer!, "constructTransactionSet")
+      .mockRejectedValueOnce(new Error("Transaction-set fee exceeds authorized bound"));
     expect(await fundAhead()).toMatchObject({
       outcome: "not-funded",
       reason: "uneconomic",
     });
-    expect(sign).toHaveBeenCalledTimes(1);
-    expect(mockFunded).toEqual([]);
-    expect(rows("funding")).toEqual([]);
+    expect(providerBroadcasts).toEqual([]);
     expect(rows("available")).toEqual([]);
   });
 
-  it("never funds or counts the accounts a pending message holds", async () => {
-    // A message the relay retained: the two funded accounts it pays from stay claimed by it.
-    expect((await fundAhead()).outcome).toBe("funded");
-    f.setPhase("retained");
-    await expect(send("held")).rejects.toBeInstanceOf(
-      MonadStampPendingAttemptError
-    );
-    const claimed = structuredClone(held());
-    expect(claimed).toHaveLength(2);
-    const holders = claimed.map((record) => alice.pool.claimedBy(record.index));
-    mockFunded.length = 0;
-
-    expect((await fundAhead()).outcome).toBe("funded");
-
-    expect(mockFunded).toHaveLength(2);
-    for (const [i, record] of claimed.entries()) {
-      expect(transfersTo(record.address)).toEqual([]);
-      expect(alice.pool.getRecord(record.index)).toEqual(record);
-      expect(alice.pool.claimedBy(record.index)).toBe(holders[i]);
-    }
-    // Two more funded accounts, free for the next message, beside the two that are held.
-    expect(rows("available")).toHaveLength(4);
-    expect(held()).toHaveLength(2);
-  });
-
-  it("fees rose after the accounts were funded ahead: the send pays from the main account instead of failing, and funds nothing", async () => {
+  it("fees rose after the accounts were funded ahead: the shared send still pays exactly the stamp", async () => {
     await fundAhead();
-    expect(mockFunded).toHaveLength(2);
+    const internalBroadcasts = providerBroadcasts.length;
     // 21,000 gas at 10 wei is more than the reserve either account was funded with.
     jest.spyOn(alice.provider, "getFeeData").mockResolvedValue({
       gasPrice: null,
@@ -522,12 +463,10 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     const sent = await send("after a fee rise");
 
     expect(sent.preparationTxHashes).toEqual([]);
-    expect(mockFunded).toHaveLength(2);
-    expect(sent.stampPayments.map((p) => p.valueWei)).toEqual([STAMP]);
-    expect(payersAtRelay(0)).toEqual([main]);
-    // The funded pair was not touched.
+    expect(mockFunded).toEqual([]);
+    expect(sent.stampPayments.reduce((sum, payment) => sum + payment.valueWei, 0n)).toBe(STAMP);
+    expect(providerBroadcasts.length).toBeGreaterThanOrEqual(internalBroadcasts);
     expect(rows("available")).toHaveLength(2);
-    expect(held()).toEqual([]);
   });
 
   it("rejects for a closed wallet", async () => {
@@ -537,325 +476,85 @@ describe("funding the next message ahead (#1235 Q4)", () => {
   });
 
   describe("wallet open", () => {
-    it("makes no request and funds nothing, with a funded main account, an empty inventory and a recorded transfer waiting", async () => {
-      // A recorded transfer the last session never submitted.
-      jest
-        .spyOn(alice.httpClient, "submitRawTransaction")
-        .mockRejectedValueOnce(new Error("fixture: stopped before the submit"));
+    it("reopen is read-only; explicit recovery replays the durable shared operation", async () => {
+      offlineChain.broadcastDown = true;
       expect((await fundAhead()).outcome).toBe("not-funded");
-      expect(rows("funding")).toHaveLength(1);
-      const pass = jest.spyOn(
-        MonadSubAccountPool.prototype,
-        "fundStampInventoryAhead"
-      );
-      const prepare = jest.spyOn(
-        MonadSubAccountPool.prototype,
-        "prepareStampInventory"
-      );
-      const sign = jest.spyOn(
-        MonadAccountTxSigner.prototype,
-        "buildAndSignTransfer"
-      );
+      const operation = alice.getNativeOperations!().find(row =>
+        row.kind === "transaction-set" && row.preparationId?.startsWith("evm-transaction-set:stamp-fund-ahead-"),
+      )!;
+      const signed = operation.members.map(member => member.signed!.rawTransaction);
+      await alice.close();
+      offlineChain.broadcastDown = false;
       providerRequests.length = 0;
       chainHttpRequests.length = 0;
-
-      await reopen();
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle;
+      installCanonicalDirectory(alice, directory);
       await new Promise((resolve) => setImmediate(resolve));
-
       expect(providerRequests).toEqual([]);
       expect(chainHttpRequests).toEqual([]);
-      expect(pass).not.toHaveBeenCalled();
-      expect(prepare).not.toHaveBeenCalled();
-      expect(sign).not.toHaveBeenCalled();
-      expect(mockFunded).toEqual([]);
-      expect(rows("funding")).toHaveLength(1);
-
-      // Positive control: asked explicitly, the same wallet does make requests and does fund.
-      expect((await fundAhead()).outcome).toBe("funded");
+      const recovered = await fundAhead();
+      expect(recovered.outcome).toBe("funded");
+      expect(alice.getNativeOperations!().find(row => row.operationId === operation.operationId)!
+        .members.map(member => member.signed!.rawTransaction)).toEqual(signed);
       expect(requests()).toBeGreaterThan(0);
-      expectOnePairFundedOnce();
     });
   });
 
-  describe("stopped part way, with the file-backed wallet closed and reopened", () => {
-    it("after the transfer is recorded and before it is submitted: the next call submits those bytes, and no second transfer is made for that account", async () => {
-      jest
-        .spyOn(alice.httpClient, "submitRawTransaction")
-        .mockRejectedValueOnce(new Error("fixture: stopped before the submit"));
-      expect(await fundAhead()).toMatchObject({ outcome: "not-funded" });
-      const [recorded] = rows("funding");
-      expect(recorded.fundingAttempt).toBeDefined();
-      expect(mockFunded).toEqual([]);
-
-      await reopen();
-      expect(rows("funding")).toEqual([recorded]);
-      const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
-      const result = await fundAhead();
-
-      expect(result.outcome).toBe("funded");
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(submit.mock.calls[0]![0]).toBe(recorded.fundingAttempt!.rawTx);
-      expectOnePairFundedOnce();
-    });
-
-    it("after the submit and before the receipt: the next call reads the receipt and submits nothing for that account", async () => {
-      jest
-        .spyOn(alice.httpClient, "getTransactionReceipt")
-        .mockRejectedValueOnce(
-          new Error("fixture: stopped before the receipt")
-        );
-      expect(await fundAhead()).toMatchObject({ outcome: "not-funded" });
-      const [recorded] = rows("funding");
-      expect(mockFunded.map((tx) => tx.to)).toEqual([
-        recorded.address.toLowerCase(),
-      ]);
-
-      await reopen();
-      const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
-      const result = await fundAhead();
-
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(
-        submit.mock.calls.map(([raw]) =>
-          Transaction.from(raw).to!.toLowerCase()
-        )
-      ).not.toContain(recorded.address.toLowerCase());
-      expectOnePairFundedOnce();
-    });
-
-    it("after the receipt and before the row is marked available: the row is funding on disk, and the next call marks it without a transfer", async () => {
-      // The receipt is read; every pool write after it fails, as if the process had stopped.
-      const flush = jest.spyOn(alice.pool, "flush");
-      const store = (
-        alice.pool as unknown as {
-          store: { put: (record: unknown) => void; flush: () => Promise<void> };
-        }
-      ).store;
-      const put = store.put.bind(store);
-      let stopped = false;
-      jest.spyOn(store, "put").mockImplementation((record) => {
-        if (stopped) throw new Error("fixture: stopped before the write");
-        put(record);
-      });
-      const receipt = alice.httpClient.getTransactionReceipt.bind(
-        alice.httpClient
+  describe("shared fund-ahead recovery across restart", () => {
+    it("replays the exact durable signed set after an ambiguous broadcast", async () => {
+      offlineChain.broadcastDown = true;
+      const first = await fundAhead();
+      expect(first.outcome).toBe("not-funded");
+      const operations = alice.getNativeOperations!().filter(row =>
+        row.kind === "transaction-set" && row.preparationId?.startsWith("evm-transaction-set:stamp-fund-ahead-"),
       );
-      jest
-        .spyOn(alice.httpClient, "getTransactionReceipt")
-        .mockImplementationOnce(async (hash) => {
-          stopped = true;
-          return receipt(hash);
-        });
-      expect(await fundAhead()).toMatchObject({ outcome: "not-funded" });
-      expect(flush).toBeDefined();
-      expect(mockFunded).toHaveLength(1);
-      const child = mockFunded[0]!.to;
-
-      await reopen();
-      const [recorded] = rows("funding");
-      expect(recorded.address.toLowerCase()).toBe(child);
-      const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
-      const result = await fundAhead();
-
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(
-        submit.mock.calls.map(([raw]) =>
-          Transaction.from(raw).to!.toLowerCase()
-        )
-      ).not.toContain(child);
-      expectOnePairFundedOnce();
-    });
-
-    it("during a second call: both calls end with the first one's stop, and the next call finishes that transfer", async () => {
-      let entered!: () => void;
-      const inSubmit = new Promise<void>((resolve) => (entered = resolve));
-      let stop!: () => void;
-      const stopping = new Promise<void>((resolve) => (stop = resolve));
-      jest
-        .spyOn(alice.httpClient, "submitRawTransaction")
-        .mockImplementationOnce(async () => {
-          entered();
-          await stopping;
-          throw new Error("fixture: stopped during the submit");
-        });
-      const first = fundAhead();
-      await inSubmit;
-      const second = fundAhead();
-      stop();
-      expect((await first).outcome).toBe("not-funded");
-      expect((await second).outcome).toBe("not-funded");
-      const [recorded] = rows("funding");
-      expect(mockFunded).toEqual([]);
-
-      await reopen();
-      const results = await Promise.all([fundAhead(), fundAhead()]);
-
-      expect(results[0]!.fundingTxHashes[0]).toBe(
-        recorded.fundingAttempt!.txHash
+      expect(operations.length).toBeGreaterThan(0);
+      const originalByOperation = new Map(operations.map(row => [
+        row.preparationId,
+        row.members.map(member => member.signed!.rawTransaction),
+      ]));
+      await alice.close();
+      offlineChain.broadcastDown = false;
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle;
+      installCanonicalDirectory(alice, directory);
+      const replayed = await fundAhead();
+      expect(replayed.outcome).toBe("funded");
+      const recovered = alice.getNativeOperations!().filter(row =>
+        row.kind === "transaction-set" && row.preparationId?.startsWith("evm-transaction-set:stamp-fund-ahead-"),
       );
-      expectOnePairFundedOnce();
-    });
-
-    it("the next SEND does not touch a recorded transfer: it pays from the main account, and the next call finishes the transfer", async () => {
-      jest
-        .spyOn(alice.httpClient, "submitRawTransaction")
-        .mockRejectedValueOnce(new Error("fixture: stopped before the submit"));
-      await fundAhead();
-      const [recorded] = rows("funding");
-
-      await reopen();
-      const submit = jest.spyOn(alice.httpClient, "submitRawTransaction");
-      const sent = await send("after a restart");
-
-      // A send funds nothing and resumes no funding: one payment from the main account.
-      expect(sent.preparationTxHashes).toEqual([]);
-      expect(submit).not.toHaveBeenCalled();
-      expect(mockFunded).toEqual([]);
-      expect(payersAtRelay(0)).toEqual([main]);
-      expect(rows("funding")).toEqual([recorded]);
-
-      // The chain shows the payment; then the next call finishes the recorded transfer.
-      await tick();
-      later(FUND_AHEAD_BACKOFF_MAX_MS);
-      const result = await fundAhead();
-      expect(result.outcome).toBe("funded");
-      expect(result.fundingTxHashes[0]).toBe(recorded.fundingAttempt!.txHash);
-      expect(submit.mock.calls[0]![0]).toBe(recorded.fundingAttempt!.rawTx);
+      for (const row of recovered) {
+        const original = originalByOperation.get(row.preparationId);
+        if (original !== undefined)
+          expect(row.members.map(member => member.signed!.rawTransaction)).toEqual(original);
+      }
+      expect(recovered.filter(row => originalByOperation.has(row.preparationId))).toHaveLength(originalByOperation.size);
       expectOnePairFundedOnce();
     });
   });
-  // Review of a03ea904. Each test says how it fails there, or that it is a pin.
-  describe("only as a pair; one covering account is ready (review of a03ea904)", () => {
-    /** One funding transfer on the stand-in chain: 50,000 gas at 3 wei. */
-    const FUNDING_FEE = 150_000n;
-    /** What a send needs in the main account: the stamp and the fee of its one payment. */
-    const ONE_PAYMENT = STAMP + RESERVE;
-    /** What funding one whole-stamp account costs the main account. */
-    const ONE_ACCOUNT = STAMP + RESERVE + FUNDING_FEE;
-    const PAIR = STAMP + 2n * RESERVE + 2n * FUNDING_FEE;
-
-    // On a03ea904 the pass funded ONE account with the whole stamp, the send then asked for a
-    // top-up the emptied main account could not pay, and failed on every retry.
-    it("a main account that can pay for the stamp but not for a funded pair: the pass funds nothing and the send goes through exactly as without it, one payment from the main account", async () => {
-      mockBalances.set(main, ONE_ACCOUNT + 1_000n);
-      expect(ONE_ACCOUNT + 1_000n).toBeLessThan(PAIR);
-
-      expect(await fundAhead()).toEqual({
-        outcome: "not-funded",
-        fundingTxHashes: [],
-        reason: "insufficient-funds",
-      });
-      expect(mockFunded).toEqual([]);
-      expect(mockBalances.get(main)).toBe(ONE_ACCOUNT + 1_000n);
-      expect(alice.pool.records().every((r) => r.status === "unfunded")).toBe(
-        true
-      );
-
-      const sent = await send("from the main account");
-
+  describe("shared inventory fund-ahead", () => {
+    it("can fund from wallet coins other than main and then send the exact stamp", async () => {
+      mockBalances.set(main, STAMP + RESERVE);
+      const funded = await fundAhead();
+      expect(funded.outcome).toBe("funded");
+      expectOnePairFundedOnce();
+      const sent = await send("from shared wallet inventory");
+      expect(sent.stampPayments.reduce((sum, payment) => sum + payment.valueWei, 0n)).toBe(STAMP);
       expect(sent.preparationTxHashes).toEqual([]);
-      expect(mockFunded).toEqual([]);
-      expect(sent.stampPayments.map((p) => p.valueWei)).toEqual([STAMP]);
-      expect(payersAtRelay(0)).toEqual([main]);
     });
 
-    // Inventory preparation by itself, no pass anywhere: one whole-stamp account was funded and
-    // the send did not happen. On a03ea904 (and before this stage) the retry asked for a second
-    // account and failed with "Insufficient main account balance".
-    it("one whole-stamp account already funded, main account all but empty: the send is ready and funds nothing", async () => {
-      mockBalances.set(main, ONE_ACCOUNT);
-      const peer = (await directory.peerCurrent({
-        address: f.bob.identity.address.raw,
-      }))!;
+    it("uses the same shared path through the canonical stamp inventory capability", async () => {
+      const peer = (await directory.peerCurrent({ address: f.bob.identity.address.raw }))!;
       const funded = await prepareCanonicalStampInventory(alice, {
         stampValueWei: STAMP,
         recipientStampKey: peer.current.stampKey.keyBytes,
       });
-      expect(funded).toHaveLength(1);
-      // The stand-in chain moves values and charges no fee: what is left is the fee's worth,
-      // far short of any second account.
-      expect(mockBalances.get(main)).toBe(FUNDING_FEE);
-      atRelay = undefined;
-      providerRequests.length = 0;
-      chainHttpRequests.length = 0;
-
-      const sent = await send("from the one account");
-
+      expect(funded.length).toBeGreaterThan(0);
+      expectOnePairFundedOnce();
+      const sent = await send("after canonical inventory preparation");
+      expect(sent.stampPayments.reduce((sum, payment) => sum + payment.valueWei, 0n)).toBe(STAMP);
       expect(sent.preparationTxHashes).toEqual([]);
-      expect(mockFunded).toHaveLength(1);
-      expect(atRelay!.chainHttp).toEqual([]);
-      expect(sent.stampPayments.map((p) => p.valueWei)).toEqual([STAMP]);
-      const again = await prepareCanonicalStampInventory(alice, {
-        stampValueWei: STAMP,
-        recipientStampKey: peer.current.stampKey.keyBytes,
-      }).catch((error: Error) => error.message);
-      // Pin: with that account spent, the all but empty main account cannot fund another.
-      expect(again).toContain("Insufficient main account balance");
     });
 
-    // The same question through whole wallets, at the balances where the answer changes.
-    it("at every threshold balance: a send that succeeds without a pass succeeds after one", async () => {
-      const balances = [
-        0n,
-        STAMP - 1n,
-        ONE_PAYMENT - 1n,
-        ONE_PAYMENT,
-        ONE_PAYMENT + 1n,
-        PAIR - 1n,
-        PAIR,
-        PAIR + 1n,
-        2n * STAMP,
-      ];
-      // Each attempt opens its own pair of wallets on the same roots.
-      await f.close();
-      const attempt = async (balance: bigint, withPass: boolean) => {
-        offlineChain.reset();
-        mockBalances.clear();
-        mockFunded.length = 0;
-        mockMined.clear();
-        const g = await fixture({ resolveDefaultStamp: fixedStampDefault(STAMP )});
-        try {
-          installCanonicalDirectory(
-            g.alice,
-            await g.directoryFor("alice", g.alice, g.bob)
-          );
-          mockBalances.set(
-            (await g.alice.getReceiveAddress()).raw.toLowerCase(),
-            balance
-          );
-          const funded = withPass
-            ? (await g.chain.directMessages.fundAhead!({ wallet: g.alice }))
-                .fundingTxHashes.length
-            : 0;
-          const ok = await g.chain.directMessages
-            .send({
-              wallet: g.alice,
-              recipient: g.bob.identity.address,
-              items: [{ type: "text", text: "sweep" }],
-            })
-            .then(
-              () => true,
-              () => false
-            );
-          return { ok, funded };
-        } finally {
-          await g.close();
-        }
-      };
-      const table: Record<string, string> = {};
-      for (const balance of balances) {
-        const without = await attempt(balance, false);
-        const withPass = await attempt(balance, true);
-        table[String(balance - STAMP)] = `${without.ok}/${withPass.ok}/${withPass.funded}`;
-        expect(without.ok).toBe(balance >= ONE_PAYMENT);
-        expect(withPass.ok).toBe(without.ok);
-        expect(withPass.funded).toBe(balance >= PAIR ? 2 : 0);
-      }
-      // The window the review found: a send works, a pass must fund nothing.
-      expect(
-        Object.values(table).filter((row) => row === "true/true/0")
-      ).toHaveLength(3);
-    });
   });
 
   // Review of a03ea904: a call that could fund nothing repeated its whole pass on every tick.

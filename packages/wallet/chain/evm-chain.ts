@@ -42,16 +42,14 @@ import {
   EvmCoinList,
   type StoredEvmListCoin,
 } from "../evm-coin-list";
+import { installEvmTransactionSetRuntime } from "../evm-transaction-set-runtime";
+import { evmTransactionSetJournal } from "../evm-transaction-set-journal";
+import { observeRetainedForumSpend } from "../evm-forum-operation";
 import {
-  FUND_AHEAD_BACKOFF_MAX_MS,
-  FUND_AHEAD_BACKOFF_MIN_MS,
   MainAccountBusyError,
   TopicBurnPreparationError,
   asNothingSent,
-  installEvmStampFundAheadCoordinator,
-  noteMainBalanceForFundAhead,
-  prepareCanonicalStampInventory,
-  prepareEvmTopicBurnAccount,
+  installEvmStampCoordinator,
   type MainAccountWait,
 } from "../evm-fund-ahead";
 import {
@@ -124,9 +122,7 @@ import {
   ChainAddress,
   ChainTransaction,
   DirectMessageClient,
-  DirectMessageFundAheadResult,
   DirectMessageStampQuote,
-  DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
@@ -470,7 +466,6 @@ export function loadMonadChainConfigFromEnv(overrides?: {
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
     minimumWagerValueWei: 10_000_000_000_000_000n,
-    stampFundingTargetWei: 10_000_000_000_000_000n,
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
@@ -570,11 +565,8 @@ export function installCanonicalDirectory(
   };
 }
 export {
-  FUND_AHEAD_BACKOFF_MAX_MS,
-  FUND_AHEAD_BACKOFF_MIN_MS,
   MainAccountBusyError,
   TopicBurnPreparationError,
-  prepareCanonicalStampInventory,
 } from "../evm-fund-ahead";
 export {
   PENDING_COIN_PROBES_PER_PASS,
@@ -1121,24 +1113,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
     );
   };
-  const prepareTopicBurnAccount = (
-    wallet: EvmChainWalletHandle,
-    voteWeightWei: bigint,
-    onProgress:
-      | ((progress: DirectMessagePreparationProgress) => void)
-      | undefined
-  ): Promise<{ leaseIndex: number; leaseHolder: string }> =>
-    prepareEvmTopicBurnAccount({
-      wallet,
-      voteWeightWei,
-      onProgress,
-      mainPrivateKey,
-      creatorBurnAddress: (w) => creatorForumPolicy(w).burnAddress,
-      sourceIsHeld,
-      sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,
-      mainAccountHolder,
-      runMainAccountExclusive,
-    });
   const consumeSelfNotes = consumeEvmSelfNotes;
   const recordReceivedCoins = recordEvmReceivedCoins;
   const directMessages: DirectMessageClient = {
@@ -1261,13 +1235,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       for (const [digest, status] of Object.entries(statuses))
         if (status === "delivered") void coinOwner?.contactMessageDelivered(digest);
       return statuses;
-    },
-
-    async fundAhead(params) {
-      const wallet = asMonadWallet(params.wallet, config.networkId);
-      const fund = evmWalletInternals(wallet).stampFunderAhead;
-      if (!fund) return { outcome: "unavailable", fundingTxHashes: [] };
-      return fund();
     },
 
     async discardAttempt(params) {
@@ -1636,11 +1603,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               },
             });
           }
-          const burn = await prepareTopicBurnAccount(
-            wallet,
-            params.voteWeightWei,
-            params.onPreparationProgress
-          );
           const result = await client
             .submitTopicPost(
               {
@@ -1653,12 +1615,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 direction: params.direction,
                 burnAddress: policy.burnAddress,
                 voteWeightWei: params.voteWeightWei,
-                ...burn,
               },
               admission
             )
             // Leased (the row's own status holds it now) or never used: the claim is over.
-            .finally(() => wallet.pool.releaseClaim(burn.leaseHolder))
             .catch((err: unknown) => {
               if (err instanceof MonadTopicPostAbandonedError) {
                 throw new TopicPostOutcomeUnknownError(err.message, err);
@@ -1686,11 +1646,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const targetPayloadHash = getBytes(`0x${params.payloadDigest}`);
           if (targetPayloadHash.length !== 32)
             throw new Error("Canonical vote requires a T1 digest");
-          const burn = await prepareTopicBurnAccount(
-            wallet,
-            params.voteWeightWei,
-            params.onPreparationProgress
-          );
           await client
             .castVote(
               {
@@ -1698,12 +1653,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 direction: params.direction,
                 burnAddress: policy.burnAddress,
                 voteWeightWei: params.voteWeightWei,
-                ...burn,
               },
               admission
             )
             // Leased (the row's own status holds it now) or never used: the claim is over.
-            .finally(() => wallet.pool.releaseClaim(burn.leaseHolder))
             .catch(asNothingSent);
         });
       });
@@ -2047,9 +2000,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ...stampAttemptJournal
               .getAll()
               .flatMap((attempt) => attempt.leaseIndices),
-            ...topicOwner.topicOperationJournal
-              .getAll()
-              .map((operation) => operation.leaseIndex),
           ]);
           for (const record of pool.records()) {
             if (
@@ -2129,6 +2079,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const scanState = coinListState;
           const coinList = await EvmCoinList.open(evmCoinListStore);
           const coinStore = coins;
+          const transactionSetRuntime = installEvmTransactionSetRuntime({
+            coinList,
+            coinStore,
+            provider,
+            mainAccount,
+            identity,
+            pool,
+            changePool,
+            changeKeyring,
+            journal: evmTransactionSetJournal(topicOwner),
+            kind: chainEntry.kind,
+            knownNoCodeAddress: config.stampBurnAddress,
+            spendSpacingBlocks: config.spendSpacingBlocks,
+            reserveBalanceWei: config.reserveBalanceWei,
+            paymentPollIntervalMs: config.paymentPollIntervalMs,
+            policy: config.transactionSetPolicy,
+          });
+          const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
           const paymentStore = contactPayments;
           const spendPool = new EvmSpendPool({
             identity,
@@ -2234,6 +2202,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
           const readBalanceParts = async (): Promise<BalanceParts> => {
             requireOpenWallet(wallet);
+            await transactionSetRuntime.refresh();
             const generation = balanceReadGeneration;
             try {
               const now = Date.now();
@@ -2288,7 +2257,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   0n
                 );
                 if (generation === balanceReadGeneration) {
-                  noteMainBalanceForFundAhead(wallet, mainBalance);
                   primaryBalanceCache = {
                     mainBalance,
                     identityBalance,
@@ -2354,6 +2322,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             networkId: config.networkId,
             identity,
             spendPool,
+            transactionSetPreparer,
+            transactionSetLifecycle,
+            refreshTransactionSetInventory: () => transactionSetRuntime.refresh(),
+            forumOperationMutation: (task) => runWalletExclusive(wallet, async () => task()),
+            observeRetainedForumSpend: (rawTx) =>
+              observeRetainedForumSpend(wallet, coinList, rawTx, config.spendSpacingBlocks),
             mainAccount,
             mainPrivateKey: mainAccount.privateKey,
             invalidateBalanceCache(networkTag?: string) {
@@ -2492,6 +2466,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   )
                 )
                 .then(() => owner.resendMissingContractCalls())
+                .then(() => internals.recoverStampFunding?.())
                 // What those looks showed frees the main account for whoever waits for it.
                 .then(() => releaseSettledMainAccounts(wallet, false))
                 .catch((error) => {
@@ -2715,6 +2690,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // Every wait on the chain ends now: nothing a waiter had was signed.
               internals.blockWatcher?.stop();
               closing = (async () => {
+                await transactionSetRuntime.stop();
                 // A re-observation pass in flight holds the wallet lifetime: end it first, or a
                 // node that never answers would hold the close.
                 await internals.nativeOperationOwner?.stopReobservation();
@@ -2738,7 +2714,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   internals.canonicalClientFactory = undefined;
                   internals.canonicalUnavailable = undefined;
                   internals.canonicalMessaging = undefined;
-                  internals.canonicalInventoryFunder = undefined;
+                  internals.recoverStampFunding = undefined;
                   internals.canonicalStampQuoter = undefined;
                   internals.canonicalDirectory = undefined;
                   internals.installedCanonicalDescriptor = undefined;
@@ -2750,6 +2726,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return closing;
             },
           });
+          evmWalletInternals(wallet).coinList = coinList;
+          evmWalletInternals(wallet).transactionSetPreparer = transactionSetPreparer;
+          evmWalletInternals(wallet).transactionSetLifecycle = transactionSetLifecycle;
           // A pool account a non-cancelled native member spends from is reserved: read from the
           // journal on every selection, so it holds from the journal write and across restart.
           pool.attachSpendReservation((index) =>
@@ -2929,7 +2908,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ) {
             const canonicalRoles = material.canonicalRoles;
             const installedNetworkTag = config.networkTag;
-            const stampPayer = installEvmStampFundAheadCoordinator({
+            const stampPayer = installEvmStampCoordinator({
               wallet,
               topicOwner,
               canonicalRoles,
@@ -2947,7 +2926,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               spendSpacingBlocks: config.spendSpacingBlocks,
               paymentPollIntervalMs: config.paymentPollIntervalMs,
               reserveBalanceWei: config.reserveBalanceWei,
-              stampFundingTargetWei: config.stampFundingTargetWei,
               sourceIsHeld,
               sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,
               requireOpenWallet,
@@ -2985,6 +2963,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               payer: () => {
                 requireOpenWallet(wallet);
                 return stampPayer;
+              },
+              transactionSets: {
+                preparer: transactionSetPreparer,
+                lifecycle: transactionSetLifecycle,
+                provider,
+                refresh: () => transactionSetRuntime.refresh(),
               },
               lifetime: (operation) => topicOwner!.runLifetime(() => operation()),
               settleOtherHolder: (holder) =>

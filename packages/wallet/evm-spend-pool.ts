@@ -36,6 +36,7 @@ export interface EvmSpendPoolParams {
   readonly coinStore: RecordStore<EvmCoin>;
   readonly nativeJournal: EvmSpendPoolJournalSource;
   readonly holdsSource?: (address: string) => boolean;
+  readonly knownChangeSources?: () => readonly { index: number; address: string }[];
 }
 
 /**
@@ -56,6 +57,7 @@ export class EvmSpendPool {
   readonly changePool: EvmChangePool;
   readonly coinStore: RecordStore<EvmCoin>;
   readonly nativeJournal: EvmSpendPoolJournalSource;
+  private readonly knownChangeSources?: EvmSpendPoolParams["knownChangeSources"];
   private readonly defaultHoldsSource?: (address: string) => boolean;
 
   constructor(params: EvmSpendPoolParams) {
@@ -71,6 +73,7 @@ export class EvmSpendPool {
     this.coinStore = params.coinStore;
     this.nativeJournal = params.nativeJournal;
     this.defaultHoldsSource = params.holdsSource;
+    this.knownChangeSources = params.knownChangeSources;
   }
 
   /**
@@ -141,7 +144,9 @@ export class EvmSpendPool {
     }
     const changeRecords = this.changePool.records();
     const recoveredChange = this.changePool.recoveredAccounts();
+    const knownChange = this.knownChangeSources?.() ?? [];
     const recordedChangeIndices = new Set([
+      ...knownChange.map((r) => r.index),
       ...changeRecords.map((r) => r.index),
       ...recoveredChange.map((r) => r.index),
     ]);
@@ -165,6 +170,9 @@ export class EvmSpendPool {
           address: r.address.toLowerCase(),
           index: r.index,
         })),
+      ...knownChange.map((r) => ({
+        kind: "change" as const, address: r.address.toLowerCase(), index: r.index,
+      })),
       ...changeRecords.map((r) => ({
         kind: "change" as const,
         address: r.address.toLowerCase(),
@@ -203,7 +211,12 @@ export class EvmSpendPool {
     for (const ref of refs) {
       this.resolveSource(ref);
     }
-    return refs;
+    const unique = new Map<string, EvmNativeSource>();
+    for (const ref of refs) {
+      const address = ref.address.toLowerCase();
+      if (!unique.has(address)) unique.set(address, ref);
+    }
+    return [...unique.values()];
   }
 
   /**

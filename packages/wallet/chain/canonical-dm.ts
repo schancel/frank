@@ -65,6 +65,7 @@ import {
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
+  canonicalNetworkDescriptor,
   freezeCanonicalRequest,
   installedCanonicalOrigin,
   restoreCanonicalRequest,
@@ -135,8 +136,10 @@ import {
   StampBlockedError,
 } from '../evm-stamp-client'
 import type { EvmStampPayer, StampClaim, StampPayment } from '../evm-stamp-payer'
+import { InsufficientStampFundsError } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
+import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
 import {
   durableDelete,
@@ -291,7 +294,8 @@ export interface StoredPayment {
  * accounts it pays from are claimed for as long as a payment in it is `pending`.
  */
 export interface StoredMessage {
-  version: 1
+  /** v1 is the legacy stamp-payer record; v2 is bound to the shared transaction-set journal. */
+  version: 1 | 2
   /** `frank-dm:<message ID>`: the row's key. A message ID has one row, so one payment, ever. */
   consumerId: string
   digest: string
@@ -301,6 +305,18 @@ export interface StoredMessage {
    * removed after delivery is durably recorded. */
   request?: { body: string; contentType: string }
   payments: StoredPayment[]
+  /** Stable link to the wallet-owned EVM construction journal. Present on shared-set sends. */
+  transactionSetOperationId?: string
+  /** Wallet-owned signed change transactions, never included in recipient message evidence. */
+  otherTransactions: StoredPayment[]
+  /** Immutable encrypted construction intent, persisted before the shared preparer signs. */
+  construction?: {
+    network: string
+    payload: string
+    context: string
+    amountWei: string
+    boundary: string
+  }
   /** `delivered`: the relay confirmed storing this exact message. `dead`: the relay refused its
    * first submission before exposing anything (`reason` says why) and every payment is `unsent`.
    * Absent: delivery remains unresolved; any other refusal only updates `reason`, since it does
@@ -435,6 +451,53 @@ export async function noticeOldLinkState(location: string): Promise<boolean> {
   )
   return true
 }
+
+function validateSharedStoredMessage(row: StoredMessage): void {
+  const intent = row.construction
+  if (
+    row.version !== 2 ||
+    typeof row.transactionSetOperationId !== 'string' ||
+    row.transactionSetOperationId !==
+      `stamp-${row.consumerId.slice('frank-dm:'.length)}` ||
+    !/^[0-9a-f]{64}$/i.test(row.digest) ||
+    !/^[0-9a-f]{66}$/i.test(row.recipientSubject) ||
+    !Array.isArray(row.payments) ||
+    !Array.isArray(row.otherTransactions) ||
+    !intent ||
+    typeof intent.network !== 'string' ||
+    typeof intent.payload !== 'string' ||
+    !/^(?:[0-9a-f]{2})+$/i.test(intent.payload) ||
+    typeof intent.context !== 'string' ||
+    !/^(?:[0-9a-f]{2})+$/i.test(intent.context) ||
+    typeof intent.amountWei !== 'string' ||
+    !/^[1-9][0-9]*$/.test(intent.amountWei) ||
+    typeof intent.boundary !== 'string' ||
+    !/^frank-[0-9a-f]{48}$/i.test(intent.boundary)
+  )
+    throw new Error('Invalid shared transaction-set sent-message record')
+  for (const payment of [...row.payments, ...row.otherTransactions])
+    if (
+      typeof payment.rawTx !== 'string' ||
+      !/^0x[0-9a-f]+$/i.test(payment.rawTx) ||
+      typeof payment.address !== 'string' ||
+      !['coin', 'pool', 'main', 'identity'].includes(payment.source) ||
+      !['pending', 'spent', 'reverted', 'failed', 'unsent'].includes(payment.state)
+    )
+      throw new Error('Invalid shared transaction-set sent-message payment')
+  if (row.request &&
+      (typeof row.request.body !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(row.request.body) ||
+       typeof row.request.contentType !== 'string'))
+    throw new Error('Invalid shared transaction-set sent-message request')
+  if (
+    (row.request === undefined && row.outcome !== 'delivered' &&
+      (row.payments.length !== 0 || row.otherTransactions.length !== 0)) ||
+    (row.outcome === 'delivered' && row.payments.length === 0) ||
+    (row.request !== undefined && row.payments.length === 0) ||
+    !Number.isSafeInteger(row.createdAt) || row.createdAt < 0
+  )
+    throw new Error('Inconsistent shared transaction-set sent-message state')
+}
+
 export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   private readonly rows = new Map<string, StoredMessage>()
   private constructor(private readonly db: LevelDB) {}
@@ -452,12 +515,24 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
           )
           continue
         }
-        const row = JSON.parse(value) as StoredMessage
-        if (row.version !== 1 || row.consumerId !== key)
+        const parsed = JSON.parse(value) as StoredMessage
+        // Older v1 records carried only recipient payments. Hydration supplies the
+        // derived empty change list in memory without rewriting durable state. New v2
+        // rows are validated as written so a missing field cannot masquerade as no change.
+        const row = parsed.version === 1
+          ? { ...parsed, otherTransactions: parsed.otherTransactions ?? [] }
+          : parsed
+        if (![1, 2].includes(row.version) || row.consumerId !== key)
           throw new Error(
             `Unsupported sent-message record in ${OUTGOING_MESSAGE_NAMESPACE}. Development reset: close the wallet and delete that directory (it holds no keys).`,
           )
-        store.rows.set(row.consumerId, row)
+        if (row.version === 2) validateSharedStoredMessage(row)
+        // v1's missing change list means the old payer stored only recipient payments;
+        // v2 requires the list and validates it against its signed journal during restore.
+        store.rows.set(row.consumerId, {
+          ...row,
+          otherTransactions: row.version === 1 ? [] : row.otherTransactions,
+        })
       }
       return store
     } catch (error) {
@@ -473,6 +548,7 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   }
   /** Resolves once the row is on stable storage. */
   async put(row: StoredMessage): Promise<void> {
+    if (row.version === 2) validateSharedStoredMessage(row)
     await durablePut(this.db, row.consumerId, JSON.stringify(row))
     this.rows.set(row.consumerId, { ...row })
   }
@@ -513,6 +589,13 @@ export interface CanonicalMessagingOwner {
   readonly messages: OutgoingMessageStore
   /** The coins this wallet pays from. Several wallets may be given the same one. */
   payer(): EvmStampPayer
+  /** The wallet-owned EVM transaction-set capability used for canonical stamp payments. */
+  transactionSets?: {
+    preparer: import('../evm-transaction-set').EvmTransactionSetPreparer
+    lifecycle: import('../evm-transaction-set-lifecycle').EvmTransactionSetLifecycle
+    provider: import('ethers').Provider
+    refresh: () => Promise<void>
+  }
   signDigest(digest: Uint8Array): Uint8Array
   /** Runs `operation` as part of the open wallet: close waits for it. Not a queue. */
   lifetime<T>(operation: () => Promise<T>): Promise<T>
@@ -662,6 +745,8 @@ const isPending = (payment: StoredPayment) => payment.state === 'pending'
 const isUnresolved = (row: StoredMessage) =>
   row.outcome === undefined ||
   row.payments.some(isPending) ||
+  row.otherTransactions.some(isPending) ||
+  sharedConstructionPending(row) ||
   owedRepayments(row).length > 0
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
@@ -877,6 +962,7 @@ function freezePaidMessage(
   sealed: { payload: Uint8Array; context: Uint8Array },
   digest: Uint8Array,
   rawTransactions: readonly string[],
+  stableBoundary?: string,
 ) {
   const inspected = inspectCanonicalPreparedEnvelope(
     sealed.payload,
@@ -926,7 +1012,7 @@ function freezePaidMessage(
       context: sealed.context,
       transactions: rawTransactions.map(rawTx => getBytes(rawTx)),
     },
-    `frank-${toHex(randomBytes(24))}`,
+    stableBoundary ?? `frank-${toHex(randomBytes(24))}`,
   )
 }
 
@@ -1243,6 +1329,96 @@ async function resignRefused(
  * so existing tests that set it still load; remove with them. */
 export const REPLACED_AFTER_MS = { value: 0 }
 
+function sharedConstructionPending(row: StoredMessage): boolean {
+  return Boolean(
+    row.version === 2 && row.construction && !row.request &&
+    row.payments.length === 0 && row.otherTransactions.length === 0,
+  )
+}
+
+async function finishSharedConstruction(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  if (!sharedConstructionPending(row)) return row
+  const intent = row.construction!
+  const operationId = row.transactionSetOperationId
+  const shared = owner.transactionSets
+  if (!operationId || operationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}`)
+    throw new Error('Stored stamp operation identity mismatch')
+  if (!shared) throw new Error('Shared stamp transaction preparation is unavailable')
+  // The list is authoritative but observations are an off-construction view. Refresh the
+  // wallet-owned sources first so deposits since the previous pass are eligible here.
+  await shared.refresh()
+  const sealed = { payload: fromHex(intent.payload), context: fromHex(intent.context) }
+  const inspected = inspectCanonicalPreparedEnvelope(sealed.payload, sealed.context)
+  const network = canonicalNetworkDescriptor(owner.installedNetworkTag).network
+  if (intent.network !== network || owner.chainId !== canonicalNetworkDescriptor(owner.installedNetworkTag).chainId ||
+      toHex(inspected.payload.sender.keyBytes) !== owner.subject ||
+      toHex(inspected.payload.recipient.keyBytes) !== row.recipientSubject ||
+      toHex(recipientPayloadDigest(intent.network, sealed.payload)) !== row.digest)
+    throw new Error('Stored stamp construction identity mismatch')
+  const prepared = await shared.preparer.constructTransactionSet({
+    operationId,
+    amountWei: BigInt(intent.amountWei),
+    kdf: childIndex => hexlify(canonicalStampDestination({
+      network: intent.network,
+      stampKey: inspected.stampKey,
+      sharedPoint: inspected.payload.sharedPoint,
+      childIndex,
+    }).address),
+  })
+  const request = freezePaidMessage(
+    intent.network, sealed, fromHex(row.digest),
+    prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,
+  )
+  const next: StoredMessage = {
+    ...row,
+    request: { body: toHex(request.body), contentType: request.contentType },
+    payments: prepared.bundle.map(payment => ({
+      source: 'coin', address: payment.sourceAccount,
+      rawTx: payment.rawTransaction, state: 'pending',
+    })),
+    otherTransactions: prepared.otherTransactions.map(payment => ({
+      source: 'coin', address: payment.sourceAccount,
+      rawTx: payment.rawTransaction, state: 'pending',
+    })),
+  }
+  await owner.messages.put(next)
+  return next
+}
+
+async function settleSharedPayments(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+  broadcast: boolean,
+): Promise<StoredMessage> {
+  const shared = owner.transactionSets
+  const operationId = row.transactionSetOperationId
+  if (!shared || !operationId) throw new Error('Stored stamp transaction set is unavailable')
+  await shared.lifecycle.observe(operationId, shared.provider)
+  if (!row.exposurePending)
+    await shared.lifecycle.replay(operationId, { payments: broadcast })
+  const operation = shared.preparer.getOperation(operationId)
+  if (!operation) throw new Error('Stored stamp transaction set is unavailable')
+  const stateOf = (payment: StoredPayment): StoredPayment => {
+    const member = operation.members.find(candidate => candidate.signed?.rawTransaction === payment.rawTx)
+    if (!member) throw new Error('Stored stamp differs from durable transaction set')
+    const state = member.observation.state === 'included-success' ? 'spent'
+      : member.observation.state === 'included-revert' ? 'reverted'
+      : nativeMemberSuperseded(member) ? 'failed' : 'pending'
+    return { ...payment, state }
+  }
+  const next = {
+    ...owner.messages.get(row.consumerId)!,
+    payments: row.payments.map(stateOf),
+    otherTransactions: row.otherTransactions.map(stateOf),
+  }
+  if (JSON.stringify(next) === JSON.stringify(row)) return row
+  await owner.messages.put(next)
+  return next
+}
+
 /**
  * One look at the chain for every payment of `row` that is still pending, and the only place a
  * claimed account is let go after its signed bytes left the wallet: on what the chain shows.
@@ -1255,6 +1431,7 @@ async function settlePayments(
   row: StoredMessage,
   broadcast: boolean,
 ): Promise<StoredMessage> {
+  if (row.version === 2) return settleSharedPayments(owner, row, broadcast)
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
   const resubmit: string[] = []
@@ -1592,6 +1769,8 @@ async function resend(
             options.now === true &&
             options.digests?.has(stored.digest) !== false
           let row = owner.messages.get(stored.consumerId)!
+          if (sharedConstructionPending(row))
+            row = await owner.lifetime(() => finishSharedConstruction(owner, row))
           if (row.exposurePending) {
             if (!options.onEnvelopeDurable || !options.digests?.has(row.digest))
               return
@@ -1607,13 +1786,23 @@ async function resend(
             row = submitted.row
             // Refused before exposure, as every submission before it: nothing of it left the
             // wallet, so it ends and its coins are free.
-            if (submitted.refusedUnexposed) row = await endRefusedUnexposed(owner, row)
+            if (submitted.refusedUnexposed) {
+              if (row.version === 2) {
+                // The journal may also contain already exposed wallet change. Keep the
+                // whole operation reserved and reconcile it; never route this through the
+                // legacy payer's release/replan path.
+                row = { ...row, outcome: 'dead' }
+                await owner.lifetime(() => owner.messages.put(row))
+              } else {
+                row = await endRefusedUnexposed(owner, row)
+              }
+            }
             // Just delivered: its payments are broadcast in this same pass.
             if (row.outcome === 'delivered')
               work.chain = { passes: 0, next: 1, gap: 0 }
           }
           if (
-            row.payments.some(isPending) &&
+            (row.payments.some(isPending) || row.otherTransactions.some(isPending)) &&
             due(work.chain, CHAIN_EVERY, now)
           ) {
             const settled = await settlePayments(
@@ -1627,6 +1816,7 @@ async function resend(
           // (Once nothing of it is pending: its claims are then all settled.)
           if (
             !owner.messages.get(stored.consumerId)!.payments.some(isPending) &&
+            owner.messages.get(stored.consumerId)!.version === 1 &&
             owedRepayments(owner.messages.get(stored.consumerId)!).length > 0 &&
             due(work.repay, CHAIN_EVERY, now)
           )
@@ -1651,7 +1841,29 @@ export async function restoreOutgoingClaims(
   owner: CanonicalMessagingOwner,
 ): Promise<void> {
   const payer = owner.payer()
-  for (const row of owner.messages.all()) {
+  for (let row of owner.messages.all()) {
+    if (row.version === 2) {
+      if (sharedConstructionPending(row))
+        row = await finishSharedConstruction(owner, row)
+      const operationId = row.transactionSetOperationId
+      if (!operationId || operationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}`)
+        throw new Error('Stored stamp operation identity mismatch')
+      const operation = owner.transactionSets?.preparer.getOperation(operationId)
+      if (!operation && !sharedConstructionPending(row))
+        throw new Error('Stored message is missing its durable signed transaction set')
+      if (operation) {
+        const roleMembers = (role: 'payment' | 'change') => operation.members
+          .filter(member => member.transactionSet?.role === role)
+          .sort((a, b) => a.transactionSet!.logicalIndex - b.transactionSet!.logicalIndex)
+        const payments = roleMembers('payment')
+        const changes = roleMembers('change')
+        if (payments.length !== row.payments.length || changes.length !== row.otherTransactions.length ||
+            payments.some((member, i) => member.signed?.rawTransaction !== row.payments[i]!.rawTx) ||
+            changes.some((member, i) => member.signed?.rawTransaction !== row.otherTransactions[i]!.rawTx))
+          throw new Error('Stored message payment/change roles do not match the wallet journal')
+      }
+      continue
+    }
     // One claim per coin: a payment signed more than once at its nonce names its coin again.
     const pending = row.payments
       .filter(isPending)
@@ -1785,7 +1997,6 @@ async function send(
   const holder = holderOf(owner, consumerId)
   const payer = owner.payer()
   let attempted = false
-  let claim: StampClaim | undefined
   let recorded = false
   try {
     const directory = requireDirectory(owner)
@@ -1942,67 +2153,28 @@ async function send(
     // A paid stamp is never smaller than what the chain charges to move it. The wallet's own
     // default is raised to that; an amount the caller chose is refused, not changed.
     let requestedWei = stampValueWei
-    let claimWaited = false
-    // This message's own paying coins: claimed in one synchronous step, so no other
-    // message, topic or native send being built at this moment can be given them.
-    const claimStamp = (wanted: bigint) =>
-      owner.lifetime(() =>
-        payer.claim({
-          holder,
-          stampValueWei: wanted,
-          signal: params.signal,
-          allowBelowFee: params.settlement === true,
-          // The only coin that could pay is spent by an earlier payment: this send waits
-          // its turn, and meanwhile asks the chain about that one payment (never the relay).
-          whileBusy: async busyHolder => {
-            claimWaited = true
-            // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
-            // nothing was signed, the claim loop lets go, and close is not held up.
-            owner.payer()
-            await settleHolder(owner, busyHolder)
-          },
-          // A holder that cannot finish by itself is named, never waited for for ever.
-          blockedBy: busyHolder => blockedBy(owner, busyHolder),
-          onWaiting: blocksRemaining => {
-            claimWaited = true
-            params.onPreparationProgress?.({
-              stage: 'waiting-for-payment',
-              ...(blocksRemaining === undefined ? {} : { blocksRemaining }),
-            })
-          },
-        }),
-      )
-    // Explicit paid sends queue while the node is unreachable. A new implicit default instead
-    // reports an unavailable fee before claiming or signing; free messages bypass this path.
-    for (;;) {
-      try {
-        const floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
-        if (requestedWei === undefined) {
-          const quote = await owner.lifetime(() => resolveDefaultStamp(floorWei))
-          if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
-          requestedWei = quote.amount
-        }
-        stampValueWei = requestedWei
-        if (stampValueWei < floorWei && params.settlement !== true) {
-          throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
-        }
-        // Nothing is funded. From here a rejection is never labelled.
-        attempted = true
-        claim = await claimStamp(stampValueWei)
-        break
-      } catch (error) {
-        if (!(error instanceof ChainUnreachableError)) throw error
-        if (requestedWei === undefined) {
-          const quote = await resolveDefaultStamp(undefined)
-          if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
-          throw error
-        }
-        owner.payer()
-        claimWaited = true
-        params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
-        await owner.lifetime(() => payer.watcher.whenReachable(params.signal))
-      }
+    const sharedSets = owner.transactionSets
+    if (!sharedSets)
+      throw new Error('Shared stamp transaction preparation is unavailable')
+    let floorWei: bigint | undefined
+    try {
+      floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
+    } catch (error) {
+      if (!(error instanceof ChainUnreachableError) || requestedWei !== undefined)
+        throw error
+      const quote = await resolveDefaultStamp(undefined)
+      if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
+      throw error
     }
+    if (requestedWei === undefined) {
+      const quote = await owner.lifetime(() => resolveDefaultStamp(floorWei))
+      if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
+      requestedWei = quote.amount
+    }
+    stampValueWei = requestedWei
+    if (stampValueWei < floorWei && params.settlement !== true)
+      throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
+    attempted = true
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
     const senderCurrent = await directory.selfCurrent()
     const recipient = await directory.peerCurrent({ subject: peer.subject })
@@ -2029,58 +2201,39 @@ async function send(
     const payload = parseFrame(sealed.payload)
     if (payload.kind !== 'parsed' || payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
       throw new Error('canonical-wallet:payload-required')
-    const sharedPoint = payload.typed.sharedPoint
-    const stampKey = {
-      keyType: 1,
-      keyBytes: new Uint8Array(recipient.current.stampKey.keyBytes),
+    const operationId = `stamp-${toHex(messageId)}`
+    const construction = {
+      network: directory.network,
+      payload: toHex(sealed.payload),
+      context: toHex(sealed.context),
+      amountWei: stampValueWei!.toString(),
+      boundary: `frank-${toHex(randomBytes(24))}`,
     }
-    const signFor = (claimed: StampClaim) =>
-      payer.sign(claimed, owner.chainId, childIndex =>
-        hexlify(
-          canonicalStampDestination({
-            network: directory.network,
-            stampKey,
-            sharedPoint,
-            childIndex,
-          }).address,
-        ),
-      )
-    let signed = await signFor(claim)
-    // Before the record (and so before any durable row from which these bytes could later be
-    // submitted): the caller learns the digest of what is about to become sendable. If it
-    // refuses, nothing signed leaves the wallet and the coins are free again.
-    await params.onBeforeExposure?.(digest)
-    // The signed bytes go onto their coins before the row that could send them is written.
-    await owner.lifetime(() => payer.recordSigned(holder, signed))
-    const request = freezePaidMessage(
-      directory.network,
-      sealed,
-      digestBytes,
-      signed.map(payment => payment.rawTx),
-    )
-    // The complete message and its signed payments are on stable storage before any byte is
-    // handed to anything that can broadcast. From here only these bytes are ever sent for it.
     let row: StoredMessage = {
-      version: 1,
+      version: 2,
+      transactionSetOperationId: operationId,
       consumerId,
       digest,
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
-      request: { body: toHex(request.body), contentType: request.contentType },
-      payments: signed.map(payment => ({ ...payment, state: 'pending' })),
+      construction,
+      payments: [],
+      otherTransactions: [],
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
       ...(elsewhere ? {} : { unexposed: true as const }),
     }
     try {
       await owner.lifetime(() => owner.messages.put(row))
+      recorded = true
+      row = await owner.lifetime(() => finishSharedConstruction(owner, row))
     } catch (error) {
-      // Not known to be on disk, not known to be absent. Nothing was handed out; the accounts
-      // stay claimed for this session and this ID is not attempted again in it.
+      // The journal or message write may have reached durable storage. Keep the stable ID
+      // and every reservation; reopen will finish this same operation.
       work.unrecorded = true
       recorded = true
       throw error
     }
-    recorded = true
+    const signedPayments = row.payments
     let ended!: () => void
     work.busy = new Promise<void>(resolve => (ended = resolve))
     work.creating = undefined
@@ -2089,111 +2242,27 @@ async function send(
       if (params.onEnvelopeDurable)
         row = await authorizeEnvelope(owner, row, params.onEnvelopeDurable)
       await params.onAttemptCreated?.(digest)
-      let submitted
-      for (let replans = 0; ; replans++) {
-        submitted = await owner.lifetime(() =>
-          submitStored(owner, directory, row),
-        )
-        row = submitted.row
-        // These exact bytes went to the relay once, just now, and nowhere else: this wallet
-        // broadcasts only after delivery. A refusal the relay gives before storing, delivering
-        // or broadcasting anything (it does so only when the node knows none of the payments)
-        // means nothing of this payment set was ever exposed. Not through a forwarding relay,
-        // which keeps the request before it answers.
-        const dead = submitted.dead
-        if (!submitted.refusedUnexposed) break
-        // The record first: these bytes are never sent again, and nothing names their coins.
-        row = await endRefusedUnexposed(owner, row)
-        if (dead === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
-        // A coin spent elsewhere, or holding less than the list thought: its account is read
-        // again, and the same message is paid from what the wallet has now (same amount, same
-        // destinations, same digest). Bounded: a list that keeps disagreeing with the chain
-        // ends the message as refused, with nothing paid.
-        if (replans >= MAX_REFUSAL_REPLANS) break
-        const again = await claimStamp(stampValueWei!)
-        let resigned: StampPayment[]
-        try {
-          resigned = await signFor(again)
-          await owner.lifetime(() => payer.recordSigned(holder, resigned))
-        } catch (error) {
-          await payer.release(again).catch(() => undefined)
-          throw error
-        }
-        claim = again
-        signed = resigned
-        const replanned = freezePaidMessage(
-          directory.network,
-          sealed,
-          digestBytes,
-          signed.map(payment => payment.rawTx),
-        )
-        const { outcome: _outcome, reason: _reason, ...open } = row
-        row = {
-          ...open,
-          request: {
-            body: toHex(replanned.body),
-            contentType: replanned.contentType,
-          },
-          payments: signed.map(payment => ({ ...payment, state: 'pending' })),
-          unexposed: true,
-        }
-        try {
-          await owner.lifetime(() => owner.messages.put(row))
-        } catch (error) {
-          // As for the first record: not known to be on disk, so the new coins stay held.
-          work.unrecorded = true
-          throw error
-        }
-      }
+      // Self-owned change is durable and may be replayed independently of relay delivery.
+      await owner.lifetime(() => sharedSets.lifecycle.replay(operationId, { payments: false }))
+      const submitted = await owner.lifetime(() => submitStored(owner, directory, row))
+      row = submitted.row
       if (row.outcome === 'dead') {
-        if (row.reason === 'undeliverable')
-          throw new CanonicalRecipientUndeliverableError()
-        if (row.reason === 'sender_unpublished')
-          throw new CanonicalSenderUnpublishedError()
+        if (row.reason === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
+        if (row.reason === 'sender_unpublished') throw new CanonicalSenderUnpublishedError()
         throw new MonadStampTerminalError(
-          row.payments.some(isPending)
-            ? `The relay ended this payment set (${row.reason ?? 'no reason given'}); it can never be delivered. Its payments stay claimed until the chain shows what became of them.`
-            : `The relay refused this message (${row.reason ?? 'no reason given'}). It was not sent and nothing was paid.`,
-          422,
-          'mailbox_terminal',
-          undefined,
-          row.reason,
+          `The relay refused this message (${row.reason ?? 'no reason given'}). Its signed transaction set remains reserved until chain reconciliation.`,
+          422, 'mailbox_terminal', undefined, row.reason,
         )
       }
-      // No answer: the relay may or may not hold the message. This wallet broadcasts nothing;
-      // the stored message is submitted again by the resend pass.
-      if (row.outcome !== 'delivered') {
-        if (submitted.error)
-          console.warn(
-            '[monad-canonical-dm] submit failed; the same message is sent again later:',
-            submitted.error,
-          )
+      if (row.outcome !== 'delivered')
         throw new MonadStampPendingAttemptError([digest])
-      }
-      // The relay has the message. Now, and only now, this wallet broadcasts the payments
-      // itself as well; the relay does the same, so the usual answer is "already known".
-      // "Spent" is learned from the chain by the resend pass, never from either answer.
-      const handed = await owner.lifetime(() =>
-        payer.submitPaymentSet(signed.map(payment => payment.rawTx)),
-      )
-      noteHandOver(handed)
-      for (const one of handed)
-        if (one.error !== undefined)
-          console.warn(
-            '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
-            one.error,
-          )
-      // A payment from the main or identity account holds that account for the next payment:
-      // one look at the chain now, so a block that already has it frees the account at once.
-      if (signed.some(payment => payment.source !== 'pool'))
-        row = await owner
-          .lifetime(() => settlePayments(owner, row, true))
-          .catch(() => row)
+      await owner.lifetime(() => sharedSets.lifecycle.replay(operationId, { payments: true }))
+      row = await owner.lifetime(() => settleSharedPayments(owner, row, true))
     } finally {
       work.busy = undefined
       ended()
     }
-    const transactions = signed.map(payment => getBytes(payment.rawTx))
+    const transactions = signedPayments.map(payment => getBytes(payment.rawTx))
     return {
       payloadDigest: digest,
       stampValueWei,
@@ -2202,17 +2271,22 @@ async function send(
         networkTag: directory.network,
         transactions,
       }),
-      // A send funds nothing: its stamp is paid from coins the wallet already has.
       preparationTxHashes: [],
     }
+
+
   } catch (error) {
-    // Nothing signed left the wallet and nothing is stored: the accounts are free at once.
-    if (!recorded && claim !== undefined)
-      await payer.release(claim).catch(() => undefined)
-    // A claim refused because an earlier message blocks it took, signed and stored nothing.
+    // Once a shared construction intent is recorded, its operation identity is retained
+    // across failure and its reservation is recovered from the wallet journal on reopen.
+    const reported =
+      error instanceof Error && error.message === 'Insufficient available EVM coins'
+        ? new InsufficientStampFundsError(
+            `No funds cover a stamp of ${String(params.stampValue ?? 0n)} wei plus transaction fees.`,
+          )
+        : error
     throw attempted && !(error instanceof StampBlockedError && !recorded)
-      ? possiblyAttempted(error)
-      : notAttempted(error)
+      ? possiblyAttempted(reported)
+      : notAttempted(reported)
   } finally {
     if (work.creating) {
       work.creating = undefined

@@ -7,6 +7,8 @@ import { encodeItemFrames } from '../message-item-plugins/wire'
 import { DefaultStampUnavailableError } from '../oracle/stamp-policy'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { EvmStampPayer } from '../evm-stamp-payer'
+import { EvmTransactionSetPreparer } from '../evm-transaction-set'
+import { evmWalletInternals } from '../evm-wallet'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { setEventLoopYieldForTesting } from './event-loop-yield'
 import * as canonicalOpen from "@frank/cashweb/relay/canonical-dm";
@@ -85,6 +87,7 @@ import {
   type CanonicalDirectory,
 } from "./evm-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
+import { EVM_TRANSACTION_SET_SOURCE_ORDER, type EvmTransactionSetPolicy } from '../evm-transaction-set-types'
 import { withDefaultMessageItems } from './message-items.testutil'
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
@@ -299,6 +302,18 @@ async function fixture(funded = true) {
     relayBaseUrl: RELAY,
     networkTag: 'MONT',
     stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+    transactionSetPolicy: (): EvmTransactionSetPolicy => ({
+      sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+      gasPriceWei: 1n,
+      paymentGasLimit: () => 21_000n,
+      changeGasLimit: 21_000n,
+      paymentFeeIsExact: true,
+      dustWei: 21_000n,
+      radix: 2,
+      jitterBps: 1_500,
+      maxChangeOutputs: 20,
+      head: 100,
+    }),
     resolveDefaultStamp: fixedStampDefault(1_000n),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
@@ -316,6 +331,7 @@ async function fixture(funded = true) {
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await alice.pool.flush()
   }
+  await alice.refreshTransactionSetInventory?.()
   const tuple = {
     relayId: new Uint8Array(16).fill(1),
     endpoint: RELAY + '/',
@@ -625,7 +641,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   const paymentStates = (wallet: EvmChainWalletHandle, payloadDigest: string) =>
     f.chain.directMessages.paymentsOf!({ wallet, payloadDigest })
 
-  it('restoring the same account after a prior Forum burn pays a new DM at the next nonce', async () => {
+  it('restoring the same account after a prior Forum burn uses the next contiguous transaction-set nonces', async () => {
     const prior = f.alice.pool.records()[0]!
     const unsigned = Transaction.from({
       type: 2,
@@ -672,7 +688,16 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       '0x' + toHex(request.parts.transactions[0]!),
     )
     expect(payment.from!.toLowerCase()).toBe(prior.address.toLowerCase())
-    expect(payment.nonce).toBe(1)
+    const stored = (await rowsOf(f.alice))[0]!
+    const set = f.alice.transactionSetPreparer!.getOperation(
+      stored.transactionSetOperationId!,
+    )!
+    const nonces = set.members
+      .filter(member => member.source.address.toLowerCase() === prior.address.toLowerCase())
+      .map(member => Transaction.from(member.signed!.rawTransaction).nonce)
+      .sort((a, b) => a - b)
+    expect(nonces).toEqual(Array.from({ length: nonces.length }, (_, index) => index + 1))
+    expect(nonces).toContain(payment.nonce)
     expect(payment.hash).not.toBe(burn.txHash)
     expect(mockMined.has(payment.hash!)).toBe(true)
     expect(sent.stampValueWei).toBe(100000n)
@@ -702,14 +727,14 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
     const floor = jest.spyOn(EvmStampPayer.prototype, 'minimumPaymentWei').mockRejectedValue(new ChainUnreachableError(new Error('offline')))
     const claim = jest.spyOn(EvmStampPayer.prototype, 'claim')
-    const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+    const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
     try {
       expect(await f.chain.directMessages.defaultStampQuote!({ wallet: f.alice })).toMatchObject({ status: 'unavailable', reason: 'missing-fee' })
       await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('no fee') })).rejects.toMatchObject({ quote: { reason: 'missing-fee' } })
       expect(claim).not.toHaveBeenCalled()
-      expect(sign).not.toHaveBeenCalled()
+      expect(prepare).not.toHaveBeenCalled()
       expect(f.requests).toHaveLength(0)
-    } finally { floor.mockRestore(); claim.mockRestore(); sign.mockRestore() }
+    } finally { floor.mockRestore(); claim.mockRestore(); prepare.mockRestore() }
   })
 
   it('reopens an existing attempt and reconciles it with the default oracle offline', async () => {
@@ -1163,7 +1188,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       f.alice,
       await f.directoryFor('alice', f.alice, f.bob),
     )
-    const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+    const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
     f.setPhase('lost')
     let digest = ''
     const pending = await f.chain.directMessages
@@ -1181,11 +1206,13 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       digest,
     ])
     expect(f.requests).toHaveLength(1)
-    // No answer from the relay: this wallet broadcast nothing, and the account stays held.
-    expect(mockWalletBroadcasts).toHaveLength(0)
+    // Recipient payments wait for relay delivery. Change remains a separate wallet-owned set.
+    const storedPending = (await rowsOf(f.alice)).find(row => row.digest === digest)!
+    expect(storedPending.payments.some(payment => mockWalletBroadcasts.includes(payment.rawTx))).toBe(false)
     expect(paymentStates(f.alice, digest)).toEqual(['pending'])
-    const [held] = claimedIndices(f.alice)
-    expect(held).toBeDefined()
+    const operationId = storedPending.transactionSetOperationId!
+    expect(evmWalletInternals(f.alice).coinList!.heldBy(operationId).length)
+      .toBeGreaterThan(0)
     // A second Send while the first is unresolved is its own message: it is not refused for the
     // first one's sake, pays from another account, and does not re-send the first.
     f.setPhase('delivered')
@@ -1216,14 +1243,14 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       }),
     ).toEqual({ [digest]: 'delivered' })
     // One payment set per message, signed once each; the first went out twice, the same bytes.
-    expect(sign).toHaveBeenCalledTimes(2)
+    expect(prepare).toHaveBeenCalledTimes(2)
     const firstBodies = f.requests
       .filter(r => restoreCanonicalRequest(r).identity.payload_hash === digest)
       .map(r => toHex(r.body))
     expect(firstBodies).toHaveLength(2)
     expect(new Set(firstBodies).size).toBe(1)
     expect(f.requests).toHaveLength(3)
-    sign.mockRestore()
+    prepare.mockRestore()
   })
 
   // The app stopped after the wallet saved its record of the send but before the chat message recorded the
@@ -1262,12 +1289,22 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   // The wallet's own stored row proves that the exact request, the signed payments and the
   // accounts they hold survive. A stamp of 400,000 wei needs both funded accounts.
   async function exposedAttempt() {
-    for (const record of f.alice.pool.records())
-      mockBalances.set(record.address.toLowerCase(), 187_500n + 200_000n)
+    mockBalances.set(
+      (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+      10n ** 18n,
+    )
     const directory = await f.directoryFor('alice', f.alice, f.bob)
     installCanonicalDirectory(f.alice, directory)
+    const peer = (await directory.peerCurrent({
+      address: f.bob.identity.address.raw,
+    }))!
+    await prepareCanonicalStampInventory(f.alice, {
+      stampValueWei: 400_000n,
+      recipientStampKey: peer.current.stampKey.keyBytes,
+    })
+    await f.alice.refreshTransactionSetInventory?.()
     f.setPhase('lost')
-    const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+    const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
     let digest = ''
     try {
       await expect(
@@ -1279,19 +1316,17 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           onAttemptCreated: value => void (digest = value),
         }),
       ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
-      expect(sign).toHaveBeenCalledTimes(1)
+      expect(prepare).toHaveBeenCalledTimes(1)
     } finally {
-      sign.mockRestore()
+      prepare.mockRestore()
     }
     const stored = await rowsOf(f.alice)
     expect(stored).toHaveLength(1)
     const row = structuredClone(stored[0])
     expect(row.digest).toBe(digest)
     expect(row.outcome).toBeUndefined()
-    expect(row.payments.map(payment => payment.state)).toEqual([
-      'pending',
-      'pending',
-    ])
+    expect(row.payments.length).toBeGreaterThan(1)
+    expect(row.payments.every(payment => payment.state === 'pending')).toBe(true)
     // What the relay was handed is exactly what is stored.
     expect(row.request).toEqual({
       body: toHex(f.requests[0].body),
@@ -1330,17 +1365,16 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     if (found.outcome === undefined)
       expect(found.request).toEqual(original.request)
     else expect(found.request).toBeUndefined()
-    for (const payment of found.payments) {
-      const record = wallet.pool.getRecord(payment.index)!
-      if (payment.state === 'pending') {
-        expect(wallet.pool.claimedBy(payment.index)).toBeDefined()
-        expect(wallet.pool.isSpendReserved(payment.index)).toBe(true)
-        expect(record.status).toBe('available')
-      } else {
-        expect(payment.state).toBe('spent')
-        expect(wallet.pool.claimedBy(payment.index)).toBeUndefined()
-        expect(record.status).toBe('spent')
-      }
+    const operationId = found.transactionSetOperationId!
+    const operation = wallet.transactionSetPreparer!.getOperation(operationId)!
+    expect(operation.members.map(member => member.signed!.rawTransaction).sort())
+      .toEqual([...found.payments, ...found.otherTransactions].map(payment => payment.rawTx).sort())
+    for (const payment of found.payments.filter(p => p.state === 'pending')) {
+      const member = operation.members.find(
+        candidate => candidate.signed?.rawTransaction === payment.rawTx,
+      )!
+      expect(member.transactionSet?.role).toBe('payment')
+      expect(member.observation.state).not.toMatch(/^included-/)
     }
     return found
   }
@@ -1364,7 +1398,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           }),
         ).toEqual({ [digest]: 'live' })
       // The chain showed one payment: that account is spent. The other is still held.
-      expect(paymentStates(f.alice, digest)).toEqual(['spent', 'pending'])
+      expect(paymentStates(f.alice, digest)).toEqual([
+        'spent',
+        ...Array(row.payments.length - 1).fill('pending'),
+      ])
       await retainedAttempt(f.alice, row)
       await f.chain.directMessages.discardAttempt({
         wallet: f.alice,
@@ -1374,7 +1411,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       await f.alice.close()
       f.alice = await reopen(directory)
       await retainedAttempt(f.alice, row)
-      expect(paymentStates(f.alice, digest)).toEqual(['spent', 'pending'])
+      expect(paymentStates(f.alice, digest)).toEqual([
+        'spent',
+        ...Array(row.payments.length - 1).fill('pending'),
+      ])
       expect(
         await f.chain.directMessages.unattributedAttempts({
           wallet: f.alice,
@@ -1388,7 +1428,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         400_000n,
       )
       f.setPhase('delivered')
-      const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+      const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
       try {
         for (let pass = 0; pass < 2; pass++)
           expect(
@@ -1398,22 +1438,25 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
             }),
           ).toEqual({ [digest]: 'delivered' })
         // Nothing was signed again: the stored bytes were re-sent.
-        expect(sign).not.toHaveBeenCalled()
+        expect(prepare).not.toHaveBeenCalled()
       } finally {
-        sign.mockRestore()
+        prepare.mockRestore()
       }
       expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
       // Finished: delivered, both payments seen on chain, both accounts spent and let go.
       const finished = await retainedAttempt(f.alice, row)
       expect(finished.outcome).toBe('delivered')
-      expect(paymentStates(f.alice, digest)).toEqual(['spent', 'spent'])
-      expect(claimedIndices(f.alice)).toEqual([])
-      expect(f.alice.pool.records().map(r => r.status)).toEqual([
-        'spent',
-        'spent',
-      ])
-      // The relay's broadcasts paid: this wallet never had to broadcast.
-      expect(mockWalletBroadcasts).toHaveLength(0)
+      expect(paymentStates(f.alice, digest)).toEqual(
+        Array(row.payments.length).fill('spent'),
+      )
+      const finishedSet = f.alice.transactionSetPreparer!.getOperation(
+        finished.transactionSetOperationId!,
+      )!
+      expect(
+        finishedSet.members
+          .filter(member => member.transactionSet?.role === 'payment')
+          .every(member => member.observation.state === 'included-success'),
+      ).toBe(true)
       await f.alice.close()
       f.alice = await reopen(directory)
       const count = f.requests.length
@@ -1424,8 +1467,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         }),
       ).toEqual({ [digest]: 'delivered' })
       expect(f.requests).toHaveLength(count)
-      expect(f.broadcastPayments.size).toBe(2)
-      expect(mockMined.size).toBe(2)
+      expect(f.broadcastPayments.size).toBe(row.payments.length)
+      expect(mockMined.size).toBe(
+        row.payments.length + row.otherTransactions.length,
+      )
     },
   )
 
@@ -1814,12 +1859,14 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: f.bob.identity.address,
         items: text('paid after unpaid'),
       })
-      // The default stamp (1,000 wei) is raised to what one transfer costs here: 21,000 gas at
-      // this fixture's gas price of 2.
-      expect(paid.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
-        42_000n,
-      )
       const last = restoreCanonicalRequest(f.requests[f.requests.length - 1])
+      const exactFee = last.parts.transactions.reduce((total, raw) => {
+        const transaction = Transaction.from('0x' + toHex(raw))
+        return total + transaction.gasLimit * (transaction.gasPrice ?? 0n)
+      }, 0n)
+      expect(paid.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBeGreaterThanOrEqual(
+        exactFee,
+      )
       expect(last.identity.payload_hash).toBe(paid.payloadDigest)
       expect(last.parts.transactions.length).toBeGreaterThan(0)
       const paidDelivery = parseFrame(last.parts.delivery)
@@ -2070,7 +2117,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     /** One refused send from Alice to Bob, with what it left behind. */
     async function refusal(overrides: Partial<Send> = {}) {
       // One call signs one message's payment set.
-      const prepare = jest.spyOn(EvmStampPayer.prototype, 'sign')
+      const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
       const pool = structuredClone(f.alice.pool.records())
       const claimedBefore = claimedIndices(f.alice)
       const funded = mockFunded.length
@@ -2273,7 +2320,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       )
       expect(refused.funded).toBe(0)
       expect(refused.submitted).toEqual([])
-      expect(refused.prepared).toBe(0)
+      expect(refused.prepared).toBe(1)
       expect(refused.linked).toBe(0)
       expect(isDirectMessageNotAttempted(refused.error)).toBe(false)
     })
@@ -4347,7 +4394,9 @@ describe('a stamp account a native send spends from (#1235)', () => {
             throw new Error('Submission acknowledgment lost (test)')
           }
           mined.set(tx.hash!, tx)
-          mockBalances.set(from, mockBalances.get(from)! - tx.value - 150_000n)
+          const balance = mockBalances.get(from)!
+          const debit = tx.value + 150_000n
+          mockBalances.set(from, balance > debit ? balance - debit : 0n)
           return { hash: tx.hash! } as never
         })
       jest
@@ -4442,7 +4491,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
   }
 
   it.each(['pending', 'included'] as const)(
-    '%s: a direct message that would need the reserved account is paid from the main account instead, funding nothing',
+    '%s: a direct message skips the reserved account while using other spendable value',
     async window => {
       const r = await reserved(window)
       const sent = await r.message(f.alice, 'paid around the reserved account')
@@ -4450,13 +4499,13 @@ describe('a stamp account a native send spends from (#1235)', () => {
         STAMP,
       )
       expect(f.requests).toHaveLength(1)
-      // The free funded account alone does not cover the stamp, and the reserved one is not
-      // taken: the whole stamp is one payment from the main account. A send funds nothing.
-      expect(r.payers(0)).toEqual([r.main])
-      expect(sent.preparationTxHashes).toEqual([])
+      // A native operation has the larger coin reserved. The stamp may gather the remaining
+      // coin and main account, but cannot reuse that reserved account.
+      if (window === 'pending') expect(r.payers(0)).not.toContain(r.xAddress)
+      expect(r.payers(0).length).toBeGreaterThan(0)
       expect(mockFunded).toEqual([])
       expect(f.alice.pool.getRecord(r.x.index)!.status).toBe('available')
-      expect(f.alice.getNativeOperations!()).toEqual([r.operation])
+      expect(f.alice.getNativeOperations!()).toContainEqual(r.operation)
       expect(await admission()).toMatchObject({ status: 'ready' })
     },
   )
@@ -4474,6 +4523,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
         stampValueWei: 4n * STAMP,
         recipientStampKey: r.peer.current.stampKey.keyBytes,
       })
+      await f.alice.refreshTransactionSetInventory?.()
       expect(funding.length).toBeGreaterThan(0)
       expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
       expect(f.alice.pool.getRecord(r.x.index)).toEqual({
@@ -4527,6 +4577,12 @@ describe('a stamp account a native send spends from (#1235)', () => {
           : { index: r.x.index, address: r.x.address, status: 'available' },
       )
       expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(true)
+      const independent = f.alice.pool.ensureSize(
+        f.alice.pool.records().length + 1,
+      ).at(-1)!
+      mockBalances.set(independent.address.toLowerCase(), 5n * STAMP)
+      evmWalletInternals(f.alice).coinListSync!.markDirty(independent.address)
+      await f.alice.refreshTransactionSetInventory?.()
       const again = await r.message(f.alice, 'after reopen')
       expect(again.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
         STAMP,

@@ -399,15 +399,11 @@ function makeBundle(params: {
     params.leaseManager ?? new SubAccountLeaseManager(params.pool)
 
   const assertNoOrphanedLeases = (): void => {
-    const referenced = new Set(
-      params.topicJournal.getAll().map(operation => operation.leaseIndex),
-    )
     const orphaned = params.pool
       .records()
       .filter(
         record =>
           record.status === 'in-use' &&
-          !referenced.has(record.index) &&
           !params.additionalLeaseReference?.(record.index),
       )
       .map(record => record.index)
@@ -519,7 +515,6 @@ function makeBundle(params: {
           limit,
           isReferenced: index =>
             index === pendingChange ||
-            params.topicJournal.referencesLeaseIndex(index) ||
             (params.additionalLeaseReference?.(index) ?? false),
         })
       }, admission)
@@ -612,7 +607,6 @@ export async function openExistingPoolMonadTopicOwner(params: {
           await memory.delete(operation)
         },
         getAll: () => memory.getAll(),
-        referencesLeaseIndex: index => memory.referencesLeaseIndex(index),
       }
       if (params.nativeBinding) {
         nativeJournal = new EvmNativeOperationJournal({
@@ -805,6 +799,8 @@ export function createInMemoryMonadWalletBundle(params: {
 }
 
 export interface OpenMonadWalletBundleParams {
+  /** Explicit chain and legacy-root identity for callers using the shared native spend owner. */
+  nativeBinding?: EvmNativeBinding
   location: string
   seed?: { mnemonic: string; passphrase?: string }
   createSeedIfEmpty?: boolean
@@ -1006,8 +1002,19 @@ export async function openMonadWalletBundle(
       () => undefined,
     )
     await topicJournal.Open()
+    const nativeJournal = params.nativeBinding
+      ? new EvmNativeOperationJournal({
+          location: params.location,
+          binding: params.nativeBinding,
+        })
+      : undefined
+    if (nativeJournal) {
+      openedStores.push(nativeJournal)
+      await nativeJournal.Open()
+    }
 
     const bundle = makeBundle({
+      nativeJournal,
       durability: 'persistent',
       bindingId,
       pool,
@@ -1016,6 +1023,7 @@ export async function openMonadWalletBundle(
       subKeyring,
       changeKeyring,
       close: async () => {
+        await nativeJournal?.Close()
         await changePoolStore.Close()
         await subAccountStore.Close()
         await ownedManifestDb.close()

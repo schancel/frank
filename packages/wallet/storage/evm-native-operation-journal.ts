@@ -50,6 +50,18 @@ export function nativeMemberSuperseded(member: {
   )
 }
 
+/** A canonical account observation must confirm consumption before its residual can be applied. */
+function terminalInventoryEvidence(member: EvmNativeMember): boolean {
+  return (
+    member.signed !== null &&
+    member.account !== null &&
+    member.account.nonce > Transaction.from(member.unsignedTransaction).nonce &&
+    (member.observation.state === 'included-success' ||
+      member.observation.state === 'included-revert' ||
+      nativeMemberSuperseded(member))
+  )
+}
+
 export type EvmNativeObservation =
   | { state: 'unknown' | 'missing' | 'pending' }
   | {
@@ -72,8 +84,31 @@ export interface EvmNativeInclusionContradiction {
  * transfer out of it. `contract`: one call with calldata from the main account, which holds the
  * tokens the call moves; the call may carry no value (an approval, or a swap that pays a token).
  */
-export type EvmNativeOperationKind = 'native' | 'legacy' | 'contract'
+export type EvmNativeOperationKind =
+  | 'native'
+  | 'legacy'
+  | 'contract'
+  | 'transaction-set'
+export interface EvmTransactionSetMember {
+  /** Durable checkpoint of terminal inventory application, independent of payment success. */
+  inventoryApplied?: true
+  role: 'payment' | 'change'
+  logicalIndex: number
+  changeIndex?: number
+  balanceBeforeWei: string
+  balanceAfterWei: string
+  predecessorWaitBlocks?: number
+  remainderSpendableFromBlock?: number
+  refundPending?: boolean
+}
+function transactionSetIntent(
+  meta: EvmTransactionSetMember,
+): Omit<EvmTransactionSetMember, 'inventoryApplied'> {
+  const { inventoryApplied: _checkpoint, ...intent } = meta
+  return intent
+}
 export interface EvmNativeMemberPlan {
+  transactionSet?: EvmTransactionSetMember
   source: EvmNativeSource
   unsignedTransaction: string
   dependencies: number[]
@@ -223,8 +258,9 @@ function checked<T>(validation: EvmNativeValidation, validate: () => T): T {
       error instanceof EvmNativeJournalError &&
       error.code === 'invalid' &&
       !error.validation
-    )
+    ) {
       throw new EvmNativeJournalError(error.code, validation)
+    }
     throw error
   }
 }
@@ -367,11 +403,20 @@ function unsigned(value: unknown, binding: EvmNativeBinding): Transaction {
   nativeMaximumFee(tx)
   return tx
 }
+/** Development candidate baseline: inventoryApplied is budgeted before signed bytes can
+ * escape. Earlier, unlanded transaction-set candidates reserved a smaller envelope and fail
+ * capacity validation clearly. There is no migration or automatic reset. Preserve the old
+ * candidate and its signed evidence to reconcile authorized operations before an explicitly
+ * scoped development reset; never delete funded wallets, keys, or unrelated stores. Existing
+ * native/legacy/contract journal envelopes are unchanged. */
 function reservation(row: EvmNativeOperation): number {
   const max = clone(row)
   max.cancelled = false
   max.members = max.members.map(member => ({
     ...member,
+    ...(member.transactionSet
+      ? { transactionSet: { ...member.transactionSet, inventoryApplied: true } }
+      : {}),
     signed: {
       rawTransaction:
         '0x' + 'ff'.repeat((member.unsignedTransaction.length - 2) / 2 + 128),
@@ -429,9 +474,14 @@ function validateRow(
   if (
     hasPreparationId &&
     (typeof row.preparationId !== 'string' ||
-      !/^stealth-payment:[a-zA-Z0-9_-]{1,128}$/.test(row.preparationId) ||
+      !(
+        row.kind === 'transaction-set'
+          ? /^evm-transaction-set:[a-zA-Z0-9_-]{1,128}$/
+          : /^stealth-payment:[a-zA-Z0-9_-]{1,128}$/
+      ).test(row.preparationId) ||
       !(
         row.kind === 'native' ||
+        row.kind === 'transaction-set' ||
         (row.kind === 'contract' && row.submissionPolicy === 'explicit')
       ))
   )
@@ -450,10 +500,20 @@ function validateRow(
     fail()
   if (JSON.stringify(validateBinding(row.binding)) !== JSON.stringify(binding))
     fail('binding')
-  if (row.kind !== 'native' && row.kind !== 'legacy' && row.kind !== 'contract')
+  if (
+    row.kind !== 'native' &&
+    row.kind !== 'legacy' &&
+    row.kind !== 'contract' &&
+    row.kind !== 'transaction-set'
+  )
     fail()
   address(row.recipient)
-  if (uint(row.intendedValueWei) === 0n && row.kind !== 'contract') fail()
+  if (
+    uint(row.intendedValueWei) === 0n &&
+    row.kind !== 'contract' &&
+    row.kind !== 'transaction-set'
+  )
+    fail()
   uint(row.maximumFeeWei)
   integer(row.reservedBytes)
   if (
@@ -476,9 +536,11 @@ function validateRow(
       'observation',
       'account',
       'syncApplied',
+      ...(row.kind === 'transaction-set' ? ['transactionSet'] : []),
     ])
     const source = checked('source', () => validateSource(member.source))
-    if (sourceAddresses.has(source.address)) fail()
+    if (sourceAddresses.has(source.address) && row.kind !== 'transaction-set')
+      fail()
     sourceAddresses.add(source.address)
     const tx = checked('unsigned', () =>
       unsigned(member.unsignedTransaction, binding),
@@ -537,7 +599,16 @@ function validateRow(
     checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
   }
-  if (row.members.length > 1 && row.kind !== 'legacy') {
+  if (row.kind === 'transaction-set')
+    validateTransactionSet(
+      row.members as EvmNativeMember[],
+      uint(row.intendedValueWei),
+    )
+  if (
+    row.members.length > 1 &&
+    row.kind !== 'legacy' &&
+    row.kind !== 'transaction-set'
+  ) {
     if (
       hasRecord ||
       (row.kind === 'contract' && row.submissionPolicy !== 'explicit')
@@ -599,6 +670,101 @@ function validateRow(
     fail('capacity')
   return typed
 }
+
+/** The new baseline alone permits repeated sources, with an explicit contiguous nonce chain. */
+function validateTransactionSet(
+  members: EvmNativeMember[],
+  intended: bigint,
+): void {
+  const latest = new Map<
+    string,
+    { index: number; nonce: number; balance: bigint }
+  >()
+  const payments = new Set<number>(),
+    changes = new Set<number>(),
+    destinations = new Set<string>()
+  let paid = 0n
+  for (const [index, member] of members.entries()) {
+    const meta = member.transactionSet
+    if (!meta) fail()
+    object(meta, [
+      'role',
+      'logicalIndex',
+      'balanceBeforeWei',
+      'balanceAfterWei',
+      ...('changeIndex' in meta ? ['changeIndex'] : []),
+      ...('inventoryApplied' in meta ? ['inventoryApplied'] : []),
+      ...('predecessorWaitBlocks' in meta ? ['predecessorWaitBlocks'] : []),
+      ...('remainderSpendableFromBlock' in meta
+        ? ['remainderSpendableFromBlock']
+        : []),
+      ...('refundPending' in meta ? ['refundPending'] : []),
+    ])
+    integer(meta.logicalIndex)
+    if (
+      meta.inventoryApplied !== undefined &&
+      (meta.inventoryApplied !== true || !terminalInventoryEvidence(member))
+    )
+      fail()
+    if (meta.predecessorWaitBlocks !== undefined) {
+      integer(meta.predecessorWaitBlocks)
+      if (
+        meta.predecessorWaitBlocks === 0 ||
+        meta.role !== 'change' ||
+        member.dependencies.length !== 1
+      )
+        fail()
+    }
+    if (meta.remainderSpendableFromBlock !== undefined)
+      integer(meta.remainderSpendableFromBlock)
+    if (meta.refundPending !== undefined && meta.refundPending !== true) fail()
+    const before = uint(meta.balanceBeforeWei),
+      after = uint(meta.balanceAfterWei)
+    const tx = Transaction.from(member.unsignedTransaction)
+    if (before !== tx.value + nativeMaximumFee(tx) + after) fail()
+    const previous = latest.get(member.source.address)
+    if (previous) {
+      if (
+        tx.nonce !== previous.nonce + 1 ||
+        before !== previous.balance ||
+        JSON.stringify(member.dependencies) !== JSON.stringify([previous.index])
+      )
+        fail()
+    } else if (member.dependencies.length) fail()
+    latest.set(member.source.address, {
+      index,
+      nonce: tx.nonce,
+      balance: after,
+    })
+    if (meta.role === 'payment') {
+      if (meta.changeIndex !== undefined || payments.has(meta.logicalIndex))
+        fail()
+      payments.add(meta.logicalIndex)
+      paid += tx.value
+    } else if (meta.role === 'change') {
+      integer(meta.changeIndex)
+      if (
+        meta.changeIndex >= 0x80000000 ||
+        changes.has(meta.changeIndex) ||
+        destinations.has(tx.to!.toLowerCase()) ||
+        tx.data !== '0x' ||
+        tx.value === 0n
+      )
+        fail()
+      changes.add(meta.changeIndex)
+      destinations.add(tx.to!.toLowerCase())
+    } else fail()
+  }
+  if (!payments.size || paid < intended) fail()
+  if (
+    [...payments].sort((a, b) => a - b).some((value, index) => value !== index)
+  )
+    fail()
+  for (const target of destinations) if (latest.has(target)) fail()
+  const signed = members.filter(member => member.signed !== null).length
+  if (signed !== 0 && signed !== members.length) fail()
+}
+
 export interface EvmNativeCapture {
   readonly operationId: string
   readonly memberIndex: number
@@ -779,8 +945,14 @@ export class EvmNativeOperationJournal {
     if (!row) fail('conflict')
     return clone(row)
   }
+  /** Retained custody references for legacy stores and their source resolvers.
+   * Transaction-set signing material and private change belong to CoinList; its `coin`
+   * references must never be projected into the independently owned received-coin store.
+   * Selection holds remain authoritative across every kind through canSelect(). */
   sourceReferences(): EvmNativeSource[] {
-    return this.list().flatMap(row => row.members.map(m => m.source))
+    return this.list()
+      .filter(row => row.kind !== 'transaction-set')
+      .flatMap(row => row.members.map(m => m.source))
   }
   referencesSpendIndex(index: number): boolean {
     this.assertOpen()
@@ -805,7 +977,12 @@ export class EvmNativeOperationJournal {
           // The dependency leader retains its provisional value across foreign nonce advances.
           if (
             m.dependencies.length &&
-            m.observation.state !== 'included-success'
+            m.observation.state !== 'included-success' &&
+            !(
+              row.kind === 'transaction-set' &&
+              (m.observation.state === 'included-revert' ||
+                nativeMemberSuperseded(m))
+            )
           )
             return false
           if (
@@ -819,7 +996,13 @@ export class EvmNativeOperationJournal {
     }
     return true
   }
-  async prepare(plan: EvmNativePlan): Promise<EvmNativeOperation> {
+  async prepare(
+    plan: EvmNativePlan,
+    signedTransactions?: readonly string[],
+  ): Promise<EvmNativeOperation> {
+    const signatures =
+      signedTransactions === undefined ? undefined : [...signedTransactions]
+    if (signatures && signatures.length !== plan.members.length) fail()
     const frozen = clone(plan)
     return this.exclusive(() =>
       this.coordinated(async () => {
@@ -839,19 +1022,38 @@ export class EvmNativeOperationJournal {
                 JSON.stringify(frozen.record ?? null) ||
               JSON.stringify(
                 existing.members.map(
-                  ({ source, unsignedTransaction, dependencies }) => ({
+                  ({
                     source,
                     unsignedTransaction,
                     dependencies,
+                    transactionSet,
+                  }) => ({
+                    source,
+                    unsignedTransaction,
+                    dependencies,
+                    ...(transactionSet
+                      ? { transactionSet: transactionSetIntent(transactionSet) }
+                      : {}),
                   }),
                 ),
               ) !==
                 JSON.stringify(
                   frozen.members.map(
-                    ({ source, unsignedTransaction, dependencies }) => ({
+                    ({
                       source,
                       unsignedTransaction,
                       dependencies,
+                      transactionSet,
+                    }) => ({
+                      source,
+                      unsignedTransaction,
+                      dependencies,
+                      ...(transactionSet
+                        ? {
+                            transactionSet:
+                              transactionSetIntent(transactionSet),
+                          }
+                        : {}),
                     }),
                   ),
                 )
@@ -896,9 +1098,14 @@ export class EvmNativeOperationJournal {
               0n,
             )
             .toString(),
-          members: frozen.members.map(m => ({
+          members: frozen.members.map((m, index) => ({
             ...m,
-            signed: null,
+            signed: signatures
+              ? {
+                  rawTransaction: signatures[index]!,
+                  transactionHash: keccak256(signatures[index]!),
+                }
+              : null,
             exposed: false,
             observation: { state: 'unknown' },
             account: null,
@@ -1000,13 +1207,42 @@ export class EvmNativeOperationJournal {
       const m = row.members[index]
       if (
         !m?.signed ||
+        (row.kind === 'transaction-set' &&
+          row.members.some(member => !member.signed)) ||
         row.cancelled ||
+        m.dependencies.some(d =>
+          row.kind === 'transaction-set'
+            ? !row.members[d]!.exposed &&
+              row.members[d]!.observation.state !== 'included-success' &&
+              row.members[d]!.observation.state !== 'included-revert'
+            : row.members[d]!.observation.state !== 'included-success',
+        )
+      )
+        fail('conflict')
+      if (
+        row.kind === 'transaction-set' &&
+        m.transactionSet?.predecessorWaitBlocks !== undefined &&
         m.dependencies.some(
-          d => row.members[d]!.observation.state !== 'included-success',
+          index => !('blockNumber' in row.members[index]!.observation),
         )
       )
         fail('conflict')
       m.exposed = true
+    })
+  }
+  markTransactionSetInventoryApplied(
+    id: string,
+    index: number,
+  ): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      const member = row.members[index]
+      if (
+        row.kind !== 'transaction-set' ||
+        !member?.transactionSet ||
+        !terminalInventoryEvidence(member)
+      )
+        fail('conflict')
+      member.transactionSet.inventoryApplied = true
     })
   }
   markSyncApplied(id: string, index: number): Promise<EvmNativeOperation> {
@@ -1093,6 +1329,12 @@ export class EvmNativeOperationJournal {
         )
       )
         return false
+      if (
+        m.transactionSet &&
+        (JSON.stringify(m.observation) !== JSON.stringify(frozenObservation) ||
+          JSON.stringify(m.account) !== JSON.stringify(frozenAccount))
+      )
+        delete m.transactionSet.inventoryApplied
       m.observation = frozenObservation
       m.account = frozenAccount
       if (frozenObservation.state !== 'included-success') m.syncApplied = false

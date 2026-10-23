@@ -1,10 +1,8 @@
 /** Canonical Forum votes; transport uncertainty preserves the exact signed journal authority. */
-import { encodeTopicVote, topicBurnCalldata } from '@frank/codec'
-import { hexlify } from 'ethers'
+import { topicBurnCalldata } from '@frank/codec'
+import { hexlify, Transaction } from 'ethers'
 import type { TopicVoteDirection } from './evm-topic-post-client'
-import type { AcquireLeaseWhenAvailableOptions } from './evm-account-lease'
-import type { MonadTxOverrides } from './evm-account-tx'
-import type { EvmWalletHandle } from "./evm-wallet-handle";
+import type { EvmWalletHandle } from './evm-wallet-handle'
 import type { MonadWalletOperationAdmission } from './storage/evm-wallet-bundle'
 import {
   assertForumAmount,
@@ -39,15 +37,11 @@ export interface CastTopicVoteParams {
   direction: TopicVoteDirection
   burnAddress: string
   voteWeightWei: bigint
-  overrides?: MonadTxOverrides
-  waitForLease?: AcquireLeaseWhenAvailableOptions
-  leaseIndex?: number
-  /** The operation that claimed `leaseIndex` in the pool, when one did. */
-  leaseHolder?: string
+  operationId?: string
 }
 export interface CastTopicVoteResult {
-  txHash: string
-  leaseIndex: number
+  transactionSetHash: string
+  transactionHashes: string[]
   status: MatchedForumStatus
 }
 export class MonadTopicVoteClient {
@@ -64,9 +58,7 @@ export class MonadTopicVoteClient {
     topicBurnCalldata(params.direction, new Uint8Array(32))
     const target = params.targetPayloadHash.slice()
     const targetPayloadHashHex = hexlify(target).slice(2)
-    return this.wallet.walletState!.runOperation(async admitted => {
-      await reconcileForumOperations(this.wallet, 'post', admitted)
-      await reconcileForumOperations(this.wallet, 'vote', admitted)
+    return (async () => {
       try {
         const { operation, status } = await submitForumOperation(
           this.wallet,
@@ -76,18 +68,14 @@ export class MonadTopicVoteClient {
             direction: params.direction,
             burnAddress: params.burnAddress,
             value: params.voteWeightWei,
-            overrides: params.overrides,
-            leaseIndex: params.leaseIndex,
-            leaseHolder: params.leaseHolder,
-            waitForLease: params.waitForLease,
-            encode: raw =>
-              encodeTopicVote(this.wallet.cborNetwork!, target, raw),
+            operationId: params.operationId,
           },
-          admitted,
         )
         return {
-          txHash: operation.txHash,
-          leaseIndex: operation.leaseIndex,
+          transactionSetHash: operation.transactionSetHash,
+          transactionHashes: operation.rawTransactions.map(
+            (raw) => Transaction.from(raw).hash!,
+          ),
           status,
         }
       } catch (error) {
@@ -98,7 +86,7 @@ export class MonadTopicVoteClient {
           )
         throw error
       }
-    }, admission)
+    })()
   }
   async resumePendingOperations(
     admission?: MonadWalletOperationAdmission,

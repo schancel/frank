@@ -19,7 +19,6 @@ import type {
   canonicalDirectMessages,
 } from "./chain/canonical-dm";
 import type {
-  DirectMessageFundAheadResult,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageStampQuote,
@@ -32,21 +31,6 @@ import type { EvmBlockWatcher } from "./evm-block-watcher";
 import type { EvmCoinListSync } from "./evm-coin-list-sync";
 import type { EvmCoinList } from "./evm-coin-list";
 import type { StealthPaymentReceiptCapability } from "./stealth-payment";
-
-export type CanonicalInventoryFunder = (input: {
-  stampValueWei: bigint;
-  /** Unused: the fee an account keeps back does not depend on the recipient. */
-  recipientStampKey?: Uint8Array;
-  onProgress?: (progress: DirectMessagePreparationProgress) => void;
-}) => Promise<string[]>;
-
-export interface FundAheadBackoff {
-  result: DirectMessageFundAheadResult;
-  delayMs: number;
-  startedAtMs: number;
-  /** The main-account balance the pass saw, when it read one. */
-  mainBalanceWei?: bigint;
-}
 
 export interface MainAccountAdmission {
   key: string;
@@ -130,13 +114,11 @@ export class EvmWalletInternals {
   canonicalUnavailable?: CanonicalWalletBindingMismatchError;
   canonicalDirectory?: CanonicalDirectory;
   canonicalMessaging?: ReturnType<typeof canonicalDirectMessages>;
-  canonicalInventoryFunder?: CanonicalInventoryFunder;
   canonicalStampQuoter?: (input: {
     stampValueWei: bigint;
     excludedAddresses?: readonly string[];
   }) => Promise<DirectMessageStampQuote>;
-  stampFunderAhead?: () => Promise<DirectMessageFundAheadResult>;
-  fundAheadBackoff?: FundAheadBackoff;
+  recoverStampFunding?: () => Promise<void>;
   mainAccountAdmission?: MainAccountAdmission;
   receivedCoinOwner?: ReceivedCoinOwner;
   heldTransferSources?: () => Set<string>;
@@ -146,6 +128,8 @@ export class EvmWalletInternals {
   /** The wallet's coin list for this chain, and what keeps it in step with the chain. */
   coinList?: EvmCoinList;
   coinListSync?: EvmCoinListSync;
+  transactionSetPreparer?: EvmChainWalletHandle["transactionSetPreparer"];
+  transactionSetLifecycle?: EvmChainWalletHandle["transactionSetLifecycle"];
   lastOwnLookMs?: number;
   readonly unjournalledTransfers = new Map<
     string,
@@ -158,7 +142,7 @@ export class EvmWalletInternals {
     this.canonicalClientFactory = undefined;
     this.canonicalUnavailable = undefined;
     this.canonicalMessaging = undefined;
-    this.canonicalInventoryFunder = undefined;
+    this.recoverStampFunding = undefined;
     this.canonicalStampQuoter = undefined;
     this.canonicalDirectory = undefined;
     this.installedCanonicalDescriptor = undefined;
@@ -211,6 +195,9 @@ export class EvmWallet implements EvmChainWalletHandle {
   readonly networkId!: string;
   readonly identity!: MonadIdentity;
   readonly spendPool!: EvmSpendPool;
+  readonly transactionSetPreparer!: EvmChainWalletHandle["transactionSetPreparer"];
+  readonly transactionSetLifecycle!: EvmChainWalletHandle["transactionSetLifecycle"];
+  readonly refreshTransactionSetInventory!: EvmChainWalletHandle["refreshTransactionSetInventory"];
   readonly mainAccount!: Wallet;
   readonly mainPrivateKey!: string;
   readonly pool!: MonadSubAccountPool;

@@ -31,8 +31,36 @@ function row(id: string, extra: Partial<Row> = {}): Row {
     payments: [
       { index: 3, address: '0x' + '0a'.repeat(20), rawTx: '0x02', state: 'pending' },
     ],
+    otherTransactions: [],
     createdAt: 1_700_000_000_000,
     ...extra,
+  }
+}
+function sharedRow(id: string): Row {
+  return {
+    ...row(id, {
+      version: 2,
+      digest: 'a'.repeat(64),
+      recipientSubject: '02' + 'ab'.repeat(32),
+      payments: [
+        {
+          index: 3,
+          address: '0x' + '0a'.repeat(20),
+          rawTx: '0x02',
+          state: 'pending',
+          source: 'coin',
+        },
+      ],
+      transactionSetOperationId: `stamp-${id}`,
+      otherTransactions: [],
+      construction: {
+        network: 'monad-testnet',
+        payload: '02',
+        context: '03',
+        amountWei: '1',
+        boundary: 'frank-' + '0a'.repeat(24),
+      },
+    }),
   }
 }
 const key = (id: string) => `frank-dm:${id}`
@@ -148,6 +176,38 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
     const reopened = await open()
 
     expect(reopened.all()).toEqual(links)
+  })
+
+  it('validates v2 transaction-set facts on reopen and closes an invalid store', async () => {
+    const invalid = sharedRow('shared-a')
+    invalid.otherTransactions = undefined as never
+    const old = level(join(location, NAMESPACE))
+    await old.put(key('shared-a'), JSON.stringify(invalid))
+    await old.close()
+
+    await expect(LevelOutgoingMessageStore.open(location)).rejects.toThrow(
+      'Invalid shared transaction-set sent-message record',
+    )
+    const repair = level(join(location, NAMESPACE))
+    await repair.put(key('shared-a'), JSON.stringify(sharedRow('shared-a')))
+    await repair.close()
+    const reopened = await open()
+    expect(reopened.get(key('shared-a'))).toEqual(sharedRow('shared-a'))
+  })
+
+  it('interprets an absent v1 otherTransactions field as no stored change, without rewriting it', async () => {
+    const legacy = row('legacy-a')
+    const { otherTransactions: _derived, ...persisted } = legacy
+    const old = level(join(location, NAMESPACE))
+    await old.put(key('legacy-a'), JSON.stringify(persisted))
+    await old.close()
+
+    const reopened = await open()
+    expect(reopened.get(key('legacy-a'))?.otherTransactions).toEqual([])
+    await close(reopened)
+    expect(await rawEntries(location)).toEqual([
+      [key('legacy-a'), JSON.stringify(persisted)],
+    ])
   })
 
   it('keeps an unpaid envelope by message ID across close and reopen, apart from the links, until it is dropped', async () => {

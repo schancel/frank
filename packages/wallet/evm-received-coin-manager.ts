@@ -1066,18 +1066,6 @@ export function createEvmReceivedCoinAndContactManager(
     const stealthAddress = destination.stealthAddress.toLowerCase();
     return contactExclusive(async () => {
       requireOpenWallet(wallet);
-      const prepare = evmWalletInternals(wallet).canonicalInventoryFunder;
-      if (
-        prepare !== undefined &&
-        recipientStampKey !== undefined &&
-        stampWei > 0n
-      ) {
-        await prepare({
-          stampValueWei: stampWei,
-          recipientStampKey,
-          onProgress: undefined,
-        });
-      }
       const messageId = newMessageId();
       await paymentStore.put(stealthAddress, {
         messageId,
@@ -1576,17 +1564,6 @@ export function createEvmReceivedCoinAndContactManager(
     const topicOwner = getTopicOwner();
     const owner = evmWalletInternals(wallet).nativeOperationOwner!;
 
-    let cachedFeeRate: { maxFeePerGas: bigint; atMs: number } | undefined;
-    const getFeeRate = async (): Promise<bigint> => {
-      if (cachedFeeRate && Date.now() - cachedFeeRate.atMs < 6000) {
-        return cachedFeeRate.maxFeePerGas;
-      }
-      const fee = await provider.getFeeData();
-      const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice ?? 1n;
-      cachedFeeRate = { maxFeePerGas, atMs: Date.now() };
-      return maxFeePerGas;
-    };
-
     const financialPayments = createEvmStealthPayments({
       chainIdentifier,
       nativeChainId,
@@ -1603,17 +1580,39 @@ export function createEvmReceivedCoinAndContactManager(
       assertActive: assertFinancialActive,
       derive: (recipientSpendPubKey) =>
         deriveEvmStealthAddress({ recipientSpendPubKey }),
+      quoteNative: (_amountWei) => {
+        const preparer = wallet.transactionSetPreparer;
+        const coins = evmWalletInternals(wallet).coinList;
+        if (!preparer || !coins) throw new Error("Shared native transaction preparation is unavailable");
+        const policy = preparer.transactionSetPolicy();
+        const available = coins.all().filter(coin => coin.state === "unspent" && (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= policy.head));
+        const balance = available.reduce((sum, coin) => sum + coin.valueWei, 0n);
+        const maximumFee = BigInt(available.length) * (policy.paymentGasLimit("0x") + BigInt(policy.maxChangeOutputs) * policy.changeGasLimit) * policy.gasPriceWei;
+        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: maximumFee };
+      },
+      constructNativePayment: async (request) => {
+        const preparer = wallet.transactionSetPreparer;
+        if (!preparer) throw new Error("Shared native transaction preparation is unavailable");
+        await wallet.refreshTransactionSetInventory?.();
+        await topicOwner.runLifetime(() => preparer.constructTransactionSet(request));
+        const row = preparer.getOperation(request.operationId);
+        if (!row) throw new Error("Prepared native operation was not retained");
+        return row;
+      },
       operations: () => topicOwner.nativeJournal!.list(),
       signIndependentPayment: (signParams) =>
         topicOwner.runLifetime((lifetime) =>
           owner.signIndependentPayment(signParams, lifetime)
         ),
-      submit: (id) =>
-        topicOwner.runLifetime((lifetime) =>
-          owner.resumeIndependentPayment(id, lifetime)
-        ),
+      submit: (id) => {
+        const row = topicOwner.nativeJournal!.get(id);
+        if (row.kind === "transaction-set") return topicOwner.runLifetime(() => wallet.transactionSetLifecycle!.replay(row.preparationId!.slice("evm-transaction-set:".length), { payments: true }));
+        return topicOwner.runLifetime(lifetime => owner.resumeIndependentPayment(id, lifetime));
+      },
       observe: (id) =>
         topicOwner.runLifetime(async (lifetime) => {
+          const row = topicOwner.nativeJournal!.get(id);
+          if (row.kind === "transaction-set") return wallet.transactionSetLifecycle!.observe(row.preparationId!.slice("evm-transaction-set:".length), provider);
           for (
             let index = 0;
             index < topicOwner.nativeJournal!.get(id).members.length;
@@ -1623,236 +1622,52 @@ export function createEvmReceivedCoinAndContactManager(
           }
         }),
       release: (id) =>
-        topicOwner.runLifetime((lifetime) =>
-          owner.releaseUnexposed(id, lifetime)
-        ),
-      async quote(input) {
-        const requested =
-          input.sourceAddress === undefined
-            ? undefined
-            : getAddress(input.sourceAddress).toLowerCase();
-        const mainAddress = mainAccount.address.toLowerCase();
-
-        let mainBalance: bigint | undefined;
-        if (
-          input.asset.kind === "native" &&
-          (requested === undefined || requested === mainAddress) &&
-          !sourceIsHeld(wallet, mainAddress) &&
-          !owner.holdsSource(mainAddress)
-        ) {
-          const maxFeePerGas = await getFeeRate();
-          const estimatedFee = 21_000n * maxFeePerGas;
-          mainBalance = await provider.getBalance(mainAccount.address);
-          assertFinancialActive();
-          if (mainBalance >= input.amountAtomic + estimatedFee) {
-            return {
-              sources: [
-                {
-                  sourceAddress: mainAddress,
-                  recipientAmountAtomic: input.amountAtomic,
-                  nativeBalanceAtomic: mainBalance,
-                  assetBalanceAtomic: mainBalance,
-                  estimatedNativeFeeAtomic: estimatedFee,
-                },
-              ],
-            };
+        topicOwner.runLifetime(async lifetime => {
+          const operation = topicOwner.nativeJournal!.get(id)
+          if (operation?.kind === 'transaction-set') {
+            if (!wallet.transactionSetPreparer)
+              throw new Error('Shared transaction-set release is unavailable')
+            await wallet.transactionSetPreparer.releaseUnexposed(id)
+            return
           }
-        }
-
-        const owned = [
-          ...new Map(
-            (await getSources()).map((source) => [source.address, source])
-          ).values(),
-        ];
-        if (
-          requested !== undefined &&
-          !owned.some((source) => source.address === requested)
-        ) {
-          throw new Error("Requested financial source is not owned");
-        }
-
-        let sourcesToInspect: EvmNativeSource[];
-        if (requested !== undefined) {
-          sourcesToInspect = owned.filter((s) => s.address === requested);
-        } else if (input.asset.kind === "erc20") {
-          sourcesToInspect = owned.filter(
-            (s) => s.kind !== "spend" && s.kind !== "change"
-          );
-        } else {
-          const availablePoolAddresses = new Set(
-            pool
-              .records()
-              .filter(
-                (r) =>
-                  r.status === "available" &&
-                  pool.claimedBy(r.index) === undefined &&
-                  !pool.isSpendReserved(r.index)
-              )
-              .map((r) => r.address.toLowerCase())
-          );
-          sourcesToInspect = owned.filter(
-            (s) =>
-              s.kind !== "spend" ||
-              availablePoolAddresses.has(s.address.toLowerCase())
-          );
-        }
-
+          await owner.releaseUnexposed(id, lifetime)
+        }),
+      async quote(input) {
+        if (input.asset.kind !== "erc20") throw new Error("Native quotes use the shared inventory snapshot");
+        const contractAddress = input.asset.contractAddress;
+        const requested = input.sourceAddress === undefined ? undefined : getAddress(input.sourceAddress).toLowerCase();
+        const owned = [...new Map((await getSources()).map(source => [source.address, source])).values()];
+        if (requested !== undefined && !owned.some(source => source.address === requested)) throw new Error("Requested financial source is not owned");
+        const inspect = requested === undefined ? owned.filter(source => source.kind !== "spend" && source.kind !== "change") : owned.filter(source => source.address === requested);
         let lacksGas = false;
-        const inspected = await Promise.all(
-          sourcesToInspect.map(async (source) => {
-            if (
-              sourceIsHeld(wallet, source.address) ||
-              owner.holdsSource(source.address)
-            ) {
-              return null;
-            }
-            const native =
-              source.address === mainAddress && mainBalance !== undefined
-                ? mainBalance
-                : await provider.getBalance(source.address);
-            assertFinancialActive();
-            const balance =
-              input.asset.kind === "native"
-                ? native
-                : await tokenBalance(
-                    input.asset.contractAddress,
-                    source.address
-                  );
-            assertFinancialActive();
-            if (balance <= 0n) return null;
-            if (input.asset.kind === "erc20" && native === 0n) {
-              lacksGas = true;
-              return null;
-            }
-            return { source, balance };
-          })
-        );
-
-        const candidates: { source: EvmNativeSource; balance: bigint }[] = [];
-        for (const item of inspected) {
-          if (item !== null) candidates.push(item);
-        }
-
-        candidates.sort((a, b) =>
-          a.source.kind === "main" && b.source.kind !== "main"
-            ? 1
-            : b.source.kind === "main" && a.source.kind !== "main"
-            ? -1
-            : a.balance === b.balance
-            ? a.source.address.localeCompare(b.source.address)
-            : a.balance < b.balance
-            ? -1
-            : 1
-        );
-        const sources: {
-          sourceAddress: string;
-          recipientAmountAtomic: bigint;
-          nativeBalanceAtomic: bigint;
-          assetBalanceAtomic: bigint;
-          estimatedNativeFeeAtomic: bigint;
-        }[] = [];
+        const inspected = await Promise.all(inspect.map(async source => {
+          if (sourceIsHeld(wallet, source.address) || owner.holdsSource(source.address)) return null;
+          const [native, balance] = await Promise.all([provider.getBalance(source.address), tokenBalance(contractAddress, source.address)]);
+          assertFinancialActive();
+          if (balance <= 0n) return null;
+          if (native === 0n) { lacksGas = true; return null; }
+          return { source, balance };
+        }));
+        const candidates = inspected.filter((item): item is NonNullable<typeof item> => item !== null);
+        candidates.sort((a, b) => a.source.kind === "main" && b.source.kind !== "main" ? 1 : b.source.kind === "main" && a.source.kind !== "main" ? -1 : a.balance === b.balance ? a.source.address.localeCompare(b.source.address) : a.balance < b.balance ? -1 : 1);
+        const sources: { sourceAddress: string; recipientAmountAtomic: bigint; nativeBalanceAtomic: bigint; assetBalanceAtomic: bigint; estimatedNativeFeeAtomic: bigint }[] = [];
         let remaining = input.amountAtomic;
-        const maxFeePerGas = await getFeeRate();
-        const nativeFeePerSource = 21_000n * maxFeePerGas;
-
         const allocate = async (ordered: typeof candidates) => {
           sources.length = 0;
           remaining = input.amountAtomic;
           for (const candidate of ordered) {
             if (remaining === 0n || sources.length === 16) break;
-            const native = input.asset.kind === "native";
-            const target =
-              input.asset.kind === "native"
-                ? input.recipientAddress
-                : input.asset.contractAddress;
-            const tentative = native
-              ? candidate.balance > nativeFeePerSource
-                ? candidate.balance - nativeFeePerSource < remaining
-                  ? candidate.balance - nativeFeePerSource
-                  : remaining
-                : 1n
-              : candidate.balance < remaining
-              ? candidate.balance
-              : remaining;
-            const quoteOne = (amount: bigint) =>
-              topicOwner.runLifetime((lifetime) =>
-                owner.quoteIndependentPayment(
-                  {
-                    kind: native ? "native" : "contract",
-                    recipient: { raw: target },
-                    members: [
-                      {
-                        sourceAddress: candidate.source.address,
-                        value: native ? amount : 0n,
-                        ...(native ? { gasLimit: 21_000n } : {}),
-                        ...(native
-                          ? {}
-                          : {
-                              data: financialAbi.encodeFunctionData(
-                                "transfer",
-                                [input.recipientAddress, amount]
-                              ),
-                            }),
-                      },
-                    ],
-                  },
-                  lifetime
-                )
-              );
-            let fact = (await quoteOne(tentative)).sources[0]!;
-            const available = native
-              ? fact.nativeBalanceAtomic - fact.estimatedNativeFeeAtomic
-              : candidate.balance;
-            if (
-              available <= 0n ||
-              fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic
-            ) {
-              lacksGas ||= !native;
-              continue;
-            }
-            const amount = available < remaining ? available : remaining;
-            if (!native && amount !== tentative) {
-              fact = (await quoteOne(amount)).sources[0]!;
-            }
-            if (
-              fact.nativeBalanceAtomic <
-              fact.estimatedNativeFeeAtomic + (native ? amount : 0n)
-            ) {
-              throw new Error(
-                "Financial source fee changed during quote; retry unsigned quote"
-              );
-            }
-            sources.push({
-              ...fact,
-              recipientAmountAtomic: amount,
-              assetBalanceAtomic: native
-                ? fact.nativeBalanceAtomic
-                : candidate.balance,
-            });
+            const amount = candidate.balance < remaining ? candidate.balance : remaining;
+            const fact = (await topicOwner.runLifetime(lifetime => owner.quoteIndependentPayment({ kind: "contract", recipient: { raw: contractAddress }, members: [{ sourceAddress: candidate.source.address, value: 0n, data: financialAbi.encodeFunctionData("transfer", [input.recipientAddress, amount]) }] }, lifetime))).sources[0]!;
+            if (fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic) { lacksGas = true; continue; }
+            sources.push({ ...fact, recipientAmountAtomic: amount, assetBalanceAtomic: candidate.balance });
             remaining -= amount;
           }
         };
         await allocate(candidates);
-        if (remaining > 0n && sources.length === 16) {
-          const largerFirst = [...candidates].sort((a, b) =>
-            a.balance === b.balance
-              ? candidates.indexOf(a) - candidates.indexOf(b)
-              : a.balance > b.balance
-              ? -1
-              : 1
-          );
-          await allocate(largerFirst);
-        }
+        if (remaining > 0n && sources.length === 16) await allocate([...candidates].sort((a, b) => a.balance === b.balance ? candidates.indexOf(a) - candidates.indexOf(b) : a.balance > b.balance ? -1 : 1));
         assertFinancialActive();
-        if (remaining > 0n) {
-          throw new RangeError(
-            sources.length === 16
-              ? "Payment cannot fit the 16-member limit"
-              : lacksGas
-              ? "ERC20 payment needs native gas at owned sources"
-              : "Insufficient unreserved payment funds"
-          );
-        }
+        if (remaining > 0n) throw new RangeError(sources.length === 16 ? "Payment cannot fit the 16-member limit" : lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds");
         return { sources };
       },
       tokenBalance,

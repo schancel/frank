@@ -22,7 +22,6 @@ import {
   type CanonicalJournalAttempt,
 } from './storage/stamp-attempt-journal'
 import {
-  topicOperationKey,
   type TopicOperationJournal,
 } from './storage/topic-operation-journal'
 
@@ -55,11 +54,6 @@ export type OwnerEvidence =
       readonly poolIndex: number
     }
   | { readonly kind: 'live-lease'; readonly poolIndex: number }
-  | {
-      readonly kind: 'topic'
-      readonly operationKey: string
-      readonly poolIndex: number
-    }
   | {
       readonly kind: 'pool-funding' | 'pool-retained'
       readonly poolIndex: number
@@ -107,6 +101,7 @@ export interface EvmInputAdmission {
     lifetime: WalletOperationLifetime,
     epoch: AdmissionEpoch,
     plan: EvmNativePlan,
+    signedTransactions?: readonly string[],
   ): Promise<EvmNativeOperation>
   prepareCanonical(
     lifetime: WalletOperationLifetime,
@@ -383,22 +378,12 @@ class AdmissionOwner implements EvmInputAdmission {
         )
       })
     }
+    // Forum payloads link to the native journal; they never own a second nonce/pool claim.
     for (const row of o.topic.getAll()) {
-      const record =
-        o.pool.getRecord(row.leaseIndex) ??
-        o.pool.terminalCheckpoints().find(r => r.index === row.leaseIndex)
-      if (!record || address(record.address) !== address(row.senderAddress))
-        invalid()
-      const key = topicOperationKey(row)
-      const tx = this.tx(row.rawTx, row.senderAddress)
-      if (tx.transactionHash !== row.txHash.toLowerCase()) invalid()
-      add(
-        { kind: 'topic', operationKey: key, poolIndex: row.leaseIndex },
-        `topic:${key}`,
-        row.rawTx,
-        row.senderAddress,
-        [{ kind: 'allocation', pool: 'spend', index: row.leaseIndex }],
-      )
+      if (row.construction) continue
+      const native = o.native.list().find(candidate => candidate.preparationId === `evm-transaction-set:${row.transactionSetOperationId}`)
+      const payments = native?.members.filter(member => member.transactionSet?.role === 'payment')
+      if (!native || native.kind !== 'transaction-set' || native.intendedValueWei !== row.intendedValueWei || !payments || payments.length !== row.rawTransactions.length || payments.some((member, index) => member.signed?.rawTransaction !== row.rawTransactions[index] || member.source.address !== row.funders[index]?.toLowerCase())) invalid()
     }
     const poolAuthorities = new Map<number, Claim[]>()
     for (const claim of claims) {
@@ -409,8 +394,7 @@ class AdmissionOwner implements EvmInputAdmission {
             ? evidence.source.index
             : undefined
           : evidence.kind === 'canonical-intent' ||
-            evidence.kind === 'canonical-attempt' ||
-            evidence.kind === 'topic'
+            evidence.kind === 'canonical-attempt'
           ? evidence.poolIndex
           : undefined
       if (index !== undefined) {
@@ -437,8 +421,7 @@ class AdmissionOwner implements EvmInputAdmission {
             (c.provenance.kind === 'native' &&
               c.transaction?.sender === tx.sender &&
               c.transaction.nonce === tx.nonce) ||
-            c.provenance.kind === 'canonical-attempt' ||
-            c.provenance.kind === 'topic',
+            c.provenance.kind === 'canonical-attempt',
         )
         const identical = related.filter(
           c =>
@@ -757,8 +740,11 @@ class AdmissionOwner implements EvmInputAdmission {
     lifetime: WalletOperationLifetime,
     epoch: AdmissionEpoch,
     plan: EvmNativePlan,
+    signedTransactions?: readonly string[],
   ): Promise<EvmNativeOperation> {
     const snapshot = JSON.parse(JSON.stringify(plan)) as EvmNativePlan
+    const signed =
+      signedTransactions === undefined ? undefined : [...signedTransactions]
     return this.mutate(lifetime, async () => {
       this.checkEpoch(epoch, lifetime)
       this.check(this.nativeResources(snapshot))
@@ -788,7 +774,7 @@ class AdmissionOwner implements EvmInputAdmission {
             invalid()
         }
       }
-      return this.owners.native!.prepare(snapshot)
+      return this.owners.native!.prepare(snapshot, signed)
     })
   }
   prepareCanonical(
@@ -931,6 +917,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'checkpointSigned'
     | 'markExposed'
     | 'markSyncApplied'
+    | 'markTransactionSetInventoryApplied'
     | 'cancelUnsigned'
     | 'discardUnexposed'
     | 'beginCapture'
@@ -955,11 +942,16 @@ export function nativeAdmissionJournal(
         owner.owners.assertLifetime(lifetime)
         return row
       }),
-    prepare: plan => {
+    prepare: (plan, signedTransactions) => {
       const snapshot = admission.inspect(lifetime)
       if (snapshot.status !== 'ready')
         return Promise.reject(new EvmInputAdmissionError(snapshot.reason))
-      return admission.prepareNative(lifetime, snapshot.epoch, plan)
+      return admission.prepareNative(
+        lifetime,
+        snapshot.epoch,
+        plan,
+        signedTransactions,
+      )
     },
     checkpointSigned: (id, index, raw) =>
       mutation(async () => {
@@ -973,6 +965,8 @@ export function nativeAdmissionJournal(
       }),
     markSyncApplied: (id, index) =>
       mutation(() => journal.markSyncApplied(id, index)),
+    markTransactionSetInventoryApplied: (id, index) =>
+      mutation(() => journal.markTransactionSetInventoryApplied(id, index)),
     cancelUnsigned: id => mutation(() => journal.cancelUnsigned(id)),
     discardUnexposed: id => mutation(() => journal.discardUnexposed(id)),
     beginCapture: (id, index) => {
@@ -1056,7 +1050,8 @@ export function poolSpendAdmission(
     }
     // 2. The row: the caller's, which the transaction must have been signed by, or the live row
     // the signer owns.
-    if (expectedAddress !== undefined && expectedAddress !== tx.sender) invalid()
+    if (expectedAddress !== undefined && expectedAddress !== tx.sender)
+      invalid()
     const index =
       expected?.index ??
       pool.records().find(record => address(record.address) === tx.sender)
@@ -1100,7 +1095,6 @@ export function poolSpendAdmission(
         claim =>
           (claim.provenance.kind === 'canonical-intent' ||
             claim.provenance.kind === 'canonical-attempt' ||
-            claim.provenance.kind === 'topic' ||
             claim.provenance.kind === 'live-lease' ||
             claim.provenance.kind === 'pool-funding') &&
           claim.provenance.poolIndex === index,
@@ -1184,7 +1178,8 @@ export function poolSpendAdmission(
           : 'no-pool-row'
       if (record.status === 'retired') return 'held-terminal'
       if (record.status === 'spent')
-        return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
+        return record.lifecycle?.spend?.rawTx ===
+          member.signed.rawTransaction &&
           record.lifecycle.legacyTerminal === undefined
           ? 'applied'
           : 'held-terminal'

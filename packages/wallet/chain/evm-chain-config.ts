@@ -2,6 +2,7 @@ import type { StampDefaultResolver } from "../oracle/stamp-policy";
 /** Generic EVM configuration; runtime/environment composition remains in monad-chain.ts. */
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
+import type { EvmTransactionSetPolicy } from "../evm-transaction-set-types";
 import type { SwapRecordItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface EvmChainConfig {
@@ -29,7 +30,6 @@ export interface EvmChainConfig {
   /** Existing EVM wager minimum, independent of attention-stamp pricing. */
   minimumWagerValueWei?: bigint;
   /** Existing background funding sizing, independent of attention-stamp pricing. */
-  stampFundingTargetWei?: bigint;
   /**
    * How many blocks must pass after an account's last transaction before a value transfer from
    * it is safe. Monad: 3. Its reserve-balance rule reverts (and still charges gas for) a
@@ -45,6 +45,8 @@ export interface EvmChainConfig {
   reserveBalanceWei?: bigint;
   /** Client polling policy for waiting payments (the registry row's `paymentPollIntervalMs`). */
   paymentPollIntervalMs?: number;
+  /** Optional pre-reviewed transaction policy, primarily for deterministic local fixtures. */
+  transactionSetPolicy?: () => EvmTransactionSetPolicy;
   /** How long a native send watches the transfer it just broadcast for its block before it
    * returns it as pending (it is then watched from outside). Default 30 s. Tests on a stub
    * node that never mines set 0: one look. */

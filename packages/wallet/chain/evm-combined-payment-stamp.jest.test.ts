@@ -5,6 +5,7 @@ import { installCanonicalDirectory } from './evm-chain'
 import { LevelOutgoingMessageStore, type StoredMessage } from './canonical-dm'
 import { evmWalletInternals } from '../evm-wallet'
 import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
+import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/stealth-asset/from-prepared'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
@@ -145,6 +146,7 @@ test('contact payment submits the original payment, stamp, and all owned change 
     expect(wrapper.otherTransactions.length).toBeGreaterThan(0)
     const graph = f.alice.transactionSetPreparer!.getOperation(wrapper.operationId)!
     expect(graph.members.every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(summarizeEvmNativeOperation(graph)).toMatchObject({ intendedValueWei: '300000', payment: 'included' })
     for (const member of [...wrapper.bundle, ...wrapper.otherTransactions])
       expect(offlineChain.walletBroadcasts).toContain(member.rawTransaction)
   } finally { await f.close() }
@@ -182,6 +184,22 @@ test('refused financial cancellation leaves the contact payment and its signed b
     jest.spyOn(f.alice.transactionSetPreparer!, 'releaseUnexposed').mockResolvedValue(false)
     await f.alice.settleContactPayment!(prepared.item.ephemeralPubKey.replace(/^0x/, ''))
     expect(f.alice.getContactPayments!()[0]).toEqual(original)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+  } finally { await f.close() }
+})
+
+test('public construction snapshots the requested amount before refreshing inventory', async () => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    const request = { operationId: 'snapshot-public-construction', amountAtomic: 300000n,
+      kdf: () => Uint8Array.from(Buffer.from(f.bob.mainAccount!.address.slice(2), 'hex')),
+      maxNativeFeeAtomic: 400000n }
+    const preparing = f.alice.constructTransactionSet!(request)
+    request.amountAtomic = 600000n
+    const prepared = await preparing
+    expect(f.alice.transactionSetPreparer!.getOperation(prepared.operationId)!.intendedValueWei).toBe('300000')
     expect(offlineChain.walletBroadcasts).toHaveLength(0)
   } finally { await f.close() }
 })

@@ -2320,10 +2320,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             identity,
             spendPool,
             transactionSetSubmission,
-            constructTransactionSet: async request => transactionOwner.runLifetime(async () => {
-              await transactionSetRuntime.refresh();
-              return publicTransactionSets.constructTransactionSet(request);
-            }),
+            constructTransactionSet: request => {
+              const input = { ...request,
+                ...(request.calldata === undefined ? {} : { calldata: request.calldata.slice() }),
+              };
+              return transactionOwner.runLifetime(async () => {
+                await transactionSetRuntime.refresh();
+                return publicTransactionSets.constructTransactionSet(input);
+              });
+            },
             sendTransaction: prepared => transactionOwner.runLifetime(() => publicTransactionSets.sendTransaction(prepared)),
             transactionSetPreparer,
             transactionSetLifecycle,

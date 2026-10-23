@@ -384,7 +384,7 @@ test('production native preparation retains exact bytes and claims until bound e
     expect(state.broadcast).not.toHaveBeenCalled()
     expect(
       await wallet.stealthPayments!.submit(intent.operationId),
-    ).toMatchObject({ status: 'pending' })
+    ).toMatchObject({ status: 'succeeded' })
     expect(
       await wallet.stealthPayments!.reconcile(intent.operationId),
     ).toMatchObject({

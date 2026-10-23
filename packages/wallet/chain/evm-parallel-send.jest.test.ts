@@ -16,7 +16,6 @@ import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { evmWalletInternals } from '../evm-wallet'
 import {
   DirectMessageAlreadyAttemptedError,
-  DirectMessageAttemptUnlinkedError,
   DirectMessageStampBelowFeeError,
   isDirectMessageNotAttempted,
 } from './active-chain'
@@ -249,7 +248,8 @@ describe('parallel paid messages', () => {
     async refusal => {
       const [coin] = await fundAccounts(1)
       offlineChain.relayBroadcasts = false
-      const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+      // Wallet submission precedes relay delivery; keep its exact bytes ambiguous.
+      offlineChain.broadcastDown = true
       const handed: { body: Uint8Array; contentType: string }[] = []
       const base = directory.fetch!
       directory = {
@@ -276,7 +276,10 @@ describe('parallel paid messages', () => {
       const digest = pending.payloadHashes[0]
       expect(bobMailbox).toHaveLength(1)
       const original = relayPayments()[0]
-      expect(offlineChain.walletBroadcasts).toHaveLength(0)
+      expect(offlineChain.walletBroadcasts).toEqual([original.serialized])
+      const operationId = alice.getNativeOperations!().find(row =>
+        row.members.some(member => member.signed?.transactionHash === original.hash),
+      )!.operationId
       await reopen()
       relay.answer = identity =>
         typeof refusal === 'string'
@@ -295,7 +298,7 @@ describe('parallel paid messages', () => {
               },
             }
       expect((await tick([digest]))[digest]).toBe('live')
-      expect(alice.pool.claimedBy(coin.index)).toBeDefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(true)
       expect(
         f.chain.directMessages.paymentsOf?.({
           wallet: alice,
@@ -303,7 +306,8 @@ describe('parallel paid messages', () => {
         }),
       ).toEqual(['pending'])
       await reopen()
-      expect(alice.pool.claimedBy(coin.index)).toBeDefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(true)
+      offlineChain.broadcastDown = false
       offlineChain.mine(original.serialized)
       await tick([digest])
       expect(
@@ -312,7 +316,7 @@ describe('parallel paid messages', () => {
           payloadDigest: digest,
         }),
       ).toEqual(['spent'])
-      expect(alice.pool.claimedBy(coin.index)).toBeUndefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(false)
       relay.answer = undefined
       await Promise.all([tick([digest]), tick([digest])])
       for (let pass = 0; pass < 6; pass++) await tick([digest])
@@ -323,7 +327,9 @@ describe('parallel paid messages', () => {
       expect(new Set(relayPayments().map(payment => payment.hash))).toEqual(
         new Set([original.hash]),
       )
-      expect(sign).toHaveBeenCalledTimes(1)
+      const operation = alice.getNativeOperations!().find(row => row.operationId === operationId)!
+      expect(operation.members.map(member => member.signed!.rawTransaction)).toEqual([original.serialized])
+      expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set([original.serialized]))
       for (const request of handed) expect(request).toEqual(handed[0])
       await expect(send(1)).rejects.toBeInstanceOf(
         DirectMessageAlreadyAttemptedError,
@@ -390,7 +396,13 @@ describe('parallel paid messages', () => {
 
     // The background pass learns "spent" from the chain for every one of them.
     await tick()
-    for (const row of rows) expect(statusOf(row.index)).toBe('spent')
+    const operations = alice.getNativeOperations!().filter(row => row.kind === 'transaction-set')
+    expect(operations).toHaveLength(21)
+    for (const operation of operations) {
+      expect(operation.members.every(member => member.observation.state === 'included-success')).toBe(true)
+      expect(operation.members.every(member => member.transactionSet?.inventoryApplied)).toBe(true)
+    }
+    for (const row of rows) expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
     expect(payersOf([first, ...sent])).toHaveLength(21)
   })
 
@@ -421,10 +433,10 @@ describe('parallel paid messages', () => {
       spent.from!.toLowerCase(),
     )
     const after = await alice.getBalanceParts!()
-    // The used account is no longer a coin; what is left in it is not counted.
-    expect(after.sending).toBe(STAMP + FEE_RESERVE)
+    // The next nonce owns the residual. This fixture's node does not deduct gas fees.
+    expect(after.sending).toBe(funded - STAMP)
     expect(after.main + after.profile).toBe(800_000n)
-    expect(await alice.getBalance()).toBe(800_000n + STAMP + FEE_RESERVE)
+    expect(await alice.getBalance()).toBe(800_000n + funded - STAMP)
   })
 
   it('a new account whose only money is at its identity address sends a paid message, with no funding transfer', async () => {
@@ -432,7 +444,7 @@ describe('parallel paid messages', () => {
     mockBalances.set(identity, 10n ** 17n)
     expect(await alice.getBalance()).toBe(10n ** 17n)
     const sent = await send(1)
-    // One payment of the whole stamp, signed by the identity account; nothing else moved.
+    // One recipient payment; all additional signed movements stay wallet-owned.
     expect(sent.stampPayments.map(p => p.valueWei)).toEqual([STAMP])
     expect(sent.preparationTxHashes).toEqual([])
     expect(mockFunded).toHaveLength(0)
@@ -445,29 +457,40 @@ describe('parallel paid messages', () => {
         payloadDigest: sent.payloadDigest,
       }),
     ).toEqual(['spent'])
-    expect(mockBalances.get(identity)).toBe(10n ** 17n - STAMP)
+    const operation = alice.getNativeOperations!().find(row => row.members.some(member =>
+      member.signed?.transactionHash === sent.stampPayments[0].txHash,
+    ))!
+    const owned = operation.members.filter(member => member.transactionSet?.role !== 'payment')
+    expect(owned.length).toBeGreaterThan(0)
+    const destinations = new Set([identity, ...owned.map(member => Transaction.from(member.signed!.rawTransaction).to!.toLowerCase())])
+    expect([...destinations].reduce((sum, address) => sum + (mockBalances.get(address) ?? 0n), 0n)).toBe(10n ** 17n - STAMP)
+    expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(operation.members.map(member => member.signed!.rawTransaction)))
   })
 
-  it('with money only in the main account, three sends started together each pay once from it, one nonce after another, and nothing is funded', async () => {
+  it('three concurrent sends with only one root input reserve it once and reject the other two without a global wait', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
-    const sent = await Promise.all([send(1), send(2), send(3)])
+    offlineChain.broadcastDown = true
+    offlineChain.relayBroadcasts = false
+    const attempts = await Promise.allSettled([send(1), send(2), send(3)])
+    const successful = attempts.filter(result => result.status === 'fulfilled')
+    const refused = attempts.filter(result => result.status === 'rejected')
+    expect(successful).toHaveLength(1)
+    expect(refused).toHaveLength(2)
+    for (const result of refused) expect(result.reason).toBeInstanceOf(InsufficientStampFundsError)
+    const operations = alice.getNativeOperations!().filter(row => row.kind === 'transaction-set')
+    expect(operations).toHaveLength(1)
+    const original = operations[0].members.map(member => member.signed!.rawTransaction)
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+    expect(new Set(operations[0].members.map(member => `${member.source.address}:${Transaction.from(member.signed!.rawTransaction).nonce}`)).size).toBe(original.length)
     expect(mockFunded).toHaveLength(0)
-    const payments = relayPayments()
-    expect(payments.map(tx => tx.from!.toLowerCase())).toEqual([main, main, main])
-    // The main account is one coin: no two payments were ever signed at the same nonce.
-    expect(payments.map(tx => tx.nonce).sort()).toEqual([0, 1, 2])
-    expect(payments.every(tx => tx.value === STAMP)).toBe(true)
-    expect(bobMailbox).toHaveLength(3)
-    await tick()
-    for (const result of sent)
-      expect(
-        f.chain.directMessages.paymentsOf?.({
-          wallet: alice,
-          payloadDigest: result.payloadDigest,
-        }),
-      ).toEqual(['spent'])
-    expect(mockBalances.get(main)).toBe(10n ** 17n - 3n * STAMP)
+    // Finish the one authorized graph without creating a second signature at any nonce.
+    offlineChain.broadcastDown = false
+    const sent = successful[0]!
+    if (sent.status !== 'fulfilled') throw new Error('Expected successful construction')
+    await alice.transactionSetSubmission!.sendTransaction(alice.transactionSetPreparer!.getTransactionSet(operations[0].preparationId!.slice('evm-transaction-set:'.length)))
+    expect(alice.getNativeOperations!().find(row => row.operationId === operations[0].operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
   })
 
   it('funded sub-accounts are used before the main account, and the main account when they run out', async () => {
@@ -573,15 +596,17 @@ describe('parallel paid messages', () => {
     f.setPhase('fail')
     const stuck = await send(1).catch(error => error)
     expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
-    // Nothing was broadcast by the wallet for a message the relay does not have.
-    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    // Financial submission can settle while delivery remains unknown.
+    expect(offlineChain.walletBroadcasts).toHaveLength(1)
+    const original = offlineChain.walletBroadcasts[0]
     f.setPhase('delivered')
     const second = await send(2)
     expect(bobMailbox).toHaveLength(1)
     await tick()
     // The second is delivered and paid; the first was re-sent by the same pass, the same bytes.
-    const paid = new Set([a.index, b.index].map(statusOf))
-    expect(paid).toEqual(new Set(['spent']))
+    for (const row of [a, b]) expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
+    expect(alice.getNativeOperations!().flatMap(row => row.members).every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(offlineChain.walletBroadcasts.filter(raw => raw === original)).toHaveLength(1)
     expect(bobMailbox).toHaveLength(2)
     expect(
       await f.chain.directMessages.reconcileAttempts({
@@ -635,16 +660,16 @@ describe('parallel paid messages', () => {
     const stuck = await send(1).catch(error => error)
     expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
     const digest: string = stuck.payloadHashes[0]
-    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(offlineChain.walletBroadcasts).toHaveLength(1)
     await tick([digest])
     // Seen on chain: spent, although the wallet still has no confirmation of delivery.
-    expect(statusOf(row.index)).toBe('spent')
+    expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
     expect((await tick([digest]))[digest]).toBe('live')
     lose = false
     for (let pass = 0; pass < 16; pass++)
       if ((await tick([digest]))[digest] === 'delivered') break
     expect((await tick([digest]))[digest]).toBe('delivered')
-    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(offlineChain.walletBroadcasts).toHaveLength(1)
     expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
     await expect(send(1)).rejects.toBeInstanceOf(
       DirectMessageAlreadyAttemptedError,
@@ -659,10 +684,10 @@ describe('parallel paid messages', () => {
     expect(Transaction.from(offlineChain.walletBroadcasts[0]).hash).toBe(
       sent.stampPayments[0].txHash,
     )
-    // Delivered is not paid: the account is spent only once the chain shows it.
-    expect(statusOf(row.index)).toBe('available')
+    // The synchronous fixture has already included this exact transaction.
+    expect(offlineChain.mined.has(sent.stampPayments[0].txHash)).toBe(true)
     await tick()
-    expect(statusOf(row.index)).toBe('spent')
+    expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
   })
 
   it('neither broadcast lands while the node is down: the same bytes are broadcast again until included', async () => {
@@ -1044,6 +1069,8 @@ describe('parallel paid messages', () => {
     'even the first relay refusal (%s) retains signed bytes and claims across restart',
     async refusal => {
       const [held, other] = await fundAccounts(2)
+      offlineChain.broadcastDown = true
+      offlineChain.relayBroadcasts = false
       relay.answer = identity =>
         typeof refusal === 'string'
           ? {
@@ -1063,10 +1090,13 @@ describe('parallel paid messages', () => {
       const pending = await send(1).catch(error => error)
       expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
       const digest = pending.payloadHashes[0]
-      expect(alice.pool.claimedBy(held.index)).toBeDefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
       await reopen()
-      expect(alice.pool.claimedBy(held.index)).toBeDefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
+      const original = alice.getNativeOperations!().flatMap(row => row.members).map(member => member.signed!.rawTransaction)
+      expect(original).toHaveLength(1)
       relay.answer = undefined
+      offlineChain.broadcastDown = false
       const next = await send(2)
       expect(relayPayments()[0].from!.toLowerCase()).toBe(
         other.address.toLowerCase(),
@@ -1080,6 +1110,8 @@ describe('parallel paid messages', () => {
         }),
       ).toEqual(['spent'])
       expect(new Set(relayPayments().map(payment => payment.hash)).size).toBe(2)
+      expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set([...original, ...relayPayments().map(payment => payment.serialized)]))
+      expect(alice.getNativeOperations!().flatMap(row => row.members).filter(member => member.signed!.rawTransaction === original[0])).toHaveLength(1)
       expect(
         relayPayments().some(
           payment => payment.hash === next.stampPayments[0].txHash,
@@ -1992,134 +2024,124 @@ describe('parallel paid messages', () => {
   })
 
   describe('a crash at each point of a send, then a restart', () => {
-    it('after the claim, before signing: nothing is stored, the account is free, and the repeat is the first payment', async () => {
+    const signedBytes = () => alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
+    function failEnvelopeAfterSigning(mode: 'dropped' | 'written-then-reported-failed') {
+      const preparer = alice.transactionSetPreparer!
+      const construct = preparer.constructTransactionSet.bind(preparer)
+      jest.spyOn(preparer, 'constructTransactionSet').mockImplementationOnce(async request => {
+        const result = await construct(request)
+        mockMessageWrite.mode = mode
+        return result
+      })
+    }
+
+    it('before signing: durable construction intent survives restart and produces only one payment', async () => {
       const [row] = await fundAccounts(1)
-      jest
-        .spyOn(EvmStampPayer.prototype, 'sign')
-        .mockRejectedValueOnce(new Error('crash after claim'))
-      await expect(send(1)).rejects.toThrow('crash after claim')
-      expect(alice.pool.claimedBy(row.index)).toBeUndefined()
+      jest.spyOn(alice.transactionSetPreparer!, 'constructTransactionSet').mockRejectedValueOnce(new Error('crash before signing'))
+      await expect(send(1)).rejects.toThrow('crash before signing')
+      expect(signedBytes()).toEqual([])
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      expect(relay.bodies).toEqual([])
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
       await reopen()
-      const sent = await send(1)
       await tick()
-      expect(statusOf(row.index)).toBe('spent')
-      expect(new Set(relayPayments().map(tx => tx.hash))).toEqual(
-        new Set([sent.stampPayments[0].txHash]),
-      )
+      expect(signedBytes()).toHaveLength(1)
+      expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set(signedBytes()))
+      expect(bobMailbox).toHaveLength(1)
     })
 
-    it('after signing, the record was not written: no second payment in the session; after a restart the repeat is the first', async () => {
+    it('after signing, a dropped envelope write retains the same signed graph across restart without exposure', async () => {
       const [row] = await fundAccounts(1)
+      failEnvelopeAfterSigning('dropped')
+      await expect(send(1)).rejects.toThrow('message write dropped')
+      const original = signedBytes()
+      expect(original).toHaveLength(1)
+      expect(relay.bodies).toEqual([])
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
+      await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+      await reopen()
+      expect(signedBytes()).toEqual(original)
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
+      await tick()
+      expect(signedBytes()).toEqual(original)
+      expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set(original))
+      expect(bobMailbox).toHaveLength(1)
+    })
+
+    it('after the signed envelope write reports failure: restart delivers exactly the stored graph once', async () => {
+      const [row] = await fundAccounts(1)
+      failEnvelopeAfterSigning('written-then-reported-failed')
+      await expect(send(1)).rejects.toThrow('message write written-then-reported-failed')
+      const original = signedBytes()
+      expect(original).toHaveLength(1)
+      expect(relay.bodies).toEqual([])
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      await reopen()
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
+      await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+      await tick()
+      await tick()
+      expect(signedBytes()).toEqual(original)
+      expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set(original))
+      expect(bobMailbox).toHaveLength(1)
+    })
+
+    it('host message-ID lookup distinguishes a dropped intent from the durable signed envelope across restart', async () => {
+      await fundAccounts(1)
+      const attemptOf = (n: number) => f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(n) })
+      expect(await attemptOf(1)).toBeUndefined()
       mockMessageWrite.mode = 'dropped'
       await expect(send(1)).rejects.toThrow('message write dropped')
-      expect(relay.bodies).toHaveLength(0)
-      // Whether the record is on disk is unknown: this ID is refused, the account stays held.
-      await expect(send(1)).rejects.toBeInstanceOf(
-        DirectMessageAttemptUnlinkedError,
-      )
-      expect(alice.pool.claimedBy(row.index)).toBeDefined()
-      await reopen()
-      expect(alice.pool.claimedBy(row.index)).toBeUndefined()
-      await send(1)
-      await tick()
-      expect(statusOf(row.index)).toBe('spent')
-      expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
-      expect(bobMailbox).toHaveLength(1)
-    })
-
-    it('after the record was written (its write reported an error): the stored message is delivered after a restart, once', async () => {
-      const [row] = await fundAccounts(1)
-      mockMessageWrite.mode = 'written-then-reported-failed'
-      await expect(send(1)).rejects.toThrow(
-        'message write written-then-reported-failed',
-      )
-      expect(relay.bodies).toHaveLength(0)
-      await reopen()
-      // The stored message holds its account from the moment the wallet opens.
-      expect(alice.pool.claimedBy(row.index)).toBeDefined()
-      await expect(send(1)).rejects.toBeInstanceOf(
-        DirectMessageAlreadyAttemptedError,
-      )
-      await tick()
-      await tick()
-      expect(bobMailbox).toHaveLength(1)
-      expect(statusOf(row.index)).toBe('spent')
-      expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
-    })
-
-    // What a host needs after a reload: its own message row may not have learned the digest
-    // (the page went between the wallet's record and the host's), and the wallet answers by
-    // the message's ID. Seen in the browser: such a message was shown "interrupted before it
-    // was sent" while the wallet delivered and paid it.
-    it('the host asks by message ID what is stored: nothing before the record; after it, across a restart, the digest of the one attempt, which the tick then delivers with the same bytes', async () => {
-      const [row] = await fundAccounts(1)
-      const attemptOf = (n: number) =>
-        f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(n) })
-      expect(await attemptOf(1)).toBeUndefined()
-      // Cut off before the record: nothing is stored, and a restart finds nothing.
-      jest
-        .spyOn(EvmStampPayer.prototype, 'sign')
-        .mockRejectedValueOnce(new Error('page closed before the record'))
-      await expect(send(1)).rejects.toThrow('page closed before the record')
       await reopen()
       expect(await attemptOf(1)).toBeUndefined()
-      // Cut off after the record, before the host learned of it or the relay saw a byte.
-      mockMessageWrite.mode = 'written-then-reported-failed'
+      failEnvelopeAfterSigning('written-then-reported-failed')
       await expect(send(1)).rejects.toThrow('written-then-reported-failed')
-      expect(relay.bodies).toHaveLength(0)
+      const original = signedBytes()
       await reopen()
       const held = await attemptOf(1)
       expect(held).toEqual({ payloadDigest: expect.any(String), paid: true })
       expect(await attemptOf(2)).toBeUndefined()
-      // The host links the digest and ticks: delivered once, paid once, the same bytes.
-      expect((await tick([held!.payloadDigest]))[held!.payloadDigest]).toBe(
-        'delivered',
-      )
+      expect((await tick([held!.payloadDigest]))[held!.payloadDigest]).toBe('delivered')
       await tick()
-      expect(bobMailbox).toHaveLength(1)
+      expect(signedBytes()).toEqual(original)
       expect(relay.bodies).toHaveLength(1)
-      expect(statusOf(row.index)).toBe('spent')
-      expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
-      // And a retry under the same ID can never pay again.
-      await expect(send(1)).rejects.toMatchObject({
-        name: 'DirectMessageAlreadyAttemptedError',
-        payloadDigest: held!.payloadDigest,
-      })
-      expect(relay.bodies).toHaveLength(1)
+      expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set(original))
+      await expect(send(1)).rejects.toMatchObject({ name: 'DirectMessageAlreadyAttemptedError', payloadDigest: held!.payloadDigest })
     })
 
-    it('after the relay accepted, before the wallet\'s own broadcast: the restart broadcasts the same bytes', async () => {
+    it('relay acceptance with wallet broadcast unavailable: restart broadcasts the original durable bytes', async () => {
       const [row] = await fundAccounts(1)
       offlineChain.relayBroadcasts = false
-      jest
-        .spyOn(EvmStampPayer.prototype, 'broadcast')
-        .mockRejectedValueOnce(new Error('crash before broadcast'))
+      offlineChain.broadcastDown = true
       const sent = await send(1)
+      const original = signedBytes()
       expect(offlineChain.mined.size).toBe(0)
       await reopen()
-      expect(alice.pool.claimedBy(row.index)).toBeDefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
+      offlineChain.broadcastDown = false
       await tick()
       await tick()
       expect(offlineChain.mined.has(sent.stampPayments[0].txHash)).toBe(true)
-      expect(statusOf(row.index)).toBe('spent')
+      expect(signedBytes()).toEqual(original)
+      expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(original))
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
       expect(relay.bodies).toHaveLength(1)
     })
 
-    it('after the wallet\'s own broadcast: the restart finds the payment on chain and sends nothing again', async () => {
+    it('after wallet broadcast and confirmation: restart neither signs nor broadcasts a second payment', async () => {
       const [row] = await fundAccounts(1)
       offlineChain.relayBroadcasts = false
       await send(1)
+      const original = signedBytes()
+      const broadcasts = [...offlineChain.walletBroadcasts]
       await reopen()
-      expect(alice.pool.claimedBy(row.index)).toBeDefined()
-      const broadcasts = offlineChain.walletBroadcasts.length
       await tick()
-      expect(statusOf(row.index)).toBe('spent')
-      expect(alice.pool.claimedBy(row.index)).toBeUndefined()
-      expect(offlineChain.walletBroadcasts.length).toBe(broadcasts)
+      expect(signedBytes()).toEqual(original)
+      expect(offlineChain.walletBroadcasts).toEqual(broadcasts)
+      expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
       expect(relay.bodies).toHaveLength(1)
-      await expect(send(1)).rejects.toBeInstanceOf(
-        DirectMessageAlreadyAttemptedError,
-      )
+      await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
     })
   })
 })

@@ -1146,11 +1146,11 @@
     },
     {
       "path": "packages/wallet/evm-identity.ts",
-      "sha256": "8900311a275efb5f9c77c7d8f886dc10e259550bebe6804f8a02494d87fe449b"
+      "sha256": "5ba8bdd7da928da242362ec505b17146004f65fd12775c87093f6693cb153d75"
     },
     {
       "path": "packages/wallet/evm-wallet-material.ts",
-      "sha256": "c5ac2b887ee3652b163af1b99f8c25e05de7bd10ae5dff4c28352c89144aee14"
+      "sha256": "41179115346567a37f7b44d95099ffa8bfe7c8ec60be80f9d7a48836e31f6e4e"
     },
     {
       "path": "packages/wallet/secp256k1-hd-keyring.ts",

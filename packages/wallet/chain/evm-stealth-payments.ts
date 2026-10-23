@@ -603,6 +603,7 @@ export function createEvmStealthPayments(
     prepare: (input) => {
       const intent = {
         ...input,
+        ...(input.messageStamp === undefined ? {} : { messageStamp: { ...input.messageStamp } }),
         asset: { ...input.asset },
         recipientSpendPublicKey: new Uint8Array(input.recipientSpendPublicKey),
       }

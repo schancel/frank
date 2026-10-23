@@ -2162,7 +2162,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           let balancePartsRefresh: Promise<BalanceParts> | undefined;
           let balanceReadGeneration = 0;
           // Existing financial invalidations detach older display reads as well as cached totals.
-          const invalidateBalanceRead = (): void => {
+          const invalidateBalanceRead = (affectedAddress?: string): void => {
+            if (affectedAddress !== undefined) transactionSetRuntime.coinListSync.markDirty(affectedAddress);
             balanceReadGeneration++;
             primaryBalanceCache = undefined;
             balancePartsRefresh = undefined;
@@ -2220,6 +2221,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 const readAddress = (address: string): Promise<bigint> =>
                   transactionBuilder.getBalance({ address, provider });
                 const changeAddressSet = new Set<string>();
+                for (const coin of coinList.all()) {
+                  if (coin.origin === "change") changeAddressSet.add(coin.account.toLowerCase());
+                }
                 for (const rec of changePool.records()) {
                   changeAddressSet.add(rec.address.toLowerCase());
                 }
@@ -2235,6 +2239,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     );
                   }
                 }
+                changeAddressSet.delete(mainAccount.address.toLowerCase());
+                changeAddressSet.delete(identity.address.raw.toLowerCase());
                 const changeAddresses = [...changeAddressSet];
                 const [nextMain, nextIdentity, ...changeBalances] =
                   await Promise.all([

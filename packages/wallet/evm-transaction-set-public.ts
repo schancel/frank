@@ -90,11 +90,12 @@ export function evmTransactionSetCapability(
 ): TransactionSetCapability {
   return {
     async constructTransactionSet(request): Promise<PreparedTransactionSet> {
+      const kdf = request.kdf
       const result = await preparer.constructTransactionSet({
         operationId: request.operationId,
         amountWei: request.amountAtomic,
         kdf(index) {
-          const destination = request.kdf(index, 0)
+          const destination = kdf(index, 0)
           if (destination.length !== 20)
             throw new Error(
               'EVM transaction-set destination must be exactly 20 bytes',

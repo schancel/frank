@@ -468,9 +468,38 @@ function reservation(row: EvmNativeOperation): number {
   }
   return fail()
 }
+/** Only immutable signature facts are memoized. Every durable reload still validates the
+ * row, binding, graph, mutable observations and cross-record reservations. Exact strings
+ * (not hashes or object identities) prevent changed durable bytes from inheriting trust. */
+class NativeSignatureValidationCache {
+  private readonly entries = new Set<string>()
+  private bytes = 0
+
+  validate(inputs: readonly string[], verify: () => void): void {
+    const key = JSON.stringify(inputs)
+    if (this.entries.has(key)) return
+    verify()
+    // Account for UTF-16 string storage, with both a byte and entry bound. An oversized
+    // valid input remains usable; it is simply verified again on the next reload.
+    const bytes = key.length * 2
+    const maximumBytes = 8 * 1024 * 1024
+    // Retain the verified prefix when full. Evicting during ordered full-journal scans
+    // would thrash the entire cache once history exceeds its capacity.
+    if (this.entries.size >= 4096 || this.bytes + bytes > maximumBytes) return
+    this.entries.add(key)
+    this.bytes += bytes
+  }
+
+  clear(): void {
+    this.entries.clear()
+    this.bytes = 0
+  }
+}
+
 function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
+  signatures: NativeSignatureValidationCache,
 ): EvmNativeOperation {
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const hasSubmissionPolicy =
@@ -599,15 +628,23 @@ function validateRow(
           (member.unsignedTransaction as string).length + 256
       )
         fail()
-      const parsed = Transaction.from(signed.rawTransaction)
-      if (
-        !parsed.isSigned() ||
-        parsed.serialized !== signed.rawTransaction ||
-        parsed.unsignedSerialized !== member.unsignedTransaction ||
-        parsed.from?.toLowerCase() !== source.address ||
-        parsed.hash !== signed.transactionHash
-      )
-        fail('invalid', 'signature')
+      const rawTransaction = signed.rawTransaction
+      signatures.validate([
+        source.address,
+        member.unsignedTransaction as string,
+        rawTransaction,
+        signed.transactionHash as string,
+      ], () => {
+        const parsed = Transaction.from(rawTransaction)
+        if (
+          !parsed.isSigned() ||
+          parsed.serialized !== signed.rawTransaction ||
+          parsed.unsignedSerialized !== member.unsignedTransaction ||
+          parsed.from?.toLowerCase() !== source.address ||
+          parsed.hash !== signed.transactionHash
+        )
+          fail('invalid', 'signature')
+      })
     } else if (member.exposed || member.syncApplied) fail()
     const observation = checked('observation', () =>
       validateObservation(member.observation),
@@ -719,6 +756,7 @@ export class EvmNativeOperationJournal {
   private nextSequence = 1
   private lifecycle: 'closed' | 'open' | 'uncertain' = 'closed'
   private closing = false
+  private readonly signatures = new NativeSignatureValidationCache()
   private tail: Promise<unknown> = Promise.resolve()
   private captures = new Map<string, object>()
   readonly binding: EvmNativeBinding
@@ -783,7 +821,7 @@ export class EvmNativeOperationJournal {
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
       if (name === 'manifest') manifest = JSON.parse(text) as unknown
       else if (name.startsWith('operation:')) {
-        const row = validateRow(JSON.parse(text) as unknown, this.binding)
+        const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
         if (
           name !== `operation:${row.operationId}` ||
           rows.has(row.operationId)
@@ -1058,7 +1096,7 @@ export class EvmNativeOperationJournal {
           ...(frozen.record ? { record: frozen.record } : {}),
         }
         row.reservedBytes = reservation(row)
-        const validated = validateRow(row, this.binding)
+        const validated = validateRow(row, this.binding, this.signatures)
         if (
           activeRows.reduce((n, r) => n + r.reservedBytes, 0) +
             row.reservedBytes >
@@ -1156,7 +1194,7 @@ export class EvmNativeOperationJournal {
         await this.reloadRows(false)
         const row = this.get(id)
         if (change(row) === false) return row
-        const validated = validateRow(row, this.binding)
+        const validated = validateRow(row, this.binding, this.signatures)
         try {
           if (this.database)
             await durablePut(
@@ -1339,6 +1377,7 @@ export class EvmNativeOperationJournal {
     this.captures.clear()
     await this.tail
     this.lifecycle = 'closed'
+    this.signatures.clear()
     await this.database?.close()
     this.database = undefined
   }

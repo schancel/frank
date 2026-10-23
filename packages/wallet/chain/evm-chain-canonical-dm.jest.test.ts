@@ -1845,7 +1845,11 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: f.bob.identity.address,
         items: text('paid after unpaid'),
       })
-      const last = restoreCanonicalRequest(f.requests[f.requests.length - 1])
+      const matching = f.requests.map(restoreCanonicalRequest).filter(request =>
+        request.identity.payload_hash === paid.payloadDigest,
+      )
+      expect(matching).toHaveLength(1)
+      const last = matching[0]!
       const exactFee = last.parts.transactions.reduce((total, raw) => {
         const transaction = Transaction.from('0x' + toHex(raw))
         return total + transaction.gasLimit * (transaction.gasPrice ?? 0n)
@@ -2500,6 +2504,10 @@ describe('two typed wallets on the open directory', () => {
       timestampMs,
     }
   }
+  const outboundRecordForMessage = (digest: string, timestampMs: number) => ({
+    ...inboxRecordForMessage(digest, timestampMs),
+    direction: 'out' as const,
+  })
   const fund = async (wallet: EvmChainWalletHandle) => {
     for (const record of wallet.pool.ensureSize(2))
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
@@ -2725,7 +2733,6 @@ describe('two typed wallets on the open directory', () => {
         mailboxPage.mockResolvedValueOnce({ records: [record] })
         expect((await scan(wallet)).records[0].items).toEqual(items)
       }
-      const index = f.requests.length
       const noteItems = [
         {
           type: 'outbox-message' as const,
@@ -2745,13 +2752,13 @@ describe('two typed wallets on the open directory', () => {
         items: noteItems,
         stampValue: 0n,
       })
-      mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(index, 9)] })
+      mailboxPage.mockResolvedValueOnce({ records: [inboxRecordForMessage(note.payloadDigest, 9)] })
       const scanned = await scan(f.alice)
       expect(scanned.records[0].items).toEqual(noteItems)
       expect(scanned.records[0].payloadDigest).toBe(note.payloadDigest)
       expect(scanned.records[0].messageId).not.toBe(noteItems[0].messageId)
       // The ordinary consumer still deliberately reconstructs the original presentation.
-      mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(index, 9)] })
+      mailboxPage.mockResolvedValueOnce({ records: [inboxRecordForMessage(note.payloadDigest, 9)] })
       const ordinary = await f.chain.directMessages.fetchSince({
         wallet: f.alice,
         sinceMs: 0,
@@ -3080,7 +3087,7 @@ describe('two typed wallets on the open directory', () => {
       await online("bob", f.bob);
       // Seal only an ordinary control message. Synthetic decoded items are injected below;
       // no command-bearing envelope is created or sent, and the dispatcher is an inert spy.
-      await f.chain.directMessages.send({
+      const sent = await f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
         items: text("projection control"),
@@ -3117,8 +3124,8 @@ describe('two typed wallets on the open directory', () => {
       const wallet = direction === "out" ? f.alice : f.bob;
       const record =
         direction === "out"
-          ? outboundRecord(0, 10)
-          : { ...inboxRecord(0, 10), direction: "in" as const };
+          ? outboundRecordForMessage(sent.payloadDigest, 10)
+          : { ...inboxRecordForMessage(sent.payloadDigest, 10), direction: "in" as const };
       const before = wallet.pool.records().map((row) => ({ ...row }));
       let close: (() => void) | undefined;
       try {
@@ -3174,12 +3181,12 @@ describe('two typed wallets on the open directory', () => {
     expect([...relay.subjects()].sort()).toEqual(
       [f.alice, f.bob].map(w => toHex(w.identity.compressedPubKey)).sort(),
     )
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('hello bob'),
     })
-    inboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+    inboxPage.mockResolvedValue({ records: [inboxRecordForMessage(sent.payloadDigest, 7)] })
     // Bob has never looked Alice up: her entry is fetched and verified from the sending key.
     const atBob = await f.chain.directMessages.fetchSince({
       wallet: f.bob,
@@ -3221,7 +3228,6 @@ describe('two typed wallets on the open directory', () => {
         direction === 'in' ? 'openDirectMessage' : 'openOwnDirectMessage',
       )
       const conversationId = '01010101-0101-0101-0101-010101010101'
-      const submissions: number[] = []
       const sent = []
       let close: (() => void) | undefined
       try {
@@ -3230,7 +3236,6 @@ describe('two typed wallets on the open directory', () => {
           'same content',
           'different content',
         ]) {
-          submissions.push(f.requests.length)
           sent.push(
             await f.chain.directMessages.send({
               wallet: f.alice,
@@ -3241,10 +3246,10 @@ describe('two typed wallets on the open directory', () => {
             }),
           )
         }
-        const records = submissions.map((index, n) =>
+        const records = sent.map((message, n) =>
           direction === 'in'
-            ? { ...inboxRecord(index, 100 + n), direction }
-            : outboundRecord(index, 100 + n),
+            ? { ...inboxRecordForMessage(message.payloadDigest, 100 + n), direction }
+            : outboundRecordForMessage(message.payloadDigest, 100 + n),
         )
         const wallet = direction === 'in' ? f.bob : f.alice
         mailboxPage.mockResolvedValueOnce({ records })
@@ -3579,14 +3584,14 @@ describe('two typed wallets on the open directory', () => {
     await fund(f.alice)
 
     // Alice sends to Bob
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('hello bob from alice'),
     })
 
     // Outbound message is echoed back to Alice's mailbox with direction: 'out'
-    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 10)] })
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecordForMessage(sent.payloadDigest, 10)] })
     const atAlice = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
       sinceMs: 0,
@@ -3618,7 +3623,7 @@ describe('two typed wallets on the open directory', () => {
     // Give async connect time to resolve
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(mockStreamRecordHandler).toBeDefined()
-    await mockStreamRecordHandler!(outboundRecord(0, 11))
+    await mockStreamRecordHandler!(outboundRecordForMessage(sent.payloadDigest, 11))
     expect(streamedRecord).toBeDefined()
     expect(streamedRecord.outbound).toBe(true)
     expect(streamedRecord.items).toEqual(text('hello bob from alice'))
@@ -3666,7 +3671,7 @@ describe('two typed wallets on the open directory', () => {
     await fund(f.alice)
 
     // Alice sends to Bob when both are on revision 0
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('pre-rotation message'),
@@ -3681,7 +3686,7 @@ describe('two typed wallets on the open directory', () => {
 
     // Alice fetches her mailbox: Bob's statement has rotated, so Alice resolves Bob's
     // revision 0 statement via peerHistorical and decrypts her own outbound message
-    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 20)] })
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecordForMessage(sent.payloadDigest, 20)] })
     const atAliceOwn = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
       sinceMs: 0,
@@ -3692,7 +3697,7 @@ describe('two typed wallets on the open directory', () => {
 
     // Bob fetches his inbox: Bob's own statement has rotated, so Bob resolves his
     // revision 0 statement via peerHistorical and decrypts Alice's incoming message
-    mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 20)] })
+    mailboxPage.mockResolvedValueOnce({ records: [inboxRecordForMessage(sent.payloadDigest, 20)] })
     const atBob = await f.chain.directMessages.fetchSince({
       wallet: f.bob,
       sinceMs: 0,
@@ -3707,7 +3712,7 @@ describe('two typed wallets on the open directory', () => {
 
     // Now BOTH Alice and Bob have rotated. Alice fetches her mailbox again:
     // Alice resolves BOTH Alice and Bob revision 0 statements and decrypts
-    mailboxPage.mockResolvedValueOnce({ records: [outboundRecord(0, 25)] })
+    mailboxPage.mockResolvedValueOnce({ records: [outboundRecordForMessage(sent.payloadDigest, 25)] })
     const atAliceBothRotated = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
       sinceMs: 0,
@@ -3721,14 +3726,14 @@ describe('two typed wallets on the open directory', () => {
     await online('alice', f.alice)
     const bobDir = await online('bob', f.bob)
     await fund(f.alice)
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('recover original'),
     })
     clock += 345n * 24n * 3600n * SECOND
     await bobDir.publish()
-    const original = inboxRecord(0, 20)
+    const original = inboxRecordForMessage(sent.payloadDigest, 20)
     inboxPage.mockResolvedValue({ records: [original] })
     installCanonicalDirectory(f.bob, {
       ...bobDir,
@@ -3871,7 +3876,7 @@ describe('two typed wallets on the open directory', () => {
   it('does not show a message whose sender entry is forged', async () => {
     await online('alice', f.alice)
     await online('bob', f.bob)
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('really from alice'),
@@ -3888,7 +3893,7 @@ describe('two typed wallets on the open directory', () => {
     })
     relay.tamper = path =>
       path.endsWith(`/${aliceSubject}/head`) ? forged : undefined
-    inboxPage.mockResolvedValue({ records: [inboxRecord(0, 7)] })
+    inboxPage.mockResolvedValue({ records: [inboxRecordForMessage(sent.payloadDigest, 7)] })
     const quarantined: number[] = []
     expect(
       await f.chain.directMessages.fetchSince({
@@ -3903,7 +3908,7 @@ describe('two typed wallets on the open directory', () => {
   it('keeps delivering other senders when one sender cannot be checked, and retries that one', async () => {
     await online('alice', f.alice)
     const bobDirectory = await online('bob', f.bob)
-    await f.chain.directMessages.send({
+    const first = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('first'),
@@ -3921,7 +3926,7 @@ describe('two typed wallets on the open directory', () => {
     })
     // The first message stands in for a sender whose entry cannot be read right now: only the
     // first directory lookup of each read fails.
-    const stuck = inboxRecord(0, 5),
+    const stuck = inboxRecordForMessage(first.payloadDigest, 5),
       good = inboxRecordForMessage(second.payloadDigest, 9)
     inboxPage.mockResolvedValue({ records: [stuck, good] })
     const real = bobDirectory.peerCurrent
@@ -3980,10 +3985,10 @@ describe('two typed wallets on the open directory', () => {
   it('keeps a missing current sender replayable and recovers the same receipt', async () => {
     await online('alice', f.alice)
     const bobDirectory = await online('bob', f.bob)
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice, recipient: f.bob.identity.address, items: text('withheld head'),
     })
-    const original = inboxRecord(0, 5)
+    const original = inboxRecordForMessage(sent.payloadDigest, 5)
     inboxPage.mockResolvedValue({ records: [original] })
     installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: f.fetch, peerCurrent: async () => undefined })
     await expect(f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 5 }))
@@ -4005,13 +4010,13 @@ describe('two typed wallets on the open directory', () => {
   it('delivers a message that carries no payment as a normal message with no stamp', async () => {
     await online('alice', f.alice)
     const bobDirectory = await online('bob', f.bob)
-    await f.chain.directMessages.send({
+    const sent = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('free of charge'),
     })
     // The same sealed message as the relay stores an unpaid one: schema 2, empty payment list.
-    const paid = inboxRecord(0, 7)
+    const paid = inboxRecordForMessage(sent.payloadDigest, 7)
     const parsed = parseFrame(paid.delivery)
     if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
       throw new Error('fixture')
@@ -4069,7 +4074,7 @@ describe('two typed wallets on the open directory', () => {
     }
     // Everything a forger can copy is right (sender, recipient, entries, context); only the
     // ciphertext is not what the key holders sealed, so it cannot be opened now or later.
-    const original = inboxRecord(0, 5)
+    const original = inboxRecordForMessage(messages[0]!, 5)
     const delivery = parseFrame(original.delivery)
     if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
       throw new Error('fixture')
@@ -4095,7 +4100,7 @@ describe('two typed wallets on the open directory', () => {
       ),
     }
     // A record whose context does not match is not known to be unopenable: it is left alone.
-    const mismatched = inboxRecord(0, 6)
+    const mismatched = inboxRecordForMessage(messages[0]!, 6)
     const context = new Uint8Array(mismatched.context)
     context[context.length - 1] ^= 1
     inboxPage.mockResolvedValue({

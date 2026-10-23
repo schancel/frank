@@ -1415,3 +1415,42 @@ it('retires cancelled authority only after durable cleanup and retries it on the
   expect(f.coins.all().some(coin => coin.holder === 'next-authorized')).toBe(true)
   await f.journal.Close()
 })
+
+
+it.each([
+  { mode: 'ordinary', budget: 64 },
+  { mode: 'append', budget: 63 },
+  { mode: 'fan-in', budget: 63 },
+  { mode: 'caller-bound', budget: 7 },
+])('bounds fragmented insufficiency by the available journal members: $mode', async ({ mode, budget }) => {
+  const count = 130
+  const f = await setup(Array<bigint>(count).fill(21001n))
+  if (mode === 'append')
+    await f.preparer.constructTransactionSet({ operationId: 'bounded-selection', amountWei: 1n, kdf })
+  const before = f.coins.all()
+  const existing = f.journal.list()
+  const select = f.coins.reserveTransactionSetSources.bind(f.coins)
+  const observedBounds: number[] = []
+  let capacityCalls = 0
+  jest.spyOn(f.coins, 'reserveTransactionSetSources').mockImplementation(params => {
+    observedBounds.push(params.maxCoins!)
+    return select({ ...params, capacityWei: (coin, fee) => {
+      capacityCalls++
+      return params.capacityWei!(coin, fee)
+    } })
+  })
+  const destinations = jest.fn(kdf)
+  const request = { operationId: 'bounded-selection', amountWei: 1000000000n, kdf: destinations,
+    ...(mode === 'caller-bound' ? { maxPaymentParts: 7 } : {}) }
+  const result = mode === 'append'
+    ? f.preparer.appendTransactionSet({ ...request, stageId: 'stamp' })
+    : mode === 'fan-in'
+      ? f.preparer.constructLegacyTransactionSet(request)
+      : f.preparer.constructTransactionSet(request)
+  await expect(result).rejects.toThrow('Insufficient')
+  expect(observedBounds).toEqual(mode === 'fan-in' ? [1, budget] : [budget])
+  expect(capacityCalls).toBeLessThanOrEqual(count * (budget + (mode === 'fan-in' ? 1 : 0)))
+  expect(destinations.mock.calls.length).toBeLessThanOrEqual(budget)
+  expect(f.coins.all()).toEqual(before)
+  expect(f.journal.list()).toEqual(existing)
+})

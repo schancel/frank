@@ -478,6 +478,7 @@ export class EvmTransactionSetPreparer {
       const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
     }
     context(0)
+    const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
     const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) => coins.reserveTransactionSetSources({
       holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
       // Independent selection funds recipients only. Actual private change determines the
@@ -485,7 +486,11 @@ export class EvmTransactionSetPreparer {
       amountWei: continuation?.deficit ?? (request.amountWei + (fanIn ? reserve + context(0).gas * policy.gasPriceWei : 0n)),
       minimumPaymentWei: fanIn || continuation ? undefined : minimum,
       feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
-      head: policy.head, sourceOrder: policy.sourceOrder, maxCoins: continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts),
+      head: policy.head, sourceOrder: policy.sourceOrder,
+      // Every selected source requires at least one member. Fan-in also needs its
+      // final recipient transaction; actual change members are checked after planning.
+      maxCoins: Math.min(remainingMemberBudget - (fanIn ? 1 : 0),
+        continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts ?? remainingMemberBudget)),
       canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
       capacityWei: (coin, fee) => {
         const capacity = coin.valueWei - fee, rule = policy.spendRule

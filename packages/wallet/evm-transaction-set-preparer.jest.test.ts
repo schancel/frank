@@ -937,6 +937,14 @@ it('restores an appended graph after durable write but interrupted inventory che
     jest.spyOn(coins, 'checkpointTransactionSetReservations').mockRejectedValueOnce(new Error('checkpoint interrupted'))
     await expect(preparer.appendTransactionSet(stamp)).rejects.toThrow('checkpoint interrupted')
     const original = journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+    const wrapper = preparer.getTransactionSet('durable-graph')
+    expect([...wrapper.bundle, ...wrapper.otherTransactions].map(member => member.rawTransaction).sort()).toEqual([...original].sort())
+    const stalePrimary = [...recipient.bundle, ...recipient.otherTransactions].map(member => member.rawTransaction)
+    await expect(preparer.authorizeSubmission('durable-graph', stalePrimary)).rejects.toThrow('conflict')
+    expect(journal.list()[0]!.submissionAuthorized).toBeUndefined()
+    await preparer.authorizeSubmission('durable-graph', original)
+    expect(journal.list()[0]!.submissionAuthorized).toBe(true)
+    expect(journal.list()[0]!.members.every(member => !member.exposed)).toBe(true)
     await journal.Close(); await store.close()
     store = await LevelRecordStore.open(directory, 'coins')
     coins = await EvmCoinList.open(store)
@@ -946,6 +954,11 @@ it('restores an appended graph after durable write but interrupted inventory che
     const restored = await preparer.appendTransactionSet(stamp)
     expect(restored.bundle.length).toBeGreaterThan(0)
     expect(journal.list()).toHaveLength(1)
+    expect(journal.list()[0]!.submissionAuthorized).toBe(true)
+    await expect(preparer.appendTransactionSet({ ...stamp, stageId: 'after-authorization' })).rejects.toThrow('exposed or unavailable')
+    expect(await preparer.releaseUnexposed(journal.list()[0]!.operationId)).toBe(false)
+    await expect(journal.discardUnexposed(journal.list()[0]!.operationId)).rejects.toThrow('conflict')
+    expect(preparer.getTransactionSet('durable-graph')).toEqual(wrapper)
     expect(journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
     expect(restored.bundle.every(payment => coins.get(payment.sourceAccount, payment.nonce)?.holder === primary.operationId)).toBe(true)
   } finally {
@@ -968,4 +981,54 @@ it.each(['missing-funder', 'invented-balance', 'cycle', 'wrong-stage-amount'] as
     members: row.members.map(({ source, unsignedTransaction, dependencies, transactionSet }) => ({ source, unsignedTransaction, dependencies, transactionSet })),
   }, row.members.map(item => item.signed!.rawTransaction))).rejects.toThrow()
   expect(other.list()).toHaveLength(0)
+})
+
+it('broadcasts every delayed change with original bytes after recipient success and durable restart', async () => {
+  const { EvmTransactionSetLifecycle } = await import('./evm-transaction-set-lifecycle')
+  const directory = await mkdtemp(join(tmpdir(), 'delayed-change-restart-'))
+  const binding = { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'delayed-change' }
+  const selectedPolicy = { ...policy, head: 100, spendRule: { belowWei: 2000000n, waitBlocks: 3 } }
+  let store = await LevelRecordStore.open<import('./evm-coin-list').StoredEvmListCoin>(directory, 'coins')
+  let coins = await EvmCoinList.open(store)
+  let journal = new EvmNativeOperationJournal({ location: directory, binding }); await journal.Open()
+  const options = () => ({ coins, journal, policy: () => selectedPolicy, recoverySpendRule: selectedPolicy.spendRule,
+    deriveChange: (index: number) => ({ account: signer(100 + index).address.toLowerCase(), privateKey: signer(100 + index).privateKey, changeIndex: index }), random: () => 0.01 })
+  let preparer = new EvmTransactionSetPreparer(options())
+  const broadcast = jest.fn(async (raw: string) => ({ hash: Transaction.from(raw).hash! }))
+  const lifecycle = () => new EvmTransactionSetLifecycle({ authority: preparer, provider: { getTransaction: async () => null, broadcastTransaction: broadcast }, head: () => selectedPolicy.head })
+  const include = async (index: number) => {
+    const member = journal.list()[0]!.members[index]!, tx = Transaction.from(member.signed!.rawTransaction)
+    await preparer.recordObservation('delayed-change', index, {
+      state: 'included-success', transactionHash: tx.hash!, blockHash: '0x' + 'ab'.repeat(32), blockNumber: selectedPolicy.head, transactionIndex: index, feeWei: '21000',
+    }, { nonce: tx.nonce + 1, balanceWei: member.transactionSet!.balanceAfterWei, blockNumber: selectedPolicy.head, blockHash: '0x' + 'ab'.repeat(32) })
+  }
+  try {
+    await coins.put({ account: signer(1).address, privateKey: signer(1).privateKey, nonce: 0, valueWei: 1000000n, origin: 'root' })
+    const set = await preparer.constructTransactionSet({ operationId: 'delayed-change', amountWei: 300000n, kdf })
+    expect(set.otherTransactions.length).toBeGreaterThan(1)
+    expect(journal.list()[0]!.members[0]!.transactionSet!.role).toBe('payment')
+    await lifecycle().replay('delayed-change', { payments: true })
+    expect(broadcast.mock.calls.map(([raw]) => raw)).toEqual([set.bundle[0]!.rawTransaction])
+    await include(0)
+    expect(coins.all().some(coin => coin.account === signer(1).address.toLowerCase() && coin.state === 'unspent')).toBe(false)
+    await journal.Close(); await store.close()
+    store = await LevelRecordStore.open(directory, 'coins'); coins = await EvmCoinList.open(store)
+    journal = new EvmNativeOperationJournal({ location: directory, binding }); await journal.Open()
+    preparer = new EvmTransactionSetPreparer(options())
+    selectedPolicy.head = 102
+    await lifecycle().replay('delayed-change', { payments: true })
+    expect(broadcast).toHaveBeenCalledTimes(1)
+    for (let index = 1; index < journal.list()[0]!.members.length; index++) {
+      selectedPolicy.head = 100 + 3 * index
+      await lifecycle().replay('delayed-change', { payments: true })
+      expect(broadcast).toHaveBeenCalledTimes(index + 1)
+      expect(broadcast.mock.calls[index]![0]).toBe(journal.list()[0]!.members[index]!.signed!.rawTransaction)
+      await include(index)
+    }
+    expect(broadcast.mock.calls.slice(1).map(([raw]) => raw)).toEqual(set.otherTransactions.map(tx => tx.rawTransaction))
+    await lifecycle().replay('delayed-change', { payments: true })
+    expect(broadcast).toHaveBeenCalledTimes(set.otherTransactions.length + 1)
+  } finally {
+    await journal.Close(); await store.close(); await rm(directory, { recursive: true, force: true })
+  }
 })

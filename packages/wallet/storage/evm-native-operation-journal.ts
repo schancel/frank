@@ -195,6 +195,8 @@ export interface EvmTransactionSetStage {
   legacy?: true
 }
 export interface EvmNativeOperation {
+  /** Explicit submission of this complete graph, durable independently of member exposure. */
+  submissionAuthorized?: true
   transactionSetStages?: EvmTransactionSetStage[]
   version: 1
   operationId: string
@@ -488,9 +490,11 @@ function validateRow(
     'reservedBytes',
     ...(hasPreparationId ? ['preparationId'] : []),
     ...('transactionSetStages' in (value as object) ? ['transactionSetStages'] : []),
+    ...('submissionAuthorized' in (value as object) ? ['submissionAuthorized'] : []),
     ...(hasRecord ? ['record'] : []),
     ...(hasSubmissionPolicy ? ['submissionPolicy'] : []),
   ])
+  if ('submissionAuthorized' in row && (row.submissionAuthorized !== true || row.kind !== 'transaction-set')) fail()
   if (
     hasPreparationId &&
     (typeof row.preparationId !== 'string' ||
@@ -1094,6 +1098,18 @@ export class EvmNativeOperationJournal {
       }),
     )
   }
+  authorizeTransactionSet(id: string, expectedRawTransactions?: readonly string[]): Promise<EvmNativeOperation> {
+    const expected = expectedRawTransactions === undefined ? undefined : [...expectedRawTransactions].sort()
+    return this.mutate(id, row => {
+      if (row.kind !== 'transaction-set' || row.cancelled || row.members.some(member => !member.signed)) fail('conflict')
+      if (expected && JSON.stringify(expected) !== JSON.stringify(row.members.map(member => member.signed!.rawTransaction).sort())) fail('conflict')
+      if (row.submissionAuthorized) return false
+      row.submissionAuthorized = true
+      row.reservedBytes = reservation(row)
+      if ([...this.rows.values()].filter(other => !other.cancelled && other.operationId !== id).reduce((sum, other) => sum + other.reservedBytes, 0) + row.reservedBytes > this.maxBytes) fail('capacity')
+    })
+  }
+
   appendTransactionSet(
     id: string,
     stage: EvmTransactionSetStage,
@@ -1102,7 +1118,7 @@ export class EvmNativeOperationJournal {
   ): Promise<EvmNativeOperation> {
     const input = clone({ stage, members, signedTransactions })
     return this.mutate(id, row => {
-      if (row.kind !== 'transaction-set' || row.cancelled || !input.stage.stageId ||
+      if (row.kind !== 'transaction-set' || row.cancelled || row.submissionAuthorized || !input.stage.stageId ||
           row.members.some(member => member.exposed || !member.signed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) fail('conflict')
       const known = row.transactionSetStages?.find(item => item.stageId === input.stage.stageId)
       if (known) {
@@ -1241,7 +1257,7 @@ export class EvmNativeOperationJournal {
    */
   discardUnexposed(id: string): Promise<EvmNativeOperation> {
     return this.mutate(id, row => {
-      if (row.members.some(m => m.exposed)) fail('conflict')
+      if (row.submissionAuthorized || row.members.some(m => m.exposed)) fail('conflict')
       for (const m of row.members) {
         m.signed = null
         m.observation = { state: 'unknown' }

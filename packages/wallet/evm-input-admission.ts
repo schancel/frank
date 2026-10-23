@@ -955,6 +955,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'beginCapture'
     | 'recordObservation'
     | 'appendTransactionSet'
+    | 'authorizeTransactionSet'
   >
 /** Internal executor capability. Every completion rechecks the captured lifetime; no raw owner escapes. */
 export function nativeAdmissionJournal(
@@ -969,6 +970,7 @@ export function nativeAdmissionJournal(
     owner.mutate(lifetime, operation)
   return {
     ...nativeJournalReader(journal, owner.owners.topic),
+    authorizeTransactionSet: (id, expected) => mutation(() => journal.authorizeTransactionSet(id, expected)),
     appendTransactionSet: (id, stage, members, signed) => mutation(async () => {
       const row = journal.get(id)
       owner.check(members.map(member => ({ kind: 'pair' as const, address: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce })), `native:${id}`)

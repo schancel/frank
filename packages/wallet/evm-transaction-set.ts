@@ -80,6 +80,19 @@ export class EvmTransactionSetPreparer {
       )
   }
 
+  /** Complete graph snapshot for the wallet submission boundary; never signs or broadcasts. */
+  getTransactionSet(operationId: string): PreparedEvmTransactionSet {
+    const row = this.getOperation(operationId)
+    if (!row || row.cancelled) throw new Error('Unknown active transaction set')
+    return this.result(row, null)
+  }
+
+  async authorizeSubmission(operationId: string, expectedRawTransactions?: readonly string[]): Promise<void> {
+    const row = this.getOperation(operationId)
+    if (!row) throw new Error('Unknown transaction-set operation')
+    await this.options.journal.authorizeTransactionSet(row.operationId, expectedRawTransactions)
+  }
+
   transactionSetPolicy(): EvmTransactionSetPolicy {
     return this.options.policy()
   }
@@ -91,6 +104,7 @@ export class EvmTransactionSetPreparer {
       !row ||
       row.kind !== 'transaction-set' ||
       row.cancelled ||
+      row.submissionAuthorized ||
       row.members.some(member => member.exposed)
     )
       return false
@@ -365,7 +379,7 @@ export class EvmTransactionSetPreparer {
       this.restoreRow(existing)
       return this.result(existing, stageId)
     }
-    if (stageId !== undefined && (!existing || !existing.transactionSetStages || existing.cancelled || existing.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))))
+    if (stageId !== undefined && (!existing || !existing.transactionSetStages || existing.cancelled || existing.submissionAuthorized || existing.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))))
       throw new Error('Cannot append to an exposed or unavailable operation')
     const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
     if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
@@ -798,7 +812,7 @@ export class EvmTransactionSetPreparer {
     }
   }
 
-  private result(row: EvmNativeOperation, stageId?: string): PreparedEvmTransactionSet {
+  private result(row: EvmNativeOperation, stageId?: string | null): PreparedEvmTransactionSet {
     const entries = row.members.map((member): PreparedEvmTransaction => {
       if (!member.signed) throw new Error('Incomplete signed transaction set')
       const tx = Transaction.from(member.signed.rawTransaction)
@@ -826,11 +840,11 @@ export class EvmTransactionSetPreparer {
       chainIdentifier: row.binding.chainIdentifier,
       bundle: entries
         .filter(
-          (_, index) => row.members[index]!.transactionSet!.role === 'payment' && row.members[index]!.transactionSet!.stageId === stageId,
+          (_, index) => row.members[index]!.transactionSet!.role === 'payment' && (stageId === null || row.members[index]!.transactionSet!.stageId === stageId),
         )
         .sort((a, b) => a.logicalIndex - b.logicalIndex),
       otherTransactions: entries.filter(
-        (_, index) => row.members[index]!.transactionSet!.role !== 'payment' && row.members[index]!.transactionSet!.stageId === stageId,
+        (_, index) => row.members[index]!.transactionSet!.role !== 'payment' && (stageId === null || row.members[index]!.transactionSet!.stageId === stageId),
       ),
     }
   }

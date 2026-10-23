@@ -80,6 +80,7 @@ export type EvmTransactionSetJournal = Pick<
   | 'refreshPreparation'
   | 'prepare'
   | 'appendTransactionSet'
+  | 'authorizeTransactionSet'
   | 'markExposed'
   | 'markSyncApplied'
   | 'markTransactionSetInventoryApplied'

@@ -24,6 +24,8 @@ const fr = flatten(frFR)
 /** fr-fr strings that are legitimately the same word in French. Everything else identical to
  * en-us is an untranslated placeholder (ticket #274: `noContactMessage` shipped English). */
 const SAME_IN_FRENCH = new Set([
+  // Protocol brand names retain their spelling in French.
+  'accountSync.walletConnectTitle',
   'accountRecovery.mera_title',
   'notificationPermission.title',
   'leftDrawer.contacts',

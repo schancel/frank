@@ -109,7 +109,7 @@ describe('parallel paid messages', () => {
   let relay: {
     inFlight: number
     mostAtOnce: number
-    delayMs: number
+    beforeResponse?: (payments: Transaction[]) => Promise<void>
     bodies: { body: Uint8Array; contentType: string }[]
     /** Set to answer the next message requests yourself: an HTTP status and a JSON body built
      * from the request's own identity (and its signed payments). The relay stand-in then stores
@@ -132,7 +132,7 @@ describe('parallel paid messages', () => {
     bobMailbox = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
     f.setMailbox(bobMailbox)
-    relay = { inFlight: 0, mostAtOnce: 0, delayMs: 0, bodies: [] }
+    relay = { inFlight: 0, mostAtOnce: 0, bodies: [] }
     const base = await f.directoryFor('alice', f.alice, f.bob)
     directory = {
       ...base,
@@ -140,13 +140,14 @@ describe('parallel paid messages', () => {
         relay.inFlight++
         relay.mostAtOnce = Math.max(relay.mostAtOnce, relay.inFlight)
         try {
-          if (relay.delayMs > 0)
-            await new Promise(resolve => setTimeout(resolve, relay.delayMs))
           const request = {
             body: new Uint8Array(init.body!),
             contentType: init.headers['Content-Type'],
           }
           const restored = restoreCanonicalRequest(request)
+          await relay.beforeResponse?.(restored.parts.transactions.map(raw =>
+            Transaction.from(hexlify(raw)),
+          ))
           const answered = relay.answer?.(
             restored.identity,
             restored.parts.transactions.map(raw =>
@@ -364,23 +365,41 @@ describe('parallel paid messages', () => {
 
   it('twenty sends started together claim twenty different accounts and are in flight together', async () => {
     const rows = await fundAccounts(21)
-    // One send on its own, for the time one send takes with a relay that answers in 5 s (long
-    // enough that sealing twenty messages on one thread, on a busy machine, fits inside it).
-    relay.delayMs = 5_000
-    const startOne = Date.now()
     const first = await send(100)
-    const oneMs = Date.now() - startOne
     relay.mostAtOnce = 0
 
-    const start = Date.now()
-    const sent = await Promise.all(
-      Array.from({ length: 20 }, (_, n) => send(n)),
-    )
-    const twentyMs = Date.now() - start
-    // eslint-disable-next-line no-console
-    console.log(
-      `one send: ${oneMs} ms; twenty together: ${twentyMs} ms; relay requests in flight at once: ${relay.mostAtOnce}`,
-    )
+    let release!: () => void
+    const responsesHeld = new Promise<void>(resolve => { release = resolve })
+    let allEntered!: () => void
+    let entryFailed!: (error: Error) => void
+    const entries = new Promise<void>((resolve, reject) => {
+      allEntered = resolve
+      entryFailed = reject
+    })
+    const enteredPayers: string[] = []
+    relay.beforeResponse = async payments => {
+      enteredPayers.push(...payments.map(tx => tx.from!.toLowerCase()))
+      if (relay.inFlight === 20) allEntered()
+      await responsesHeld
+    }
+    // This bounds a deadlock, not throughput: no response can complete until all
+    // twenty sends have independently reached the relay with distinct signed inputs.
+    const deadline = setTimeout(() => entryFailed(new Error('Twenty sends did not reach the held relay concurrently')), 30_000)
+    const sending = Promise.all(Array.from({ length: 20 }, (_, n) => send(n)))
+    void sending.catch(entryFailed)
+    let sent!: Awaited<typeof sending>
+    try {
+      await entries
+      expect(relay.inFlight).toBe(20)
+      expect(enteredPayers).toHaveLength(20)
+      expect(new Set(enteredPayers).size).toBe(20)
+      expect(bobMailbox).toHaveLength(1)
+    } finally {
+      clearTimeout(deadline)
+      release()
+      sent = await sending
+      relay.beforeResponse = undefined
+    }
 
     // Twenty messages, each paid by one account, no account used twice.
     const payers = relayPayments().map(tx => tx.from!.toLowerCase())
@@ -393,8 +412,6 @@ describe('parallel paid messages', () => {
     expect(bobMailbox).toHaveLength(21)
     // All twenty relay requests were in flight at the same time: nothing queued them.
     expect(relay.mostAtOnce).toBe(20)
-    // One after another they would take twenty relay answers (100 s); together, about one.
-    expect(twentyMs).toBeLessThan(3 * relay.delayMs)
     expect(mockFunded).toHaveLength(0)
 
     // The background pass learns "spent" from the chain for every one of them.

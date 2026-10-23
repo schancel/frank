@@ -484,7 +484,9 @@ describe("a wallet's sync note to itself", () => {
       })
     /** What the app's Wallet and Send pages read (`inspectNativeTransferOperations`). */
     const status = () => {
-      const [row, ...more] = one.alice.getNativeOperations!()
+      const [row, ...more] = one.alice.getNativeOperations!().filter(
+        operation => operation.transactionSetStages?.some(stage => stage.legacy),
+      )
       expect(more).toEqual([])
       return {
         row,
@@ -502,7 +504,7 @@ describe("a wallet's sync note to itself", () => {
     }
     const nothingPaid = async () => {
       expect(mockFunded).toHaveLength(0)
-      expect(providerBroadcasts).toHaveLength(1)
+      expect(providerBroadcasts).toHaveLength(status().row.members.length)
       expect(
         await one.chain.directMessages.unattributedAttempts({
           wallet: one.alice,
@@ -511,29 +513,33 @@ describe("a wallet's sync note to itself", () => {
       ).toEqual([])
     }
 
-    it('one free note to itself goes to the relay, nothing is paid for it, and the other device applies it', async () => {
+    it('free notes for every signed movement reach the relay and the other device applies them once', async () => {
       minesNativeTransfers(one.alice)
       one.setMailbox(mailbox)
       const sent = await send(one)
       expect(status().payment).toBe('included')
       await until(() => status().sharing === 'shared')
       const { row } = status()
-      expect(sent.txHash).toBe(
-        row.members[row.members.length - 1].signed!.transactionHash,
-      )
-      // Exactly one message: to the wallet's own account, with no payment and no transaction.
-      expect(one.requests).toHaveLength(1)
-      expect(mailbox).toHaveLength(1)
-      const request = restoreCanonicalRequest(one.requests[0])
-      expect(request.parts.transactions).toEqual([])
-      expect(request.identity.recipient).toBe(
-        one.alice.identity.address.raw.toLowerCase(),
-      )
-      const delivery = parseFrame(request.parts.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
-        throw new Error('not a delivery')
-      expect(delivery.schemaVersion).toBe(2)
-      expect(delivery.typed.payments).toEqual([])
+      const payments = row.members.filter(member => member.transactionSet?.role === 'payment')
+      expect(payments).toHaveLength(1)
+      expect(sent.txHash).toBe(payments[0].signed!.transactionHash)
+      expect(row.members.some(member => member.transactionSet?.role === 'change')).toBe(true)
+      expect(row.members.every(member => member.observation.state === 'included-success')).toBe(true)
+      // One free self-note per original signed member, including every owned change movement.
+      expect(one.requests).toHaveLength(row.members.length)
+      expect(mailbox).toHaveLength(row.members.length)
+      for (const encoded of one.requests) {
+        const request = restoreCanonicalRequest(encoded)
+        expect(request.parts.transactions).toEqual([])
+        expect(request.identity.recipient).toBe(
+          one.alice.identity.address.raw.toLowerCase(),
+        )
+        const delivery = parseFrame(request.parts.delivery)
+        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+          throw new Error('not a delivery')
+        expect(delivery.schemaVersion).toBe(2)
+        expect(delivery.typed.payments).toEqual([])
+      }
       await nothingPaid()
       // This device recorded its own spend in the send; the note is for the others.
       expect(applied).not.toHaveBeenCalled()
@@ -541,27 +547,27 @@ describe("a wallet's sync note to itself", () => {
       await one.alice.resumeLegacySend!(row.operationId)
       await one.alice.resumeNativeOperation!(row.operationId)
       await new Promise(resolve => setTimeout(resolve, 50))
-      expect(one.requests).toHaveLength(1)
+      expect(one.requests).toHaveLength(row.members.length)
 
       one.setMailbox(undefined)
       const other = await otherDevice()
       const first = await read(other, other.alice)
       expect(first.messages).toEqual([])
-      expect(applied).toHaveBeenCalledTimes(1)
-      expect(applied.mock.calls[0][0]).toBe(other.alice)
-      expect(applied.mock.calls[0][1]).toMatchObject({
-        type: 'wallet-sync',
-        chainIdentifier: 'monad-testnet',
-        txHash: sent.txHash,
-        rawTx: row.members[row.members.length - 1].signed!.rawTransaction,
-      })
+      expect(applied).toHaveBeenCalledTimes(row.members.length)
+      expect(applied.mock.calls.every(([wallet]) => wallet === other.alice)).toBe(true)
+      expect(applied.mock.calls.map(([, item]) => ({
+        type: item.type, chainIdentifier: item.chainIdentifier, txHash: item.txHash, rawTx: item.rawTx,
+      }))).toEqual(row.members.map(member => ({
+        type: 'wallet-sync', chainIdentifier: 'monad-testnet',
+        txHash: member.signed!.transactionHash, rawTx: member.signed!.rawTransaction,
+      })))
       // Applied, not merely passed: the other device now has the spend on record.
-      await expect(applied.mock.results[0].value).resolves.toBeDefined()
+      for (const result of applied.mock.results) await expect(result.value).resolves.toBeDefined()
       expect(first.held).toEqual([])
-      expect(first.passed).toEqual([[mailbox[0].timestampMs, expect.any(String)]])
+      expect(first.passed).toEqual(mailbox.map(record => [record.timestampMs, expect.any(String)]))
       // Reading it again applies nothing more.
       await read(other, other.alice)
-      expect(applied).toHaveBeenCalledTimes(1)
+      expect(applied).toHaveBeenCalledTimes(row.members.length)
     })
 
     it('a wallet whose only money is at its identity address sends it natively', async () => {
@@ -574,7 +580,10 @@ describe("a wallet's sync note to itself", () => {
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
       const [row] = one.alice.getNativeOperations!()
       expect(summarizeEvmNativeOperation(row).payment).toBe('included')
-      expect(row.members.map(member => member.source.kind)).toEqual(['identity'])
+      expect(row.members.length).toBeGreaterThan(1)
+      expect(row.members.every(member => Transaction.from(member.signed!.rawTransaction).from!.toLowerCase() === identity)).toBe(true)
+      expect(row.members.filter(member => member.transactionSet?.role === 'payment')).toHaveLength(1)
+      expect(row.members.every(member => member.observation.state === 'included-success')).toBe(true)
       expect(mockBalances.get(main)).toBe(0n)
     })
 
@@ -600,11 +609,16 @@ describe("a wallet's sync note to itself", () => {
           (e: unknown) => e,
         )
       expect(chat).toBeInstanceOf(Error)
+      const [chatOperation] = one.alice.getNativeOperations!()
+      expect(chatOperation).toBeDefined()
+      const chatBytes = chatOperation.members.map(member => member.signed!.rawTransaction)
       const funded = mockFunded.length
       // Relay still down: the send resolves on inclusion, and says the note did not get through.
       const sent = await send(one)
       expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
       expect(status().payment).toBe('included')
+      expect(status().row.operationId).not.toBe(chatOperation.operationId)
+      expect(one.alice.getNativeOperations!().find(row => row.operationId === chatOperation.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
       await until(() => status().sharing === 'failed')
       expect(status().payment).toBe('included')
       expect(mockFunded).toHaveLength(funded)
@@ -616,7 +630,7 @@ describe("a wallet's sync note to itself", () => {
       one.setMailbox(mailbox)
       await one.alice.resumeLegacySend!(status().row.operationId)
       await until(() => status().sharing === 'shared')
-      expect(mailbox).toHaveLength(1)
+      expect(mailbox).toHaveLength(status().row.members.length)
       expect(bobMailbox).toHaveLength(0)
       expect(mockFunded).toHaveLength(funded)
       const noted = parseFrame(mailbox[0].delivery)
@@ -636,13 +650,15 @@ describe("a wallet's sync note to itself", () => {
         payloadDigests: [],
       })
       expect(bobMailbox).toHaveLength(2)
-      expect(mailbox).toHaveLength(1)
+      expect(mailbox).toHaveLength(status().row.members.length)
 
+      const members = status().row.members
       const other = await otherDevice()
       one.setMailbox(undefined)
       await read(other, other.alice)
-      expect(applied).toHaveBeenCalledTimes(1)
-      expect(applied.mock.calls[0][1]).toMatchObject({ txHash: sent.txHash })
+      expect(applied).toHaveBeenCalledTimes(members.length)
+      expect(applied.mock.calls.map(([, item]) => item.rawTx)).toEqual(members.map(member => member.signed!.rawTransaction))
+      expect(applied.mock.calls.map(([, item]) => item.txHash)).toContain(sent.txHash)
     })
   })
 })

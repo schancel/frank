@@ -714,7 +714,8 @@ describe('parallel paid messages', () => {
     offlineChain.relayBroadcasts = false
     // Nonce admission succeeds before signing. Fail the node after original signed bytes
     // are durable but before either party can broadcast them.
-    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).rejects.toThrow('node unreachable')
+    // Relay delivery succeeds even though the original payment remains pending on chain.
+    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).resolves.toMatchObject({ stampValueWei: STAMP })
     const attempt = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(1) })
     const original = alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
     expect(original).toHaveLength(1)
@@ -735,7 +736,8 @@ describe('parallel paid messages', () => {
   it('a payment whose nonce was consumed by another transaction: the claim ends as failed and nothing is paid again', async () => {
     const [row] = await fundAccounts(1)
     offlineChain.relayBroadcasts = false
-    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).rejects.toThrow('node unreachable')
+    // Relay delivery succeeds even though the original payment remains pending on chain.
+    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).resolves.toMatchObject({ stampValueWei: STAMP })
     const attempt = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(1) })
     const [operation] = alice.getNativeOperations!()
     const original = await operationBytes(operation.operationId)
@@ -898,7 +900,8 @@ describe('parallel paid messages', () => {
   it('an unavailable chain leaves a durable paid attempt recoverable while an unrelated free message can send', async () => {
     await fundAccounts(1)
     offlineChain.relayBroadcasts = false
-    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).rejects.toThrow('node unreachable')
+    // Relay delivery succeeds even though the original payment remains pending on chain.
+    await expect(send(1, alice, () => { offlineChain.nodeDown = true })).resolves.toMatchObject({ stampValueWei: STAMP })
     const original = graphBytes()
     expect(original).toHaveLength(1)
     await expect(f.chain.directMessages.send({ wallet: alice, recipient: f.bob.identity.address, items: [{ type: 'text', text: 'independent free message' }], stampValue: 0n, messageId: ID(2) })).resolves.toMatchObject({ stampValueWei: 0n })

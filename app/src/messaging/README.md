@@ -41,7 +41,6 @@ identity, original-attempt recovery and exact-rejection evidence. See
 [AGENTS.md](AGENTS.md) for commands. None of these tests claim live RPC or browser
 durability verification.
 
-
 ## Row-bound outgoing recovery
 
 `createOutgoingRecovery(ports)` returns `resumeCutOffOutgoing`, `reconcileOutgoing`

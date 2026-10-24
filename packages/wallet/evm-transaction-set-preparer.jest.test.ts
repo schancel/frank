@@ -76,6 +76,58 @@ async function setup(values = [1000000n, 900000n], selectedPolicy = policy) {
 }
 const kdf = (index: number) => signer(50 + index).address
 
+it('lets host input run while constructing change without releasing reserved sources', async () => {
+  const f = await setup([10000000n])
+  let completed = false
+  const hostTurn = new Promise<{ completed: boolean; held: boolean }>(resolve => {
+    setTimeout(() => resolve({ completed, held: f.coins.all().some(coin => coin.holder === 'responsive') }), 0)
+  })
+  try {
+    const result = await f.preparer.constructTransactionSet({ operationId: 'responsive', amountWei: 300000n, kdf })
+    completed = true
+    expect(await hostTurn).toEqual({ completed: false, held: true })
+    expect(result.otherTransactions.length).toBeGreaterThan(4)
+    const replay = await f.preparer.constructTransactionSet({ operationId: 'responsive', amountWei: 300000n, kdf })
+    expect([...replay.bundle, ...replay.otherTransactions].map(tx => tx.rawTransaction))
+      .toEqual([...result.bundle, ...result.otherTransactions].map(tx => tx.rawTransaction))
+  } finally { await f.journal.Close() }
+})
+
+it.each([false, true])('yields across exhausted sources, including legacy fan-in=%s', async legacy => {
+  const count = legacy ? 32 : 64
+  const f = await setup(Array.from({ length: count }, () => 50000n))
+  let completed = false
+  const hostTurn = new Promise<boolean>(resolve => setTimeout(() => resolve(completed), 0))
+  try {
+    const request = { operationId: 'many-sources', amountWei: BigInt(count) * 29000n - (legacy ? 21000n : 0n), kdf }
+    const result = legacy
+      ? await f.preparer.constructLegacyTransactionSet(request)
+      : await f.preparer.constructTransactionSet(request)
+    completed = true
+    expect(await hostTurn).toBe(false)
+    expect(result.bundle).toHaveLength(legacy ? 1 : count)
+    if (legacy) expect(result.otherTransactions).toHaveLength(count)
+  } finally { await f.journal.Close() }
+})
+
+it('lets the host run during cold journal validation before publishing the signed graph', async () => {
+  const f = await setup(Array.from({ length: 32 }, () => 50000n))
+  const prepare = f.journal.prepare.bind(f.journal)
+  const check = jest.spyOn(f.journal, 'prepare').mockImplementation(async (...args) => {
+    let completed = false
+    const hostTurn = new Promise<{ completed: boolean; published: number }>(resolve =>
+      setTimeout(() => resolve({ completed, published: f.journal.list().length }), 0))
+    const row = await prepare(...args)
+    completed = true
+    expect(await hostTurn).toEqual({ completed: false, published: 0 })
+    return row
+  })
+  try {
+    const result = await f.preparer.constructTransactionSet({ operationId: 'cold-validation', amountWei: 32n * 29000n, kdf })
+    expect(result.bundle).toHaveLength(32)
+  } finally { check.mockRestore(); await f.journal.Close() }
+})
+
 it('constructs one complete signed set with private change, exact source conservation, and shuffled contiguous nonces', async () => {
   const { preparer, coins, journal } = await setup()
   const derive = jest.fn(kdf)

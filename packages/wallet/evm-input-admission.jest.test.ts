@@ -243,6 +243,56 @@ describe('derived EVM input admission', () => {
   afterEach(async () => {
     await rm(location, { recursive: true, force: true })
   })
+  it('rechecks live claims without recovering an unchanged signature on every projection', async () => {
+    const f = await fixture(location)
+    const recovery = jest.spyOn(SigningKey, 'recoverPublicKey')
+    try {
+      const plan = f.plan()
+      const row = await f.journal.prepare(plan)
+      const raw = await new Wallet(f.keyring.deriveSubAccount(0).privateKey)
+        .signTransaction(Transaction.from(plan.members[0]!.unsignedTransaction))
+      await f.journal.checkpointSigned(row.operationId, 0, raw)
+      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+      recovery.mockClear()
+      for (let i = 0; i < 20; i++)
+        expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+      expect(recovery).not.toHaveBeenCalled()
+      // Reusing transaction facts must not reuse the owner's validation result.
+      f.faults.validate = () => { throw new Error('changed durable owner') }
+      expect(f.admission.inspect(f.lifetime).status).toBe('unavailable')
+    } finally {
+      recovery.mockRestore()
+      await f.close()
+    }
+  })
+
+  it.each(['sender', 'chain', 'bytes'] as const)('refuses changed %s after warming transaction facts', async field => {
+    const f = await fixture(location)
+    let read: jest.SpyInstance | undefined
+    try {
+      const plan = f.plan()
+      const row = await f.journal.prepare(plan)
+      const signer = new Wallet(f.keyring.deriveSubAccount(0).privateKey)
+      const raw = await signer.signTransaction(Transaction.from(plan.members[0]!.unsignedTransaction))
+      await f.journal.checkpointSigned(row.operationId, 0, raw)
+      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+      const changed = f.journal.list()
+      const member = changed[0]!.members[0]!
+      if (field === 'sender') member.source.address = '0x' + 'ab'.repeat(20)
+      if (field === 'bytes') member.signed!.rawTransaction = '0x00'
+      if (field === 'chain') {
+        const tx = Transaction.from(member.unsignedTransaction)
+        tx.chainId += 1n
+        member.signed!.rawTransaction = await signer.signTransaction(tx)
+      }
+      read = jest.spyOn(f.journal, 'list').mockReturnValue(changed)
+      expect(f.admission.inspect(f.lifetime)).toMatchObject({ status: 'unavailable', reason: 'invalid-provenance' })
+    } finally {
+      read?.mockRestore()
+      await f.close()
+    }
+  })
+
   it('refreshes the original preparation and rejects completion after its admission lifetime expires', async () => {
     const f = await fixture(location)
     try {

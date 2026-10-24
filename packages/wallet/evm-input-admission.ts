@@ -216,6 +216,10 @@ function frozen<T>(value: T): T {
 
 /** Fixed owner composition, not a registration mechanism or another persisted claim table. */
 class AdmissionOwner implements EvmInputAdmission {
+  // Immutable parse/signature facts only. Mutable claims and observations are projected
+  // afresh on every check; exact bytes and the expected sender cannot inherit another parse.
+  private readonly transactions = new Map<string, ValidatedFrozenTransaction>()
+  private transactionCacheBytes = 0
   private tail: Promise<unknown> = Promise.resolve()
   private readonly epochs = new WeakMap<
     AdmissionEpoch,
@@ -237,8 +241,12 @@ class AdmissionOwner implements EvmInputAdmission {
     this.owners.assertLifetime(lifetime)
   }
   tx(bytes: string, sender?: string): ValidatedFrozenTransaction {
-    const tx = Transaction.from(bytes)
     const binding = this.owners.binding
+    if (!binding) invalid()
+    const key = JSON.stringify([bytes, sender ?? null, binding.nativeChainId])
+    const cached = this.transactions.get(key)
+    if (cached) return cached
+    const tx = Transaction.from(bytes)
     if (
       !binding ||
       tx.chainId.toString() !== binding.nativeChainId ||
@@ -248,13 +256,21 @@ class AdmissionOwner implements EvmInputAdmission {
       invalid()
     const from = tx.from ?? sender
     if (!from || (sender && address(from) !== address(sender))) invalid()
-    return {
+    const result = Object.freeze({
       unsignedSerialized: tx.unsignedSerialized,
       sender: address(from),
       nonce: tx.nonce,
       nativeChainId: tx.chainId.toString(),
       transactionHash: tx.hash,
+    })
+    const size = (key.length + JSON.stringify(result).length) * 2
+    // Preserve the verified prefix on saturation, avoiding scan-driven eviction churn.
+    // Oversized/new entries still validate normally; they simply are not retained.
+    if (this.transactions.size < 4096 && this.transactionCacheBytes + size <= 8 * 1024 * 1024) {
+      this.transactions.set(key, result)
+      this.transactionCacheBytes += size
     }
+    return result
   }
   project(): Claim[] {
     const o = this.owners,

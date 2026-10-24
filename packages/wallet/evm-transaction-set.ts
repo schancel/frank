@@ -1,4 +1,5 @@
 import { computeAddress, getAddress, SigningKey, Transaction } from 'ethers'
+import { createCooperativeBatchYielder, type CooperativeBatchYielder } from './chain/event-loop-yield'
 import { computeGeometricRadixChangeSplits } from './evm-change-distribution'
 import type {
   CoinPart,
@@ -638,8 +639,9 @@ export class EvmTransactionSetPreparer {
     if (!parts && legacy) { parts = select(true); fanIn = true }
     if (!parts) throw new EvmTransactionSetInsufficientFundsError()
     let members: LocalMember[]
+    const yielder = createCooperativeBatchYielder()
     try {
-      if (fanIn) members = await this.prepareFanIn(request, policy, context(0), parts)
+      if (fanIn) members = await this.prepareFanIn(request, policy, context(0), parts, yielder)
       else {
         let remaining = request.amountWei, paymentIndex = 0
         members = []
@@ -652,7 +654,7 @@ export class EvmTransactionSetPreparer {
           members.push(...await this.prepareSource(
             hasPayment ? request : { ...request, calldata: undefined },
             policy, context(hasPayment ? paymentIndex : 0),
-            { ...part, paymentValueWei: payment }, paymentIndex,
+            { ...part, paymentValueWei: payment }, paymentIndex, yielder,
           ))
           if (hasPayment) paymentIndex++
         }
@@ -674,7 +676,7 @@ export class EvmTransactionSetPreparer {
         for (const part of additional)
           members.push(...await this.prepareSource(
             { ...request, calldata: undefined }, policy, context(0),
-            { ...part, paymentValueWei: 0n }, 0,
+            { ...part, paymentValueWei: 0n }, 0, yielder,
           ))
       }
       const offset = existing?.members.length ?? 0
@@ -729,24 +731,26 @@ export class EvmTransactionSetPreparer {
     return this.result(row, stageId)
   }
 
-  private async prepareFanIn(request: ConstructEvmTransactionSetRequest, policy: EvmTransactionSetPolicy, context: PaymentContext, parts: CoinPart[]): Promise<LocalMember[]> {
+  private async prepareFanIn(request: ConstructEvmTransactionSetRequest, policy: EvmTransactionSetPolicy, context: PaymentContext, parts: CoinPart[], yielder: CooperativeBatchYielder): Promise<LocalMember[]> {
     const { coins } = this.options, minimum = coins.nextChangeIndex()
     const target = this.options.reserveChange ? await this.options.reserveChange(request.operationId, minimum) : this.options.deriveChange(minimum)
     if (!Number.isSafeInteger(target.changeIndex) || target.changeIndex < minimum || target.changeIndex >= 0x80000000 || target.account.toLowerCase() === context.destination || computeAddress(target.privateKey).toLowerCase() !== target.account.toLowerCase()) throw new Error('Invalid fan-in destination')
     coins.reserveChangeTarget(request.operationId, target.changeIndex, target.account)
     let balance = 0n
-    const members = parts.map((part, index): LocalMember => {
+    const members: LocalMember[] = []
+    for (const [index, part] of parts.entries()) {
       const value = part.coin.valueWei - policy.changeGasLimit * policy.gasPriceWei
       balance += value
       const tx = Transaction.from({ type: 0, chainId: BigInt(this.options.journal.binding.nativeChainId), nonce: part.coin.nonce,
         to: target.account, value, gasLimit: policy.changeGasLimit, gasPrice: policy.gasPriceWei })
       tx.signature = new SigningKey(part.coin.privateKey).sign(tx.unsignedHash)
-      return { raw: tx.serialized, plan: { source: { kind: 'coin', address: part.coin.account }, unsignedTransaction: tx.unsignedSerialized, dependencies: [], transactionSet: {
+      members.push({ raw: tx.serialized, plan: { source: { kind: 'coin', address: part.coin.account }, unsignedTransaction: tx.unsignedSerialized, dependencies: [], transactionSet: {
         role: 'funding', logicalIndex: index, changeIndex: target.changeIndex, balanceBeforeWei: part.coin.valueWei.toString(), balanceAfterWei: '0',
-      } } }
-    })
+      } } })
+      await yielder.maybeYield()
+    }
     const coin: EvmListCoin = { account: target.account.toLowerCase(), privateKey: target.privateKey, changeIndex: target.changeIndex, origin: 'change', nonce: 0, valueWei: balance, state: 'spend_pending', holder: request.operationId }
-    members.push(...await this.prepareSource(request, policy, context, { coin, paymentValueWei: request.amountWei }, 0))
+    members.push(...await this.prepareSource(request, policy, context, { coin, paymentValueWei: request.amountWei }, 0, yielder))
     return members
   }
 
@@ -823,6 +827,7 @@ export class EvmTransactionSetPreparer {
     context: PaymentContext,
     part: CoinPart,
     paymentIndex: number,
+    yielder: CooperativeBatchYielder,
   ): Promise<LocalMember[]> {
     const { coins, deriveChange } = this.options
     const paymentGas = context.gas
@@ -942,9 +947,11 @@ export class EvmTransactionSetPreparer {
         move.to = target.account.toLowerCase()
         move.changeIndex = index
         move.logicalIndex = changeLogicalIndex++
+        await yielder.maybeYield()
       }
     let balance = part.coin.valueWei
-    return moves.map((move, index) => {
+    const signed: LocalMember[] = []
+    for (const [index, move] of moves.entries()) {
       const before = balance
       balance -= move.value + move.gas * policy.gasPriceWei
       const tx = Transaction.from({
@@ -981,8 +988,12 @@ export class EvmTransactionSetPreparer {
         },
       }
       tx.signature = new SigningKey(part.coin.privateKey).sign(tx.unsignedHash)
-      return { plan, raw: tx.serialized }
-    })
+      signed.push({ plan, raw: tx.serialized })
+      // Sources and fresh derivations remain reserved by this operation across host turns.
+      // Awaiting cached promises alone cannot let the browser process input or paint.
+      await yielder.maybeYield()
+    }
+    return signed
   }
 
   private entropy(): number {

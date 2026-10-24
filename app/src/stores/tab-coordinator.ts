@@ -18,6 +18,7 @@ import { useLeaderStore } from './leader'
 import { translateMessage } from '../i18n'
 import {
   focusOwnExtensionView,
+  closeExtensionView,
   isBrowserExtensionRuntime,
 } from '../../src-bex/runtime-adapter'
 
@@ -473,7 +474,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       const result = await this.requestTabFocus()
       if (result !== 'focused') return false
       try {
-        window.close()
+        closeExtensionView()
       } catch {
         return false
       }

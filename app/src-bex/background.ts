@@ -8,6 +8,7 @@ import {
   FRANK_SYNC_NAVIGATION_TIMEOUT_MS,
   type SyncSenderNavigationResult,
   getRawExtensionApi,
+  getExtensionRuntime,
   isBrowserExtensionRuntime,
   isFrankWebAppOrigin,
   onRuntimeMessage,
@@ -16,7 +17,7 @@ import {
   parseExtensionLaunchMode,
   sendRuntimeMessage,
 } from './runtime-adapter'
-import { EXTENSION_POPUP_PATH } from './manifests'
+import { EXTENSION_POPUP_PATH, SAFARI_POPUP_PATH } from './manifests'
 import {
   createSyncSender,
   syncSenderConfirm,
@@ -544,7 +545,12 @@ export function applyToolbarClickBehavior(
   try {
     void Promise.resolve(
       api.action.setPopup({
-        popup: mode === 'popup' ? EXTENSION_POPUP_PATH : '',
+        popup:
+          mode === 'popup'
+            ? getExtensionRuntime(runtimeScope).kind === 'safari-extension'
+              ? SAFARI_POPUP_PATH
+              : EXTENSION_POPUP_PATH
+            : '',
       }),
     ).catch(() => undefined)
   } catch {
@@ -855,7 +861,9 @@ function isSyncNavigationRequester(
     return (
       actual.protocol === expected.protocol &&
       actual.host === expected.host &&
-      actual.pathname === expected.pathname
+      (actual.pathname === expected.pathname ||
+        actual.pathname ===
+          new URL(api!.runtime.getURL(SAFARI_POPUP_PATH)).pathname)
     )
   } catch {
     return false

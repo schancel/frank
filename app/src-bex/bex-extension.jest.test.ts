@@ -143,6 +143,7 @@ describe('Multi-target WebExtension manifests & runtime adapter (#1707, #1709, #
 
   it('builds Safari MV3 manifest with service_worker background and web_accessible_resources for inpage.js fallback', () => {
     const manifest = buildExtensionManifest('safari', '0.3.0')
+    expect(manifest.action.default_popup).toBe('popup.html')
     expect(manifest.manifest_version).toBe(3)
     expect(manifest.permissions).toEqual([
       'storage',

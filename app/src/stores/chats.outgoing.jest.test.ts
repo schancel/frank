@@ -371,15 +371,15 @@ describe('outgoing direct messages (#269, #270)', () => {
             chats.saveOutgoing(PEER, id, { strict: true }),
           )
           await holding
-          // Observe entry to the real status application, which enqueues its mutation
-          // behind the blocked save. Do not replace the financial result handler.
+          // Observe the real confirmation action enqueueing its serialized mutation
+          // behind the blocked save; recovery policy now runs outside Pinia.
           let applying!: () => void
           const application = new Promise<void>(resolve => {
             applying = resolve
           })
-          const apply = chats.applyAttemptStatus.bind(chats)
-          jest.spyOn(chats, 'applyAttemptStatus').mockImplementation(params => {
-            const result = apply(params)
+          const confirm = chats.confirmOutgoing.bind(chats)
+          jest.spyOn(chats, 'confirmOutgoing').mockImplementation(params => {
+            const result = confirm(params)
             applying()
             return result
           })

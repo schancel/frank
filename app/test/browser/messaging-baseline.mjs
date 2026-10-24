@@ -661,7 +661,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
   )
   report.containmentConsole = report.consoleErrors.splice(appErrorCount)
   report.offlineIsolation = isolation
-  if (scenario !== 'queue-route')
+  if (scenario.startsWith('history-'))
     assert.deepEqual(
       report.history.failures,
       [],

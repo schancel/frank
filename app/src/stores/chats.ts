@@ -3986,7 +3986,7 @@ export const useChatStore = defineStore('chats', {
         : undefined
       if (financial && !message.sealedMessageId)
         throw new Error('Financial message has no durable sealed identity')
-      const onEnvelopeDurable =
+      const envelopeDurabilityCallback = (assertCurrent?: () => void) =>
         financial &&
         (async (attemptDigest: string) => {
           await this.setOutgoingState(
@@ -3994,10 +3994,12 @@ export const useChatStore = defineStore('chats', {
             id,
             'pending',
             { attemptDigest },
-            { strict: true },
+            { strict: true, assertCurrent },
           )
+          assertCurrent?.()
           await financial.expose(attemptDigest)
         })
+      const onEnvelopeDurable = envelopeDurabilityCallback()
       // Free envelopes have their own durable replay owner; paid reconciliation cannot find them.
       const replayFreeFinancial = !!financial && message.stampValueWei === 0n
 
@@ -4019,7 +4021,12 @@ export const useChatStore = defineStore('chats', {
               wallet,
               payloadDigests: [digest],
               maxPutAttempts: manual ? 3 : 1,
-              ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
+              ...(financial
+                ? {
+                    onEnvelopeDurable:
+                      envelopeDurabilityCallback(assertCurrent),
+                  }
+                : {}),
             })
           } catch (error) {
             assertCurrent()

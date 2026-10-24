@@ -234,6 +234,26 @@ describe('outgoing direct messages (#269, #270)', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
 
+  // These suspension fixtures must release their gates even if an assertion or Jest
+  // timeout interrupts the body. Drain the actual actions before the next test can
+  // replace mocks or reuse the module's serialized delivery mutation queue.
+  const recoveryReleases = new Set<() => void>()
+  const recoveryTasks = new Set<Promise<unknown>>()
+  function trackRecovery<T>(task: Promise<T>): Promise<T> {
+    recoveryTasks.add(task)
+    void task.then(
+      () => recoveryTasks.delete(task),
+      () => recoveryTasks.delete(task),
+    )
+    return task
+  }
+  afterEach(async () => {
+    for (const release of recoveryReleases) release()
+    recoveryReleases.clear()
+    await Promise.allSettled([...recoveryTasks])
+    recoveryTasks.clear()
+  })
+
   describe('reconciliation result identity across suspended work', () => {
     it.each([
       ...(
@@ -277,6 +297,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         const reply = new Promise<Record<string, DirectMessageAttemptStatus>>(
           resolve => {
             answer = resolve
+            recoveryReleases.add(() => resolve({}))
           },
         )
         const reconcile = jest
@@ -286,7 +307,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             entered()
             return reply
           })
-        const recovering = chats.reconcileOutgoing({ wallet })
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
         await asked
 
         // Synthetic row/projection replacement, not a full accountSession lifecycle test.
@@ -319,6 +340,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           })
           const gate = new Promise<void>(resolve => {
             release = resolve
+            recoveryReleases.add(resolve)
           })
           const store = await messageStorePromise
           const save = store.saveMessage.bind(store)
@@ -328,7 +350,9 @@ describe('outgoing direct messages (#269, #270)', () => {
             await save(row)
             replace()
           })
-          blocker = chats.saveOutgoing(PEER, id, { strict: true })
+          blocker = trackRecovery(
+            chats.saveOutgoing(PEER, id, { strict: true }),
+          )
           await holding
           // Observe entry to the real status application, which enqueues its mutation
           // behind the blocked save. Do not replace the financial result handler.
@@ -355,6 +379,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           })
           const gate = new Promise<void>(resolve => {
             release = resolve
+            recoveryReleases.add(resolve)
           })
           // The read has taken its snapshot but its promise has not resolved yet.
           // A different valid owner is published before confirmation resumes.
@@ -429,6 +454,59 @@ describe('outgoing direct messages (#269, #270)', () => {
       return serialized
     }
 
+    it.each([false, true])(
+      'financial durable callback respects replacement owner=%s with the same digest',
+      async replaced => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        message.financialOperations = [
+          { chainIdentifier: 'monad-testnet', operationId: 'original' },
+        ]
+        message.sealedMessageId = outgoingMessageId(id)
+        message.stampValueWei = 1n
+        await chats.setOutgoingState(PEER, id, 'error', { attemptDigest: HASH })
+        const expose = jest.fn(async () => undefined)
+        const submit = jest.fn(async () => undefined)
+        jest
+          .mocked(captureOutgoingFinancialOperations)
+          .mockResolvedValue({ expose, submit })
+        let expected: string | undefined
+        jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockImplementation(async params => {
+            expect(params.payloadDigests).toEqual([HASH])
+            expect(params.onEnvelopeDurable).toBeDefined()
+            if (replaced) expected = await replaceOwner(chats, id)
+            await params.onEnvelopeDurable!(HASH)
+            return { [HASH]: 'live' }
+          })
+        const outcome = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: id,
+        })
+        if (replaced) {
+          expect(expected).toBeDefined()
+          expect((await durable()).get(id)).toBe(expected)
+          expect(expose).not.toHaveBeenCalled()
+          expect(outcome.state).toBe('busy')
+        } else {
+          expect(expose).toHaveBeenCalledTimes(1)
+          expect(expose).toHaveBeenCalledWith(HASH)
+          expect(outcome.state).toBe('payment-pending')
+          expect(
+            deserializeMessageWrapper((await durable()).get(id)!).message
+              .delivery?.attemptDigest,
+          ).toBe(HASH)
+        }
+        expect(submit).not.toHaveBeenCalled()
+        expect(send).toHaveBeenCalledTimes(1)
+      },
+    )
+
     it.each([
       'manual-reconcile',
       'automatic-reconcile',
@@ -450,6 +528,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         })
         const held = new Promise<never>((_resolve, failure) => {
           reject = failure
+          recoveryReleases.add(() => failure(new Error('test cleanup')))
         })
         const submit = jest.fn(async () => {
           entered()
@@ -485,6 +564,7 @@ describe('outgoing direct messages (#269, #270)', () => {
                 automatic: true,
               })
             : chats.retryOutgoing({ wallet, address: PEER, payloadDigest: id })
+        trackRecovery(retry)
         await started
         const expected = await replaceOwner(chats, id)
         reject(new Error('synthetic unavailable owner'))
@@ -551,6 +631,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         })
         const held = new Promise<void>(resolve => {
           finish = resolve
+          recoveryReleases.add(resolve)
         })
         jest
           .spyOn(activeChain.directMessages, 'reconcileAttempts')
@@ -560,7 +641,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             await held
             return { [HASH]: 'delivered', [secondDigest]: 'delivered' }
           })
-        const recovering = chats.reconcileOutgoing({ wallet })
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
         await started
         let expected: string
         if (boundary === 'durable-new-row') {
@@ -573,6 +654,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           })
           const readGate = new Promise<void>(resolve => {
             releaseRead = resolve
+            recoveryReleases.add(resolve)
           })
           // Unlike the snapshot-A case, this pending read returns the newly committed
           // replacement B row. Its association mismatch must remain local to this entry.
@@ -629,6 +711,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         })
         const gate = new Promise<void>(resolve => {
           release = resolve
+          recoveryReleases.add(resolve)
         })
         const oldLookup = jest
           .spyOn(activeChain.directMessages, 'attemptOf')
@@ -656,11 +739,13 @@ describe('outgoing direct messages (#269, #270)', () => {
         }))
         const replacementSend = jest.fn(async () => okResult('cd'.repeat(32)))
         try {
-          const recovering = chats.resumeCutOffOutgoing({
-            wallet,
-            address: PEER,
-            id,
-          })
+          const recovering = trackRecovery(
+            chats.resumeCutOffOutgoing({
+              wallet,
+              address: PEER,
+              id,
+            }),
+          )
           await started
           Object.assign(activeChain, {
             chainIdentifier: 'ethereum-sepolia',
@@ -706,6 +791,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
       const gate = new Promise<void>(resolve => {
         release = resolve
+        recoveryReleases.add(resolve)
       })
       jest
         .spyOn(activeChain.directMessages, 'reconcileAttempts')
@@ -715,7 +801,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           return { [HASH]: 'delivered' }
         })
       try {
-        const recovering = chats.reconcileOutgoing({ wallet })
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
         await started
         context.revision = revision + 1
         expect(accountSession.state.revision).toBe(revision + 1)

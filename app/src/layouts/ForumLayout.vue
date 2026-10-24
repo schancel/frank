@@ -161,7 +161,7 @@ import { storeToRefs } from 'pinia'
 
 import { useForumStore } from 'src/stores/forum'
 import { useTopicStore } from 'src/stores/topics'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { peekActiveWallet } from 'src/composables/useActiveWallet'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
@@ -324,17 +324,7 @@ export default defineComponent({
     },
     async refreshContent() {
       try {
-        let wallet
-        try {
-          wallet = await Promise.race([
-            useActiveWallet(),
-            new Promise<undefined>(resolve =>
-              setTimeout(() => resolve(undefined), 5),
-            ),
-          ])
-        } catch {
-          // Public reading requires no active wallet
-        }
+        const wallet = peekActiveWallet()
         await this.refreshMessages({ wallet, topic: this.selectedTopic })
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception

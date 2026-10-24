@@ -5,7 +5,10 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import ForumLayout from './ForumLayout.vue'
 import { useForumStore } from 'src/stores/forum'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import {
+  peekActiveWallet,
+  useActiveWallet,
+} from 'src/composables/useActiveWallet'
 import enUS from '../i18n/en-us'
 
 const mockFetchByTopic = jest.fn()
@@ -28,6 +31,7 @@ jest.mock('@frank/wallet/chain', () => ({
 }))
 
 jest.mock('src/composables/useActiveWallet', () => ({
+  peekActiveWallet: jest.fn(),
   useActiveWallet: jest.fn(),
 }))
 
@@ -61,7 +65,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     unhandledRejections = []
     process.on('unhandledRejection', onUnhandled)
     mockDiscoverTopics.mockResolvedValue([])
-    ;(useActiveWallet as jest.Mock).mockResolvedValue(testWallet)
+    ;(peekActiveWallet as jest.Mock).mockReturnValue(testWallet)
   })
 
   afterEach(() => {
@@ -119,6 +123,38 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     })
   }
 
+  it('keeps public pull refresh pending until its query finishes without initializing custody', async () => {
+    ;(peekActiveWallet as jest.Mock).mockReturnValue(undefined)
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    mockFetchByTopic.mockResolvedValue([])
+    const wrapper = mountLayout()
+    await flushPromises()
+    let finish!: (rows: unknown[]) => void
+    mockFetchByTopic.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(mockFetchByTopic).toHaveBeenLastCalledWith(
+      expect.objectContaining({ wallet: undefined }),
+    )
+    expect(store.isRefreshing).toBe(true)
+    expect(done).not.toHaveBeenCalled()
+    finish([])
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(store.isRefreshing).toBe(false)
+    wrapper.unmount()
+  })
+
   it('mounted refresh handles HTTP 503 rejection without an unhandled browser exception', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation()
     mockFetchByTopic.mockRejectedValue(create503Error())
@@ -163,7 +199,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
 
     // Trigger manual refresh
     const clickPromise = refreshBtn.trigger('click')
-    // Wait for useActiveWallet to resolve and fetchByTopic to be invoked
+    // Wait for peekActiveWallet to resolve and fetchByTopic to be invoked
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(store.isRefreshing).toBe(true)

@@ -975,6 +975,21 @@ describe('useForumStore: setEntries snapshot diffing', () => {
     patchSpy.mockRestore()
   })
 
+  it('publishes a deeply nested thread without recursively revisiting its flat rows', () => {
+    const store = useForumStore()
+    const rows = Array.from({ length: 12000 }, (_, i) =>
+      makeMessage({
+        payloadDigest: `deep-${i}`,
+        parentDigest: i ? `deep-${i - 1}` : undefined,
+      }),
+    )
+    expect(() => store.setEntries(rows)).not.toThrow()
+    expect(store.messages).toHaveLength(rows.length)
+    expect(store.index['deep-11998']?.replies[0].payloadDigest).toBe(
+      'deep-11999',
+    )
+  })
+
   it('proactively prefetches and caches author display profiles for unique posters in setEntries', async () => {
     const store = useForumStore()
     const mockFetchProfile = jest.fn().mockImplementation(async addr => ({

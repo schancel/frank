@@ -246,6 +246,38 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     },
   )
 
+  it('queues two composer submissions while the first network send is still pending', async () => {
+    const { wrapper } = await mountChat(undefined, { realInput: true })
+    const vm = wrapper.vm as any
+    const finish: Array<(value: unknown) => void> = []
+    vm.sendDirectMessage = jest.fn(
+      () => new Promise(resolve => finish.push(resolve)),
+    )
+    try {
+      const composer = wrapper.findComponent(ChatInput)
+      for (const text of ['first', 'second']) {
+        vm.message = text
+        await flushPromises()
+        ;(composer.vm as any).sendMessage()
+        await flushPromises()
+        expect(vm.message).toBe('')
+        expect(composer.props('disable')).toBe(false)
+      }
+      expect(
+        vm.sendDirectMessage.mock.calls.map(
+          ([input]: [{ items: unknown[] }]) => input.items,
+        ),
+      ).toEqual([
+        [{ type: 'text', text: 'first' }],
+        [{ type: 'text', text: 'second' }],
+      ])
+    } finally {
+      for (const resolve of finish) resolve({ state: 'sent' })
+      await flushPromises()
+      wrapper.unmount()
+    }
+  })
+
   it('passes the compose bar no blackjack props', async () => {
     const { input } = await mountChat({ isBot: true })
     expect(Object.keys(input.props())).toEqual(['disable'])

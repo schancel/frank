@@ -37,12 +37,6 @@ export const SETTINGS_ROW_GROUPS: readonly (readonly SettingsRow[])[] = [
       labelKey: 'accountRecovery.backup_account_codex32',
       route: '/backup',
     },
-    {
-      id: 'dapp-bridge',
-      icon: 'extension',
-      labelKey: 'leftDrawer.dappBridge',
-      route: '/dapp-bridge',
-    },
   ],
   [
     { id: 'docs', icon: 'menu_book', labelKey: 'docs.title', route: '/docs' },

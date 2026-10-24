@@ -28,7 +28,7 @@ const storeInputs = {
   'src/stores/topics':
     'export const useTopicStore=()=>({refreshDiscoveredTopics:async()=>{}})',
   'src/composables/useActiveWallet':
-    'export const useActiveWallet=async()=>undefined',
+    'export const useActiveWallet=async()=>undefined;export const peekActiveWallet=()=>undefined',
 }
 const bundle = await build({
   stdin: {

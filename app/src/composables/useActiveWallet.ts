@@ -9,3 +9,8 @@ export async function useActiveWallet() {
     throw walletNotReadyError('Account wallet is locked or unavailable')
   }
 }
+
+/** Public reads may use the ready wallet without starting custody or network work. */
+export function peekActiveWallet() {
+  return accountSession.peekWallet()
+}

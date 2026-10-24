@@ -25,14 +25,34 @@ export interface MailboxStatusState {
   state: MailboxPollState
   /** Delay until the next poll, when the poller is backing off. */
   retryInMs: number | null
+  /** Result of the first poll in the current identity-bound polling session. */
+  initialPoll: 'ready' | 'pending' | 'error'
+  /** Guards completion callbacks from a poller that was replaced during a request. */
+  pollSession: number
 }
 
 export const useMailboxStatusStore = defineStore('mailbox-status', {
-  state: (): MailboxStatusState => ({ state: 'ok', retryInMs: null }),
+  state: (): MailboxStatusState => ({
+    state: 'ok',
+    retryInMs: null,
+    initialPoll: 'ready',
+    pollSession: 0,
+  }),
   getters: {
     hasProblem: state => state.state !== 'ok',
   },
   actions: {
+    beginPollSession(): number {
+      this.pollSession += 1
+      this.initialPoll = 'pending'
+      return this.pollSession
+    },
+    settleInitialPoll(session: number, result: 'ready' | 'error') {
+      if (this.pollSession === session) this.initialPoll = result
+    },
+    endPollSession(session: number) {
+      if (this.pollSession === session) this.initialPoll = 'ready'
+    },
     setOk() {
       this.state = 'ok'
       this.retryInMs = null

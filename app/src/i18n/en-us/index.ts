@@ -843,6 +843,9 @@ export const rawEnUS = {
   chatList: {
     senderPrefix: '{name}: {text}',
     noContactMessage: 'Add contacts from the drawer above...',
+    loadingConversations: 'Loading conversations…',
+    initialConversationsFailed:
+      'Could not load conversations. The inbox will keep trying.',
     youPrefix: 'You: {text}',
     themPrefix: 'Them: {text}',
     balance: 'Balance',
@@ -2133,19 +2136,20 @@ export const rawEnUS = {
     showPinAction: 'Show PIN',
     openingPersistentView:
       'Opening sync in a Frank tab that stays open while you switch windows.',
-    continueInTab: 'Continue in the new Frank tab and choose Show PIN there.',
+    continueInTab: 'Continue in the new Frank tab. Your PIN appears there.',
     openPersistentView: 'Open sync in a tab',
     promotionFailed:
       'Could not open a Frank tab. Try again, or open Frank in a full tab before syncing. No PIN has been created.',
     senderIntro:
-      'In the other Frank window, choose Sync existing account. When you are ready, show a PIN here and enter it there. Keep this page open until the account is sent.',
+      'A PIN appears here automatically. In the other Frank window, choose Sync existing account and enter this PIN. Keep this page open until the account is sent.',
+    preparingPin: 'Preparing your pairing PIN…',
     pinPrivate:
       'This PIN expires in two minutes. Share it only with the Frank window you are syncing.',
     received: 'Account synced',
     senderOpened:
-      'The sync page is open in your signed-in Frank tab. Choose Show PIN there, then enter it here.',
+      'The sync page is open in your signed-in Frank tab. Its PIN appears automatically; enter it here.',
     openSource:
-      'Open the Frank window that already has your account. Choose Profile → Sync this account → Show PIN, then enter its PIN here.',
+      'Open the Frank window that already has your account. Choose Profile → Sync this account, then enter the PIN shown there.',
     cancel: 'Cancel',
     hasAccount:
       'This device already has an account. Sync only into a device without one.',

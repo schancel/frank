@@ -3,7 +3,7 @@
  * @jest-environment-options {"url": "https://signet.mx/"}
  */
 import { flushPromises, mount } from '@vue/test-utils'
-import { reactive } from 'vue'
+import { nextTick, reactive } from 'vue'
 import enUS from '../i18n/en-us'
 
 const mockStatus = reactive({
@@ -209,12 +209,9 @@ describe('full-page account sender', () => {
     const persistent = renderSender()
     try {
       await flushPromises()
-      expect(mockBackup).not.toHaveBeenCalled()
-      expect(state.syncPairing.sender).toBeNull()
-      await persistent.get('[data-test="sync-show-pin"]').trigger('click')
-      await flushPromises()
       expect(mockBackup).toHaveBeenCalledTimes(1)
       const pin = persistent.get('[data-test="sync-sender-pin"]').text()
+      expect(state.syncPairing.sender).not.toBeNull()
       const result = await receiveSyncBundle(pin, async (type, payload) => {
         const response = await handleBackgroundMessage(
           { channel: 'frank-pwa-extension-sync-v1', type, payload },
@@ -277,27 +274,44 @@ describe('full-page account sender', () => {
     async mode => {
       document.documentElement.setAttribute('data-ext-mode', mode)
       const create = jest.fn()
+      const sendMessage = jest.fn(
+        async (message: { payload?: { offerId?: string } }) => ({
+          result: {
+            ok: true,
+            pin: '123456',
+            offerId: message.payload?.offerId,
+            expiresAt: Date.now() + SYNC_PAIRING_TTL_MS,
+          },
+        }),
+      )
       Object.assign(globalThis, {
-        chrome: { runtime: { id: 'extension' }, tabs: { create } },
+        chrome: {
+          runtime: { id: 'extension', sendMessage },
+          tabs: { create },
+        },
       })
       const wrapper = renderSender()
       await flushPromises()
+      await nextTick()
       expect(create).not.toHaveBeenCalled()
-      expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(true)
-      expect(mockBackup).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(false)
+      expect(mockBackup).toHaveBeenCalledTimes(1)
+      expect(wrapper.get('[data-test="sync-sender-pin"]').text()).toMatch(
+        /^\d{6}$/,
+      )
       wrapper.unmount()
     },
   )
 
-  it('opens without a dialog or account export until Show PIN is chosen', async () => {
+  it('shows a PIN automatically on entry to the existing pairing flow', async () => {
     const wrapper = renderSender()
     await flushPromises()
+    await nextTick()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
-    expect(mockBackup).not.toHaveBeenCalled()
-    expect(post).not.toHaveBeenCalled()
-    await wrapper.get('[data-test="sync-show-pin"]').trigger('click')
-    await flushPromises()
+    expect(mockBackup).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0]?.[0].type).toBe('pwa-sync-offer')
     expect(mockBackup).toHaveBeenCalledWith(2, 3)
+    expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(false)
     expect(wrapper.get('[data-test="sync-sender-pin"]').text()).toMatch(
       /^\d{6}$/,
     )
@@ -372,7 +386,12 @@ describe('full-page account sender', () => {
     const backup = deferred<string[]>()
     mockBackup.mockReturnValueOnce(backup.promise)
     const wrapper = renderSender()
-    await wrapper.get('[data-test="sync-show-pin"]').trigger('click')
+    await nextTick()
+    expect(mockBackup).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="sync-show-pin"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-test="sync-pin-loading"]').attributes('role'),
+    ).toBe('status')
     wrapper.unmount()
     backup.resolve(['ms12frankshareone', 'ms12franksharetwo'])
     await flushPromises()

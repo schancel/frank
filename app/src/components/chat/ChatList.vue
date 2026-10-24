@@ -164,8 +164,46 @@
 
         <q-item
           v-if="
+            $status.setup &&
+            displayedConversations.length === 0 &&
+            initialInboxLoading
+          "
+          role="status"
+          data-test="chat-list-initial-loading"
+        >
+          <q-item-section avatar>
+            <q-spinner size="1.25rem" color="primary" aria-hidden="true" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label>{{
+              $t('chatList.loadingConversations')
+            }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-item
+          v-else-if="$status.setup && initialInboxError"
+          role="alert"
+          data-test="chat-list-initial-error"
+        >
+          <q-item-section>
+            <q-item-label
+              v-if="messagingState.status !== 'ready' && messagingState.reason"
+            >
+              {{ $t(`mailboxStatus.directory.${messagingState.reason}`) }}
+            </q-item-label>
+            <q-item-label v-else>{{
+              $t('chatList.initialConversationsFailed')
+            }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-item
+          v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'ready' &&
             normalizedQuery
           "
           data-test="chat-search-empty"
@@ -179,6 +217,8 @@
           v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'ready' &&
             activeFilter === 'screener'
           "
           data-test="screener-empty"
@@ -190,7 +230,14 @@
           </q-item-section>
         </q-item>
 
-        <q-item v-else-if="getSortedChatOrder.length === 0 && $status.setup">
+        <q-item
+          v-else-if="
+            getSortedChatOrder.length === 0 &&
+            $status.setup &&
+            messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'ready'
+          "
+        >
           <q-item-section>
             <q-item-label>{{ $t('chatList.noContactMessage') }}</q-item-label>
           </q-item-section>
@@ -215,6 +262,7 @@ import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
+import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
@@ -248,6 +296,7 @@ export default defineComponent({
     const { getSortedChatOrder } = storeToRefs(chatStore)
 
     const contactStore = useContactStore()
+    const mailboxStatus = useMailboxStatusStore()
 
     const searchQuery = ref('')
     const activeFilter = ref<'all' | 'screener'>('all')
@@ -380,6 +429,19 @@ export default defineComponent({
           messagingState.status === 'ready' &&
           activeChain.capabilities.directMessages,
       ),
+      initialInboxLoading: computed(
+        () =>
+          (messagingState.status !== 'ready' && !messagingState.reason) ||
+          (messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'pending'),
+      ),
+      initialInboxError: computed(
+        () =>
+          (messagingState.status !== 'ready' &&
+            messagingState.reason !== null) ||
+          (messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'error'),
+      ),
       /** What the unread received messages brought, in AVU: stamps plus payments the wallets
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
@@ -403,6 +465,8 @@ export default defineComponent({
         return figure ? `≈ ${figure}` : undefined
       },
       getSortedChatOrder,
+      mailboxStatus,
+      messagingState,
       displayedConversations,
       searchQuery,
       normalizedQuery,

@@ -859,6 +859,9 @@ export const rawFrFR = {
   chatList: {
     senderPrefix: '{name} : {text}',
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
+    loadingConversations: 'Chargement des conversations…',
+    initialConversationsFailed:
+      'Impossible de charger les conversations. La boîte de réception réessaiera.',
     youPrefix: 'Vous : {text}',
     themPrefix: 'Contact : {text}',
     balance: 'Solde',
@@ -2197,19 +2200,20 @@ export const rawFrFR = {
     openingPersistentView:
       'Ouverture de la synchronisation dans un onglet Frank qui reste ouvert quand vous changez de fenêtre.',
     continueInTab:
-      'Continuez dans le nouvel onglet Frank et choisissez Afficher le code PIN.',
+      'Continuez dans le nouvel onglet Frank. Votre code PIN y apparaîtra.',
     openPersistentView: 'Ouvrir dans un onglet',
     promotionFailed:
       'Impossible d’ouvrir un onglet Frank. Réessayez ou ouvrez Frank dans un onglet complet avant de synchroniser. Aucun code PIN n’a été créé.',
     senderIntro:
-      'Dans l’autre fenêtre Frank, choisissez Synchroniser un compte existant. Quand vous êtes prêt, affichez un code PIN ici et saisissez-le là-bas. Gardez cette page ouverte jusqu’à l’envoi du compte.',
+      'Un code PIN apparaît ici automatiquement. Dans l’autre fenêtre Frank, choisissez Synchroniser un compte existant et saisissez ce code. Gardez cette page ouverte jusqu’à l’envoi du compte.',
+    preparingPin: 'Préparation de votre code PIN…',
     pinPrivate:
       'Ce code PIN expire après deux minutes. Partagez-le uniquement avec la fenêtre Frank à synchroniser.',
     received: 'Compte synchronisé',
     senderOpened:
-      'La page de synchronisation est ouverte dans votre onglet Frank connecté. Choisissez Afficher le code PIN, puis saisissez-le ici.',
+      'La page de synchronisation est ouverte dans votre onglet Frank connecté. Le code PIN apparaît automatiquement ; saisissez-le ici.',
     openSource:
-      'Ouvrez la fenêtre Frank contenant votre compte. Choisissez Profil → Synchroniser ce compte → Afficher le code PIN, puis saisissez le code ici.',
+      'Ouvrez la fenêtre Frank contenant votre compte. Choisissez Profil → Synchroniser ce compte, puis saisissez le code PIN affiché là-bas.',
     cancel: 'Annuler',
     hasAccount:
       'Cet appareil a déjà un compte. Synchronisez uniquement vers un appareil sans compte.',

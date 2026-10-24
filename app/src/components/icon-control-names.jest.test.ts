@@ -10,6 +10,7 @@ import { join } from 'path'
 import { mount, VueWrapper } from '@vue/test-utils'
 import * as quasar from 'quasar'
 import { defineComponent, h, ref } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
@@ -156,6 +157,7 @@ function render(
     attrs?: Record<string, unknown>
   } = {},
 ) {
+  setActivePinia(createPinia())
   const $q = {
     screen: { width: 1200 },
     platform: { is: { mobile: false } },

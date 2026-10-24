@@ -57,6 +57,13 @@
           </template>
           <template v-else>
             <p>{{ $t('accountSync.senderIntro') }}</p>
+            <p
+              v-if="busy && !view?.pin"
+              role="status"
+              data-test="sync-pin-loading"
+            >
+              {{ $t('accountSync.preparingPin') }}
+            </p>
             <div v-if="view?.pin" class="q-my-lg" data-test="sync-pin-block">
               <p>
                 {{
@@ -91,13 +98,11 @@
               {{ error }}
             </p>
             <q-btn
-              v-if="!view?.pin"
+              v-if="!view?.pin && !busy"
               unelevated
               no-caps
               color="primary"
               :label="$t('accountSync.showPinAction')"
-              :loading="busy"
-              :disable="busy"
               data-test="sync-show-pin"
               @click="showPin"
             />

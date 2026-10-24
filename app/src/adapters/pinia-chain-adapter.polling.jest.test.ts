@@ -334,6 +334,33 @@ describe('direct-message polling: cadence, backoff and status', () => {
   })
 
   describe('mailbox status shown to the user (ticket #271)', () => {
+    it('keeps the initial inbox pending until an empty mailbox read completes', async () => {
+      const { mailbox, wallet } = setup()
+      mailbox.inject({ delayMs: 6000 })
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      expect(status.initialPoll).toBe('pending')
+      await jest.advanceTimersByTimeAsync(5999)
+      expect(status.initialPoll).toBe('pending')
+      await jest.advanceTimersByTimeAsync(1)
+      expect(status.initialPoll).toBe('ready')
+      polling.stop()
+    })
+
+    it('shows an initial read error until a later poll succeeds', async () => {
+      const { mailbox, wallet } = setup()
+      mailbox.inject(unavailable())
+      const status = useMailboxStatusStore()
+      const polling = startDirectMessagePolling({ wallet })
+      expect(status.initialPoll).toBe('pending')
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(status.initialPoll).toBe('error')
+      expect(status.state).toBe('unavailable')
+      await jest.advanceTimersByTimeAsync(14_000)
+      expect(status.initialPoll).toBe('ready')
+      polling.stop()
+    })
+
     it('reports unavailable on a 404 mailbox and clears after a successful poll', async () => {
       const { mailbox, wallet } = setup()
       mailbox.inject(unavailable())

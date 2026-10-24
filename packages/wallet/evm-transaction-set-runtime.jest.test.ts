@@ -1,4 +1,4 @@
-import { EVM_TRANSACTION_SET_SOURCE_ORDER } from './evm-transaction-set-types'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -180,4 +180,92 @@ it('shared selection respects an indexed native claim before that claim has a jo
     expect(enumerate).not.toHaveBeenCalled()
     expect(coinList.latestOf(keys.deriveSubAccount(0).address)?.state).toBe('unspent')
   } finally { enumerate.mockRestore(); await runtime.stop(); await journal.Close() }
+})
+
+it.each([false, true])('preserves funding observation failures without blocking valid inventory (trusted coin: %s)', async trustedCoin => {
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const mainAccount = new Wallet('0x' + '11'.repeat(32))
+  const identity = MonadIdentity.fromSeed({ mnemonic })
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const unavailable = Object.assign(new Error('RPC rate limited'), { status: 429 })
+  let blocked = true
+  const coinList = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
+  if (trustedCoin) await coinList.put({ account: mainAccount.address, privateKey: mainAccount.privateKey,
+    origin: 'change', nonce: 0, valueWei: 1000000000000000000n })
+  const journal = new EvmNativeOperationJournal({ testOnlyEphemeral: true,
+    binding: { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'unavailable-funding' } })
+  await journal.Open()
+  const runtime = installEvmTransactionSetRuntime({ mainAccount, identity, coinList, changeKeyring,
+    changePool: new EvmChangePool({ keyring: changeKeyring }),
+    pool: new EvmSubAccountPool({ keyring: MonadHdKeyring.fromMnemonic(mnemonic) }),
+    coinStore: new MemoryRecordStore<EvmCoin>(), journal, kind: 'monad', knownNoCodeAddress: mainAccount.address,
+    provider: { getBlockNumber: async () => 100, getTransactionCount: async () => 0,
+      getBalance: async () => { if (blocked) throw unavailable; return 1000000000000000000n } } as unknown as Provider,
+    policy: () => ({ sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER, gasPriceWei: 1n,
+      paymentGasLimit: () => 21000n, changeGasLimit: 21000n, paymentFeeIsExact: true,
+      dustWei: 1000n, radix: 2, jitterBps: 0, maxChangeOutputs: 16, head: 100 }) })
+  try {
+    await runtime.refresh()
+    const preparation = runtime.transactionSetPreparer.constructTransactionSet({
+      operationId: 'original-unfunded-message', amountWei: 474123955331419010n,
+      kdf: () => new Wallet('0x' + '22'.repeat(32)).address,
+    })
+    if (trustedCoin) {
+      const prepared = await preparation
+      expect(prepared.bundle).toHaveLength(1)
+      expect(prepared.bundle[0]!.sourceAccount).toBe(mainAccount.address.toLowerCase())
+    } else {
+      await expect(preparation).rejects.toBe(unavailable)
+      expect(coinList.all()).toHaveLength(0)
+      blocked = false
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61000)
+      try { await runtime.refresh() } finally { clock.mockRestore() }
+      const retry = { operationId: 'original-unfunded-message', amountWei: 474123955331419010n,
+        kdf: () => new Wallet('0x' + '22'.repeat(32)).address }
+      const prepared = await runtime.transactionSetPreparer.constructTransactionSet(retry)
+      expect(prepared.operationId).toBe(retry.operationId)
+      expect(await runtime.transactionSetPreparer.constructTransactionSet(retry)).toEqual(prepared)
+      await expect(runtime.transactionSetPreparer.constructTransactionSet({ ...retry,
+        operationId: 'truly-insufficient-after-refresh', amountWei: 3000000000000000000n,
+      })).rejects.toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+    }
+  } finally {
+    await runtime.stop()
+    await journal.Close()
+  }
+})
+
+it.each(['cold', 'warm', 'funded'] as const)('keeps failed policy observations visible without blocking trusted funding (%s)', async mode => {
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const mainAccount = new Wallet('0x' + '11'.repeat(32))
+  const identity = MonadIdentity.fromSeed({ mnemonic })
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const unavailable = Object.assign(new Error('RPC 429 fee quote unavailable'), { status: 429 })
+  let blocked = mode === 'cold'
+  const coinList = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
+  const journal = new EvmNativeOperationJournal({ testOnlyEphemeral: true,
+    binding: { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'unavailable-policy' } })
+  await journal.Open()
+  const runtime = installEvmTransactionSetRuntime({ mainAccount, identity, coinList, changeKeyring,
+    changePool: new EvmChangePool({ keyring: changeKeyring }),
+    pool: new EvmSubAccountPool({ keyring: MonadHdKeyring.fromMnemonic(mnemonic) }),
+    coinStore: new MemoryRecordStore<EvmCoin>(), journal, kind: 'monad', knownNoCodeAddress: mainAccount.address,
+    provider: { getBlockNumber: async () => 100, getTransactionCount: async () => 0,
+      getBalance: async () => mode === 'funded' ? 1000000000000000000n : 0n,
+      getFeeData: async () => { if (blocked) throw unavailable; return { gasPrice: 1n } },
+    } as unknown as Provider })
+  try {
+    await runtime.refresh()
+    blocked = true
+    await runtime.refresh()
+    const preparation = runtime.transactionSetPreparer.constructTransactionSet({
+      operationId: 'policy-failure-message', amountWei: 474123955331419010n,
+      kdf: () => new Wallet('0x' + '22'.repeat(32)).address,
+    })
+    if (mode === 'funded') expect((await preparation).bundle).toHaveLength(1)
+    else await expect(preparation).rejects.toBe(unavailable)
+  } finally {
+    await runtime.stop()
+    await journal.Close()
+  }
 })

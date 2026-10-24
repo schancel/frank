@@ -638,7 +638,10 @@ export class EvmTransactionSetPreparer {
     const beforeSelection = coins.all()
     let parts = select(false), fanIn = false
     if (!parts && legacy) { parts = select(true); fanIn = true }
-    if (!parts) throw new EvmTransactionSetInsufficientFundsError()
+    if (!parts) {
+      this.options.assertFundingObserved?.()
+      throw new EvmTransactionSetInsufficientFundsError()
+    }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
     try {
@@ -672,7 +675,10 @@ export class EvmTransactionSetPreparer {
         const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? 64) - parts.length)
         if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
         const additional = select(false, { deficit: reserve - privateValue(), maxCoins })
-        if (!additional) throw new EvmTransactionSetInsufficientFundsError()
+        if (!additional) {
+          this.options.assertFundingObserved?.()
+          throw new EvmTransactionSetInsufficientFundsError()
+        }
         parts.push(...additional)
         for (const part of additional)
           members.push(...await this.prepareSource(

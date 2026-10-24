@@ -76,6 +76,23 @@ async function setup(values = [1000000n, 900000n], selectedPolicy = policy) {
 }
 const kdf = (index: number) => signer(50 + index).address
 
+it('lets host input run while constructing change without releasing reserved sources', async () => {
+  const f = await setup([10000000n])
+  let completed = false
+  const hostTurn = new Promise<{ completed: boolean; held: boolean }>(resolve => {
+    setTimeout(() => resolve({ completed, held: f.coins.all().some(coin => coin.holder === 'responsive') }), 0)
+  })
+  try {
+    const result = await f.preparer.constructTransactionSet({ operationId: 'responsive', amountWei: 300000n, kdf })
+    completed = true
+    expect(await hostTurn).toEqual({ completed: false, held: true })
+    expect(result.otherTransactions.length).toBeGreaterThan(4)
+    const replay = await f.preparer.constructTransactionSet({ operationId: 'responsive', amountWei: 300000n, kdf })
+    expect([...replay.bundle, ...replay.otherTransactions].map(tx => tx.rawTransaction))
+      .toEqual([...result.bundle, ...result.otherTransactions].map(tx => tx.rawTransaction))
+  } finally { await f.journal.Close() }
+})
+
 it('constructs one complete signed set with private change, exact source conservation, and shuffled contiguous nonces', async () => {
   const { preparer, coins, journal } = await setup()
   const derive = jest.fn(kdf)

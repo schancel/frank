@@ -1,4 +1,5 @@
 import { computeAddress, getAddress, SigningKey, Transaction } from 'ethers'
+import { createCooperativeBatchYielder } from './chain/event-loop-yield'
 import { computeGeometricRadixChangeSplits } from './evm-change-distribution'
 import type {
   CoinPart,
@@ -921,6 +922,7 @@ export class EvmTransactionSetPreparer {
         moves.unshift(moves.splice(paymentIndex, 1)[0]!)
       }
     }
+    const yielder = createCooperativeBatchYielder()
     let changeLogicalIndex = 0
     for (const move of moves)
       if (move.role === 'change') {
@@ -942,9 +944,11 @@ export class EvmTransactionSetPreparer {
         move.to = target.account.toLowerCase()
         move.changeIndex = index
         move.logicalIndex = changeLogicalIndex++
+        await yielder.maybeYield()
       }
     let balance = part.coin.valueWei
-    return moves.map((move, index) => {
+    const signed: LocalMember[] = []
+    for (const [index, move] of moves.entries()) {
       const before = balance
       balance -= move.value + move.gas * policy.gasPriceWei
       const tx = Transaction.from({
@@ -981,8 +985,12 @@ export class EvmTransactionSetPreparer {
         },
       }
       tx.signature = new SigningKey(part.coin.privateKey).sign(tx.unsignedHash)
-      return { plan, raw: tx.serialized }
-    })
+      signed.push({ plan, raw: tx.serialized })
+      // Sources and fresh derivations remain reserved by this operation across host turns.
+      // Awaiting cached promises alone cannot let the browser process input or paint.
+      await yielder.maybeYield()
+    }
+    return signed
   }
 
   private entropy(): number {

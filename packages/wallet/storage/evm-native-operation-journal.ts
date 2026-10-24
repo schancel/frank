@@ -1,10 +1,10 @@
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
-import { getAddress, keccak256, toUtf8Bytes, Transaction } from 'ethers'
+import { keccak256, toUtf8Bytes, Transaction } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
-import { validateTransactionSetGraph } from './evm-transaction-set-graph'
+import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './evm-transaction-set-graph'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
@@ -341,7 +341,7 @@ function hash(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !HASH.test(value)) fail()
 }
 function address(value: unknown): asserts value is string {
-  if (typeof value !== 'string' || getAddress(value).toLowerCase() !== value)
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{40}$/.test(value))
     fail()
 }
 function point(value: unknown): asserts value is string {
@@ -357,7 +357,7 @@ function clone<T>(value: T): T {
 function encodedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value))
 }
-export function nativeMaximumFee(tx: Transaction): bigint {
+export function nativeMaximumFee(tx: Pick<Transaction, 'gasLimit' | 'maxFeePerGas' | 'gasPrice'>): bigint {
   const fee = tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
   if (fee > UINT_MAX) fail()
   return fee
@@ -509,6 +509,7 @@ function reservation(row: EvmNativeOperation): number {
  * (not hashes or object identities) prevent changed durable bytes from inheriting trust. */
 class NativeSignatureValidationCache {
   private readonly entries = new Set<string>()
+  private readonly unsignedFacts = new Map<string, UnsignedTransactionFacts>()
   private bytes = 0
 
   validate(inputs: readonly string[], verify: () => void): void {
@@ -521,13 +522,33 @@ class NativeSignatureValidationCache {
     const maximumBytes = 8 * 1024 * 1024
     // Retain the verified prefix when full. Evicting during ordered full-journal scans
     // would thrash the entire cache once history exceeds its capacity.
-    if (this.entries.size >= 4096 || this.bytes + bytes > maximumBytes) return
+    if (this.entries.size + this.unsignedFacts.size >= 4096 || this.bytes + bytes > maximumBytes) return
     this.entries.add(key)
     this.bytes += bytes
   }
 
+  unsigned(value: unknown, binding: EvmNativeBinding): UnsignedTransactionFacts {
+    // Binding and exact durable bytes participate in the key. Only immutable fields
+    // are retained; Transaction instances expose setters and must not be cached.
+    if (typeof value !== 'string') fail()
+    const key = JSON.stringify([binding.nativeChainId, value])
+    const cached = this.unsignedFacts.get(key)
+    if (cached) return cached
+    const tx = unsigned(value, binding)
+    const facts = Object.freeze({ nonce: tx.nonce, to: tx.to, data: tx.data,
+      value: tx.value, gasLimit: tx.gasLimit, gasPrice: tx.gasPrice,
+      maxFeePerGas: tx.maxFeePerGas })
+    const bytes = (key.length + facts.data.length + (facts.to?.length ?? 0)) * 2 + 256
+    if (this.entries.size + this.unsignedFacts.size < 4096 && this.bytes + bytes <= 8 * 1024 * 1024) {
+      this.unsignedFacts.set(key, facts)
+      this.bytes += bytes
+    }
+    return facts
+  }
+
   clear(): void {
     this.entries.clear()
+    this.unsignedFacts.clear()
     this.bytes = 0
   }
 }
@@ -632,7 +653,7 @@ function validateRow(
       fail()
     sourceAddresses.add(source.address)
     const tx = checked('unsigned', () =>
-      unsigned(member.unsignedTransaction, binding),
+      signatures.unsigned(member.unsignedTransaction, binding),
     )
     fee += nativeMaximumFee(tx)
     const claim = `${source.address}:${tx.nonce}`
@@ -701,6 +722,7 @@ function validateRow(
       row.members as EvmNativeMember[],
       uint(row.intendedValueWei),
       row.transactionSetStages,
+      bytes => signatures.unsigned(bytes, binding),
     )
   if (
     row.members.length > 1 &&
@@ -714,7 +736,7 @@ function validateRow(
       fail()
     let value = 0n
     for (const item of row.members as EvmNativeMember[]) {
-      const tx = unsigned(item.unsignedTransaction, binding)
+      const tx = signatures.unsigned(item.unsignedTransaction, binding)
       if (item.dependencies.length || tx.to?.toLowerCase() !== row.recipient)
         fail()
       if (row.kind === 'native') {
@@ -773,9 +795,10 @@ function validateRow(
 function validateTransactionSet(
   members: EvmNativeMember[],
   intended: bigint,
-  stages?: unknown,
+  stages: unknown,
+  parse: (bytes: string) => UnsignedTransactionFacts,
 ): void {
-  validateTransactionSetGraph(members, intended, stages, () => fail())
+  validateTransactionSetGraph(members, intended, stages, () => fail(), parse)
 
 }
 
@@ -894,7 +917,7 @@ export class EvmNativeOperationJournal {
       if (!row.cancelled)
         for (const member of row.members) {
           const pair = `${member.source.address}:${
-            Transaction.from(member.unsignedTransaction).nonce
+            this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce
           }`
           if (pairs.has(pair)) fail('conflict')
           pairs.add(pair)
@@ -981,7 +1004,7 @@ export class EvmNativeOperationJournal {
     }
     if (!row.cancelled)
       for (const member of row.members) {
-        const key = this.pairKey(member.source.address, Transaction.from(member.unsignedTransaction).nonce)
+        const key = this.pairKey(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce)
         const indexed = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
         if (indexed !== id) fail()
       }
@@ -995,7 +1018,7 @@ export class EvmNativeOperationJournal {
     this.operationId(id)
     const row = await this.readArchived(id)
     if (!row || row.cancelled || !row.members.some(member =>
-      member.source.address === account && Transaction.from(member.unsignedTransaction).nonce === nonce)) fail()
+      member.source.address === account && this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce === nonce)) fail()
     return id
   }
 
@@ -1096,7 +1119,7 @@ export class EvmNativeOperationJournal {
       }
       if (!row.cancelled)
         for (const member of row.members) {
-          const nonce = Transaction.from(member.unsignedTransaction).nonce
+          const nonce = this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce
           if (await this.consumedBy(member.source.address, nonce)) fail('conflict')
           operations.push({ type: 'put', key: this.pairKey(member.source.address, nonce), value: id })
         }
@@ -1107,7 +1130,7 @@ export class EvmNativeOperationJournal {
           if (row.preparationId !== undefined) this.ephemeralPreparations.set(row.preparationId, id)
           if (!row.cancelled)
             for (const member of row.members)
-              this.ephemeralConsumed.set(this.pairKey(member.source.address, Transaction.from(member.unsignedTransaction).nonce), id)
+              this.ephemeralConsumed.set(this.pairKey(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce), id)
         }
       } catch (error) {
         this.lifecycle = 'uncertain'
@@ -1168,7 +1191,7 @@ export class EvmNativeOperationJournal {
       if (row.cancelled) continue
       for (const m of row.members)
         if (m.source.address === address) {
-          if (Transaction.from(m.unsignedTransaction).nonce === nonce)
+          if (this.signatures.unsigned(m.unsignedTransaction, this.binding).nonce === nonce)
             return false
           // The dependency leader retains its provisional value across foreign nonce advances.
           if (
@@ -1320,10 +1343,10 @@ export class EvmNativeOperationJournal {
           fail('capacity')
         for (const m of row.members)
           if (
-            (await this.consumedBy(m.source.address, Transaction.from(m.unsignedTransaction).nonce)) !== undefined ||
+            (await this.consumedBy(m.source.address, this.signatures.unsigned(m.unsignedTransaction, this.binding).nonce)) !== undefined ||
             !this.canSelect(
               m.source.address,
-              Transaction.from(m.unsignedTransaction).nonce,
+              this.signatures.unsigned(m.unsignedTransaction, this.binding).nonce,
             )
           )
             fail('conflict')
@@ -1384,7 +1407,7 @@ export class EvmNativeOperationJournal {
           input.stage.memberCount !== input.members.length || !input.members.length ||
           input.members.length !== input.signedTransactions.length) fail('conflict')
       for (const member of input.members)
-        if (await this.consumedBy(member.source.address, Transaction.from(member.unsignedTransaction).nonce)) fail('conflict')
+        if (await this.consumedBy(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce)) fail('conflict')
       for (const member of input.members)
         for (const other of this.rows.values())
           if (other.operationId !== id && !other.cancelled && other.members.some(candidate =>
@@ -1396,7 +1419,7 @@ export class EvmNativeOperationJournal {
         ...member, signed: { rawTransaction: input.signedTransactions[index]!, transactionHash: keccak256(input.signedTransactions[index]!) },
         exposed: false, observation: { state: 'unknown' as const }, account: null, syncApplied: false,
       })))
-      row.maximumFeeWei = row.members.reduce((sum, member) => sum + nativeMaximumFee(Transaction.from(member.unsignedTransaction)), 0n).toString()
+      row.maximumFeeWei = row.members.reduce((sum, member) => sum + nativeMaximumFee(this.signatures.unsigned(member.unsignedTransaction, this.binding)), 0n).toString()
       row.reservedBytes = reservation(row)
       if (row.members.length > MAX_MEMBERS || [...this.rows.values()].filter(other => !other.cancelled && other.operationId !== id).reduce((sum, other) => sum + other.reservedBytes, 0) + row.reservedBytes > this.maxBytes) fail('capacity')
     })

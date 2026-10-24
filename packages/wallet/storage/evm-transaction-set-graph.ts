@@ -2,8 +2,12 @@
 import { Transaction } from 'ethers'
 import type { EvmNativeMember, EvmTransactionSetStage } from './evm-native-operation-journal'
 
+export type UnsignedTransactionFacts = Readonly<Pick<Transaction,
+  'nonce' | 'to' | 'data' | 'value' | 'gasLimit' | 'gasPrice' | 'maxFeePerGas'>>
+
 export function validateTransactionSetGraph(
   members: EvmNativeMember[], intended: bigint, value: unknown, fail: () => never,
+  parse: (bytes: string) => UnsignedTransactionFacts = bytes => Transaction.from(bytes),
 ): void {
   const uint = (value: unknown): bigint => {
     if (typeof value !== 'string' || !/^\d+$/.test(value)) return fail()
@@ -13,7 +17,7 @@ export function validateTransactionSetGraph(
     if (!Number.isSafeInteger(value) || (value as number) < 0) return fail()
     return value as number
   }
-  const fee = (tx: Transaction) => tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
+  const fee = (tx: UnsignedTransactionFacts) => tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
   const stages = value === undefined ? undefined : value as EvmTransactionSetStage[]
   if (stages && (!Array.isArray(stages) || !stages.length)) fail()
   let offset = 0
@@ -31,13 +35,13 @@ export function validateTransactionSetGraph(
     stageNames.add(key)
     if (index === 0 && uint(stage.intendedValueWei) !== intended) fail()
     offset += stage.memberCount
-    const totalFee = members.reduce((sum, member) => sum + fee(Transaction.from(member.unsignedTransaction)), 0n)
+    const totalFee = members.reduce((sum, member) => sum + fee(parse(member.unsignedTransaction)), 0n)
     if (stage.maxFeeWei !== undefined && totalFee > uint(stage.maxFeeWei)) fail()
   }
   if (stages && offset !== members.length) fail()
   const incoming = new Map<string, { indexes: number[]; value: bigint; changeIndex: number; role: string }>()
   for (const [index, member] of members.entries()) {
-    const tx = Transaction.from(member.unsignedTransaction), meta = member.transactionSet
+    const tx = parse(member.unsignedTransaction), meta = member.transactionSet
     if (!meta) fail()
     if (meta.role === 'change' || meta.role === 'funding') {
       const changeIndex = integer(meta.changeIndex), destination = tx.to!.toLowerCase(), prior = incoming.get(destination)
@@ -51,7 +55,7 @@ export function validateTransactionSetGraph(
   const intendedPaid = new Map<string, bigint>()
   const paid = new Map<string, bigint>(), paymentIndexes = new Map<string, Set<number>>()
   for (const [index, member] of members.entries()) {
-    const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
+    const meta = member.transactionSet!, tx = parse(member.unsignedTransaction)
     if (Object.keys(meta).some(key => !['role','intendedValueWei','stageId','fundingWaitBlocks','logicalIndex','changeIndex','balanceBeforeWei','balanceAfterWei','inventoryApplied','predecessorWaitBlocks','remainderSpendableFromBlock','refundPending'].includes(key))) fail()
     integer(meta.logicalIndex)
     if (meta.stageId !== undefined && !stageNames.has(meta.stageId)) fail()
@@ -92,7 +96,7 @@ export function validateTransactionSetGraph(
     if ('destinations' in stage && (stage.destinations.length !== indexes.size || intendedPaid.get(key) !== uint(stage.intendedValueWei))) fail()
     if ('legacy' in stage && stage.legacy && indexes.size !== 1) fail()
     if ('reserveForContinuationWei' in stage && stage.reserveForContinuationWei !== undefined) {
-      const change = members.filter(member => member.transactionSet?.stageId === stage.stageId && member.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.unsignedTransaction).value, 0n)
+      const change = members.filter(member => member.transactionSet?.stageId === stage.stageId && member.transactionSet!.role === 'change').reduce((sum, member) => sum + parse(member.unsignedTransaction).value, 0n)
       if (change < uint(stage.reserveForContinuationWei)) fail()
     }
   }

@@ -6,7 +6,9 @@ import type { OutgoingFinancialOperation } from '@frank/cashweb/types/messages'
 import type { DirectMessageAttemptStatus } from '@frank/wallet/chain'
 
 /** Host recovery owns only the durable binding. Messaging owns originals and its handoff
- * barrier; financial owners own signed sets. No chat row, fresh send, sign or release is used. */
+ * barrier; financial owners own signed sets. Only durable original delivery authorizes submit.
+ * Submission is not settlement: retained originals remain eligible for later bounded ticks.
+ * No chat row, fresh send, sign or release is used. */
 export function createFinancialEnvelopeRecovery(options: {
   store: Pick<
     MessageStore,
@@ -17,7 +19,10 @@ export function createFinancialEnvelopeRecovery(options: {
   isCurrent(): boolean
   capture(
     references: readonly OutgoingFinancialOperation[],
-  ): Promise<{ expose(digest: string): Promise<void> }>
+  ): Promise<{ expose(digest: string): Promise<void>; submit(): Promise<void> }>
+  attemptOf(
+    messageId: string,
+  ): Promise<{ payloadDigest: string; paid: boolean } | undefined>
   deliveryOf(digest: string): Promise<DirectMessageAttemptStatus | undefined>
   reconcile(params: {
     payloadDigests: string[]
@@ -54,26 +59,52 @@ export function createFinancialEnvelopeRecovery(options: {
           if (!options.isCurrent() || active.has(binding.messageId)) return
           active.add(binding.messageId)
           try {
-            if (binding.phase === 'bound') {
-              const status = await options.deliveryOf(binding.payloadDigest)
+            let originalDigest =
+              binding.phase === 'bound' ? binding.payloadDigest : undefined
+            let financial:
+              | Awaited<ReturnType<typeof options.capture>>
+              | undefined
+            const submitOriginal = async () => {
+              assertCurrent()
+              financial ??= await options.capture(binding.financialOperations)
+              assertCurrent()
+              await financial.submit()
+              assertCurrent()
+            }
+            if (binding.phase === 'pending') {
+              const original = await options.attemptOf(binding.messageId)
+              assertCurrent()
+              if (!original)
+                throw new Error(
+                  'Financial envelope intent is pending: original has not been stored; no new message was created',
+                )
+              // Record identity only. A held original still requires its canonical exposure callback.
+              await options.store.bindFinancialEnvelope({
+                ...binding,
+                phase: 'bound',
+                payloadDigest: original.payloadDigest,
+              })
+              assertCurrent()
+              originalDigest = original.payloadDigest
+            }
+            if (originalDigest !== undefined) {
+              const status = await options.deliveryOf(originalDigest)
               assertCurrent()
               if (status === 'delivered') {
                 // Restore the referenced owner handles even when every presentation row is gone.
-                await options.capture(binding.financialOperations)
-                assertCurrent()
+                await submitOriginal()
                 return
               }
             }
             const statuses = await options.reconcile({
               messageIds: [binding.messageId],
               payloadDigests:
-                binding.phase === 'bound' ? [binding.payloadDigest] : [],
+                originalDigest === undefined ? [] : [originalDigest],
               async onEnvelopeDurable(digest, messageId) {
                 assertCurrent()
                 if (
                   messageId !== binding.messageId ||
-                  (binding.phase === 'bound' &&
-                    digest !== binding.payloadDigest)
+                  (originalDigest !== undefined && digest !== originalDigest)
                 )
                   throw new Error(
                     'Financial envelope original identity conflict',
@@ -84,9 +115,8 @@ export function createFinancialEnvelopeRecovery(options: {
                   payloadDigest: digest,
                 })
                 assertCurrent()
-                const financial = await options.capture(
-                  binding.financialOperations,
-                )
+                originalDigest = digest
+                financial = await options.capture(binding.financialOperations)
                 assertCurrent()
                 await financial.expose(digest)
                 assertCurrent()
@@ -94,14 +124,14 @@ export function createFinancialEnvelopeRecovery(options: {
             })
             assertCurrent()
             if (
-              (binding.phase === 'pending' &&
-                Object.keys(statuses).length === 0) ||
-              (binding.phase === 'bound' &&
-                statuses[binding.payloadDigest] === 'unknown')
+              originalDigest === undefined ||
+              statuses[originalDigest] === undefined ||
+              statuses[originalDigest] === 'unknown'
             )
               throw new Error(
                 'Financial envelope intent is pending: original has not been stored; no new message was created',
               )
+            if (statuses[originalDigest] === 'delivered') await submitOriginal()
           } catch (error) {
             if (options.isCurrent()) options.onError(binding, error)
           } finally {

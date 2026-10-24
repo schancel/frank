@@ -123,6 +123,7 @@ import {
 import {
   isSafeRelayTimestamp,
   type RelayDeliverySuppression,
+  type FinancialEnvelopeBinding,
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
@@ -3978,14 +3979,77 @@ export const useChatStore = defineStore('chats', {
       const stillCurrent = () =>
         this.messages[id] === message && walletOwnsMessage(wallet, message)
 
-      const financial = message.financialOperations?.length
-        ? await captureOutgoingFinancialOperations(
-            wallet,
-            message.financialOperations,
-          )
+      const financialAccount = accountSession.state.account
+      const sealedMessageId = message.sealedMessageId
+      const financialReferences = message.financialOperations?.map(
+        reference => ({ ...reference }),
+      )
+      const financial = financialReferences?.length
+        ? await captureOutgoingFinancialOperations(wallet, financialReferences)
         : undefined
-      if (financial && !message.sealedMessageId)
+      if (financial && !sealedMessageId)
         throw new Error('Financial message has no durable sealed identity')
+      const assertFinancialCurrent = () => {
+        if (
+          !contextCurrent() ||
+          !stillCurrent() ||
+          message.sealedMessageId !== sealedMessageId ||
+          !financialAccount ||
+          accountSession.state.account !== financialAccount ||
+          accountSession.state.status !== 'ready' ||
+          accountSession.peekWallet() !== wallet ||
+          wallet.chainIdentifier !== messagingChain.chainIdentifier
+        )
+          throw new Error('Financial envelope context changed')
+      }
+      let financialEnvelope: FinancialEnvelopeBinding | undefined
+      if (financial) {
+        assertFinancialCurrent()
+        financialEnvelope = {
+          version: 1,
+          phase: 'pending',
+          accountId: financialAccount!.receipt.context.accountId,
+          messagingChainIdentifier: messagingChain.chainIdentifier,
+          messageId: sealedMessageId!,
+          financialOperations: financialReferences!,
+        }
+        if (digest !== undefined) {
+          await assertDurableAttemptAssociation(id, digest, message, address)
+          assertFinancialCurrent()
+          const original = await messagingChain.directMessages.attemptOf?.({
+            wallet,
+            messageId: sealedMessageId!,
+          })
+          assertFinancialCurrent()
+          if (
+            original?.payloadDigest !== digest ||
+            original.paid !== (message.stampValueWei !== 0n)
+          )
+            throw new Error(
+              'Financial envelope original association unavailable',
+            )
+          financialEnvelope = {
+            ...financialEnvelope,
+            phase: 'bound',
+            payloadDigest: digest,
+          }
+        }
+        const repository = await store
+        assertFinancialCurrent()
+        await repository.bindFinancialEnvelope({
+          version: financialEnvelope.version,
+          phase: 'pending',
+          accountId: financialEnvelope.accountId,
+          messagingChainIdentifier: financialEnvelope.messagingChainIdentifier,
+          messageId: financialEnvelope.messageId,
+          financialOperations: financialEnvelope.financialOperations,
+        })
+        assertFinancialCurrent()
+        if (financialEnvelope.phase === 'bound') {
+          await repository.bindFinancialEnvelope(financialEnvelope)
+          assertFinancialCurrent()
+        }
+      }
       const envelopeDurabilityCallback = (assertCurrent?: () => void) =>
         financial &&
         (async (attemptDigest: string) => {
@@ -3997,6 +4061,17 @@ export const useChatStore = defineStore('chats', {
             { strict: true, assertCurrent },
           )
           assertCurrent?.()
+          assertFinancialCurrent()
+          const repository = await store
+          assertCurrent?.()
+          assertFinancialCurrent()
+          await repository.bindFinancialEnvelope({
+            ...financialEnvelope!,
+            phase: 'bound',
+            payloadDigest: attemptDigest,
+          })
+          assertCurrent?.()
+          assertFinancialCurrent()
           await financial.expose(attemptDigest)
         })
       const onEnvelopeDurable = envelopeDurabilityCallback()
@@ -4020,6 +4095,7 @@ export const useChatStore = defineStore('chats', {
             statuses = await messagingChain.directMessages.reconcileAttempts({
               wallet,
               payloadDigests: [digest],
+              ...(financial ? { messageIds: [sealedMessageId!] } : {}),
               maxPutAttempts: manual ? 3 : 1,
               ...(financial
                 ? {

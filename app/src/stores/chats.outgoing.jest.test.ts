@@ -73,6 +73,7 @@ jest.mock('../adapters/level-message-store', () => {
   const serialized = new Map<string, string>()
   return {
     store: Promise.resolve({
+      bindFinancialEnvelope: jest.fn(async () => undefined),
       saveMessage: jest.fn(async (wrapper: MessageWrapper) => {
         serialized.set(wrapper.index, serializeMessageWrapper(wrapper))
       }),
@@ -118,12 +119,27 @@ async function durable(): Promise<Map<string, string>> {
 const ME = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
 const wallet = {
+  chainIdentifier: 'monad-testnet',
   identity: { address: { raw: ME }, displayAddress: ME },
 } as unknown as WalletHandle
 
 const TEXT = [{ type: 'text' as const, text: 'held two' }]
 const HASH = 'ab'.repeat(32)
 const STORED_CONVERSATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+function installFinancialSession(paid = true) {
+  jest.replaceProperty(accountSession, 'state', {
+    ...accountSession.state,
+    status: 'ready',
+    account: {
+      receipt: { context: { accountId: 'synthetic-outgoing-account' } },
+    } as NonNullable<typeof accountSession.state.account>,
+  })
+  jest.spyOn(accountSession, 'peekWallet').mockReturnValue(wallet)
+  jest
+    .spyOn(activeChain.directMessages, 'attemptOf')
+    .mockResolvedValue({ payloadDigest: HASH, paid })
+}
 
 const okResult = (payloadDigest: string): DirectMessageSendResult => ({
   payloadDigest,
@@ -231,6 +247,7 @@ describe('outgoing direct messages (#269, #270)', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
 
@@ -457,6 +474,7 @@ describe('outgoing direct messages (#269, #270)', () => {
     it.each([false, true])(
       'financial durable callback respects replacement owner=%s with the same digest',
       async replaced => {
+        installFinancialSession()
         const send = sendJournalsThenPending()
         const chats = useChatStore()
         await chats.sendMessage({ wallet, address: PEER, items: TEXT })
@@ -536,6 +554,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           return held
         })
         if (phase === 'financial-submit') {
+          installFinancialSession()
           message.financialOperations = [
             { chainIdentifier: 'monad-testnet', operationId: 'original' },
           ]
@@ -2870,6 +2889,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       db.clear()
       survived.forEach((value, key) => db.set(key, value))
       jest.restoreAllMocks()
+
       jest.spyOn(console, 'warn').mockImplementation(() => undefined)
       return reload()
     }
@@ -2962,6 +2982,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         ;(await durable()).clear()
         setActivePinia(createPinia())
         jest.restoreAllMocks()
+
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         // A bet whose payment set exists and whose delivery could not be confirmed.
         jest
@@ -2985,6 +3006,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           }),
         )
         jest.restoreAllMocks()
+
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         const send = jest.spyOn(activeChain.directMessages, 'send')
         reconcileReturns({ [HASH]: status })
@@ -3223,6 +3245,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         const chats = useChatStore()
         await chats.sendMessage({ wallet, address: PEER, items: DEAL })
         jest.restoreAllMocks()
+
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         const [message] = only(chats)
         expect(message.delivery?.attemptDigest).toBe(HASH)
@@ -3298,6 +3321,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         const chats = useChatStore()
         await chats.sendMessage({ wallet, address: PEER, items: DEAL })
         jest.restoreAllMocks()
+
         const [message] = only(chats)
         expect(message.status).toBe('error')
         expect(message.delivery?.attemptDigest).toBeUndefined()
@@ -3333,6 +3357,7 @@ describe('financial outbox envelope barrier', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    installFinancialSession(false)
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     expose = jest.fn(async () => undefined)
     submit = jest.fn(async () => undefined)
@@ -3450,6 +3475,9 @@ describe('financial outbox envelope barrier', () => {
   })
 
   it('resumes a held paid attempt through its barrier and submits originals only after delivery', async () => {
+    jest
+      .mocked(activeChain.directMessages.attemptOf!)
+      .mockResolvedValue({ payloadDigest: HASH, paid: true })
     const send = jest
       .spyOn(activeChain.directMessages, 'send')
       .mockImplementation(async p => {
@@ -3476,6 +3504,9 @@ describe('financial outbox envelope barrier', () => {
   })
 
   it('a failed payment submit after delivery is not sent; reconciliation submits the same operations again', async () => {
+    jest
+      .mocked(activeChain.directMessages.attemptOf!)
+      .mockResolvedValue({ payloadDigest: HASH, paid: true })
     const send = jest
       .spyOn(activeChain.directMessages, 'send')
       .mockImplementation(async p => {
@@ -3534,6 +3565,8 @@ describe('financial UI cancellation', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    installFinancialSession()
+
     const expose = jest.fn(),
       submit = jest.fn()
     jest
@@ -3594,6 +3627,7 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
   it.each([false, true])(
@@ -3728,6 +3762,7 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+
     const chats = useChatStore()
     let calls = 0
     jest
@@ -3758,6 +3793,7 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+
     const chats = useChatStore()
     jest.spyOn(activeChain.directMessages, 'send').mockImplementation(() => {
       const err = Object.assign(

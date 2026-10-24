@@ -530,6 +530,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           reject = failure
           recoveryReleases.add(() => failure(new Error('test cleanup')))
         })
+        void held.catch(() => undefined)
         const submit = jest.fn(async () => {
           entered()
           return held

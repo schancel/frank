@@ -26,7 +26,7 @@ it('Safari names the coloured toolbar icons; Chrome and Firefox the transparent 
     'icons/extension-safari-32x32.png',
   )
   expect(safari.icons).toEqual(safari.action.default_icon)
-  expect(safari.action.default_popup).toBe('index.html')
+  expect(safari.action.default_popup).toBe('popup.html')
   for (const target of ['chrome', 'firefox'] as const) {
     for (const icon of manifestIconPaths(buildExtensionManifest(target))) {
       expect(icon).toMatch(/^icons\/extension-\d+x\d+\.png$/)

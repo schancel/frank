@@ -31,6 +31,10 @@ const mockExtension = {
   raised: true,
 }
 jest.mock('../../src-bex/runtime-adapter', () => ({
+  closeExtensionView: (...args: unknown[]) =>
+    jest
+      .requireActual('../../src-bex/runtime-adapter')
+      .closeExtensionView(...args),
   isBrowserExtensionRuntime: () => mockExtension.isExtension,
   focusOwnExtensionView: jest.fn(async () => mockExtension.raised),
 }))

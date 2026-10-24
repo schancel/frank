@@ -1026,7 +1026,10 @@ import {
   activeChain,
   onActiveChainChange,
 } from '@frank/wallet/chain'
-import { isBrowserExtensionRuntime } from '../../src-bex/runtime-adapter'
+import {
+  closeExtensionView,
+  isBrowserExtensionRuntime,
+} from '../../src-bex/runtime-adapter'
 import {
   detectPreferredExtensionTarget,
   EXTENSION_DOWNLOAD_TARGETS,
@@ -1131,7 +1134,7 @@ function switchToOpenTab() {
   // In the extension the raised view is the one to use: close this one once it is up.
   if (isBrowserExtensionRuntime()) {
     void outcome.then(result => {
-      if (result === 'focused') window.close()
+      if (result === 'focused') closeExtensionView()
     })
   }
 }

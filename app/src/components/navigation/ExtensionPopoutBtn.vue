@@ -18,6 +18,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import {
+  closeExtensionView,
   isBrowserExtensionRuntime,
   focusOrOpenMainExtensionWindow,
 } from '../../../src-bex/runtime-adapter'
@@ -86,7 +87,7 @@ export default defineComponent({
         typeof window.close === 'function'
       ) {
         try {
-          window.close()
+          closeExtensionView()
         } catch {
           // Ignore window.close errors in restricted contexts
         }

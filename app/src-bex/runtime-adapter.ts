@@ -1,6 +1,35 @@
 export const FRANK_DAPP_BRIDGE_CHANNEL = 'frank-dapp-bridge-v1'
 export const FRANK_PWA_EXTENSION_SYNC_CHANNEL = 'frank-pwa-extension-sync-v1'
 export const FRANK_SYNC_NAVIGATION_TIMEOUT_MS = 5_000
+export const FRANK_POPUP_FRAME_ID = 'frank-popup-app'
+export interface ExtensionPopupHost {
+  close(): void
+  requestSyncSender(): Promise<unknown>
+}
+
+function popupHost(scope: Record<string, any>): ExtensionPopupHost | undefined {
+  const view = scope.window ?? scope
+  try {
+    if (view.frameElement?.id === FRANK_POPUP_FRAME_ID)
+      return view.parent.frankPopupHost
+  } catch {
+    // Cross-origin frames do not have access to the extension popup host.
+  }
+}
+
+export function closeExtensionView(
+  scope: Record<string, any> = globalThis,
+): boolean {
+  const host = popupHost(scope)
+  if (host) {
+    host.close()
+    return true
+  }
+  const view = scope.window ?? scope
+  if (typeof view.close !== 'function') return false
+  view.close()
+  return true
+}
 export interface SyncSenderNavigationResult {
   ok: boolean
   reason?: 'no-tab' | 'not-ready' | 'timeout' | 'unavailable'
@@ -202,6 +231,15 @@ export async function sendRuntimeMessage<TReq = unknown, TRes = any>(
   message: TReq,
   globalScope?: Record<string, any>,
 ): Promise<TRes | null> {
+  const host = popupHost(globalScope ?? globalThis)
+  if (
+    host &&
+    (message as { channel?: unknown })?.channel ===
+      FRANK_PWA_EXTENSION_SYNC_CHANNEL &&
+    (message as { type?: unknown })?.type === 'request-sync-sender'
+  ) {
+    return (await host.requestSyncSender()) as TRes | null
+  }
   const api = getRawExtensionApi(globalScope)
   if (!api || !api.runtime || typeof api.runtime.sendMessage !== 'function') {
     return null
@@ -582,7 +620,8 @@ export async function hasOtherExtensionViews(
       const views = api.extension.getViews()
       if (Array.isArray(views)) {
         const self = globalScope.window ?? globalScope
-        return views.some(view => view !== self)
+        const host = popupHost(globalScope) ? self.parent : undefined
+        return views.some(view => view !== self && view !== host)
       }
     }
   } catch {

@@ -42,6 +42,13 @@ export const EXTENSION_POPUP_SIZING_CSS = [
   '}',
 ].join('\n')
 
+export const SAFARI_POPUP_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Frank</title>
+<style>html,body{margin:0;padding:0;width:${EXTENSION_POPUP_WIDTH}px;height:${EXTENSION_POPUP_HEIGHT}px;overflow:hidden}
+iframe{display:block;border:0;width:${EXTENSION_POPUP_WIDTH}px;height:${EXTENSION_POPUP_HEIGHT}px}</style>
+<script src="./popup-shell.js"></script></head>
+<body><iframe id="frank-popup-app" title="Frank" src="./index.html?extMode=popup"></iframe></body></html>`
+
 function parseTargetArg(argv) {
   let target = 'all'
   for (let i = 0; i < argv.length; i++) {
@@ -665,6 +672,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
   const contentBundle = bundleBexEntry('content.ts')
   const backgroundBundle = bundleBexEntryWithDependencies('background.ts')
   const approvalBundle = bundleBexEntryWithDependencies('approval.ts')
+  const popupBundle = bundleBexEntryWithDependencies('popup-shell.ts')
 
   const pwaDist = process.env.APP_DIST_DIR
     ? path.resolve(appDir, process.env.APP_DIST_DIR)
@@ -744,6 +752,18 @@ export function buildExtensions(argv = process.argv.slice(2)) {
     )
 
     const manifest = buildExtensionManifest(target, version)
+    if (target === 'safari') {
+      fs.writeFileSync(
+        path.join(targetDir, 'popup.html'),
+        SAFARI_POPUP_HTML,
+        'utf8',
+      )
+      fs.writeFileSync(
+        path.join(targetDir, 'popup-shell.js'),
+        popupBundle,
+        'utf8',
+      )
+    }
     ensureManifestIcons(targetDir, manifest)
     fs.writeFileSync(
       path.join(targetDir, 'manifest.json'),

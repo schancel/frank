@@ -62,6 +62,15 @@ test('a trusted extension view requests navigation only in an existing exact-ori
   )
 })
 
+test('the top-level popup shell can request sync navigation', async () => {
+  const { request } = backgroundHarness()
+  const result = await request({
+    ...extensionSender,
+    url: 'chrome-extension://frank-test-ext/popup.html',
+  })
+  expect(result).toEqual({ ok: true, result: { ok: true } })
+})
+
 function backgroundHarness() {
   const state = createBackgroundBridgeState()
   const tabs = {

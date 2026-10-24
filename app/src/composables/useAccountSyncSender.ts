@@ -12,6 +12,7 @@ import {
   FRANK_PWA_EXTENSION_SYNC_CHANNEL,
   FRANK_WEB_APP_ORIGIN,
   getRawExtensionApi,
+  closeExtensionView,
   isBrowserExtensionRuntime,
   openExtensionTab,
   isFrankWebAppOrigin,
@@ -149,7 +150,7 @@ export function useAccountSyncSender() {
       if (disposed) return
       promoted.value = true
       try {
-        window.close()
+        closeExtensionView()
       } catch {
         /* The persistent tab is open; the popup may stay visible. */
       }

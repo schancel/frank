@@ -72,6 +72,44 @@ describe('persistent account mutation order', () => {
     }
   })
 
+  it('a flush after an empty flush still acknowledges every newly queued write', async () => {
+    const original = durability.durableBatch
+    let acknowledged = false
+    jest.spyOn(durability, 'durableBatch').mockImplementation(async (...args) => {
+      const result = await original(...args)
+      acknowledged = true
+      return result
+    })
+    const empty = store.flush()
+    store.put(terminal)
+    await store.flush()
+    expect(acknowledged).toBe(true)
+    await empty
+    await store.Close()
+    store = new LevelSubAccountPoolStore(location)
+    await store.Open()
+    expect(store.getByIndex(0)).toEqual(terminal)
+  })
+
+  it('snapshots checkpoint keys and values before the caller can mutate its object', async () => {
+    store.put(terminal)
+    store.put({ index: 1, address, status: 'available' })
+    await store.flush()
+    const checkpoint: TerminalSubAccountCheckpoint = { version: 1, index: 0, address,
+      status: 'retired', denominationWei: '7', lifecycle: terminal.lifecycle as TerminalSubAccountCheckpoint['lifecycle'], compactedAt: 10 }
+    const expected = JSON.parse(JSON.stringify(checkpoint))
+    store.replaceWithCheckpoint(checkpoint)
+    checkpoint.index = 2
+    checkpoint.address = 'changed'
+    expect(store.scanRecords(-1, 10).map(row => row.index)).toEqual([1])
+    await store.flush()
+    await store.Close()
+    store = new LevelSubAccountPoolStore(location)
+    await store.Open()
+    expect(store.getCheckpoints()).toEqual([expected])
+    expect(store.getByIndex(0)).toBeUndefined()
+  })
+
   it('keeps an uncertain write observable and stops dependent writes until actual reopen', async () => {
     const error = new Error('commit outcome unknown')
     const original = durability.durableBatch

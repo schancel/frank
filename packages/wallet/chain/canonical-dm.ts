@@ -2019,9 +2019,10 @@ async function send(
     // Once a shared construction intent is recorded, its operation identity is retained
     // across failure and its reservation is recovered from the wallet journal on reopen.
     const reported =
-      error instanceof Error && error.message === 'Insufficient available EVM coins'
+      error instanceof EvmTransactionSetInsufficientFundsError
         ? new InsufficientStampFundsError(
             `No funds cover a stamp of ${String(params.stampValue ?? 0n)} wei plus transaction fees.`,
+            { cause: error },
           )
         : error
     throw attempted && !(error instanceof StampBlockedError && !recorded)

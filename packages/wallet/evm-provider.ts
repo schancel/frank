@@ -1,3 +1,5 @@
+import { recordEvmRpcFailure } from './evm-rpc-failure'
+import { recordWalletFailure } from './wallet-failure'
 import {
   FetchRequest,
   JsonRpcApiProviderOptions,
@@ -937,6 +939,14 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     }
   }
 
+  override async send(method: string, params: Parameters<JsonRpcProvider['send']>[1]): ReturnType<JsonRpcProvider['send']> {
+    try {
+      return await super.send(method, params);
+    } catch (error) {
+      throw recordEvmRpcFailure(error);
+    }
+  }
+
   override async _detectNetwork(): Promise<Network> {
     if (this.destroyed) {
       throw makeError(
@@ -962,11 +972,11 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
         const actualChainId = getBigInt(raw);
 
         if (actualChainId !== this.expectedChainId) {
-          throw makeError(
+          throw recordWalletFailure(makeError(
             `network mismatch: expected ${this.expectedChainId} but RPC reported ${actualChainId}`,
             "NETWORK_ERROR",
             { event: "changed" }
-          );
+          ), { retryVeto: 'identity' });
         }
 
         const network = new Network("monad", actualChainId);

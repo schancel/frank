@@ -1,3 +1,4 @@
+import { recordWalletFailure } from './wallet-failure'
 import { getAddress, hexlify, keccak256, toUtf8Bytes, Transaction } from 'ethers'
 import type { MonadSubAccountPool } from './evm-account-pool'
 import type { MonadChangePool } from './evm-change-pool'
@@ -135,6 +136,8 @@ export class EvmInputAdmissionError extends Error {
   ) {
     super(`evm-input-admission:${reason}`)
     this.name = 'EvmInputAdmissionError'
+    recordWalletFailure(this, reason === 'conflicting-authorization'
+      ? { diagnosis: 'admission-conflict' } : { retryVeto: 'admission' })
   }
 }
 export type NativeJournalReader = Pick<

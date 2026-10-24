@@ -1,3 +1,4 @@
+import { recordWalletFailure } from './wallet-failure'
 /**
  * HD sub-account pool + fan-out funding for Monad (ticket #14).
  *
@@ -146,9 +147,10 @@ export const STAMP_PAIR_TRANSFERS = 2;
 /** The wallet cannot pay for this: its funded accounts do not cover the value and its main
  * account cannot fund more. Nothing was signed; nothing stays claimed. */
 export class InsufficientStampFundsError extends Error {
-  constructor(message: string) {
+  constructor(message: string, diagnostic?: { readonly cause: unknown }) {
     super(message);
     this.name = "InsufficientStampFundsError";
+    recordWalletFailure(this, { diagnosis: 'insufficient-funds' }, diagnostic);
   }
 }
 

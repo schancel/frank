@@ -1,3 +1,4 @@
+import { recordWalletFailure } from './wallet-failure'
 /** Shared native-wallet composition. Installation derives no new roots and performs no RPC. */
 import { EvmBlockWatcher } from './evm-block-watcher'
 import { installEvmWalletCoinList } from './evm-wallet-coin-list'
@@ -54,12 +55,16 @@ export function installEvmTransactionSetRuntime(
           },
     policy: () => {
       try { return transactionSetPolicy.snapshot() } catch (error) {
-        throw policyFailure?.error ?? error
+        throw recordWalletFailure(policyFailure?.error ?? error, { observationUnavailable: true })
       }
     },
     assertFundingObserved: () => {
-      coinListSync.assertFundingObserved()
-      if (policyFailure) throw policyFailure.error
+      try {
+        coinListSync.assertFundingObserved()
+        if (policyFailure) throw policyFailure.error
+      } catch (error) {
+        throw recordWalletFailure(error, { observationUnavailable: true })
+      }
     },
     deriveChange: index => {
       const derived = changeKeyring.deriveChangeAccount(index)

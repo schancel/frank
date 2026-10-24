@@ -1,3 +1,4 @@
+import { recordWalletFailure } from './wallet-failure'
 import type {
   EvmCoinList,
   EvmCoinListOrigin,
@@ -144,5 +145,6 @@ export class EvmTransactionSetInsufficientFundsError extends Error {
   constructor() {
     super('Insufficient available EVM coins')
     this.name = 'EvmTransactionSetInsufficientFundsError'
+    recordWalletFailure(this, { diagnosis: 'insufficient-funds' })
   }
 }

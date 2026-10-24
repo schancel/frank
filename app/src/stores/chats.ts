@@ -44,8 +44,9 @@ import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yi
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
 
+import { decideOutgoingRetry } from '../messaging/outgoing-retry-policy'
+
 import {
-  CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   ContactPaymentReleasedError,
   DirectMessageAlreadyAttemptedError,
@@ -4240,81 +4241,34 @@ export const useChatStore = defineStore('chats', {
             return { state: 'payment-pending' }
           }
 
-          const isPendingMessaging =
-            (typeof CanonicalMessagingPendingError === 'function' &&
-              error instanceof CanonicalMessagingPendingError) ||
-            (error instanceof Error &&
-              (error.name === 'CanonicalMessagingPendingError' ||
-                error.name === 'CanonicalMessageItemsNotInstalledError'))
-          if (
-            isPendingMessaging &&
-            ownDigest === undefined &&
-            sendAttempt < maxSendAttempts &&
-            stillCurrent()
-          ) {
+          const retry = decideOutgoingRetry(error, {
+            ownDigest,
+            sendAttempt,
+            maxSendAttempts,
+            allCallsUnattempted,
+            isCurrent: stillCurrent,
+          })
+          if (retry.kind === 'retry-messaging') {
             const ready =
               typeof waitForMessagingReady === 'function'
-                ? await waitForMessagingReady(5_000)
+                ? await waitForMessagingReady(retry.readyTimeoutMs)
                 : false
             if (!ready) {
-              await new Promise(r => setTimeout(r, sendAttempt * 500))
+              await new Promise(r => setTimeout(r, retry.delayMs))
             }
             continue
           }
 
-          const errorStr =
-            String(error) +
-            (error instanceof Error ? ' ' + error.message : '') +
-            (typeof error === 'object' && error !== null && 'info' in error
-              ? ' ' + JSON.stringify((error as any).info)
-              : '')
-          const isDirectoryUnreachable =
-            typeof error === 'object' &&
-            error !== null &&
-            (error as { name?: unknown }).name === 'OpenDirectoryError' &&
-            (error as { code?: unknown }).code === 'unreachable'
-          const transportError =
-            typeof error === 'object' && error !== null
-              ? (error as {
-                  code?: unknown
-                  status?: unknown
-                  statusCode?: unknown
-                })
-              : undefined
-          const isTransientRpc =
-            isDirectoryUnreachable ||
-            ['SERVER_ERROR', 'TIMEOUT', 'NETWORK_ERROR', 429].some(
-              code => transportError?.code === code,
-            ) ||
-            transportError?.status === 429 ||
-            transportError?.statusCode === 429 ||
-            errorStr.includes('502') ||
-            errorStr.includes('503') ||
-            errorStr.includes('504') ||
-            errorStr.includes('429') ||
-            errorStr.includes('SERVER_ERROR') ||
-            errorStr.includes('TIMEOUT') ||
-            errorStr.includes('invalid_rpc_upstream_response') ||
-            errorStr.includes('rpc_upstream_unavailable') ||
-            errorStr.includes('network') ||
-            errorStr.includes('failed to fetch') ||
-            errorStr.includes('Failed to fetch')
-
-          if (
-            isTransientRpc &&
-            ownDigest === undefined &&
-            sendAttempt < maxSendAttempts &&
-            stillCurrent()
-          ) {
+          if (retry.kind === 'retry-transport') {
             console.warn(
               `[sendDirectMessage transient rpc error (attempt ${sendAttempt}/${maxSendAttempts})]:`,
               error,
             )
-            await new Promise(r => setTimeout(r, sendAttempt * 500))
+            await new Promise(r => setTimeout(r, retry.delayMs))
             continue
           }
 
-          if (isTransientRpc && allCallsUnattempted && stillCurrent()) {
+          if (retry.kind === 'queue-unattempted') {
             // Every rejected call explicitly did nothing. Retain this same message ID and
             // request for the existing background reconciliation queue, including after restart.
             // An absent digest alone never grants this authority.

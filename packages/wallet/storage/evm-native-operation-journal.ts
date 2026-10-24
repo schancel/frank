@@ -468,7 +468,7 @@ function unsigned(value: unknown, binding: EvmNativeBinding): Transaction {
  * scoped development reset; never delete funded wallets, keys, or unrelated stores. Existing
  * native/legacy/contract journal envelopes are unchanged. */
 function reservation(row: EvmNativeOperation): number {
-  const max = clone(row)
+  const max = { ...row }
   max.cancelled = false
   max.members = max.members.map(member => ({
     ...member,
@@ -498,8 +498,11 @@ function reservation(row: EvmNativeOperation): number {
     },
   }))
   max.reservedBytes = 0
+  // Only this decimal number changes during the fixed-point calculation. Serialize
+  // the worst-case envelope once, then account for its number of ASCII digits.
+  const withoutReservedDigits = encodedBytes(max) - 1
   for (let i = 0; i < 8; i++) {
-    const bytes = encodedBytes(max)
+    const bytes = withoutReservedDigits + String(max.reservedBytes).length
     if (bytes === max.reservedBytes) return bytes
     max.reservedBytes = bytes
   }

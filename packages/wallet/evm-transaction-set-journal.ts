@@ -1,5 +1,5 @@
 /** Mutation capability for the shared preparer; the bundle retains the raw journal owner. */
-import { nativeAdmissionJournal } from './evm-input-admission'
+import { captureNativeInputSelection, nativeAdmissionJournal } from './evm-input-admission'
 import type { EvmTransactionSetJournal } from './evm-transaction-set-types'
 import type { EvmWalletPersistenceBundle } from './storage/evm-wallet-bundle'
 
@@ -11,6 +11,8 @@ export function evmTransactionSetJournal(
     throw new Error('Transaction sets require a bound native journal')
   return {
     binding: reader.binding,
+    captureInputSelection: () => owner.runLifetime(async lifetime =>
+      captureNativeInputSelection(owner.inputAdmission, lifetime)),
     list: () => reader.list(),
     get: id => reader.get(id),
     canSelect: (account, nonce) => reader.canSelect(account, nonce),

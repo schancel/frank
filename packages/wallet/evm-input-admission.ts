@@ -950,6 +950,25 @@ export function nativeJournalReader(
       !topic?.holdsRetainedSource?.(source) && journal.canSelect(source, nonce),
   } satisfies NativeJournalReader)
 }
+/** Construction-only view. Final admission always rechecks live owners before writing. */
+export function captureNativeInputSelection(
+  admission: EvmInputAdmission,
+  lifetime: WalletOperationLifetime,
+): (source: string, nonce: number) => boolean {
+  const snapshot = admission.inspect(lifetime)
+  if (snapshot.status !== 'ready') throw new EvmInputAdmissionError(snapshot.reason)
+  const heldAddresses = new Set<string>()
+  const heldPairs = new Set<string>()
+  for (const obligation of snapshot.obligations)
+    for (const resource of obligation.resources) {
+      if (resource.kind === 'address') heldAddresses.add(resource.address)
+      if (resource.kind === 'pair') heldPairs.add(`${resource.address}:${resource.nonce}`)
+    }
+  return (source, nonce) => {
+    const account = address(source)
+    return !heldAddresses.has(account) && !heldPairs.has(`${account}:${nonce}`)
+  }
+}
 export function canonicalJournalReader(
   journal: LevelCanonicalStampAttemptJournal,
 ): CanonicalJournalReader {

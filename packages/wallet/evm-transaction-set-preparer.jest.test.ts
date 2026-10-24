@@ -1,3 +1,6 @@
+import { openMonadWalletBundle } from './storage/evm-wallet-bundle'
+import { MonadHdKeyring, MonadChangeKeyring } from './secp256k1-hd-keyring'
+import { evmTransactionSetJournal } from './evm-transaction-set-journal'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1553,4 +1556,42 @@ it.each([
   expect(destinations.mock.calls.length).toBeLessThanOrEqual(budget)
   expect(f.coins.all()).toEqual(before)
   expect(f.journal.list()).toEqual(existing)
+})
+
+it('constructs around a legacy lease through the production admission adapter and replays exact bytes', async () => {
+  const location = await mkdtemp(join(tmpdir(), 'admission-construction-'))
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keys = MonadHdKeyring.fromMnemonic(mnemonic)
+  const changeKeys = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const owner = await openMonadWalletBundle({ location, seed: { mnemonic }, mode: 'create',
+    nativeBinding: { chainIdentifier: 'monad-testnet', nativeChainId: '10143',
+      publicTuple: JSON.stringify({ mainAddress: keys.deriveSubAccount(0).address.toLowerCase() }) } })
+  try {
+    owner.pool.ensureSize(2)
+    owner.pool.setStatus(0, 'available')
+    const lease = owner.leaseManager.acquireForIndex(0)
+    const coins = await EvmCoinList.open(new MemoryRecordStore())
+    for (const index of [0, 1]) {
+      const key = keys.deriveSubAccount(index)
+      await coins.put({ account: key.address, privateKey: key.privateKey, nonce: 0,
+        valueWei: index === 0 ? 1000000n : 500000n, origin: 'deterministic', spendIndex: index })
+    }
+    const journal = evmTransactionSetJournal(owner)
+    const capture = jest.spyOn(journal, 'captureInputSelection')
+    const preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy,
+      deriveChange: index => {
+        const key = changeKeys.deriveChangeAccount(index)
+        return { account: key.address.toLowerCase(), privateKey: key.privateKey, changeIndex: index }
+      },
+      reserveChange: (_operation, minimum) => owner.changePool.reserveFreshChange(minimum),
+    })
+    const request = { operationId: 'original-message', amountWei: 479000n, kdf }
+    const result = await preparer.constructTransactionSet(request)
+    expect(result.bundle.length).toBeGreaterThan(0)
+    expect(result.bundle.every(tx => tx.sourceAccount === keys.deriveSubAccount(1).address.toLowerCase())).toBe(true)
+    expect(owner.leaseManager.isCurrentLease(lease)).toBe(true)
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(await preparer.constructTransactionSet(request)).toEqual(result)
+    expect(capture).toHaveBeenCalledTimes(1)
+  } finally { await owner.close(); await rm(location, { recursive: true, force: true }) }
 })

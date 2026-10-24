@@ -13,8 +13,9 @@ async function publicRejection(response: () => Response | Promise<Response>, san
   const provider = new MonadJsonRpcProvider(connection, 10143, { batchStallTime: 0 })
   try {
     let error: unknown
-    try { await provider.send('eth_blockNumber', []) } catch (caught) { error = caught }
-    expect(error).toBeInstanceOf(Error)
+    let rejected = false
+    try { await provider.send('eth_blockNumber', []) } catch (caught) { error = caught; rejected = true }
+    expect(rejected).toBe(true)
     expect(fetch).toHaveBeenCalledTimes(1)
     return error
   } finally {
@@ -62,4 +63,30 @@ it('keeps genuine sanitized fetch failure transient without retaining the raw be
 it('keeps a genuine sanitized HTTP 429 transient with one request', async () => {
   const error = await publicRejection(() => new Response('{}', { status: 429 }), true)
   expect(describeWalletFailure(error)).toMatchObject({ retry: 'transient', retryVetoes: [] })
+})
+
+describe.each([false, true])('public provider overflow cleanup rejection (sanitized=%s)', sanitized => {
+  it.each(['object', 'primitive'] as const)('retains %s rejection semantics and known refusal', async kind => {
+    const original = kind === 'object' ? new Error(`cleanup failed at ${url}`) : `cleanup failed at ${url}`
+    const cancel = jest.fn(async () => { throw original })
+    const error = await publicRejection(() => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(5)) },
+      cancel,
+    })), sanitized)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    if (!sanitized) expect(error).toBe(original)
+    if (sanitized || kind === 'object') {
+      expect(describeWalletFailure(error).retry).toBe('forbidden')
+      recordWalletFailure(error, { observationUnavailable: true, transientTransport: true })
+      expect(describeWalletFailure(error).retry).toBe('forbidden')
+    } else {
+      expect(describeWalletFailure(error).retry).toBe('unknown')
+    }
+    if (sanitized) {
+      expect(String(error)).not.toContain(bearer)
+      expect(JSON.stringify(error)).not.toContain(bearer)
+      expect(describeWalletFailure(error).cause).toBe(error)
+      expect((error as { cause?: unknown }).cause).toBeUndefined()
+    }
+  })
 })

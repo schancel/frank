@@ -20,7 +20,9 @@ insufficient balance is not proof that the wallet inventory is insufficient.
 Local response-size and streaming refusals carry a nontransient transport veto.
 The relay's existing credential-safe error replacement preserves only finite retry
 vetoes: never the original transport cause, arbitrary details or financial effect
-labels. Later observation or transient facts cannot clear that veto.
+labels. A request-local refusal flag preserves this fact if stream cleanup itself
+rejects, including a primitive rejection; the unsanitized path still throws that
+exact original value. Later observation or transient facts cannot clear the veto.
 
 Focused checks from the repository root:
 

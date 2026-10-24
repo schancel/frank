@@ -97,18 +97,22 @@ const MAX_RELAY_RPC_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 async function readBoundedRelayResponse(
   response: RelayFetchResponse,
-  maxBytes: number
+  maxBytes: number,
+  onRefusal?: () => void
 ): Promise<Uint8Array> {
   const declared = response.headers.get?.("content-length");
   if (declared !== undefined && declared !== null) {
     const length = Number(declared);
-    if (Number.isFinite(length) && length > maxBytes)
+    if (Number.isFinite(length) && length > maxBytes) {
+      onRefusal?.();
       throw recordWalletFailure(
         makeError("relay response too large", "SERVER_ERROR"),
         { retryVeto: 'nontransient-transport' },
       );
+    }
   }
   if (!response.body) {
+    onRefusal?.();
     throw recordWalletFailure(
       makeError("relay response streaming unavailable", "SERVER_ERROR"),
       { retryVeto: 'nontransient-transport' },
@@ -123,6 +127,7 @@ async function readBoundedRelayResponse(
     if (!value) continue;
     length += value.length;
     if (length > maxBytes) {
+      onRefusal?.();
       await reader.cancel();
       throw recordWalletFailure(
         makeError("relay response too large", "SERVER_ERROR"),
@@ -142,8 +147,9 @@ async function readBoundedRelayResponse(
 
 // Preserve only finite retry vetoes across the existing credential-safe error replacement.
 // Never retain the original transport error: it may contain the capability URL.
-function sanitizedRelayTransportError(original: unknown): Error {
+function sanitizedRelayTransportError(original: unknown, refusedResponse = false): Error {
   const error = makeError("relay RPC transport failed", "SERVER_ERROR");
+  if (refusedResponse) recordWalletFailure(error, { retryVeto: 'nontransient-transport' });
   for (const retryVeto of describeWalletFailure(original).retryVetoes) {
     recordWalletFailure(error, { retryVeto });
   }
@@ -225,6 +231,7 @@ export function makeRelayGetUrl(
         : [request.url];
 
     let lastError: Error | null = null;
+    let lastResponseRefused = false;
     let lastResponse:
       | {
           statusCode: number;
@@ -240,6 +247,7 @@ export function makeRelayGetUrl(
 
       const controller = new AbortController();
       let cancellationError: Error | null = null;
+      let responseRefused = false;
       const timer = setTimeout(() => {
         cancellationError = makeError("request timeout", "TIMEOUT");
         controller.abort();
@@ -303,20 +311,26 @@ export function makeRelayGetUrl(
           body:
             maxResponseBytes === undefined
               ? new Uint8Array(await response.arrayBuffer())
-              : await readBoundedRelayResponse(response, maxResponseBytes),
+              : await readBoundedRelayResponse(response, maxResponseBytes, () => {
+                  responseRefused = true;
+                }),
         };
       } catch (error) {
         // Once fetch has returned headers, every rejection path must still tear down the body.
         // In particular, an oversized declared Content-Length is rejected before a reader exists.
         controller.abort();
         if (cancellationError) throw cancellationError;
+        // Cleanup may reject with a primitive; retain that exact value, while keeping
+        // the known refusal local for the existing sanitized reporting boundary.
+        if (responseRefused) recordWalletFailure(error, { retryVeto: 'nontransient-transport' });
         tracker.markFailure(targetUrl);
         lastError = error as Error;
+        lastResponseRefused = responseRefused;
         if (hasNext) {
           continue;
         }
         if (sanitizeTransportErrors)
-          throw sanitizedRelayTransportError(error);
+          throw sanitizedRelayTransportError(error, responseRefused);
         throw error;
       } finally {
         clearTimeout(timer);
@@ -327,7 +341,7 @@ export function makeRelayGetUrl(
     if (lastResponse) return lastResponse;
     if (lastError) {
       if (sanitizeTransportErrors)
-        throw sanitizedRelayTransportError(lastError);
+        throw sanitizedRelayTransportError(lastError, lastResponseRefused);
       throw lastError;
     }
     throw makeError("no RPC endpoints available", "SERVER_ERROR");

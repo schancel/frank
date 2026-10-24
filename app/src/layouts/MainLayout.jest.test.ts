@@ -6,6 +6,7 @@ import { defineComponent, h } from 'vue'
 
 import enUS from 'src/i18n/en-us'
 import MainLayout from './MainLayout.vue'
+import LeftDrawer from '../components/panels/LeftDrawer.vue'
 import * as extensionRuntime from '../../src-bex/runtime-adapter'
 
 // Stores are plain reactive objects; storeToRefs just needs to turn them into refs.
@@ -868,5 +869,36 @@ describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => 
       shown,
     )
     wrapper.unmount()
+  })
+})
+
+
+describe('page-owned navigation', () => {
+  it.each([801, 1280])('keeps only the global rail on settings and dApp pages at %s px', async width => {
+    for (const path of ['/settings', '/settings/storage', '/dapp-bridge']) {
+      const { wrapper } = await mountLayout(width, undefined, true, path)
+      await flushPromises()
+      const state = wrapper.vm as unknown as { drawerWidth: number; desktopDrawerWidth: number }
+      expect(state.drawerWidth).toBe(56)
+      expect(wrapper.get('.list-column').attributes('style')).toContain('display: none')
+      ;(wrapper.findComponent(LeftDrawer).vm as unknown as { tab: string }).tab = 'contacts'
+      await flushPromises()
+      expect(state.drawerWidth).toBe(state.desktopDrawerWidth)
+      wrapper.unmount()
+    }
+  })
+
+  it.each([390, 800])('keeps the mobile navigation list and closes it on the current page at %s px', async width => {
+    for (const [path, tab] of [['/settings', 'settings'], ['/dapp-bridge', 'dapp-bridge']]) {
+      const { wrapper } = await mountLayout(width, undefined, true, path)
+      layoutVm(wrapper).toggleMyDrawerOpen()
+      await flushPromises()
+      expect((wrapper.vm as unknown as { drawerWidth: number }).drawerWidth).toBe(325)
+      expect(wrapper.get('.list-column').attributes('style') ?? '').not.toContain('display: none')
+      await wrapper.get('#rail-tab-' + tab).trigger('click')
+      await flushPromises()
+      expect(layoutVm(wrapper).myDrawerOpen).toBe(false)
+      wrapper.unmount()
+    }
   })
 })

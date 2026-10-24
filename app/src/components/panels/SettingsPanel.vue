@@ -51,21 +51,6 @@
           </q-item-section>
         </q-item>
 
-        <q-item
-          clickable
-          v-ripple
-          data-test="settings-panel-download-extension"
-          @click="openDappBridge"
-        >
-          <q-item-section avatar>
-            <q-icon :name="plugIcon" />
-          </q-item-section>
-
-          <q-item-section>
-            {{ extensionSidebarUi.title }}
-          </q-item-section>
-        </q-item>
-
         <q-separator />
 
         <q-item clickable v-ripple @click="openChangelog">
@@ -122,8 +107,6 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isNarrowWidth } from '../../utils/layout'
-import { isBrowserExtensionRuntime } from '../../../src-bex/runtime-adapter'
-import { FA_PLUG_CIRCLE_PLUS_ICON } from '../../utils/extension-download'
 
 export default defineComponent({
   components: {
@@ -147,14 +130,6 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     const instance = getCurrentInstance()
-    const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
-    const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
-    const extensionSidebarUi = computed(() => ({
-      title: isExtensionRuntime.value
-        ? 'dApp Connect & Bridge'
-        : 'Download Browser Extension',
-    }))
-
     function getRouter() {
       return router || (instance?.proxy as any)?.$router
     }
@@ -190,14 +165,6 @@ export default defineComponent({
       maybeCloseDrawer('/profile')
       if (r) {
         return openPage(r, '/profile')
-      }
-    }
-
-    function openDappBridge() {
-      const r = getRouter()
-      maybeCloseDrawer('/dapp-bridge')
-      if (r) {
-        return openPage(r, '/dapp-bridge')
       }
     }
 
@@ -238,10 +205,6 @@ export default defineComponent({
       profile,
       inbox,
       myAddress,
-      isExtensionRuntime,
-      plugIcon,
-      extensionSidebarUi,
-      openDappBridge,
       openSettings,
       openBackup,
       openBackupDialog: openBackup,

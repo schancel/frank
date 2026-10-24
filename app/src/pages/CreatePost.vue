@@ -274,6 +274,7 @@
         <q-btn
           ref="composeFocusTarget"
           @click="back"
+          flat
           label="Back"
           color="primary"
           class="q-ma-sm"

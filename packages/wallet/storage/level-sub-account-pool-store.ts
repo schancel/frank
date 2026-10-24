@@ -40,7 +40,8 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private sortedRecordIndices: number[] = []
   private checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
   private nextIndex = 0
-  private pendingWrites: Promise<unknown>[] = []
+  private pendingWrites: Array<() => Promise<unknown>> = []
+  private flushing?: Promise<void>
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
   private readonly assertMutationAllowed: () => void
@@ -66,6 +67,17 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     if (!this.loaded) throw new Error('Persistent pool store is not open')
   }
 
+  private assertWritable(): void {
+    this.assertMutationAllowed()
+    this.assertLoaded()
+  }
+
+  /** Capture immutable writes; flush invokes them in order and retains any uncertain head. */
+  private enqueueWrite(write: () => Promise<unknown>): void {
+    this.assertWritable()
+    this.pendingWrites.push(write)
+  }
+
   private get db() {
     if (!this.openedDb) {
       throw new Error('No db opened')
@@ -77,6 +89,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
    * called (and awaited) before using the store — same lifecycle as `LevelUtxoStore.Open()`. */
   async Open(): Promise<void> {
     this.assertMutationAllowed()
+    if (this.loaded || this.flushing) throw new Error('Persistent pool store is already open or closing')
     this.loaded = false
     this.openedDb = level(this.dbLocation)
     await openDurableLevel(
@@ -84,13 +97,27 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       this.rootLocation,
       'sub-account-pool',
     )
+    // Reopen restores the disk's acknowledged prefix, not stale cache or failed writes
+    // retained by a previous lifetime of this instance.
+    this.pendingWrites = []
+    this.cache.clear()
+    this.checkpoints.clear()
+    this.sortedRecordIndices = []
+    this.normalizedLegacyRows.clear()
+    this.nextIndex = 0
     await this.loadData()
     this.loaded = true
   }
 
   async Close(): Promise<void> {
     this.loaded = false
-    await this.flush()
+    try {
+      await this.flush()
+    } catch (error) {
+      // Release the database lock even when durability is uncertain; preserve that failure.
+      try { await this.db.close() } catch { /* report the original write failure */ }
+      throw error
+    }
     await this.db.close()
   }
 
@@ -183,8 +210,8 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
 
   async Bind(): Promise<void> {
     if (this.expectedBindingId === undefined) return
-    this.assertMutationAllowed()
-    await durableBatch(this.db, [
+    this.assertWritable()
+    const writes: Parameters<typeof durableBatch>[1] = [
       { type: 'put', key: WALLET_BINDING_KEY, value: this.expectedBindingId },
       {
         type: 'put',
@@ -196,7 +223,9 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         key: String(record.index),
         value: JSON.stringify(record),
       })),
-    ])
+    ]
+    this.enqueueWrite(() => durableBatch(this.db, writes))
+    await this.flush()
     this.normalizedLegacyRows.clear()
   }
 
@@ -211,7 +240,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   putMany(records: readonly SubAccountRecord[]): void {
-    this.assertMutationAllowed()
+    this.assertWritable()
     const staged = records.map(cloneSubAccountRecord)
     let nextIndex = this.nextIndex
     const writes: Array<{ type: 'put'; key: string; value: string }> = []
@@ -235,7 +264,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         value: JSON.stringify(nextIndex),
       })
     }
-    this.pendingWrites.push(durableBatch(this.db, writes))
+    void this.enqueueWrite(() => durableBatch(this.db, writes))
     for (const record of staged) {
       if (!this.cache.has(record.index)) {
         const position = lowerBoundAfter(this.sortedRecordIndices, record.index)
@@ -273,7 +302,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   setNextIndex(index: number): void {
-    this.assertMutationAllowed()
+    this.assertWritable()
     assertSubAccountIndex(index, 'Next sub-account index')
     if (index < this.nextIndex) {
       throw new Error(
@@ -281,26 +310,26 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
       )
     }
     this.nextIndex = index
-    this.pendingWrites.push(
-      durablePut(this.db, NEXT_INDEX_KEY, JSON.stringify(index)),
-    )
+    void this.enqueueWrite(() => durablePut(this.db, NEXT_INDEX_KEY, JSON.stringify(index)))
   }
 
   replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
-    this.assertMutationAllowed()
-    this.checkpoints.set(checkpoint.index, cloneCheckpoint(checkpoint))
-    this.cache.delete(checkpoint.index)
+    this.assertWritable()
+    const index = checkpoint.index
+    const encoded = JSON.stringify(checkpoint)
+    this.checkpoints.set(index, cloneCheckpoint(checkpoint))
+    this.cache.delete(index)
     this.sortedRecordIndices = this.sortedRecordIndices.filter(
-      index => index !== checkpoint.index,
+      candidate => candidate !== index,
     )
-    this.pendingWrites.push(
+    void this.enqueueWrite(() =>
       durableBatch(this.db, [
         {
           type: 'put',
-          key: `${CHECKPOINT_PREFIX}${checkpoint.index}`,
-          value: JSON.stringify(checkpoint),
+          key: `${CHECKPOINT_PREFIX}${index}`,
+          value: encoded,
         },
-        { type: 'del', key: String(checkpoint.index) },
+        { type: 'del', key: String(index) },
       ]),
     )
   }
@@ -313,21 +342,37 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   async flush(): Promise<void> {
-    const writes = this.pendingWrites
-    this.pendingWrites = []
-    await Promise.all(writes)
+    while (this.pendingWrites.length > 0) {
+      if (this.flushing) {
+        await this.flushing
+        // A write may have been accepted after that drain completed but before its
+        // completion handlers ran. This flush still owes that write an acknowledgment.
+        continue
+      }
+      const draining = (async () => {
+        while (this.pendingWrites.length > 0) {
+          await this.pendingWrites[0]!()
+          // Keep a failed/uncertain head for an explicit retry of the exact write.
+          this.pendingWrites.shift()
+        }
+      })()
+      this.flushing = draining
+      try { await draining } finally {
+        if (this.flushing === draining) this.flushing = undefined
+      }
+    }
   }
 
   /**
    * This will delete everything in the store! Don't call it by accident!
    */
   async clear(): Promise<void> {
-    this.assertMutationAllowed()
-    await this.flush()
+    this.assertWritable()
+    this.enqueueWrite(() => durableClear(this.db))
     this.cache = new Map<number, SubAccountRecord>()
     this.sortedRecordIndices = []
     this.checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
     this.nextIndex = 0
-    await durableClear(this.db)
+    await this.flush()
   }
 }

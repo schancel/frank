@@ -407,6 +407,7 @@ import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 import { isNarrowWidth } from '../../utils/layout'
+import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
 import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
@@ -425,8 +426,10 @@ export default defineComponent({
     const q = inject<{ screen?: { width?: number } } | null>('_q_', null)
     const isNarrow = computed(() =>
       isNarrowWidth(
-        q?.screen?.width ??
-          (typeof window !== 'undefined' ? window.innerWidth : 1024),
+        getEffectiveScreenWidth(
+          q?.screen?.width ??
+            (typeof window !== 'undefined' ? window.innerWidth : 1024),
+        ),
       ),
     )
     const chats = useChatStore()

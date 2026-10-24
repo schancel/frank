@@ -902,3 +902,23 @@ describe('page-owned navigation', () => {
     }
   })
 })
+
+
+it('retains the mobile list and closes the current dApp route at 150% UI scale', async () => {
+  localStorage.setItem('frank:ui-scale', '150')
+  try {
+    const { wrapper } = await mountLayout(1133, undefined, true, '/dapp-bridge')
+    try {
+      layoutVm(wrapper).toggleMyDrawerOpen()
+      await flushPromises()
+      expect((wrapper.vm as unknown as { drawerWidth: number }).drawerWidth).toBe(325)
+      expect(wrapper.get('.list-column').attributes('style') ?? '').not.toContain('display: none')
+      await wrapper.get('#rail-tab-dapp-bridge').trigger('click')
+      await flushPromises()
+      expect(layoutVm(wrapper).myDrawerOpen).toBe(false)
+    } finally { wrapper.unmount() }
+  } finally {
+    localStorage.removeItem('frank:ui-scale')
+    document.documentElement.style.removeProperty('zoom')
+  }
+})

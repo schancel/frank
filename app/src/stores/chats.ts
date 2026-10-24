@@ -3972,6 +3972,9 @@ export const useChatStore = defineStore('chats', {
           if (hasQueued) void this.reconcileOutgoing({ wallet })
         }
         return outcome
+      } catch (error) {
+        if (error instanceof StaleOutgoingResult) return { state: 'busy' }
+        throw error
       } finally {
         inflightOutgoing.delete(id)
         // Another attempt was just recovered: settle its message now instead of at the next tick.
@@ -4047,7 +4050,7 @@ export const useChatStore = defineStore('chats', {
           accountSession.peekWallet() !== wallet ||
           wallet.chainIdentifier !== messagingChain.chainIdentifier
         )
-          throw new Error('Financial envelope context changed')
+          throw new StaleOutgoingResult('Financial envelope context changed')
       }
       let financialEnvelope: FinancialEnvelopeBinding | undefined
       if (financial) {
@@ -4301,6 +4304,18 @@ export const useChatStore = defineStore('chats', {
         }
       }
 
+      // All financial first-send projections share the same serialized ownership guard.
+      // Nonfinancial callers retain their existing projection behavior.
+      const setFirstSendState = (
+        status: 'pending' | 'payment-pending' | 'error',
+        delivery: OutgoingDelivery,
+        options: { strict?: boolean } = {},
+      ) =>
+        this.setOutgoingState(address, id, status, delivery, {
+          ...options,
+          ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
+        })
+
       // 2. Build and send a new payment set.
       if (!stillCurrent()) return { state: 'busy' }
       if (
@@ -4332,9 +4347,7 @@ export const useChatStore = defineStore('chats', {
       }
       // Keep an already queued message queued while it retries: toggling through pending
       // would reset the background backoff and make restart mistake it for a cut-off send.
-      await this.setOutgoingState(
-        address,
-        id,
+      await setFirstSendState(
         message.status === 'payment-pending' ? 'payment-pending' : 'pending',
         {},
       )
@@ -4400,6 +4413,7 @@ export const useChatStore = defineStore('chats', {
             // Best-effort wakeup token exchange
           }
           application?.assertCurrent()
+          if (financial) assertFinancialCurrent()
           result = await messagingChain.directMessages.send({
             wallet,
             recipient,
@@ -4444,9 +4458,7 @@ export const useChatStore = defineStore('chats', {
               // attempt back: its payment intent stays journaled, later sends wait behind it, and
               // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
               // kept on the message by the failure path below whenever that later write succeeds.
-              await this.setOutgoingState(
-                address,
-                id,
+              await setFirstSendState(
                 'pending',
                 { attemptDigest },
                 { strict: true },
@@ -4483,7 +4495,7 @@ export const useChatStore = defineStore('chats', {
             const attemptDigest = (error as DirectMessageAlreadyAttemptedError)
               .payloadDigest
             endWaitingSend(id)
-            await this.setOutgoingState(address, id, 'payment-pending', {
+            await setFirstSendState('payment-pending', {
               attemptDigest,
             })
             return { state: 'payment-pending' }
@@ -4493,9 +4505,7 @@ export const useChatStore = defineStore('chats', {
             // bytes. Without an own set, an earlier attempt is still pending and this message has
             // not been paid for yet; it is sent once that clears.
             console.info('[sendDirectMessage pending]:', error)
-            await this.setOutgoingState(
-              address,
-              id,
+            await setFirstSendState(
               'payment-pending',
               ownDigest === undefined
                 ? {}
@@ -4535,7 +4545,7 @@ export const useChatStore = defineStore('chats', {
             // Every rejected call explicitly did nothing. Retain this same message ID and
             // request for the existing background reconciliation queue, including after restart.
             // An absent digest alone never grants this authority.
-            await this.setOutgoingState(address, id, 'payment-pending', {})
+            await setFirstSendState('payment-pending', {})
             return { state: 'payment-pending' }
           }
 
@@ -4550,7 +4560,7 @@ export const useChatStore = defineStore('chats', {
           )
             stripReleasedPayments(this.messages[id])
           const failure = classifySendFailure(error, ownDigest)
-          await this.setOutgoingState(address, id, 'error', {
+          await setFirstSendState('error', {
             ...(failure.keepDigest === undefined
               ? {}
               : { attemptDigest: failure.keepDigest }),
@@ -4564,7 +4574,7 @@ export const useChatStore = defineStore('chats', {
       endWaitingSend(id)
       if (!result) {
         const failure = classifySendFailure(lastSendError, ownDigest)
-        await this.setOutgoingState(address, id, 'error', {
+        await setFirstSendState('error', {
           ...(failure.keepDigest === undefined
             ? {}
             : { attemptDigest: failure.keepDigest }),
@@ -4575,6 +4585,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       if (financial) {
+        assertFinancialCurrent()
         try {
           await financial.submit()
         } catch (error) {
@@ -4582,7 +4593,7 @@ export const useChatStore = defineStore('chats', {
           // is not on chain yet. It stays payment-pending, and reconciliation submits the same
           // stored signed bytes again; never a new payment.
           console.warn('Financial submission remains pending', error)
-          await this.setOutgoingState(address, id, 'payment-pending', {
+          await setFirstSendState('payment-pending', {
             attemptDigest: result.payloadDigest,
           })
           return { state: 'payment-pending' }
@@ -4594,6 +4605,7 @@ export const useChatStore = defineStore('chats', {
         payloadDigest: result.payloadDigest,
         stampValueWei: result.stampValueWei,
         stampPayments: result.stampPayments,
+        ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
       })
       return { state: 'sent', payloadDigest: result.payloadDigest }
     },

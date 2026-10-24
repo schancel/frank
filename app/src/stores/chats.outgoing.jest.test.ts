@@ -3669,6 +3669,159 @@ describe('financial outbox envelope barrier', () => {
     },
   )
 
+  describe('first financial send projection boundaries', () => {
+    const releases = new Set<() => void>()
+    const actions = new Set<Promise<unknown>>()
+    const track = <T>(action: Promise<T>): Promise<T> => {
+      actions.add(action)
+      void action.then(
+        () => actions.delete(action),
+        () => actions.delete(action),
+      )
+      return action
+    }
+    afterEach(async () => {
+      for (const release of releases) release()
+      releases.clear()
+      await Promise.allSettled([...actions])
+      actions.clear()
+    })
+    it.each(
+      [
+        'attempt-created',
+        'submit-success',
+        'submit-rejection',
+        'queued-catch',
+      ].flatMap(boundary =>
+        [false, true].map(replaced => [boundary, replaced] as const),
+      ),
+    )(
+      'keeps original ownership through %s (replaced=%s)',
+      async (boundary, replaced) => {
+        const chats = useChatStore()
+        const repository = await messageStorePromise
+        const bind = jest.mocked(repository.bindFinancialEnvelope)
+        bind.mockClear()
+        let id = ''
+        let replacementBytes: string | undefined
+        const replace = async () => {
+          if (!replaced) return
+          const db = await durable()
+          const row = deserializeMessageWrapper(db.get(id)!)
+          row.message.sealedMessageId = outgoingMessageId(
+            'replacement-during-first-send',
+          )
+          row.message.items = [
+            { type: 'text', text: 'replacement during send' },
+          ]
+          row.message.status = 'error'
+          row.message.delivery = {
+            attemptDigest: HASH,
+            detail: 'replacement metadata',
+          }
+          replacementBytes = serializeMessageWrapper(row)
+          db.set(id, replacementBytes)
+          const original = chats.messages[id]
+          const projection = { ...original, ...row.message, payloadDigest: id }
+          chats.messages[id] = projection
+          for (const conversation of Object.values(chats.conversations))
+            conversation.messages = conversation.messages.map(current =>
+              current.payloadDigest === id ? projection : current,
+            )
+        }
+        let catchQueued!: () => void
+        const queued = new Promise<void>(resolve => {
+          catchQueued = resolve
+        })
+        let releaseSave!: () => void
+        let blockingSave: Promise<void> | undefined
+        if (boundary.startsWith('submit-')) {
+          submit.mockImplementation(async () => {
+            await replace()
+            if (boundary === 'submit-rejection')
+              throw new Error('synthetic submission rejection')
+          })
+        }
+        const send = jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockImplementation(async request => {
+            id = only(chats)[0].payloadDigest
+            await request.onEnvelopeDurable?.(HASH)
+            if (boundary === 'attempt-created') await replace()
+            await request.onAttemptCreated?.(HASH)
+            if (boundary === 'queued-catch') {
+              let entered!: () => void
+              const held = new Promise<void>(resolve => {
+                entered = resolve
+              })
+              const gate = new Promise<void>(resolve => {
+                releaseSave = resolve
+                releases.add(resolve)
+              })
+              const save = repository.saveMessage.bind(repository)
+              jest
+                .spyOn(repository, 'saveMessage')
+                .mockImplementationOnce(async row => {
+                  entered()
+                  await gate
+                  await save(row)
+                  await replace()
+                })
+              blockingSave = track(
+                chats.saveOutgoing(PEER, id, { strict: true }),
+              )
+              await held
+              const setState = chats.setOutgoingState.bind(chats)
+              jest
+                .spyOn(chats, 'setOutgoingState')
+                .mockImplementation((...args) => {
+                  const result = setState(...args)
+                  if (args[2] === 'error') catchQueued()
+                  return result
+                })
+              throw new Error('synthetic send transport failure')
+            }
+            return { ...okResult(HASH), stampValueWei: 0n }
+          })
+        const sending = track(chats.sendMessage(params()))
+        if (boundary === 'queued-catch') {
+          await queued
+          releaseSave()
+          await blockingSave
+        }
+        const result = await sending
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(expose).toHaveBeenCalledTimes(1)
+        expect(
+          bind.mock.calls.filter(([binding]) => binding.phase === 'bound'),
+        ).toHaveLength(1)
+        if (replaced) {
+          expect(replacementBytes).toBeDefined()
+          expect((await durable()).get(id)).toBe(replacementBytes)
+          expect(chats.messages[id]?.status).toBe('error')
+          expect(chats.messages[HASH]).toBeUndefined()
+          expect(result.state).toBe('busy')
+        } else {
+          expect(result.state).toBe(
+            boundary === 'queued-catch'
+              ? 'failed'
+              : boundary === 'submit-rejection'
+              ? 'payment-pending'
+              : 'sent',
+          )
+          if (result.state === 'sent')
+            expect(chats.messages[HASH]?.status).toBe('confirmed')
+        }
+        expect(submit).toHaveBeenCalledTimes(
+          boundary === 'queued-catch' ||
+            (replaced && boundary === 'attempt-created')
+            ? 0
+            : 1,
+        )
+      },
+    )
+  })
+
   it('passes the captured payment operation into stamp construction after saving the financial draft', async () => {
     jest.mocked(captureOutgoingFinancialOperations).mockResolvedValue({
       expose,

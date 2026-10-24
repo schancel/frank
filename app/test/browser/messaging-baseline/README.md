@@ -22,3 +22,14 @@ Only owned browser/build processes and temporary profile/build paths are cleaned
 `--typecheck` runs the app TypeScript compiler against the exported production source plus the fixture before building. It fails on all reported errors, including existing app dependency/declaration problems; it does not filter or waive errors. This is distinct from a successful browser build, which transpiles TypeScript. Root package typechecks and independent review remain required before integrating the harness.
 
 This initial harness is intentionally limited to the queue/route vertical test. Full scroll/history-anchor, browser startup/failure, paired multi-sample distributions, actual extension focus/pairing and isolated real construction measurements remain separate acceptance work. Do not represent this smoke as satisfying those later gates.
+
+## History geometry scenarios
+
+```sh
+node app/test/browser/messaging-baseline.mjs --scenario=history-desktop --source-ref=HEAD --out=/absolute/evidence/history-desktop
+node app/test/browser/messaging-baseline.mjs --scenario=history-narrow --source-ref=HEAD --out=/absolute/evidence/history-narrow
+```
+
+`--scenario=queue-route` remains the default and retains the existing send/route assertions. The history scenarios use fresh 1280×860 or 390×860 Chromium page viewports, real Chat/ChatMessage/ChatInput and Quasar scrolling. They wheel upward, check the visible reading anchor across render-window expansion and two incoming deliveries through real `chats.receiveMessages`, and explicitly jump to the latest message. Incoming data is a typed synthetic already-decoded wrapper; this does not test authentication, decoding or financial receipt verification. No component method or scroll position is directly assigned. The jump control uses its actual mousedown interaction.
+
+`report.history` retains before/after scroll geometry, unique text anchors, confirmed store rows and every failed invariant. The tolerance is two CSS pixels after layout settles. A current production regression produces a nonzero exit; the fixture does not compensate for it. This is expansion of already-loaded history, not fetching older history from storage or a server. These are functional geometry checks, not performance, touch keyboard, installed-extension or native Safari evidence. `history.png` captures the final scenario state; exact intermediate geometry is in `result.json`.

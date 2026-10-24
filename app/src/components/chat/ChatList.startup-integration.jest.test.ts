@@ -5,7 +5,7 @@ import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
 import { serialize, deserialize } from 'v8'
 import { webcrypto } from 'crypto'
-import { reactive, defineComponent, h } from 'vue'
+import { reactive, defineComponent, h, nextTick } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { getBytes } from 'ethers'
@@ -130,12 +130,27 @@ async function wallet(index: number) {
   wallets.push(created)
   return created
 }
+const drainDevices: Array<() => Promise<void>> = []
+const releaseGates: Array<() => Promise<void>> = []
+
 /** One device: its own IndexedDB and its own local storage. */
 function device(live: EvmChainWalletHandle) {
   globalThis.indexedDB = new IDBFactory()
   const saved = new Map<string, string>()
   const uninstall = jest.fn()
   const reconcile = { stop: jest.fn() }
+  const requests: Promise<unknown>[] = []
+  const closes: Promise<void>[] = []
+  const firstClose = deferred<void>(undefined, false)
+  let acceptedPublication = false
+  let closedStores = 0
+  drainDevices.push(async () => {
+    // A neutral release of a held PUT can open admission storage only after teardown starts.
+    // Wait for its actual response and subsequent close, not only handles already open.
+    await Promise.all(requests)
+    if (acceptedPublication) await firstClose.promise
+    await Promise.all(closes)
+  })
   const deps: MessagingDeps = {
     session: { state: mockStatus, getWallet: async () => live },
     relayBaseUrl: RELAY,
@@ -143,8 +158,35 @@ function device(live: EvmChainWalletHandle) {
     chainId: 10143n,
     directory: {
       nowNs: () => BigInt(Date.now()) * 1_000_000n,
-      fetch: relay.fetch,
-      openStore: options => openBrowserDirectoryStore(options),
+      fetch: (url, init) => {
+        const request = Promise.resolve(relay.fetch(url, init)).then(answer => {
+          if (init?.method === 'PUT' && answer.status === 200)
+            acceptedPublication = true
+          return answer
+        })
+        requests.push(request)
+        return request
+      },
+      openStore: async options => {
+        const closed = deferred<void>(undefined, false)
+        closes.push(closed.promise)
+        try {
+          const store = await openBrowserDirectoryStore(options)
+          return {
+            ...store,
+            close: async () => {
+              await store.close()
+              closedStores++
+              closed.resolve()
+              firstClose.resolve()
+            },
+          }
+        } catch (error) {
+          closed.reject(error)
+          firstClose.reject(error)
+          throw error
+        }
+      },
       discardUnenrolled: discardUnenrolledDirectoryStore,
       checkpoints: {
         load: key => {
@@ -169,7 +211,7 @@ function device(live: EvmChainWalletHandle) {
     resumeLegacy: jest.fn(),
     retryDelayMs: () => 100,
   }
-  return { deps, saved, uninstall, reconcile }
+  return { deps, saved, uninstall, reconcile, closedStores: () => closedStores }
 }
 const until = async (condition: () => boolean, what: string) => {
   for (let i = 0; i < 1000; i++) {
@@ -179,13 +221,18 @@ const until = async (condition: () => boolean, what: string) => {
   throw new Error(`timed out waiting for ${what}`)
 }
 
-function deferred<T>() {
+function deferred<T>(neutral: T, register = true) {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
   const promise = new Promise<T>((yes, no) => {
     resolve = yes
     reject = no
   })
+  if (register)
+    releaseGates.push(async () => {
+      resolve(neutral)
+      await promise.catch(() => undefined)
+    })
   return { promise, resolve, reject }
 }
 const passthrough = defineComponent({
@@ -249,21 +296,27 @@ beforeEach(async () => {
     .spyOn(activeChain.directMessages, 'subscribeMailboxStream')
     .mockImplementation(() => () => undefined)
 })
-afterEach(async () => {
+async function cleanup() {
   view?.unmount()
   view = undefined
+  // Invalidate first so releasing a request cannot install or project an old session.
+  mockStatus.status = 'fresh'
+  await nextTick()
   await configureMessagingForTest(undefined)
+  await Promise.all(releaseGates.splice(0).map(release => release()))
+  await Promise.all(drainDevices.splice(0).map(drain => drain()))
   jest.restoreAllMocks()
   for (const w of wallets.splice(0)) await w.close()
-})
+}
+afterEach(cleanup)
 
 test.each([false, true])(
   'publication failure/retry keeps cached=%s rows and waits for first mailbox success',
   async cached => {
     const alice = await wallet(0)
     const d = device(alice)
-    const publication = deferred<void>()
-    const retry = deferred<void>()
+    const publication = deferred<void>(undefined)
+    const retry = deferred<void>(undefined)
     let publications = 0
     const fetch = d.deps.directory.fetch
     d.deps.directory.fetch = async (url, init) => {
@@ -274,7 +327,7 @@ test.each([false, true])(
       }
       return fetch(url, init)
     }
-    const mailbox = deferred<[]>()
+    const mailbox = deferred<[]>([])
     const read = jest
       .spyOn(activeChain.directMessages, 'fetchSince')
       .mockImplementation(() => mailbox.promise)
@@ -336,8 +389,8 @@ test.each([false, true])(
 
 test('first mailbox failure is visible and a later successful poll clears the error', async () => {
   const d = device(await wallet(0))
-  const first = deferred<[]>(),
-    recovery = deferred<[]>()
+  const first = deferred<[]>([]),
+    recovery = deferred<[]>([])
   const read = jest
     .spyOn(activeChain.directMessages, 'fetchSince')
     .mockImplementationOnce(() => first.promise)
@@ -371,8 +424,8 @@ test.each(['resolve', 'reject'] as const)(
   'replaced session ignores old mailbox %s while the new initial poll is held',
   async completion => {
     const d = device(await wallet(0))
-    const old = deferred<[]>(),
-      current = deferred<[]>()
+    const old = deferred<[]>([]),
+      current = deferred<[]>([])
     const read = jest
       .spyOn(activeChain.directMessages, 'fetchSince')
       .mockImplementationOnce(() => old.promise)
@@ -404,3 +457,33 @@ test.each(['resolve', 'reject'] as const)(
     )
   },
 )
+
+test('cleanup drains held publication through its actual admission close without installing stale messaging', async () => {
+  const d = device(await wallet(0))
+  const held = deferred<void>(undefined)
+  const entered = deferred<void>(undefined, false)
+  const fetch = d.deps.directory.fetch
+  d.deps.directory.fetch = async (url, init) => {
+    if (init?.method === 'PUT') {
+      entered.resolve()
+      await held.promise
+    }
+    return fetch(url, init)
+  }
+  const read = jest
+    .spyOn(activeChain.directMessages, 'fetchSince')
+    .mockResolvedValue([])
+  await configureMessagingForTest(d.deps)
+  await initializeMonadIdentity()
+  render()
+  mockStatus.status = 'ready'
+  await entered.promise
+  expect(loading()).toBe(true)
+  // Models the unconditional afterEach path after an assertion interrupts this scenario.
+  // No manual gate release, timeout, or sleep is needed to close the real admission owner.
+  await cleanup()
+  expect(d.closedStores()).toBeGreaterThan(0)
+  expect(d.deps.install).not.toHaveBeenCalled()
+  expect(read).not.toHaveBeenCalled()
+  expect(messagingState.status).toBe('pending')
+})

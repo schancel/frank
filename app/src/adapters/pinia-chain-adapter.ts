@@ -834,9 +834,7 @@ export function startOutgoingReconciliation({
   }
 
   const tick = async () => {
-    if (ticking || stopped) return
-    ticking = true
-    resetRequested = false
+    if (stopped) return
     // This owner is independent of presentation rows and never holds the chat recovery tick.
     // Its per-message exclusion allows a later pass to advance other retained originals.
     if (envelopeRecovery)
@@ -844,6 +842,16 @@ export function startOutgoingReconciliation({
         if (!stopped)
           console.warn('Financial envelope recovery remains pending', error)
       })
+    // Keep the same timer alive while chat RPC is pending so later retained batches can
+    // advance. The chat completion replaces this pulse with its normal backoff schedule.
+    schedule(
+      typeof document !== 'undefined' && document.hidden
+        ? Math.max(intervalMs, backgroundIntervalMs)
+        : intervalMs,
+    )
+    if (ticking) return
+    ticking = true
+    resetRequested = false
     let pending = 0
     let walletUnsettled = 0
     try {

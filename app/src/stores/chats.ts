@@ -557,6 +557,53 @@ async function assertDurableAttemptAssociation(
   }
 }
 
+/** A new financial binding needs complete durable authority, not a presentation-only hint. */
+async function readFinancialBootstrapAuthority(
+  id: string,
+  digest: string,
+  sealedMessageId: string,
+  message: Message,
+  address: string,
+  references: readonly OutgoingFinancialOperation[],
+): Promise<{
+  paid: boolean
+  financialOperations: OutgoingFinancialOperation[]
+}> {
+  const repository = await store
+  const persisted = await repository.getMessage(id)
+  const stored = persisted?.message
+  const storedReferences = stored?.financialOperations
+  if (
+    !persisted ||
+    persisted.outbound !== true ||
+    !stored ||
+    !matchesOutgoingOwner(persisted, message, address) ||
+    !message.conversationId ||
+    stored.conversationId !== message.conversationId ||
+    stored.logicalMessageId !== message.logicalMessageId ||
+    stored.delivery?.attemptDigest !== digest ||
+    stored.sealedMessageId !== sealedMessageId ||
+    !sealedMessageId ||
+    !storedReferences ||
+    storedReferences.length !== references.length ||
+    !storedReferences.every(
+      (reference, index) =>
+        reference.chainIdentifier === references[index].chainIdentifier &&
+        reference.operationId === references[index].operationId,
+    ) ||
+    typeof stored.stampValueWei !== 'bigint' ||
+    stored.stampValueWei < 0n ||
+    typeof message.stampValueWei !== 'bigint' ||
+    message.stampValueWei < 0n ||
+    (stored.stampValueWei === 0n) !== (message.stampValueWei === 0n)
+  )
+    throw new Error('Financial envelope durable association unavailable')
+  return {
+    paid: stored.stampValueWei > 0n,
+    financialOperations: storedReferences.map(reference => ({ ...reference })),
+  }
+}
+
 /** A wallet's own records (`wallet-sync`, `payment-transfer`) are never taken from a mailbox row
  * here. The wallet's receive rule already keeps them from arriving as such; if one does, that
  * row alone is refused, uninterpreted, like any other row that cannot be filed. */
@@ -4014,7 +4061,14 @@ export const useChatStore = defineStore('chats', {
           financialOperations: financialReferences!,
         }
         if (digest !== undefined) {
-          await assertDurableAttemptAssociation(id, digest, message, address)
+          const authority = await readFinancialBootstrapAuthority(
+            id,
+            digest,
+            sealedMessageId!,
+            message,
+            address,
+            financialReferences!,
+          )
           assertFinancialCurrent()
           const original = await messagingChain.directMessages.attemptOf?.({
             wallet,
@@ -4023,7 +4077,7 @@ export const useChatStore = defineStore('chats', {
           assertFinancialCurrent()
           if (
             original?.payloadDigest !== digest ||
-            original.paid !== (message.stampValueWei !== 0n)
+            original.paid !== authority.paid
           )
             throw new Error(
               'Financial envelope original association unavailable',
@@ -4032,6 +4086,7 @@ export const useChatStore = defineStore('chats', {
             ...financialEnvelope,
             phase: 'bound',
             payloadDigest: digest,
+            financialOperations: authority.financialOperations,
           }
         }
         const repository = await store

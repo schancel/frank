@@ -3374,6 +3374,110 @@ describe('financial outbox envelope barrier', () => {
     stampValue: 0n,
   })
 
+  describe('foreground retained binding bootstrap evidence', () => {
+    const id = 'pending:bootstrap-evidence'
+    const sealedId = '11111111-2222-4333-8444-555555555555'
+    const conversationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    async function seed(paid: boolean) {
+      const chats = useChatStore()
+      chats.createConversation({ participants: [ME, PEER], address: PEER, conversationId })
+      // Independent serialized evidence is installed before publishing its UI projection.
+      // Mutations below alter only this durable evidence, never derive authority from UI.
+      const row: MessageWrapper = {
+        index: id, outbound: true, senderAddress: ME, copartyAddress: PEER,
+        message: {
+          outbound: true, status: 'error', receivedTime: 1, serverTime: 1,
+          senderAddress: ME, conversationId, logicalMessageId: id, items: TEXT, outpoints: [],
+          stampValueWei: paid ? 1n : 0n, sealedMessageId: sealedId,
+          financialOperations: financialOperations.map(ref => ({ ...ref })),
+          delivery: { attemptDigest: HASH },
+        },
+      }
+      ;(await durable()).set(id, serializeMessageWrapper(row))
+      chats.sendMessageLocal({
+        address: PEER, senderAddress: ME, conversationId, index: id,
+        items: TEXT, outpoints: [], previousHash: null, timestamp: 1,
+        status: 'error', stampValueWei: paid ? 1n : 0n, sealedMessageId: sealedId,
+        financialOperations: financialOperations.map(ref => ({ ...ref })),
+        delivery: { attemptDigest: HASH },
+      })
+      jest.mocked(activeChain.directMessages.attemptOf!).mockResolvedValue({ payloadDigest: HASH, paid })
+      const bind = jest.mocked((await messageStorePromise).bindFinancialEnvelope)
+      bind.mockClear()
+      return { chats, bind }
+    }
+    const defects = [
+      'missing-row', 'missing-digest', 'missing-conversation', 'missing-lookup-capability', 'different-sealed-id', 'missing-sealed-id',
+      'different-references', 'missing-references', 'absent-original', 'different-original-digest',
+      'missing-paid-evidence', 'different-paid-evidence', 'missing-stamp', 'different-stamp',
+    ] as const
+    it.each(defects.flatMap(defect => [true, false].map(paid => [defect, paid] as const)))(
+      'rejects %s before retaining authority (paid=%s)', async (defect, paid) => {
+        const { chats, bind } = await seed(paid)
+        const db = await durable()
+        const previousMessaging = activeChain.directMessages
+        const row = deserializeMessageWrapper(db.get(id)!)
+        switch (defect) {
+          case 'missing-row': db.delete(id); break
+          case 'missing-conversation': delete row.message.conversationId; break
+          case 'missing-lookup-capability': Object.assign(activeChain, { directMessages: { ...previousMessaging, attemptOf: undefined } }); break
+          case 'missing-digest': row.message.delivery = {}; break
+          case 'different-sealed-id': row.message.sealedMessageId = outgoingMessageId('different'); break
+          case 'missing-sealed-id': delete row.message.sealedMessageId; break
+          case 'different-references': row.message.financialOperations = [{ chainIdentifier: 'monad-testnet', operationId: 'another' }]; break
+          case 'missing-references': delete row.message.financialOperations; break
+          case 'missing-stamp': delete row.message.stampValueWei; break
+          case 'different-stamp': row.message.stampValueWei = paid ? 0n : 1n; break
+          case 'absent-original': jest.mocked(activeChain.directMessages.attemptOf!).mockResolvedValue(undefined); break
+          case 'different-original-digest': jest.mocked(activeChain.directMessages.attemptOf!).mockResolvedValue({ payloadDigest: 'cd'.repeat(32), paid }); break
+          case 'missing-paid-evidence': jest.mocked(activeChain.directMessages.attemptOf!).mockResolvedValue({ payloadDigest: HASH } as { payloadDigest: string; paid: boolean }); break
+          case 'different-paid-evidence': jest.mocked(activeChain.directMessages.attemptOf!).mockResolvedValue({ payloadDigest: HASH, paid: !paid }); break
+        }
+        if (defect !== 'missing-row') db.set(id, serializeMessageWrapper(row))
+        const originalBytes = db.get(id)
+        jest.spyOn(activeChain.directMessages, 'reconcileAttempts').mockImplementation(async params => {
+          await params.onEnvelopeDurable?.(HASH)
+          return { [HASH]: 'delivered' }
+        })
+        jest.spyOn(activeChain.directMessages, 'send').mockImplementation(async params => {
+          await params.onEnvelopeDurable?.(HASH)
+          return { ...okResult(HASH), stampValueWei: paid ? 1n : 0n }
+        })
+        try {
+          await chats.runOutgoing({ wallet, address: PEER, id, manual: false }).catch(() => undefined)
+        } finally {
+          Object.assign(activeChain, { directMessages: previousMessaging })
+        }
+        expect(bind).not.toHaveBeenCalled()
+        expect(expose).not.toHaveBeenCalled()
+        expect(submit).not.toHaveBeenCalled()
+        expect(db.get(id)).toBe(originalBytes)
+      },
+    )
+    it.each([true, false].flatMap(paid => ['live', 'delivered'].map(status => [paid, status] as const)))(
+      'bootstraps matching independent original evidence paid=%s status=%s', async (paid, status) => {
+        const { chats, bind } = await seed(paid)
+        jest.spyOn(activeChain.directMessages, 'reconcileAttempts').mockImplementation(async params => {
+          expect(params.payloadDigests).toEqual([HASH])
+          await params.onEnvelopeDurable?.(HASH)
+          return { [HASH]: status as DirectMessageAttemptStatus }
+        })
+        jest.spyOn(activeChain.directMessages, 'send').mockImplementation(async params => {
+          expect(params.messageId).toBe(sealedId)
+          await params.onEnvelopeDurable?.(HASH)
+          if (status === 'live') throw new MonadStampPendingAttemptError([HASH])
+          return { ...okResult(HASH), stampValueWei: paid ? 1n : 0n }
+        })
+        const outcome = await chats.runOutgoing({ wallet, address: PEER, id, manual: false })
+        expect(bind).toHaveBeenNthCalledWith(1, expect.objectContaining({ phase: 'pending', messageId: sealedId, financialOperations }))
+        expect(bind).toHaveBeenNthCalledWith(2, expect.objectContaining({ phase: 'bound', messageId: sealedId, payloadDigest: HASH, financialOperations }))
+        expect(expose).toHaveBeenCalledWith(HASH)
+        expect(submit).toHaveBeenCalledTimes(status === 'delivered' ? 1 : 0)
+        expect(outcome.state).toBe(status === 'delivered' ? 'sent' : 'payment-pending')
+      },
+    )
+  })
+
   it('passes the captured payment operation into stamp construction after saving the financial draft', async () => {
     jest.mocked(captureOutgoingFinancialOperations).mockResolvedValue({
       expose,

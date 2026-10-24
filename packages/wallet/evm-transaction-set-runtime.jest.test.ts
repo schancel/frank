@@ -1,3 +1,4 @@
+import { EVM_TRANSACTION_SET_SOURCE_ORDER } from './evm-transaction-set-types'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -143,4 +144,38 @@ it('reopens durable inventory, retries a failed startup observation without bloc
     await store.close()
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+it('shared selection respects an indexed native claim before that claim has a journal row', async () => {
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keys = MonadHdKeyring.fromMnemonic(mnemonic)
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const identity = MonadIdentity.fromSeed({ mnemonic })
+  const mainAccount = new Wallet('0x' + '11'.repeat(32))
+  const pool = new EvmSubAccountPool({ keyring: keys })
+  pool.ensureSize(2)
+  const coinList = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
+  for (const index of [0, 1]) {
+    const key = keys.deriveSubAccount(index)
+    await coinList.put({ account: key.address, privateKey: key.privateKey, nonce: 0,
+      valueWei: index === 0 ? 1000000n : 500000n, origin: 'deterministic' })
+  }
+  pool.restoreClaim('native-original', [0])
+  const journal = new EvmNativeOperationJournal({ testOnlyEphemeral: true,
+    binding: { chainIdentifier: 'monad-testnet', nativeChainId: '10143', publicTuple: 'claim-test' } })
+  await journal.Open()
+  const runtime = installEvmTransactionSetRuntime({ mainAccount, identity, pool, coinList, changeKeyring,
+    changePool: new EvmChangePool({ keyring: changeKeyring }), coinStore: new MemoryRecordStore<EvmCoin>(),
+    provider: {} as Provider, journal, kind: 'monad', knownNoCodeAddress: mainAccount.address,
+    policy: () => ({ sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER, gasPriceWei: 1n, paymentGasLimit: () => 21000n,
+      changeGasLimit: 21000n, paymentFeeIsExact: true, dustWei: 1000n, radix: 2, jitterBps: 0,
+      maxChangeOutputs: 16, head: 100 }) })
+  try {
+    const result = await runtime.transactionSetPreparer.constructTransactionSet({ operationId: 'chat', amountWei: 479000n,
+      kdf: () => new Wallet('0x' + '22'.repeat(32)).address })
+    expect(result.bundle).toHaveLength(1)
+    expect(result.bundle[0]!.sourceAccount).toBe(keys.deriveSubAccount(1).address.toLowerCase())
+    expect(pool.claimedBy(0)).toBe('native-original')
+    expect(coinList.latestOf(keys.deriveSubAccount(0).address)?.state).toBe('unspent')
+  } finally { await runtime.stop(); await journal.Close() }
 })

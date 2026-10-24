@@ -1574,7 +1574,7 @@ it('constructs around a legacy lease through the production admission adapter an
     for (const index of [0, 1]) {
       const key = keys.deriveSubAccount(index)
       await coins.put({ account: key.address, privateKey: key.privateKey, nonce: 0,
-        valueWei: index === 0 ? 1000000n : 500000n, origin: 'deterministic', spendIndex: index })
+        valueWei: index === 0 ? 1000000n : 500000n, origin: 'deterministic' })
     }
     const journal = evmTransactionSetJournal(owner)
     const capture = jest.spyOn(journal, 'captureInputSelection')

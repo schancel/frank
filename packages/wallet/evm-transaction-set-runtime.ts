@@ -65,6 +65,7 @@ export function installEvmTransactionSetRuntime(
     canSelectCoin: coin =>
       !coinListSync.isDirty(coin.account) &&
       pool.accountClaimedBy(coin.account) === undefined &&
+      !pool.records().some(row => row.address.toLowerCase() === coin.account && pool.claimedBy(row.index) !== undefined) &&
       (params.canSelectCoin?.(coin) ?? true),
   })
   const transactionSetLifecycle = new EvmTransactionSetLifecycle({

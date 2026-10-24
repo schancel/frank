@@ -36,6 +36,7 @@ export interface EvmSpendPoolParams {
   readonly coinStore: RecordStore<EvmCoin>;
   readonly nativeJournal: EvmSpendPoolJournalSource;
   readonly holdsSource?: (address: string) => boolean;
+  readonly isAccountReserved?: (address: string) => boolean;
   readonly knownChangeSources?: () => readonly { index: number; address: string }[];
 }
 
@@ -59,6 +60,7 @@ export class EvmSpendPool {
   readonly nativeJournal: EvmSpendPoolJournalSource;
   private readonly knownChangeSources?: EvmSpendPoolParams["knownChangeSources"];
   private readonly defaultHoldsSource?: (address: string) => boolean;
+  private readonly isAccountReserved: (address: string) => boolean;
 
   constructor(params: EvmSpendPoolParams) {
     this.mainAccount = params.mainAccount;
@@ -73,6 +75,7 @@ export class EvmSpendPool {
     this.coinStore = params.coinStore;
     this.nativeJournal = params.nativeJournal;
     this.defaultHoldsSource = params.holdsSource;
+    this.isAccountReserved = params.isAccountReserved ?? (() => false);
     this.knownChangeSources = params.knownChangeSources;
   }
 
@@ -223,6 +226,7 @@ export class EvmSpendPool {
    * Returns whether a spend pool entry is currently claimed by another operation.
    */
   sourceHeld(source: EvmNativeSource, mainAccountHolder: string): boolean {
+    if (this.isAccountReserved(source.address)) return true;
     if (source.kind === "spend") {
       const record = this.pool.getRecord(source.index);
       return (
@@ -245,6 +249,9 @@ export class EvmSpendPool {
     sources: readonly EvmNativeSource[],
     mainAccountHolder: string
   ): () => void {
+    // Recheck synchronously with taking claims: selection may have awaited chain reads.
+    if (sources.some(source => this.isAccountReserved(source.address)))
+      throw new RangeError("Account is reserved by another operation; plan the send again");
     const indices = sources.flatMap((source) =>
       source.kind === "spend" ? [source.index] : []
     );

@@ -973,7 +973,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const others = () =>
       addresses.filter((address) => {
         const claimant = pool.accountClaimedBy(address);
-        return claimant !== undefined && claimant !== holder;
+        return (claimant !== undefined && claimant !== holder) || internals.coinList?.isAccountReserved(address) === true;
       });
     const own = () =>
       options.waitForOwn === true
@@ -2168,6 +2168,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             changePool,
             coinStore,
             nativeJournal: () => topicOwner?.nativeJournal,
+            isAccountReserved: address => coinList.isAccountReserved(address),
             holdsSource: (address) =>
               evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
           });
@@ -2914,11 +2915,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           evmWalletInternals(wallet).coinList = coinList;
           evmWalletInternals(wallet).transactionSetPreparer = transactionSetPreparer;
           evmWalletInternals(wallet).transactionSetLifecycle = transactionSetLifecycle;
-          // A pool account a non-cancelled native member spends from is reserved: read from the
-          // journal on every selection, so it holds from the journal write and across restart.
-          pool.attachSpendReservation((index) =>
-            topicOwner!.nativeJournal!.referencesSpendIndex(index)
-          );
+          // Construction reservations hold before signing yields; durable journal references
+          // retain those holds after persistence and across restart.
+          pool.attachSpendReservation((index) => {
+            const account = pool.getRecord(index)?.address;
+            return (account !== undefined && coinList.isAccountReserved(account)) ||
+              topicOwner!.nativeJournal!.referencesSpendIndex(index);
+          });
           // Caller B, the sync boundary: a wallet sync item's signed transaction reaches the one
           // writer only here, inside the wallet queue (whose guard refuses while a canonical
           // pre-sign intent holds an available row) and under the input admission. Not

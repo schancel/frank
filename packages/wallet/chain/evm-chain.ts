@@ -1039,8 +1039,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const look = watcher
         ? watcher.next(abort.signal).catch(() => undefined)
         : new Promise((resolve) => (timer = setTimeout(resolve, 1_000)));
+      // Coin-list reservations have no pool release signal. Racing an already-resolved
+      // pool promise would spin in microtasks and starve the construction holding the coin.
+      const poolHeld = held.find(address => pool.accountClaimedBy(address) !== undefined);
       await Promise.race([
-        ...(held.length > 0 ? [pool.accountReleased(held[0]!)] : []),
+        ...(poolHeld !== undefined ? [pool.accountReleased(poolHeld)] : []),
         look,
       ]);
       abort.abort();

@@ -170,12 +170,14 @@ it('shared selection respects an indexed native claim before that claim has a jo
     policy: () => ({ sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER, gasPriceWei: 1n, paymentGasLimit: () => 21000n,
       changeGasLimit: 21000n, paymentFeeIsExact: true, dustWei: 1000n, radix: 2, jitterBps: 0,
       maxChangeOutputs: 16, head: 100 }) })
+  const enumerate = jest.spyOn(pool, 'records')
   try {
     const result = await runtime.transactionSetPreparer.constructTransactionSet({ operationId: 'chat', amountWei: 479000n,
       kdf: () => new Wallet('0x' + '22'.repeat(32)).address })
     expect(result.bundle).toHaveLength(1)
     expect(result.bundle[0]!.sourceAccount).toBe(keys.deriveSubAccount(1).address.toLowerCase())
     expect(pool.claimedBy(0)).toBe('native-original')
+    expect(enumerate).not.toHaveBeenCalled()
     expect(coinList.latestOf(keys.deriveSubAccount(0).address)?.state).toBe('unspent')
-  } finally { await runtime.stop(); await journal.Close() }
+  } finally { enumerate.mockRestore(); await runtime.stop(); await journal.Close() }
 })

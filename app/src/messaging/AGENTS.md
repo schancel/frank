@@ -1,6 +1,6 @@
 # App messaging policy
 
-This folder owns foreground retry decisions and row-bound outgoing recovery policy.
+This folder owns outgoing execution, foreground retry decisions and row-bound recovery policy.
 Start with [README.md](README.md) and the module you are changing.
 
 - `outgoing-retry-policy.ts` stays effect-free: no timers, RPC, storage, locks,
@@ -21,6 +21,15 @@ Start with [README.md](README.md) and the module you are changing.
   State/confirmation ports perform assertions inside their existing mutation queue.
 - Retained financial-envelope recovery and scheduling remain separate owners;
   this module does not enumerate financial bindings, prepare payments or own timers.
+- `outgoing-execution.ts` owns the complete run/runExclusive orchestration, including
+  retained binding/bootstrap and envelope callback ordering. Inject existing lifecycle,
+  projection, financial/application capabilities and grouped presentation hooks; no whole
+  store, global wallet selection, second journal or new authorization policy.
+- Execution retains explicit existing error-class/accessor and retry-helper imports.
+  Its AST allowlist pins those runtime dependencies; never normalize exact thrown objects
+  before the no-effect accessor or replace the shared host stale sentinel.
+- Group dispatch, contacts/wakeup features, progress state and mutation queue remain
+  composition-owned. Do not fold group delivery or contact-card policy into execution.
 - This is app policy, not a shared bot/mail delivery engine. Do not move their
   journals or policies here merely to make a common interface.
 

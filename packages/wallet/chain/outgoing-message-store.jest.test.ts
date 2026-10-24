@@ -253,14 +253,17 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
         },
       ],
     }
+    // Capture expectations before the writer can mutate its input.
+    const expectedBytes = JSON.stringify(staged)
+    const expectedRow = JSON.parse(expectedBytes) as Row
+    const expected = [[key('staged'), expectedBytes]]
     const store = await open()
     await store.put(staged)
     await close(store)
 
-    const expected = [[key('staged'), JSON.stringify(staged)]]
     expect(await rawEntries(location)).toEqual(expected)
     const reopened = await open()
-    expect(reopened.get(key('staged'))).toEqual(staged)
+    expect(reopened.get(key('staged'))).toEqual(expectedRow)
     await close(reopened)
     // Hydration must not rewrite the stored intent, barrier or either signed-byte list.
     expect(await rawEntries(location)).toEqual(expected)

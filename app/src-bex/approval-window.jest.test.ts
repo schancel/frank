@@ -1308,14 +1308,29 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     )
     const bg = installBackgroundBridge(scope, state)
     const cleanupContent = installContentScriptBridge(window as any, scope)
-    const provider = installInpageProvider(window as any)!
+    installInpageProvider(window as any)!
+    const standardWallets: any[] = []
+    window.dispatchEvent(
+      new CustomEvent('wallet-standard:app-ready', {
+        detail: { register: (wallet: unknown) => standardWallets.push(wallet) },
+      }),
+    )
+    const standardWallet = standardWallets.find(
+      wallet => wallet.name === 'Frank',
+    )
+    expect(standardWallet?.accounts).toEqual([])
+    const accountChanges: unknown[] = []
+    const stopListening = standardWallet.features['standard:events'].on(
+      'change',
+      (change: unknown) => accountChanges.push(change),
+    )
     const root = document.createElement('main')
     const page = mountApprovalPage(root, {
       globalScope: scope,
       closeWindow: () => undefined,
     })
 
-    const connecting = provider.request<any>({ method: 'solana_connect' })
+    const connecting = standardWallet.features['standard:connect'].connect()
     await tick(10)
     expect(windows.create).toHaveBeenCalledTimes(1)
     await page.refresh()
@@ -1331,14 +1346,17 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
       .click()
-    const account = await connecting
+    const { accounts: connectedAccounts } = await connecting
+    const account = connectedAccounts[0]
     expect(account.address).toBe(address)
-    expect(account.publicKey).toEqual(Array.from(publicKeyBytes))
+    expect(account.publicKey).toEqual(publicKeyBytes)
+    expect(standardWallet.accounts).toEqual([account])
+    expect(accountChanges).toEqual([{ accounts: [account] }])
 
     const message = new Uint8Array([2, 4, 6, 8])
-    const signing = provider.request<any>({
-      method: 'solana_signMessage',
-      params: { message: Array.from(message), account: account.address },
+    const signing = standardWallet.features['solana:signMessage'].signMessage({
+      message,
+      account,
     })
     await tick(10)
     await page.refresh()
@@ -1346,7 +1364,7 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
     root
       .querySelector<HTMLButtonElement>('[data-testid="approval-approve"]')!
       .click()
-    const result = await signing
+    const [result] = await signing
     expect(
       ed25519.verify(
         Uint8Array.from(result.signature),
@@ -1354,33 +1372,47 @@ describe('dApp provider end to end (inpage -> content -> background -> approval 
         publicKeyBytes,
       ),
     ).toBe(true)
+    await standardWallet.features['standard:disconnect'].disconnect()
+    expect(standardWallet.accounts).toEqual([])
+    expect(accountChanges).toEqual([{ accounts: [account] }, { accounts: [] }])
+    stopListening()
     page.dispose()
     cleanupContent()
     bg.dispose()
   })
 
   it('discovers Frank through Wallet Standard without exposing an account before approval', async () => {
-    const registered: unknown[] = []
-    window.addEventListener('wallet-standard:register-wallet', event => {
-      ;(event as CustomEvent<(wallet: unknown) => void>).detail(wallet =>
-        registered.push(wallet),
-      )
-    })
+    const registered: any[] = []
+    const registry = { register: (wallet: unknown) => registered.push(wallet) }
+    const onRegister = (event: Event) => {
+      ;(event as CustomEvent<(api: typeof registry) => void>).detail(registry)
+    }
+    window.addEventListener('wallet-standard:register-wallet', onRegister)
     const win = window as any
     delete win.__FRANK_INPAGE_PROVIDER_INSTALLED__
     delete win.frankEthereum
+    delete win.__FRANK_SOLANA_WALLET__
     installInpageProvider(win)
     expect(registered).toHaveLength(1)
     expect(registered[0]).toMatchObject({
       name: 'Frank',
       chains: ['solana:mainnet', 'solana:devnet'],
+      accounts: [],
       features: expect.objectContaining({
         'standard:connect': expect.any(Object),
+        'standard:events': expect.any(Object),
         'solana:signMessage': expect.any(Object),
         'solana:signTransaction': expect.any(Object),
         'solana:signAndSendTransaction': expect.any(Object),
       }),
     })
+    expect(registered[0].icon).toMatch(/^data:image\/svg\+xml;base64,/)
+    const first = registered[0]
+    window.dispatchEvent(
+      new CustomEvent('wallet-standard:app-ready', { detail: registry }),
+    )
+    expect(registered).toContain(first)
+    window.removeEventListener('wallet-standard:register-wallet', onRegister)
     expect(win.frankSolana).toBeUndefined()
   })
 })

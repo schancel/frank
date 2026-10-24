@@ -22,8 +22,18 @@ export interface FrankSolanaWalletStandard {
   readonly name: 'Frank'
   readonly icon: string
   readonly chains: readonly string[]
+  readonly accounts: readonly {
+    readonly address: string
+    readonly publicKey: Uint8Array
+    readonly chains: readonly string[]
+    readonly features: readonly string[]
+  }[]
   readonly features: Record<string, any>
 }
+
+// Wallet Standard requires a base64 data URI; the EIP-6963 icon uses a URI-encoded SVG.
+const FRANK_SOLANA_ICON =
+  'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxMTE4MjciLz48dGV4dCB4PSIzMiIgeT0iNDMiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjMyIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iIzEwYjk4MSI+RjwvdGV4dD48L3N2Zz4='
 
 export type ProviderEventListener = (...args: any[]) => void
 
@@ -425,21 +435,48 @@ export function installSolanaWalletStandard(
       'solana:signAndSendTransaction',
     ],
   })
+  let accounts: FrankSolanaWalletStandard['accounts'] = []
+  const changeListeners = new Set<
+    (change: { accounts: FrankSolanaWalletStandard['accounts'] }) => void
+  >()
+  const setAccounts = (next: FrankSolanaWalletStandard['accounts']) => {
+    accounts = next
+    for (const listener of changeListeners) {
+      try {
+        listener({ accounts })
+      } catch {
+        // A site listener must not turn an approved connection into a failed response.
+      }
+    }
+  }
   const features = {
     'standard:connect': {
       version: '1.0.0',
       connect: async () => {
         const result = await provider.request<any>({ method: 'solana_connect' })
-        return { accounts: [account(result)] }
+        setAccounts([account(result)])
+        return { accounts }
       },
     },
     'standard:disconnect': {
       version: '1.0.0',
       disconnect: async () => {
         await provider.request({ method: 'solana_disconnect' })
+        setAccounts([])
       },
     },
-    'standard:events': { version: '1.0.0', on: () => () => undefined },
+    'standard:events': {
+      version: '1.0.0',
+      on: (
+        event: string,
+        listener: (change: {
+          accounts: FrankSolanaWalletStandard['accounts']
+        }) => void,
+      ) => {
+        if (event === 'change') changeListeners.add(listener)
+        return () => changeListeners.delete(listener)
+      },
+    },
     'solana:signMessage': {
       version: '1.0.0',
       signMessage: async (...inputs: any[]) => {
@@ -512,8 +549,11 @@ export function installSolanaWalletStandard(
   const wallet: FrankSolanaWalletStandard = Object.freeze({
     version: '1.0.0',
     name: 'Frank',
-    icon: FRANK_EIP6963_INFO.icon,
+    icon: FRANK_SOLANA_ICON,
     chains: Object.freeze(['solana:mainnet', 'solana:devnet']),
+    get accounts() {
+      return accounts
+    },
     features,
   })
   win.__FRANK_SOLANA_WALLET__ = wallet
@@ -528,15 +568,26 @@ function registerSolanaWallet(
   const register = () => {
     win.dispatchEvent(
       new CustomEvent('wallet-standard:register-wallet', {
-        detail: (callback: (wallet: FrankSolanaWalletStandard) => void) =>
-          callback(wallet),
+        detail: (api: {
+          register: (wallet: FrankSolanaWalletStandard) => void
+        }) => api.register(wallet),
       }),
     )
   }
   register()
   if (!win.__FRANK_SOLANA_WALLET_READY_LISTENER__) {
     win.__FRANK_SOLANA_WALLET_READY_LISTENER__ = true
-    win.addEventListener('wallet-standard:app-ready', register)
+    win.addEventListener('wallet-standard:app-ready', (event: Event) => {
+      const api = (
+        event as CustomEvent<{
+          register?: (wallet: FrankSolanaWalletStandard) => void
+        }>
+      ).detail
+      const current = win.__FRANK_SOLANA_WALLET__ as
+        | FrankSolanaWalletStandard
+        | undefined
+      if (current) api?.register?.(current)
+    })
   }
 }
 

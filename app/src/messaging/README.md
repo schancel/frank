@@ -40,3 +40,41 @@ with fake scheduling and transport boundaries, including retry timing, stable
 identity, original-attempt recovery and exact-rejection evidence. See
 [AGENTS.md](AGENTS.md) for commands. None of these tests claim live RPC or browser
 durability verification.
+
+## Row-bound outgoing recovery
+
+`createOutgoingRecovery(ports)` returns `resumeCutOffOutgoing`, `reconcileOutgoing`
+and `applyAttemptStatus`. Its sole implementation lives in `outgoing-recovery.ts`;
+public Pinia actions delegate through `chats.ts:createChatOutgoingRecovery`.
+
+The engine finds cut-off sends, asks for their original attempt, batches existing
+attempt reconciliation, routes financial rows back through original execution,
+and interprets delivered/live/dead/unknown results. It never constructs a new
+payment. Existing queued rows may request the existing host execution capability.
+
+The host retains original message/conversation objects, shared in-flight/starting
+sets, Web Locks, the serialized projection mutation queue and persistence. The
+adapter supplies these narrow capabilities and captures account/network context
+at each invocation. Public wallet methods retain their captured receiver. An
+assertion tied to the original object, digest, wallet and context travels into
+state/confirmation mutations; only the original private stale-result sentinel
+maps to `stale`. Ordinary errors retain their existing propagation/warnings.
+No new cache, queue, lifecycle, wallet selection or persistent format is owned here.
+
+Conversation entries are snapshotted for the two selection passes, preserving
+object identity and their different array traversal semantics. The final pending
+count reads current conversation references again. It counts presentation rows,
+not all financial obligations. Retained-envelope recovery in
+`../stealth-payments/financial-envelope-recovery.ts` and scheduling in
+`../adapters/pinia-chain-adapter.ts` remain independent of this enumeration.
+
+Headless tests use plain shared-reference objects and injected external boundaries.
+They prove policy runs without Pinia. `chats.outgoing.jest.test.ts`, tombstone tests
+and adapter suites still prove the real state/queue/storage integration. The
+queue-suspension characterization observes `confirmOutgoing` enqueueing the
+mutation; internal policy no longer dispatches a Pinia `applyAttemptStatus` action.
+The recovery AST test allows only public type dependencies and pins the three
+public actions as delegates; it is not a transitive dependency/security audit.
+
+This slice does not move foreground execution or bot/mail host policy. Canonical
+wallet messaging remains the shared original-envelope execution/replay engine.

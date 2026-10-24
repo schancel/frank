@@ -469,3 +469,20 @@ test.each(['wallet-open', 'application-restore'] as const)(
     mockAccount.failureStage = null
   },
 )
+
+test.each(['fresh', 'locked', 'unavailable', 'standby'] as const)(
+  'app updates remain reachable while the account is %s',
+  status => {
+    Object.assign(mockAccount, {
+      status,
+      error: status === 'unavailable' ? 'unavailable' : null,
+    })
+    const view = render()
+    const update = view.get('[data-test="account-app-updates"]')
+    expect(update.text()).toBe(en.accountRecovery.app_updates)
+    expect(update.attributes('to')).toBe('/about')
+    expect(mockSession.getWallet).not.toHaveBeenCalled()
+    expect(mockSession.reset).not.toHaveBeenCalled()
+    view.unmount()
+  },
+)

@@ -44,6 +44,18 @@
           <p role="status" aria-live="polite" data-test="account-status">
             {{ statusText }}
           </p>
+          <q-btn
+            v-if="mode === 'choice'"
+            flat
+            no-caps
+            icon="system_update"
+            color="primary"
+            :label="$t('accountRecovery.app_updates')"
+            :disable="busy"
+            to="/about"
+            data-test="account-app-updates"
+            class="q-mb-md"
+          />
           <p
             v-if="
               error &&

@@ -769,7 +769,7 @@ describe("MonadSubAccountPool", () => {
 
           expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
           expect(pool.getRecord(0)?.status).toBe("funding");
-          await store.Close();
+          await expect(store.Close()).rejects.toThrow("simulated storage failure");
 
           const reopened = new LevelSubAccountPoolStore(dir);
           await reopened.Open();
@@ -810,11 +810,14 @@ describe("MonadSubAccountPool", () => {
             "simulated storage failure"
           );
 
+          // The failed exact write is retained, then the caller's repeated checkpoint is
+          // applied in order. Both are durable before the single external submission.
           expect(events).toEqual([
+            `durable:${recordedRawTx}`,
             `durable:${recordedRawTx}`,
             `submit:${recordedRawTx}`,
           ]);
-          await store.Close();
+          await expect(store.Close()).rejects.toThrow("simulated storage failure");
 
           const reopened = new LevelSubAccountPoolStore(dir);
           await reopened.Open();

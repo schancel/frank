@@ -17,6 +17,7 @@ jest.mock('../stealth-payments/outgoing', () => ({
  * Plain `node` environment; see `chats.jest.test.ts`'s header for why.
  */
 import { createPinia, setActivePinia } from 'pinia'
+import { accountSession } from '../accounts/session'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
@@ -231,6 +232,592 @@ describe('outgoing direct messages (#269, #270)', () => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+
+  // These suspension fixtures must release their gates even if an assertion or Jest
+  // timeout interrupts the body. Drain the actual actions before the next test can
+  // replace mocks or reuse the module's serialized delivery mutation queue.
+  const recoveryReleases = new Set<() => void>()
+  const recoveryTasks = new Set<Promise<unknown>>()
+  function trackRecovery<T>(task: Promise<T>): Promise<T> {
+    recoveryTasks.add(task)
+    void task.then(
+      () => recoveryTasks.delete(task),
+      () => recoveryTasks.delete(task),
+    )
+    return task
+  }
+  afterEach(async () => {
+    for (const release of recoveryReleases) release()
+    recoveryReleases.clear()
+    await Promise.allSettled([...recoveryTasks])
+    recoveryTasks.clear()
+  })
+
+  describe('reconciliation result identity across suspended work', () => {
+    it.each([
+      ...(
+        [
+          ['rpc', 'unchanged'],
+          ['rpc', 'attempt'],
+          ['rpc', 'account'],
+          ['queue', 'attempt'],
+          ['queue', 'account'],
+          ['durable-read', 'attempt'],
+          ['durable-read', 'account'],
+        ] as const
+      ).map(
+        ([boundary, replacement]) =>
+          [boundary, replacement, 'delivered'] as const,
+      ),
+      ...(['live', 'dead', 'unknown'] as const).flatMap(status =>
+        (['unchanged', 'attempt', 'account'] as const).map(
+          replacement => ['rpc', replacement, status] as const,
+        ),
+      ),
+    ])(
+      'does not mutate a replacement %s/%s owner with the previous %s result',
+      async (boundary, replacement, status) => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        const db = await durable()
+        const B = replacement === 'attempt' ? 'cd'.repeat(32) : HASH
+        const sender =
+          replacement === 'account'
+            ? '0x3333333333333333333333333333333333333333'
+            : ME
+        let entered!: () => void
+        let answer!: (value: Record<string, DirectMessageAttemptStatus>) => void
+        const asked = new Promise<void>(resolve => {
+          entered = resolve
+        })
+        const reply = new Promise<Record<string, DirectMessageAttemptStatus>>(
+          resolve => {
+            answer = resolve
+            recoveryReleases.add(() => resolve({}))
+          },
+        )
+        const reconcile = jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockImplementation(async params => {
+            expect(params.payloadDigests).toEqual([HASH])
+            entered()
+            return reply
+          })
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
+        await asked
+
+        // Synthetic row/projection replacement, not a full accountSession lifecycle test.
+        // This models a different restored owner arriving at an existing presentation key.
+        // Both its durable row and its local projection agree; only the in-flight result is old.
+        let replacementBytes: string | undefined
+        const replace = () => {
+          const row = deserializeMessageWrapper(db.get(id)!)
+          row.senderAddress = sender
+          row.message.senderAddress = sender
+          row.message.sealedMessageId = outgoingMessageId('replacement-owner')
+          row.message.delivery = { attemptDigest: B }
+          row.message.status = 'payment-pending'
+          row.message.items = [{ type: 'text', text: 'replacement owner' }]
+          replacementBytes = serializeMessageWrapper(row)
+          db.set(id, replacementBytes)
+          const projection = { ...message, ...row.message, payloadDigest: id }
+          chats.messages[id] = projection
+          for (const conversation of Object.values(chats.conversations))
+            conversation.messages = conversation.messages.map(current =>
+              current.payloadDigest === id ? projection : current,
+            )
+        }
+        let blocker: Promise<void> | undefined
+        let release!: () => void
+        if (boundary === 'queue') {
+          let held!: () => void
+          const holding = new Promise<void>(resolve => {
+            held = resolve
+          })
+          const gate = new Promise<void>(resolve => {
+            release = resolve
+            recoveryReleases.add(resolve)
+          })
+          const store = await messageStorePromise
+          const save = store.saveMessage.bind(store)
+          jest.spyOn(store, 'saveMessage').mockImplementationOnce(async row => {
+            held()
+            await gate
+            await save(row)
+            replace()
+          })
+          blocker = trackRecovery(
+            chats.saveOutgoing(PEER, id, { strict: true }),
+          )
+          await holding
+          // Observe entry to the real status application, which enqueues its mutation
+          // behind the blocked save. Do not replace the financial result handler.
+          let applying!: () => void
+          const application = new Promise<void>(resolve => {
+            applying = resolve
+          })
+          const apply = chats.applyAttemptStatus.bind(chats)
+          jest.spyOn(chats, 'applyAttemptStatus').mockImplementation(params => {
+            const result = apply(params)
+            applying()
+            return result
+          })
+          answer({ [HASH]: status })
+          await application
+          release()
+          await blocker
+        } else if (boundary === 'durable-read') {
+          const store = await messageStorePromise
+          const get = store.getMessage.bind(store)
+          let reading!: () => void
+          const started = new Promise<void>(resolve => {
+            reading = resolve
+          })
+          const gate = new Promise<void>(resolve => {
+            release = resolve
+            recoveryReleases.add(resolve)
+          })
+          // The read has taken its snapshot but its promise has not resolved yet.
+          // A different valid owner is published before confirmation resumes.
+          jest.spyOn(store, 'getMessage').mockImplementationOnce(async key => {
+            const snapshot = await get(key)
+            reading()
+            await gate
+            return snapshot
+          })
+          answer({ [HASH]: status })
+          await started
+          replace()
+          release()
+        } else {
+          if (replacement !== 'unchanged') replace()
+          answer({ [HASH]: status })
+        }
+        await recovering
+        expect(reconcile).toHaveBeenCalledTimes(1)
+        expect(send).toHaveBeenCalledTimes(1)
+        if (replacement === 'unchanged') {
+          if (status === 'delivered') {
+            expect(chats.messages[HASH]?.status).toBe('confirmed')
+            expect(
+              deserializeMessageWrapper(db.get(HASH)!).message.status,
+            ).toBe('confirmed')
+          } else {
+            expect(chats.messages[id]?.status).toBe(
+              status === 'live' ? 'payment-pending' : 'error',
+            )
+            expect(chats.messages[id]?.delivery?.attemptDigest).toBe(HASH)
+          }
+          return
+        }
+        expect(replacementBytes).toBeDefined()
+        expect(db.get(id)).toBe(replacementBytes)
+        expect(chats.messages[id]?.status).toBe('payment-pending')
+        expect(chats.messages[id]?.delivery?.attemptDigest).toBe(B)
+        expect(chats.messages[B]).toBeUndefined()
+      },
+    )
+  })
+
+  describe('reconciliation failure projection identity', () => {
+    async function replaceOwner(
+      chats: ReturnType<typeof useChatStore>,
+      id: string,
+    ) {
+      const db = await durable()
+      const row = deserializeMessageWrapper(db.get(id)!)
+      const sender = '0x3333333333333333333333333333333333333333'
+      row.senderAddress = sender
+      row.message.senderAddress = sender
+      row.message.status = 'payment-pending'
+      row.message.delivery = {
+        ...row.message.delivery,
+        detail: 'replacement projection metadata',
+      }
+      row.message.items = [{ type: 'text', text: 'replacement owner' }]
+      const serialized = serializeMessageWrapper(row)
+      db.set(id, serialized)
+      const projection = {
+        ...chats.messages[id],
+        ...row.message,
+        payloadDigest: id,
+      }
+      chats.messages[id] = projection
+      for (const conversation of Object.values(chats.conversations))
+        conversation.messages = conversation.messages.map(current =>
+          current.payloadDigest === id ? projection : current,
+        )
+      return serialized
+    }
+
+    it.each([false, true])(
+      'financial durable callback respects replacement owner=%s with the same digest',
+      async replaced => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        message.financialOperations = [
+          { chainIdentifier: 'monad-testnet', operationId: 'original' },
+        ]
+        message.sealedMessageId = outgoingMessageId(id)
+        message.stampValueWei = 1n
+        await chats.setOutgoingState(PEER, id, 'error', { attemptDigest: HASH })
+        const expose = jest.fn(async () => undefined)
+        const submit = jest.fn(async () => undefined)
+        jest
+          .mocked(captureOutgoingFinancialOperations)
+          .mockResolvedValue({ expose, submit })
+        let expected: string | undefined
+        jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockImplementation(async params => {
+            expect(params.payloadDigests).toEqual([HASH])
+            expect(params.onEnvelopeDurable).toBeDefined()
+            if (replaced) expected = await replaceOwner(chats, id)
+            await params.onEnvelopeDurable!(HASH)
+            return { [HASH]: 'live' }
+          })
+        const outcome = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: id,
+        })
+        if (replaced) {
+          expect(expected).toBeDefined()
+          expect((await durable()).get(id)).toBe(expected)
+          expect(expose).not.toHaveBeenCalled()
+          expect(outcome.state).toBe('busy')
+        } else {
+          expect(expose).toHaveBeenCalledTimes(1)
+          expect(expose).toHaveBeenCalledWith(HASH)
+          expect(outcome.state).toBe('payment-pending')
+          expect(
+            deserializeMessageWrapper((await durable()).get(id)!).message
+              .delivery?.attemptDigest,
+          ).toBe(HASH)
+        }
+        expect(submit).not.toHaveBeenCalled()
+        expect(send).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it.each([
+      'manual-reconcile',
+      'automatic-reconcile',
+      'financial-submit',
+    ] as const)(
+      'does not project a rejected %s into a replacement owner',
+      async phase => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        // Manual retry is available for a failed row retaining its original attempt.
+        await chats.setOutgoingState(PEER, id, 'error', { attemptDigest: HASH })
+        let entered!: () => void
+        let reject!: (error: Error) => void
+        const started = new Promise<void>(resolve => {
+          entered = resolve
+        })
+        const held = new Promise<never>((_resolve, failure) => {
+          reject = failure
+          recoveryReleases.add(() => failure(new Error('test cleanup')))
+        })
+        void held.catch(() => undefined)
+        const submit = jest.fn(async () => {
+          entered()
+          return held
+        })
+        if (phase === 'financial-submit') {
+          message.financialOperations = [
+            { chainIdentifier: 'monad-testnet', operationId: 'original' },
+          ]
+          message.sealedMessageId = outgoingMessageId(id)
+          message.stampValueWei = 1n
+          await chats.saveOutgoing(PEER, id, { strict: true })
+          jest.mocked(captureOutgoingFinancialOperations).mockResolvedValue({
+            expose: jest.fn(),
+            submit,
+          })
+          reconcileReturns({ [HASH]: 'delivered' })
+        } else {
+          jest
+            .spyOn(activeChain.directMessages, 'reconcileAttempts')
+            .mockImplementation(async () => {
+              entered()
+              return held
+            })
+        }
+        const retry =
+          phase === 'automatic-reconcile'
+            ? chats.runOutgoing({
+                wallet,
+                address: PEER,
+                id,
+                manual: false,
+                automatic: true,
+              })
+            : chats.retryOutgoing({ wallet, address: PEER, payloadDigest: id })
+        trackRecovery(retry)
+        await started
+        const expected = await replaceOwner(chats, id)
+        reject(new Error('synthetic unavailable owner'))
+        const outcome = await retry
+        expect((await durable()).get(id)).toBe(expected)
+        expect(chats.messages[id]?.status).toBe('payment-pending')
+        expect(outcome.state).toBe('busy')
+        expect(send).toHaveBeenCalledTimes(1)
+        if (phase === 'financial-submit')
+          expect(submit).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it('preserves a genuine durable association conflict when the selected owner is still current', async () => {
+      sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      const id = message.payloadDigest
+      const db = await durable()
+      const conflicting = deserializeMessageWrapper(db.get(id)!)
+      conflicting.message.delivery = { attemptDigest: 'cd'.repeat(32) }
+      const bytes = serializeMessageWrapper(conflicting)
+      db.set(id, bytes)
+      await expect(
+        chats.confirmOutgoing({
+          address: PEER,
+          id,
+          payloadDigest: HASH,
+          assertCurrent: () => {
+            expect(chats.messages[id]).toBe(message)
+          },
+        }),
+      ).rejects.toThrow('conflicting stored payment attempt')
+      expect(db.get(id)).toBe(bytes)
+      expect(chats.messages[id]).toBe(message)
+      expect(message.status).toBe('payment-pending')
+      expect(chats.messages[HASH]).toBeUndefined()
+    })
+
+    it.each(['rpc', 'durable-new-row'] as const)(
+      'continues the valid second batch entry after the first owner becomes stale during %s',
+      async boundary => {
+        const secondDigest = 'ef'.repeat(32)
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        send.mockImplementationOnce(async params => {
+          await params.onAttemptCreated?.(secondDigest)
+          throw new MonadStampPendingAttemptError([secondDigest])
+        })
+        await chats.sendMessage({
+          wallet,
+          address: PEER,
+          items: [{ type: 'text', text: 'second' }],
+        })
+        const first = only(chats).find(
+          message => message.delivery?.attemptDigest === HASH,
+        )!
+        let entered!: () => void
+        let finish!: () => void
+        const started = new Promise<void>(resolve => {
+          entered = resolve
+        })
+        const held = new Promise<void>(resolve => {
+          finish = resolve
+          recoveryReleases.add(resolve)
+        })
+        jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockImplementation(async params => {
+            expect(params.payloadDigests).toEqual([HASH, secondDigest])
+            entered()
+            await held
+            return { [HASH]: 'delivered', [secondDigest]: 'delivered' }
+          })
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
+        await started
+        let expected: string
+        if (boundary === 'durable-new-row') {
+          const store = await messageStorePromise
+          const get = store.getMessage.bind(store)
+          let reading!: () => void
+          let releaseRead!: () => void
+          const readStarted = new Promise<void>(resolve => {
+            reading = resolve
+          })
+          const readGate = new Promise<void>(resolve => {
+            releaseRead = resolve
+            recoveryReleases.add(resolve)
+          })
+          // Unlike the snapshot-A case, this pending read returns the newly committed
+          // replacement B row. Its association mismatch must remain local to this entry.
+          jest.spyOn(store, 'getMessage').mockImplementationOnce(async key => {
+            expect(key).toBe(first.payloadDigest)
+            reading()
+            await readGate
+            return get(key)
+          })
+          finish()
+          await readStarted
+          expected = await replaceOwner(chats, first.payloadDigest)
+          releaseRead()
+        } else {
+          expected = await replaceOwner(chats, first.payloadDigest)
+          finish()
+        }
+        await recovering
+        // Check the valid entry first so a future guard that aborts the whole batch fails here.
+        expect(chats.messages[secondDigest]?.status).toBe('confirmed')
+        expect(
+          deserializeMessageWrapper((await durable()).get(secondDigest)!)
+            .message.status,
+        ).toBe('confirmed')
+        expect((await durable()).get(first.payloadDigest)).toBe(expected)
+        expect(chats.messages[first.payloadDigest]?.status).toBe(
+          'payment-pending',
+        )
+        expect(send).toHaveBeenCalledTimes(2)
+      },
+    )
+  })
+
+  describe('synthetic recovery context fencing', () => {
+    // These change host context at a suspended boundary. They do not simulate a
+    // complete custody lifecycle or assert anything about native-chain broadcast.
+    it.each(['refresh', 'attempt-lookup'] as const)(
+      'does not use the replacement network after cut-off %s awaits',
+      async boundary => {
+        await seedInterrupted()
+        const chats = await reload({ askWallet: false })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        const db = await durable()
+        const originalBytes = db.get(id)
+        const originalChain = {
+          chainIdentifier: activeChain.chainIdentifier,
+          directMessages: activeChain.directMessages,
+        }
+        let entered!: () => void
+        let release!: () => void
+        const started = new Promise<void>(resolve => {
+          entered = resolve
+        })
+        const gate = new Promise<void>(resolve => {
+          release = resolve
+          recoveryReleases.add(resolve)
+        })
+        const oldLookup = jest
+          .spyOn(activeChain.directMessages, 'attemptOf')
+          .mockImplementation(async () => {
+            if (boundary === 'attempt-lookup') {
+              entered()
+              await gate
+            }
+            return { payloadDigest: HASH, paid: true }
+          })
+        if (boundary === 'refresh') {
+          const refresh = chats.refreshOutgoingFromStore.bind(chats)
+          jest
+            .spyOn(chats, 'refreshOutgoingFromStore')
+            .mockImplementation(async (...args) => {
+              const result = await refresh(...args)
+              entered()
+              await gate
+              return result
+            })
+        }
+        const replacementLookup = jest.fn(async () => ({
+          payloadDigest: 'cd'.repeat(32),
+          paid: true,
+        }))
+        const replacementSend = jest.fn(async () => okResult('cd'.repeat(32)))
+        try {
+          const recovering = trackRecovery(
+            chats.resumeCutOffOutgoing({
+              wallet,
+              address: PEER,
+              id,
+            }),
+          )
+          await started
+          Object.assign(activeChain, {
+            chainIdentifier: 'ethereum-sepolia',
+            directMessages: {
+              ...originalChain.directMessages,
+              attemptOf: replacementLookup,
+              send: replacementSend,
+            },
+          })
+          release()
+          await recovering
+          expect(replacementLookup).not.toHaveBeenCalled()
+          expect(replacementSend).not.toHaveBeenCalled()
+          expect(oldLookup).toHaveBeenCalledTimes(
+            boundary === 'refresh' ? 0 : 1,
+          )
+          expect(db.get(id)).toBe(originalBytes)
+          expect(chats.messages[id]?.status).toBe('pending')
+          expect(chats.messages[id]?.delivery).toEqual({})
+        } finally {
+          release()
+          Object.assign(activeChain, originalChain)
+        }
+      },
+    )
+
+    it('ignores a batch result after the captured account revision changes', async () => {
+      sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      const db = await durable()
+      const originalBytes = db.get(message.payloadDigest)
+      // The public state is readonly. Replace only this environment context view;
+      // do not pretend assigning into its readonly Vue proxy changes custody.
+      const context = { ...accountSession.state }
+      const stateView = jest.replaceProperty(accountSession, 'state', context)
+      const revision = context.revision
+      let entered!: () => void
+      let release!: () => void
+      const started = new Promise<void>(resolve => {
+        entered = resolve
+      })
+      const gate = new Promise<void>(resolve => {
+        release = resolve
+        recoveryReleases.add(resolve)
+      })
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockImplementation(async () => {
+          entered()
+          await gate
+          return { [HASH]: 'delivered' }
+        })
+      try {
+        const recovering = trackRecovery(chats.reconcileOutgoing({ wallet }))
+        await started
+        context.revision = revision + 1
+        expect(accountSession.state.revision).toBe(revision + 1)
+        release()
+        await recovering
+        expect(db.get(message.payloadDigest)).toBe(originalBytes)
+        expect(chats.messages[message.payloadDigest]?.status).toBe(
+          'payment-pending',
+        )
+        expect(chats.messages[HASH]).toBeUndefined()
+      } finally {
+        release()
+        stateView.restore()
+      }
+    })
   })
 
   describe('#1237: outgoing conversation ownership', () => {

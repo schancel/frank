@@ -23,7 +23,11 @@ const styles = []
 // Synthetic read-only store input; real ForumLayout, Quasar scroll area and touch directive.
 const storeInputs = {
   'src/stores/forum':
-    "import {reactive} from 'vue'; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',isRefreshing:false, async refreshMessages(){globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh)throw Error('fixture outage')}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store",
+    "import {reactive} from 'vue'; let requestToken; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',duration:1000,outageStatus:'ok',isRefreshing:false,getRefreshRequestToken(){return requestToken},async refreshMessages(){requestToken={};globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh){store.outageStatus='outage';throw Error('fixture outage')}store.outageStatus='ok';return true}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store",
+  'src/accounts/session':
+    "export const accountStatus={revision:0,status:'ready'}",
+  '@frank/wallet/chain':
+    'export const activeChain={chainIdentifier:"monad-testnet"}',
   'pinia': "import {toRefs} from 'vue'; export const storeToRefs=toRefs",
   'src/stores/topics':
     'export const useTopicStore=()=>({refreshDiscoveredTopics:async()=>{}})',
@@ -266,7 +270,7 @@ try {
       { type: 'touchEnd', touchPoints: [] },
       sessionId,
     )
-    await pause(650)
+    await pause(1000)
   }
   for (const width of [320, 390, 590, 1280]) {
     await call(
@@ -304,6 +308,12 @@ try {
       await evaluate('refreshes'),
       before + 1,
       'one physical pull produces one read refresh',
+    )
+    assert.ok(
+      await evaluate(
+        "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshed')",
+      ),
+      'physical touch shows completion feedback',
     )
     assert.equal(
       await evaluate("!!document.querySelector('.q-spinner')"),
@@ -378,6 +388,7 @@ try {
     'normal link click still reaches its handler',
   )
   await evaluate('setMedia(false)')
+  await pause(1000)
   const wheel = async (deltaY, deltaX = 0, modifiers = 0) => {
     const point = await evaluate(
       "(()=>{const r=document.querySelector('.q-scrollarea__container').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+160}})()",
@@ -419,7 +430,7 @@ try {
     beforeWheel + 1,
     'coalesced large event refreshes once',
   )
-  await pause(1100)
+  await pause(1500)
   beforeWheel = await evaluate('refreshes')
   await wheel(-40)
   assert.ok(
@@ -436,7 +447,7 @@ try {
     ),
     'distance threshold arms release feedback',
   )
-  await pause(180)
+  await pause(350)
   assert.ok(
     await evaluate(
       "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshing')",
@@ -453,8 +464,8 @@ try {
     await evaluate(
       '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
     ),
-    false,
-    'completion clears feedback',
+    true,
+    'a quick response keeps visible refresh feedback',
   )
   await wheelBurst()
   await pause(400)
@@ -463,7 +474,14 @@ try {
     beforeWheel + 1,
     'cooldown prevents repeat momentum refresh',
   )
-  await pause(1100)
+  await pause(800)
+  assert.equal(
+    await evaluate(
+      '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
+    ),
+    false,
+    'completion feedback eventually clears',
+  )
   beforeWheel = await evaluate('refreshes')
   await wheelBurst(-40, 80)
   await pause(400)
@@ -504,24 +522,23 @@ try {
   await evaluate("router.push('/forum');failRefresh=true")
   await pause(350)
   await wheelBurst()
-  await pause(600)
+  await pause(1100)
   assert.equal(
     await evaluate('refreshes'),
     beforeWheel + 1,
     'failed wheel refresh was attempted once',
   )
-  assert.equal(
+  assert.ok(
     await evaluate(
-      '!!document.querySelector(\'[data-test="forum-wheel-refresh"]\')',
+      "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshFailed')",
     ),
-    false,
-    'failure clears feedback',
+    'failure shows a visible result',
   )
   await evaluate('failRefresh=false;setTall(false)')
   await pause(1100)
   const beforeRouteRead = await evaluate('refreshes')
   await wheelBurst()
-  await pause(180)
+  await pause(350)
   assert.ok(
     await evaluate(
       "document.querySelector('[data-test=\"forum-wheel-refresh\"]')?.textContent.includes('forum.refreshing')",
@@ -613,6 +630,9 @@ try {
   )
 } finally {
   clearTimeout(timeout)
-  chrome.kill('SIGTERM')
-  await new Promise(resolve => chrome.once('exit', resolve))
+  if (chrome.exitCode === null) {
+    const exited = new Promise(resolve => chrome.once('exit', resolve))
+    chrome.kill('SIGTERM')
+    await exited
+  }
 }

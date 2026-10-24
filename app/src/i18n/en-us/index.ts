@@ -107,6 +107,8 @@ export const rawEnUS = {
     pullToRefresh: 'Pull down to refresh',
     releaseToRefresh: 'Release to refresh',
     refreshing: 'Refreshing…',
+    refreshed: 'Updated',
+    refreshFailed: 'Could not refresh',
 
     postsLabel: 'posts',
     noPosts: 'No posts yet.',

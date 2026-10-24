@@ -65,6 +65,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     unhandledRejections = []
     process.on('unhandledRejection', onUnhandled)
     mockDiscoverTopics.mockResolvedValue([])
+    mockFetchByTopic.mockResolvedValue([])
     ;(peekActiveWallet as jest.Mock).mockReturnValue(testWallet)
   })
 
@@ -105,6 +106,8 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
               '<div data-test="forum-pull-to-refresh" :data-disable="String(disable)"><slot /></div>',
           },
           QIcon: { template: '<i />' },
+          QSpinner: { template: '<i />' },
+          QCircularProgress: { template: '<i />' },
           QChip: {
             name: 'QChip',
             props: ['removable'],
@@ -130,6 +133,9 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     mockFetchByTopic.mockResolvedValue([])
     const wrapper = mountLayout()
     await flushPromises()
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
     let finish!: (rows: unknown[]) => void
     mockFetchByTopic.mockImplementation(
       () =>
@@ -150,8 +156,134 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(done).not.toHaveBeenCalled()
     finish([])
     await flushPromises()
+    expect(done).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
     expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      'Updated',
+    )
     expect(store.isRefreshing).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not report a canceled refresh as updated', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    let finish!: (rows: unknown[]) => void
+    mockFetchByTopic.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    store.setDuration(store.duration + 60_000)
+    finish([])
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
+    wrapper.unmount()
+  })
+
+  it('does not show an old success after the topic changes during the feedback delay', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    let finishNext!: (rows: unknown[]) => void
+    mockFetchByTopic.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finishNext = resolve
+        }),
+    )
+    const vm = wrapper.vm as unknown as { setTopic(topic: string): void }
+    vm.setTopic('news')
+    await flushPromises()
+    expect(store.isRefreshing).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
+    finishNext([])
+    await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('does not show an old failure after a same-topic retry succeeds', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    mockFetchByTopic.mockRejectedValueOnce(create503Error())
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    expect(store.outageStatus).toBe('outage')
+    expect(done).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="forum-refresh"]').trigger('click')
+    await flushPromises()
+    expect(store.outageStatus).toBe('ok')
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
+    wrapper.unmount()
+  })
+
+  it('does not show an old failure after the Forum page retries through the store', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    mockFetchByTopic.mockRejectedValueOnce(create503Error())
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    expect(store.outageStatus).toBe('outage')
+    await store.refreshMessages({ topic: 'memes' })
+    expect(store.outageStatus).toBe('ok')
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
     wrapper.unmount()
   })
 
@@ -343,13 +475,25 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     pull.vm.$emit('refresh', done)
     await flushPromises()
     expect(mockFetchByTopic).toHaveBeenCalled()
+    expect(done).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
     expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="forum-wheel-refresh"]').text()).toContain(
+      'Updated',
+    )
 
     mockFetchByTopic.mockRejectedValue(create503Error())
     const failedDone = jest.fn()
     pull.vm.$emit('refresh', failedDone)
     await flushPromises()
+    expect(failedDone).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
     expect(failedDone).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="forum-wheel-refresh"]').text()).toContain(
+      'Could not refresh',
+    )
     expect(store.isRefreshing).toBe(false)
   })
 

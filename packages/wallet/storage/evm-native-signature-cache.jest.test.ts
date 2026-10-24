@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { SigningKey, Transaction, Wallet } from 'ethers'
 import type { LevelDB } from 'level'
 import * as durability from './level-durability'
+import { setEventLoopYieldForTesting } from '../chain/event-loop-yield'
 import { EvmNativeOperationJournal, type EvmNativeOperation, type EvmNativePlan } from './evm-native-operation-journal'
 
 const wallet = new Wallet('0x' + '41'.repeat(32))
@@ -30,6 +31,7 @@ beforeEach(async () => {
   await journal.Open()
 })
 afterEach(async () => {
+  setEventLoopYieldForTesting(null)
   jest.restoreAllMocks()
   await journal.Close()
   await rm(root, { recursive: true, force: true })
@@ -77,3 +79,66 @@ it.each(['source', 'unsigned', 'raw', 'hash', 'binding', 'observation'] as const
     await expect(journal.markExposed(row.operationId, 0)).resolves.toMatchObject({ operationId: row.operationId })
   },
 )
+
+async function signedPlan(count: number, offset = 0) {
+  const input = plan()
+  input.members = []
+  const raws: string[] = []
+  for (let i = 0; i < count; i++) {
+    const signer = new Wallet('0x' + (100 + offset + i).toString(16).padStart(64, '0'))
+    const member = plan().members[0]!
+    member.source.address = signer.address.toLowerCase()
+    input.members.push(member)
+    raws.push(await signer.signTransaction(Transaction.from(member.unsignedTransaction)))
+  }
+  input.intendedValueWei = String(1000 * count)
+  return { input, raws }
+}
+
+it('warm multi-member mutation avoids per-four-member timers below the work budget', async () => {
+  const { input, raws } = await signedPlan(16)
+  const row = await journal.prepare(input, raws)
+  jest.spyOn(performance, 'now').mockReturnValue(0)
+  const host = jest.fn(async () => undefined)
+  setEventLoopYieldForTesting(host)
+  await journal.markExposed(row.operationId, 0)
+  expect(host).not.toHaveBeenCalled()
+  expect(journal.get(row.operationId).members.map(m => m.signed!.rawTransaction)).toEqual(raws)
+})
+
+it('cold maximum-size signature validation permits a host turn before publishing the row', async () => {
+  const { input, raws } = await signedPlan(64)
+  const original = SigningKey.recoverPublicKey
+  let heartbeat: Promise<void> | undefined
+  let observedUnpublished = false
+  jest.spyOn(SigningKey, 'recoverPublicKey').mockImplementation((...args) => {
+    heartbeat ??= new Promise<void>(resolve => setTimeout(() => {
+      observedUnpublished = journal.list().length === 0
+      resolve()
+    }, 0))
+    return original(...args)
+  })
+  const row = await journal.prepare(input, raws)
+  expect(observedUnpublished).toBe(true)
+  await heartbeat
+  expect(row.members).toHaveLength(64)
+  expect(row.members.map(m => m.signed!.rawTransaction)).toEqual(raws)
+})
+
+it('durable reload shares its work budget across cheap rows and yields to the host', async () => {
+  const rows = []
+  for (let i = 0; i < 8; i++) {
+    const { input, raws } = await signedPlan(1, i)
+    rows.push(await journal.prepare(input, raws))
+  }
+  let clock = 0
+  jest.spyOn(performance, 'now').mockImplementation(() => (clock += 4))
+  let hostTurns = 0
+  setEventLoopYieldForTesting(() => new Promise(resolve => setTimeout(() => {
+    hostTurns++
+    resolve()
+  }, 0)))
+  await journal.markExposed(rows[0]!.operationId, 0)
+  expect(hostTurns).toBeGreaterThan(0)
+  expect(journal.list()).toHaveLength(8)
+})

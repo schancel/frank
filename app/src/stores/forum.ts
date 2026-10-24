@@ -188,6 +188,9 @@ export const useForumStore = defineStore('forum', {
     },
   },
   actions: {
+    getRefreshRequestToken(): object | undefined {
+      return refreshContexts.get(toRaw(this.$state))
+    },
     getPostReservationId({
       wallet,
       destination,

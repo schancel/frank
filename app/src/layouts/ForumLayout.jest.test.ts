@@ -261,6 +261,32 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     wrapper.unmount()
   })
 
+  it('does not show an old failure after the Forum page retries through the store', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    mockFetchByTopic.mockRejectedValueOnce(create503Error())
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    expect(store.outageStatus).toBe('outage')
+    await store.refreshMessages({ topic: 'memes' })
+    expect(store.outageStatus).toBe('ok')
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
+    wrapper.unmount()
+  })
+
   it('mounted refresh handles HTTP 503 rejection without an unhandled browser exception', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation()
     mockFetchByTopic.mockRejectedValue(create503Error())

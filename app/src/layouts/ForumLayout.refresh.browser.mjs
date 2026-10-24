@@ -23,7 +23,7 @@ const styles = []
 // Synthetic read-only store input; real ForumLayout, Quasar scroll area and touch directive.
 const storeInputs = {
   'src/stores/forum':
-    "import {reactive} from 'vue'; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',duration:1000,outageStatus:'ok',isRefreshing:false, async refreshMessages(){globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh){store.outageStatus='outage';throw Error('fixture outage')}store.outageStatus='ok';return true}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store",
+    "import {reactive} from 'vue'; let requestToken; export const store=reactive({topics:[],selectedTopic:'a-very-long-topic-that-must-yield-to-actions',duration:1000,outageStatus:'ok',isRefreshing:false,getRefreshRequestToken(){return requestToken},async refreshMessages(){requestToken={};globalThis.refreshes=(globalThis.refreshes??0)+1;store.isRefreshing=true;try{await new Promise(r=>setTimeout(r,150));if(globalThis.failRefresh){store.outageStatus='outage';throw Error('fixture outage')}store.outageStatus='ok';return true}finally{store.isRefreshing=false}},setSelectedTopic(value){store.selectedTopic=value}});export const useForumStore=()=>store",
   'src/accounts/session':
     "export const accountStatus={revision:0,status:'ready'}",
   '@frank/wallet/chain':

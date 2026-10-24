@@ -208,7 +208,6 @@ export default defineComponent({
       wheelCooldownUntil: 0,
       wheelRefreshing: false,
       wheelRefreshRevision: 0,
-      refreshAttemptRevision: 0,
       wheelReleaseTimer: undefined as ReturnType<typeof setTimeout> | undefined,
       refreshResult: '' as '' | 'success' | 'error',
       refreshResultTimer: undefined as
@@ -252,6 +251,7 @@ export default defineComponent({
       restoreTouchDrag,
       myDrawerOpen: useMyDrawerOpen(),
       refreshMessages: forumStore.refreshMessages,
+      getRefreshRequestToken: forumStore.getRefreshRequestToken,
       setSelectedTopic: forumStore.setSelectedTopic,
       // Ticket #72: `refreshDiscoveredTopics` merges relay-discovered topics into `useTopicStore`
       // (the store `AddTopic.vue`/`TopicList.vue`/`TopicDrawer.vue` read from, distinct from this
@@ -325,11 +325,12 @@ export default defineComponent({
     canShowRefreshResult(
       context: RefreshFeedbackContext,
       succeeded: boolean | undefined,
-      attemptRevision: number,
+      requestToken: object | undefined,
     ): succeeded is boolean {
       return (
         succeeded !== undefined &&
-        this.refreshAttemptRevision === attemptRevision &&
+        requestToken !== undefined &&
+        this.getRefreshRequestToken() === requestToken &&
         !this.isRefreshing &&
         this.selectedTopic === context.topic &&
         this.duration === context.duration &&
@@ -401,13 +402,13 @@ export default defineComponent({
         const startedAt = performance.now()
         const context = this.captureRefreshContext()
         const refresh = this.refreshContent()
-        const attemptRevision = this.refreshAttemptRevision
+        const requestToken = this.getRefreshRequestToken()
         void (async () => {
           const succeeded = await refresh
           await this.waitForRefreshFeedback(startedAt)
           if (this.wheelRefreshRevision !== revision) return
           this.wheelRefreshing = false
-          if (this.canShowRefreshResult(context, succeeded, attemptRevision))
+          if (this.canShowRefreshResult(context, succeeded, requestToken))
             this.showRefreshResult(succeeded)
         })()
       }, WHEEL_RELEASE_DELAY_MS)
@@ -421,20 +422,19 @@ export default defineComponent({
       const startedAt = performance.now()
       const context = this.captureRefreshContext()
       const refresh = this.refreshContent()
-      const attemptRevision = this.refreshAttemptRevision
+      const requestToken = this.getRefreshRequestToken()
       void (async () => {
         const succeeded = await refresh
         await this.waitForRefreshFeedback(startedAt)
         done()
         if (
           this.wheelRefreshRevision === revision &&
-          this.canShowRefreshResult(context, succeeded, attemptRevision)
+          this.canShowRefreshResult(context, succeeded, requestToken)
         )
           this.showRefreshResult(succeeded)
       })()
     },
     async refreshContent() {
-      this.refreshAttemptRevision++
       try {
         const wallet = peekActiveWallet()
         const applied = await this.refreshMessages({

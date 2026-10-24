@@ -2214,37 +2214,41 @@ export async function handleBackgroundMessage(
           useBurnerPersona,
           suppliedPersonaAddress,
         )
-        try {
-          const funded: any = await sendRuntimeMessage(
-            {
-              channel: FRANK_DAPP_BRIDGE_CHANNEL,
-              type: 'fund-dapp-persona',
-              chainIdentifier: chain.id,
-              origin: pending.origin,
-              useBurnerPersona,
-              address,
-              amountAtomic: fundingAmountAtomic,
-            },
-            runtimeScope,
-          )
-          if (funded?.ok !== true)
+        // The shared address already belongs to this extension. Connecting it
+        // without a top-up does not need an unlocked wallet or a balance read.
+        if (fundingAmountAtomic !== '0' || useBurnerPersona) {
+          try {
+            const funded: any = await sendRuntimeMessage(
+              {
+                channel: FRANK_DAPP_BRIDGE_CHANNEL,
+                type: 'fund-dapp-persona',
+                chainIdentifier: chain.id,
+                origin: pending.origin,
+                useBurnerPersona,
+                address,
+                amountAtomic: fundingAmountAtomic,
+              },
+              runtimeScope,
+            )
+            if (funded?.ok !== true)
+              return {
+                ok: false,
+                error: funded?.error ?? {
+                  code: 4900,
+                  message: 'Unlock Frank to fund this address.',
+                },
+              }
+          } catch (error) {
             return {
               ok: false,
-              error: funded?.error ?? {
+              error: {
                 code: 4900,
-                message: 'Unlock Frank to fund this address.',
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Frank wallet is unavailable.',
               },
             }
-        } catch (error) {
-          return {
-            ok: false,
-            error: {
-              code: 4900,
-              message:
-                error instanceof Error
-                  ? error.message
-                  : 'Frank wallet is unavailable.',
-            },
           }
         }
       }

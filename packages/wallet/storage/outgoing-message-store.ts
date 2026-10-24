@@ -334,4 +334,3 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
     await this.db.close()
   }
 }
-

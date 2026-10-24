@@ -79,13 +79,17 @@ function nowMs(): number {
  * are active so unit tests using fake timers do not stall waiting for timer advancement.
  */
 export function yieldToEventLoop(): Promise<void> {
+  return yieldToHost(true)
+}
+
+function yieldToHost(deferWhileTyping: boolean): Promise<void> {
   if (customYieldHook) {
     return customYieldHook()
   }
   if (isFakeTimerActive()) {
     return Promise.resolve()
   }
-  const delayMs = isUserActivelyTyping() ? ACTIVE_INPUT_BACKOFF_MS : 0
+  const delayMs = deferWhileTyping && isUserActivelyTyping() ? ACTIVE_INPUT_BACKOFF_MS : 0
   return new Promise<void>(resolve => {
     setTimeout(resolve, delayMs)
   })
@@ -97,7 +101,7 @@ export interface CooperativeBatchYielder {
   /**
    * Call after processing an item in a batch loop. Yields to the event loop when either
    * `batchSize` items have been processed, `budgetMs` wall-clock milliseconds have elapsed,
-   * or the user is actively typing.
+   * or the user is actively typing (background work only).
    */
   maybeYield(force?: boolean): Promise<boolean>
   readonly yieldCount: number
@@ -106,6 +110,8 @@ export interface CooperativeBatchYielder {
 export function createCooperativeBatchYielder(
   batchSize: number = DEFAULT_DECODE_BATCH_SIZE,
   budgetMs: number = DEFAULT_YIELD_BUDGET_MS,
+  // Foreground work still yields real host turns, without background typing backoff.
+  options: { foreground?: boolean } = {},
 ): CooperativeBatchYielder {
   const effectiveBatchSize = Math.max(1, Math.floor(batchSize))
   const effectiveBudgetMs = Math.max(0, budgetMs)
@@ -117,7 +123,7 @@ export function createCooperativeBatchYielder(
     async maybeYield(force = false): Promise<boolean> {
       itemsSinceYield += 1
       const elapsed = nowMs() - lastYieldTime
-      const activeInput = !customYieldHook && !isFakeTimerActive() && isUserActivelyTyping()
+      const activeInput = !options.foreground && !customYieldHook && !isFakeTimerActive() && isUserActivelyTyping()
       if (
         !force &&
         !activeInput &&
@@ -128,7 +134,7 @@ export function createCooperativeBatchYielder(
       }
       itemsSinceYield = 0
       count += 1
-      await yieldToEventLoop()
+      await yieldToHost(!options.foreground)
       lastYieldTime = nowMs()
       return true
     },

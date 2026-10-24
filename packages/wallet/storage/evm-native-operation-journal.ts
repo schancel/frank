@@ -1,4 +1,4 @@
-import { createCooperativeBatchYielder } from '../chain/event-loop-yield'
+import { createCooperativeBatchYielder, DEFAULT_YIELD_BUDGET_MS } from '../chain/event-loop-yield'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { keccak256, toUtf8Bytes, Transaction } from 'ethers'
@@ -554,10 +554,18 @@ class NativeSignatureValidationCache {
   }
 }
 
+// Cached signature facts make warm members cheap. Bound elapsed work instead of
+// adding a timer for every four members; foreground sends must not inherit the
+// background decoder's typing backoff.
+function validationYielder() {
+  return createCooperativeBatchYielder(MAX_MEMBERS, DEFAULT_YIELD_BUDGET_MS, { foreground: true })
+}
+
 async function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
   signatures: NativeSignatureValidationCache,
+  yielder = validationYielder(),
 ): Promise<EvmNativeOperation> {
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const hasSubmissionPolicy =
@@ -637,7 +645,6 @@ async function validateRow(
   let fee = 0n
   const sourceAddresses = new Set<string>()
   const claims = new Set<string>()
-  const yielder = createCooperativeBatchYielder()
   for (let i = 0; i < row.members.length; i++) {
     const member = object(row.members[i], [
       'source',
@@ -883,6 +890,7 @@ export class EvmNativeOperationJournal {
   private async reloadRows(initialize: boolean): Promise<void> {
     if (!this.database) return
     const rows = new Map<string, EvmNativeOperation>()
+    const yielder = validationYielder()
     const manifestText = await this.stored('manifest')
     const manifest: unknown = manifestText === undefined ? undefined : JSON.parse(manifestText)
     // Only active rows participate in recovery scans. Completed history is read through
@@ -890,7 +898,7 @@ export class EvmNativeOperationJournal {
     for await (const [key, value] of this.database.iterator({ gte: 'operation:', lt: 'operation;' })) {
       const name = String(key), text = String(value)
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
-      const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+      const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures, yielder)
       if (name !== `operation:${row.operationId}` || rows.has(row.operationId)) fail()
       rows.set(row.operationId, row)
     }

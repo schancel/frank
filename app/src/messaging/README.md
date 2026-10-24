@@ -9,12 +9,12 @@ owns per-message locking and persists presentation. Wallet and message journals
 remain the authorities for original payments, signed bytes and delivery. The
 helper owns none of those facts and cannot authorize a new payment.
 
-| Result | Caller action |
-| --- | --- |
-| `retry-messaging` | Wait up to 5000 ms for readiness; if not ready, delay by attempt number × 500 ms, then retry the same message. |
-| `retry-transport` | Delay by attempt number × 500 ms, then retry the same message. |
+| Result              | Caller action                                                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `retry-messaging`   | Wait up to 5000 ms for readiness; if not ready, delay by attempt number × 500 ms, then retry the same message.                      |
+| `retry-transport`   | Delay by attempt number × 500 ms, then retry the same message.                                                                      |
 | `queue-unattempted` | Retain the original message for the existing reconciliation queue; permitted only with the caller's accumulated no-effect evidence. |
-| `fail` | Continue existing failure classification and presentation. It does not release reservations or declare financial failure. |
+| `fail`              | Continue existing failure classification and presentation. It does not release reservations or declare financial failure.           |
 
 The caller currently limits foreground sends to three calls. Once it has an own
 attempt digest, it does not take another foreground retry branch. It computes

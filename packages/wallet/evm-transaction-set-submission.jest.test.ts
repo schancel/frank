@@ -499,6 +499,52 @@ test('a pending operation does not hold a wallet queue against another operation
   }
 })
 
+test('host ticks faster than a recovery pass join the in-flight attempt instead of stacking passes', async () => {
+  const chain = node(),
+    f = await fixture(location, chain)
+  let release!: () => void
+  const held = new Promise<void>(resolve => {
+    release = resolve
+  })
+  try {
+    const prepared = await f.construct()
+    const originalBroadcast =
+      chain.provider.broadcastTransaction.getMockImplementation()!
+    let reached!: () => void
+    const entered = new Promise<void>(resolve => {
+      reached = resolve
+    })
+    chain.provider.broadcastTransaction.mockImplementation(async raw => {
+      reached()
+      await held
+      return originalBroadcast(raw)
+    })
+    const observe = jest.spyOn(f.lifecycle, 'observe')
+    const replay = jest.spyOn(f.lifecycle, 'replay')
+    const sending = f.submission.sendTransaction(prepared)
+    await entered
+    // A slow node holds the explicit submission; the host poll keeps ticking meanwhile.
+    const ticks = Array.from({ length: 20 }, () =>
+      f.submission.reconcileAuthorized(),
+    )
+    const observesWhileHeld = observe.mock.calls.length
+    release()
+    const sent = await sending
+    expect(sent.status).toBe('confirmed')
+    for (const reports of await Promise.all(ticks))
+      expect(reports).toEqual([sent])
+    expect(observesWhileHeld).toBe(1)
+    expect(observe).toHaveBeenCalledTimes(2)
+    expect(replay).toHaveBeenCalledTimes(1)
+    // A finished attempt is not cached: the next tick sees completion and starts nothing.
+    expect(await f.submission.reconcileAuthorized()).toEqual([])
+    expect(replay).toHaveBeenCalledTimes(1)
+  } finally {
+    release()
+    await f.close()
+  }
+})
+
 test('a source observation/submission failure does not suppress eligible transactions from another source', async () => {
   const chain = node(),
     f = await fixture(location, chain)

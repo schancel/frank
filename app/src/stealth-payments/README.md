@@ -2,7 +2,7 @@
 
 `outgoing.ts` captures existing financial operations through their family owners. It never prepares replacement payments. The returned `expose` and `submit` capabilities retain the original operation references and wallet bindings.
 
-`financial-envelope-recovery.ts` resumes an authorized message independently of its chat row. It receives narrow storage, original-message lookup, delivery, reconciliation and financial capabilities. It does not import Pinia, custody, or transport implementations. `pinia-chain-adapter.ts` composes it into the active messaging session and stops new effects when that session changes.
+`financial-envelope-recovery.ts` resumes an authorized message independently of its chat row. It receives narrow storage, original-message lookup, delivery, reconciliation and financial capabilities. It does not import Pinia, custody, or transport implementations. [`startOutgoingReconciliation`](../adapters/pinia-chain-adapter.ts) is the production composition example: it supplies the factory capabilities from the captured messaging session and stops new effects when that session changes.
 
 ## Durable ownership and ordering
 
@@ -28,8 +28,8 @@ A held original still invokes the canonical durability callback before it can le
 From the repository root:
 
 ```sh
-yarn --cwd app test:unit:ci --runInBand financial-envelope-recovery.jest.test.ts recovery.jest.test.ts outgoing.jest.test.ts
-yarn --cwd app test:unit:ci --runInBand chats.financial-retained-recovery.jest.test.ts chats.outgoing.jest.test.ts pinia-chain-adapter.outgoing.jest.test.ts
+yarn --cwd app test:unit:ci --runInBand financial-envelope-recovery.jest.test.ts financial-envelope-recovery-boundary.jest.test.ts recovery.jest.test.ts outgoing.jest.test.ts
+yarn --cwd app test:unit:ci --runInBand chats.financial-retained-recovery.jest.test.ts chats.outgoing.jest.test.ts pinia-chain-adapter.outgoing.jest.test.ts pinia-chain-adapter.retained-scheduling.jest.test.ts
 yarn typecheck:fast
 ```
 

@@ -166,7 +166,7 @@
           v-if="
             $status.setup &&
             displayedConversations.length === 0 &&
-            mailboxStatus.initialPoll === 'pending'
+            initialInboxLoading
           "
           role="status"
           data-test="chat-list-initial-loading"
@@ -182,12 +182,17 @@
         </q-item>
 
         <q-item
-          v-else-if="$status.setup && mailboxStatus.initialPoll === 'error'"
+          v-else-if="$status.setup && initialInboxError"
           role="alert"
           data-test="chat-list-initial-error"
         >
           <q-item-section>
-            <q-item-label>{{
+            <q-item-label
+              v-if="messagingState.status !== 'ready' && messagingState.reason"
+            >
+              {{ $t(`mailboxStatus.directory.${messagingState.reason}`) }}
+            </q-item-label>
+            <q-item-label v-else>{{
               $t('chatList.initialConversationsFailed')
             }}</q-item-label>
           </q-item-section>
@@ -197,6 +202,7 @@
           v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            messagingState.status === 'ready' &&
             mailboxStatus.initialPoll === 'ready' &&
             normalizedQuery
           "
@@ -211,6 +217,7 @@
           v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            messagingState.status === 'ready' &&
             mailboxStatus.initialPoll === 'ready' &&
             activeFilter === 'screener'
           "
@@ -227,6 +234,7 @@
           v-else-if="
             getSortedChatOrder.length === 0 &&
             $status.setup &&
+            messagingState.status === 'ready' &&
             mailboxStatus.initialPoll === 'ready'
           "
         >
@@ -421,6 +429,19 @@ export default defineComponent({
           messagingState.status === 'ready' &&
           activeChain.capabilities.directMessages,
       ),
+      initialInboxLoading: computed(
+        () =>
+          (messagingState.status !== 'ready' && !messagingState.reason) ||
+          (messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'pending'),
+      ),
+      initialInboxError: computed(
+        () =>
+          (messagingState.status !== 'ready' &&
+            messagingState.reason !== null) ||
+          (messagingState.status === 'ready' &&
+            mailboxStatus.initialPoll === 'error'),
+      ),
       /** What the unread received messages brought, in AVU: stamps plus payments the wallets
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
@@ -445,6 +466,7 @@ export default defineComponent({
       },
       getSortedChatOrder,
       mailboxStatus,
+      messagingState,
       displayedConversations,
       searchQuery,
       normalizedQuery,

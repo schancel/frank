@@ -237,6 +237,51 @@ test('a ready account publishes its own entry and starts messaging with no user 
   expect(useMonadWallet()).toBe(alice)
 })
 
+test('directory publication stays pending before polling and exposes failure before recovering', async () => {
+  const alice = await wallet(0, 'directory-startup')
+  const d = device(alice)
+  const originalFetch = d.deps.directory.fetch
+  let releasePublish!: () => void
+  let markPublishEntered!: () => void
+  const held = new Promise<void>(resolve => (releasePublish = resolve))
+  const entered = new Promise<void>(resolve => (markPublishEntered = resolve))
+  let holdFirstPublish = true
+  d.deps.retryDelayMs = () => 1000
+  d.deps.directory.fetch = async (url, init) => {
+    if (holdFirstPublish && init?.method === 'PUT') {
+      holdFirstPublish = false
+      markPublishEntered()
+      await held
+      throw new TypeError('directory connection interrupted')
+    }
+    return originalFetch(url, init)
+  }
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  try {
+    await initializeMonadIdentity()
+    await entered
+    expect(messagingState.status).toBe('publishing')
+    expect(messagingState.reason).toBeNull()
+    expect(d.deps.startPolling).not.toHaveBeenCalled()
+
+    releasePublish()
+    await until(
+      () =>
+        messagingState.status === 'pending' &&
+        messagingState.reason === 'relay-unreachable',
+      'visible directory failure',
+    )
+    expect(d.deps.startPolling).not.toHaveBeenCalled()
+
+    await until(() => messagingState.status === 'ready', 'messaging retry')
+    expect(messagingState.reason).toBeNull()
+    expect(d.deps.startPolling).toHaveBeenCalledTimes(1)
+  } finally {
+    releasePublish()
+  }
+})
+
 test('restoring the account on a second device adopts the published entry instead of signing another', async () => {
   const phone = await wallet(0, 'phone')
   await configureMessagingForTest(device(phone).deps)

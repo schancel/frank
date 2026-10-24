@@ -58,6 +58,8 @@ jest.mock('../../stores/mailbox-status', () => ({
 }))
 beforeEach(() => {
   mockMailboxStatus.initialPoll = 'ready'
+  messagingStateOwner.status = 'ready'
+  messagingStateOwner.reason = null
 })
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -69,7 +71,10 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('../../utils/messaging-state', () => {
-  const owner = jest.requireActual('vue').reactive({ status: 'ready' })
+  const owner = jest.requireActual('vue').reactive({
+    status: 'ready',
+    reason: null,
+  })
   return { messagingState: owner, messagingStateOwner: owner }
 })
 jest.mock('../../stores/settings', () => ({ useSettingsStore: () => ({}) }))
@@ -344,6 +349,66 @@ describe('initial conversation loading', () => {
     mockMailboxStatus.initialPoll = 'ready'
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('chatList.noContactMessage')
+    wrapper.unmount()
+  })
+
+  it('waits for directory startup and the first mailbox poll before showing empty', async () => {
+    messagingStateOwner.status = 'publishing'
+    messagingStateOwner.reason = null
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        mocks: { $status: { setup: true }, $t: (key: string) => key },
+        stubs: {
+          QSpinner: {
+            template: '<span data-test="initial-loading-spinner" />',
+          },
+        },
+      },
+    })
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(true)
+    expect(wrapper.text()).not.toContain('chatList.noContactMessage')
+
+    messagingStateOwner.status = 'pending'
+    messagingStateOwner.reason = 'relay-unreachable'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="chat-list-initial-error"]').text()).toBe(
+      'mailboxStatus.directory.relay-unreachable',
+    )
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(false)
+    expect(wrapper.text()).not.toContain('chatList.noContactMessage')
+
+    messagingStateOwner.status = 'ready'
+    messagingStateOwner.reason = null
+    mockMailboxStatus.initialPoll = 'pending'
+    await wrapper.vm.$nextTick()
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(true)
+    mockMailboxStatus.initialPoll = 'ready'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('chatList.noContactMessage')
+    wrapper.unmount()
+  })
+
+  it('keeps cached rows visible when directory startup reports an error', async () => {
+    mockChatStore.getSortedChatOrder = [
+      { id: 'cached', address: 'known-contact', totalUnreadMessages: 0 },
+    ]
+    messagingStateOwner.status = 'pending'
+    messagingStateOwner.reason = 'relay-rejected'
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+    })
+    expect(wrapper.find('[data-testid="chat-item"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="chat-list-initial-error"]').text()).toBe(
+      'mailboxStatus.directory.relay-rejected',
+    )
     wrapper.unmount()
   })
 

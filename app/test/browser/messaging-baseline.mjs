@@ -124,7 +124,7 @@ try {
       if (error.code !== 'ENOENT') throw error
     }
   }
-  async function linkModules(source, destination) {
+  const linkModules = async (source, destination) => {
     if (!existsSync(source)) return
     await mkdir(destination, { recursive: true })
     for (const entry of await readdir(source, { withFileTypes: true })) {
@@ -341,7 +341,9 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
           ...(allowed ? {} : { errorReason: 'BlockedByClient' }),
         },
         m.sessionId,
-      ).catch(() => {})
+      ).catch(() => {
+        // The target may close while interception replies are in flight.
+      })
     }
     if (m.method === 'Runtime.exceptionThrown')
       report.runtimeErrors.push(
@@ -376,7 +378,7 @@ new PerformanceObserver(list=>window.__baselineMetrics.longtasks.push(...list.ge
 window.WebSocket=class {constructor(){throw Error('Fixture blocks WebSocket')}};window.EventSource=class {constructor(){throw Error('Fixture blocks EventSource')}};
 document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetrics.marks.push({kind:'enter',time:performance.now()})},true);`,
   })
-  async function evaluate(expression) {
+  const evaluate = async expression => {
     const r = await call('Runtime.evaluate', {
       expression,
       awaitPromise: true,
@@ -388,7 +390,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
       )
     return r.result.value
   }
-  async function until(expression, timeout = 30000) {
+  const until = async (expression, timeout = 30000) => {
     const end = Date.now() + timeout
     while (Date.now() < end) {
       if (await evaluate(expression)) return
@@ -410,7 +412,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     'document.querySelector(".chat-footer textarea, .chat-footer [contenteditable=true]")',
   )
   await evaluate(
-    `new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`,
+    'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',
   )
   const text = 'Fixture queued message'
   await evaluate(
@@ -456,7 +458,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     undefined,
     'Synthetic service must still be held',
   )
-  async function navigate(control, route, content) {
+  const navigate = async (control, route, content) => {
     return evaluate(`new Promise((resolve,reject)=>{
       const tab=document.querySelector(${JSON.stringify(control)});
       if(!tab){reject(Error('Navigation control missing'));return}
@@ -526,7 +528,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
   // Negative control: browser policy must stop the URL before any external connection.
   const appErrorCount = report.consoleErrors.length
   const isolation = await evaluate(
-    `(async()=>{const violations=[];document.addEventListener('securitypolicyviolation',e=>violations.push(e.blockedURI));let rejected=false;try{await fetch('https://offline-probe.invalid/must-not-connect')}catch{rejected=true}await new Promise(r=>setTimeout(r,50));return {rejected,violations}})()`,
+    "(async()=>{const violations=[];document.addEventListener('securitypolicyviolation',e=>violations.push(e.blockedURI));let rejected=false;try{await fetch('https://offline-probe.invalid/must-not-connect')}catch{rejected=true}await new Promise(r=>setTimeout(r,50));return {rejected,violations}})()",
   )
   assert.ok(
     isolation.rejected &&

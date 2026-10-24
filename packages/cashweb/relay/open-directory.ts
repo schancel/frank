@@ -116,6 +116,8 @@ export class OpenDirectoryError extends Error {
     /** The address the failure is about, when there is one. */
     readonly address?: string,
     readonly status?: number,
+    /** Transport retry fact authored at the failing boundary; absent means unknown. */
+    readonly retry?: 'transient' | 'forbidden',
   ) {
     super(MESSAGES[code])
     this.name = 'OpenDirectoryError'
@@ -272,6 +274,7 @@ async function readBody(
   response: DirectoryResponse,
   limit: number,
   deadline: Promise<never>,
+  onTransportFailure: () => void,
 ): Promise<Uint8Array> {
   if (!response.body) throw new Error('empty body')
   const reader = response.body.getReader()
@@ -279,7 +282,12 @@ async function readBody(
     const chunks: Uint8Array[] = []
     let length = 0
     for (;;) {
-      const { done, value } = await Promise.race([reader.read(), deadline])
+      const { done, value } = await Promise.race([reader.read(), deadline]).catch(
+        error => {
+          onTransportFailure()
+          throw error
+        },
+      )
       if (done) break
       if (!value || length + value.length > limit) throw new Error('body bound')
       chunks.push(value.slice())
@@ -346,6 +354,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
   }> {
     if (closed) throw new OpenDirectoryError('storage')
     const controller = new AbortController()
+    let transportFailed = false
     let timer: ReturnType<typeof setTimeout>
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -370,7 +379,10 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
           signal: controller.signal,
         }),
         deadline,
-      ])
+      ]).catch(error => {
+        transportFailed = true
+        throw error
+      })
       if (response.url !== url) throw new Error('redirected')
       if (response.status !== 200) {
         void response.body
@@ -386,10 +398,17 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       return {
         status: 200,
         headers: response.headers,
-        body: await readBody(response, options.limit, deadline),
+        body: await readBody(response, options.limit, deadline, () => {
+          transportFailed = true
+        }),
       }
     } catch {
-      throw new OpenDirectoryError('unreachable')
+      throw new OpenDirectoryError(
+        'unreachable',
+        undefined,
+        undefined,
+        transportFailed ? 'transient' : 'forbidden',
+      )
     } finally {
       clearTimeout(timer!)
     }
@@ -436,7 +455,12 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       response.headers.get('content-type') !== MEDIA ||
       response.headers.get('x-frank-directory-evidence') !== kind
     )
-      throw new OpenDirectoryError('unreachable', undefined, response.status)
+      throw new OpenDirectoryError(
+        'unreachable',
+        undefined,
+        response.status,
+        [429, 502, 503, 504].includes(response.status) ? 'transient' : 'forbidden',
+      )
     return response.body
   }
 
@@ -786,7 +810,12 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       limit: INFO_LIMIT,
     })
     if (response.status !== 200 || !response.body)
-      throw new OpenDirectoryError('unreachable', undefined, response.status)
+      throw new OpenDirectoryError(
+        'unreachable',
+        undefined,
+        response.status,
+        [429, 502, 503, 504].includes(response.status) ? 'transient' : 'forbidden',
+      )
     try {
       const info = JSON.parse(
         new TextDecoder().decode(response.body),

@@ -55,7 +55,10 @@ const examples = [
   [new ChainUnreachableError(new Error('observation failed')), 'unreachable'],
   [new SolanaStealthSendRefusedError(), 'error'],
   [new DirectMessageStampBelowFeeError(1n, 2n), 'stamp-below-fee'],
-  [new OpenDirectoryError('unreachable'), 'unreachable'],
+  [
+    new OpenDirectoryError('unreachable', undefined, undefined, 'transient'),
+    'unreachable',
+  ],
   [new MonadMailboxRetryableError('unavailable'), 'unreachable'],
   [
     recordWalletFailure(new Error('changed observation wording'), {

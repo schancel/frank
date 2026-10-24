@@ -20,6 +20,7 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { encodeGroupItems } from '../utils/group-message-items'
 import { accountSession } from '../accounts/session'
+import type { WalletHandle } from '@frank/wallet/chain'
 import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
@@ -959,34 +960,53 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(accountSession.getGroupSigner).not.toHaveBeenCalled()
   })
 
-  it('retains the exact signed envelope after an uncertain send and retries it without new encryption', async () => {
-    const { chats, group, client } = await makeGroup()
-    const send = client.sendGroupMessage.bind(client)
-    jest
-      .spyOn(client, 'sendGroupMessage')
-      .mockImplementationOnce(async (...args) => {
-        await send(...args)
-        throw new Error('response lost')
+  it.each(['group', 'outgoing'] as const)(
+    'retains the exact signed envelope after an uncertain send through the %s retry entry',
+    async entry => {
+      const { chats, group, client } = await makeGroup()
+      const send = client.sendGroupMessage.bind(client)
+      const sending = jest
+        .spyOn(client, 'sendGroupMessage')
+        .mockImplementationOnce(async (...args) => {
+          await send(...args)
+          throw new Error('response lost')
+        })
+      const outcome = await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Once' }],
+        relayClient: client,
+        senderAddress: ALICE,
       })
-    const outcome = await chats.sendGroupMessage({
-      conversationId: group.id,
-      items: [{ type: 'text', text: 'Once' }],
-      relayClient: client,
-      senderAddress: ALICE,
-    })
-    expect(outcome.state).toBe('failed')
-    const digest = Object.keys(group.groupState.pendingMessages)[0]
-    const originalEnvelope = JSON.stringify(
-      chats.messages[digest].groupEnvelope,
-    )
-    const retried = await chats.retryGroupMessage(group.id, digest, client)
-    expect(retried.state).toBe('sent')
-    expect(JSON.stringify(client.sendGroupMessage.mock.calls[1][1])).toBe(
-      originalEnvelope,
-    )
-    expect(group.messages).toHaveLength(1)
-    expect(group.groupState.pendingMessages[digest]).toBeUndefined()
-  })
+      expect(outcome.state).toBe('failed')
+      const digest = Object.keys(group.groupState.pendingMessages)[0]
+      const originalEnvelope = JSON.stringify(
+        chats.messages[digest].groupEnvelope,
+      )
+      const direct = jest.spyOn(chats, 'runOutgoing')
+      // Group retry owns its signer and journal. The generic UI entry must dispatch before
+      // looking at a direct wallet or attempting direct-message preparation.
+      const unusedWallet = new Proxy({} as WalletHandle, {
+        get() {
+          throw new Error('Group retry must not inspect a direct wallet')
+        },
+      })
+      const retried =
+        entry === 'group'
+          ? await chats.retryGroupMessage(group.id, digest, client)
+          : await chats.retryOutgoing({
+              wallet: unusedWallet,
+              address: BOB,
+              payloadDigest: digest,
+            })
+      expect(retried.state).toBe('sent')
+      expect(direct).not.toHaveBeenCalled()
+      expect(sending.mock.calls[1][0]).toBe(group.groupId)
+      expect(JSON.stringify(sending.mock.calls[1][1])).toBe(originalEnvelope)
+      expect(group.messages).toHaveLength(1)
+      expect(group.groupState.pendingMessages[digest]).toBeUndefined()
+      direct.mockRestore()
+    },
+  )
 
   it('rebuilds pending retry references from durable signed receipts after interrupted metadata persistence', async () => {
     const { chats, group, client } = await makeGroup()

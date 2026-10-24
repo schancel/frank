@@ -37,6 +37,13 @@ describe('the wallet suites hosted CI names', () => {
     'chain/canonical-dm-message-id.jest.test.ts',
     'chain/evm-chain.jest.test.ts',
     'evm-spend-spacing.jest.test.ts',
+    'wallet-failure.jest.test.ts',
+    'wallet-failure-boundary.jest.test.ts',
+    'evm-rpc-failure.jest.test.ts',
+    'evm-provider-response-failure.jest.test.ts',
+    'evm-provider.jest.test.ts',
+    'evm-transaction-set-runtime.jest.test.ts',
+    'utxo-wallet.jest.test.ts',
   ])('the send path suite %s is run', name => {
     expect(named).toContain(name)
   })

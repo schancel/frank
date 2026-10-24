@@ -24,6 +24,8 @@ explicit opt-ins. Multi-chain UTXO serialization and script validation use
 `@frank/nakamoto`. Relay encryption has not moved to `@frank/crypto-box` (issue
 #258).
 
+Failure facts and diagnostic ownership: [wallet-failure.md](wallet-failure.md).
+
 ## Public entry points
 
 - `monad-hd-keyring.ts`, `monad-identity.ts`, `monad-wallet-handle.ts`

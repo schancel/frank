@@ -24,6 +24,27 @@ labels. A request-local refusal flag preserves this fact if stream cleanup itsel
 rejects, including a primitive rejection; the unsanitized path still throws that
 exact original value. Later observation or transient facts cannot clear the veto.
 
+At an authoritative failure boundary, annotate and rethrow the exact value:
+
+```ts
+import { recordWalletFailure, describeWalletFailure } from './wallet-failure'
+
+try {
+  await observeInventory()
+} catch (error) {
+  throw recordWalletFailure(error, { observationUnavailable: true })
+}
+
+// A caller receives the original rejected value; it does not reconstruct one.
+const failure = describeWalletFailure(rejected)
+if (failure.retry === 'forbidden') {
+  // Do not grant transport retry. Original-operation recovery remains separate.
+}
+```
+
+`observeInventory` and `rejected` stand for the caller's existing observation and
+caught value. The annotation alone grants no retry or no-effect authority.
+
 Focused checks from the repository root:
 
 ```sh

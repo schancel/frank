@@ -6,7 +6,7 @@ import {
   useProviderStandIns,
 } from './canonical-two-wallets.testutil'
 import { Transaction, getBytes, hexlify } from 'ethers'
-import { LevelOutgoingMessageStore, type StoredMessage } from './canonical-dm'
+import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoing-message-store'
 import { evmWalletInternals } from '../evm-wallet'
 import { installCanonicalDirectory } from './evm-chain'
 import {

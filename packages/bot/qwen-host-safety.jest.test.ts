@@ -27,7 +27,10 @@ import { LevelBotStateStore } from "../bot-framework/src/state-store";
 import { PassThrough } from "stream";
 import { MODEL_FAILED_TEXT, QwenBot } from "./src/bots/qwen-bot";
 import { Outbox } from "./src/bots/money";
-import { LevelOutgoingMessageStore, type StoredMessage } from "@frank/wallet/chain/canonical-dm";
+import {
+  LevelOutgoingMessageStore,
+  type StoredMessage,
+} from '@frank/wallet/storage/outgoing-message-store'
 import { FAILED_REPLY_TEXT } from "../bot-framework/src/bot-host";
 import {
   replyMessageId,

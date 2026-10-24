@@ -50,9 +50,9 @@ import * as chainIndex from './index'
 import {
   CanonicalMessagingPendingError,
   CanonicalRecipientUndeliverableError,
-  LevelOutgoingMessageStore,
   type CanonicalDirectory,
 } from './canonical-dm'
+import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 import { installCanonicalDirectory } from './evm-chain'
 
 jest.mock('../evm-provider', () =>

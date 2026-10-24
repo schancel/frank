@@ -2,7 +2,7 @@
 import { Transaction, hexlify } from 'ethers'
 import { fixture, mockBalances, offlineChain, roots, useProviderStandIns } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
-import { LevelOutgoingMessageStore, type StoredMessage } from './canonical-dm'
+import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoing-message-store'
 import { evmWalletInternals } from '../evm-wallet'
 import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'

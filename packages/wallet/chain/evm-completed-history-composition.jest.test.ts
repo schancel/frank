@@ -2,7 +2,7 @@
 import { getBytes, SigningKey } from 'ethers'
 import { fixture, mockBalances, offlineChain, roots, useProviderStandIns } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
-import { LevelOutgoingMessageStore, type StoredMessage } from './canonical-dm'
+import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoing-message-store'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { EvmTransactionSetPolicy } from '../evm-transaction-set-types'
 

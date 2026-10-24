@@ -210,17 +210,19 @@ import { readViteEnv } from "./vite-env";
 import {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
-  LevelOutgoingMessageStore,
-  MemoryOutgoingMessageStore,
   createCooperativeBatchYielder,
-  noticeOldLinkState,
   restoreOutgoingClaims,
   canonicalDirectMessages,
   installedMessageItemRegistry,
   type CanonicalDirectory,
   type CanonicalMessagingOwner,
+} from './canonical-dm'
+import {
+  LevelOutgoingMessageStore,
+  MemoryOutgoingMessageStore,
+  noticeOldLinkState,
   type OutgoingMessageStore,
-} from "./canonical-dm";
+} from '../storage/outgoing-message-store'
 import { waitForSpendSpacing } from "../evm-stamp-payer";
 export {
   CanonicalMessagingPendingError,

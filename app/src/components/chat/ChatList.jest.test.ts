@@ -2,6 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 import { readFileSync } from 'fs'
 import { parse } from '@vue/compiler-sfc'
 import { transpileModule, ModuleKind } from 'typescript'
@@ -57,6 +58,7 @@ jest.mock('../../stores/mailbox-status', () => ({
   useMailboxStatusStore: () => mockMailboxStatus,
 }))
 beforeEach(() => {
+  setActivePinia(createPinia())
   mockMailboxStatus.initialPoll = 'ready'
   messagingStateOwner.status = 'ready'
   messagingStateOwner.reason = null

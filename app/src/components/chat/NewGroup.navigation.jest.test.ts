@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent, h, reactive } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 const runtime = globalThis as typeof globalThis & {
   Vue: typeof import('vue')
@@ -90,6 +91,7 @@ jest.mock('../../utils/own-address', () => ({
 jest.mock('./ChatListItem.vue', () => ({ render: () => null }))
 
 async function start(path = '/chat') {
+  setActivePinia(createPinia())
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [

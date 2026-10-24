@@ -138,11 +138,15 @@ jest.mock('@frank/bot-framework/directory-manager', () => ({
             },
           }
         },
-        startHeartbeat() {},
+        startHeartbeat() {
+          // Synthetic publication has no background heartbeat.
+        },
         async lookupPeer() {
           return undefined
         },
-        async close() {},
+        async close() {
+          // Synthetic publication owns no external connection.
+        },
       }
     },
   },
@@ -192,10 +196,14 @@ async function sessionFor(wallet: EvmChainWalletHandle) {
         reconcile: async () => 'ready',
         openActive: async () => ({
           account,
-          close() {},
+          close() {
+            // Synthetic account lease owns no external resource.
+          },
           takeRoots: () => Object.values(material),
         }),
-        close() {},
+        close() {
+          // Synthetic custody owns no external resource.
+        },
       } as unknown as import('../accounts/custody').AccountCustody),
     createWallet: async () =>
       wallet as import('../accounts/session').RuntimeWallet,

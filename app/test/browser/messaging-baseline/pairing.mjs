@@ -60,6 +60,21 @@ export async function runPairing({ main, openPage, origin, report }) {
     await page.until('document.querySelector("[data-test=sync-sender-pin]")')
     const value = await pin(page)
     assert.match(value, /^\d{6}$/)
+    const binding = await page.evaluate(`(()=>{
+      const fixture=window.__pairingFixture;
+      const shown=document.querySelector('[data-test=sync-sender-pin]').textContent.trim();
+      const altered=String((Number(shown[0])+1)%10)+shown.slice(1);
+      return {
+        matches:fixture.matchesOfferPin(fixture.activeOfferId,shown),
+        acceptsWrongDigits:fixture.matchesOfferPin(fixture.activeOfferId,altered),
+        acceptsWrongOffer:fixture.matchesOfferPin(fixture.activeOfferId+'-wrong',shown)
+      };
+    })()`)
+    assert.deepEqual(
+      binding,
+      { matches: true, acceptsWrongDigits: false, acceptsWrongOffer: false },
+      'Displayed PIN must be the actual generated PIN of this offer',
+    )
     const list = await events(page)
     assert.equal(count(list, 'export'), 1)
     assert.equal(count(list, 'offer'), 1)

@@ -31,6 +31,10 @@ let promotion:
 let offer: { id: string; sender: SyncSenderState } | undefined
 export const pairing = {
   events: [] as Event[],
+  // Boolean-only observation: never expose the retained PIN or backup bundle to the runner.
+  matchesOfferPin(offerId: string, displayedPin: string): boolean {
+    return !!offer && offer.id === offerId && offer.sender.pin === displayedPin
+  },
   get activeOfferId() {
     return offer?.id ?? null
   },

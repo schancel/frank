@@ -953,7 +953,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
    */
   const holdMainAccounts = async (
     wallet: EvmChainWalletHandle,
-    options: MainAccountWait = {}
+    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
   ): Promise<void> => {
     const pool = wallet.pool;
     const internals = evmWalletInternals(wallet);
@@ -962,7 +962,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return;
     }
     const holder = mainAccountHolder(wallet);
-    const addresses =
+    const rootAddresses =
       options.addresses !== undefined && options.addresses.length > 0
         ? [
             ...new Set(
@@ -970,10 +970,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ),
           ]
         : mainAccountAddresses(wallet);
+    // Inventory-based sends may use other accounts while a shared construction owns a root.
+    // Opaque own-transfers still require the complete requested root claim.
+    const addresses = rootAddresses.filter(address =>
+      !options.unreservedRootsOnly || !internals.coinList?.isAccountReserved(address));
     const others = () =>
       addresses.filter((address) => {
         const claimant = pool.accountClaimedBy(address);
-        return claimant !== undefined && claimant !== holder;
+        return (claimant !== undefined && claimant !== holder) || internals.coinList?.isAccountReserved(address) === true;
       });
     const own = () =>
       options.waitForOwn === true
@@ -1039,8 +1043,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const look = watcher
         ? watcher.next(abort.signal).catch(() => undefined)
         : new Promise((resolve) => (timer = setTimeout(resolve, 1_000)));
+      // Coin-list reservations have no pool release signal. Racing an already-resolved
+      // pool promise would spin in microtasks and starve the construction holding the coin.
+      const poolHeld = held.find(address => pool.accountClaimedBy(address) !== undefined);
       await Promise.race([
-        ...(held.length > 0 ? [pool.accountReleased(held[0]!)] : []),
+        ...(poolHeld !== undefined ? [pool.accountReleased(poolHeld)] : []),
         look,
       ]);
       abort.abort();
@@ -1080,7 +1087,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const runMainAccountExclusive = <T>(
     wallet: EvmChainWalletHandle,
     task: () => Promise<T>,
-    options: MainAccountWait = {}
+    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
   ): Promise<T> => {
     const internals = evmWalletInternals(wallet);
     let admission = internals.mainAccountAdmission;
@@ -2168,6 +2175,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             changePool,
             coinStore,
             nativeJournal: () => topicOwner?.nativeJournal,
+            isAccountReserved: address => coinList.isAccountReserved(address),
             holdsSource: (address) =>
               evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
           });
@@ -2656,7 +2664,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 runMainAccountExclusive(
                   wallet,
                   () => owner.sendNative(params, admission),
-                  { waitMs: params.mainAccountWaitMs }
+                  { waitMs: params.mainAccountWaitMs, unreservedRootsOnly: true }
                 )
               );
               invalidateBalanceRead();
@@ -2914,11 +2922,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           evmWalletInternals(wallet).coinList = coinList;
           evmWalletInternals(wallet).transactionSetPreparer = transactionSetPreparer;
           evmWalletInternals(wallet).transactionSetLifecycle = transactionSetLifecycle;
-          // A pool account a non-cancelled native member spends from is reserved: read from the
-          // journal on every selection, so it holds from the journal write and across restart.
-          pool.attachSpendReservation((index) =>
-            topicOwner!.nativeJournal!.referencesSpendIndex(index)
-          );
+          // Construction reservations hold before signing yields; durable journal references
+          // retain those holds after persistence and across restart.
+          pool.attachSpendReservation((index) => {
+            const account = pool.getRecord(index)?.address;
+            return (account !== undefined && coinList.isAccountReserved(account)) ||
+              topicOwner!.nativeJournal!.referencesSpendIndex(index);
+          });
           // Caller B, the sync boundary: a wallet sync item's signed transaction reaches the one
           // writer only here, inside the wallet queue (whose guard refuses while a canonical
           // pre-sign intent holds an available row) and under the input admission. Not

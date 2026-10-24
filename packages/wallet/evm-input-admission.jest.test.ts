@@ -5,6 +5,7 @@ import { SigningKey, Transaction, Wallet, type Provider } from 'ethers'
 import level from 'level'
 import {
   createEvmInputAdmission,
+  captureNativeInputSelection,
   canonicalAdmissionPool,
   nativeAdmissionJournal,
   poolSpendAdmission,
@@ -595,6 +596,33 @@ describe('derived EVM input admission', () => {
       }
     },
   )
+  it('selection excludes a live legacy lease before constructing another payment', async () => {
+    const f = await fixture(location)
+    try {
+      f.pool.setStatus(0, 'available')
+      const lease = f.leases.acquireForIndex(0)
+      const writer = nativeAdmissionJournal(f.admission, f.lifetime)
+      const held = f.plan().members[0]!.source.address
+      const free = f.plan(1).members[0]!.source.address
+      // Chain balance alone does not permit borrowing another operation's input.
+      expect(captureNativeInputSelection(f.admission, f.lifetime)(held, 0)).toBe(false)
+      const selection = captureNativeInputSelection(f.admission, f.lifetime)
+      expect(selection(free, 0)).toBe(true)
+      f.pool.setStatus(1, 'available')
+      const laterLease = f.leases.acquireForIndex(1)
+      // A snapshot is advisory: a claim made after selection still wins at admission.
+      await expect(writer.prepare(f.plan(1))).rejects.toThrow('conflicting-authorization')
+      expect(f.leases.isCurrentLease(laterLease)).toBe(true)
+      f.leases.releaseLease(laterLease, 'unused')
+      await writer.prepare(f.plan(1))
+      expect(f.leases.isCurrentLease(lease)).toBe(true)
+      f.leases.releaseLease(lease, 'unused')
+      expect(captureNativeInputSelection(f.admission, f.lifetime)(held, 0)).toBe(true)
+    } finally {
+      await f.close()
+    }
+  })
+
   it('an independent current lease holds its own source without blocking a disjoint unsigned claim', async () => {
     const f = await fixture(location)
     try {

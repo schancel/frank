@@ -522,6 +522,15 @@ export class EvmSubAccountPool {
     return this.claims.get(index);
   }
 
+  /** Live claims only: selection must not rescan historical inventory for each coin. */
+  isAccountClaimed(address: string): boolean {
+    const key = address.toLowerCase();
+    if (this.accountClaims.has(key)) return true;
+    for (const index of this.claims.keys())
+      if (this.store.getByIndex(index)?.address.toLowerCase() === key) return true;
+    return false;
+  }
+
   /** The accounts `holder` holds. */
   claimsOf(holder: string): number[] {
     return [...this.claims]

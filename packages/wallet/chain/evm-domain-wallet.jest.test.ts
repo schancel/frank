@@ -1171,7 +1171,7 @@ test.each(['main', 'identity'] as const)(
               value: 100000n,
               onSigned: signed,
             }),
-          ).rejects.toThrow(method === 'sendNative' ? 'funding' : 'evm-input-admission:conflicting-authorization')
+          ).rejects.toThrow(method === 'sendNative' ? 'funding' : 'Insufficient available EVM coins')
         expect(signed).not.toHaveBeenCalled()
         expect(rpc.broadcast).not.toHaveBeenCalled()
         expect(wallet.getNativeOperations!()).toEqual(originalOperations)

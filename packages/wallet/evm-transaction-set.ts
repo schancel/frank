@@ -600,6 +600,7 @@ export class EvmTransactionSetPreparer {
     // This operation has been proved non-cancelled before taking any other cancelled
     // operation's queue, preserving append/release ordering without cross-queue cycles.
     await this.recoverCancelledOperations(request.operationId)
+    const admittedInput = await journal.captureInputSelection?.()
     const policy = this.options.policy(), contexts = new Map<number, PaymentContext>()
     const context = (index: number): PaymentContext => {
       const known = contexts.get(index)
@@ -624,7 +625,7 @@ export class EvmTransactionSetPreparer {
       // final recipient transaction; actual change members are checked after planning.
       maxCoins: Math.min(remainingMemberBudget - (fanIn ? 1 : 0),
         continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts ?? remainingMemberBudget)),
-      canSelect: coin => journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
+      canSelect: coin => (admittedInput?.(coin.account, coin.nonce) ?? true) && journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
       capacityWei: (coin, fee) => {
         const capacity = coin.valueWei - fee, rule = policy.spendRule
         if (continuation && capacity < policy.dustWei) return 0n

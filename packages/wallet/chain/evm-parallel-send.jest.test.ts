@@ -241,6 +241,44 @@ describe('parallel paid messages', () => {
     installCanonicalDirectory(alice, directory)
   }
 
+  it('an own-transfer waiting on a construction-only root reservation yields to the host', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    const internals = evmWalletInternals(alice)
+    await internals.coinListSync!.refreshAccounts([main])
+    const coins = internals.coinList!
+    const before = coins.all()
+    const parts = coins.reserveTransactionSetSources({ holder: 'construction-only', amountWei: STAMP,
+      feeWei: 21000n, head: Number.MAX_SAFE_INTEGER, sourceOrder: ['root'] })!
+    expect(parts).toHaveLength(1)
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    const released = jest.spyOn(alice.pool, 'accountReleased')
+    const isReserved = coins.isAccountReserved.bind(coins)
+    let hostRan = false, scheduled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const reservation = jest.spyOn(coins, 'isAccountReserved').mockImplementation(account => {
+      if (!scheduled && account.toLowerCase() === main) {
+        scheduled = true
+        timer = setTimeout(() => { hostRan = true }, 0)
+      }
+      return isReserved(account)
+    })
+    try {
+      const sign = jest.fn(async () => ({ txHash: 'unused', from: main, nonce: 0 }))
+      await expect(alice.runOwnTransfer!(sign, { mainAccountWaitMs: 50 })).rejects.toThrow()
+      expect(sign).not.toHaveBeenCalled()
+      expect(scheduled).toBe(true)
+      expect(hostRan).toBe(true)
+      expect(released).not.toHaveBeenCalled()
+      expect(coins.heldBy('construction-only').some(coin => coin.account === main)).toBe(true)
+    } finally {
+      clearTimeout(timer)
+      reservation.mockRestore()
+      released.mockRestore()
+      coins.abandonTransactionSetSources('construction-only', parts.map(part => part.coin), before)
+    }
+  })
+
   it.each([
     400,
     413,

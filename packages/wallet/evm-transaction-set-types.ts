@@ -106,6 +106,8 @@ export type EvmTransactionSetJournal = Pick<
   | 'discardUnexposed'
   | 'recordObservation'
 > & {
+  /** Snapshot other authorization owners once per selection, never once per coin. */
+  captureInputSelection?(): Promise<(source: string, nonce: number) => boolean>
   beginCapture(
     operationId: string,
     memberIndex: number,

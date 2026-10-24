@@ -1,3 +1,4 @@
+import { SubAccountLeaseManager } from './evm-account-lease'
 import { HDNodeWallet, Wallet, type Provider } from 'ethers'
 import { EvmSpendPool } from './evm-spend-pool'
 import { MonadIdentity } from './evm-identity'
@@ -15,7 +16,7 @@ import { EVM_TRANSACTION_SET_SOURCE_ORDER } from './evm-transaction-set-types'
 import { EvmLegacyConsolidator } from './chain/evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './chain/evm-transaction-builder'
 
-async function fixture(origin: 'root' | 'change', knownChanges = false) {
+async function fixture(origin: 'root' | 'change' | 'identity' | 'deterministic', knownChanges = false) {
   const mainAccount = new Wallet('0x' + '01'.repeat(32))
   const identity = MonadIdentity.fromPrivateKeyHex('0x' + '02'.repeat(32))
   const master = HDNodeWallet.fromSeed('0x' + '03'.repeat(32))
@@ -41,6 +42,7 @@ async function fixture(origin: 'root' | 'change', knownChanges = false) {
     changePool,
     coinStore: new MemoryRecordStore(),
     nativeJournal: journal,
+    isAccountReserved: address => coins.isAccountReserved(address),
     knownChangeSources: () =>
       knownChanges
         ? coins
@@ -59,10 +61,13 @@ async function fixture(origin: 'root' | 'change', knownChanges = false) {
         : [],
   })
   const coins = await EvmCoinList.open(new MemoryRecordStore())
-  const source =
-    origin === 'root'
-      ? mainAccount
-      : new Wallet(changeKeyring.deriveChangeAccount(8).privateKey)
+  pool.ensureSize(1)
+  pool.setStatus(0, 'available')
+  pool.attachSpendReservation(index => coins.isAccountReserved(pool.getRecord(index)!.address) || journal.referencesSpendIndex(index))
+  const source = origin === 'root' ? mainAccount
+    : origin === 'identity' ? new Wallet(identity.toPrivateKeyHex())
+    : origin === 'deterministic' ? new Wallet(keyring.deriveSubAccount(0).privateKey)
+    : new Wallet(changeKeyring.deriveChangeAccount(8).privateKey)
   await coins.put({
     account: source.address,
     privateKey: source.privateKey,
@@ -71,7 +76,13 @@ async function fixture(origin: 'root' | 'change', knownChanges = false) {
     origin,
     ...(origin === 'change' ? { changeIndex: 8 } : {}),
   })
+  const hooks: { beforeChange?: () => void } = {}
   const preparer = new EvmTransactionSetPreparer({
+    reserveChange: (_operation, index) => {
+      hooks.beforeChange?.()
+      const key = changeKeyring.deriveChangeAccount(index)
+      return { account: key.address, privateKey: key.privateKey, changeIndex: index }
+    },
     coins,
     journal,
     random: () => 0.5,
@@ -109,7 +120,7 @@ async function fixture(origin: 'root' | 'change', knownChanges = false) {
       amountWei: 100000n,
       kdf: () => new Wallet('0x' + '04'.repeat(32)).address,
     })
-  return { journal, spendPool, source, identity, coins, provider, prepare }
+  return { journal, spendPool, source, identity, coins, provider, prepare, hooks }
 }
 
 it.each(['root', 'change'] as const)(
@@ -207,4 +218,34 @@ it('discovers indexed inventory change without new legacy records, deduplicates 
   } finally {
     await f.journal.Close()
   }
+})
+
+it.each(['root', 'change', 'identity', 'deterministic'] as const)('a legacy claim cannot take a %s account during shared signing', async origin => {
+  const f = await fixture(origin)
+  const source: EvmNativeSource = origin === 'root'
+    ? { kind: 'main', address: f.source.address.toLowerCase() }
+    : origin === 'identity' ? { kind: 'identity', address: f.source.address.toLowerCase(), identityPublicKey: f.spendPool.identityPublicKey }
+    : origin === 'deterministic' ? { kind: 'spend', address: f.source.address.toLowerCase(), index: 0 }
+    : { kind: 'change', address: f.source.address.toLowerCase(), index: 8 }
+  const other: EvmNativeSource = { kind: 'change', address: f.spendPool.changeKeyring.deriveChangeAccount(9).address.toLowerCase(), index: 9 }
+  let checked = false
+  f.hooks.beforeChange = () => {
+    if (!checked) {
+      checked = true
+      // Real construction has reserved the input but has not journaled its signed set.
+      expect(f.coins.isAccountReserved(source.address)).toBe(true)
+      expect(f.journal.list()).toHaveLength(0)
+      expect(f.spendPool.sourceHeld(source, 'native-other')).toBe(true)
+      expect(() => f.spendPool.claimSources([source], 'native-other')).toThrow('reserved')
+      expect(f.coins.heldBy('shared').some(coin => coin.account === source.address)).toBe(true)
+      if (origin === 'deterministic')
+        expect(() => new SubAccountLeaseManager(f.spendPool.pool).acquireForIndex(0)).toThrow('held')
+      const release = f.spendPool.claimSources([other], 'native-other')
+      release()
+    }
+  }
+  try {
+    await f.prepare()
+    expect(checked).toBe(true)
+  } finally { await f.journal.Close() }
 })

@@ -75,13 +75,19 @@ jest.mock('../accounts/evm-wallets', () => ({
     ),
 }))
 jest.mock('@frank/wallet/evm-provider', () =>
-  require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
+  jest
+    .requireActual('@frank/wallet/chain/canonical-two-wallets.testutil')
+    .offlineProviderModule(),
 )
 jest.mock('@frank/wallet/evm-http', () =>
-  require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineHttpModule(),
+  jest
+    .requireActual('@frank/wallet/chain/canonical-two-wallets.testutil')
+    .offlineHttpModule(),
 )
 jest.mock('@frank/cashweb/relay/mailbox-client', () =>
-  require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineMailboxModule(),
+  jest
+    .requireActual('@frank/wallet/chain/canonical-two-wallets.testutil')
+    .offlineMailboxModule(),
 )
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
 
@@ -131,10 +137,14 @@ async function sessionFor(wallet: Fixture['alice']) {
         reconcile: async () => 'ready',
         openActive: async () => ({
           account,
-          close() {},
+          close() {
+            // Synthetic custody has no external resource to close.
+          },
           takeRoots: () => Object.values(material),
         }),
-        close() {},
+        close() {
+          // Synthetic custody has no external resource to close.
+        },
       } as unknown as import('../accounts/custody').AccountCustody),
     createWallet: async () =>
       wallet as import('../accounts/session').RuntimeWallet,

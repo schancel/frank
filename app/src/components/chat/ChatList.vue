@@ -171,6 +171,9 @@
           role="status"
           data-test="chat-list-initial-loading"
         >
+          <q-item-section avatar>
+            <q-spinner size="1.25rem" color="primary" aria-hidden="true" />
+          </q-item-section>
           <q-item-section>
             <q-item-label>{{
               $t('chatList.loadingConversations')

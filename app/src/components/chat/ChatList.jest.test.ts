@@ -310,10 +310,21 @@ describe('initial conversation loading', () => {
     mockMailboxStatus.initialPoll = 'pending'
     const wrapper = mount(ChatList, {
       props: { compact: false },
-      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+      global: {
+        mocks: { $status: { setup: true }, $t: (key: string) => key },
+        stubs: {
+          QSpinner: {
+            template:
+              '<span data-test="initial-loading-spinner" aria-hidden="true" />',
+          },
+        },
+      },
     })
     expect(wrapper.find('[data-test="chat-list-initial-loading"]').text()).toBe(
       'chatList.loadingConversations',
+    )
+    expect(wrapper.find('[data-test="initial-loading-spinner"]').exists()).toBe(
+      true,
     )
     expect(wrapper.find('[data-test="chat-list-initial-error"]').exists()).toBe(
       false,

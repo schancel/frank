@@ -131,7 +131,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   let bobInbox: InboxRecord[]
   /** Every body the relay was handed, in any relay mode, in order. */
   let relayBodies: { body: Uint8Array; contentType: string }[]
-  let relayMode: 'fixture' | 'ended'
+  let relayMode: 'fixture' | 'ended' | 'lost' | 'held'
+  /** In `held` mode every request waits here before the fixture relay answers it. */
+  let relayGate: Promise<void>
   /** One call signs one message's payment set: the count of payment attempts made. */
   let sign: jest.SpyInstance
   let openMessages: jest.SpyInstance
@@ -147,6 +149,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     mockMessageWrite.signedOnly = true
     relayBodies = []
     relayMode = 'fixture'
+    relayGate = Promise.resolve()
     openMessages = jest.spyOn(LevelOutgoingMessageStore, 'open')
     f = await fixture()
     alice = f.alice
@@ -162,7 +165,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
           contentType: init.headers['Content-Type'],
         }
         relayBodies.push(request)
-        if (relayMode === 'fixture') return base.fetch!(url, init)
+        if (relayMode === 'lost') throw new Error('relay answer lost')
+        if (relayMode === 'held') await relayGate
+        if (relayMode === 'fixture' || relayMode === 'held') return base.fetch!(url, init)
         const answer = new TextEncoder().encode(
           JSON.stringify({
             version: 1,
@@ -310,6 +315,42 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       expect(two.result?.payloadDigest).toBe(one.result?.payloadDigest)
       expect(callback).not.toHaveBeenCalled()
       expect(relayBodies).toHaveLength(1)
+      expect(sign).not.toHaveBeenCalled()
+    })
+
+    it('a free repeat send waits for a running free resend of the same row and submits nothing itself', async () => {
+      // The first send's relay answer is lost: a host-bound free envelope with no outcome.
+      relayMode = 'lost'
+      let digest: string | undefined
+      const first = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => { digest = value } })
+      expect(first.requests).toBe(1)
+      expect(first.error).toBeDefined()
+      const original = relayBodies[0]
+      // Recovery resends that envelope; the relay holds its answer.
+      let release!: () => void
+      relayGate = new Promise<void>(resolve => { release = resolve })
+      relayMode = 'held'
+      const reconcile = f.chain.directMessages.reconcileAttempts({
+        wallet: alice, payloadDigests: [digest!], messageIds: [ID_A], onEnvelopeDurable: async () => undefined,
+      })
+      while (relayBodies.length < 2) await new Promise(resolve => setTimeout(resolve, 5))
+      // Meanwhile the host repeats the free send of the same message ID.
+      const callback = jest.fn()
+      let settled = false
+      const repeat = attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: callback })
+        .finally(() => { settled = true })
+      // Give the repeat every chance to reach the relay while the resend is in flight.
+      for (let waited = 0; waited < 200 && !settled && relayBodies.length < 3; waited += 5)
+        await new Promise(resolve => setTimeout(resolve, 5))
+      release()
+      const [statuses, two] = await Promise.all([reconcile, repeat])
+      expect(statuses[digest!]).toBe('delivered')
+      expect(two.error).toBeUndefined()
+      expect(two.result?.payloadDigest).toBe(digest)
+      // One submission of the original bytes by the resend; none by the repeat.
+      expect(relayBodies).toHaveLength(2)
+      expect(toHex(relayBodies[1].body)).toBe(toHex(original.body))
+      expect(callback).not.toHaveBeenCalled()
       expect(sign).not.toHaveBeenCalled()
     })
 

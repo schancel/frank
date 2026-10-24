@@ -164,8 +164,37 @@
 
         <q-item
           v-if="
+            $status.setup &&
+            displayedConversations.length === 0 &&
+            mailboxStatus.initialPoll === 'pending'
+          "
+          role="status"
+          data-test="chat-list-initial-loading"
+        >
+          <q-item-section>
+            <q-item-label>{{
+              $t('chatList.loadingConversations')
+            }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-item
+          v-else-if="$status.setup && mailboxStatus.initialPoll === 'error'"
+          role="alert"
+          data-test="chat-list-initial-error"
+        >
+          <q-item-section>
+            <q-item-label>{{
+              $t('chatList.initialConversationsFailed')
+            }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-item
+          v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            mailboxStatus.initialPoll === 'ready' &&
             normalizedQuery
           "
           data-test="chat-search-empty"
@@ -179,6 +208,7 @@
           v-else-if="
             displayedConversations.length === 0 &&
             $status.setup &&
+            mailboxStatus.initialPoll === 'ready' &&
             activeFilter === 'screener'
           "
           data-test="screener-empty"
@@ -190,7 +220,13 @@
           </q-item-section>
         </q-item>
 
-        <q-item v-else-if="getSortedChatOrder.length === 0 && $status.setup">
+        <q-item
+          v-else-if="
+            getSortedChatOrder.length === 0 &&
+            $status.setup &&
+            mailboxStatus.initialPoll === 'ready'
+          "
+        >
           <q-item-section>
             <q-item-label>{{ $t('chatList.noContactMessage') }}</q-item-label>
           </q-item-section>
@@ -215,6 +251,7 @@ import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
+import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
 import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
@@ -248,6 +285,7 @@ export default defineComponent({
     const { getSortedChatOrder } = storeToRefs(chatStore)
 
     const contactStore = useContactStore()
+    const mailboxStatus = useMailboxStatusStore()
 
     const searchQuery = ref('')
     const activeFilter = ref<'all' | 'screener'>('all')
@@ -403,6 +441,7 @@ export default defineComponent({
         return figure ? `≈ ${figure}` : undefined
       },
       getSortedChatOrder,
+      mailboxStatus,
       displayedConversations,
       searchQuery,
       normalizedQuery,

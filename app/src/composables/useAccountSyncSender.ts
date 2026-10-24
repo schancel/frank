@@ -161,6 +161,7 @@ export function useAccountSyncSender() {
   }
   onMounted(() => {
     if (needsPersistentView) void promoteToPersistentView()
+    else void showPin()
   })
 
   async function showPin() {

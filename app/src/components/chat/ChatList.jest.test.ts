@@ -50,6 +50,15 @@ const mockContactStore = {
 jest.mock('../../stores/contacts', () => ({
   useContactStore: () => mockContactStore,
 }))
+const mockMailboxStatus = jest
+  .requireActual('vue')
+  .reactive({ initialPoll: 'ready', state: 'ok', retryInMs: null })
+jest.mock('../../stores/mailbox-status', () => ({
+  useMailboxStatusStore: () => mockMailboxStatus,
+}))
+beforeEach(() => {
+  mockMailboxStatus.initialPoll = 'ready'
+})
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -288,6 +297,63 @@ describe('ChatList closeDrawer', () => {
     const wrapper = await selectChatAt(width)
     expect(mockPush).toHaveBeenCalledWith('/chat/thread1')
     expect(wrapper.emitted('closeDrawer')).toBeUndefined()
+  })
+})
+
+describe('initial conversation loading', () => {
+  beforeEach(() => {
+    mockChatStore.getSortedChatOrder = []
+    mockMailboxStatus.initialPoll = 'ready'
+  })
+
+  it('shows loading and errors before the completed empty state', async () => {
+    mockMailboxStatus.initialPoll = 'pending'
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+    })
+    expect(wrapper.find('[data-test="chat-list-initial-loading"]').text()).toBe(
+      'chatList.loadingConversations',
+    )
+    expect(wrapper.find('[data-test="chat-list-initial-error"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.text()).not.toContain('chatList.noContactMessage')
+
+    mockMailboxStatus.initialPoll = 'error'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="chat-list-initial-error"]').text()).toBe(
+      'chatList.initialConversationsFailed',
+    )
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(false)
+    expect(wrapper.text()).not.toContain('chatList.noContactMessage')
+
+    mockMailboxStatus.initialPoll = 'ready'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('chatList.noContactMessage')
+    wrapper.unmount()
+  })
+
+  it('shows a newly received conversation while the first mailbox poll is pending', async () => {
+    mockMailboxStatus.initialPoll = 'pending'
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+    })
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(true)
+    mockChatStore.getSortedChatOrder = [
+      { id: 'received', address: 'known-contact', totalUnreadMessages: 0 },
+    ]
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="chat-item"]').exists()).toBe(true)
+    expect(
+      wrapper.find('[data-test="chat-list-initial-loading"]').exists(),
+    ).toBe(false)
+    wrapper.unmount()
   })
 })
 

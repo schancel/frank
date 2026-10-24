@@ -215,6 +215,8 @@ export function startDirectMessagePolling({
 }): DirectMessagePolling {
   const chats = useChatStore()
   const mailboxStatus = useMailboxStatusStore()
+  const pollSession = mailboxStatus.beginPollSession()
+  let initialPollSettled = false
   const recipientAddress = activeChain.formatAddress(wallet.identity.address)
   let sinceMs = 0
   const cursorReady = chats.relayCursor(recipientAddress).then(cursor => {
@@ -332,6 +334,8 @@ export function startDirectMessagePolling({
         quarantined.length === 0 &&
         incompleteTimestamps.length === 0
       ) {
+        mailboxStatus.settleInitialPoll(pollSession, 'ready')
+        initialPollSettled = true
         return
       }
 
@@ -424,10 +428,16 @@ export function startDirectMessagePolling({
       // store from the receipts this and earlier sessions persisted, never from local or
       // outbound clocks -- a cursor row is deliberately never written ahead of a receipt.
       sinceMs = nextSinceMs
+      mailboxStatus.settleInitialPoll(pollSession, 'ready')
+      initialPollSettled = true
     } catch (err) {
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
       // problem back on screen after stop() cleared it.
       if (stopped) return
+      if (!initialPollSettled) {
+        mailboxStatus.settleInitialPoll(pollSession, 'error')
+        initialPollSettled = true
+      }
       profileSynced = false
       const isChallengeCapacity =
         err instanceof MonadMailboxChallengeCapacityError ||
@@ -569,6 +579,7 @@ export function startDirectMessagePolling({
       profileAbort.abort()
       unsubscribeStream?.()
       // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
+      mailboxStatus.endPollSession(pollSession)
       mailboxStatus.setOk()
       if (timer !== undefined) clearTimeout(timer)
       if (

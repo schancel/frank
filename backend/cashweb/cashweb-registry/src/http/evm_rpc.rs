@@ -2091,7 +2091,19 @@ async fn proxy_rpc_inner(
                     )
                 })?;
             let status = response.status();
-            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                runtime.cooldowns.mark_failure(upstream_url);
+                // Throttling is a transport signal even when the provider sends HTML/text.
+                // Preserve it through exhausted failover so wallet refresh can back off.
+                // A signed submission remains uncertain; 429 is not proof it cannot land.
+                return Err(broadcast_error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rpc_upstream_rate_limited",
+                    cost.broadcast,
+                    true,
+                ));
+            }
+            if status.is_server_error() {
                 runtime.cooldowns.mark_failure(upstream_url);
                 if attempt + 1 < ordered_upstreams.len() {
                     return Err(broadcast_error(
@@ -4015,15 +4027,16 @@ mod tests {
     }
 
     async fn check_upstream_response_failover(failure: &'static str, batch: bool) {
-        let body: &'static [u8] = if failure == "ambiguous-broadcast" {
-            br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x00"]},
+        let body: &'static [u8] =
+            if matches!(failure, "ambiguous-broadcast" | "broadcast-throttled") {
+                br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x00"]},
                 {"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]} ]"#
-        } else if batch {
-            br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
+            } else if batch {
+                br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
                 {"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]} ]"#
-        } else {
-            br#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#
-        };
+            } else {
+                br#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#
+            };
         let expected_bytes = body;
         let calls_1 = Arc::new(AtomicUsize::new(0));
         let calls_2 = Arc::new(AtomicUsize::new(0));
@@ -4054,9 +4067,10 @@ mod tests {
                                     None => response(&request),
                                 }
                             };
-                            if returns_error_on_rpc || failure == "all-malformed" {
+                            if returns_error_on_rpc || matches!(failure, "all-malformed" | "all-throttled" | "broadcast-throttled") {
                             match failure {
                                 "http" => (StatusCode::INTERNAL_SERVER_ERROR, "unavailable").into_response(),
+                                "throttled" | "all-throttled" | "broadcast-throttled" => (StatusCode::TOO_MANY_REQUESTS, "provider-secret: slow down").into_response(),
                                 "malformed" | "all-malformed" | "ambiguous-broadcast" => (StatusCode::OK, "not JSON").into_response(),
                                 "mismatched" => Json(json!({"jsonrpc":"2.0","id":999,"result":"0x2a"})).into_response(),
                                 "rpc-error" => Json(reply(true)).into_response(),
@@ -4162,6 +4176,17 @@ mod tests {
             );
             return;
         }
+        if matches!(failure, "all-throttled" | "broadcast-throttled") {
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(calls_1.load(Ordering::SeqCst), 3);
+            assert_eq!(calls_2.load(Ordering::SeqCst), 3);
+            let mut expected = json!({"error":"rpc_upstream_rate_limited"});
+            if failure == "broadcast-throttled" {
+                expected["broadcast_state"] = json!("unknown");
+            }
+            assert_eq!(response_json(response).await, expected);
+            return;
+        }
         if failure == "all-malformed" {
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
             assert_eq!(calls_1.load(Ordering::SeqCst), 3);
@@ -4232,6 +4257,21 @@ mod tests {
     #[tokio::test]
     async fn malformed_mixed_broadcast_batch_stays_ambiguous_without_failover() {
         check_upstream_response_failover("ambiguous-broadcast", true).await;
+    }
+
+    #[tokio::test]
+    async fn upstream_throttle_uses_verified_fallback() {
+        check_upstream_response_failover("throttled", false).await;
+    }
+
+    #[tokio::test]
+    async fn all_upstreams_throttled_preserves_429_for_wallet_backoff() {
+        check_upstream_response_failover("all-throttled", true).await;
+    }
+
+    #[tokio::test]
+    async fn throttled_broadcast_remains_unknown() {
+        check_upstream_response_failover("broadcast-throttled", true).await;
     }
 
     #[tokio::test]

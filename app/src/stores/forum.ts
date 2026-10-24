@@ -414,7 +414,7 @@ export const useForumStore = defineStore('forum', {
         // reuse the relay's cached query snapshot rather than exhausting its 16-slot capacity.
         const from = Math.floor((Date.now() - this.duration) / 60000) * 60000
         const names = await this.topicsToFetch(topic, current)
-        if (!current()) return
+        if (!current()) return false
         // Sequential query staging bounds aggregate memory instead of allocating one full
         // 64 MiB client snapshot per discovered topic. Accumulate across topics and publish
         // once so mounted forum posts do not re-index and re-render N times per refresh.
@@ -433,7 +433,7 @@ export const useForumStore = defineStore('forum', {
                 }),
               current,
             )
-            if (!current()) return
+            if (!current()) return false
             if (!entries) throw new Error('Incomplete Forum query')
             nextMessages = [
               ...nextMessages.filter(message => message.topic !== name),
@@ -449,12 +449,12 @@ export const useForumStore = defineStore('forum', {
               this.hasFetchedOnce = true
             }
           } catch (error) {
-            if (!current()) return
+            if (!current()) return false
             failures++
             firstError ??= error
           }
         }
-        if (!current()) return
+        if (!current()) return false
         if (succeeded > 0 || names.length === 0) {
           this.setEntries(nextMessages)
         }
@@ -466,8 +466,9 @@ export const useForumStore = defineStore('forum', {
             ? 'outage'
             : 'degraded'
         if (failures) throw firstError
+        return true
       } catch (error) {
-        if (!current()) return
+        if (!current()) return false
         this.hasFetchedOnce = true
         if (this.outageStatus !== 'degraded') this.outageStatus = 'outage'
         throw error

@@ -133,8 +133,7 @@
             refreshResult === 'error' ? 'text-negative' : 'text-primary',
           ]"
           data-test="forum-wheel-refresh"
-          role="status"
-          aria-live="polite"
+          aria-hidden="true"
         >
           <q-spinner v-if="wheelRefreshing" size="24px" />
           <q-icon
@@ -151,17 +150,19 @@
             :thickness="0.2"
           />
           <span>{{
-            wheelRefreshing
-              ? $t('forum.refreshing')
-              : refreshResult === 'success'
-              ? $t('forum.refreshed')
-              : refreshResult === 'error'
-              ? $t('forum.refreshFailed')
-              : wheelPullReady
+            refreshAnnouncement ||
+            (wheelPullReady
               ? $t('forum.releaseToRefresh')
-              : $t('forum.pullToRefresh')
+              : $t('forum.pullToRefresh'))
           }}</span>
         </div>
+        <span
+          class="forum-refresh-announcement"
+          data-test="forum-refresh-announcement"
+          role="status"
+          aria-live="polite"
+          >{{ refreshAnnouncement }}</span
+        >
       </q-page>
     </q-page-container>
   </div>
@@ -363,7 +364,7 @@ export default defineComponent({
           await this.waitForRefreshFeedback(startedAt)
           if (this.wheelRefreshRevision !== revision) return
           this.wheelRefreshing = false
-          this.showRefreshResult(succeeded)
+          if (succeeded !== undefined) this.showRefreshResult(succeeded)
         })()
       }, WHEEL_RELEASE_DELAY_MS)
     },
@@ -378,15 +379,18 @@ export default defineComponent({
         const succeeded = await this.refreshContent()
         await this.waitForRefreshFeedback(startedAt)
         done()
-        if (this.wheelRefreshRevision === revision)
+        if (this.wheelRefreshRevision === revision && succeeded !== undefined)
           this.showRefreshResult(succeeded)
       })()
     },
     async refreshContent() {
       try {
         const wallet = peekActiveWallet()
-        await this.refreshMessages({ wallet, topic: this.selectedTopic })
-        return true
+        const applied = await this.refreshMessages({
+          wallet,
+          topic: this.selectedTopic,
+        })
+        return applied ? true : undefined
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception
         return false
@@ -408,6 +412,12 @@ export default defineComponent({
     },
   },
   computed: {
+    refreshAnnouncement(): string {
+      if (this.wheelRefreshing) return this.$t('forum.refreshing')
+      if (this.refreshResult === 'success') return this.$t('forum.refreshed')
+      if (this.refreshResult === 'error') return this.$t('forum.refreshFailed')
+      return ''
+    },
     wheelPullReady(): boolean {
       return this.wheelPullDistance >= 100
     },
@@ -460,6 +470,17 @@ export default defineComponent({
 
 .forum-refresh-surface {
   flex: 1;
+}
+
+.forum-refresh-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .forum-toolbar-title {

@@ -225,17 +225,14 @@ export class EvmCoinListSync {
         while (!this.stopped && cursor < due.length && !limited) {
           const source = due[cursor++]!
           const account = source.account.toLowerCase()
-          const generation = this.generations.get(account) ?? 0
           try {
             await this.readOne(source, head, error => {
               limited ??= { error }
             })
           } catch (error) {
-            if (
-              !this.stopped &&
-              (this.generations.get(account) ?? 0) === generation
-            )
-              this.failedObservations.set(account, error)
+            // A newer dirty mark invalidates values from this read, but cannot turn its
+            // failure into evidence of no funds. Only an accepted observation clears it.
+            if (!this.stopped) this.failedObservations.set(account, error)
             if (isRateLimited(error)) {
               limited ??= { error }
               continue

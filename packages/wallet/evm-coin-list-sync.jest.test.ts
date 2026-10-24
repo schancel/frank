@@ -214,3 +214,28 @@ it('clears recovered account failures after an accepted pending observation', as
   warn.mockRestore()
   await f.sync.stop()
 })
+
+it.each([429, 'NETWORK_ERROR'])('keeps a failed read observable when invalidated in flight (%s)', async code => {
+  const f = await fixture()
+  f.sources.splice(1)
+  const account = f.sources[0]!.account
+  const error = Object.assign(new Error('RPC unavailable'), { code })
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  f.provider.getBalance.mockImplementationOnce(async () => {
+    f.sync.markDirty(account)
+    throw error
+  })
+  try {
+    await f.sync.refresh().catch(failure => expect(failure).toBe(error))
+    expect(f.list.all()).toHaveLength(0)
+    expect(f.sync.isDirty(account)).toBe(true)
+    expect(() => f.sync.assertFundingObserved()).toThrow(error)
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61000)
+    try { await f.sync.refresh() } finally { clock.mockRestore() }
+    expect(f.sync.isDirty(account)).toBe(false)
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+  } finally {
+    warn.mockRestore()
+    await f.sync.stop()
+  }
+})

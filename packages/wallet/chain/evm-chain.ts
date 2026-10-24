@@ -986,6 +986,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     let waiting = false;
     for (;;) {
       let held = others();
+      // A competing transaction set may remain pending until a future block or recovery.
+      // New native sends refuse promptly unless the caller explicitly requested a bounded wait.
+      if (options.waitMs === undefined && held.some(address =>
+        pool.accountClaimedBy(address) === undefined && internals.coinList?.isAccountReserved(address)
+      )) throw new MainAccountBusyError();
       // Synchronous from the look to the claim: nobody else can take one in between.
       if (held.length === 0 && own().length === 0) {
         for (const address of addresses)

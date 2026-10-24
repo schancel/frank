@@ -45,13 +45,12 @@ export interface MainAccountWait {
 }
 
 /**
- * The caller's own deadline passed while the main account was still spent by an earlier payment
- * the chain has not shown. Nothing was signed; the same call can be made again.
+ * An account needed by this operation remains reserved. Nothing was signed by this call.
  */
 export class MainAccountBusyError extends Error {
   constructor() {
     super(
-      "The main account is still spent by an earlier payment the chain has not shown, and the wait given for it ran out. Nothing was signed."
+      "An account needed by this operation is reserved. Nothing was signed."
     );
     this.name = "MainAccountBusyError";
   }

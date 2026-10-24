@@ -553,7 +553,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       const first = await own()
       expect(alice.pool.accountClaimedBy(identity)).toMatch(NATIVE_HOLDER)
       // Not mined: a second transfer does not sign behind it.
-      await expect(own()).rejects.toThrow(/wait given for it ran out/)
+      await expect(own()).rejects.toThrow(/account needed by this operation is reserved/)
       expect(await chain.getTransactionCount(identity, 'pending')).toBe(
         first.nonce + 1,
       )

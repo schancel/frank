@@ -806,9 +806,26 @@ describe('outgoing direct messages (#269, #270)', () => {
     })
 
     it('waits 500ms then 1000ms, stops at three calls, and retains the message and destination', async () => {
+      const observed: {
+        messageId: string | undefined
+        recipient: string
+        conversationId: string | undefined
+        items: string
+        stampValue: bigint | undefined
+      }[] = []
       const send = jest
         .spyOn(activeChain.directMessages, 'send')
-        .mockRejectedValue(new Error('network response lost'))
+        .mockImplementation(async request => {
+          // Snapshot at invocation: mock.calls retains mutable request references.
+          observed.push({
+            messageId: JSON.stringify(request.messageId),
+            recipient: request.recipient.raw,
+            conversationId: request.conversationId,
+            items: JSON.stringify(request.items),
+            stampValue: request.stampValue,
+          })
+          throw new Error('network response lost')
+        })
       const chats = useChatStore()
       const sending = chats.sendMessage({
         wallet,
@@ -829,21 +846,17 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect((await sending).state).toBe('failed')
       await jest.advanceTimersByTimeAsync(10_000)
       expect(send).toHaveBeenCalledTimes(3)
-      const original = send.mock.calls[0][0]
-      expect(original.messageId).toBeDefined()
-      expect(original.conversationId).toBe(STORED_CONVERSATION_ID)
-      expect(original.recipient).toEqual(activeChain.parseAddress(PEER))
-      for (const [request] of send.mock.calls) {
-        expect(request).toEqual(
-          expect.objectContaining({
-            messageId: original.messageId,
-            recipient: original.recipient,
-            conversationId: STORED_CONVERSATION_ID,
-            items: TEXT,
-            stampValue: 5n,
-          }),
-        )
-      }
+      expect(observed).toHaveLength(3)
+      expect(observed[0].messageId).toBeDefined()
+      expect(observed).toEqual(
+        Array.from({ length: 3 }, () => ({
+          messageId: observed[0].messageId,
+          recipient: activeChain.parseAddress(PEER)!.raw,
+          conversationId: STORED_CONVERSATION_ID,
+          items: JSON.stringify(TEXT),
+          stampValue: 5n,
+        })),
+      )
       expect(only(chats)).toHaveLength(1)
       expect(only(chats)[0].status).toBe('error')
     })

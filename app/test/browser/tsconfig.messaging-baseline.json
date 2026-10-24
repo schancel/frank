@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": [
+    "messaging-baseline.mjs",
+    "messaging-baseline/**/*.ts",
+    "messaging-baseline/**/*.mjs",
+    "../../src/**/*.d.ts",
+    "../../../packages/bitcore-lib-xpi/types.d.ts",
+    "../../../packages/wallet/level.d.ts",
+    "../../../packages/cashweb/relay/storage/message-store-level-types.d.ts",
+    "../../../packages/wallet/ecash-wallet-sdk.d.ts"
+  ]
+}

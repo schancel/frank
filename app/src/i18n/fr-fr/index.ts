@@ -72,6 +72,8 @@ export const rawFrFR = {
     pullToRefresh: 'Tirez vers le bas pour actualiser',
     releaseToRefresh: 'Relâchez pour actualiser',
     refreshing: 'Actualisation…',
+    refreshed: 'Actualisé',
+    refreshFailed: 'Actualisation impossible',
 
     postsLabel: 'messages',
     noPosts: 'Aucun message pour le moment.',

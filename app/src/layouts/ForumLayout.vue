@@ -126,14 +126,24 @@
           </q-pull-to-refresh>
         </q-scroll-area>
         <div
-          v-if="wheelPullDistance > 0 || wheelRefreshing"
-          class="forum-wheel-refresh row no-wrap items-center text-primary shadow-2"
-          :class="$q.dark?.isActive ? 'bg-grey-10' : 'bg-white'"
+          v-if="wheelPullDistance > 0 || wheelRefreshing || refreshResult"
+          class="forum-wheel-refresh row no-wrap items-center shadow-2"
+          :class="[
+            $q.dark?.isActive ? 'bg-grey-10' : 'bg-white',
+            refreshResult === 'error' ? 'text-negative' : 'text-primary',
+          ]"
           data-test="forum-wheel-refresh"
           role="status"
           aria-live="polite"
         >
           <q-spinner v-if="wheelRefreshing" size="24px" />
+          <q-icon
+            v-else-if="refreshResult"
+            :name="
+              refreshResult === 'success' ? 'check_circle' : 'error_outline'
+            "
+            size="24px"
+          />
           <q-circular-progress
             v-else
             :value="Math.min(100, wheelPullDistance)"
@@ -143,6 +153,10 @@
           <span>{{
             wheelRefreshing
               ? $t('forum.refreshing')
+              : refreshResult === 'success'
+              ? $t('forum.refreshed')
+              : refreshResult === 'error'
+              ? $t('forum.refreshFailed')
               : wheelPullReady
               ? $t('forum.releaseToRefresh')
               : $t('forum.pullToRefresh')
@@ -168,6 +182,10 @@ import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 
+const MIN_REFRESH_FEEDBACK_MS = 700
+const RESULT_FEEDBACK_MS = 900
+const WHEEL_RELEASE_DELAY_MS = 300
+
 export default defineComponent({
   data() {
     return {
@@ -180,6 +198,10 @@ export default defineComponent({
       wheelRefreshing: false,
       wheelRefreshRevision: 0,
       wheelReleaseTimer: undefined as ReturnType<typeof setTimeout> | undefined,
+      refreshResult: '' as '' | 'success' | 'error',
+      refreshResultTimer: undefined as
+        | ReturnType<typeof setTimeout>
+        | undefined,
     }
   },
   setup() {
@@ -254,6 +276,27 @@ export default defineComponent({
       this.resetWheelPull()
       this.wheelRefreshRevision++
       this.wheelRefreshing = false
+      this.clearRefreshResult()
+    },
+    clearRefreshResult() {
+      if (this.refreshResultTimer !== undefined)
+        clearTimeout(this.refreshResultTimer)
+      this.refreshResultTimer = undefined
+      this.refreshResult = ''
+    },
+    showRefreshResult(succeeded: boolean) {
+      this.clearRefreshResult()
+      this.refreshResult = succeeded ? 'success' : 'error'
+      this.refreshResultTimer = setTimeout(() => {
+        this.refreshResult = ''
+        this.refreshResultTimer = undefined
+      }, RESULT_FEEDBACK_MS)
+    },
+    async waitForRefreshFeedback(startedAt: number) {
+      const remaining =
+        MIN_REFRESH_FEEDBACK_MS - (performance.now() - startedAt)
+      if (remaining > 0)
+        await new Promise<void>(resolve => setTimeout(resolve, remaining))
     },
     resetWheelPull() {
       if (this.wheelReleaseTimer !== undefined)
@@ -271,7 +314,10 @@ export default defineComponent({
       const now = performance.now()
       // A wheel burst has no release event. A quiet interval marks finger lift;
       // a burst that began below the top never turns into a refresh on reaching it.
-      if (this.wheelLastAt === 0 || now - this.wheelLastAt > 160) {
+      if (
+        this.wheelLastAt === 0 ||
+        now - this.wheelLastAt > WHEEL_RELEASE_DELAY_MS
+      ) {
         this.resetWheelPull()
         this.wheelStartedAtTop = scroll.scrollTop === 0
       }
@@ -290,6 +336,7 @@ export default defineComponent({
         Math.abs(event.deltaX) >= Math.abs(event.deltaY) ||
         scroll.scrollTop !== 0 ||
         this.wheelRefreshing ||
+        Boolean(this.refreshResult) ||
         this.isRefreshing ||
         now < this.wheelCooldownUntil
       ) {
@@ -310,24 +357,39 @@ export default defineComponent({
         this.wheelCooldownUntil = performance.now() + 1000
         this.wheelRefreshing = true
         const revision = ++this.wheelRefreshRevision
-        void this.refreshContent().finally(() => {
-          if (this.wheelRefreshRevision === revision)
-            this.wheelRefreshing = false
-        })
-      }, 160)
+        const startedAt = performance.now()
+        void (async () => {
+          const succeeded = await this.refreshContent()
+          await this.waitForRefreshFeedback(startedAt)
+          if (this.wheelRefreshRevision !== revision) return
+          this.wheelRefreshing = false
+          this.showRefreshResult(succeeded)
+        })()
+      }, WHEEL_RELEASE_DELAY_MS)
     },
     toggleSettingsDrawerOpen() {
       this.$emit('toggleMyDrawerOpen')
     },
     pullToRefresh(done: () => void) {
-      void this.refreshContent().finally(done)
+      this.clearWheelFeedback()
+      const revision = ++this.wheelRefreshRevision
+      const startedAt = performance.now()
+      void (async () => {
+        const succeeded = await this.refreshContent()
+        await this.waitForRefreshFeedback(startedAt)
+        done()
+        if (this.wheelRefreshRevision === revision)
+          this.showRefreshResult(succeeded)
+      })()
     },
     async refreshContent() {
       try {
         const wallet = peekActiveWallet()
         await this.refreshMessages({ wallet, topic: this.selectedTopic })
+        return true
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception
+        return false
       }
     },
     async setTopic(text: string) {

@@ -65,6 +65,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     unhandledRejections = []
     process.on('unhandledRejection', onUnhandled)
     mockDiscoverTopics.mockResolvedValue([])
+    mockFetchByTopic.mockResolvedValue([])
     ;(peekActiveWallet as jest.Mock).mockReturnValue(testWallet)
   })
 
@@ -105,6 +106,8 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
               '<div data-test="forum-pull-to-refresh" :data-disable="String(disable)"><slot /></div>',
           },
           QIcon: { template: '<i />' },
+          QSpinner: { template: '<i />' },
+          QCircularProgress: { template: '<i />' },
           QChip: {
             name: 'QChip',
             props: ['removable'],
@@ -149,6 +152,9 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(store.isRefreshing).toBe(true)
     expect(done).not.toHaveBeenCalled()
     finish([])
+    await flushPromises()
+    expect(done).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
     await flushPromises()
     expect(done).toHaveBeenCalledTimes(1)
     expect(store.isRefreshing).toBe(false)
@@ -343,13 +349,25 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     pull.vm.$emit('refresh', done)
     await flushPromises()
     expect(mockFetchByTopic).toHaveBeenCalled()
+    expect(done).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
     expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="forum-wheel-refresh"]').text()).toContain(
+      'Updated',
+    )
 
     mockFetchByTopic.mockRejectedValue(create503Error())
     const failedDone = jest.fn()
     pull.vm.$emit('refresh', failedDone)
     await flushPromises()
+    expect(failedDone).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
     expect(failedDone).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="forum-wheel-refresh"]').text()).toContain(
+      'Could not refresh',
+    )
     expect(store.isRefreshing).toBe(false)
   })
 

@@ -18,6 +18,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { MonadStampPendingAttemptError } from '@frank/wallet/evm-stamp-client'
+import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 
@@ -149,9 +150,15 @@ describe('startOutgoingReconciliation (#270)', () => {
   })
 
   it('backs off unattempted offline sends and resumes the original request online', async () => {
-    const offline = Object.assign(new Error('network unavailable'), {
-      [directMessageNotAttempted]: true,
-    })
+    // The provider adapter records offline transport as transient; message text grants nothing.
+    const offline = Object.assign(
+      recordEvmRpcFailure(
+        Object.assign(new Error('network unavailable'), {
+          code: 'NETWORK_ERROR',
+        }),
+      ),
+      { [directMessageNotAttempted]: true },
+    )
     const send = jest
       .spyOn(activeChain.directMessages, 'send')
       .mockRejectedValue(offline)

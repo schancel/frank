@@ -1,6 +1,7 @@
 /** Offline real-App interaction fixture. See messaging-baseline/README.md for boundaries. */
 import assert from 'node:assert/strict'
 import ts from 'typescript'
+import { runPairing } from './messaging-baseline/pairing.mjs'
 import { runHistory } from './messaging-baseline/history.mjs'
 import { OwnedProcesses } from './messaging-baseline/processes.mjs'
 import { execFileSync } from 'node:child_process'
@@ -32,7 +33,9 @@ const option = (name, fallback) =>
 const ref = option('source-ref', 'HEAD')
 const scenario = option('scenario', 'queue-route')
 assert.ok(
-  ['queue-route', 'history-desktop', 'history-narrow'].includes(scenario),
+  ['queue-route', 'history-desktop', 'history-narrow', 'pairing-pin'].includes(
+    scenario,
+  ),
   'Unknown scenario',
 )
 const out = resolve(
@@ -169,11 +172,19 @@ try {
     )
   }
   const fixture = join(here, 'messaging-baseline')
-  const names = ['boot.ts', 'runtime.ts', 'session.ts', 'identity.ts']
+  const names = [
+    'boot.ts',
+    'runtime.ts',
+    'session.ts',
+    'identity.ts',
+    'pairing-runtime.ts',
+    'pairing-adapter.ts',
+  ]
   const hash = createHash('sha256')
   hash.update(await readFile(fileURLToPath(import.meta.url)))
   hash.update(await readFile(join(fixture, 'processes.mjs')))
   hash.update(await readFile(join(fixture, 'history.mjs')))
+  hash.update(await readFile(join(fixture, 'pairing.mjs')))
   for (const name of names) hash.update(await readFile(join(fixture, name)))
   report.fixtureHash = hash.digest('hex')
   await cp(fixture, join(tree, 'app/test/browser/messaging-baseline'), {
@@ -182,6 +193,7 @@ try {
   for (const path of [
     'app/src/accounts/session',
     'app/src/utils/identity-session',
+    'app/src-bex/runtime-adapter',
   ])
     await cp(join(tree, path + '.ts'), join(tree, path + '.original.ts'))
   await rename(
@@ -200,7 +212,11 @@ const root=path.dirname(fileURLToPath(import.meta.url));
 export default async ctx => { const config=await original(ctx); config.boot.push('messaging-baseline');
 const prior=config.build.extendViteConf; config.build.extendViteConf=function(vite) { prior?.call(this,vite);
 vite.plugins.unshift({name:'test-only-synthetic-session',enforce:'pre',load(id){
-const replacements={ [path.join(root,'src/accounts/session.ts')]: 'session.ts', [path.join(root,'src/utils/identity-session.ts')]: 'identity.ts' };
+const replacements={ [path.join(root,'src/accounts/session.ts')]: 'session.ts', [path.join(root,'src/utils/identity-session.ts')]: 'identity.ts', ${
+      scenario === 'pairing-pin'
+        ? "[path.join(root,'src-bex/runtime-adapter.ts')]: 'pairing-adapter.ts'"
+        : ''
+    } };
 const name=replacements[id]; if(!name) return null;
 // Resolve relative fixture imports from the fixture directory, not the substituted production id.
 return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'utf8').replace(/from (['"])(\\.[^'"]+)\\1/g,(_all,q,rel)=>'from '+q+path.resolve(root,'test/browser/messaging-baseline',rel)+q);
@@ -380,11 +396,14 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
     deviceScaleFactor: 1,
     mobile: false,
   })
-  await call('Page.addScriptToEvaluateOnNewDocument', {
-    source: `window.__baselineMetrics={longtasks:[],marks:[],frames:[]};
+  const containmentScript = `window.__baselineMetrics={longtasks:[],marks:[],frames:[]};
 new PerformanceObserver(list=>window.__baselineMetrics.longtasks.push(...list.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});
 window.WebSocket=class {constructor(){throw Error('Fixture blocks WebSocket')}};window.EventSource=class {constructor(){throw Error('Fixture blocks EventSource')}};
-document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetrics.marks.push({kind:'enter',time:performance.now()})},true);`,
+document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetrics.marks.push({kind:'enter',time:performance.now()})},true);`
+  await call('Page.addScriptToEvaluateOnNewDocument', {
+    source:
+      containmentScript +
+      (scenario === 'pairing-pin' ? "window.__pairingMode='tab';" : ''),
   })
   const evaluate = async expression => {
     const r = await call('Runtime.evaluate', {
@@ -410,18 +429,96 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
       )}`,
     )
   }
-  await call('Page.navigate', {
-    url: origin + '/#/chat/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  })
-  await until(
-    'window.__messagingBaseline?.state.ready && document.querySelector(".chat-message-list")',
-  )
-  await until(
-    'document.querySelector(".chat-footer textarea, .chat-footer [contenteditable=true]")',
-  )
-  await evaluate(
-    'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',
-  )
+  const openPairingPage = async mode => {
+    // Separate disposable storage prevents cross-tab account-election from impersonating
+    // real extension storage in this simulated page-host test. All contexts die with Chrome.
+    const { browserContextId } = await call(
+      'Target.createBrowserContext',
+      {},
+      undefined,
+    )
+    const { targetId: ownedTarget } = await call(
+      'Target.createTarget',
+      { url: 'about:blank', browserContextId },
+      undefined,
+    )
+    const { sessionId } = await call(
+      'Target.attachToTarget',
+      { targetId: ownedTarget, flatten: true },
+      undefined,
+    )
+    const pageCall = (method, params = {}) => call(method, params, sessionId)
+    for (const domain of ['Runtime', 'Page', 'Network', 'Fetch'])
+      await pageCall(domain + '.enable')
+    await pageCall('Emulation.setDeviceMetricsOverride', {
+      width: 1280,
+      height: 860,
+      deviceScaleFactor: 1,
+      mobile: false,
+    })
+    await pageCall('Page.addScriptToEvaluateOnNewDocument', {
+      source:
+        containmentScript +
+        'window.__pairingMode=' +
+        JSON.stringify(mode) +
+        ';',
+    })
+    const pageEvaluate = async expression => {
+      const result = await pageCall('Runtime.evaluate', {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      })
+      if (result.exceptionDetails)
+        throw new Error(
+          result.exceptionDetails.exception?.description ??
+            result.exceptionDetails.text,
+        )
+      return result.result.value
+    }
+    const pageUntil = async expression => {
+      const deadline = Date.now() + 30000
+      while (Date.now() < deadline) {
+        if (await pageEvaluate(expression)) return
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+      throw new Error(
+        'Pairing target timed out: ' +
+          expression +
+          '\n' +
+          (await pageEvaluate('document.body.innerText.slice(0,2500)')),
+      )
+    }
+    return {
+      targetId: ownedTarget,
+      call: pageCall,
+      evaluate: pageEvaluate,
+      until: pageUntil,
+    }
+  }
+  if (scenario === 'pairing-pin') {
+    report.mode =
+      'SPA sender page with simulated extension APIs; not installed extension or Safari'
+    await runPairing({
+      main: { targetId, call, evaluate, until },
+      openPage: openPairingPage,
+      origin,
+      report,
+    })
+  } else {
+    await call('Page.navigate', {
+      url: origin + '/#/chat/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    })
+    await until(
+      'window.__messagingBaseline?.state.ready && document.querySelector(".chat-message-list")',
+    )
+    await until(
+      'document.querySelector(".chat-footer textarea, .chat-footer [contenteditable=true]")',
+    )
+    await evaluate(
+      'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',
+    )
+  }
   if (scenario === 'queue-route') {
     const text = 'Fixture queued message'
     await evaluate(
@@ -514,7 +611,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     report.metrics = await evaluate(
       `(()=>{const m=window.__baselineMetrics;const enter=m.marks.find(x=>x.kind==='enter').time;return {enterToQueuedDomMs:m.queuedDom-enter,enterToQueuedFrameMs:m.queuedFrame-enter,conversationRouteFrameMs:${conversationRouteMs},forumRouteFrameMs:${forumRouteMs},maxInteractionLongTaskMs:Math.max(0,...m.longtasks.filter(t=>t.start+t.duration>=enter).map(t=>t.duration)),longtasks:m.longtasks.filter(t=>t.start+t.duration>=enter),startupLongtasks:m.longtasks.filter(t=>t.start+t.duration<enter),syntheticService:window.__messagingBaseline.state.sends}})()`,
     )
-  } else {
+  } else if (scenario.startsWith('history-')) {
     try {
       await runHistory({ evaluate, call, report })
     } finally {

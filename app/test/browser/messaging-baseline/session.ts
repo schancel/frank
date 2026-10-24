@@ -1,5 +1,6 @@
 // Public UI/session boundary only: this fixture does not establish custody/restoration coverage.
 export * from '../../../src/accounts/session.original'
+import { backupCodex32 } from './pairing-runtime'
 import { readonly } from 'vue'
 import {
   status,
@@ -12,6 +13,7 @@ import type { accountSession as original } from '../../../src/accounts/session.o
 export const accountStatus = readonly(status)
 export const accountSession = {
   state: accountStatus,
+  backupCodex32,
   initialize,
   getWallet,
   peekWallet,
@@ -32,6 +34,7 @@ export const accountSession = {
   },
 } satisfies Pick<
   typeof original,
+  | 'backupCodex32'
   | 'state'
   | 'initialize'
   | 'getWallet'

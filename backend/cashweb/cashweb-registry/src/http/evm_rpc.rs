@@ -2101,37 +2101,69 @@ async fn proxy_rpc_inner(
                         true,
                     ));
                 }
-            } else {
-                runtime.cooldowns.mark_success(upstream_url);
             }
-            super::json_rpc::spool_response(response, runtime.max_response_bytes, remaining_time)
-                .await
-                .map_err(|error| match error {
-                    super::json_rpc::SpoolError::TooLarge => broadcast_error(
-                        StatusCode::BAD_GATEWAY,
-                        "rpc_upstream_response_too_large",
+            let spool = super::json_rpc::spool_response(
+                response,
+                runtime.max_response_bytes,
+                remaining_time,
+            )
+            .await
+            .map_err(|error| match error {
+                super::json_rpc::SpoolError::TooLarge => broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_response_too_large",
+                    cost.broadcast,
+                    true,
+                ),
+                super::json_rpc::SpoolError::Timeout => {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    broadcast_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "rpc_upstream_timeout",
                         cost.broadcast,
                         true,
-                    ),
-                    super::json_rpc::SpoolError::Timeout => {
-                        runtime.cooldowns.mark_failure(upstream_url);
-                        broadcast_error(
-                            StatusCode::GATEWAY_TIMEOUT,
-                            "rpc_upstream_timeout",
-                            cost.broadcast,
-                            true,
-                        )
-                    }
-                    super::json_rpc::SpoolError::Io => {
-                        runtime.cooldowns.mark_failure(upstream_url);
-                        broadcast_error(
-                            StatusCode::BAD_GATEWAY,
-                            "rpc_upstream_unavailable",
-                            cost.broadcast,
-                            true,
-                        )
-                    }
-                })
+                    )
+                }
+                super::json_rpc::SpoolError::Io => {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        cost.broadcast,
+                        true,
+                    )
+                }
+            })?;
+            // A successful HTTP exchange is not a usable RPC response until its envelope
+            // and request IDs are validated. Keep that validation inside this attempt so
+            // a malformed upstream cannot prevent trying another verified node.
+            let inspected = spool
+                .inspect(
+                    super::json_rpc::JsonRpcVersion::V2,
+                    super::json_rpc::RequestCorrelation {
+                        ids: correlation.ids.clone(),
+                        is_batch: correlation.is_batch,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    tracing::warn!(
+                        chain_identifier = %chain_id,
+                        upstream_status = status.as_u16(),
+                        "Rejected invalid upstream JSON-RPC response"
+                    );
+                    broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "invalid_rpc_upstream_response",
+                        cost.broadcast,
+                        true,
+                    )
+                })?;
+            if !status.is_server_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+                runtime.cooldowns.mark_success(upstream_url);
+            }
+            Ok((spool, inspected))
         };
 
         match tokio::time::timeout_at(deadline, upstream).await {
@@ -2140,6 +2172,11 @@ async fn proxy_rpc_inner(
                 break;
             }
             Ok(Err(err)) => {
+                // A malformed broadcast response may follow a successful submission. Do not
+                // replace that uncertainty with a later node's apparently definitive rejection.
+                if cost.broadcast && err.code == "invalid_rpc_upstream_response" {
+                    return Err(err);
+                }
                 last_error = Some(err);
             }
             Err(_) => {
@@ -2154,7 +2191,7 @@ async fn proxy_rpc_inner(
         }
     }
 
-    let spool = match spool {
+    let (spool, inspected) = match spool {
         Some(s) => s,
         None => {
             return Err(last_error.unwrap_or_else(|| {
@@ -2167,27 +2204,6 @@ async fn proxy_rpc_inner(
             }))
         }
     };
-    let inspected = tokio::time::timeout_at(
-        deadline,
-        spool.inspect(super::json_rpc::JsonRpcVersion::V2, correlation),
-    )
-    .await
-    .map_err(|_| {
-        broadcast_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "rpc_upstream_timeout",
-            cost.broadcast,
-            true,
-        )
-    })?
-    .map_err(|_| {
-        broadcast_error(
-            StatusCode::BAD_GATEWAY,
-            "invalid_rpc_upstream_response",
-            cost.broadcast,
-            true,
-        )
-    })?;
     let response_body = spool
         .into_body(inspected.error_rewrites)
         .await
@@ -3998,12 +4014,21 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn multi_upstream_load_balancing_and_failover() {
+    async fn check_upstream_response_failover(failure: &'static str, batch: bool) {
+        let body: &'static [u8] = if failure == "ambiguous-broadcast" {
+            br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x00"]},
+                {"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]} ]"#
+        } else if batch {
+            br#"[ {"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},
+                {"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]} ]"#
+        } else {
+            br#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#
+        };
+        let expected_bytes = body;
         let calls_1 = Arc::new(AtomicUsize::new(0));
         let calls_2 = Arc::new(AtomicUsize::new(0));
 
-        let make_upstream = |calls: Arc<AtomicUsize>, returns_error_on_rpc: bool| {
+        let make_upstream = move |calls: Arc<AtomicUsize>, returns_error_on_rpc: bool| {
             Router::new().route(
                 "/provider-secret",
                 routing::post(move |body: Bytes| {
@@ -4016,15 +4041,30 @@ mod tests {
                         } else if request["method"] == "eth_chainId" {
                             Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x279f"}))
                                 .into_response()
-                        } else if returns_error_on_rpc {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(json!({"error": "upstream failure"})),
-                            )
-                                .into_response()
                         } else {
-                            Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x2a"}))
-                                .into_response()
+                            assert_eq!(body.as_ref(), expected_bytes, "fallback must forward the exact request bytes");
+                            let reply = |error: bool| {
+                                let response = |call: &Value| if error {
+                                    json!({"jsonrpc":"2.0","id":call["id"],"error":{"code":-32602,"message":"invalid parameters"}})
+                                } else {
+                                    json!({"jsonrpc":"2.0","id":call["id"],"result":"0x2a"})
+                                };
+                                match request.as_array() {
+                                    Some(calls) => Value::Array(calls.iter().map(response).collect()),
+                                    None => response(&request),
+                                }
+                            };
+                            if returns_error_on_rpc || failure == "all-malformed" {
+                            match failure {
+                                "http" => (StatusCode::INTERNAL_SERVER_ERROR, "unavailable").into_response(),
+                                "malformed" | "all-malformed" | "ambiguous-broadcast" => (StatusCode::OK, "not JSON").into_response(),
+                                "mismatched" => Json(json!({"jsonrpc":"2.0","id":999,"result":"0x2a"})).into_response(),
+                                "rpc-error" => Json(reply(true)).into_response(),
+                                _ => unreachable!(),
+                            }
+                            } else {
+                                Json(reply(false)).into_response()
+                            }
                         }
                     }
                 }),
@@ -4099,21 +4139,99 @@ mod tests {
         assert_eq!(calls_1.load(Ordering::SeqCst), 2);
         assert_eq!(calls_2.load(Ordering::SeqCst), 2);
 
+        // Force the failed upstream before its verified fallback.
+        runtime
+            .cooldowns
+            .mark_failure(&url::Url::parse(&url_2).unwrap());
         let (_tempdir, server) = registered_server(runtime);
         let router = server.into_router();
-        let body = br#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#;
 
-        // When request is sent: upstream 1 returns 500, failover to upstream 2 returns 200 OK!
+        // A malformed response is an upstream failure; a valid RPC error is a response.
         let response = router
             .clone()
             .oneshot(request_with_proof(&router, body, customer_address()).await)
             .await
             .unwrap();
+        if failure == "ambiguous-broadcast" {
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(calls_1.load(Ordering::SeqCst), 3);
+            assert_eq!(calls_2.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                response_json(response).await,
+                json!({"error":"invalid_rpc_upstream_response","broadcast_state":"unknown"})
+            );
+            return;
+        }
+        if failure == "all-malformed" {
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            assert_eq!(calls_1.load(Ordering::SeqCst), 3);
+            assert_eq!(calls_2.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                response_json(response).await,
+                json!({"error":"invalid_rpc_upstream_response"})
+            );
+            return;
+        }
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response_json(response).await,
-            json!({"jsonrpc":"2.0","id":1,"result":"0x2a"})
-        );
+        assert_eq!(calls_1.load(Ordering::SeqCst), 3);
+        if failure == "rpc-error" {
+            assert_eq!(calls_2.load(Ordering::SeqCst), 2);
+            let expected = json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"upstream RPC error"}});
+            let expected = if batch {
+                json!([expected, {"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"upstream RPC error"}}])
+            } else {
+                expected
+            };
+            assert_eq!(response_json(response).await, expected);
+        } else {
+            assert_eq!(calls_2.load(Ordering::SeqCst), 3);
+            let expected = if batch {
+                json!([{"jsonrpc":"2.0","id":1,"result":"0x2a"},{"jsonrpc":"2.0","id":2,"result":"0x2a"}])
+            } else {
+                json!({"jsonrpc":"2.0","id":1,"result":"0x2a"})
+            };
+            assert_eq!(response_json(response).await, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_upstream_load_balancing_and_failover() {
+        check_upstream_response_failover("http", false).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_upstream_response_uses_verified_fallback() {
+        check_upstream_response_failover("malformed", false).await;
+    }
+
+    #[tokio::test]
+    async fn mismatched_upstream_response_uses_verified_fallback() {
+        check_upstream_response_failover("mismatched", false).await;
+    }
+
+    #[tokio::test]
+    async fn valid_rpc_error_keeps_request_id_and_does_not_fail_over() {
+        check_upstream_response_failover("rpc-error", false).await;
+    }
+
+    #[tokio::test]
+    async fn batch_read_failover_preserves_exact_bytes() {
+        check_upstream_response_failover("mismatched", true).await;
+    }
+
+    #[tokio::test]
+    async fn batch_rpc_errors_preserve_ids_without_failover() {
+        check_upstream_response_failover("rpc-error", true).await;
+    }
+
+    #[tokio::test]
+    async fn all_invalid_read_responses_remain_gateway_errors() {
+        check_upstream_response_failover("all-malformed", true).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_mixed_broadcast_batch_stays_ambiguous_without_failover() {
+        check_upstream_response_failover("ambiguous-broadcast", true).await;
     }
 
     #[tokio::test]

@@ -4,7 +4,6 @@ import {
   isSimulatedExtension,
   openTab,
   closeView,
-  listen,
   message,
 } from './pairing-runtime'
 export const isBrowserExtensionRuntime = isSimulatedExtension
@@ -20,5 +19,7 @@ export const getRawExtensionApi = () =>
     : null
 export const openExtensionTab = openTab
 export const closeExtensionView = closeView
-export const onRuntimeMessage = listen
+// This slice sends requests only; update/expiry/race behavior is covered by sender Jest tests.
+export const onRuntimeMessage: typeof import('../../../src-bex/runtime-adapter.original').onRuntimeMessage =
+  () => () => undefined
 export const sendRuntimeMessage = message

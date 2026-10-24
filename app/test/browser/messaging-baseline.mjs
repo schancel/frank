@@ -435,17 +435,17 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     const { browserContextId } = await call(
       'Target.createBrowserContext',
       {},
-      undefined,
+      null,
     )
     const { targetId: ownedTarget } = await call(
       'Target.createTarget',
       { url: 'about:blank', browserContextId },
-      undefined,
+      null,
     )
     const { sessionId } = await call(
       'Target.attachToTarget',
       { targetId: ownedTarget, flatten: true },
-      undefined,
+      null,
     )
     const pageCall = (method, params = {}) => call(method, params, sessionId)
     for (const domain of ['Runtime', 'Page', 'Network', 'Fetch'])

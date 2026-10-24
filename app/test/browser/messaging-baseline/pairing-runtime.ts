@@ -29,7 +29,6 @@ let promotion:
     }
   | undefined
 let offer: { id: string; sender: SyncSenderState } | undefined
-const listeners = new Set<(message: unknown) => unknown>()
 export const pairing = {
   events: [] as Event[],
   get activeOfferId() {
@@ -86,12 +85,6 @@ export function openTab({
 export function closeView() {
   pairing.events.push({ type: 'close-request' })
   return true
-}
-export function listen(listener: (message: unknown) => unknown) {
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
-  }
 }
 export async function message<TReq = unknown, TRes = unknown>(
   request: TReq,

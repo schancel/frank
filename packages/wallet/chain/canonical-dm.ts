@@ -1460,8 +1460,11 @@ async function settleSharedPayments(
   const shared = owner.transactionSets
   const operationId = row.transactionSetOperationId
   if (!shared || !operationId) throw new Error('Stored stamp transaction set is unavailable')
-  await shared.lifecycle.observe(operationId, shared.provider)
-  if (!row.exposurePending)
+  if (row.exposurePending)
+    await shared.lifecycle.observe(operationId, shared.provider)
+  else
+    // Submission owns observation failures and retains the original graph for recovery.
+    // An extra failing read here must not turn confirmed relay delivery into send failure.
     await shared.sendTransaction(await shared.preparer.readTransactionSet(operationId))
   const operation = await shared.preparer.readOperation(operationId)
   if (!operation) throw new Error('Stored stamp transaction set is unavailable')

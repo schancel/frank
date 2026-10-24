@@ -208,3 +208,55 @@ test.each(['undeliverable', 'stale_nonce', 'insufficient_total'])(
     }
   }
 )
+
+
+test('a delivered chat remains delivered when post-delivery RPC fails and restart recovers the original change', async () => {
+  // Keep the recipient first so owned change is still owed when the node goes away.
+  jest.spyOn(Math, 'random').mockReturnValue(0.99)
+  const f = await setup()
+  offlineChain.broadcastDown = true
+  let active = f.alice
+  let latest: StoredMessage | undefined
+  let requests = 0
+  const put = LevelOutgoingMessageStore.prototype.put
+  jest.spyOn(LevelOutgoingMessageStore.prototype, 'put').mockImplementation(async function (row) {
+    latest = structuredClone(row)
+    return put.call(this, row)
+  })
+  const fetch: CanonicalFetch = async (url, init) => {
+    requests++
+    const delivered = await f.directory.fetch!(url, init)
+    // The relay has accepted the envelope; subsequent wallet chain reads fail.
+    offlineChain.broadcastDown = false
+    offlineChain.nodeDown = true
+    return delivered
+  }
+  try {
+    installCanonicalDirectory(active, { ...f.directory, fetch })
+    const result = await f.chain.directMessages.send({ wallet: active,
+      recipient: f.bob.identity.address, messageId: id, stampValue: 300000n,
+      items: [{ type: 'text', text: 'delivered with RPC unavailable' }] })
+    expect(latest!.outcome).toBe('delivered')
+    expect(result.payloadDigest).toBe(latest!.digest)
+    expect(requests).toBe(1)
+    const original = structuredClone(latest!)
+    expect(original.otherTransactions.length).toBeGreaterThan(0)
+    expect(original.otherTransactions.some(tx => tx.state === 'pending')).toBe(true)
+    await active.close()
+    offlineChain.nodeDown = false
+    active = await f.chain.createWallet(roots()) as EvmChainWalletHandle
+    installCanonicalDirectory(active, { ...f.directory, fetch })
+    await f.chain.directMessages.reconcileAttempts({ wallet: active,
+      payloadDigests: [original.digest], maxPutAttempts: 1 })
+    expect(requests).toBe(1)
+    expect(latest!.outcome).toBe('delivered')
+    expect(latest!.transactionSetOperationId).toBe(original.transactionSetOperationId)
+    expect(latest!.request).toEqual(original.request)
+    expect(latest!.payments.map(tx => tx.rawTx)).toEqual(original.payments.map(tx => tx.rawTx))
+    expect(latest!.otherTransactions.map(tx => tx.rawTx)).toEqual(original.otherTransactions.map(tx => tx.rawTx))
+    expect(latest!.payments.every(tx => tx.state === 'spent')).toBe(true)
+    expect(latest!.otherTransactions.every(tx => tx.state === 'spent')).toBe(true)
+    const authorized = new Set([...original.payments, ...original.otherTransactions].map(tx => tx.rawTx))
+    expect(offlineChain.walletBroadcasts.every(raw => authorized.has(raw))).toBe(true)
+  } finally { offlineChain.broadcastDown = false; offlineChain.nodeDown = false; await active.close(); await f.close() }
+})

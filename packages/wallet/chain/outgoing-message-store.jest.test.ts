@@ -237,6 +237,80 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
     await third.close()
   })
 
+  it('preserves a staged v2 recipient/change record and its exact stored bytes across reopen', async () => {
+    const staged: Row = {
+      ...sharedRow('staged'),
+      transactionSetOperationId: 'payment-original',
+      transactionSetStageId: 'stamp-staged',
+      paymentOperationId: 'payment-original',
+      exposurePending: true,
+      otherTransactions: [
+        {
+          source: 'coin',
+          address: '0x' + '0b'.repeat(20),
+          rawTx: '0x0304',
+          state: 'pending',
+        },
+      ],
+    }
+    const store = await open()
+    await store.put(staged)
+    await close(store)
+
+    const expected = [[key('staged'), JSON.stringify(staged)]]
+    expect(await rawEntries(location)).toEqual(expected)
+    const reopened = await open()
+    expect(reopened.get(key('staged'))).toEqual(staged)
+    await close(reopened)
+    // Hydration must not rewrite the stored intent, barrier or either signed-byte list.
+    expect(await rawEntries(location)).toEqual(expected)
+  })
+
+  it.each(['write', 'delete'] as const)(
+    'retains a host-bound free envelope in memory and on disk when its %s fails',
+    async (operation) => {
+      const envelope = {
+        digest: 'aa',
+        delivery: '0102',
+        context: '03',
+        recipientSubject: '02ff',
+        boundary: 'frank-' + '0a'.repeat(24),
+        hostBound: true as const,
+        exposurePending: true as const,
+      }
+      const store = await open()
+      await store.setUnpaid('stable-message', envelope)
+      const failure = new Error('durable envelope mutation refused')
+      const mutation =
+        operation === 'write'
+          ? jest.spyOn(handle(store), 'put').mockRejectedValue(failure)
+          : jest.spyOn(handle(store), 'del').mockRejectedValue(failure)
+
+      await expect(
+        store.setUnpaid(
+          'stable-message',
+          operation === 'write'
+            ? { ...envelope, exposurePending: undefined }
+            : undefined,
+        ),
+      ).rejects.toBe(failure)
+      expect(store.unpaid('stable-message')).toEqual(envelope)
+      expect(store.unpaidByDigest('aa')).toEqual({
+        ...envelope,
+        messageId: 'stable-message',
+      })
+      mutation.mockRestore()
+      await close(store)
+
+      const reopened = await open()
+      expect(reopened.unpaid('stable-message')).toEqual(envelope)
+      expect(reopened.unpaidByDigest('aa')).toEqual({
+        ...envelope,
+        messageId: 'stable-message',
+      })
+    },
+  )
+
   it('lists rows in first-write order, keeps a rewritten row in place, and returns copies', async () => {
     const store = await open()
     const second = row('attempt-b')

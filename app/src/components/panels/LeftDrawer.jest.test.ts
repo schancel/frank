@@ -138,7 +138,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     await nextTick()
     expect(wrapper.get('.list-column').attributes('style')).toContain('display: none')
     expect(wrapper.find('[data-testid="drawer-resize-handle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="drawer-open-wallet-from-bridge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="drawer-open-wallet-from-bridge"]').exists()).toBe(false)
     expect(wrapper.find('#rail-tab-wallet').exists()).toBe(true)
     expect(wrapper.emitted('pageNavigation')?.slice(-1)[0]).toEqual([true])
     ;(wrapper.vm as unknown as { tab: string }).tab = 'contacts'

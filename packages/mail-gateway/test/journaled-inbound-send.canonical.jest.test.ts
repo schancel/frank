@@ -109,6 +109,8 @@ describe('mail journal to canonical wallet and receiver across interrupted linka
       : restoreCanonicalRequest({ body: getBytes(`0x${paid!.request!.body}`), contentType: paid!.request!.contentType });
     expect(original.body.length).toBeGreaterThan(0);
     expect((paid ?? free)?.exposurePending).toBe(true);
+    const originalRecipientBytes = paid?.payments.map(payment => payment.rawTx) ?? [];
+    const originalChangeBytes = paid?.otherTransactions.map(payment => payment.rawTx) ?? [];
     const operationId = paid?.transactionSetOperationId;
     const nativeBytes = operationId ? wallet.transactionSetPreparer!.getOperation(operationId)!.members.map(member => member.signed!.rawTransaction) : [];
     if (stampValue > 0n) {
@@ -150,8 +152,22 @@ describe('mail journal to canonical wallet and receiver across interrupted linka
       expect(request.contentType).toBe(original.contentType);
     }
     expect(signed.mock.calls.length).toBe(prepareCount);
-    if (operationId) expect(wallet.transactionSetPreparer!.getOperation(operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes);
-    else expect(offlineChain.walletBroadcasts).toHaveLength(0);
+    if (operationId) {
+      expect(wallet.transactionSetPreparer!.getOperation(operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes);
+      const recipientSubmissions = f.requests.flatMap(request =>
+        restoreCanonicalRequest(request).parts.transactions.map(bytes => `0x${toHex(bytes)}`));
+      expect([...new Set(recipientSubmissions)].sort()).toEqual([...new Set(originalRecipientBytes)].sort());
+      expect(originalChangeBytes.length).toBeGreaterThan(0);
+      for (const raw of originalChangeBytes) {
+        expect(raw.startsWith('0x') && raw.length > 2).toBe(true);
+        expect(offlineChain.walletBroadcasts).toContain(raw);
+      }
+      // Observe both real submission boundaries; retaining the journal alone
+      // does not prove wallet-owned change was actually submitted. Retries may
+      // repeat these exact bytes but must not add another signed transaction.
+      expect([...new Set([...recipientSubmissions, ...offlineChain.walletBroadcasts])].sort())
+        .toEqual([...new Set(nativeBytes)].sort());
+    } else expect(offlineChain.walletBroadcasts).toHaveLength(0);
     const received = await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 });
     expect(received).toHaveLength(1);
     expect(received[0]).toMatchObject({ messageId: slot.frankMessageId, conversationId: CONVERSATION, payloadDigest: known!.payloadDigest,

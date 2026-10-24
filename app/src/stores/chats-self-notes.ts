@@ -9,7 +9,12 @@ import {
   MonadStampTerminalError,
   StampBlockedError,
 } from '@frank/wallet/evm-stamp-client'
-import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
+import {
+  MonadMailboxRetryableError,
+  MonadMailboxUnavailableError,
+} from '@frank/cashweb/relay/mailbox-client'
+import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
+import { describeWalletFailure } from '@frank/wallet/wallet-failure'
 import type {
   MessageItem,
   OutgoingFailureReason,
@@ -195,84 +200,55 @@ export function blockingMessage<
 }
 
 export function isNoResponseError(error: unknown): boolean {
-  const candidate = error as {
-    isAxiosError?: boolean
-    response?: unknown
-    name?: unknown
-    code?: unknown
+  const failure = describeWalletFailure(error)
+  if (failure.observationUnavailable || failure.retry === 'transient')
+    return true
+  try {
+    return (
+      error instanceof MonadMailboxRetryableError ||
+      (error instanceof OpenDirectoryError && error.code === 'unreachable')
+    )
+  } catch {
+    return false
   }
-  return (
-    (candidate?.isAxiosError === true && candidate.response === undefined) ||
-    (error instanceof Error && error.name === 'MonadMailboxRetryableError') ||
-    (candidate?.name === 'OpenDirectoryError' &&
-      candidate.code === 'unreachable')
-  )
 }
 
 export function isInsufficientFundsError(error: unknown): boolean {
-  const kind =
-    error !== null && typeof error === 'object' && 'kind' in error
-      ? (error as { kind?: unknown }).kind
-      : undefined
-  return (
-    kind === 'insufficient-funds' ||
-    (error instanceof Error &&
-      (error.name === 'InsufficientStampFundsError' ||
-        /insufficient (?:main account )?(?:balance|funds)|insufficient stamp-account capacity|no funds cover a stamp/i.test(
-          error.message,
-        )))
-  )
+  return describeWalletFailure(error).kind === 'insufficient-funds'
 }
 
-/** Maps a failed send to the reason class shown to the user, and says whether the message must
- * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
+/** Presentation never discards a known original attempt digest. Retry and financial
+ * authorization remain with the original-operation owners. */
 export function classifySendFailure(
   error: unknown,
   ownDigest: string | undefined,
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
-  if (error instanceof MonadStampRecoveredAttemptError) {
-    return { reason: 'recovered' }
+  let reason: OutgoingFailureReason = 'error'
+  let keepDigest = ownDigest
+  try {
+    if (error instanceof MonadStampRecoveredAttemptError) reason = 'recovered'
+    else if (error instanceof StampBlockedError) reason = 'blocked'
+    else if (error instanceof MonadStampAbandonedError) {
+      reason = 'unverified'
+      keepDigest = ownDigest ?? error.payloadHashHex
+    } else if (
+      error instanceof MonadStampTerminalError ||
+      error instanceof MonadStampRejectedError
+    )
+      reason = 'rejected'
+    else if (error instanceof MonadMailboxUnavailableError)
+      reason = 'unavailable'
+    else if (
+      error instanceof CanonicalRecipientNotPublishedError ||
+      (error instanceof OpenDirectoryError && error.code === 'not-published')
+    )
+      reason = 'recipient-unregistered'
+    else if (isInsufficientFundsError(error)) reason = 'insufficient-funds'
+    else if (error instanceof DirectMessageStampBelowFeeError)
+      reason = 'stamp-below-fee'
+    else if (isNoResponseError(error)) reason = 'unreachable'
+  } catch {
+    // Hostile unknown values have no presentation classification authority.
   }
-  // Nothing was taken or signed for this message: it is not an attempt to keep.
-  if (
-    error instanceof StampBlockedError ||
-    (error instanceof Error && error.name === 'StampBlockedError')
-  ) {
-    return { reason: 'blocked' }
-  }
-  if (error instanceof MonadStampAbandonedError) {
-    return { reason: 'unverified', keepDigest: error.payloadHashHex }
-  }
-  if (
-    error instanceof MonadStampTerminalError ||
-    error instanceof MonadStampRejectedError
-  ) {
-    return { reason: 'rejected' }
-  }
-  if (error instanceof MonadMailboxUnavailableError) {
-    return { reason: 'unavailable' }
-  }
-  if (
-    error instanceof CanonicalRecipientNotPublishedError ||
-    (error instanceof Error &&
-      error.name === 'CanonicalRecipientNotPublishedError') ||
-    ((error as { name?: unknown; code?: unknown })?.name ===
-      'OpenDirectoryError' &&
-      (error as { code?: unknown }).code === 'not-published')
-  ) {
-    return { reason: 'recipient-unregistered' }
-  }
-  if (isInsufficientFundsError(error)) {
-    return { reason: 'insufficient-funds' }
-  }
-  if (
-    error instanceof DirectMessageStampBelowFeeError ||
-    (error instanceof Error && error.name === 'DirectMessageStampBelowFeeError')
-  ) {
-    return { reason: 'stamp-below-fee' }
-  }
-  return {
-    reason: isNoResponseError(error) ? 'unreachable' : 'error',
-    keepDigest: ownDigest,
-  }
+  return { reason, ...(keepDigest === undefined ? {} : { keepDigest }) }
 }

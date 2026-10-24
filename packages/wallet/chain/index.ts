@@ -160,6 +160,7 @@ export {
 } from "./active-chain";
 export {
   CanonicalMessagingPendingError,
+  CanonicalMessageItemsNotInstalledError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
 } from "./canonical-dm";

@@ -23,15 +23,20 @@ labelled cause nor the helper's transport classification substitutes for that
 evidence. Already-attempted adoption, pending-payment handling and financial
 exposure callbacks stay in the caller.
 
-Startup retry is evaluated before error-string/info formatting. Otherwise that
-formatting occurs even for recognized transport codes and may throw. Separate
-`isCurrent()` calls are intentionally not memoized; preserving this evaluation
-order is part of this behavior-preserving extraction.
+Wallet facts come from `describeWalletFailure` in
+[`wallet-failure.ts`](../../../packages/wallet/wallet-failure.ts). Authoritative
+vetoes defeat transient facts and messaging fallback. Actual setup classes retain
+readiness retry; actual `OpenDirectoryError('unreachable')` retains transport retry.
+Unknown names, vendor shapes and strings grant no permission. Recognition catches
+hostile prototype traps; it never formats arbitrary errors. Separate `isCurrent()`
+calls remain intentional. The helper does not choose a wallet or read app state.
 
-The helper imports the existing `CanonicalMessagingPendingError` to retain its
-class identity check, but does not choose an active wallet or read application
-state. It is not a generic shared delivery engine and is not installed into bot
-or mail-gateway workflows.
+For the composed capabilities and caller-owned timing/evidence, see
+[`createOutgoingExecution` in outgoing-execution.ts](outgoing-execution.ts) and its
+production composition in [`chats.ts`](../stores/chats.ts). These are app policy,
+not a shared bot/mail delivery engine. Failure presentation in
+[`chats-self-notes.ts`](../stores/chats-self-notes.ts) retains every known original
+digest, including terminal/rejected and abandoned errors with a different digest.
 
 Local unit tests pin classification and evaluation order. The AST test enforces
 direct dependency syntax; it is not a whole dependency-graph audit or a runtime

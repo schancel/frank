@@ -90,17 +90,6 @@ export default boot(async ({ app }) => {
         /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
           window.location?.protocol || '',
         ))
-    if (
-      isExtensionSurface &&
-      (typeof process === 'undefined' || !process.env?.JEST_WORKER_ID)
-    ) {
-      void import('../layouts/MainLayout.vue').catch(() => undefined)
-      void import('../layouts/ForumLayout.vue').catch(() => undefined)
-      void import('../pages/Forum.vue').catch(() => undefined)
-      void import('../pages/Wallet.vue').catch(() => undefined)
-      void import('../pages/Welcome.vue').catch(() => undefined)
-      void import('../pages/Setup.vue').catch(() => undefined)
-    }
     // The popup boots fast when it is the only extension view. With another view open (the
     // pop-out, say) it waits long enough for that view to answer: a late answer would let
     // both views take the account and leave both on the lock screen.

@@ -302,7 +302,6 @@ export default defineComponent({
     const activeFilter = ref<'all' | 'screener'>('all')
     const searchInputRef = ref<HTMLInputElement | null>(null)
     const showIdentityQrDialog = ref(false)
-    const searchIndex = new ChatSearchIndex()
 
     const isContactFn = (address: string): boolean =>
       contactStore.isContact(address)
@@ -321,19 +320,23 @@ export default defineComponent({
 
     const normalizedQuery = computed(() => searchQuery.value.trim())
 
-    const searchResults = computed(() => {
-      const q = normalizedQuery.value
-      if (!q) return []
+    const indexedConversations = computed(() => {
       const list = Array.isArray(getSortedChatOrder?.value)
         ? getSortedChatOrder.value
         : []
-      searchIndex.clear()
-      searchIndex.indexConversations(list, {
+      const index = new ChatSearchIndex()
+      index.indexConversations(list, {
         getContact: getContactFn,
         isScreened: conv =>
           isScreenerConversation(conv, { isContact: isContactFn }),
       })
-      return searchIndex.searchConversations(q)
+      return index
+    })
+
+    const searchResults = computed(() => {
+      const q = normalizedQuery.value
+      if (!q) return []
+      return indexedConversations.value.searchConversations(q)
     })
 
     const searchSnippetByConv = computed<Record<string, SearchSnippet>>(() => {

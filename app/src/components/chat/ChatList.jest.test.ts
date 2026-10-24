@@ -8,6 +8,7 @@ import { parse } from '@vue/compiler-sfc'
 import { transpileModule, ModuleKind } from 'typescript'
 
 import ChatList from './ChatList.vue'
+import { ChatSearchIndex } from '../../utils/chat-search-index'
 import { messagingStateOwner } from '../../utils/messaging-state'
 const mockAccountState = jest
   .requireActual('vue')
@@ -185,6 +186,43 @@ describe('eager conversation profiles', () => {
     wrapper.unmount()
     mockAccountState.status = 'loading'
     messagingStateOwner.status = 'ready'
+  })
+})
+
+describe('conversation search responsiveness', () => {
+  it('reuses the indexed conversation history while the query changes', async () => {
+    const index = jest.spyOn(ChatSearchIndex.prototype, 'indexConversations')
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: { mocks: { $status: { setup: true }, $t: (key: string) => key } },
+    })
+    try {
+      const vm = wrapper.vm as unknown as {
+        searchQuery: string
+        displayedConversations: Array<{ id: string }>
+      }
+      for (const query of ['a', 'ad', 'addr']) {
+        vm.searchQuery = query
+        await wrapper.vm.$nextTick()
+      }
+      expect(index).toHaveBeenCalledTimes(1)
+      mockChatStore.getSortedChatOrder = [
+        ...mockChatStore.getSortedChatOrder,
+        { id: 'new-thread', address: 'new-address', totalUnreadMessages: 0 },
+      ]
+      await wrapper.vm.$nextTick()
+      expect(index).toHaveBeenCalledTimes(2)
+      vm.searchQuery = 'new-address'
+      await wrapper.vm.$nextTick()
+      expect(vm.displayedConversations.map(c => c.id)).toEqual(['new-thread'])
+      expect(index).toHaveBeenCalledTimes(2)
+    } finally {
+      wrapper.unmount()
+      index.mockRestore()
+      mockChatStore.getSortedChatOrder = [
+        { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
+      ]
+    }
   })
 })
 

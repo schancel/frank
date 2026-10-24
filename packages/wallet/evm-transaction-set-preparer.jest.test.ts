@@ -93,6 +93,23 @@ it('lets host input run while constructing change without releasing reserved sou
   } finally { await f.journal.Close() }
 })
 
+it.each([false, true])('yields across exhausted sources, including legacy fan-in=%s', async legacy => {
+  const count = legacy ? 32 : 64
+  const f = await setup(Array.from({ length: count }, () => 50000n))
+  let completed = false
+  const hostTurn = new Promise<boolean>(resolve => setTimeout(() => resolve(completed), 0))
+  try {
+    const request = { operationId: 'many-sources', amountWei: BigInt(count) * 29000n - (legacy ? 21000n : 0n), kdf }
+    const result = legacy
+      ? await f.preparer.constructLegacyTransactionSet(request)
+      : await f.preparer.constructTransactionSet(request)
+    completed = true
+    expect(await hostTurn).toBe(false)
+    expect(result.bundle).toHaveLength(legacy ? 1 : count)
+    if (legacy) expect(result.otherTransactions).toHaveLength(count)
+  } finally { await f.journal.Close() }
+})
+
 it('constructs one complete signed set with private change, exact source conservation, and shuffled contiguous nonces', async () => {
   const { preparer, coins, journal } = await setup()
   const derive = jest.fn(kdf)

@@ -121,6 +121,9 @@ export interface EvmTransactionSetPreparerOptions {
    * independent durable derivation ownership before it retires the tombstone. */
   readonly onCancellationCheckpoint?: (operation: EvmNativeOperation) => Promise<void>
   readonly canSelectCoin?: (coin: EvmListCoin) => boolean
+  /** Synchronous cached observation check, only after insufficient selection. Never performs
+   * RPC or changes reservations; throws the retained observation error when funding is unknown. */
+  readonly assertFundingObserved?: () => void
   /** Snapshot must already be cached/reviewed; construction never calls RPC. */
   readonly policy: () => EvmTransactionSetPolicy
   /** Static network execution rule, available during recovery before fee observations. */

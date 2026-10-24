@@ -4273,8 +4273,14 @@ export const useChatStore = defineStore('chats', {
             error !== null &&
             (error as { name?: unknown }).name === 'OpenDirectoryError' &&
             (error as { code?: unknown }).code === 'unreachable'
+          const transportError = typeof error === 'object' && error !== null
+            ? error as { code?: unknown; status?: unknown; statusCode?: unknown }
+            : undefined
           const isTransientRpc =
             isDirectoryUnreachable ||
+            ['SERVER_ERROR', 'TIMEOUT', 'NETWORK_ERROR', 429].some(code => transportError?.code === code) ||
+            transportError?.status === 429 ||
+            transportError?.statusCode === 429 ||
             errorStr.includes('502') ||
             errorStr.includes('503') ||
             errorStr.includes('504') ||

@@ -622,6 +622,31 @@ describe('outgoing direct messages (#269, #270)', () => {
     expect(send.mock.calls[1][0].stampValue).toBe(5000n)
   })
 
+  it('queues a throttled retained intent and recovers the same message after restart', async () => {
+    const unavailable = Object.assign(new Error('relay RPC transport failed'), {
+      code: 'SERVER_ERROR', status: 429,
+    })
+    const send = jest.spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValueOnce(unavailable)
+      .mockImplementationOnce(async params => {
+        throw new DirectMessageAlreadyAttemptedError(params.messageId!, HASH, 'aa'.repeat(33))
+      })
+    const chats = useChatStore()
+    expect(await chats.sendMessage({ wallet, address: PEER, items: TEXT, stampValue: 5n }))
+      .toEqual({ state: 'payment-pending' })
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(send.mock.calls[1][0].messageId).toEqual(send.mock.calls[0][0].messageId)
+    expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+    const restored = await reload()
+    expect(only(restored)[0].status).toBe('payment-pending')
+    const reconcile = reconcileReturns({ [HASH]: 'delivered' })
+    await restored.reconcileOutgoing({ wallet })
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ payloadDigests: [HASH] }))
+    expect(only(restored)[0].status).toBe('confirmed')
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(only(restored)).toHaveLength(1)
+  })
+
   describe('reconnecting an explicitly unattempted send', () => {
     const offline = () =>
       Object.assign(new Error('network unavailable'), {

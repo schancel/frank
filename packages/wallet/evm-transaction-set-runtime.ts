@@ -40,6 +40,7 @@ export function installEvmTransactionSetRuntime(
     reserveBalanceWei: params.reserveBalanceWei,
     override: params.policy,
   })
+  let policyFailure: { error: unknown } | undefined
   const transactionSetPreparer = new EvmTransactionSetPreparer({
     coins: coinList,
     journal: params.journal,
@@ -51,7 +52,15 @@ export function installEvmTransactionSetRuntime(
             belowWei: params.reserveBalanceWei ?? 0n,
             waitBlocks: params.spendSpacingBlocks,
           },
-    policy: () => transactionSetPolicy.snapshot(),
+    policy: () => {
+      try { return transactionSetPolicy.snapshot() } catch (error) {
+        throw policyFailure?.error ?? error
+      }
+    },
+    assertFundingObserved: () => {
+      coinListSync.assertFundingObserved()
+      if (policyFailure) throw policyFailure.error
+    },
     deriveChange: index => {
       const derived = changeKeyring.deriveChangeAccount(index)
       return {
@@ -106,7 +115,9 @@ export function installEvmTransactionSetRuntime(
           }
         })(),
         transactionSetPolicy.refresh(),
-      ]).then(() => undefined),
+      ]).then(([, policy]) => {
+        policyFailure = policy.status === 'rejected' ? { error: policy.reason } : undefined
+      }),
       stoppedRefresh,
     ]).finally(() => {
       refreshing = undefined

@@ -39,7 +39,7 @@ export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
   private readonly dirty = new Set<string>()
   /** Retry an unsuccessful observation without withdrawing an otherwise trusted coin. */
-  private readonly failedObservations = new Set<string>()
+  private readonly failedObservations = new Map<string, unknown>()
   /** Accounts read and found empty: not read again until something marks them dirty. */
   private readonly empty = new Set<string>()
   private stopped = false
@@ -92,6 +92,13 @@ export class EvmCoinListSync {
     this.empty.delete(key)
     this.dirty.add(key)
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1)
+  }
+
+  /** Selection could not fund a request. Incomplete observations are not proof of insufficient
+   * funds. Successful selection does not call this: other trusted coins remain usable. */
+  assertFundingObserved(): void {
+    const failed = this.failedObservations.values().next()
+    if (!failed.done) throw failed.value
   }
 
   /** The key of a wallet account the list may hold coins of, or undefined. */
@@ -228,7 +235,7 @@ export class EvmCoinListSync {
               !this.stopped &&
               (this.generations.get(account) ?? 0) === generation
             )
-              this.failedObservations.add(account)
+              this.failedObservations.set(account, error)
             if (isRateLimited(error)) {
               limited ??= { error }
               continue
@@ -304,6 +311,7 @@ export class EvmCoinListSync {
     // Marked dirty while these reads were out: they may predate what the mark announced.
     if (this.stopped || (this.generations.get(account) ?? 0) !== generation)
       return
+    this.failedObservations.delete(account)
     // Something of this account is in the mempool: no coin until it is mined.
     if (pending > latest) {
       this.markDirty(account)

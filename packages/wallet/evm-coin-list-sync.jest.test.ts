@@ -194,3 +194,23 @@ it('recognizes the actual ethers error from sanitized JSON-RPC429 over HTTP with
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
+
+it('clears recovered account failures after an accepted pending observation', async () => {
+  const f = await fixture()
+  const error = new Error('network unavailable')
+  await f.sync.refresh()
+  expect(() => f.sync.assertFundingObserved()).not.toThrow()
+  const account = f.sources[0]!.account
+  f.sync.markDirty(account)
+  f.provider.getBalance.mockRejectedValueOnce(error)
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  await f.sync.refresh()
+  expect(() => f.sync.assertFundingObserved()).toThrow(error)
+  // A successful observation of a pending nonce is known unavailable funding, not a failed read.
+  f.provider.getTransactionCount.mockImplementation(async (_address, block) => block === 'pending' ? 1 : 0)
+  await f.sync.refresh()
+  expect(f.sync.isDirty(account)).toBe(true)
+  expect(() => f.sync.assertFundingObserved()).not.toThrow()
+  warn.mockRestore()
+  await f.sync.stop()
+})

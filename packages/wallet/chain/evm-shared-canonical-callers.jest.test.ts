@@ -406,3 +406,47 @@ test('an invalid unsigned encrypted intent still prevents wallet restoration', a
     await f.close()
   }
 })
+
+test('RPC throttling keeps the original unsigned message intent and restart funds that same operation', async () => {
+  const f = await setup()
+  let active: EvmChainWalletHandle = f.alice
+  const unavailable = Object.assign(new Error('relay RPC transport failed'), { code: 'SERVER_ERROR', status: 429 })
+  const rows: StoredMessage[] = []
+  const originalPut = LevelOutgoingMessageStore.prototype.put
+  const capture = jest.spyOn(LevelOutgoingMessageStore.prototype, 'put').mockImplementation(async function(row) {
+    rows.push(structuredClone(row))
+    return originalPut.call(this, row)
+  })
+  const owner = evmWalletInternals(active)
+  owner.coinListSync!.markDirty(active.mainAccount!.address)
+  const read = jest.spyOn(active.provider, 'getBalance').mockRejectedValue(unavailable)
+  try {
+    await expect(f.chain.directMessages.send({ wallet: active, recipient: f.bob.identity.address,
+      messageId: id, stampValue: 300000n, items: [{ type: 'text', text: 'keep this message through throttling' }],
+    })).rejects.toBe(unavailable)
+    const intent = rows.find(row => row.construction)!
+    expect(intent).toBeDefined()
+    expect(intent.payments).toEqual([])
+    expect(f.requests).toEqual([])
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(active.transactionSetPreparer!.getOperation(intent.transactionSetOperationId!)).toBeUndefined()
+    read.mockRestore()
+    await active.close()
+    active = await f.chain.createWallet(roots()) as EvmChainWalletHandle
+    installCanonicalDirectory(active, f.directory)
+    await f.chain.directMessages.reconcileAttempts({ wallet: active, payloadDigests: [intent.digest], maxPutAttempts: 1 })
+    const completed = rows.find(row => row.digest === intent.digest && row.request)!
+    expect(completed.construction).toEqual(intent.construction)
+    expect(completed.transactionSetOperationId).toBe(intent.transactionSetOperationId)
+    expect(f.requests).toHaveLength(1)
+    const originalBytes = active.transactionSetPreparer!.getOperation(intent.transactionSetOperationId!)!.members.map(member => member.signed!.rawTransaction)
+    await f.chain.directMessages.reconcileAttempts({ wallet: active, payloadDigests: [intent.digest], maxPutAttempts: 1 })
+    expect(active.transactionSetPreparer!.getOperation(intent.transactionSetOperationId!)!.members.map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+    expect(f.requests).toHaveLength(1)
+  } finally {
+    read.mockRestore()
+    capture.mockRestore()
+    await active.close()
+    await f.close()
+  }
+})

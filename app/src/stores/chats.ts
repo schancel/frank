@@ -4108,25 +4108,26 @@ export const useChatStore = defineStore('chats', {
       const envelopeDurabilityCallback = (assertCurrent?: () => void) =>
         financial &&
         (async (attemptDigest: string) => {
+          const assertEnvelopeCurrent = () => {
+            assertCurrent?.()
+            assertFinancialCurrent()
+          }
           await this.setOutgoingState(
             address,
             id,
             'pending',
             { attemptDigest },
-            { strict: true, assertCurrent },
+            { strict: true, assertCurrent: assertEnvelopeCurrent },
           )
-          assertCurrent?.()
-          assertFinancialCurrent()
+          assertEnvelopeCurrent()
           const repository = await store
-          assertCurrent?.()
-          assertFinancialCurrent()
+          assertEnvelopeCurrent()
           await repository.bindFinancialEnvelope({
             ...financialEnvelope!,
             phase: 'bound',
             payloadDigest: attemptDigest,
           })
-          assertCurrent?.()
-          assertFinancialCurrent()
+          assertEnvelopeCurrent()
           await financial.expose(attemptDigest)
         })
       const onEnvelopeDurable = envelopeDurabilityCallback()
@@ -4462,6 +4463,14 @@ export const useChatStore = defineStore('chats', {
           allCallsUnattempted &&=
             ownDigest === undefined && isDirectMessageNotAttempted(error)
           cancellable.done()
+          if (financial) {
+            try {
+              assertFinancialCurrent()
+            } catch {
+              // A rejected stale callback must not label the replacement row as failed.
+              return { state: 'busy' }
+            }
+          }
           if (
             error instanceof DirectMessageAlreadyAttemptedError ||
             (error instanceof Error &&

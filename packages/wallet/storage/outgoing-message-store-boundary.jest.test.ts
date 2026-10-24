@@ -62,7 +62,7 @@ it('keeps outgoing storage and its durability dependency independent of executio
   expect(
     forbidden(
       readFileSync(join(__dirname, 'level-durability.ts'), 'utf8'),
-      new Set(['level', 'path']),
+      new Set(['level', 'path', 'fs']),
     ),
   ).toEqual([])
 })

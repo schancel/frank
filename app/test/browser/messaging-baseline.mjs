@@ -227,6 +227,13 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
   const serve = server.listeners('request')[0]
   server.removeAllListeners('request')
   server.on('request', (req, res) => {
+    if (req.url === '/fixture/pairing-focus') {
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(
+        '<!doctype html><title>Owned focus target</title><p>Disposable pairing focus target</p><input aria-label="Synthetic receiver input">',
+      )
+      return
+    }
     if (
       [
         '/fixture/profiles/curated-defaults',
@@ -429,14 +436,12 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
       )}`,
     )
   }
-  const openPairingPage = async mode => {
+  const openPairingPage = async (mode, sharedContext = false) => {
     // Separate disposable storage prevents cross-tab account-election from impersonating
     // real extension storage in this simulated page-host test. All contexts die with Chrome.
-    const { browserContextId } = await call(
-      'Target.createBrowserContext',
-      {},
-      null,
-    )
+    const browserContextId = sharedContext
+      ? undefined
+      : (await call('Target.createBrowserContext', {}, null)).browserContextId
     const { targetId: ownedTarget } = await call(
       'Target.createTarget',
       { url: 'about:blank', browserContextId },

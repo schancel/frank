@@ -21,8 +21,8 @@ export async function runPairing({ main, openPage, origin, report }) {
       'window.__messagingBaseline?.state.ready && document.querySelector("[data-test=account-sync-send]")',
     )
   const count = (list, type) => list.filter(event => event.type === type).length
-  const create = async mode => {
-    const page = await openPage(mode)
+  const create = async (mode, sharedContext = false) => {
+    const page = await openPage(mode, sharedContext)
     evidence.targets.push({
       targetId: page.targetId,
       mode,
@@ -105,14 +105,25 @@ export async function runPairing({ main, openPage, origin, report }) {
   await navigate(main, 'tab')
   const initial = await showAutomaticPin(main)
   // Activate a separate owned receiver-like page, without importing an account or calling pairing crypto.
-  const receiver = await create('web')
-  await navigate(receiver, 'tab')
-  await ready(receiver)
-  await receiver.until(
-    'document.querySelector("[data-test=sync-sender-error]")',
-  )
-  assert.equal(count(await events(receiver), 'export'), 0)
-  assert.equal(count(await events(receiver), 'offer'), 0)
+  const web = await create('web')
+  await navigate(web, 'tab')
+  await ready(web)
+  await web.until('document.querySelector("[data-test=sync-sender-error]")')
+  assert.equal(count(await events(web), 'export'), 0)
+  assert.equal(count(await events(web), 'offer'), 0)
+  await probe(web)
+  evidence.cases.push({
+    name: 'loopback-web-origin-rejected-before-export',
+    events: await events(web),
+  })
+  await main.call('Target.closeTarget', { targetId: web.targetId })
+  // Same browser context gives real tab focus transitions. This target has no application
+  // session, avoiding an unrelated multi-tab custody election in the simulated host.
+  const receiver = await create('web', true)
+  await receiver.call('Page.navigate', {
+    url: origin + '/fixture/pairing-focus',
+  })
+  await receiver.until('document.querySelector("input")')
   await probe(receiver)
   await main.evaluate(
     'window.__pairingFocus=[];addEventListener("focus",()=>window.__pairingFocus.push("focus"));addEventListener("blur",()=>window.__pairingFocus.push("blur"))',
@@ -134,10 +145,6 @@ export async function runPairing({ main, openPage, origin, report }) {
     name: 'automatic-pin-focus-survival',
     offerId: initial.offerId,
     focus: await main.evaluate('window.__pairingFocus'),
-  })
-  evidence.cases.push({
-    name: 'loopback-web-origin-rejected-before-export',
-    events: await events(receiver),
   })
   await probe(main)
   await leave(main)

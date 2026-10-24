@@ -198,6 +198,41 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     wrapper.unmount()
   })
 
+  it('does not show an old success after the topic changes during the feedback delay', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('memes')
+    const wrapper = mountLayout()
+    await flushPromises()
+    const done = jest.fn()
+    wrapper
+      .getComponent('[data-test="forum-pull-to-refresh"]')
+      .vm.$emit('refresh', done)
+    await flushPromises()
+    let finishNext!: (rows: unknown[]) => void
+    mockFetchByTopic.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finishNext = resolve
+        }),
+    )
+    const vm = wrapper.vm as unknown as { setTopic(topic: string): void }
+    vm.setTopic('news')
+    await flushPromises()
+    expect(store.isRefreshing).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await flushPromises()
+    expect(done).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="forum-wheel-refresh"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.get('[data-test="forum-refresh-announcement"]').text()).toBe(
+      '',
+    )
+    finishNext([])
+    await flushPromises()
+    wrapper.unmount()
+  })
+
   it('mounted refresh handles HTTP 503 rejection without an unhandled browser exception', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation()
     mockFetchByTopic.mockRejectedValue(create503Error())

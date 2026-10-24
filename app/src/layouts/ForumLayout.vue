@@ -177,6 +177,8 @@ import { storeToRefs } from 'pinia'
 import { useForumStore } from 'src/stores/forum'
 import { useTopicStore } from 'src/stores/topics'
 import { peekActiveWallet } from 'src/composables/useActiveWallet'
+import { accountStatus } from 'src/accounts/session'
+import { activeChain } from '@frank/wallet/chain'
 
 import ForumDrawer from '../components/panels/ForumDrawer.vue'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
@@ -186,6 +188,14 @@ import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 const MIN_REFRESH_FEEDBACK_MS = 700
 const RESULT_FEEDBACK_MS = 900
 const WHEEL_RELEASE_DELAY_MS = 300
+
+type RefreshFeedbackContext = {
+  topic: string
+  duration: number
+  revision: number
+  status: typeof accountStatus.status
+  chain: typeof activeChain
+}
 
 export default defineComponent({
   data() {
@@ -233,7 +243,8 @@ export default defineComponent({
 
     const forumStore = useForumStore()
     const topicStore = useTopicStore()
-    const { topics, selectedTopic, isRefreshing } = storeToRefs(forumStore)
+    const { topics, selectedTopic, duration, outageStatus, isRefreshing } =
+      storeToRefs(forumStore)
 
     return {
       prepareTouchRefresh,
@@ -252,6 +263,8 @@ export default defineComponent({
       refreshDiscoveredTopics: topicStore.refreshDiscoveredTopics,
       topics,
       storeSelectedTopic: selectedTopic,
+      duration,
+      outageStatus,
       isRefreshing,
     }
   },
@@ -298,6 +311,30 @@ export default defineComponent({
         MIN_REFRESH_FEEDBACK_MS - (performance.now() - startedAt)
       if (remaining > 0)
         await new Promise<void>(resolve => setTimeout(resolve, remaining))
+    },
+    captureRefreshContext(): RefreshFeedbackContext {
+      return {
+        topic: this.selectedTopic,
+        duration: this.duration,
+        revision: accountStatus.revision,
+        status: accountStatus.status,
+        chain: activeChain,
+      }
+    },
+    canShowRefreshResult(
+      context: RefreshFeedbackContext,
+      succeeded: boolean | undefined,
+    ): succeeded is boolean {
+      return (
+        succeeded !== undefined &&
+        !this.isRefreshing &&
+        this.selectedTopic === context.topic &&
+        this.duration === context.duration &&
+        accountStatus.revision === context.revision &&
+        accountStatus.status === context.status &&
+        activeChain === context.chain &&
+        (succeeded === false || this.outageStatus === 'ok')
+      )
     },
     resetWheelPull() {
       if (this.wheelReleaseTimer !== undefined)
@@ -359,12 +396,14 @@ export default defineComponent({
         this.wheelRefreshing = true
         const revision = ++this.wheelRefreshRevision
         const startedAt = performance.now()
+        const context = this.captureRefreshContext()
         void (async () => {
           const succeeded = await this.refreshContent()
           await this.waitForRefreshFeedback(startedAt)
           if (this.wheelRefreshRevision !== revision) return
           this.wheelRefreshing = false
-          if (succeeded !== undefined) this.showRefreshResult(succeeded)
+          if (this.canShowRefreshResult(context, succeeded))
+            this.showRefreshResult(succeeded)
         })()
       }, WHEEL_RELEASE_DELAY_MS)
     },
@@ -375,11 +414,15 @@ export default defineComponent({
       this.clearWheelFeedback()
       const revision = ++this.wheelRefreshRevision
       const startedAt = performance.now()
+      const context = this.captureRefreshContext()
       void (async () => {
         const succeeded = await this.refreshContent()
         await this.waitForRefreshFeedback(startedAt)
         done()
-        if (this.wheelRefreshRevision === revision && succeeded !== undefined)
+        if (
+          this.wheelRefreshRevision === revision &&
+          this.canShowRefreshResult(context, succeeded)
+        )
           this.showRefreshResult(succeeded)
       })()
     },

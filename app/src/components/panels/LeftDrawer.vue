@@ -120,7 +120,10 @@
     </div>
 
     <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet, dapp-bridge or forum) -->
-    <div v-show="!$status.setup || isNarrow || !pageOwnsNavigation" class="column full-height col list-column">
+    <div
+      v-show="!$status.setup || isNarrow || !pageOwnsNavigation"
+      class="column full-height col list-column"
+    >
       <settings-panel
         v-if="$status.setup"
         v-show="tab == 'settings'"
@@ -590,10 +593,14 @@ export default defineComponent({
     >('chats')
     // These pages own their list/detail navigation. Other rail selections (notably
     // Contacts without a route change) still need their secondary drawer panel.
-    const pageOwnsNavigation = computed(() =>
-      (tab.value === 'settings' && route.path.startsWith('/settings')) ||
-      (tab.value === 'dapp-bridge' && route.path.startsWith('/dapp-bridge')))
-    watch(pageOwnsNavigation, value => emit('pageNavigation', value), { immediate: true })
+    const pageOwnsNavigation = computed(
+      () =>
+        (tab.value === 'settings' && route.path.startsWith('/settings')) ||
+        (tab.value === 'dapp-bridge' && route.path.startsWith('/dapp-bridge')),
+    )
+    watch(pageOwnsNavigation, value => emit('pageNavigation', value), {
+      immediate: true,
+    })
     const chatListRef = ref<{ focusSearchInput(): void } | null>(null)
     const shortcut = inject(CHAT_SEARCH_SHORTCUT, null)
     const revealDrawer = inject(REVEAL_CHAT_DRAWER, null)

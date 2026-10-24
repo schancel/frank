@@ -872,37 +872,55 @@ describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => 
   })
 })
 
-
 describe('page-owned navigation', () => {
-  it.each([801, 1280])('keeps only the global rail on settings and dApp pages at %s px', async width => {
-    for (const path of ['/settings', '/settings/storage', '/dapp-bridge']) {
-      const { wrapper } = await mountLayout(width, undefined, true, path)
-      await flushPromises()
-      const state = wrapper.vm as unknown as { drawerWidth: number; desktopDrawerWidth: number }
-      expect(state.drawerWidth).toBe(56)
-      expect(wrapper.get('.list-column').attributes('style')).toContain('display: none')
-      ;(wrapper.findComponent(LeftDrawer).vm as unknown as { tab: string }).tab = 'contacts'
-      await flushPromises()
-      expect(state.drawerWidth).toBe(state.desktopDrawerWidth)
-      wrapper.unmount()
-    }
-  })
+  it.each([801, 1280])(
+    'keeps only the global rail on settings and dApp pages at %s px',
+    async width => {
+      for (const path of ['/settings', '/settings/storage', '/dapp-bridge']) {
+        const { wrapper } = await mountLayout(width, undefined, true, path)
+        await flushPromises()
+        const state = wrapper.vm as unknown as {
+          drawerWidth: number
+          desktopDrawerWidth: number
+        }
+        expect(state.drawerWidth).toBe(56)
+        expect(wrapper.get('.list-column').attributes('style')).toContain(
+          'display: none',
+        )
+        ;(
+          wrapper.findComponent(LeftDrawer).vm as unknown as { tab: string }
+        ).tab = 'contacts'
+        await flushPromises()
+        expect(state.drawerWidth).toBe(state.desktopDrawerWidth)
+        wrapper.unmount()
+      }
+    },
+  )
 
-  it.each([390, 800])('keeps the mobile navigation list and closes it on the current page at %s px', async width => {
-    for (const [path, tab] of [['/settings', 'settings'], ['/dapp-bridge', 'dapp-bridge']]) {
-      const { wrapper } = await mountLayout(width, undefined, true, path)
-      layoutVm(wrapper).toggleMyDrawerOpen()
-      await flushPromises()
-      expect((wrapper.vm as unknown as { drawerWidth: number }).drawerWidth).toBe(325)
-      expect(wrapper.get('.list-column').attributes('style') ?? '').not.toContain('display: none')
-      await wrapper.get('#rail-tab-' + tab).trigger('click')
-      await flushPromises()
-      expect(layoutVm(wrapper).myDrawerOpen).toBe(false)
-      wrapper.unmount()
-    }
-  })
+  it.each([390, 800])(
+    'keeps the mobile navigation list and closes it on the current page at %s px',
+    async width => {
+      for (const [path, tab] of [
+        ['/settings', 'settings'],
+        ['/dapp-bridge', 'dapp-bridge'],
+      ]) {
+        const { wrapper } = await mountLayout(width, undefined, true, path)
+        layoutVm(wrapper).toggleMyDrawerOpen()
+        await flushPromises()
+        expect(
+          (wrapper.vm as unknown as { drawerWidth: number }).drawerWidth,
+        ).toBe(325)
+        expect(
+          wrapper.get('.list-column').attributes('style') ?? '',
+        ).not.toContain('display: none')
+        await wrapper.get('#rail-tab-' + tab).trigger('click')
+        await flushPromises()
+        expect(layoutVm(wrapper).myDrawerOpen).toBe(false)
+        wrapper.unmount()
+      }
+    },
+  )
 })
-
 
 it('retains the mobile list and closes the current dApp route at 150% UI scale', async () => {
   localStorage.setItem('frank:ui-scale', '150')
@@ -911,12 +929,18 @@ it('retains the mobile list and closes the current dApp route at 150% UI scale',
     try {
       layoutVm(wrapper).toggleMyDrawerOpen()
       await flushPromises()
-      expect((wrapper.vm as unknown as { drawerWidth: number }).drawerWidth).toBe(325)
-      expect(wrapper.get('.list-column').attributes('style') ?? '').not.toContain('display: none')
+      expect(
+        (wrapper.vm as unknown as { drawerWidth: number }).drawerWidth,
+      ).toBe(325)
+      expect(
+        wrapper.get('.list-column').attributes('style') ?? '',
+      ).not.toContain('display: none')
       await wrapper.get('#rail-tab-dapp-bridge').trigger('click')
       await flushPromises()
       expect(layoutVm(wrapper).myDrawerOpen).toBe(false)
-    } finally { wrapper.unmount() }
+    } finally {
+      wrapper.unmount()
+    }
   } finally {
     localStorage.removeItem('frank:ui-scale')
     document.documentElement.style.removeProperty('zoom')

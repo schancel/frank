@@ -157,7 +157,9 @@ describe('SettingsPanel wallet-action split (#399)', () => {
 
   it('does not advertise a download action that actually opens another settings area', () => {
     const { wrapper } = mountPanel()
-    expect(wrapper.find('[data-test="settings-panel-download-extension"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-test="settings-panel-download-extension"]').exists(),
+    ).toBe(false)
     wrapper.unmount()
   })
 })

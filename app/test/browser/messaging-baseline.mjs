@@ -1,7 +1,8 @@
 /** Offline real-App interaction fixture. See messaging-baseline/README.md for boundaries. */
 import assert from 'node:assert/strict'
 import ts from 'typescript'
-import { spawn, execFileSync } from 'node:child_process'
+import { OwnedProcesses } from './messaging-baseline/processes.mjs'
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   cp,
@@ -13,6 +14,7 @@ import {
   symlink,
   rm,
   readdir,
+  realpath,
 } from 'node:fs/promises'
 import { existsSync, createWriteStream } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -47,7 +49,7 @@ await writeFile(join(owned, '.owner'), ownership)
 await mkdir(out, { recursive: true })
 const tree = join(owned, 'source')
 await mkdir(tree)
-const processes = new Set()
+const processes = new OwnedProcesses()
 let browser, socket, server
 const report = {
   sourceSha: sha,
@@ -66,12 +68,11 @@ const report = {
   passed: false,
 }
 async function command(program, params, options = {}) {
-  const child = spawn(program, params, {
+  const child = processes.spawn(program, params, {
     cwd: tree,
     ...options,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  processes.add(child)
   const log = createWriteStream(join(out, 'build.log'), { flags: 'a' })
   child.stdout.pipe(log, { end: false })
   child.stderr.pipe(log, { end: false })
@@ -80,24 +81,15 @@ async function command(program, params, options = {}) {
     child.on('exit', resolve)
   })
   log.end()
-  processes.delete(child)
   assert.equal(code, 0, `${program} failed; see ${join(out, 'build.log')}`)
 }
-async function stop(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  await new Promise(resolve => {
-    child.once('exit', resolve)
-    child.kill('SIGTERM')
-    const t = setTimeout(() => child.kill('SIGKILL'), 5000)
-    child.once('exit', () => clearTimeout(t))
-  })
+let closing
+function cleanup() {
+  return (closing ??= cleanupOwned())
 }
-let closing = false
-async function cleanup() {
-  if (closing) return
-  closing = true
+async function cleanupOwned() {
   socket?.close()
-  await Promise.all([...processes].map(stop))
+  await processes.stopAll()
   if (server) {
     server.closeAllConnections()
     await new Promise(resolve => server.close(resolve))
@@ -132,31 +124,48 @@ try {
       if (error.code !== 'ENOENT') throw error
     }
   }
-  for (const entry of await readdir(join(repository, 'node_modules'), {
-    withFileTypes: true,
-  })) {
-    if (entry.name.startsWith('@')) {
-      await mkdir(join(modules, entry.name))
-      for (const child of await readdir(
-        join(repository, 'node_modules', entry.name),
-      )) {
-        const name = entry.name + '/' + child
+  async function linkModules(source, destination) {
+    if (!existsSync(source)) return
+    await mkdir(destination, { recursive: true })
+    for (const entry of await readdir(source, { withFileTypes: true })) {
+      if (entry.name.startsWith('@')) {
+        await mkdir(join(destination, entry.name), { recursive: true })
+        for (const child of await readdir(join(source, entry.name))) {
+          const name = entry.name + '/' + child
+          await symlink(
+            workspaceNames.get(name) ?? join(source, name),
+            join(destination, name),
+          )
+        }
+      } else {
         await symlink(
-          workspaceNames.get(name) ?? join(repository, 'node_modules', name),
-          join(modules, name),
+          workspaceNames.get(entry.name) ?? join(source, entry.name),
+          join(destination, entry.name),
         )
       }
-    } else
-      await symlink(
-        workspaceNames.get(entry.name) ??
-          join(repository, 'node_modules', entry.name),
-        join(modules, entry.name),
-      )
+    }
+  }
+  await linkModules(join(repository, 'node_modules'), modules)
+  const installationRoot = dirname(
+    await realpath(join(repository, 'node_modules')),
+  )
+  // Preserve package-local installed versions; only workspace links redirect to the snapshot.
+  for (const relative of [
+    'app',
+    ...[...workspaceNames.values()].map(path => path.slice(tree.length + 1)),
+  ]) {
+    await linkModules(
+      existsSync(join(repository, relative, 'node_modules'))
+        ? join(repository, relative, 'node_modules')
+        : join(installationRoot, relative, 'node_modules'),
+      join(tree, relative, 'node_modules'),
+    )
   }
   const fixture = join(here, 'messaging-baseline')
   const names = ['boot.ts', 'runtime.ts', 'session.ts', 'identity.ts']
   const hash = createHash('sha256')
   hash.update(await readFile(fileURLToPath(import.meta.url)))
+  hash.update(await readFile(join(fixture, 'processes.mjs')))
   for (const name of names) hash.update(await readFile(join(fixture, name)))
   report.fixtureHash = hash.digest('hex')
   await cp(fixture, join(tree, 'app/test/browser/messaging-baseline'), {
@@ -248,7 +257,7 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
       QCLI_MONAD_SUB_ACCOUNT_POOL_SIZE: '0',
     },
   })
-  browser = spawn(
+  browser = processes.spawn(
     chrome,
     [
       '--headless=new',
@@ -263,7 +272,6 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
     ],
     { stdio: ['ignore', 'ignore', 'pipe'] },
   )
-  processes.add(browser)
   const endpoint = await new Promise((resolve, reject) => {
     let buf = ''
     const timeout = setTimeout(
@@ -473,6 +481,20 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     '#rail-tab-chats',
     '/chat/',
     '.chat-message-list',
+  )
+  assert.equal(
+    await evaluate(
+      "window.__messagingBaseline.messageState('Fixture queued message')?.status",
+    ),
+    'pending',
+    'Message must remain pending through delayed service and navigation',
+  )
+  assert.equal(
+    await evaluate(
+      "window.__messagingBaseline.state.sends.filter(s=>s.text === 'Fixture queued message').length",
+    ),
+    1,
+    'Exactly one matching send must be submitted',
   )
   await evaluate(`window.__messagingBaseline.release(${sendSlot})`)
   await until(

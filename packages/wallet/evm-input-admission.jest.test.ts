@@ -1686,7 +1686,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const { id, raw } = await member(f)
     const batch = jest
       .spyOn(database(f), 'batch')
-      .mockRejectedValueOnce(new Error('pool write lost'))
+      .mockRejectedValue(new Error('pool write lost'))
     await expect(spend(f).applyMember(id, 0)).rejects.toThrow('pool write lost')
     expect(batch).toHaveBeenCalledTimes(1)
     expect(f.admission.inspect(f.lifetime)).toMatchObject({
@@ -1697,13 +1697,38 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     await expect(
       f.admission.authorizeNativeSigning(f.lifetime, id),
     ).rejects.toThrow('uncertain-owner')
+    // Keep the write lost through close; a healthy close explicitly retries queued writes.
+    await expect(f.close()).rejects.toThrow('pool write lost')
     batch.mockRestore()
-    const reopened = await reopen(f)
+    const reopened = await start(location)
     expect(reopened.pool.getRecord(0)?.status).not.toBe('spent')
     expect(reopened.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
     expect(kinds(reopened)).toEqual(['native'])
     expect((await spend(reopened).applyMember(id, 0)).kind).toBe('committed')
     expect(reopened.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(raw)
+  })
+
+  it('a healthy close retries a lost write exactly, and reopen recognizes the original member as applied', async () => {
+    const f = await start(location)
+    const { id, raw } = await member(f)
+    const batch = jest.spyOn(database(f), 'batch')
+      .mockRejectedValueOnce(new Error('pool write lost'))
+    await expect(spend(f).applyMember(id, 0)).rejects.toThrow('pool write lost')
+    expect(f.admission.inspect(f.lifetime)).toMatchObject({
+      status: 'unavailable', reason: 'uncertain-owner',
+    })
+    const reopened = await reopen(f)
+    expect(batch).toHaveBeenCalledTimes(2)
+    expect(batch.mock.calls[1]).toEqual(batch.mock.calls[0])
+    expect(reopened.pool.getRecord(0)).toMatchObject({
+      status: 'spent', lifecycle: { spend: { rawTx: raw } },
+    })
+    expect(reopened.journal.get(id).members[0]!.signed?.rawTransaction).toBe(raw)
+    const putMany = writes()
+    expect(await spend(reopened).applyMember(id, 0)).toEqual({
+      kind: 'already-applied', poolIndex: 0,
+    })
+    expect(putMany).not.toHaveBeenCalled()
   })
 
   // Contract test 22, second half: the write landed and the caller saw an error.
@@ -1794,12 +1819,19 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         settled = true
       })
     await entered.promise
-    // The other caller finds nothing pending: this apply took its own write with it.
-    await f.pool.flush()
-    await new Promise(resolve => setImmediate(resolve))
-    expect(settled).toBe(false)
-    release.resolve()
+    // Both callers owe the same in-flight write a durable acknowledgment.
+    let otherSettled = false
+    const otherFlush = f.pool.flush().finally(() => { otherSettled = true })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      expect(settled).toBe(false)
+      expect(otherSettled).toBe(false)
+    } finally {
+      release.resolve()
+    }
     expect((await applying).kind).toBe('committed')
+    await otherFlush
+    expect(otherSettled).toBe(true)
   })
 
   // Contract test 24.

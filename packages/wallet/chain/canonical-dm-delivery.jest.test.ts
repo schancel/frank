@@ -1,11 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  canonicalDirectMessages,
-  LevelOutgoingMessageStore,
-  type CanonicalMessagingOwner,
-} from './canonical-dm'
+import { canonicalDirectMessages, type CanonicalMessagingOwner } from './canonical-dm'
+import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 
 it('reads durable paid and host-bound free delivery after reopening without any effect capability', async () => {
   const location = await mkdtemp(join(tmpdir(), 'frank-dm-delivery-'))

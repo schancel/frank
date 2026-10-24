@@ -10,11 +10,8 @@ import { openNodeDirectoryStore } from '@frank/directory-admission/node'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
-import {
-  canonicalDirectMessages,
-  MemoryOutgoingMessageStore,
-  type CanonicalMessagingOwner,
-} from './canonical-dm'
+import { canonicalDirectMessages, type CanonicalMessagingOwner } from './canonical-dm'
+import { MemoryOutgoingMessageStore } from '../storage/outgoing-message-store'
 
 export async function canonicalPollingFixture() {
   const v = corpus.runtime_case

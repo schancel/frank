@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import * as durability from '../storage/level-durability'
-import { LevelOutgoingMessageStore } from './canonical-dm'
+import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 
 // The real helpers run; the opener is only wrapped so the suite can see that it was the code path.
 jest.mock('../storage/level-durability', () => {

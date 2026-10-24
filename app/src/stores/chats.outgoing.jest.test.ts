@@ -51,6 +51,7 @@ import {
 } from '../utils/blackjack-hand'
 import { FakeLockManager } from '../utils/__fakes__/web-locks'
 import { outgoingLockName } from '../utils/outgoing-lock'
+import * as identitySession from '../utils/identity-session'
 import { setConversationIdSalt as installTestConversationIdSalt } from './chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 
@@ -791,6 +792,133 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(reconcile).toHaveBeenCalled()
       expect(send).toHaveBeenCalledTimes(1)
       expect(only(restored)[0].delivery?.attemptDigest).toBe(HASH)
+    })
+  })
+
+  describe('foreground retry scheduling', () => {
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+    })
+
+    it('waits 500ms then 1000ms, stops at three calls, and retains the message and destination', async () => {
+      const observed: {
+        messageId: string | undefined
+        recipient: string
+        conversationId: string | undefined
+        items: string
+        stampValue: bigint | undefined
+      }[] = []
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async request => {
+          // Snapshot at invocation: mock.calls retains mutable request references.
+          observed.push({
+            messageId: JSON.stringify(request.messageId),
+            recipient: request.recipient.raw,
+            conversationId: request.conversationId,
+            items: JSON.stringify(request.items),
+            stampValue: request.stampValue,
+          })
+          throw new Error('network response lost')
+        })
+      const chats = useChatStore()
+      const sending = chats.sendMessage({
+        wallet,
+        address: PEER,
+        conversationId: STORED_CONVERSATION_ID,
+        items: TEXT,
+        stampValue: 5n,
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(send).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(499)
+      expect(send).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(send).toHaveBeenCalledTimes(2)
+      await jest.advanceTimersByTimeAsync(999)
+      expect(send).toHaveBeenCalledTimes(2)
+      await jest.advanceTimersByTimeAsync(1)
+      expect((await sending).state).toBe('failed')
+      await jest.advanceTimersByTimeAsync(10_000)
+      expect(send).toHaveBeenCalledTimes(3)
+      expect(observed).toHaveLength(3)
+      expect(observed[0].messageId).toBeDefined()
+      expect(observed).toEqual(
+        Array.from({ length: 3 }, () => ({
+          messageId: observed[0].messageId,
+          recipient: activeChain.parseAddress(PEER)!.raw,
+          conversationId: STORED_CONVERSATION_ID,
+          items: JSON.stringify(TEXT),
+          stampValue: 5n,
+        })),
+      )
+      expect(only(chats)).toHaveLength(1)
+      expect(only(chats)[0].status).toBe('error')
+    })
+
+    it.each([true, false])(
+      'honors a 5000ms readiness budget (ready=%s) before deciding whether to back off',
+      async ready => {
+        const wait = jest
+          .spyOn(identitySession, 'waitForMessagingReady')
+          .mockResolvedValue(ready)
+        const pending = Object.assign(
+          new Error('directory publication pending'),
+          {
+            name: 'CanonicalMessagingPendingError',
+          },
+        )
+        const send = jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockRejectedValueOnce(pending)
+          .mockRejectedValueOnce(pending)
+          .mockResolvedValue(okResult(HASH))
+        const sending = useChatStore().sendMessage({
+          wallet,
+          address: PEER,
+          items: TEXT,
+        })
+        await jest.advanceTimersByTimeAsync(0)
+        if (!ready) {
+          expect(send).toHaveBeenCalledTimes(1)
+          expect(wait.mock.calls).toEqual([[5_000]])
+          await jest.advanceTimersByTimeAsync(499)
+          expect(send).toHaveBeenCalledTimes(1)
+          await jest.advanceTimersByTimeAsync(1)
+          expect(send).toHaveBeenCalledTimes(2)
+          await jest.advanceTimersByTimeAsync(999)
+          expect(send).toHaveBeenCalledTimes(2)
+          await jest.advanceTimersByTimeAsync(1)
+        }
+        expect((await sending).state).toBe('sent')
+        expect(send).toHaveBeenCalledTimes(3)
+        expect(wait.mock.calls).toEqual([[5_000], [5_000]])
+      },
+    )
+
+    it('does not treat a labelled cause as proof that the rejected call did nothing', async () => {
+      const unattempted = Object.assign(new Error('network unavailable'), {
+        [directMessageNotAttempted]: true,
+      })
+      const wrapped = Object.assign(new Error('network response lost'), {
+        cause: unattempted,
+      })
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValueOnce(wrapped)
+        .mockRejectedValue(unattempted)
+      const chats = useChatStore()
+      const sending = chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      await jest.advanceTimersByTimeAsync(1_500)
+      expect((await sending).state).toBe('failed')
+      expect(only(chats)[0].status).toBe('error')
+      await chats.reconcileOutgoing({ wallet })
+      expect(send).toHaveBeenCalledTimes(3)
     })
   })
 

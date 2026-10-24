@@ -39,10 +39,8 @@ import { InsufficientStampFundsError } from '../evm-stamp-payer'
 import {
   MonadStampPendingAttemptError,
 } from '../evm-stamp-client'
-import {
-  REFUSED_BEFORE_EXPOSURE,
-  LevelOutgoingMessageStore,
-} from './canonical-dm'
+import { REFUSED_BEFORE_EXPOSURE } from './canonical-dm'
+import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),

@@ -94,13 +94,15 @@ import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import {
   CanonicalRecipientUndeliverableError,
   CanonicalSenderUnpublishedError,
-  LevelOutgoingMessageStore,
   UnpaidDirectMessageNotDeliveredError,
   installedMessageItemRegistry,
   projectOutboxMessageRecord,
+} from './canonical-dm'
+import {
+  LevelOutgoingMessageStore,
   type UnpaidEnvelope,
   type StoredMessage,
-} from './canonical-dm'
+} from '../storage/outgoing-message-store'
 import {
   isDirectMessageNotAttempted,
   type DirectMessageClient,

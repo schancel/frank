@@ -1721,6 +1721,14 @@ async function send(
     // Its record's write failed: whether it is on disk is unknown, so never a second payment.
     if (work.unrecorded)
       throw new DirectMessageAttemptUnlinkedError(formatUuid(messageId))
+    // A step for this row is in flight (a resend submitting the stored free envelope): it owns
+    // the row until it ends. Wait, then read again what it left, so the same bytes are never
+    // handed to the relay by two writers at once.
+    if (work.busy) {
+      await work.busy
+      work = workOf(owner, consumerId)
+      continue
+    }
     if (!work.creating) break
     await work.creating
     work = workOf(owner, consumerId)

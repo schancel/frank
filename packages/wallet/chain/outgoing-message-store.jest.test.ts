@@ -271,7 +271,7 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
 
   it.each(['write', 'delete'] as const)(
     'retains a host-bound free envelope in memory and on disk when its %s fails',
-    async (operation) => {
+    async operation => {
       const envelope = {
         digest: 'aa',
         delivery: '0102',

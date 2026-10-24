@@ -1379,8 +1379,23 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
                 for (const reference of references)
                   await expose(reference.operationId)
               },
+              submit: async () => {
+                expect(
+                  await f.chain.directMessages.deliveryOf!({
+                    wallet: alice,
+                    payloadDigest: digest,
+                  }),
+                ).toBe('delivered')
+                for (const reference of references)
+                  await nativeOwner.resumeOperation(reference.operationId)
+              },
             }
           },
+          attemptOf: messageId =>
+            f.chain.directMessages.attemptOf!({
+              wallet: alice,
+              messageId,
+            }),
           deliveryOf: payloadDigest =>
             f.chain.directMessages.deliveryOf!({
               wallet: alice,
@@ -1393,6 +1408,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
             }),
           onError: (_binding, error) => errors.push(error),
         })
+        expect(broadcasts).toEqual([])
         await recovery.tick()
         expect(errors).toEqual([])
         expect(relayBodies).toHaveLength(1)
@@ -1417,8 +1433,13 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
             original.members.map(member => member.signed!.rawTransaction),
           )
         }
-        expect(broadcasts).toEqual([])
+        const originalNativeBytes = [first, second].flatMap(original =>
+          original.members.map(member => member.signed!.rawTransaction),
+        )
+        expect(broadcasts).toEqual(originalNativeBytes)
         await recovery.tick()
+        expect(errors).toEqual([])
+        expect(new Set(broadcasts)).toEqual(new Set(originalNativeBytes))
         expect(relayBodies).toHaveLength(1)
         expect(prepare).toHaveBeenCalledTimes(preparedCalls)
         expect(nativeSign).toHaveBeenCalledTimes(nativeSigns)

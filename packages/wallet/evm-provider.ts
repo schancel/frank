@@ -1,5 +1,5 @@
 import { recordEvmRpcFailure } from './evm-rpc-failure'
-import { recordWalletFailure } from './wallet-failure'
+import { describeWalletFailure, recordWalletFailure } from './wallet-failure'
 import {
   FetchRequest,
   JsonRpcApiProviderOptions,
@@ -103,10 +103,16 @@ async function readBoundedRelayResponse(
   if (declared !== undefined && declared !== null) {
     const length = Number(declared);
     if (Number.isFinite(length) && length > maxBytes)
-      throw makeError("relay response too large", "SERVER_ERROR");
+      throw recordWalletFailure(
+        makeError("relay response too large", "SERVER_ERROR"),
+        { retryVeto: 'nontransient-transport' },
+      );
   }
   if (!response.body) {
-    throw makeError("relay response streaming unavailable", "SERVER_ERROR");
+    throw recordWalletFailure(
+      makeError("relay response streaming unavailable", "SERVER_ERROR"),
+      { retryVeto: 'nontransient-transport' },
+    );
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -118,7 +124,10 @@ async function readBoundedRelayResponse(
     length += value.length;
     if (length > maxBytes) {
       await reader.cancel();
-      throw makeError("relay response too large", "SERVER_ERROR");
+      throw recordWalletFailure(
+        makeError("relay response too large", "SERVER_ERROR"),
+        { retryVeto: 'nontransient-transport' },
+      );
     }
     chunks.push(value);
   }
@@ -129,6 +138,16 @@ async function readBoundedRelayResponse(
     offset += chunk.length;
   }
   return body;
+}
+
+// Preserve only finite retry vetoes across the existing credential-safe error replacement.
+// Never retain the original transport error: it may contain the capability URL.
+function sanitizedRelayTransportError(original: unknown): Error {
+  const error = makeError("relay RPC transport failed", "SERVER_ERROR");
+  for (const retryVeto of describeWalletFailure(original).retryVetoes) {
+    recordWalletFailure(error, { retryVeto });
+  }
+  return error;
 }
 
 export class RpcCooldownTracker {
@@ -297,7 +316,7 @@ export function makeRelayGetUrl(
           continue;
         }
         if (sanitizeTransportErrors)
-          throw makeError("relay RPC transport failed", "SERVER_ERROR");
+          throw sanitizedRelayTransportError(error);
         throw error;
       } finally {
         clearTimeout(timer);
@@ -308,7 +327,7 @@ export function makeRelayGetUrl(
     if (lastResponse) return lastResponse;
     if (lastError) {
       if (sanitizeTransportErrors)
-        throw makeError("relay RPC transport failed", "SERVER_ERROR");
+        throw sanitizedRelayTransportError(lastError);
       throw lastError;
     }
     throw makeError("no RPC endpoints available", "SERVER_ERROR");

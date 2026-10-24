@@ -17,6 +17,10 @@ before retry. Do not copy labels, replace errors, or search causes for authoriza
 `evm-rpc-failure.ts` is the EVM adapter's vendor normalization boundary. Chain mismatch,
 authorization and cancellation must precede transient status/code handling. RPC
 insufficient balance is not proof that the wallet inventory is insufficient.
+Local response-size and streaming refusals carry a nontransient transport veto.
+The relay's existing credential-safe error replacement preserves only finite retry
+vetoes: never the original transport cause, arbitrary details or financial effect
+labels. Later observation or transient facts cannot clear that veto.
 
 Focused checks from the repository root:
 

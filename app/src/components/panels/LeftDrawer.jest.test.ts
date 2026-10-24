@@ -132,6 +132,33 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     balance.hasError.value = false
   })
 
+  it.each(['/settings', '/dapp-bridge'])(
+    'uses page navigation on desktop %s while keeping the global wallet',
+    async path => {
+      mockRoute.path = path
+      const wrapper = mountDrawer()
+      await nextTick()
+      expect(wrapper.get('.list-column').attributes('style')).toContain(
+        'display: none',
+      )
+      expect(
+        wrapper.find('[data-testid="drawer-resize-handle"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.find('[data-test="drawer-open-wallet-from-bridge"]').exists(),
+      ).toBe(false)
+      expect(wrapper.find('#rail-tab-wallet').exists()).toBe(true)
+      expect(wrapper.emitted('pageNavigation')?.slice(-1)[0]).toEqual([true])
+      ;(wrapper.vm as unknown as { tab: string }).tab = 'contacts'
+      await nextTick()
+      expect(
+        wrapper.get('.list-column').attributes('style') ?? '',
+      ).not.toContain('display: none')
+      expect(wrapper.emitted('pageNavigation')?.slice(-1)[0]).toEqual([false])
+      wrapper.unmount()
+    },
+  )
+
   it('wires Wallet to its tabpanel and pins Settings after the main tabs', () => {
     const wrapper = mountDrawer()
     const html = wrapper.html()

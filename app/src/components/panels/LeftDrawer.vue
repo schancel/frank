@@ -120,7 +120,10 @@
     </div>
 
     <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet, dapp-bridge or forum) -->
-    <div class="column full-height col list-column">
+    <div
+      v-show="!$status.setup || isNarrow || !pageOwnsNavigation"
+      class="column full-height col list-column"
+    >
       <settings-panel
         v-if="$status.setup"
         v-show="tab == 'settings'"
@@ -203,19 +206,6 @@
                   dappBridgeDrawerUi.openBridgeCaption
                 }}</q-item-label>
               </q-item-section>
-            </q-item>
-            <q-item
-              clickable
-              class="topic-list-item"
-              data-test="drawer-open-wallet-from-bridge"
-              @click="openReceive"
-            >
-              <q-item-section avatar class="topic-avatar-section">
-                <q-icon name="account_balance_wallet" size="18px" />
-              </q-item-section>
-              <q-item-section class="topic-name-section">{{
-                $t('leftDrawer.wallet')
-              }}</q-item-section>
             </q-item>
           </q-list>
         </q-scroll-area>
@@ -385,7 +375,7 @@
 
     <!-- Desktop resize drag handle -->
     <div
-      v-if="!isNarrow"
+      v-if="!isNarrow && !pageOwnsNavigation"
       class="drawer-resize-handle"
       data-testid="drawer-resize-handle"
       @mousedown="startResize"
@@ -420,6 +410,7 @@ import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
 import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 import { isNarrowWidth } from '../../utils/layout'
+import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
 import { openChat, openPage } from '../../utils/routes'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
@@ -438,8 +429,10 @@ export default defineComponent({
     const q = inject<{ screen?: { width?: number } } | null>('_q_', null)
     const isNarrow = computed(() =>
       isNarrowWidth(
-        q?.screen?.width ??
-          (typeof window !== 'undefined' ? window.innerWidth : 1024),
+        getEffectiveScreenWidth(
+          q?.screen?.width ??
+            (typeof window !== 'undefined' ? window.innerWidth : 1024),
+        ),
       ),
     )
     const chats = useChatStore()
@@ -487,7 +480,7 @@ export default defineComponent({
       return router.push('/forum')
     }
     function openSettingsTab() {
-      markRailNavigation()
+      if (isNarrow.value) emit('closeDrawer')
       return router.push('/settings')
     }
     function openWalletTab() {
@@ -497,7 +490,7 @@ export default defineComponent({
       }
     }
     function openDappBridgeTab() {
-      markRailNavigation()
+      if (isNarrow.value) emit('closeDrawer')
       if (!route?.path?.startsWith('/dapp-bridge')) {
         return router.push('/dapp-bridge')
       }
@@ -598,6 +591,16 @@ export default defineComponent({
     const tab = ref<
       'chats' | 'contacts' | 'wallet' | 'dapp-bridge' | 'settings' | 'forum'
     >('chats')
+    // These pages own their list/detail navigation. Other rail selections (notably
+    // Contacts without a route change) still need their secondary drawer panel.
+    const pageOwnsNavigation = computed(
+      () =>
+        (tab.value === 'settings' && route.path.startsWith('/settings')) ||
+        (tab.value === 'dapp-bridge' && route.path.startsWith('/dapp-bridge')),
+    )
+    watch(pageOwnsNavigation, value => emit('pageNavigation', value), {
+      immediate: true,
+    })
     const chatListRef = ref<{ focusSearchInput(): void } | null>(null)
     const shortcut = inject(CHAT_SEARCH_SHORTCUT, null)
     const revealDrawer = inject(REVEAL_CHAT_DRAWER, null)
@@ -742,6 +745,7 @@ export default defineComponent({
       balanceStale,
       loaded,
       isNarrow,
+      pageOwnsNavigation,
       legacyRelayEnabled: legacyLotusModeEnabled(),
       chats,
       accountBackedUp,
@@ -749,7 +753,7 @@ export default defineComponent({
       openReceive,
     }
   },
-  emits: ['closeDrawer', 'updateWidth', 'resizing'],
+  emits: ['closeDrawer', 'updateWidth', 'resizing', 'pageNavigation'],
   components: {
     ChatListLink,
     ChatList,

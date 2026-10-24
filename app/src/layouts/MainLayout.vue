@@ -24,6 +24,7 @@
         @closeDrawer="closeDrawerForNavigation"
         @updateWidth="onDrawerWidthUpdate"
         @resizing="onDrawerResizing"
+        @pageNavigation="drawerPageNavigation = $event"
       />
     </q-drawer>
     <router-view
@@ -191,6 +192,7 @@ export default defineComponent({
       disposed: false,
       trueSplitterRatio: compactCutoff,
       desktopDrawerWidth: compactCutoff,
+      drawerPageNavigation: false,
       isDragging: false,
       // See `drawerBreakpoint`'s own comment above for why this can't just be `true`.
       myDrawerOpen: !isNarrowWidth(getEffectiveScreenWidth(initialRawWidth)),
@@ -666,6 +668,8 @@ export default defineComponent({
       if (isNarrowWidth(this.screenWidth)) {
         return compactCutoff
       }
+      // Match the global icon rail; preserve the saved list width for Chats/Contacts.
+      if (this.$status.setup && this.drawerPageNavigation) return 56
       return this.desktopDrawerWidth
     },
     splitterRatio: {

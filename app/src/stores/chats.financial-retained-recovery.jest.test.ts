@@ -495,6 +495,63 @@ it.each([
       expect(await wallet.stealthPayments!.get(operationId)).toEqual(original)
       const requestsBeforeRecovery = f.requests.length
       f.setPhase('delivered')
+      // Temporary diagnostic observer: no extra RPC, writes, deadline or assertion changes.
+      const diagnosticStarted = Date.now()
+      const diagnosticEvents: unknown[] = []
+      const observe = (read: () => void) => {
+        try {
+          read()
+        } catch {
+          // Diagnostics must never replace recovery errors or prevent the deadline.
+        }
+      }
+      const diagnostic = (event: string) =>
+        observe(() => {
+          if (diagnosticEvents.length >= 48 && event !== 'deadline') return
+          diagnosticEvents.push({
+            event,
+            elapsedMs: Date.now() - diagnosticStarted,
+            relayRequests: f.requests.length - requestsBeforeRecovery,
+            broadcasts: offlineChain.walletBroadcasts.length,
+            operations: wallet.getNativeOperations!().map(row => ({
+              id: row.operationId,
+              members: row.members.map(member => ({
+                source: member.source.address,
+                dependencies: member.dependencies,
+                transactionSet: member.transactionSet,
+                exposed: member.exposed,
+                observation: member.observation,
+              })),
+            })),
+          })
+        })
+      const reportDiagnostic = (label: string) =>
+        observe(() => {
+          console.info(
+            label,
+            JSON.stringify({
+              stamp: String(stampValue),
+              mode,
+              distinctPayment,
+              cut,
+              events: diagnosticEvents,
+            }),
+          )
+        })
+      const reconcileOriginal = f.chain.directMessages.reconcileAttempts.bind(
+        f.chain.directMessages,
+      )
+      jest
+        .spyOn(f.chain.directMessages, 'reconcileAttempts')
+        .mockImplementation(async params => {
+          diagnostic('reconcile-start')
+          try {
+            return await reconcileOriginal(params)
+          } finally {
+            diagnostic('reconcile-finish')
+          }
+        })
+      diagnostic('recovery-start')
       const prepare = jest.spyOn(wallet.stealthPayments!, 'prepare')
       const exposeAfterReopen = jest.spyOn(wallet.stealthPayments!, 'expose')
       // Retained-envelope recovery is independent of Chat ticks. Observe the real
@@ -512,8 +569,10 @@ it.each([
         .spyOn(wallet.stealthPayments!, 'submit')
         .mockImplementation(async id => {
           try {
+            diagnostic('financial-submit-start')
             expect(id).toBe(operationId)
             await mockTrackBackground(submit(id))
+            diagnostic('financial-submit-finish')
             finish()
           } catch (error) {
             fail(error)
@@ -557,19 +616,20 @@ it.each([
         await Promise.race([
           recovered,
           new Promise<never>((_resolve, reject) => {
-            deadline = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    'Original financial operation did not complete recovery submission',
-                  ),
+            deadline = setTimeout(() => {
+              diagnostic('deadline')
+              reportDiagnostic('Retained recovery deadline diagnostics')
+              reject(
+                new Error(
+                  'Original financial operation did not complete recovery submission',
                 ),
-              5000,
-            )
+              )
+            }, 5000)
           }),
         ])
       } finally {
         if (deadline !== undefined) clearTimeout(deadline)
+        reportDiagnostic('Retained recovery diagnostics')
       }
       expect(
         await f.chain.directMessages.attemptOf!({

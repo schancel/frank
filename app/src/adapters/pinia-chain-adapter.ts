@@ -43,6 +43,9 @@ import {
 } from '../accounts/evm-wallets'
 import { peekOpenedUtxoWallets } from '../accounts/utxo-wallets'
 import { createFinancialOperationRecovery } from '../stealth-payments/recovery'
+import { createFinancialEnvelopeRecovery } from '../stealth-payments/financial-envelope-recovery'
+import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
+import { store as messageStore } from './level-message-store'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageReceived,
@@ -651,6 +654,48 @@ export function startOutgoingReconciliation({
   // payment's stored signed bytes are submitted (again). This is also how an operation left
   // `exposed` by a restart between delivery and submission is finished. Opens no wallet.
   const messaging = activeChain.directMessages
+  const account = accountSession.state.account
+  const revision = accountSession.state.revision
+  const messagingChainIdentifier = activeChain.chainIdentifier
+  const envelopeContextCurrent = () =>
+    !stopped &&
+    accountSession.state.status === 'ready' &&
+    accountSession.state.account === account &&
+    accountSession.state.revision === revision &&
+    accountSession.peekWallet() === wallet &&
+    activeChain.chainIdentifier === messagingChainIdentifier &&
+    wallet.chainIdentifier === messagingChainIdentifier
+  const envelopeRecovery = account
+    ? createFinancialEnvelopeRecovery({
+        accountId: account.receipt.context.accountId,
+        messagingChainIdentifier,
+        isCurrent: envelopeContextCurrent,
+        store: {
+          async financialEnvelopeBindings(scope) {
+            return (await messageStore).financialEnvelopeBindings(scope)
+          },
+          async bindFinancialEnvelope(binding) {
+            const store = await messageStore
+            if (!envelopeContextCurrent())
+              throw new Error('Financial envelope recovery context changed')
+            return store.bindFinancialEnvelope(binding)
+          },
+        },
+        capture: references =>
+          captureOutgoingFinancialOperations(wallet, references),
+        attemptOf: async messageId => {
+          if (!messaging.attemptOf)
+            throw new Error('Financial envelope original lookup is unsupported')
+          return messaging.attemptOf({ wallet, messageId })
+        },
+        deliveryOf: payloadDigest =>
+          messaging.deliveryOf?.({ wallet, payloadDigest }) ??
+          Promise.resolve(undefined),
+        reconcile: params => messaging.reconcileAttempts({ wallet, ...params }),
+        onError: (_binding, error) =>
+          console.warn('Financial envelope recovery remains pending', error),
+      })
+    : undefined
   const financialRecovery = createFinancialOperationRecovery({
     async captureSession() {
       const deliveryOf = messaging.deliveryOf
@@ -789,7 +834,22 @@ export function startOutgoingReconciliation({
   }
 
   const tick = async () => {
-    if (ticking || stopped) return
+    if (stopped) return
+    // This owner is independent of presentation rows and never holds the chat recovery tick.
+    // Its per-message exclusion allows a later pass to advance other retained originals.
+    if (envelopeRecovery)
+      void envelopeRecovery.tick().catch(error => {
+        if (!stopped)
+          console.warn('Financial envelope recovery remains pending', error)
+      })
+    // Keep the same timer alive while chat RPC is pending so later retained batches can
+    // advance. The chat completion replaces this pulse with its normal backoff schedule.
+    schedule(
+      typeof document !== 'undefined' && document.hidden
+        ? Math.max(intervalMs, backgroundIntervalMs)
+        : intervalMs,
+    )
+    if (ticking) return
     ticking = true
     resetRequested = false
     let pending = 0

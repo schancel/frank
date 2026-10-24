@@ -315,20 +315,21 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
 
   replaceWithCheckpoint(checkpoint: TerminalSubAccountCheckpoint): void {
     this.assertWritable()
+    const index = checkpoint.index
     const encoded = JSON.stringify(checkpoint)
-    this.checkpoints.set(checkpoint.index, cloneCheckpoint(checkpoint))
-    this.cache.delete(checkpoint.index)
+    this.checkpoints.set(index, cloneCheckpoint(checkpoint))
+    this.cache.delete(index)
     this.sortedRecordIndices = this.sortedRecordIndices.filter(
-      index => index !== checkpoint.index,
+      candidate => candidate !== index,
     )
     void this.enqueueWrite(() =>
       durableBatch(this.db, [
         {
           type: 'put',
-          key: `${CHECKPOINT_PREFIX}${checkpoint.index}`,
+          key: `${CHECKPOINT_PREFIX}${index}`,
           value: encoded,
         },
-        { type: 'del', key: String(checkpoint.index) },
+        { type: 'del', key: String(index) },
       ]),
     )
   }
@@ -341,17 +342,25 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   async flush(): Promise<void> {
-    if (this.flushing) return this.flushing
-    const draining = (async () => {
-      while (this.pendingWrites.length > 0) {
-        await this.pendingWrites[0]!()
-        // A failed/uncertain write stays at the head. A later explicit flush retries
-        // these exact bytes before any dependent write; it cannot forget the failure.
-        this.pendingWrites.shift()
+    while (this.pendingWrites.length > 0) {
+      if (this.flushing) {
+        await this.flushing
+        // A write may have been accepted after that drain completed but before its
+        // completion handlers ran. This flush still owes that write an acknowledgment.
+        continue
       }
-    })()
-    this.flushing = draining
-    try { await draining } finally { this.flushing = undefined }
+      const draining = (async () => {
+        while (this.pendingWrites.length > 0) {
+          await this.pendingWrites[0]!()
+          // Keep a failed/uncertain head for an explicit retry of the exact write.
+          this.pendingWrites.shift()
+        }
+      })()
+      this.flushing = draining
+      try { await draining } finally {
+        if (this.flushing === draining) this.flushing = undefined
+      }
+    }
   }
 
   /**

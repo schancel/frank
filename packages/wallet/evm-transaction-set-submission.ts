@@ -172,6 +172,22 @@ export function createEvmTransactionSetSubmission(options: {
         : 'dependency-pending',
     )
   }
+  // One recovery attempt per operation at a time. Host polls may tick faster than a pass
+  // completes; a pass that finds an attempt already running awaits that attempt instead of
+  // stacking another observe/replay sequence onto the serialized journal behind it.
+  const running = new Map<string, Promise<TransactionSetSubmission>>()
+  const track = (
+    id: string,
+    attempt: Promise<TransactionSetSubmission>,
+  ): Promise<TransactionSetSubmission> => {
+    running.set(id, attempt)
+    void attempt
+      .finally(() => {
+        if (running.get(id) === attempt) running.delete(id)
+      })
+      .catch(() => undefined)
+    return attempt
+  }
   return {
     async sendTransaction(
       prepared: PreparedEvmTransactionSet,
@@ -188,7 +204,8 @@ export function createEvmTransactionSetSubmission(options: {
           member => member.rawTransaction,
         ),
       )
-      return resume(id)
+      // Explicit submission always starts its own pass after authorization is durable.
+      return track(id, resume(id))
     },
     async reconcileAuthorized(): Promise<readonly TransactionSetSubmission[]> {
       const operations = options
@@ -201,10 +218,12 @@ export function createEvmTransactionSetSubmission(options: {
             operation.members.some(needsRecovery),
         )
       // No wallet-wide queue: one slow operation never prevents another from entering replay.
+      // Per operation, an attempt already in flight is joined rather than duplicated.
       return Promise.all(
-        operations.map(operation =>
-          resume(operation.preparationId!.slice('evm-transaction-set:'.length)),
-        ),
+        operations.map(operation => {
+          const id = operation.preparationId!.slice('evm-transaction-set:'.length)
+          return running.get(id) ?? track(id, resume(id))
+        }),
       )
     },
   }

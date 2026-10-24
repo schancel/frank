@@ -570,6 +570,18 @@ describe('approval window page', () => {
     const { scope, windows } = createExtensionScope()
     const state = createBackgroundBridgeState({ activePersonaAddress: PRIMARY })
     const bg = installBackgroundBridge(scope, state)
+    const funding = jest.fn()
+    scope.chrome.runtime.onMessage.addListener(
+      (message: any, _sender: any, respond: (value: unknown) => void) => {
+        if (message.type !== 'fund-dapp-persona') return undefined
+        funding(message)
+        respond({
+          ok: false,
+          error: { code: 4900, message: 'Unlock Frank to fund this address.' },
+        })
+        return undefined
+      },
+    )
 
     const pending = rpc(state, scope, 'r1', 'eth_requestAccounts')
     await tick()
@@ -601,6 +613,7 @@ describe('approval window page', () => {
       .click()
 
     expect(await pending).toEqual({ ok: true, result: [PRIMARY] })
+    expect(funding).not.toHaveBeenCalled()
     await tick(5)
     expect(closeWindow).toHaveBeenCalled()
     page.dispose()

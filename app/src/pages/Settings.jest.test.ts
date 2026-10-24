@@ -315,7 +315,6 @@ describe('Settings list and section navigation', () => {
       'storage',
       'gateways',
       'backup',
-      'dapp-bridge',
       'docs',
       'changelog',
       'about',
@@ -324,6 +323,9 @@ describe('Settings list and section navigation', () => {
         true,
       )
     }
+    expect(
+      wrapper.find('[data-test="settings-row-dapp-bridge"]').exists(),
+    ).toBe(false)
     // Phone, no section chosen: the list alone, no Save/Cancel bar, no tabs.
     expect(wrapper.find('[data-test="settings-section"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="save-email-gateway-btn"]').exists()).toBe(

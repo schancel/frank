@@ -219,7 +219,7 @@ import { storeToRefs } from 'pinia'
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus } from 'src/accounts/session'
 import { useForumStore } from 'src/stores/forum'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { peekActiveWallet } from 'src/composables/useActiveWallet'
 import { sortPostsByMode } from '../utils/sorting'
 
 import ForumPost from '../components/forum/ForumPost.vue'
@@ -255,17 +255,7 @@ export default defineComponent({
     }
     const retryRefresh = async () => {
       try {
-        let wallet
-        try {
-          wallet = await Promise.race([
-            useActiveWallet(),
-            new Promise<undefined>(resolve =>
-              setTimeout(() => resolve(undefined), 5),
-            ),
-          ])
-        } catch {
-          // Public reading requires no active wallet
-        }
+        const wallet = peekActiveWallet()
         await forumStore.refreshMessages({
           wallet,
           topic: selectedTopic.value,

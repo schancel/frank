@@ -115,30 +115,15 @@ export function forumSnapshot(rows: ForumMessage[]): {
   return { messages, index }
 }
 
+/** Snapshot messages already contain every reply as a flat row. */
 function collectPosterAddresses(
-  messages: ReadonlyArray<{ poster?: string; replies?: unknown[] }>,
+  messages: ReadonlyArray<{ poster?: string }>,
 ): string[] {
-  const posters: string[] = []
-  const visit = (
-    rows: ReadonlyArray<{ poster?: string; replies?: unknown[] }>,
-  ) => {
-    for (const row of rows) {
-      if (!row) continue
-      if (typeof row.poster === 'string' && row.poster.trim()) {
-        posters.push(row.poster.trim())
-      }
-      if (Array.isArray(row.replies) && row.replies.length > 0) {
-        visit(
-          row.replies as ReadonlyArray<{
-            poster?: string
-            replies?: unknown[]
-          }>,
-        )
-      }
-    }
-  }
-  visit(messages)
-  return posters
+  return messages.flatMap(row =>
+    typeof row.poster === 'string' && row.poster.trim()
+      ? [row.poster.trim()]
+      : [],
+  )
 }
 
 // All app Forum queries share one staging slot, including overlapping refresh generations.

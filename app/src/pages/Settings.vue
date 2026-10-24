@@ -755,7 +755,6 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
-import { FA_PLUG_CIRCLE_PLUS_ICON } from 'src/utils/extension-download'
 const msToMinutes = 60000
 
 const UI_SCALE_OPTIONS: readonly {
@@ -1272,13 +1271,7 @@ export default defineComponent({
       myAddress,
       myName: computed(() => profileStore.profile?.name ?? ''),
       myAvatar: computed(() => profileStore.profile?.avatar ?? ''),
-      rowGroups: SETTINGS_ROW_GROUPS.map(group =>
-        group.map(row =>
-          row.id === 'dapp-bridge'
-            ? { ...row, icon: FA_PLUG_CIRCLE_PLUS_ICON }
-            : row,
-        ),
-      ),
+      rowGroups: SETTINGS_ROW_GROUPS,
     }
   },
   computed: {

@@ -384,6 +384,12 @@ export default defineComponent({
        * saw arrive, each chain at its own price. Nothing when there is none, or when part of
        * it has no price: never a claimed amount, never a made-up figure. */
       unreadValueText(conversation: Conversation): string | undefined {
+        // Read histories and wallet receipts only for a badge that can be shown.
+        if (
+          !conversation.totalUnreadMessages ||
+          conversation.id === chatStore.activeConversationId
+        )
+          return undefined
         const avu = unreadValueAvu(
           conversation,
           chatStore.activeConversationId ?? null,

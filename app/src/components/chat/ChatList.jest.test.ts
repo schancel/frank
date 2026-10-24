@@ -77,8 +77,11 @@ const mockReceipts: Record<
   string,
   Array<{ chainIdentifier: string; baseUnits: bigint }>
 > = {}
+const mockReadReceipts = jest.fn(
+  () => (digest: string) => mockReceipts[digest] ?? [],
+)
 jest.mock('src/utils/message-receipts', () => ({
-  verifiedReceiptsReader: () => (digest: string) => mockReceipts[digest] ?? [],
+  verifiedReceiptsReader: () => mockReadReceipts(),
 }))
 jest.mock('./ChatListItem.vue', () => ({
   props: ['valueUnread', 'numUnread', 'screenerStamp'],
@@ -209,6 +212,31 @@ describe('ChatList closeDrawer', () => {
       wrapper.unmount()
     },
   )
+
+  it('does not scan history or wallet receipts while opening a read conversation', async () => {
+    const history = new Proxy([], {
+      get(target, key, receiver) {
+        if (key === 'flatMap')
+          throw new Error(
+            'Read history must not be scanned for an invisible badge',
+          )
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    mockChatStore.getSortedChatOrder = [
+      {
+        id: 'read-thread',
+        address: 'known-contact',
+        totalUnreadMessages: 0,
+        messages: history,
+      },
+    ]
+    mockReadReceipts.mockClear()
+    const wrapper = await selectChatAt(390)
+    expect(mockReadReceipts).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="unread-value"]').text()).toBe('')
+    wrapper.unmount()
+  })
 
   it('passes no unread value when unread messages brought nothing', async () => {
     mockChatStore.getSortedChatOrder = [

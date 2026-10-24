@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import Forum from './Forum.vue'
 import { useForumStore } from 'src/stores/forum'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { peekActiveWallet } from 'src/composables/useActiveWallet'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ForumMessage } from '@frank/wallet/forum-model'
 import enUS from '../i18n/en-us'
@@ -31,7 +31,7 @@ jest.mock('@frank/wallet/chain', () => ({
 }))
 
 jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(),
+  peekActiveWallet: jest.fn(),
 }))
 
 function t(messages: unknown, key: string): string {
@@ -83,7 +83,7 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     unhandledRejections = []
     process.on('unhandledRejection', onUnhandled)
     mockDiscoverTopics.mockResolvedValue([])
-    ;(useActiveWallet as jest.Mock).mockResolvedValue(testWallet)
+    ;(peekActiveWallet as jest.Mock).mockReturnValue(testWallet)
   })
 
   afterEach(() => {

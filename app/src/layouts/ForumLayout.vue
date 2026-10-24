@@ -208,6 +208,7 @@ export default defineComponent({
       wheelCooldownUntil: 0,
       wheelRefreshing: false,
       wheelRefreshRevision: 0,
+      refreshAttemptRevision: 0,
       wheelReleaseTimer: undefined as ReturnType<typeof setTimeout> | undefined,
       refreshResult: '' as '' | 'success' | 'error',
       refreshResultTimer: undefined as
@@ -324,9 +325,11 @@ export default defineComponent({
     canShowRefreshResult(
       context: RefreshFeedbackContext,
       succeeded: boolean | undefined,
+      attemptRevision: number,
     ): succeeded is boolean {
       return (
         succeeded !== undefined &&
+        this.refreshAttemptRevision === attemptRevision &&
         !this.isRefreshing &&
         this.selectedTopic === context.topic &&
         this.duration === context.duration &&
@@ -397,12 +400,14 @@ export default defineComponent({
         const revision = ++this.wheelRefreshRevision
         const startedAt = performance.now()
         const context = this.captureRefreshContext()
+        const refresh = this.refreshContent()
+        const attemptRevision = this.refreshAttemptRevision
         void (async () => {
-          const succeeded = await this.refreshContent()
+          const succeeded = await refresh
           await this.waitForRefreshFeedback(startedAt)
           if (this.wheelRefreshRevision !== revision) return
           this.wheelRefreshing = false
-          if (this.canShowRefreshResult(context, succeeded))
+          if (this.canShowRefreshResult(context, succeeded, attemptRevision))
             this.showRefreshResult(succeeded)
         })()
       }, WHEEL_RELEASE_DELAY_MS)
@@ -415,18 +420,21 @@ export default defineComponent({
       const revision = ++this.wheelRefreshRevision
       const startedAt = performance.now()
       const context = this.captureRefreshContext()
+      const refresh = this.refreshContent()
+      const attemptRevision = this.refreshAttemptRevision
       void (async () => {
-        const succeeded = await this.refreshContent()
+        const succeeded = await refresh
         await this.waitForRefreshFeedback(startedAt)
         done()
         if (
           this.wheelRefreshRevision === revision &&
-          this.canShowRefreshResult(context, succeeded)
+          this.canShowRefreshResult(context, succeeded, attemptRevision)
         )
           this.showRefreshResult(succeeded)
       })()
     },
     async refreshContent() {
+      this.refreshAttemptRevision++
       try {
         const wallet = peekActiveWallet()
         const applied = await this.refreshMessages({

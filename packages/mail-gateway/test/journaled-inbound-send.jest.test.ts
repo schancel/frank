@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain';
+import { DirectMessageAlreadyAttemptedError } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { MailJournal } from '../src/ledger/mail-journal';
 import { JournaledInboundSend } from '../src/relay/journaled-inbound-send';
@@ -286,6 +287,124 @@ describe('journal-backed inbound Frank send', () => {
       expect(await recovered.recover()).toMatchObject({ attempted: 0 });
     }
   );
+
+  it.each(
+    (['generic', 'already-recorded'] as const).flatMap(errorKind =>
+      (['known', 'absent', 'lookup-failed', 'held'] as const).map(lookup => ({ errorKind, lookup }))
+    )
+  )('preserves lookup, linkage and error identity after $errorKind send rejection ($lookup)', async ({ errorKind, lookup }) => {
+    ledger.addCredits(SENDER, lookup === 'held' ? 2 : 1);
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const admitted = admit(sender);
+    if (admitted.kind !== 'queued') throw new Error('admission failed');
+    if (lookup === 'held') {
+      const otherRaw = Buffer.from(RAW.toString('utf8').replace('mail-1', 'other-mail'));
+      const other = sender.admit(
+        { email: parseRawRfc822(otherRaw), verifiedTransportId: 'smtp:other-mail', authenticatedSenderEmail: SENDER },
+        RECIPIENT, 1000n
+      );
+      if (other.kind !== 'queued') throw new Error('second admission failed');
+      journal.markFrankSendSending(other.slot.slotId);
+      journal.linkFrankSend(other.slot.slotId, DIGEST);
+    }
+    const original = errorKind === 'generic'
+      ? new Error('original send rejection')
+      : new DirectMessageAlreadyAttemptedError(admitted.slot.frankMessageId, DIGEST, '02' + 'ab'.repeat(32));
+    const lookupError = new Error('original lookup rejection');
+    const order: string[] = [];
+    let lookups = 0;
+    jest.spyOn(chain.directMessages, 'attemptOf').mockImplementation(async ({ messageId }) => {
+      expect(messageId).toBe(admitted.slot.frankMessageId);
+      order.push(++lookups === 1 ? 'lookup-before' : 'lookup-after');
+      if (lookups === 1 || lookup === 'absent') return undefined;
+      if (lookup === 'lookup-failed') throw lookupError;
+      return { payloadDigest: DIGEST, paid: true };
+    });
+    jest.spyOn(chain.directMessages, 'send').mockImplementation(async params => {
+      order.push('send');
+      expect(params.messageId).toBe(admitted.slot.frankMessageId);
+      throw original;
+    });
+    const link = journal.linkFrankSend.bind(journal);
+    jest.spyOn(journal, 'linkFrankSend').mockImplementation((slotId, digest) => {
+      order.push('link');
+      return link(slotId, digest);
+    });
+    const reconcile = jest.spyOn(chain.directMessages, 'reconcileAttempts');
+    let caught: unknown;
+    const resume = sender.resume.bind(sender);
+    jest.spyOn(sender, 'resume').mockImplementation(async slotId => {
+      try { return await resume(slotId); }
+      catch (error) { caught = error; order.push('throw'); throw error; }
+    });
+    // Limit the page to this slot: the competing owner in the held case stays untouched.
+    const result = await sender.recover(1);
+    if (lookup === 'held') {
+      expect(caught).toBeUndefined();
+      expect(order).toEqual(['lookup-before', 'send', 'lookup-after', 'link']);
+      expect(result).toMatchObject({ attempted: 1, held: 1, delivered: 0, pending: 0, errors: [] });
+      expect(journal.findFrankSend(admitted.slot.slotId)).toMatchObject({ state: 'held', holdReason: 'digest_conflict' });
+    } else {
+      const expected = lookup === 'lookup-failed' ? lookupError : original;
+      expect(caught).toBe(expected);
+      expect(order).toEqual(['lookup-before', 'send', 'lookup-after', ...(lookup === 'known' ? ['link'] : []), 'throw']);
+      expect(result).toMatchObject({ attempted: 1, delivered: 0, pending: 0, held: 0,
+        errors: [{ slotId: admitted.slot.slotId, kind: expected.name }] });
+      expect(journal.findFrankSend(admitted.slot.slotId)).toMatchObject({
+        state: lookup === 'known' ? 'linked' : 'sending',
+        ...(lookup === 'known' ? { payloadDigest: DIGEST } : {}),
+      });
+    }
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(journal.findFrankSend(admitted.slot.slotId)?.frankMessageId).toBe(admitted.slot.frankMessageId);
+  });
+
+  it.each(
+    ([0n, 1000n] as const).flatMap(stamp =>
+      (['live', 'dead'] as const).map(status => ({ stamp, status }))
+    )
+  )('observes $status after a returned receipt with stamp $stamp instead of assuming delivery', async ({ stamp, status }) => {
+    ledger.addCredits(SENDER, 1);
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const admitted = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'smtp:receipt', authenticatedSenderEmail: SENDER },
+      RECIPIENT, stamp
+    );
+    if (admitted.kind !== 'queued') throw new Error('admission failed');
+    const order: string[] = [];
+    const send = jest.spyOn(chain.directMessages, 'send').mockImplementation(async params => {
+      order.push('send');
+      expect(params.messageId).toBe(admitted.slot.frankMessageId);
+      await params.onEnvelopeDurable!(DIGEST);
+      order.push('receipt');
+      return { payloadDigest: DIGEST, stampValueWei: stamp, stampPayments: [], preparationTxHashes: [] };
+    });
+    const deliveryOf = jest.fn(async ({ payloadDigest }: { payloadDigest: string }) => {
+      order.push('delivery');
+      expect(payloadDigest).toBe(DIGEST);
+      return status;
+    });
+    chain.directMessages.deliveryOf = deliveryOf;
+    const reconcile = jest.spyOn(chain.directMessages, 'reconcileAttempts').mockImplementation(async params => {
+      order.push('reconcile');
+      expect(params.payloadDigests).toEqual([DIGEST]);
+      await params.onEnvelopeDurable!(DIGEST);
+      return { [DIGEST]: status };
+    });
+    await expect(sender.resume(admitted.slot.slotId)).resolves.toBe(status === 'live' ? 'pending' : 'held');
+    expect(order).toEqual(['send', 'receipt', stamp === 0n ? 'delivery' : 'reconcile']);
+    expect(send).toHaveBeenCalledTimes(1);
+    if (stamp === 0n) expect(reconcile).not.toHaveBeenCalled();
+    else expect(deliveryOf).not.toHaveBeenCalled();
+    expect(journal.findFrankSend(admitted.slot.slotId)).toMatchObject({
+      frankMessageId: admitted.slot.frankMessageId,
+      payloadDigest: DIGEST,
+      state: status === 'live' ? 'linked' : 'held',
+      ...(status === 'dead' ? { holdReason: 'wallet_delivery_dead' } : {}),
+    });
+    expect(ledger.getBalance(SENDER)).toBe(0);
+  });
 
   it('keeps an unpaid mail held, then consumes one credit when the same verified mail returns', async () => {
     let sender = new JournaledInboundSend({ chain, wallet, ledger, journal });

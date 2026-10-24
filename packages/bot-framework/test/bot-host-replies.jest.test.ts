@@ -1562,6 +1562,108 @@ describe("FrankBotHost replies", () => {
       expect(await finished(second.instance, message)).toBe(true);
     });
 
+    it("waits for the stamp floor before starting the send timeout", async () => {
+      const { host, instance } = await start(answering(), { callTimeoutMs: 4321 });
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend.mockRejectedValue(new Error("stage the reply"));
+      const message = inbound("floor", { stampValueWei: STAMP });
+      await poll(host, [message]);
+      await drain(instance);
+      const originalId = mockSend.mock.calls[0][0].messageId;
+      const storedStamp = BigInt(instance.operations.get(message.payloadDigest).reply.stampValue);
+      expect(storedStamp).toBeGreaterThan(0n);
+      const floorEntered = checkpoint();
+      const releaseFloor = checkpoint();
+      const sendEntered = checkpoint();
+      const releaseSend = checkpoint();
+      (host as any).chain.directMessages.minimumStamp = async () => {
+        floorEntered.resolve();
+        await releaseFloor.promise;
+        return 0n;
+      };
+      mockSend.mockClear().mockImplementation(async () => {
+        sendEntered.resolve();
+        await releaseSend.promise;
+        throw new Error("late send failure");
+      });
+      const realTimeout = global.setTimeout;
+      let expire: (() => void) | undefined;
+      const timer = jest.spyOn(global, "setTimeout").mockImplementation(((callback: () => void, delay?: number, ...args: unknown[]) => {
+        if (delay === 4321) expire = callback;
+        return realTimeout(callback, delay, ...args);
+      }) as typeof setTimeout);
+      try {
+        const delivery = (host as any).deliver(instance, message.payloadDigest);
+        await floorEntered.promise;
+        expect(mockSend).not.toHaveBeenCalled();
+        expect(expire).toBeUndefined();
+        releaseFloor.resolve();
+        await sendEntered.promise;
+        expect(expire).toBeDefined();
+        expect(mockSend.mock.calls[0][0]).toMatchObject({ messageId: originalId, stampValue: storedStamp });
+        expire!();
+        await expect(delivery).resolves.toBe("waiting");
+        expect(await finished(instance, message)).toBe(false);
+        expect(instance.operations.get(message.payloadDigest)?.reply).toBeDefined();
+      } finally {
+        releaseFloor.resolve();
+        releaseSend.resolve();
+        timer.mockRestore();
+      }
+    });
+
+    it("swallows a late attempt callback's missing-row rejection without resurrecting a completed reply", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen), { callTimeoutMs: 4321 });
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend.mockRejectedValue(new Error("stage the reply"));
+      const message = inbound("late callback");
+      await poll(host, [message]);
+      await drain(instance);
+      const originalId = mockSend.mock.calls[0][0].messageId;
+      const entered = checkpoint();
+      const release = checkpoint();
+      const lateFinished = checkpoint();
+      const digest = "d4".repeat(32);
+      mockSend.mockClear().mockImplementationOnce(async params => {
+        entered.resolve();
+        await release.promise;
+        await params.onAttemptCreated(digest);
+        lateFinished.resolve();
+        return { payloadDigest: digest, stampValueWei: STAMP, stampPayments: [], preparationTxHashes: [] };
+      }).mockImplementation(async params => {
+        await params.onAttemptCreated(digest);
+        return { payloadDigest: digest, stampValueWei: STAMP, stampPayments: [], preparationTxHashes: [] };
+      });
+      const realTimeout = global.setTimeout;
+      let expire: (() => void) | undefined;
+      const timer = jest.spyOn(global, "setTimeout").mockImplementation(((callback: () => void, delay?: number, ...args: unknown[]) => {
+        if (delay === 4321) expire = callback;
+        return realTimeout(callback, delay, ...args);
+      }) as typeof setTimeout);
+      const link = jest.spyOn(instance.operations, "linkReply");
+      try {
+        const first = (host as any).deliver(instance, message.payloadDigest);
+        await entered.promise;
+        expire!();
+        await expect(first).resolves.toBe("waiting");
+        await (host as any).deliver(instance, message.payloadDigest);
+        expect(await finished(instance, message)).toBe(true);
+        expect(instance.operations.get(message.payloadDigest)).toBeUndefined();
+        release.resolve();
+        await lateFinished.promise;
+        await expect(link.mock.results[1].value).rejects.toThrow();
+        expect(instance.operations.get(message.payloadDigest)).toBeUndefined();
+        expect(await finished(instance, message)).toBe(true);
+        instance.operations.assertOpen();
+        expect(seen).toEqual(["late callback"]);
+        expect(mockSend.mock.calls.map(([params]) => params.messageId)).toEqual([originalId, originalId]);
+      } finally {
+        release.resolve();
+        timer.mockRestore();
+      }
+    });
+
     // On 16218e9f this send had no bound: one that hung held its peer's lane and the single
     // retry pass, so no other waiting reply was sent either.
     it("whose send hangs is let go at the call bound and sent again; the wallet's one-payment rule covers the call left behind", async () => {

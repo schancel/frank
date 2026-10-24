@@ -1,3 +1,4 @@
+import { createCooperativeBatchYielder } from '../chain/event-loop-yield'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { keccak256, toUtf8Bytes, Transaction } from 'ethers'
@@ -553,11 +554,11 @@ class NativeSignatureValidationCache {
   }
 }
 
-function validateRow(
+async function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
   signatures: NativeSignatureValidationCache,
-): EvmNativeOperation {
+): Promise<EvmNativeOperation> {
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const hasSubmissionPolicy =
     !!value && typeof value === 'object' && 'submissionPolicy' in value
@@ -636,6 +637,7 @@ function validateRow(
   let fee = 0n
   const sourceAddresses = new Set<string>()
   const claims = new Set<string>()
+  const yielder = createCooperativeBatchYielder()
   for (let i = 0; i < row.members.length; i++) {
     const member = object(row.members[i], [
       'source',
@@ -716,6 +718,9 @@ function validateRow(
     if (member.syncApplied && observation.state !== 'included-success') fail()
     checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
+    // Callers retain journal coordination through validation and the following write.
+    // Yielding never publishes this still-unvalidated snapshot.
+    await yielder.maybeYield()
   }
   if (row.kind === 'transaction-set')
     validateTransactionSet(
@@ -885,7 +890,7 @@ export class EvmNativeOperationJournal {
     for await (const [key, value] of this.database.iterator({ gte: 'operation:', lt: 'operation;' })) {
       const name = String(key), text = String(value)
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
-      const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+      const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
       if (name !== `operation:${row.operationId}` || rows.has(row.operationId)) fail()
       rows.set(row.operationId, row)
     }
@@ -992,7 +997,7 @@ export class EvmNativeOperationJournal {
     const memory = this.database ? undefined : this.ephemeralHistory.get(id)
     const text = this.database ? await this.stored(`history:${id}`) : memory && JSON.stringify(memory.row)
     if (text === undefined) return undefined
-    const row = validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+    const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
     if (row.operationId !== id || !completedForHistory(row)) fail()
     const receiptText = this.database ? await this.stored(`completion:${id}`) : memory && JSON.stringify(memory.receipt)
     if (receiptText === undefined) fail()
@@ -1334,7 +1339,7 @@ export class EvmNativeOperationJournal {
           ...(frozen.record ? { record: frozen.record } : {}),
         }
         row.reservedBytes = reservation(row)
-        const validated = validateRow(row, this.binding, this.signatures)
+        const validated = await validateRow(row, this.binding, this.signatures)
         if (
           activeRows.reduce((n, r) => n + r.reservedBytes, 0) +
             row.reservedBytes >
@@ -1435,7 +1440,7 @@ export class EvmNativeOperationJournal {
         await this.reloadRows(false)
         const row = this.get(id)
         if (await change(row) === false) return row
-        const validated = validateRow(row, this.binding, this.signatures)
+        const validated = await validateRow(row, this.binding, this.signatures)
         try {
           if (this.database)
             await durablePut(

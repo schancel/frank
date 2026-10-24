@@ -110,6 +110,24 @@ it.each([false, true])('yields across exhausted sources, including legacy fan-in
   } finally { await f.journal.Close() }
 })
 
+it('lets the host run during cold journal validation before publishing the signed graph', async () => {
+  const f = await setup(Array.from({ length: 32 }, () => 50000n))
+  const prepare = f.journal.prepare.bind(f.journal)
+  const check = jest.spyOn(f.journal, 'prepare').mockImplementation(async (...args) => {
+    let completed = false
+    const hostTurn = new Promise<{ completed: boolean; published: number }>(resolve =>
+      setTimeout(() => resolve({ completed, published: f.journal.list().length }), 0))
+    const row = await prepare(...args)
+    completed = true
+    expect(await hostTurn).toEqual({ completed: false, published: 0 })
+    return row
+  })
+  try {
+    const result = await f.preparer.constructTransactionSet({ operationId: 'cold-validation', amountWei: 32n * 29000n, kdf })
+    expect(result.bundle).toHaveLength(32)
+  } finally { check.mockRestore(); await f.journal.Close() }
+})
+
 it('constructs one complete signed set with private change, exact source conservation, and shuffled contiguous nonces', async () => {
   const { preparer, coins, journal } = await setup()
   const derive = jest.fn(kdf)

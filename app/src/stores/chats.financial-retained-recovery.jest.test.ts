@@ -513,18 +513,116 @@ it.each([
             elapsedMs: Date.now() - diagnosticStarted,
             relayRequests: f.requests.length - requestsBeforeRecovery,
             broadcasts: offlineChain.walletBroadcasts.length,
-            operations: wallet.getNativeOperations!().map(row => ({
-              id: row.operationId,
-              members: row.members.map(member => ({
-                source: member.source.address,
-                dependencies: member.dependencies,
-                transactionSet: member.transactionSet,
-                exposed: member.exposed,
-                observation: member.observation,
-              })),
-            })),
+            operations: JSON.parse(
+              JSON.stringify(
+                wallet.getNativeOperations!().map(row => ({
+                  id: row.operationId,
+                  members: row.members.map(member => ({
+                    source: member.source.address,
+                    dependencies: member.dependencies,
+                    transactionSet: member.transactionSet,
+                    exposed: member.exposed,
+                    observation: member.observation,
+                  })),
+                })),
+              ),
+            ),
           })
         })
+      // Observe existing public calls without replacing their returned promises or
+      // inserting another await into financial recovery. Keep unfinished calls even
+      // when the bounded completed-event buffer fills.
+      let invocationId = 0
+      const pendingInvocations = new Map<
+        number,
+        { method: string; startedMs: number }
+      >()
+      const invocationEvents: {
+        id: number
+        method: string
+        state: string
+        elapsedMs: number
+      }[] = []
+      const traceCall = <T>(
+        method: string,
+        invoke: () => Promise<T>,
+      ): Promise<T> => {
+        const id = ++invocationId
+        const event = (state: string) =>
+          observe(() => {
+            if (invocationEvents.length < 160)
+              invocationEvents.push({
+                id,
+                method,
+                state,
+                elapsedMs: Date.now() - diagnosticStarted,
+              })
+            if (state === 'start')
+              pendingInvocations.set(id, {
+                method,
+                startedMs: Date.now() - diagnosticStarted,
+              })
+            else pendingInvocations.delete(id)
+          })
+        event('start')
+        let task: Promise<T>
+        try {
+          task = invoke()
+        } catch (error) {
+          event('throw')
+          throw error
+        }
+        void task.then(
+          () => event('finish'),
+          () => event('reject'),
+        )
+        return task
+      }
+      const submission = wallet.transactionSetSubmission!
+      const sendTransaction = submission.sendTransaction.bind(submission)
+      jest
+        .spyOn(submission, 'sendTransaction')
+        .mockImplementation((...args) =>
+          traceCall('submission.sendTransaction', () =>
+            sendTransaction(...args),
+          ),
+        )
+      const lifecycle = wallet.transactionSetLifecycle!
+      const observeOriginal = lifecycle.observe.bind(lifecycle)
+      jest
+        .spyOn(lifecycle, 'observe')
+        .mockImplementation((...args) =>
+          traceCall('lifecycle.observe', () => observeOriginal(...args)),
+        )
+      const replayOriginal = lifecycle.replay.bind(lifecycle)
+      jest
+        .spyOn(lifecycle, 'replay')
+        .mockImplementation((...args) =>
+          traceCall('lifecycle.replay', () => replayOriginal(...args)),
+        )
+      const preparer = wallet.transactionSetPreparer!
+      const readOperation = preparer.readOperation.bind(preparer)
+      jest
+        .spyOn(preparer, 'readOperation')
+        .mockImplementation((...args) =>
+          traceCall('preparer.readOperation', () => readOperation(...args)),
+        )
+      const readTransactionSet = preparer.readTransactionSet.bind(preparer)
+      jest
+        .spyOn(preparer, 'readTransactionSet')
+        .mockImplementation((...args) =>
+          traceCall('preparer.readTransactionSet', () =>
+            readTransactionSet(...args),
+          ),
+        )
+      const recordObservation = preparer.recordObservation.bind(preparer)
+      jest
+        .spyOn(preparer, 'recordObservation')
+        .mockImplementation((...args) =>
+          traceCall('preparer.recordObservation', () =>
+            recordObservation(...args),
+          ),
+        )
       const reportDiagnostic = (label: string) =>
         observe(() => {
           console.info(
@@ -535,6 +633,10 @@ it.each([
               distinctPayment,
               cut,
               events: diagnosticEvents,
+              invocations: invocationEvents,
+              pendingInvocations: [...pendingInvocations].map(
+                ([id, value]) => ({ id, ...value }),
+              ),
             }),
           )
         })

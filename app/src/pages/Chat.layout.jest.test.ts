@@ -343,3 +343,130 @@ describe('Chat.vue layout structure (mounted)', () => {
     expect(setScrollPosition).not.toHaveBeenCalled()
   })
 })
+
+describe('Chat history anchor restoration lifetime', () => {
+  const wrappers: Awaited<ReturnType<typeof mountChat>>[] = []
+  let frames: FrameRequestCallback[]
+  beforeEach(() => {
+    frames = []
+    jest.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+      return frames.length
+    })
+  })
+  afterEach(() => {
+    for (const wrapper of wrappers.splice(0)) {
+      wrapper.unmount()
+      wrapper.element.remove()
+    }
+    jest.restoreAllMocks()
+  })
+  async function history() {
+    const wrapper = await mountChat(
+      Array.from({ length: 95 }, (_, index) => message(`anchor-${index}`)),
+    )
+    wrappers.push(wrapper)
+    document.body.append(wrapper.element)
+    const target = wrapper.get('.q-scroll-area-stub').element as HTMLElement
+    const scroll = wrapper.getComponent(stubs.QScrollArea)
+    scroll.vm.getScrollTarget = () => target
+    const moved = jest.fn((_axis: string, position: number) => {
+      target.scrollTop = position
+    })
+    scroll.vm.setScrollPosition = moved
+    jest
+      .spyOn(target, 'getBoundingClientRect')
+      .mockReturnValue({ top: 0, bottom: 500 } as DOMRect)
+    // Layout is deliberately deterministic here; actual browser geometry is the primary gate.
+    jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        const rows = [
+          ...target.querySelectorAll('[data-testid="chat-message"]'),
+        ]
+        const index = rows.indexOf(this)
+        const top = index * 100 - target.scrollTop
+        return { top, bottom: top + 100 } as DOMRect
+      })
+    const vm = wrapper.vm as unknown as {
+      messagesToShow: number
+      historyAnchorPending: boolean
+      address: string
+      scrollHandler(details: {
+        verticalPosition: number
+        verticalSize: number
+        verticalContainerSize: number
+      }): void
+      buttonScrollBottom(): void
+    }
+    const top = () =>
+      vm.scrollHandler({
+        verticalPosition: 0,
+        verticalSize: 3000,
+        verticalContainerSize: 500,
+      })
+    vm.scrollHandler({
+      verticalPosition: 2500,
+      verticalSize: 3000,
+      verticalContainerSize: 500,
+    })
+    moved.mockClear()
+    return { wrapper, target, scroll, moved, vm, top }
+  }
+  it('ignores reentrant scroll/resize while restoring and permits the next expansion', async () => {
+    const { wrapper, target, moved, vm, top } = await history()
+    top()
+    top()
+    listObserver(wrapper).vm.$emit('resize', { height: 6000, width: 375 })
+    expect(vm.messagesToShow).toBe(60)
+    await wrapper.vm.$nextTick()
+    expect(moved).toHaveBeenLastCalledWith('vertical', 3000, 0)
+    top()
+    expect(vm.messagesToShow).toBe(60)
+    frames.splice(0).forEach(callback => callback(0))
+    target.scrollTop = 0
+    top()
+    expect(vm.messagesToShow).toBe(90)
+    await wrapper.vm.$nextTick()
+    expect(moved).toHaveBeenCalledTimes(2)
+    expect(target.scrollTop).toBe(3000)
+  })
+  it('does not let restoration override explicit latest navigation', async () => {
+    const { wrapper, moved, vm, top } = await history()
+    top()
+    vm.buttonScrollBottom()
+    await wrapper.vm.$nextTick()
+    expect(moved).toHaveBeenCalledTimes(1)
+    expect(moved.mock.calls[0][1]).toBe(0) // jsdom scrollHeight, not the history anchor's 3000px
+  })
+  it.each(['conversation', 'target', 'route-return', 'unmount'] as const)(
+    'rejects a pending restoration after %s changes',
+    async kind => {
+      const { wrapper, scroll, moved, vm, top } = await history()
+      top()
+      if (kind === 'conversation') {
+        const other = useChatStore().openDirectConversation(
+          '0x4444444444444444444444444444444444444444',
+        )
+        vm.address = other.id
+      }
+      if (kind === 'target')
+        scroll.vm.getScrollTarget = () => document.createElement('div')
+      if (kind === 'route-return') {
+        ChatPage.beforeRouteUpdate.call(vm, {
+          params: { address: 'different-conversation' },
+        })
+        ChatPage.beforeRouteUpdate.call(vm, { params: { address: DEALER } })
+      }
+      if (kind === 'unmount') wrapper.unmount()
+      await wrapper.vm.$nextTick()
+      frames.splice(0).forEach(callback => callback(0))
+      if (kind === 'conversation') {
+        // The new empty conversation may intentionally pin to its own bottom;
+        // it must never receive the previous conversation's 3000px correction.
+        expect(moved).not.toHaveBeenCalledWith('vertical', 3000, 0)
+        expect(moved.mock.calls.every(call => call[1] === 0)).toBe(true)
+      } else expect(moved).not.toHaveBeenCalled()
+    },
+  )
+})

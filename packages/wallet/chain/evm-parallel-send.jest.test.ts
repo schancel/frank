@@ -241,7 +241,7 @@ describe('parallel paid messages', () => {
     installCanonicalDirectory(alice, directory)
   }
 
-  it('native waiting on a construction-only root reservation yields to the host', async () => {
+  it('an own-transfer waiting on a construction-only root reservation yields to the host', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
     const internals = evmWalletInternals(alice)
@@ -264,8 +264,9 @@ describe('parallel paid messages', () => {
       return isReserved(account)
     })
     try {
-      await expect(alice.sendNative({ recipient: { raw: '0x' + '77'.repeat(20) },
-        value: 5n, mainAccountWaitMs: 50 })).rejects.toThrow()
+      const sign = jest.fn(async () => ({ txHash: 'unused', from: main, nonce: 0 }))
+      await expect(alice.runOwnTransfer!(sign, { mainAccountWaitMs: 50 })).rejects.toThrow()
+      expect(sign).not.toHaveBeenCalled()
       expect(scheduled).toBe(true)
       expect(hostRan).toBe(true)
       expect(released).not.toHaveBeenCalled()

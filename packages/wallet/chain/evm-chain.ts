@@ -953,7 +953,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
    */
   const holdMainAccounts = async (
     wallet: EvmChainWalletHandle,
-    options: MainAccountWait = {}
+    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
   ): Promise<void> => {
     const pool = wallet.pool;
     const internals = evmWalletInternals(wallet);
@@ -962,7 +962,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return;
     }
     const holder = mainAccountHolder(wallet);
-    const addresses =
+    const rootAddresses =
       options.addresses !== undefined && options.addresses.length > 0
         ? [
             ...new Set(
@@ -970,6 +970,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ),
           ]
         : mainAccountAddresses(wallet);
+    // Inventory-based sends may use other accounts while a shared construction owns a root.
+    // Opaque own-transfers still require the complete requested root claim.
+    const addresses = rootAddresses.filter(address =>
+      !options.unreservedRootsOnly || !internals.coinList?.isAccountReserved(address));
     const others = () =>
       addresses.filter((address) => {
         const claimant = pool.accountClaimedBy(address);
@@ -986,11 +990,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     let waiting = false;
     for (;;) {
       let held = others();
-      // A competing transaction set may remain pending until a future block or recovery.
-      // New native sends refuse promptly unless the caller explicitly requested a bounded wait.
-      if (options.waitMs === undefined && held.some(address =>
-        pool.accountClaimedBy(address) === undefined && internals.coinList?.isAccountReserved(address)
-      )) throw new MainAccountBusyError();
       // Synchronous from the look to the claim: nobody else can take one in between.
       if (held.length === 0 && own().length === 0) {
         for (const address of addresses)
@@ -1088,7 +1087,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const runMainAccountExclusive = <T>(
     wallet: EvmChainWalletHandle,
     task: () => Promise<T>,
-    options: MainAccountWait = {}
+    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
   ): Promise<T> => {
     const internals = evmWalletInternals(wallet);
     let admission = internals.mainAccountAdmission;
@@ -2665,7 +2664,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 runMainAccountExclusive(
                   wallet,
                   () => owner.sendNative(params, admission),
-                  { waitMs: params.mainAccountWaitMs }
+                  { waitMs: params.mainAccountWaitMs, unreservedRootsOnly: true }
                 )
               );
               invalidateBalanceRead();

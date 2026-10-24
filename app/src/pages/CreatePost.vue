@@ -274,8 +274,8 @@
         <q-btn
           ref="composeFocusTarget"
           @click="back"
-          label="back"
-          color="negative"
+          label="Back"
+          color="primary"
           class="q-ma-sm"
           :disable="posting"
           data-test="compose-focus-target"

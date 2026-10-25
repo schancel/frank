@@ -13,6 +13,11 @@
 //! - `'G_mirror' || group_id`: home-relay subscriber tracking and mirror state for foreign groups.
 //! - `'G_accept' || group_id || signed_content_digest`: derived original-receipt locator, atomically
 //!   committed with message/sequence/epoch/ownership guards.
+//! - `'G_pay:' || tx_hash`: the [`GroupPaymentRecord`] of the payment that funded one accepted
+//!   write, committed in that write's acceptance transaction. One payment funds one write.
+//! - `'G_pnonce:' || u8(len(network)) || network || payer[20] || nonce_be[8]`: the hash of the
+//!   payment that took this payer's nonce, written in the same transaction. One nonce funds
+//!   one write: a second, different payment at the same nonce is refused.
 //! - `'G_part:' || key || part_be32`: interim, for epoch frames and mirror state only (an epoch
 //!   descriptor may be 256 KiB; the subscriber set is unbounded). A value longer than the store's
 //!   value limit (or starting with `0x00`) is stored at `key` as `0x00 || part_count_be32` and
@@ -503,12 +508,21 @@ pub enum GroupError {
     /// Caller's `write_sig`, `epoch`, or `X-Group-Read-Token` was rejected (`403 Forbidden`).
     #[error("group access forbidden: {0}")]
     Forbidden(String),
-    /// Positive-price new writes cannot be funded by this baseline.
-    #[error("group_credit_funding_unavailable")]
-    CreditFundingUnavailable,
-    /// Underlying KV store or upstream proxy failure.
+    /// The payment already funded another accepted write.
+    #[error("group write payment already funded another write")]
+    PaymentAlreadyUsed,
+    /// Another payment from the same payer at the same nonce already funded an accepted write.
+    #[error("another payment at this payer's nonce already funded a write")]
+    PaymentNonceUsed,
+    /// Underlying KV store failure.
     #[error("group storage error: {0}")]
     Storage(String),
+    /// The upstream relay could not be reached or answered unreadably (`502`).
+    #[error("upstream relay error: {0}")]
+    Upstream(String),
+    /// The upstream relay did not answer in time (`504`).
+    #[error("upstream relay timeout: {0}")]
+    UpstreamTimeout(String),
     /// The large-value (object) store failed or refused. The detail can name the endpoint,
     /// bucket and object key, so the HTTP layer logs it and answers generically.
     #[error("group large-value store: {0}")]
@@ -593,6 +607,60 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The payment that funds one new write, as the hosting relay verified it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupWritePaymentFact {
+    /// Canonical chain identifier the payment is on.
+    pub network: String,
+    /// Keccak256 of the signed transaction: the payment's dedup key.
+    pub tx_hash: [u8; 32],
+    /// The paying account.
+    pub payer: [u8; 20],
+    /// The address paid.
+    pub payee: [u8; 20],
+    /// Value paid, in wei.
+    pub value_wei: u128,
+    /// The payer's transaction nonce. At most one accepted write per (network, payer, nonce).
+    pub nonce: u64,
+}
+
+/// `'G_pay:' || tx_hash`: which accepted write a payment funded, written in that write's
+/// acceptance transaction. It is also the operator's record of what each write paid whom.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPaymentRecord {
+    /// Canonical chain identifier the payment is on.
+    pub network: String,
+    /// Hex transaction hash.
+    pub tx_hash: String,
+    /// `0x`-prefixed paying account.
+    pub payer: String,
+    /// `0x`-prefixed address paid.
+    pub payee: String,
+    /// Value paid, decimal wei.
+    pub value_wei: String,
+    /// The group of the write it funded.
+    pub group_id: String,
+    /// The sequence of the write it funded.
+    pub server_seq: u64,
+}
+
+fn payment_key(tx_hash: &[u8; 32]) -> Vec<u8> {
+    [GROUP_PAYMENT_PREFIX, tx_hash.as_slice()].concat()
+}
+
+fn payment_nonce_key(network: &str, payer: &[u8; 20], nonce: u64) -> Result<Vec<u8>, GroupError> {
+    let length = u8::try_from(network.len())
+        .map_err(|_| GroupError::InvalidInput("payment network name too long".into()))?;
+    Ok([
+        GROUP_PAYMENT_NONCE_PREFIX,
+        &[length],
+        network.as_bytes(),
+        payer.as_slice(),
+        &nonce.to_be_bytes(),
+    ]
+    .concat())
+}
+
 /// The authoritative acceptance receipt and whether this operation created it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupAppendOutcome {
@@ -605,9 +673,11 @@ pub struct GroupAppendOutcome {
 const GROUP_FORMAT_KEY: &[u8] = b"G_format";
 const GROUP_FORMAT: &[u8] = b"group-binary-rows-v1";
 const GROUP_PART_PREFIX: &[u8] = b"G_part:";
+const GROUP_PAYMENT_PREFIX: &[u8] = b"G_pay:";
 const GROUP_LARGE_VALUE_PREFIX: &[u8] = b"G_lv:";
 /// Object namespace of group ciphertexts in the shared bucket.
 pub const GROUP_OBJECT_NAMESPACE: &str = "groups";
+const GROUP_PAYMENT_NONCE_PREFIX: &[u8] = b"G_pnonce:";
 const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G:",
     b"G_meta:",
@@ -616,6 +686,8 @@ const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G_mirror:",
     b"G_vs:",
     b"G_accept:",
+    GROUP_PAYMENT_PREFIX,
+    GROUP_PAYMENT_NONCE_PREFIX,
     GROUP_PART_PREFIX,
     GROUP_LARGE_VALUE_PREFIX,
 ];
@@ -874,7 +946,6 @@ pub struct GroupStore {
     kv: Arc<dyn RelayKvStore>,
     large_values: LargeValues,
     mirror_threshold: usize,
-    group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 /// Write a message row at `key`, committing `staged`'s reference with it and dropping the
@@ -901,12 +972,8 @@ fn write_message_row(
 impl GroupStore {
     /// Construct a `GroupStore` over the given [`RelayKvStore`] with default mirror threshold
     /// (`2`). Ciphertexts over [`INLINE_LIMIT`] are stored in `objects`.
-    pub fn new(
-        kv: Arc<dyn RelayKvStore>,
-        objects: Arc<dyn ObjectStore>,
-        group_policy: cashweb_config::GroupAppendPolicy,
-    ) -> Self {
-        Self::with_mirror_threshold(kv, objects, DEFAULT_GROUP_MIRROR_THRESHOLD, group_policy)
+    pub fn new(kv: Arc<dyn RelayKvStore>, objects: Arc<dyn ObjectStore>) -> Self {
+        Self::with_mirror_threshold(kv, objects, DEFAULT_GROUP_MIRROR_THRESHOLD)
     }
 
     /// Construct a `GroupStore` with a custom subscriber threshold `n` for auto-mirroring.
@@ -914,7 +981,6 @@ impl GroupStore {
         kv: Arc<dyn RelayKvStore>,
         objects: Arc<dyn ObjectStore>,
         mirror_threshold: usize,
-        group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
         let large_values = LargeValues::new(
             kv.clone(),
@@ -926,7 +992,6 @@ impl GroupStore {
             kv,
             large_values,
             mirror_threshold: mirror_threshold.max(1),
-            group_policy,
         }
     }
 
@@ -993,13 +1058,9 @@ impl GroupStore {
     ///
     /// # Panics
     /// If the temporary database cannot be created.
-    pub fn new_temporary(group_policy: cashweb_config::GroupAppendPolicy) -> Self {
+    pub fn new_temporary() -> Self {
         let kv = RocksDbKvStore::open_temporary().expect("open temporary group store");
-        Self::new(
-            Arc::new(kv),
-            Arc::new(LocalFsObjectStore::temporary()),
-            group_policy,
-        )
+        Self::new(Arc::new(kv), Arc::new(LocalFsObjectStore::temporary()))
     }
 
     /// Configured subscriber count threshold `n` for promoting a foreign group from proxy to mirror.
@@ -1123,21 +1184,35 @@ impl GroupStore {
         Ok(current)
     }
 
-    /// Authenticate new content against the active epoch and append exactly once. Accepted
-    /// signed content (including equivalent signature encodings) is authenticated against its
-    /// historical certificate and returns the original receipt, without a new sequence or wake.
-    pub fn put_message(
+    /// The original receipt of `envelope` if this relay already accepted it (including under
+    /// an equivalent signature encoding), authenticated against its historical certificate.
+    /// The host answers a retry from this before it looks at the retry's payment, so a retry
+    /// gets its receipt whatever the current price or payee.
+    pub fn accepted_receipt(
+        &self,
+        path_group_id: &str,
+        envelope: GroupMessageEnvelope,
+    ) -> Result<Option<StoredGroupMessage>, GroupError> {
+        let (group_id, envelope, digest) = self.local_write(path_group_id, envelope)?;
+        self.accepted_message(
+            path_group_id,
+            &envelope,
+            &acceptance_key(&group_id, &digest),
+        )
+    }
+
+    /// Normalize a write to a group hosted here.
+    fn local_write(
         &self,
         path_group_id: &str,
         mut envelope: GroupMessageEnvelope,
-    ) -> Result<GroupAppendOutcome, GroupError> {
+    ) -> Result<([u8; 32], GroupMessageEnvelope, [u8; 32]), GroupError> {
         let group_id = parse_group_id_hex(path_group_id)?;
         if envelope.group_id.to_lowercase() != path_group_id {
             return Err(GroupError::InvalidInput(
                 "envelope.group_id does not match URL path :group_id".into(),
             ));
         }
-
         if self.get_mirror_state(path_group_id)?.is_some() {
             return Err(GroupError::Forbidden(
                 "foreign groups cannot accept local message writes".into(),
@@ -1151,6 +1226,22 @@ impl GroupStore {
             1024 * 1024,
         )?);
         let digest = envelope.signing_digest()?;
+        Ok((group_id, envelope, digest))
+    }
+
+    /// Authenticate new content against the active epoch and append exactly once, recording
+    /// `payment` as the payment that funded it in the same transaction. Accepted signed content
+    /// (including equivalent signature encodings) is authenticated against its historical
+    /// certificate and returns the original receipt, without a new sequence, wake or payment
+    /// record. A payment that already funded another write, or a different payment at a
+    /// (payer, nonce) that already funded one, is refused before anything is written.
+    pub fn put_paid_message(
+        &self,
+        path_group_id: &str,
+        envelope: GroupMessageEnvelope,
+        payment: &GroupWritePaymentFact,
+    ) -> Result<GroupAppendOutcome, GroupError> {
+        let (group_id, envelope, digest) = self.local_write(path_group_id, envelope)?;
         let accept_key = acceptance_key(&group_id, &digest);
         if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
             return Ok(GroupAppendOutcome {
@@ -1190,19 +1281,6 @@ impl GroupStore {
             ));
         }
 
-        // Historical receipts remain authoritative across operator policy changes.
-        // Authenticate NEW content before exposing funding admission, and reject before
-        // sequence allocation or any append-side storage effect.
-        if self.group_policy.per_message_price_credits > 0 {
-            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
-                return Ok(GroupAppendOutcome {
-                    message,
-                    appended: false,
-                });
-            }
-            return Err(GroupError::CreditFundingUnavailable);
-        }
-
         // The object is written before the commit that references it. If the object store is
         // unavailable the append fails here, before any sequence is allocated.
         let ciphertext = hex::decode(&envelope.ciphertext)
@@ -1215,6 +1293,7 @@ impl GroupStore {
             &authority_snapshot,
             &ciphertext,
             staged.as_ref(),
+            payment,
         );
         if let Some(staged) = &staged {
             if !matches!(&result, Ok(outcome) if outcome.appended) {
@@ -1224,7 +1303,8 @@ impl GroupStore {
         result
     }
 
-    /// The append loop of [`Self::put_message`], after authentication and staging.
+    /// The append loop of [`Self::put_paid_message`], after authentication and staging.
+    #[allow(clippy::too_many_arguments)]
     fn append_staged(
         &self,
         path_group_id: &str,
@@ -1233,11 +1313,14 @@ impl GroupStore {
         authority_snapshot: &[u8],
         ciphertext: &[u8],
         staged: Option<&Staged>,
+        payment: &GroupWritePaymentFact,
     ) -> Result<GroupAppendOutcome, GroupError> {
         let group_id = parse_group_id_hex(path_group_id)?;
         let ownership_key = mirror_key(&group_id);
         let authority_key = meta_key(&group_id);
         let sequence_key = seq_key(&group_id);
+        let pay_key = payment_key(&payment.tx_hash);
+        let nonce_key = payment_nonce_key(&payment.network, &payment.payer, payment.nonce)?;
         let strip = |value: &str| value.strip_prefix("0x").unwrap_or(value).to_lowercase();
         loop {
             // This is the authorization linearization point: epoch rotation and append read
@@ -1248,6 +1331,16 @@ impl GroupStore {
                     || get_value(tx, &authority_key)?.as_deref() != Some(authority_snapshot)
                 {
                     return Ok::<_, GroupError>(None);
+                }
+                // Read in this transaction, so two writes racing on one payment conflict and
+                // the re-run of the loser finds the winner's record.
+                if tx.get(&pay_key)?.is_some() {
+                    return Err(GroupError::PaymentAlreadyUsed);
+                }
+                // Only one of a payer's transactions at a nonce can ever land, so only one may
+                // fund a write; read here too, so racing writes at one nonce conflict.
+                if tx.get(&nonce_key)?.is_some() {
+                    return Err(GroupError::PaymentNonceUsed);
                 }
                 let server_seq = match tx.get(&sequence_key)? {
                     Some(bytes) => parse_sequence(&bytes, "G_seq value")?
@@ -1266,8 +1359,22 @@ impl GroupStore {
                 };
                 let row =
                     MessageRow::from_message(&stored, Self::stored_ciphertext(ciphertext, staged))?;
+                let record = GroupPaymentRecord {
+                    network: payment.network.clone(),
+                    tx_hash: hex::encode(payment.tx_hash),
+                    payer: format!("0x{}", hex::encode(payment.payer)),
+                    payee: format!("0x{}", hex::encode(payment.payee)),
+                    value_wei: payment.value_wei.to_string(),
+                    group_id: path_group_id.to_string(),
+                    server_seq,
+                };
+                let record = serde_json::to_vec(&record).map_err(|error| {
+                    GroupError::Storage(format!("serialize group payment record: {error}"))
+                })?;
                 tx.set(accept_key, &server_seq.to_be_bytes())?;
                 tx.set(&sequence_key, &server_seq.to_be_bytes())?;
+                tx.set(&pay_key, &record)?;
+                tx.set(&nonce_key, &payment.tx_hash)?;
                 write_message_row(
                     tx,
                     &self.large_values,
@@ -1371,6 +1478,40 @@ impl GroupStore {
             ));
         }
         Ok(Some(stored))
+    }
+
+    /// The record of the accepted write `tx_hash` paid for, if any.
+    pub fn payment_record(
+        &self,
+        tx_hash: &[u8; 32],
+    ) -> Result<Option<GroupPaymentRecord>, GroupError> {
+        let key = payment_key(tx_hash);
+        let Some(raw) = self.read(|tx| tx.get(&key).map_err(GroupError::from))? else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&raw)
+            .map(Some)
+            .map_err(|error| GroupError::Storage(format!("corrupt group payment record: {error}")))
+    }
+
+    /// Append `envelope` with a payment derived from its digest. Tests of the store's
+    /// sequencing and authority, which do not concern payments.
+    #[cfg(test)]
+    pub(crate) fn put_message(
+        &self,
+        path_group_id: &str,
+        envelope: GroupMessageEnvelope,
+    ) -> Result<GroupAppendOutcome, GroupError> {
+        let digest = self.local_write(path_group_id, envelope.clone())?.2;
+        let payment = GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: digest,
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei: 1,
+            nonce: u64::from_be_bytes(digest[..8].try_into().unwrap()),
+        };
+        self.put_paid_message(path_group_id, envelope, &payment)
     }
 
     /// Scan ordered messages for `group_id_hex` strictly after `after_seq`, up to `limit`.
@@ -1632,22 +1773,16 @@ pub struct Owner {
     objects: Arc<dyn ObjectStore>,
     store: Mutex<Option<GroupStore>>,
     mirror_threshold: usize,
-    group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 impl Owner {
     /// Create a lazy group store owner over `backend`, storing large ciphertexts in `objects`.
-    pub fn new(
-        backend: GroupBackend,
-        objects: Arc<dyn ObjectStore>,
-        group_policy: cashweb_config::GroupAppendPolicy,
-    ) -> Self {
+    pub fn new(backend: GroupBackend, objects: Arc<dyn ObjectStore>) -> Self {
         Self {
             backend,
             objects,
             store: Mutex::new(None),
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
-            group_policy,
         }
     }
 
@@ -1675,12 +1810,8 @@ impl Owner {
                 GroupBackend::RocksDbBeside(path) => Arc::new(RocksDbKvStore::open(path)?),
                 GroupBackend::Shared(kv) => Arc::clone(kv),
             };
-            let opened = GroupStore::with_mirror_threshold(
-                kv,
-                self.objects.clone(),
-                self.mirror_threshold,
-                self.group_policy,
-            );
+            let opened =
+                GroupStore::with_mirror_threshold(kv, self.objects.clone(), self.mirror_threshold);
             *store = Some(opened.clone());
             opened
         };
@@ -1853,20 +1984,8 @@ mod tests {
     #[test]
     fn epoch_cas_backend_failures_are_not_reported_as_successful_creation_or_rotation() {
         let kv = temporary();
-        let healthy = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
-        let failing = GroupStore::new(
-            Arc::new(FailingCommitKv(kv)),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let healthy = GroupStore::new(kv.clone(), test_objects());
+        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv)), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         assert!(matches!(
@@ -1942,43 +2061,217 @@ mod tests {
     }
 
     #[test]
-    fn group_price_policy_rejects_unfunded_new_content_without_storage_effects() {
+    fn one_payment_funds_one_write_and_is_recorded_with_it() {
         let kv = temporary();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: u64::MAX,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
-        let before = kv.scan_prefix_range(&[], None, 100).unwrap();
         let (write_sk, _) = keypair(42);
+        let payment = GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: [9; 32],
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei: 1_000,
+            nonce: 0,
+        };
+        let first = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment)
+            .unwrap();
+        assert!(first.appended);
         assert_eq!(
-            store.put_message(&id, message_for(&id, 0, 1, &write_sk)),
-            Err(GroupError::CreditFundingUnavailable)
+            store.payment_record(&[9; 32]).unwrap(),
+            Some(GroupPaymentRecord {
+                network: "monad-testnet".into(),
+                tx_hash: hex::encode([9u8; 32]),
+                payer: format!("0x{}", hex::encode([1u8; 20])),
+                payee: format!("0x{}", hex::encode([2u8; 20])),
+                value_wei: "1000".into(),
+                group_id: id.clone(),
+                server_seq: first.message.server_seq,
+            })
+        );
+        // The same write again is its receipt, whatever payment comes with it.
+        let other_payment = GroupWritePaymentFact {
+            tx_hash: [8; 32],
+            ..payment.clone()
+        };
+        let retry = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &other_payment)
+            .unwrap();
+        assert_eq!((retry.appended, retry.message), (false, first.message));
+        assert_eq!(store.payment_record(&[8; 32]).unwrap(), None);
+        // Another write cannot reuse the payment, and nothing of it is stored.
+        let before = kv.scan_prefix_range(&[], None, 100).unwrap();
+        assert_eq!(
+            store.put_paid_message(&id, message_for(&id, 0, 2, &write_sk), &payment),
+            Err(GroupError::PaymentAlreadyUsed)
         );
         assert_eq!(kv.scan_prefix_range(&[], None, 100).unwrap(), before);
-        let mut forged = message_for(&id, 0, 2, &write_sk);
-        forged.write_sig = "00".repeat(64);
-        assert!(matches!(
-            store.put_message(&id, forged),
-            Err(GroupError::Forbidden(_))
-        ));
+    }
+
+    #[test]
+    fn one_payer_nonce_funds_one_write() {
+        let kv = temporary();
+        let store = GroupStore::new(kv.clone(), test_objects());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let payment = |tx: u8, nonce: u64| GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: [tx; 32],
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei: 1_000,
+            nonce,
+        };
+        let first = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment(9, 5))
+            .unwrap();
+        assert!(first.appended);
+        // A different payment from the same payer at the same nonce: only one can land, so it
+        // funds nothing, and nothing of it is stored.
+        let before = kv.scan_prefix_range(&[], None, 100).unwrap();
+        assert_eq!(
+            store.put_paid_message(&id, message_for(&id, 0, 2, &write_sk), &payment(8, 5)),
+            Err(GroupError::PaymentNonceUsed)
+        );
+        assert_eq!(kv.scan_prefix_range(&[], None, 100).unwrap(), before);
+        // The exact retry of the accepted write still gets its receipt.
+        let retry = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment(9, 5))
+            .unwrap();
+        assert_eq!((retry.appended, retry.message), (false, first.message));
+        // The payer's next nonce, or the same nonce from another payer, funds a write.
+        assert!(
+            store
+                .put_paid_message(&id, message_for(&id, 0, 3, &write_sk), &payment(7, 6))
+                .unwrap()
+                .appended
+        );
+        let other_payer = GroupWritePaymentFact {
+            payer: [3; 20],
+            ..payment(6, 5)
+        };
+        assert!(
+            store
+                .put_paid_message(&id, message_for(&id, 0, 4, &write_sk), &other_payer)
+                .unwrap()
+                .appended
+        );
+    }
+
+    #[test]
+    fn two_payments_racing_at_one_nonce_give_one_append() {
+        for _ in 0..20 {
+            let kv = temporary();
+            let initial = root_frame(3, 0, &"00".repeat(32));
+            let id = initial.group_id.clone();
+            GroupStore::new(kv.clone(), test_objects())
+                .put_epoch(&id, initial)
+                .unwrap();
+            let (write_sk, _) = keypair(42);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let results: Vec<_> = (1..=2u8)
+                .map(|n| {
+                    let store = GroupStore::new(kv.clone(), test_objects());
+                    let payment = GroupWritePaymentFact {
+                        network: "monad-testnet".into(),
+                        tx_hash: [n; 32],
+                        payer: [1; 20],
+                        payee: [2; 20],
+                        value_wei: 1_000,
+                        nonce: 0,
+                    };
+                    let (id, barrier) = (id.clone(), barrier.clone());
+                    let message = message_for(&id, 0, n, &write_sk);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        store.put_paid_message(&id, message, &payment)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let appended = results
+                .iter()
+                .filter(|result| matches!(result, Ok(outcome) if outcome.appended))
+                .count();
+            let refused = results
+                .iter()
+                .filter(|result| **result == Err(GroupError::PaymentNonceUsed))
+                .count();
+            assert_eq!((appended, refused), (1, 1), "{results:?}");
+            assert_eq!(
+                GroupStore::new(kv, test_objects())
+                    .list_messages(&id, 0, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn two_writes_racing_on_one_payment_give_one_append() {
+        for _ in 0..20 {
+            let kv = temporary();
+            let objects = test_objects();
+            let initial = root_frame(3, 0, &"00".repeat(32));
+            let id = initial.group_id.clone();
+            GroupStore::new(kv.clone(), objects.clone())
+                .put_epoch(&id, initial)
+                .unwrap();
+            let (write_sk, _) = keypair(42);
+            let payment = GroupWritePaymentFact {
+                network: "monad-testnet".into(),
+                tx_hash: [9; 32],
+                payer: [1; 20],
+                payee: [2; 20],
+                value_wei: 1_000,
+                nonce: 0,
+            };
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let results: Vec<_> = (1..=2u8)
+                .map(|nonce| {
+                    // Two replicas: separate stores over the one database.
+                    let store = GroupStore::new(kv.clone(), objects.clone());
+                    let (id, payment, barrier) = (id.clone(), payment.clone(), barrier.clone());
+                    let message = message_for(&id, 0, nonce, &write_sk);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        store.put_paid_message(&id, message, &payment)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let appended = results
+                .iter()
+                .filter(|result| matches!(result, Ok(outcome) if outcome.appended))
+                .count();
+            let refused = results
+                .iter()
+                .filter(|result| **result == Err(GroupError::PaymentAlreadyUsed))
+                .count();
+            assert_eq!((appended, refused), (1, 1), "{results:?}");
+            let store = GroupStore::new(kv, objects);
+            assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
+            assert_eq!(
+                store.payment_record(&[9; 32]).unwrap().unwrap().server_seq,
+                1
+            );
+        }
     }
 
     #[test]
     fn values_over_the_store_limit_split_and_replacements_leave_no_stale_parts() {
         let kv = temporary();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let (root_sk, _) = keypair(3);
         let mut initial = root_frame(3, 0, &"00".repeat(32));
         initial.encrypted_epoch_descriptor = hex::encode(vec![7u8; 120 * 1024]);
@@ -2003,7 +2296,7 @@ mod tests {
     }
 
     #[test]
-    fn group_zero_price_accepts_varied_sizes_and_retry_survives_positive_policy_reopen_rotation() {
+    fn group_writes_accept_varied_sizes_and_retry_survives_reopen_rotation() {
         let path = std::env::temp_dir().join(format!(
             "frank-group-price-{}-{}",
             std::process::id(),
@@ -2018,9 +2311,6 @@ mod tests {
             let store = GroupStore::new(
                 Arc::new(RocksDbKvStore::open(&path).unwrap()),
                 test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
             );
             store.put_epoch(&id, initial.clone()).unwrap();
             receipt = store.put_message(&id, original.clone()).unwrap().message;
@@ -2038,9 +2328,6 @@ mod tests {
             let store = GroupStore::new(
                 Arc::new(RocksDbKvStore::open(&path).unwrap()),
                 test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 7,
-                },
             );
             let retry = store.put_message(&id, original.clone()).unwrap();
             assert!(!retry.appended);
@@ -2056,9 +2343,11 @@ mod tests {
                 store.put_message(&id, message_for(&id, 0, 3, &write_sk)),
                 Err(GroupError::Forbidden(_))
             ));
-            assert_eq!(
-                store.put_message(&id, message_for(&id, 1, 4, &write_sk)),
-                Err(GroupError::CreditFundingUnavailable)
+            assert!(
+                store
+                    .put_message(&id, message_for(&id, 1, 4, &write_sk))
+                    .unwrap()
+                    .appended
             );
             let mut invalid_retry = original;
             invalid_retry.write_sig = "00".repeat(64);
@@ -2066,19 +2355,13 @@ mod tests {
                 store.put_message(&id, invalid_retry),
                 Err(GroupError::Forbidden(_))
             ));
-            assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 2);
+            assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 3);
         }
         std::fs::remove_dir_all(path).unwrap();
     }
 
     fn verify_rotation_serializes_with_in_flight_appends(backend: Arc<dyn RelayKvStore>) {
-        let store = GroupStore::new(
-            backend.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(backend.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let committed = store.put_epoch(&id, initial).unwrap();
@@ -2089,13 +2372,7 @@ mod tests {
             pause: std::sync::atomic::AtomicBool::new(true),
             pause_at_lookup: false,
         });
-        let in_flight = GroupStore::new(
-            paused_kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let in_flight = GroupStore::new(paused_kv.clone(), test_objects());
         let (old_write_sk, _) = keypair(42);
         let pending = message_for(&id, 0, 1, &old_write_sk);
         let pending_id = id.clone();
@@ -2122,13 +2399,7 @@ mod tests {
         let start = Arc::new(std::sync::Barrier::new(9));
         let mut writers = Vec::new();
         for nonce in 2..10 {
-            let replica = GroupStore::new(
-                backend.clone(),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let replica = GroupStore::new(backend.clone(), test_objects());
             let writer_id = id.clone();
             let message = message_for(&id, 1, nonce, &new_write_sk);
             let writer_start = start.clone();
@@ -2168,9 +2439,6 @@ mod tests {
         let reopened = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
             test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
         let id = root_frame(3, 0, &"00".repeat(32)).group_id;
         assert_eq!(reopened.get_current_epoch(&id).unwrap().unwrap().epoch, 1);
@@ -2180,13 +2448,7 @@ mod tests {
     #[test]
     fn append_writes_only_the_sequence_and_message_rows() {
         let kv = temporary();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -2200,9 +2462,7 @@ mod tests {
 
     #[test]
     fn foreign_subscriber_without_a_tag_is_counted_by_a_hash_never_the_read_token() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let read_token = "00".repeat(32);
@@ -2225,9 +2485,6 @@ mod tests {
         let owner = Arc::new(Owner::new(
             GroupBackend::rocksdb_beside(&dir.path().join("registry.db")),
             test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         ));
         let start = Arc::new(std::sync::Barrier::new(8));
         let threads: Vec<_> = (0..8)
@@ -2258,20 +2515,8 @@ mod tests {
     #[test]
     fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
         let kv = temporary();
-        let healthy = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
-        let failing = GroupStore::new(
-            Arc::new(FailingCommitKv(kv.clone())),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let healthy = GroupStore::new(kv.clone(), test_objects());
+        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         healthy.put_epoch(&id, initial).unwrap();
@@ -2303,34 +2548,16 @@ mod tests {
         let id = initial.group_id.clone();
         {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let failing = GroupStore::new(
-                Arc::new(FailingCommitKv(backend)),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)), test_objects());
             assert!(failing.put_epoch(&id, initial.clone()).is_err());
         }
         {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let healthy = GroupStore::new(
-                backend.clone(),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let healthy = GroupStore::new(backend.clone(), test_objects());
             assert!(healthy.get_current_epoch(&id).unwrap().is_none());
             assert!(healthy.get_epoch(&id, 0).unwrap().is_none());
             let committed = healthy.put_epoch(&id, initial).unwrap();
-            let failing = GroupStore::new(
-                Arc::new(FailingCommitKv(backend)),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)), test_objects());
             assert!(failing
                 .put_epoch(&id, root_frame(3, 1, &committed.epoch_hash))
                 .is_err());
@@ -2338,9 +2565,6 @@ mod tests {
         let reopened = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
             test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
         let current = reopened.get_current_epoch(&id).unwrap().unwrap();
         assert_eq!(current.epoch, 0);
@@ -2354,9 +2578,7 @@ mod tests {
 
     #[test]
     fn mirrors_reject_authoritative_local_message_and_epoch_writes() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store
@@ -2387,9 +2609,7 @@ mod tests {
 
     #[test]
     fn foreign_admission_requires_capability_and_preserves_authoritative_ownership() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         assert!(store
@@ -2459,9 +2679,7 @@ mod tests {
         ));
         assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), current);
-        let local = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let local = GroupStore::new_temporary();
         local.put_epoch(&id, initial.clone()).unwrap();
         assert!(local
             .record_foreign_subscriber(
@@ -2477,9 +2695,7 @@ mod tests {
 
     #[test]
     fn epoch_authority_rejects_forgery_and_binds_all_mutable_fields() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let (write_sk, _) = keypair(42);
@@ -2549,9 +2765,7 @@ mod tests {
 
     #[test]
     fn mirror_rejects_poisoned_certificates_messages_and_epoch_rollback() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let epoch0 = root_frame(4, 0, &"00".repeat(32)).normalized().unwrap();
         let id = epoch0.group_id.clone();
         let mut poisoned = epoch0.clone();
@@ -2568,9 +2782,7 @@ mod tests {
             .ingest_mirrored_upstream(&id, Some(epoch0), &[])
             .unwrap();
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), epoch1);
-        let source = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let source = GroupStore::new_temporary();
         let source_epoch = root_frame(4, 0, &"00".repeat(32));
         source.put_epoch(&id, source_epoch).unwrap();
         let (write_sk, _) = keypair(42);
@@ -2601,9 +2813,7 @@ mod tests {
 
     #[test]
     fn epoch_cas_enforces_monotonicity_and_rejects_concurrent_collision_with_current_frame() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let (group_sk, group_pk) = keypair(1);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
@@ -2666,9 +2876,7 @@ mod tests {
 
     #[test]
     fn group_messages_enforce_epoch_write_key_and_reject_kicked_or_outsider_keys() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let (group_sk, group_pk) = keypair(2);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
@@ -2792,25 +3000,13 @@ mod tests {
     #[test]
     fn baseline_is_read_only_namespace_scoped_and_initializes_concurrently() {
         let empty = temporary();
-        GroupStore::new(
-            empty.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        )
-        .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
-        .unwrap();
+        GroupStore::new(empty.clone(), test_objects())
+            .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
+            .unwrap();
         assert!(empty.scan_prefix_range(&[], None, 1).unwrap().is_empty());
         let kv = temporary();
         kv.put(b"unrelated:registry", b"preserved").unwrap();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         assert!(store
             .get_current_epoch(&initial.group_id)
@@ -2836,13 +3032,7 @@ mod tests {
         let threads: Vec<_> = [3, 4]
             .into_iter()
             .map(|seed| {
-                let replica = GroupStore::new(
-                    kv.clone(),
-                    test_objects(),
-                    cashweb_config::GroupAppendPolicy {
-                        per_message_price_credits: 0,
-                    },
-                );
+                let replica = GroupStore::new(kv.clone(), test_objects());
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     let epoch = root_frame(seed, 0, &"00".repeat(32));
@@ -2866,13 +3056,7 @@ mod tests {
             &initial.to_cbor_bytes().unwrap(),
         )
         .unwrap();
-        let unsupported = GroupStore::new(
-            old.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let unsupported = GroupStore::new(old.clone(), test_objects());
         assert!(matches!(
             unsupported.get_current_epoch(&initial.group_id),
             Err(GroupError::Storage(_))
@@ -2890,13 +3074,7 @@ mod tests {
     #[test]
     fn same_signed_content_race_appends_once_and_signature_encodings_share_receipt() {
         let kv = temporary();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -2905,13 +3083,7 @@ mod tests {
         let start = Arc::new(std::sync::Barrier::new(3));
         let threads: Vec<_> = (0..2)
             .map(|_| {
-                let replica = GroupStore::new(
-                    kv.clone(),
-                    test_objects(),
-                    cashweb_config::GroupAppendPolicy {
-                        per_message_price_credits: 0,
-                    },
-                );
+                let replica = GroupStore::new(kv.clone(), test_objects());
                 let id = id.clone();
                 let envelope = envelope.clone();
                 let start = start.clone();
@@ -2953,21 +3125,9 @@ mod tests {
         let envelope = message_for(&id, 0, 1, &key);
         let receipt = {
             let kv = Arc::new(RocksDbKvStore::open(&path).unwrap());
-            let store = GroupStore::new(
-                kv.clone(),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let store = GroupStore::new(kv.clone(), test_objects());
             let initial = store.put_epoch(&id, initial).unwrap();
-            let failing = GroupStore::new(
-                Arc::new(FailingCommitKv(kv.clone())),
-                test_objects(),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
-            );
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())), test_objects());
             assert!(failing.put_message(&id, envelope.clone()).is_err());
             assert!(kv
                 .get(&acceptance_key(
@@ -2989,9 +3149,6 @@ mod tests {
         let store = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
             test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
         let retry = store.put_message(&id, envelope).unwrap();
         assert!(!retry.appended);
@@ -3006,13 +3163,7 @@ mod tests {
     #[test]
     fn same_content_cas_loser_acknowledges_winner_even_when_epoch_rotates() {
         let backend = temporary();
-        let store = GroupStore::new(
-            backend.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(backend.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let initial = store.put_epoch(&id, initial).unwrap();
@@ -3025,13 +3176,7 @@ mod tests {
         });
         let (key, _) = keypair(42);
         let envelope = message_for(&id, 0, 1, &key);
-        let replica = GroupStore::new(
-            paused.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let replica = GroupStore::new(paused.clone(), test_objects());
         let replica_id = id.clone();
         let pending = envelope.clone();
         let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));
@@ -3049,13 +3194,7 @@ mod tests {
     #[test]
     fn corrupt_acceptance_locator_and_original_signature_fail_without_appending() {
         let kv = temporary();
-        let store = GroupStore::new(
-            kv.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -3105,15 +3244,11 @@ mod tests {
             let kv = RocksDbKvStore::open(&path).unwrap();
             kv.put(&key, &raw).unwrap();
         }
-        assert!(Owner::new(
-            GroupBackend::rocksdb_beside(&registry),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0
-            }
-        )
-        .get()
-        .is_err());
+        assert!(
+            Owner::new(GroupBackend::rocksdb_beside(&registry), test_objects())
+                .get()
+                .is_err()
+        );
         let kv = RocksDbKvStore::open(&path).unwrap();
         assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         assert_eq!(kv.get(&key).unwrap().unwrap(), raw);
@@ -3121,13 +3256,7 @@ mod tests {
     #[test]
     fn stale_empty_acceptance_lookup_rechecks_receipt_before_rejecting_rotated_epoch() {
         let backend = temporary();
-        let store = GroupStore::new(
-            backend.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(backend.clone(), test_objects());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         let initial = store.put_epoch(&id, initial).unwrap();
@@ -3140,13 +3269,7 @@ mod tests {
         });
         let (key, _) = keypair(42);
         let envelope = message_for(&id, 0, 1, &key);
-        let replica = GroupStore::new(
-            paused.clone(),
-            test_objects(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let replica = GroupStore::new(paused.clone(), test_objects());
         let replica_id = id.clone();
         let pending = envelope.clone();
         let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));
@@ -3213,13 +3336,7 @@ mod tests {
     fn large_ciphertext_is_stored_by_reference_and_inline_up_to_64_kib() {
         let kv = temporary();
         let objects = Arc::new(LocalFsObjectStore::temporary());
-        let store = GroupStore::new(
-            kv.clone(),
-            objects.clone(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let store = GroupStore::new(kv.clone(), objects.clone());
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -3330,14 +3447,8 @@ mod tests {
             inner: LocalFsObjectStore::temporary(),
             down: std::sync::atomic::AtomicBool::new(true),
         });
-        let store = GroupStore::new(
-            kv.clone(),
-            objects.clone(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        )
-        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        let store = GroupStore::new(kv.clone(), objects.clone())
+            .with_large_value_intent_ttl(std::time::Duration::ZERO);
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -3383,14 +3494,8 @@ mod tests {
             inner: LocalFsObjectStore::temporary(),
             down: std::sync::atomic::AtomicBool::new(false),
         });
-        let store = GroupStore::new(
-            kv.clone(),
-            objects.clone(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        )
-        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        let store = GroupStore::new(kv.clone(), objects.clone())
+            .with_large_value_intent_ttl(std::time::Duration::ZERO);
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         store.put_epoch(&id, initial).unwrap();
@@ -3426,14 +3531,8 @@ mod tests {
     fn sweep_collects_an_abandoned_upload_and_never_a_referenced_ciphertext() {
         let kv = temporary();
         let objects = Arc::new(LocalFsObjectStore::temporary());
-        let store = GroupStore::new(
-            kv.clone(),
-            objects.clone(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        )
-        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        let store = GroupStore::new(kv.clone(), objects.clone())
+            .with_large_value_intent_ttl(std::time::Duration::ZERO);
         // A store with no group state is left untouched, not initialized.
         assert_eq!(
             store.sweep_large_values([7; 16]).unwrap(),
@@ -3476,17 +3575,9 @@ mod tests {
 
     #[test]
     fn mirrored_large_messages_are_stored_by_reference() {
-        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let upstream = GroupStore::new_temporary();
         let objects = Arc::new(LocalFsObjectStore::temporary());
-        let home = GroupStore::new(
-            temporary(),
-            objects.clone(),
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let home = GroupStore::new(temporary(), objects.clone());
         let initial = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
         let id = initial.group_id.clone();
         upstream.put_epoch(&id, initial.clone()).unwrap();

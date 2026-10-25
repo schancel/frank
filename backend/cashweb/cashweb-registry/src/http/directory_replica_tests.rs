@@ -36,9 +36,6 @@ impl Replicas {
                 directory: DirectoryBackend::Shared(self.kv.clone()),
                 groups: crate::store::groups::GroupBackend::rocksdb_beside(&path),
                 objects: self.objects.clone(),
-                group_policy: cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
                 messages: None,
             },
         ));
@@ -262,9 +259,6 @@ async fn the_relay_wide_subject_cap_holds_across_replicas() {
                 directory: DirectoryBackend::Shared(replicas.kv.clone()),
                 groups: crate::store::groups::GroupBackend::rocksdb_beside(&path(name)),
                 objects: replicas.objects.clone(),
-                group_policy: cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
                 messages: None,
             },
         ));

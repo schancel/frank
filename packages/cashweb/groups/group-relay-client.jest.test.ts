@@ -1,4 +1,9 @@
-import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
+import {
+  GROUP_TEST_ACCOUNTS,
+  groupTestPaymentFor,
+  groupTestSigningKey,
+} from './group-test.testutil'
+import { GROUP_WRITE_BURN_ADDRESS } from './group-write-payment'
 import type { AxiosInstance } from 'axios'
 import {
   decryptGroupRoster,
@@ -16,8 +21,13 @@ import {
   rotateGroupEpochOnRelay,
   openGroupEpochCertificate,
   groupEpochCertificate,
+  GroupWriteDeferredError,
+  GroupWriteRefusedError,
   type StoredGroupMessageWire,
 } from './group-relay-client'
+
+/** The last message PUT body the simulated relay received. */
+let lastMessageBody: Record<string, unknown> | undefined
 
 /**
  * In-memory simulation of the cashweb-registry `/groups/:group_id/*` HTTP endpoints
@@ -87,6 +97,7 @@ function createMockGroupRelayAxios() {
         const msgMatch = url.match(/\/groups\/([0-9a-f]{64})\/messages$/)
         if (msgMatch) {
           const groupId = msgMatch[1]
+          lastMessageBody = body
           const list = messages.get(groupId) ?? []
           const serverSeq = list.length + 1
           const row: StoredGroupMessageWire = {
@@ -283,11 +294,23 @@ describe('GroupRelayClient', () => {
       timestampMs: 1700000001234,
     })
 
-    const sendRes = await client.sendGroupMessage(
+    const payment = groupTestPaymentFor(
+      {
+        network: 'monad-testnet',
+        priceWei: 1000n,
+        hostOrigin: client.relayUrl,
+        payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+      },
       created.identity.groupIdHex,
       sealed,
     )
+    const sendRes = await client.sendGroupMessage(
+      created.identity.groupIdHex,
+      sealed,
+      payment,
+    )
     expect(sendRes.server_seq).toBe(1)
+    expect(lastMessageBody?.payment).toEqual(payment)
 
     const fetched = await client.fetchGroupMessages(
       created.identity.groupIdHex,
@@ -370,5 +393,85 @@ describe('GroupRelayClient', () => {
         authorityPrivateKey: created.identity.groupSecretKey,
       }),
     ).rejects.toThrow('CAS mismatch')
+  })
+})
+
+describe('group write refusals', () => {
+  /** A relay whose every write PUT answers `status` with `body`. */
+  function answering(status: number, body: unknown) {
+    const put = jest.fn(async () => {
+      // What axios rejects with for an HTTP error answer.
+      throw Object.assign(
+        new Error(`Request failed with status code ${status}`),
+        {
+          isAxiosError: true,
+          response: { status, data: body },
+        },
+      )
+    })
+    return new GroupRelayClient('https://relay.example', {
+      axiosInstance: { put } as unknown as AxiosInstance,
+    })
+  }
+  const write = (client: GroupRelayClient) =>
+    client.sendGroupMessage(
+      '11'.repeat(32),
+      {
+        epoch: 0,
+        nonce: '22'.repeat(24),
+        ciphertext: '33'.repeat(8),
+        write_sig: '44'.repeat(64),
+      },
+      { network: 'monad-testnet', raw_transaction: '00' },
+    )
+
+  test('only a refusal before anything was stored is definitive', async () => {
+    for (const [status, body] of [
+      [402, { error: 'group_payment_invalid', reason: 'underpaid' }],
+      [402, { error: 'group_payment_unfunded', reason: 'stale_nonce' }],
+      [402, { error: 'group_payment_required', reason: 'missing' }],
+      [403, { error: 'invalid write_sig' }],
+      [404, { error: 'group not found' }],
+    ] as const)
+      await expect(write(answering(status, body))).rejects.toBeInstanceOf(
+        GroupWriteRefusedError,
+      )
+    // A gateway error, a malformed-request answer, a 402 that is not the host's payment
+    // refusal, or a retryable check: the write may still have been stored.
+    for (const [status, body] of [
+      [400, { error: 'bad input' }],
+      [402, { error: 'payment required' }],
+      [408, {}],
+      [429, {}],
+      [502, { error: 'upstream relay unreachable' }],
+      [503, { error: 'group_writes_unavailable' }],
+      [504, { error: 'upstream relay timed out' }],
+    ] as const) {
+      const error = await write(answering(status, body)).catch(e => e)
+      expect(error).not.toBeInstanceOf(GroupWriteRefusedError)
+      expect(error).not.toBeInstanceOf(GroupWriteDeferredError)
+      expect(error.response?.status).toBe(status)
+    }
+  })
+
+  test('a payment the host cannot accept yet defers the write, never refuses it', async () => {
+    for (const [body, reason] of [
+      [{ error: 'group_payment_not_ready', reason: 'nonce_gap' }, 'nonce_gap'],
+      [
+        { error: 'group_payment_not_ready', reason: 'insufficient_balance' },
+        'insufficient_balance',
+      ],
+      [
+        {
+          error: 'group_payment_check_unavailable',
+          reason: 'node_unavailable',
+        },
+        'node_unavailable',
+      ],
+    ] as const) {
+      const error = await write(answering(503, body)).catch(e => e)
+      expect(error).toBeInstanceOf(GroupWriteDeferredError)
+      expect(error.reason).toBe(reason)
+    }
   })
 })

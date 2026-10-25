@@ -58,7 +58,7 @@ pub struct MonadStampPrivateChild {
     pub private_key: [u8; 32],
 }
 
-fn evm_address(public_key: &PublicKey) -> [u8; 20] {
+pub(crate) fn evm_address(public_key: &PublicKey) -> [u8; 20] {
     let uncompressed = public_key.serialize_uncompressed();
     let digest = Keccak256::digest(&uncompressed[1..]);
     let mut address = [0; 20];
@@ -90,7 +90,7 @@ fn child_tweak(public_key: &PublicKey, chain_code: &[u8; 32], index: u32) -> ([u
     (tweak, child_chain_code)
 }
 
-fn derive_public_step(
+pub(crate) fn derive_public_step(
     secp: &Secp256k1<All>,
     public_key: &mut PublicKey,
     chain_code: &mut [u8; 32],

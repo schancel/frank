@@ -891,6 +891,7 @@ export const rawEnUS = {
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',
+    reasonRejectedPaid: 'The relay rejected it after its payment went out.',
     reasonInterrupted: 'It was interrupted before it was sent.',
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',

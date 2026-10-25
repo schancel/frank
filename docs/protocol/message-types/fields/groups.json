@@ -33,17 +33,39 @@
     },
     {
       "key": "group-message-envelope",
-      "description": "Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.",
+      "description": "Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. 'payment' is the group-write-payment that pays the hosting relay for this write; the relay requires it for every new write and never stores it in the message row. It may be absent on a retry of a write the relay already accepted: the relay answers such a retry with the original receipt before it looks at any payment.",
       "fields": {
         "group-id": 0,
         "epoch": 1,
         "nonce": 2,
         "ciphertext": 3,
-        "write-sig": 4
+        "write-sig": 4,
+        "payment": 5
       },
       "shapes": [
         {
-          "required": ["group-id", "epoch", "nonce", "ciphertext", "write-sig"],
+          "required": [
+            "group-id",
+            "epoch",
+            "nonce",
+            "ciphertext",
+            "write-sig"
+          ],
+          "optional": ["payment"],
+          "open": true
+        }
+      ]
+    },
+    {
+      "key": "group-write-payment",
+      "description": "Payment carried by a group write (group-message-envelope 'payment'): one signed raw EVM transaction paying the hosting relay's configured payee at least its price, on 'network' (a canonical chain identifier from docs/protocol/chains/v1.json). Its calldata commits to the hosting relay, group, epoch and the envelope's signing digest. 'raw-transaction' is bytes (or hex text).",
+      "fields": {
+        "network": 0,
+        "raw-transaction": 1
+      },
+      "shapes": [
+        {
+          "required": ["network", "raw-transaction"],
           "optional": [],
           "open": true
         }

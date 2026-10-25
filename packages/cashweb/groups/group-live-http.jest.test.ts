@@ -6,7 +6,11 @@ import {
   rotateGroupEpochOnRelay,
 } from './group-relay-client'
 import { sealGroupMessage } from './group-crypto'
-import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
+import {
+  GROUP_TEST_ACCOUNTS,
+  groupTestSigningKey,
+  paidSend,
+} from './group-test.testutil'
 
 const originUrl = process.env.FRANK_GROUP_HTTP_ORIGIN_URL
 const homeUrl = process.env.FRANK_GROUP_HTTP_HOME_URL
@@ -16,7 +20,7 @@ const waitFor = async (predicate: () => boolean) => {
   while (!predicate()) {
     if (Date.now() > deadline)
       throw new Error('Timed out waiting for live delivery')
-    await new Promise((resolve) => setTimeout(resolve, 25))
+    await new Promise(resolve => setTimeout(resolve, 25))
   }
 }
 
@@ -29,7 +33,7 @@ integration(
     const home = new GroupRelayClient(originUrl!, {
       homeRelayUrl: homeUrl!,
       subscriberTag: async () => 'cc'.repeat(32),
-      webSocketFactory: (url) => {
+      webSocketFactory: url => {
         urls.push(url)
         const socket = new NodeWebSocket(url)
         sockets.push(socket)
@@ -85,15 +89,15 @@ integration(
         subscriberTag: async () => 'dd'.repeat(32),
       }).fetchGroupMessages(id, created.epochKeys.readTokenHex)
       // No cross-relay NATS event: the server's bounded foreign probe must repair this missed notification.
-      await origin.sendGroupMessage(id, seal('foreign missed wake'))
+      await paidSend(origin, id, seal('foreign missed wake'))
       await waitFor(() => cursor === 1)
       sockets.at(-1)!.terminate()
-      await origin.sendGroupMessage(id, seal('during disconnect'))
+      await paidSend(origin, id, seal('during disconnect'))
       await waitFor(() => sockets.length >= 2 && cursor === 2)
       live.close()
-      await origin.sendGroupMessage(id, seal('while stopped'))
+      await paidSend(origin, id, seal('while stopped'))
       const stoppedWakes = wakes
-      await new Promise((resolve) => setTimeout(resolve, 1200))
+      await new Promise(resolve => setTimeout(resolve, 1200))
       expect(wakes).toBe(stoppedWakes)
       // New subscription represents startup with the original durable receipt-derived cursor.
       live = home.subscribeGroupMessages(
@@ -159,7 +163,7 @@ integration(
         home.fetchGroupMessages(id, created.epochKeys.readTokenHex, cursor),
       ).rejects.toThrow()
       live.close()
-      await origin.sendGroupMessage(id, seal('new epoch', rotated.epochKeys))
+      await paidSend(origin, id, seal('new epoch', rotated.epochKeys))
       live = home.subscribeGroupMessages(
         id,
         1,
@@ -189,7 +193,7 @@ integration(
   'local durable append immediately wakes Home Relay clients',
   async () => {
     const client = new GroupRelayClient(homeUrl!, {
-      webSocketFactory: (url) => new NodeWebSocket(url) as unknown as WebSocket,
+      webSocketFactory: url => new NodeWebSocket(url) as unknown as WebSocket,
     })
     const [alice] = GROUP_TEST_ACCOUNTS
     const created = await createGroupOnRelay({
@@ -201,7 +205,7 @@ integration(
     let cursor = 0,
       wakes = 0
     let arrived!: () => void
-    const received = new Promise<void>((resolve) => {
+    const received = new Promise<void>(resolve => {
       arrived = resolve
     })
     const live = client.subscribeGroupMessages(
@@ -224,8 +228,9 @@ integration(
     try {
       await waitFor(() => wakes > 0)
       // Wait out the coalescing interval, leaving the five-second repair probe well in the future.
-      await new Promise((resolve) => setTimeout(resolve, 300))
-      await client.sendGroupMessage(
+      await new Promise(resolve => setTimeout(resolve, 300))
+      await paidSend(
+        client,
         created.identity.groupIdHex,
         sealGroupMessage({
           epochKeys: created.epochKeys,

@@ -15,7 +15,10 @@ use std::{sync::Arc, time::Duration};
 use cashweb_registry::store::{
     blob_store::S3BlobStoreConfig,
     foundationdb_driver::FoundationDbKvStore,
-    groups::{derive_group_id, GroupEpochFrame, GroupError, GroupMessageEnvelope, GroupStore},
+    groups::{
+        derive_group_id, GroupAppendOutcome, GroupEpochFrame, GroupError, GroupMessageEnvelope,
+        GroupStore, GroupWritePaymentFact,
+    },
     kv_store::{KvError, RelayKvStore, Transact},
     large_values::{LargeValueError, ObjectStore, INLINE_LIMIT},
     s3_objects::S3ObjectStore,
@@ -82,13 +85,28 @@ fn s3() -> Arc<S3ObjectStore> {
 
 /// One relay's view: its own FDB client and its own S3 client.
 fn relay(kv: &Arc<FoundationDbKvStore>, objects: &Arc<S3ObjectStore>) -> GroupStore {
-    GroupStore::new(
-        kv.clone(),
-        objects.clone(),
-        cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        },
-    )
+    GroupStore::new(kv.clone(), objects.clone())
+}
+
+/// Append `envelope` as the HTTP layer does once it has verified the write's payment. This
+/// contract is about where ciphertext lives, so the store is handed a payment fact (hash and
+/// nonce from the envelope's digest, so a retry of one envelope is the same payment) rather than a
+/// transaction checked on a chain; the cluster lab pays for real.
+fn put_message(
+    store: &GroupStore,
+    group_id: &str,
+    envelope: GroupMessageEnvelope,
+) -> Result<GroupAppendOutcome, GroupError> {
+    let digest = envelope.signing_digest()?;
+    let payment = GroupWritePaymentFact {
+        network: "monad-regtest".into(),
+        tx_hash: digest,
+        payer: [1; 20],
+        payee: [2; 20],
+        value_wei: 1,
+        nonce: u64::from_be_bytes(digest[..8].try_into().unwrap()),
+    };
+    store.put_paid_message(group_id, envelope, &payment)
 }
 
 fn group_id() -> String {
@@ -159,14 +177,10 @@ fn relay_a_appends_a_1_mib_message() {
         let (kv, objects) = (open_kv(), s3());
         let store = relay(&kv, &objects);
         store.put_epoch(&group_id(), initial_epoch()).unwrap();
-        let large = store
-            .put_message(&group_id(), message("large", MIB))
-            .unwrap();
+        let large = put_message(&store, &group_id(), message("large", MIB)).unwrap();
         assert!(large.appended);
         assert_eq!(large.message.server_seq, 1);
-        let small = store
-            .put_message(&group_id(), message("small", 64))
-            .unwrap();
+        let small = put_message(&store, &group_id(), message("small", 64)).unwrap();
         assert_eq!(small.message.server_seq, 2);
         assert!(objects
             .contains(&referenced_key(&store, &content("large", MIB)))
@@ -209,7 +223,11 @@ fn with_minio_stopped_a_large_append_fails_closed() {
         let (kv, objects) = (open_kv(), s3());
         let store = relay(&kv, &objects);
         assert_eq!(sequence(&kv), Some(2));
-        let result = store.put_message(&group_id(), message("during-outage", 2 * INLINE_LIMIT));
+        let result = put_message(
+            &store,
+            &group_id(),
+            message("during-outage", 2 * INLINE_LIMIT),
+        );
         assert!(
             matches!(
                 &result,
@@ -242,7 +260,7 @@ fn after_minio_restarts_the_append_lands_as_the_next_sequence() {
         let (kv, objects) = (open_kv(), s3());
         let store = relay(&kv, &objects);
         let envelope = message("during-outage", 2 * INLINE_LIMIT);
-        let receipt = store.put_message(&group_id(), envelope.clone()).unwrap();
+        let receipt = put_message(&store, &group_id(), envelope.clone()).unwrap();
         assert!(receipt.appended);
         assert_eq!(receipt.message.server_seq, 3);
         let read = relay(&open_kv(), &s3())
@@ -329,7 +347,7 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
                             ));
                             shared.write_sig =
                                 sign(&keypair("write").0, &shared.signing_digest().unwrap());
-                            match store.put_message(&group_id(), shared.clone()) {
+                            match put_message(&store, &group_id(), shared.clone()) {
                                 Ok(receipt) => appended.push((receipt.message.server_seq, shared)),
                                 Err(GroupError::LargeValue(_) | GroupError::Storage(_)) => {
                                     failed += 1

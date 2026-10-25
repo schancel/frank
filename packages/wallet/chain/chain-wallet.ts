@@ -692,6 +692,8 @@ export interface WalletHandle {
   constructTransactionSet?: import("../transaction-set").TransactionSetCapability["constructTransactionSet"];
   /** Submit the complete prepared wrapper, including wallet-owned change transactions. */
   sendTransaction?: import("../transaction-set").TransactionSetCapability["sendTransaction"];
+  releaseTransactionSet?: import("../transaction-set").TransactionSetCapability["releaseTransactionSet"];
+  observeTransactionSet?: import("../transaction-set").TransactionSetCapability["observeTransactionSet"];
   readonly topicOperations?: import("../topic-operations").TopicOperationCapability;
   readonly identity: FrankIdentityHandle;
 }

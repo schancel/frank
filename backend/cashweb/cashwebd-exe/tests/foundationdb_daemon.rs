@@ -1,9 +1,12 @@
 //! The real daemon in cluster mode against a live FoundationDB and Core NATS (the
 //! `backend/labs/compose.foundationdb-nats.yml` lab). Two relay processes with separate local
-//! disks share the group store; a third start on a fresh disk still reads it.
+//! disks share the group store; a third start on a fresh disk still reads it. The append pays
+//! its relay on solonet (`monad-regtest`), so the relays and the test reach it at
+//! `FRANK_LAB_SOLONET_RPC_URL`.
 //!
 //! ```sh
 //! FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster FRANK_LAB_NATS_URL=nats://nats:4222 \
+//!   FRANK_LAB_SOLONET_RPC_URL=http://host.docker.internal:48080 \
 //!   cargo test -p cashwebd-exe --features foundationdb --test foundationdb_daemon -- --ignored
 //! ```
 #![cfg(feature = "foundationdb")]
@@ -21,6 +24,10 @@ use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::{connect_async, tungstenite};
 
+#[path = "../../../labs/solonet_payer.rs"]
+mod solonet_payer;
+use solonet_payer::{paid_body, write_policy, Solonet};
+
 /// The daemon under test: the binary Cargo built, or `FRANK_CASHWEBD_EXE` when the test
 /// executable was copied out of its build tree (the lab image does this).
 fn daemon_exe() -> PathBuf {
@@ -36,8 +43,15 @@ struct Relay {
 }
 
 impl Relay {
-    /// Start one replica of `cluster` with its own local disk under `dir`.
-    fn start(dir: &Path, shared: &Path, cluster: &str, subspace: &str) -> Self {
+    /// Start one replica of `cluster` with its own local disk under `dir`, on solonet at
+    /// `rpc` whose block `checkpoint.0` has the hash `checkpoint.1`.
+    fn start(
+        dir: &Path,
+        shared: &Path,
+        cluster: &str,
+        subspace: &str,
+        (rpc, (checkpoint_number, checkpoint)): (&str, (u64, &str)),
+    ) -> Self {
         std::fs::create_dir_all(dir).unwrap();
         let port = TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
@@ -51,10 +65,9 @@ host = "127.0.0.1:{port}"
 url = "http://127.0.0.1:{port}"
 
 [registry]
-groups = {{ per_message_price_credits = 0 }}
 db_path = "{db}"
-network = "monad-testnet"
-net = "mainnet"
+network = "monad-regtest"
+net = "regtest"
 peers = []
 session_secret_file = "{shared}/session-secret"
 vapid_private_key_file = "{shared}/vapid-private-key"
@@ -70,6 +83,23 @@ preview_replica_local_owners = true
 [registry.cluster.nats]
 enabled = true
 url = "{nats}"
+
+[registry.group_writes]
+price_wei = "1000000000000"
+payee = "burn"
+
+[registry.evm_rpc]
+enabled = true
+capability_ttl_ms = 3600000
+anonymous_units_per_hour = 1000000
+
+[[registry.evm_rpc.chains]]
+id = "monad-regtest"
+expected_chain_id = 20143
+upstream_env = "MONAD_REGTEST_HTTP_RPC_URL"
+checkpoint_block_number = {checkpoint_number}
+checkpoint_block_hash = "{checkpoint}"
+max_get_logs_range = 10
 
 [registry.monad_mailbox]
 enabled = false
@@ -91,6 +121,7 @@ min_value_wei = "0"
         let child = Command::new(daemon_exe())
             .arg(&conf)
             .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
+            .env("MONAD_REGTEST_HTTP_RPC_URL", rpc)
             .stdin(Stdio::null())
             .stdout(out.try_clone().unwrap())
             .stderr(out)
@@ -232,7 +263,8 @@ async fn list_profiles(http: &reqwest::Client, url: String) -> Vec<(String, Vec<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs the FoundationDB + NATS lab: FRANK_FDB_CLUSTER_FILE and FRANK_LAB_NATS_URL"]
+#[ignore = "needs the FoundationDB + NATS lab and solonet: FRANK_FDB_CLUSTER_FILE, \
+            FRANK_LAB_NATS_URL and FRANK_LAB_SOLONET_RPC_URL"]
 async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     let temp = tempfile::tempdir().unwrap();
     let shared = temp.path().join("provisioned");
@@ -246,9 +278,15 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     let run = hex::encode(rand::random::<[u8; 6]>());
     let cluster = format!("daemon-{run}");
     let subspace = format!("frank-daemon-test/{run}/");
+    let solonet = Solonet::from_env().await;
+    let (checkpoint_number, checkpoint) = solonet.checkpoint().await;
+    let chain = (solonet.rpc_url(), (checkpoint_number, checkpoint.as_str()));
+    // Swept back to the faucet when dropped, at the end of the test or while it unwinds.
+    let funded = solonet.fund(1).await;
+    let payer = funded.take();
 
-    let a = Relay::start(&temp.path().join("a"), &shared, &cluster, &subspace);
-    let b = Relay::start(&temp.path().join("b"), &shared, &cluster, &subspace);
+    let a = Relay::start(&temp.path().join("a"), &shared, &cluster, &subspace, chain);
+    let b = Relay::start(&temp.path().join("b"), &shared, &cluster, &subspace, chain);
     for relay in [&a, &b] {
         let log = relay.log();
         assert!(
@@ -338,9 +376,13 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         write_sig: String::new(),
     };
     envelope.write_sig = sign(&write, &envelope.signing_digest().unwrap());
+    // Paid as B asks: B's own origin, so the payment funds this write on B only.
+    let policy = write_policy(&http, &b.origin, &group_id).await;
+    let (payment, tx_hash) = solonet.payment(payer, &policy, &envelope);
     let appended = http
         .put(format!("{}/groups/{group_id}/messages", b.origin))
-        .json(&envelope)
+        .header("content-type", "application/json")
+        .body(paid_body(&envelope, &payment))
         .send()
         .await
         .unwrap();
@@ -367,6 +409,8 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         woken - tick
     );
     drop(socket);
+    // B handed the payment to solonet after the commit.
+    solonet.wait_landed(&tx_hash).await;
 
     // The registry is shared too: a profile replaced on A is the only record B lists or finds.
     let (old, address) = signed_profile(1_000, "OldName");
@@ -388,7 +432,7 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
 
     // A third replica on an empty disk reads the same message: the state is in FoundationDB.
     a.kill();
-    let c = Relay::start(&temp.path().join("c"), &shared, &cluster, &subspace);
+    let c = Relay::start(&temp.path().join("c"), &shared, &cluster, &subspace, chain);
     let page: serde_json::Value = http
         .get(format!(
             "{}/groups/{group_id}/messages?after_seq=0",

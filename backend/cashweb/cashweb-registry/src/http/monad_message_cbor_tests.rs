@@ -188,9 +188,6 @@ impl NativeDirectoryFixture {
             Db::open(root.path().join("db")).unwrap(),
             Arc::new(DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         ));
         let (directory, ready) = DirectoryRuntime::start_with_clock(
             registry.clone(),
@@ -274,9 +271,6 @@ impl NativeDirectoryFixture {
             crate::store::db::Db::open(root.path().join("db")).unwrap(),
             Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
             bitcoinsuite_core::Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         ));
         // Nothing is re-published: the restarted relay finds the accounts in its own database.
         let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
@@ -377,9 +371,6 @@ async fn ordinary_directory_drop_releases_registry_before_reopen() {
         crate::store::db::Db::open(root.path().join("db")).unwrap(),
         Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
         bitcoinsuite_core::Net::Regtest,
-        cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        },
     ));
     let (directory, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
         registry,
@@ -458,6 +449,7 @@ fn server_with(
             crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
         ),
         forum: None,
+        group_writes: None,
         spa_dir: None,
         event_bus: fixture.registry.event_bus().clone(),
     }
@@ -873,6 +865,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
             crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
         ),
         forum: None,
+        group_writes: None,
         spa_dir: None,
         event_bus: fixture.registry.event_bus().clone(),
     };

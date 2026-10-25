@@ -69,3 +69,21 @@ it("rejects a non-address EVM destination at the preparation boundary", async ()
     operationId: "bad", amountAtomic: 1n, kdf: () => new Uint8Array(19),
   })).rejects.toThrow("exactly 20 bytes");
 });
+
+it("bounds the recipient transactions as the EVM payment-part limit", async () => {
+  const construct = jest.fn(async (request: ConstructEvmTransactionSetRequest) => {
+    void request;
+    throw new Error("stop after mapping");
+  });
+  const capability = evmTransactionSetCapability({ constructTransactionSet: construct });
+  const base = { operationId: "one", amountAtomic: 1n, kdf: () => new Uint8Array(20) };
+  await expect(capability.constructTransactionSet({ ...base, maxRecipientTransactions: 1 }))
+    .rejects.toThrow("stop after mapping");
+  expect(construct.mock.calls[0][0]).toMatchObject({ maxPaymentParts: 1 });
+  await expect(capability.constructTransactionSet(base)).rejects.toThrow("stop after mapping");
+  expect(construct.mock.calls[1][0]).not.toHaveProperty("maxPaymentParts");
+  for (const bad of [0, -1, 1.5, Number.NaN])
+    await expect(capability.constructTransactionSet({ ...base, maxRecipientTransactions: bad }))
+      .rejects.toThrow("positive integer");
+  expect(construct).toHaveBeenCalledTimes(2);
+});

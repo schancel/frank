@@ -441,22 +441,14 @@ fn a_build_without_foundationdb_refuses_the_driver_before_any_state() {
 }
 
 #[test]
-fn group_price_configuration_is_explicit_and_checked_before_database_effects() {
+fn group_write_configuration_is_checked_before_database_effects() {
     let base = include_str!("../../cashwebd.local.toml");
     let path =
-        std::env::temp_dir().join(format!("frank-missing-group-policy-{}", std::process::id()));
+        std::env::temp_dir().join(format!("frank-missing-group-writes-{}", std::process::id()));
     assert!(!path.exists());
-    for price in ["-1", "0.5", "18446744073709551616", "\"free\""] {
-        let invalid = base.replace(
-            "per_message_price_credits = 0",
-            &format!("per_message_price_credits = {price}"),
-        );
-        assert!(!check_stdin(invalid.as_bytes()).status.success(), "{price}");
-    }
-    for removed in [
-        "[registry.groups]\nper_message_price_credits = 0\n",
-        "per_message_price_credits = 0\n",
-    ] {
+    let section = "[registry.group_writes]\nprice_wei = \"1000000000000\"\npayee = \"burn\"\n";
+    for removed in [section, "price_wei = \"1000000000000\"\n"] {
+        assert!(base.contains(removed));
         let invalid = base.replace(removed, "").replace(
             "data/registry.rocksdb",
             &format!("{}/registry.rocksdb", path.display()),
@@ -482,9 +474,48 @@ fn group_price_configuration_is_explicit_and_checked_before_database_effects() {
             "invalid config created database/session directory"
         );
     }
-    let positive = base.replace(
-        "per_message_price_credits = 0",
-        "per_message_price_credits = 7",
+}
+
+#[test]
+fn group_writes_are_always_priced_and_paid_to_an_explicit_payee() {
+    let base = include_str!("../../cashwebd.local.toml");
+    let section = "[registry.group_writes]\nprice_wei = \"1000000000000\"\npayee = \"burn\"\n";
+    assert!(
+        base.contains(section),
+        "the shipped config states its group write policy"
     );
-    assert!(check_stdin(positive.as_bytes()).status.success());
+    assert!(check_stdin(base.as_bytes()).status.success());
+    // No free writes, no implicit payee, no missing policy.
+    for invalid in [
+        base.replace(section, ""),
+        base.replace("price_wei = \"1000000000000\"", "price_wei = \"0\""),
+        base.replace("price_wei = \"1000000000000\"", "price_wei = \"-1\""),
+        base.replace("price_wei = \"1000000000000\"", "price_wei = \"1e12\""),
+        base.replace("price_wei = \"1000000000000\"\n", ""),
+        base.replace("payee = \"burn\"\n", ""),
+        base.replace("payee = \"burn\"", "payee = \"free\""),
+        base.replace("payee = \"burn\"", "payee = { address = \"0xdead\" }"),
+        base.replace("payee = \"burn\"", "payee = { xpub = \"xpub-not-a-key\" }"),
+        base.replace(
+            "url = \"http://127.0.0.1:8098\"",
+            "url = \"http://127.0.0.1:8098/groups\"",
+        ),
+        base.replace(
+            "endpoint = \"http://127.0.0.1:8098\"",
+            "endpoint = \"http://127.0.0.1:9999\"",
+        ),
+        format!("{base}\n[registry.groups]\nper_message_price_credits = 0\n"),
+    ] {
+        assert!(
+            !check_stdin(invalid.as_bytes()).status.success(),
+            "{invalid}"
+        );
+    }
+    for payee in [
+        "payee = { address = \"0x00000000000000000000000000000000000000aA\" }",
+        "payee = { xpub = \"xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8\" }",
+    ] {
+        let valid = base.replace("payee = \"burn\"", payee);
+        assert!(check_stdin(valid.as_bytes()).status.success(), "{payee}");
+    }
 }

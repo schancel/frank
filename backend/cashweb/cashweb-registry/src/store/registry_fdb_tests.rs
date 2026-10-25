@@ -87,9 +87,6 @@ async fn serve_until_stdin_closes(dir: std::path::PathBuf, subspace: String) {
         shared_db(&dir.join("registry"), &subspace),
         Arc::new(DisabledChainAdapter),
         Net::Regtest,
-        cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        },
     ));
     let (runtime, ready) = DirectoryRuntime::start_with_clock(
         Arc::clone(&registry),
@@ -111,6 +108,7 @@ async fn serve_until_stdin_closes(dir: std::path::PathBuf, subspace: String) {
         solana_proxy: None,
         chains: Arc::new(crate::chains::RelayChains::network_only(NETWORK).unwrap()),
         forum: None,
+        group_writes: None,
         spa_dir: None,
         event_bus,
     }

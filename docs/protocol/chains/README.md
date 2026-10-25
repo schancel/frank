@@ -177,6 +177,7 @@ record is never committed) and a wallet is given their addresses in its chain co
 ```sh
 yarn --cwd packages/bot regtest:monad-check     # relay, contracts, a paid and a free message each way
 yarn --cwd packages/bot regtest:monad-reserve   # the wallet against Monad's reserve balance
+yarn --cwd packages/bot regtest:monad-group-writes  # paid group writes on two real relays
 yarn --cwd packages/bot regtest:monad-status
 yarn --cwd packages/bot regtest:monad-stop      # the chain keeps running until this
 ```

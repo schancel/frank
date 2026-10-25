@@ -957,9 +957,6 @@ mod tests {
             Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
             Arc::new(DisabledChainAdapter),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
         let event_bus = registry.event_bus().clone();
         let auth = Arc::clone(&runtime);
@@ -976,6 +973,7 @@ mod tests {
                 crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
             ),
             forum: None,
+            group_writes: None,
             spa_dir: None,
             event_bus,
         }

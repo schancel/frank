@@ -191,6 +191,10 @@ pub struct RegistryServer {
     pub chains: Arc<RelayChains>,
     /// The relay network's forum. `None` (no `[registry.forum]`) answers its routes unavailable.
     pub forum: Option<Arc<ForumRuntime>>,
+    /// Price and payee of writes to groups this relay hosts. The daemon always installs it
+    /// (`[registry.group_writes]` is mandatory); `None` only in fixtures that take no group
+    /// writes, which then answer `503 group_writes_unavailable`.
+    pub group_writes: Option<Arc<crate::http::groups::GroupWriteRuntime>>,
     /// Optional directory to serve Single Page Application (SPA) static files from.
     pub spa_dir: Option<PathBuf>,
     /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
@@ -359,6 +363,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["message", "monad", "topics", _] => Cow::Borrowed("/message/monad/topics/:payload_hash"),
         ["groups", _, "epochs"] => Cow::Borrowed("/groups/:group_id/epochs"),
         ["groups", _, "messages"] => Cow::Borrowed("/groups/:group_id/messages"),
+        ["groups", _, "write-policy"] => Cow::Borrowed("/groups/:group_id/write-policy"),
         // Unknown paths under this namespace are fail-closed. Routers may percent-decode
         // or normalize segments differently than this logging middleware, so no
         // chain-rpc-shaped miss is allowed to copy attacker-controlled path text to logs.
@@ -1247,14 +1252,7 @@ mod spa_tests {
     fn test_server(spa_dir: Option<std::path::PathBuf>) -> (TempDir, RegistryServer) {
         let tempdir = TempDir::new("cashweb-registry--spa-test").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(
-            db,
-            Arc::new(DisabledChainAdapter),
-            Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let registry = Registry::new(db, Arc::new(DisabledChainAdapter), Net::Regtest);
         let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
             registry: Arc::new(registry),
@@ -1269,6 +1267,7 @@ mod spa_tests {
                 crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
             ),
             forum: None,
+            group_writes: None,
             spa_dir,
             event_bus,
         };
@@ -1448,6 +1447,7 @@ mod spa_tests {
                 crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
             ),
             forum: None,
+            group_writes: None,
             spa_dir: None,
             event_bus,
         };

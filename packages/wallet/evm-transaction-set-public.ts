@@ -87,10 +87,15 @@ export function evmTransactionSetCapability(
   submit?: (
     prepared: PreparedEvmTransactionSet,
   ) => Promise<TransactionSetSubmission>,
+  release?: (operationId: string) => Promise<boolean>,
+  observe?: (operationId: string) => Promise<boolean>,
 ): TransactionSetCapability {
   return {
     async constructTransactionSet(request): Promise<PreparedTransactionSet> {
       const kdf = request.kdf
+      const parts = request.maxRecipientTransactions
+      if (parts !== undefined && (!Number.isSafeInteger(parts) || parts < 1))
+        throw new Error('maxRecipientTransactions must be a positive integer')
       const result = await preparer.constructTransactionSet({
         operationId: request.operationId,
         amountWei: request.amountAtomic,
@@ -108,6 +113,9 @@ export function evmTransactionSetCapability(
         ...(request.maxNativeFeeAtomic === undefined
           ? {}
           : { maxFeeWei: request.maxNativeFeeAtomic }),
+        ...(request.maxRecipientTransactions === undefined
+          ? {}
+          : { maxPaymentParts: request.maxRecipientTransactions }),
       })
       return project(result)
     },
@@ -119,6 +127,16 @@ export function evmTransactionSetCapability(
       const authoritative = await preparer.readTransactionSet(prepared.operationId)
       assertPublicWrapper(prepared, project(authoritative))
       return submit(authoritative)
+    },
+    async releaseTransactionSet(operationId): Promise<boolean> {
+      if (!release)
+        throw new Error('Transaction-set release is unavailable for this wallet')
+      return release(operationId)
+    },
+    async observeTransactionSet(operationId): Promise<boolean> {
+      if (!observe)
+        throw new Error('Transaction-set observation is unavailable for this wallet')
+      return observe(operationId)
     },
   }
 }

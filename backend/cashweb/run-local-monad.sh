@@ -102,7 +102,8 @@ cd -- "$script_dir"
 #   FRANK_RELAY_LISTEN      host:port to listen on (also sets the advertised url and the directory
 #                           endpoint), e.g. 127.0.0.1:18098
 #   FRANK_RELAY_PUBLIC_URL  the origin clients reach this relay at when it is not the listen
-#                           address (a tunnel or proxy); becomes the directory endpoint
+#                           address (a tunnel or proxy); becomes the relay url and the
+#                           directory endpoint
 #   FRANK_RELAY_ID          this relay's 16-byte id (32 hex) in the directory section
 #   FRANK_RELAY_IDENTITY    this relay's compressed public key (66 hex) in the directory section;
 #                           two relays run side by side need their own id and identity
@@ -269,6 +270,7 @@ fi
 if [[ -n "${FRANK_RELAY_PUBLIC_URL:-}" ]]; then
     runtime_config="$(printf '%s\n' "$runtime_config" | awk '
         /^endpoint = / { print "endpoint = \"" ENVIRON["FRANK_RELAY_PUBLIC_URL"] "\""; next }
+        /^url = / { print "url = \"" ENVIRON["FRANK_RELAY_PUBLIC_URL"] "\""; next }
         { print }
     ')"
 fi

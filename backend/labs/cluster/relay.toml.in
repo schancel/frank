@@ -1,17 +1,17 @@
 # One configuration for relay-a, relay-b and relay-c of the disposable cluster lab.
 # A template: lab-init writes it to the shared `config` volume with @PUBLIC_ORIGIN@ set to the
-# proxy origin (http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT), the one origin clients use.
+# proxy origin (http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT), the one origin clients use, and
+# @SOLONET_CHECKPOINT_NUMBER@ and @SOLONET_CHECKPOINT_HASH@ set to a block a few behind the head
+# of the solonet run it reached (see below).
 # Synthetic and local-only: no funded identity and no production state.
 host = "0.0.0.0:8080"
 url = "@PUBLIC_ORIGIN@"
 
 [registry]
-# Free group appends: the current policy. Paid group writes (HA step 5, PR #1847) add
-# [registry.group_writes] with a payee and a solonet (monad-regtest) upstream here once they land.
-groups = { per_message_price_credits = 0 }
 db_path = "/data/registry.rocksdb"
-network = "monad-testnet"
-net = "mainnet"
+# solonet, the local Monad network: every group write pays the hosting relay on it.
+network = "monad-regtest"
+net = "regtest"
 peers = []
 public_relay_urls = []
 # Written once by lab-init into a shared volume (mode 0400); identical on every replica.
@@ -43,34 +43,42 @@ enabled = true
 url = "nats://nats:4222"
 
 # The open directory, shared by all three replicas through FoundationDB, with evidence over
-# 64 KiB in the MinIO above. A synthetic relay tuple (the reviewed vectors' relay); the cluster
-# contract signs entries naming it.
+# 64 KiB in the MinIO above. A synthetic relay id and identity (the reviewed vectors' relay)
+# with the proxy origin as the endpoint, which must be the relay's `url`; the cluster contract
+# signs entries naming it.
 [registry.directory]
 relay_id = "000102030405060708090a0b0c0d0e0f"
 relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
-endpoint = "https://relay.example.invalid"
+endpoint = "@PUBLIC_ORIGIN@"
 # 2028-01-01T00:00:00Z
 binding_expiry_ns = "1830297600000000000"
 # The contract publishes hundreds of accounts from one container; the per-source hourly
 # quota is still counted by each replica (HA step 10).
 enrollments_per_source_per_hour = 100000
 
-# Optional chain upstream. The URL is read from MONAD_TESTNET_HTTP_RPC_URL, which compose passes
-# through from the host environment and which is never written to a file. Unset, the row is
-# omitted and the relay serves no chain. Set, the relay checks the upstream's chain id and
-# checkpoint before serving it, so the mailbox below can be switched on once the direct
-# messages owner is shared (HA step 6).
+# Every new group write carries one signed transaction on solonet paying the burn address at least
+# price_wei and committing to the proxy origin above, which all three replicas share. Whichever
+# replica takes the write checks the payment against solonet before accepting it.
+[registry.group_writes]
+price_wei = "1000000000000"
+payee = "burn"
+
+# solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
+# MONAD_REGTEST_HTTP_RPC_URL; unset, the row is omitted, the relay serves no chain and every
+# group write is answered 503 group_payment_check_unavailable. Set, the relay checks the
+# upstream's chain id and the checkpoint block before serving it. The mailbox below can be
+# switched on once the direct messages owner is shared (HA step 6).
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000
 anonymous_units_per_hour = 1000000
 
 [[registry.evm_rpc.chains]]
-id = "monad-testnet"
-expected_chain_id = 10143
-upstream_env = "MONAD_TESTNET_HTTP_RPC_URL"
-checkpoint_block_number = 0
-checkpoint_block_hash = "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+id = "monad-regtest"
+expected_chain_id = 20143
+upstream_env = "MONAD_REGTEST_HTTP_RPC_URL"
+checkpoint_block_number = @SOLONET_CHECKPOINT_NUMBER@
+checkpoint_block_hash = "@SOLONET_CHECKPOINT_HASH@"
 max_get_logs_range = 10
 
 # Message routes off: direct messages are still replica-local until HA step 6.

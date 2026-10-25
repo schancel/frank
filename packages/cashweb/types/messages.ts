@@ -1,4 +1,5 @@
 import type { SealedGroupMessageEnvelope } from '../groups/group-crypto'
+import type { StoredGroupWritePayment } from '../groups/group-write-payment'
 import type {
   BlackjackHandV3Item,
   BlackjackItem,
@@ -884,6 +885,9 @@ export type OutgoingFailureReason =
   | 'unavailable'
   /** The relay refused the message for good (400/409/422...). The old payment can never land. */
   | 'rejected'
+  /** The relay refused the message for good, but its payment had already gone out and is on
+   * chain. Nothing more is sent; the wallet accounts for the payment. */
+  | 'rejected-paid'
   /** The app stopped while this was sending and no payment attempt was recorded for it. */
   | 'interrupted'
   /** A payment attempt exists but neither delivery nor death of it could be established. A retry
@@ -931,6 +935,10 @@ export interface Message {
   requestedConversationId?: string
   /** Local durable proof for content admitted through a shared group mailbox, never a DM writer field. */
   groupEnvelope?: SealedGroupMessageEnvelope
+  /** The payment the group write of `groupEnvelope` carries to its hosting relay. Persisted
+   * before it is signed and again before its bytes leave this device; every attempt of the
+   * write carries the same bytes. */
+  groupWritePayment?: StoredGroupWritePayment
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
   /** Opaque retained application owner reference; never itself authorizes spending. */

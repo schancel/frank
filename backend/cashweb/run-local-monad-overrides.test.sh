@@ -58,6 +58,7 @@ run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashw
     FRANK_RELAY_ID=ffeeddccbbaa99887766554433221100 \
     FRANK_RELAY_IDENTITY=02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5
 grep -q '^endpoint = "https://relay-b.example.invalid"$' "$work/out/run.toml" || fail "public endpoint override missing"
+grep -q '^url = "https://relay-b.example.invalid"$' "$work/out/run.toml" || fail "public url override missing"
 grep -q '^relay_id = "ffeeddccbbaa99887766554433221100"$' "$work/out/run.toml" || fail "relay id override missing"
 grep -q '^relay_identity = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"$' "$work/out/run.toml" || fail "relay identity override missing"
 

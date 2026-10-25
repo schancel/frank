@@ -333,20 +333,114 @@ pub struct CashwebdConf {
     pub bitcoin_rpc: Option<BitcoindRpcClientConf>,
 }
 
-/// Operator policy for authoritative new group message appends.
-/// Units are abstract integer credits, independent of message size or any currency.
-/// Positive prices reject new appends until funded admission is implemented.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-pub struct GroupAppendPolicy {
-    /// Required flat price per newly accepted message. Explicit zero permits free appends.
-    pub per_message_price_credits: u64,
+/// Who a group write pays: exactly one of the burn address, one operator address, or an
+/// operator xpub whose per-write child the writer and relay both derive from the write.
+///
+/// TOML: `payee = "burn"`, `payee = { address = "0x…" }` or `payee = { xpub = "xpub…" }`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum GroupWritePayeeConf {
+    /// The conventional `0x…dEaD` burn address. Funds nobody; an explicit operator choice.
+    Burn,
+    /// A `0x`-prefixed 20-byte address on `registry.network`.
+    Address(String),
+    /// A BIP32 extended public key (`xpub…`/`tpub…`); each write pays one non-hardened child.
+    Xpub(String),
+}
+
+/// Mandatory price of a group write on groups this relay hosts (`[registry.group_writes]`).
+/// Every new write carries one signed transaction on `registry.network` paying `payee` at
+/// least `price_wei`. There is no free write.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GroupWritesConf {
+    /// Least value of one write's payment, in wei, as a decimal string. Must be above zero.
+    /// Every payment also commits to the relay's public origin, the top-level `url` (see
+    /// [`CashwebdConf::public_origin`]), so one payment cannot fund a write on another relay.
+    pub price_wei: String,
+    /// Who is paid.
+    pub payee: GroupWritePayeeConf,
+}
+
+impl GroupWritesConf {
+    /// The price in wei, refusing zero and anything that is not a plain decimal integer.
+    pub fn price_wei(&self) -> Result<u128, RegistryConfigError> {
+        if self.price_wei.is_empty() || !self.price_wei.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(RegistryConfigError::InvalidGroupWrites("price_wei"));
+        }
+        match self.price_wei.parse::<u128>() {
+            Ok(price) if price > 0 => Ok(price),
+            _ => Err(RegistryConfigError::InvalidGroupWrites("price_wei")),
+        }
+    }
+
+    /// Structural checks; the relay parses an xpub payee itself before it starts.
+    pub fn validate(&self) -> Result<(), RegistryConfigError> {
+        self.price_wei()?;
+        if let GroupWritePayeeConf::Address(address) = &self.payee {
+            if address.len() != 42
+                || !address.starts_with("0x")
+                || !address[2..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(RegistryConfigError::InvalidGroupWrites("payee.address"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A configuration section that no longer exists. It parses so that loading can name it and
+/// refuse it with a clear message, instead of ignoring it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RemovedSection;
+
+impl<'de> Deserialize<'de> for RemovedSection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer)?;
+        Ok(RemovedSection)
+    }
+}
+
+impl CashwebdConf {
+    /// The relay's public origin: the top-level `url`, which must be a bare http(s) origin.
+    /// Group write payments commit to it, so it is the one source of the relay's origin. When
+    /// `[registry.directory]` is present its `endpoint` must name the same origin.
+    pub fn public_origin(&self) -> Result<&url::Url, RegistryConfigError> {
+        let origin = &self.url;
+        if !matches!(origin.scheme(), "http" | "https")
+            || origin.host_str().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+        {
+            return Err(RegistryConfigError::InvalidPublicUrl(origin.to_string()));
+        }
+        if let Some(directory) = &self.registry.directory {
+            let same = url::Url::parse(&directory.endpoint)
+                .map(|endpoint| endpoint.origin() == origin.origin() && endpoint.path() == "/")
+                .unwrap_or(false);
+            if !same {
+                return Err(RegistryConfigError::PublicOriginMismatch {
+                    url: origin.to_string(),
+                    endpoint: directory.endpoint.clone(),
+                });
+            }
+        }
+        Ok(origin)
+    }
 }
 
 /// Configuration for a registry server
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct RegistryConf {
-    /// Mandatory group admission policy; omission is a startup error.
-    pub groups: GroupAppendPolicy,
+    /// Removed: the credit policy `[registry.groups]` is gone, because every group write pays
+    /// under `[registry.group_writes]`. A file that still has it is refused.
+    #[serde(default)]
+    pub groups: Option<RemovedSection>,
+    /// Mandatory group write price and payee; omission is a startup error.
+    pub group_writes: GroupWritesConf,
     /// Path where the Registry's RocksDB database is stored.
     pub db_path: PathBuf,
     /// Canonical identifier (`docs/protocol/chains/v1.json`) of the network this relay's
@@ -1096,6 +1190,19 @@ pub enum RegistryConfigError {
     NetworkNotProxied(String),
     /// `registry.forum.burn_address` is not a `0x`-prefixed 20-byte hex address.
     InvalidForumBurnAddress,
+    /// A `[registry.group_writes]` field is invalid.
+    InvalidGroupWrites(&'static str),
+    /// The file still has the removed `[registry.groups]` credit policy.
+    RemovedGroupsSection,
+    /// The top-level `url` is not a bare http(s) origin.
+    InvalidPublicUrl(String),
+    /// `[registry.directory] endpoint` names another origin than the top-level `url`.
+    PublicOriginMismatch {
+        /// The top-level `url`.
+        url: String,
+        /// The directory endpoint.
+        endpoint: String,
+    },
 }
 
 impl fmt::Display for RegistryConfigError {
@@ -1119,6 +1226,25 @@ impl fmt::Display for RegistryConfigError {
             ),
             Self::InvalidForumBurnAddress => formatter
                 .write_str("registry.forum.burn_address must be 0x followed by 40 hex characters"),
+            Self::InvalidGroupWrites(field) => write!(
+                formatter,
+                "invalid registry.group_writes.{field}: price_wei is a decimal wei amount above \
+                 zero, payee \"burn\", {{ address = \"0x…\" }} or {{ xpub = \"xpub…\" }}"
+            ),
+            Self::RemovedGroupsSection => formatter.write_str(
+                "[registry.groups] was removed: group writes are no longer priced in credits, \
+                 each one pays under [registry.group_writes]; delete the [registry.groups] section",
+            ),
+            Self::InvalidPublicUrl(url) => write!(
+                formatter,
+                "url {url:?} must be this relay's public http(s) origin, with no path, query or \
+                 credentials: group write payments commit to it"
+            ),
+            Self::PublicOriginMismatch { url, endpoint } => write!(
+                formatter,
+                "[registry.directory] endpoint {endpoint:?} is not the relay's public origin \
+                 url {url:?}: set both to the origin clients reach this relay at"
+            ),
         }
     }
 }
@@ -1130,7 +1256,8 @@ impl RegistryConf {
     ///
     /// The network must be a canonical EVM chain identifier. When the mailbox is enabled or the
     /// forum is configured, `[registry.evm_rpc]` must be enabled with a row for that network:
-    /// both verify payments only through that row's identity-checked upstreams.
+    /// both verify payments only through that row's identity-checked upstreams. Group writes
+    /// are checked from their bytes alone and are paid on this network too.
     pub fn validate_network(
         &self,
     ) -> Result<&'static ProtocolChainDescriptor, RegistryConfigError> {
@@ -1139,6 +1266,10 @@ impl RegistryConf {
         if chain.family != ProtocolChainFamily::Evm {
             return Err(RegistryConfigError::NetworkNotEvm(self.network.clone()));
         }
+        if self.groups.is_some() {
+            return Err(RegistryConfigError::RemovedGroupsSection);
+        }
+        self.group_writes.validate()?;
         if self.monad_mailbox.enabled || self.forum.is_some() {
             let proxied =
                 self.evm_rpc.enabled && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
@@ -2503,6 +2634,135 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
+    fn group_writes_need_a_positive_wei_price_and_a_payee() {
+        use crate::{GroupWritePayeeConf, GroupWritesConf};
+        let conf = |price: &str, payee: GroupWritePayeeConf| GroupWritesConf {
+            price_wei: price.into(),
+            payee,
+        };
+        let address = || GroupWritePayeeConf::Address(format!("0x{}", "aB".repeat(20)));
+        assert_eq!(conf("1", GroupWritePayeeConf::Burn).validate(), Ok(()));
+        assert_eq!(
+            conf("340282366920938463463374607431768211455", address()).validate(),
+            Ok(())
+        );
+        assert_eq!(conf("7", address()).price_wei(), Ok(7));
+        for price in [
+            "0",
+            "",
+            "-1",
+            "1e3",
+            "0x10",
+            " 1",
+            "340282366920938463463374607431768211456",
+        ] {
+            assert_eq!(
+                conf(price, GroupWritePayeeConf::Burn).validate(),
+                Err(RegistryConfigError::InvalidGroupWrites("price_wei")),
+                "{price}"
+            );
+        }
+        for bad in ["0xdead", "dead", &format!("0x{}", "zz".repeat(20))] {
+            assert_eq!(
+                conf("1", GroupWritePayeeConf::Address(bad.to_string())).validate(),
+                Err(RegistryConfigError::InvalidGroupWrites("payee.address")),
+                "{bad}"
+            );
+        }
+        let parsed: CashwebdConf = toml::from_str(
+            r#"
+                host = "127.0.0.1:6543"
+                url = "https://cashweb.registry"
+                [registry]
+                group_writes = { price_wei = "1", payee = "burn" }
+                db_path = "/test/path"
+                network = "monad-testnet"
+                net = "mainnet"
+                peers = []
+                [registry.monad_mailbox]
+                enabled = false
+                [registry.pop]
+                enabled = false
+                monad_rpc_url = "http://unused.invalid"
+                hmac_secret = "unused"
+                payment_recipient = "0x0000000000000000000000000000000000000000"
+                min_value_wei = "0"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.registry.group_writes.payee,
+            GroupWritePayeeConf::Burn
+        );
+    }
+
+    #[test]
+    fn the_public_origin_is_the_url_and_the_old_groups_section_is_refused() {
+        let conf = |url: &str, extra: &str| -> CashwebdConf {
+            toml::from_str(&format!(
+                r#"
+                host = "127.0.0.1:6543"
+                url = "{url}"
+                [registry]
+                group_writes = {{ price_wei = "1", payee = "burn" }}
+                db_path = "/test/path"
+                network = "monad-testnet"
+                net = "mainnet"
+                peers = []
+                {extra}
+                [registry.monad_mailbox]
+                enabled = false
+                [registry.pop]
+                enabled = false
+                monad_rpc_url = "http://unused.invalid"
+                hmac_secret = "unused"
+                payment_recipient = "0x0000000000000000000000000000000000000000"
+                min_value_wei = "0"
+            "#
+            ))
+            .unwrap()
+        };
+        let ok = conf("https://relay.example", "");
+        assert_eq!(
+            ok.public_origin().unwrap().as_str(),
+            "https://relay.example/"
+        );
+        for url in [
+            "https://relay.example/path",
+            "https://user@relay.example",
+            "https://relay.example/?q",
+            "ftp://relay.example",
+        ] {
+            assert!(matches!(
+                conf(url, "").public_origin(),
+                Err(RegistryConfigError::InvalidPublicUrl(_))
+            ));
+        }
+        assert!(matches!(
+            conf(
+                "https://relay.example",
+                r#"directory = { endpoint = "https://other.example" }"#
+            )
+            .public_origin(),
+            Err(RegistryConfigError::PublicOriginMismatch { .. })
+        ));
+        assert!(conf(
+            "https://relay.example",
+            r#"directory = { endpoint = "https://relay.example" }"#
+        )
+        .public_origin()
+        .is_ok());
+
+        let old = conf(
+            "https://relay.example",
+            "groups = { per_message_price_credits = 0 }",
+        );
+        let error = old.registry.validate_network().unwrap_err();
+        assert_eq!(error, RegistryConfigError::RemovedGroupsSection);
+        assert!(error.to_string().contains("[registry.groups] was removed"));
+    }
+
+    #[test]
     fn test_config_err() -> Result<()> {
         let err = parse_conf("").unwrap_err().downcast::<toml::de::Error>()?;
         assert_eq!(err.to_string(), "missing field `host`");
@@ -2517,7 +2777,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                groups = { per_message_price_credits = 0 }
+                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2545,8 +2805,10 @@ continuity_file = "/var/lib/frank/continuity"
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
-                    groups: crate::GroupAppendPolicy {
-                        per_message_price_credits: 0
+                    groups: None,
+                    group_writes: crate::GroupWritesConf {
+                        price_wei: "7".into(),
+                        payee: crate::GroupWritePayeeConf::Xpub("xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8".into()),
                     },
                     directory: None,
                     db_path: "/test/path".into(),
@@ -2604,7 +2866,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                groups = { per_message_price_credits = 0 }
+                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2634,8 +2896,10 @@ continuity_file = "/var/lib/frank/continuity"
                 host: "127.0.0.1:6543".parse()?,
                 url: "https://cashweb.registry".parse()?,
                 registry: RegistryConf {
-                    groups: crate::GroupAppendPolicy {
-                        per_message_price_credits: 0
+                    groups: None,
+                    group_writes: crate::GroupWritesConf {
+                        price_wei: "7".into(),
+                        payee: crate::GroupWritePayeeConf::Xpub("xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8".into()),
                     },
                     directory: None,
                     db_path: "/test/path".into(),
@@ -2758,7 +3022,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "http://127.0.0.1:8098"
 
                 [registry]
-                groups = { per_message_price_credits = 0 }
+                group_writes = { price_wei = "1", payee = "burn" }
                 db_path = "data/registry.rocksdb"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2792,7 +3056,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                groups = { per_message_price_credits = 0 }
+                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"

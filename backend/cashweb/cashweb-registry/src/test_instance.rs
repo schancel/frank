@@ -79,9 +79,6 @@ impl RegistryTestInstance {
             db,
             Arc::new(LotusAdapter::new(bitcoind.rpc_client().clone())),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         ));
         let peers = Arc::new(Peers::new(url.clone(), peers));
         let pop_gate = Arc::new(PopGate::from_conf_if_enabled(&pop_conf));
@@ -100,6 +97,7 @@ impl RegistryTestInstance {
                     .expect("monad-testnet is a registry chain"),
             ),
             forum: None,
+            group_writes: None,
             spa_dir: None,
             event_bus: registry.event_bus().clone(),
         };

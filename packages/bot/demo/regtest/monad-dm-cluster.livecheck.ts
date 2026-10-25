@@ -144,7 +144,7 @@ function relayConfig(dbPath: string, monad: MonadRegtest): string {
     `url = "${ENDPOINT}"`,
     '',
     '[registry]',
-    'groups = { per_message_price_credits = 0 }',
+    'group_writes = { price_wei = "1000000000000", payee = "burn" }',
     `db_path = "${dbPath}"`,
     'session_secret_file = "/state/session-secret"',
     'vapid_private_key_file = "/state/vapid-key"',
@@ -421,6 +421,8 @@ async function main() {
     console.log(`lab up: relays A, B, C on ${ALL.map(r => RELAYS[r]).join(', ')} sharing FDB and NATS (project ${PROJECT}); proxy ${ENDPOINT}`)
     const stack: RegtestStack = {
       relayUrl: ENDPOINT,
+      // One relay as far as the wallets can tell: the proxy in front of A, B and C.
+      relayUrls: [ENDPOINT],
       chains: { [monad.chainIdentifier]: monad },
       stateDir,
       relayLogPath: '',

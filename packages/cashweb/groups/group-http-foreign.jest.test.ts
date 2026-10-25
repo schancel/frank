@@ -10,7 +10,12 @@ import {
   sealGroupMessage,
   verifyEpochFrame,
 } from './group-crypto'
-import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
+import {
+  GROUP_TEST_ACCOUNTS,
+  groupTestPayment,
+  groupTestSigningKey,
+  paidSend,
+} from './group-test.testutil'
 
 const originUrl = process.env.FRANK_GROUP_HTTP_ORIGIN_URL
 const homeUrl = process.env.FRANK_GROUP_HTTP_HOME_URL
@@ -50,8 +55,11 @@ integration(
         timestampMs: 1700000001234,
       })
     const initialEnvelope = seal('Initial')
-    const initialReceipt = await origin.sendGroupMessage(id, initialEnvelope)
-    assert.deepEqual(await origin.sendGroupMessage(id, initialEnvelope), initialReceipt)
+    const initialReceipt = await paidSend(origin, id, initialEnvelope)
+    assert.deepEqual(
+      await paidSend(origin, id, initialEnvelope),
+      initialReceipt,
+    )
     assert.equal(
       (await homeA.fetchGroupMessages(id, created.epochKeys.readTokenHex))
         .messages.length,
@@ -62,23 +70,36 @@ integration(
         .messages.length,
       1,
     )
-    assert.deepEqual(await homeA.sendGroupMessage(id, initialEnvelope), initialReceipt)
-    assert.deepEqual(await homeB.sendGroupMessage(id, initialEnvelope), initialReceipt)
-    const repeatedProxyResponse = await fetch(`${homeUrl}/groups/${id}/messages`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'X-Group-Upstream-Relay': originUrl! },
-      body: JSON.stringify({ group_id: id, ...initialEnvelope }),
-    })
+    assert.deepEqual(await paidSend(homeA, id, initialEnvelope), initialReceipt)
+    assert.deepEqual(await paidSend(homeB, id, initialEnvelope), initialReceipt)
+    const repeatedProxyResponse = await fetch(
+      `${homeUrl}/groups/${id}/messages`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Group-Upstream-Relay': originUrl!,
+        },
+        body: JSON.stringify({
+          group_id: id,
+          ...initialEnvelope,
+          payment: await groupTestPayment(origin, id, initialEnvelope),
+        }),
+      },
+    )
     assert.equal(repeatedProxyResponse.status, 200)
-    assert.equal(repeatedProxyResponse.headers.get('x-group-append-disposition'), 'existing')
-    assert.equal(JSON.stringify(await repeatedProxyResponse.json()), JSON.stringify(initialReceipt))
+    assert.equal(
+      repeatedProxyResponse.headers.get('x-group-append-disposition'),
+      'existing',
+    )
+    assert.equal(
+      JSON.stringify(await repeatedProxyResponse.json()),
+      JSON.stringify(initialReceipt),
+    )
     // The second subscriber promotes the mirror. New upstream rows remain unread when a send is routed home.
     for (const text of ['Unread 2', 'Unread 3', 'Unread 4'])
-      await origin.sendGroupMessage(id, seal(text))
-    assert.equal(
-      (await homeA.sendGroupMessage(id, seal('Routed 5'))).server_seq,
-      5,
-    )
+      await paidSend(origin, id, seal(text))
+    assert.equal((await paidSend(homeA, id, seal('Routed 5'))).server_seq, 5)
     const backlog = await homeA.fetchGroupMessages(
       id,
       created.epochKeys.readTokenHex,
@@ -112,12 +133,12 @@ integration(
       authorityPrivateKey: created.identity.groupSecretKey,
     })
     // An accepted historical retry returns the original receipt, even after membership/key rotation.
-    assert.deepEqual(await homeA.sendGroupMessage(id, initialEnvelope), initialReceipt)
+    assert.deepEqual(await paidSend(homeA, id, initialEnvelope), initialReceipt)
     // This is the app order: check latest certificate before polling the mailbox with the newly authorized secret.
     const latest = await homeA.getLatestEpoch(id)
     assert.equal(latest.epoch, 1)
     assert(verifyEpochFrame(latest, id, created.identity.groupPubKeyHex))
-    await origin.sendGroupMessage(id, seal('After rotation', rotated.epochKeys))
+    await paidSend(origin, id, seal('After rotation', rotated.epochKeys))
     const after = await homeA.fetchGroupMessages(
       id,
       rotated.epochKeys.readTokenHex,

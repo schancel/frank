@@ -4,7 +4,10 @@
 //! Routes:
 //! - `PUT /groups/:group_id/epochs` — Atomic Compare-And-Swap (CAS) epoch creation/transition.
 //! - `GET /groups/:group_id/epochs` — Fetch current (or specific `?epoch=<u64>`) [`GroupEpochFrame`].
-//! - `PUT /groups/:group_id/messages` — Submit a sealed-sender [`GroupMessageEnvelope`] signed by $w_{G,e}$.
+//! - `PUT /groups/:group_id/messages` — Submit a sealed-sender [`GroupMessageEnvelope`] signed by $w_{G,e}$,
+//!   with the payment for the write ([`GroupWriteRequest`]). Only the hosting relay verifies it.
+//! - `GET /groups/:group_id/write-policy` — What a write to a group hosted here must pay
+//!   ([`GroupWritePolicyBody`]); proxied to the host with `X-Group-Upstream-Relay`.
 //! - `GET /groups/:group_id/messages?after_seq=<u64>&limit=<u16>` — Sync ordered group messages
 //!   authenticated via `X-Group-Read-Token`, with automatic Home-Relay proxying (`< n` local
 //!   subscribers) and local mirror promotion (`>= n` local subscribers) when
@@ -13,6 +16,12 @@
 mod live;
 #[cfg(test)]
 mod nats_tests;
+mod payment;
+
+pub use payment::{
+    GroupWritePayeeBody, GroupWritePaymentWire, GroupWritePolicyBody, GroupWriteRefusal,
+    GroupWriteRequest, GroupWriteRuntime,
+};
 
 use crate::store::large_values::LargeValueError;
 use axum::{
@@ -27,8 +36,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     http::server::RegistryServer,
     store::groups::{
-        parse_group_id_hex, GroupEpochFrame, GroupError, GroupMessageEnvelope, GroupStore,
-        StoredGroupMessage,
+        parse_group_id_hex, GroupEpochFrame, GroupError, GroupStore, StoredGroupMessage,
     },
 };
 
@@ -117,13 +125,32 @@ fn group_error_response(err: GroupError) -> Response {
             }),
         )
             .into_response(),
-        GroupError::CreditFundingUnavailable => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorBody {
-                error: "group_credit_funding_unavailable".into(),
+        GroupError::PaymentNonceUsed => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_invalid",
+                reason: "nonce_used",
+                detail: GroupError::PaymentNonceUsed.to_string(),
             }),
         )
             .into_response(),
+        GroupError::PaymentAlreadyUsed => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_invalid",
+                reason: "already_used",
+                detail: GroupError::PaymentAlreadyUsed.to_string(),
+            }),
+        )
+            .into_response(),
+        // The upstream relay could not be reached or answered unreadably: a gateway failure, never
+        // a 4xx, so a writer cannot mistake it for the host's refusal.
+        GroupError::Upstream(msg) => {
+            (StatusCode::BAD_GATEWAY, Json(ErrorBody { error: msg })).into_response()
+        }
+        GroupError::UpstreamTimeout(msg) => {
+            (StatusCode::GATEWAY_TIMEOUT, Json(ErrorBody { error: msg })).into_response()
+        }
         GroupError::Storage(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorBody { error: msg }),
@@ -176,17 +203,94 @@ fn decode_epoch_frame(headers: &HeaderMap, body: &[u8]) -> Result<GroupEpochFram
     }
 }
 
-fn decode_message_envelope(
-    headers: &HeaderMap,
-    body: &[u8],
-) -> Result<GroupMessageEnvelope, GroupError> {
+fn decode_write_request(headers: &HeaderMap, body: &[u8]) -> Result<GroupWriteRequest, GroupError> {
     if is_cbor_content_type(headers) {
-        GroupMessageEnvelope::from_cbor_bytes(body)
+        GroupWriteRequest::from_cbor_bytes(body)
     } else {
-        serde_json::from_slice::<GroupMessageEnvelope>(body).map_err(|e| {
+        serde_json::from_slice::<GroupWriteRequest>(body).map_err(|e| {
             GroupError::InvalidInput(format!("invalid GroupMessageEnvelope JSON: {e}"))
         })
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PaymentErrorBody {
+    error: &'static str,
+    reason: &'static str,
+    detail: String,
+}
+
+/// A write refused for its payment: `402`, nothing stored and no sequence consumed.
+fn payment_refusal_response(refusal: GroupWriteRefusal) -> Response {
+    match refusal {
+        GroupWriteRefusal::Group(error) => group_error_response(error),
+        GroupWriteRefusal::StaleNonce => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_unfunded",
+                reason: "stale_nonce",
+                detail: "the payer has already used this payment's nonce, so it can never land"
+                    .into(),
+            }),
+        )
+            .into_response(),
+        GroupWriteRefusal::NotReady(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, HeaderValue::from_static("5"))],
+            Json(PaymentErrorBody {
+                error: "group_payment_not_ready",
+                reason,
+                detail: "the node does not show yet that this payment can land: its nonce is too \
+                         far ahead of the payer's, or the payer's balance does not cover it; \
+                         retry the same write"
+                    .into(),
+            }),
+        )
+            .into_response(),
+        GroupWriteRefusal::CheckUnavailable(detail) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, HeaderValue::from_static("5"))],
+            Json(PaymentErrorBody {
+                error: "group_payment_check_unavailable",
+                reason: "node_unavailable",
+                detail,
+            }),
+        )
+            .into_response(),
+        GroupWriteRefusal::Payment(error) => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_invalid",
+                reason: error.reason(),
+                detail: error.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+fn payment_required_response() -> Response {
+    (
+        StatusCode::PAYMENT_REQUIRED,
+        Json(PaymentErrorBody {
+            error: "group_payment_required",
+            reason: "missing",
+            detail:
+                "every new group write carries a payment; see GET /groups/:group_id/write-policy"
+                    .into(),
+        }),
+    )
+        .into_response()
+}
+
+fn group_writes_unavailable_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorBody {
+            error: "group_writes_unavailable".into(),
+        }),
+    )
+        .into_response()
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -195,6 +299,15 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+/// A request to the upstream relay that got no response.
+fn upstream_send_error(error: reqwest::Error) -> GroupError {
+    if error.is_timeout() {
+        GroupError::UpstreamTimeout(format!("upstream relay timed out: {error}"))
+    } else {
+        GroupError::Upstream(format!("upstream relay unreachable: {error}"))
+    }
 }
 
 fn validate_upstream_url(raw: &str) -> Result<String, GroupError> {
@@ -285,8 +398,8 @@ async fn upstream_transport(
         tokio::net::lookup_host((host, port)),
     )
     .await
-    .map_err(|_| GroupError::InvalidInput("upstream DNS lookup timed out".into()))?
-    .map_err(|error| GroupError::InvalidInput(format!("upstream DNS lookup failed: {error}")))?
+    .map_err(|_| GroupError::UpstreamTimeout("upstream DNS lookup timed out".into()))?
+    .map_err(|error| GroupError::Upstream(format!("upstream DNS lookup failed: {error}")))?
     .collect();
     if addresses.is_empty()
         || addresses.iter().any(|address| {
@@ -342,7 +455,7 @@ async fn read_upstream_body_before(
             .content_length()
             .is_some_and(|length| length > budget as u64)
         {
-            return Err(GroupError::Storage(
+            return Err(GroupError::Upstream(
                 "upstream response exceeds body budget".into(),
             ));
         }
@@ -350,10 +463,10 @@ async fn read_upstream_body_before(
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|error| GroupError::Storage(format!("upstream body failed: {error}")))?
+            .map_err(|error| GroupError::Upstream(format!("upstream body failed: {error}")))?
         {
             if chunk.len() > budget.saturating_sub(body.len()) {
-                return Err(GroupError::Storage(
+                return Err(GroupError::Upstream(
                     "upstream response exceeds body budget".into(),
                 ));
             }
@@ -362,7 +475,7 @@ async fn read_upstream_body_before(
         Ok(body)
     })
     .await
-    .map_err(|_| GroupError::Storage("upstream body deadline exceeded".into()))?
+    .map_err(|_| GroupError::UpstreamTimeout("upstream body deadline exceeded".into()))?
 }
 
 /// Largest group message request body: a JSON envelope carrying the largest ciphertext
@@ -413,10 +526,15 @@ pub fn router() -> Router {
             "/groups/:group_id/messages",
             routing::put(handle_put_group_message).get(handle_get_group_messages),
         )
+        .route(
+            "/groups/:group_id/write-policy",
+            routing::get(handle_get_write_policy),
+        )
 }
 
-/// Standalone router backed directly by a [`GroupStore`] (convenient for isolated unit/integration tests).
-pub fn router_with_store(store: GroupStore) -> Router {
+/// Standalone router backed directly by a [`GroupStore`] (convenient for isolated unit/integration
+/// tests), taking group writes priced and paid as `writes` says.
+pub fn router_with_store(store: GroupStore, writes: std::sync::Arc<GroupWriteRuntime>) -> Router {
     Router::new()
         .route(
             "/groups/:group_id/live",
@@ -430,7 +548,12 @@ pub fn router_with_store(store: GroupStore) -> Router {
             "/groups/:group_id/messages",
             routing::put(handle_put_group_message_store).get(handle_get_group_messages_store),
         )
+        .route(
+            "/groups/:group_id/write-policy",
+            routing::get(handle_get_write_policy_store),
+        )
         .layer(Extension(store))
+        .layer(Extension(Some(writes)))
         .layer(Extension(
             std::sync::Arc::new(crate::events::StandaloneEventBus::new())
                 as std::sync::Arc<dyn crate::events::RelayEventBus>,
@@ -528,11 +651,7 @@ async fn put_group_epoch_impl(
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                return group_error_response(GroupError::Storage(format!(
-                    "upstream proxy error: {e}"
-                )))
-            }
+            Err(e) => return group_error_response(upstream_send_error(e)),
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -608,10 +727,10 @@ async fn fetch_verified_epoch(
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| GroupError::Storage(format!("upstream epoch fetch failed: {error}")))?;
+        .map_err(|error| GroupError::Upstream(format!("upstream epoch fetch failed: {error}")))?;
     let bytes = read_upstream_body(response, UPSTREAM_EPOCH_BUDGET).await?;
     let frame: GroupEpochFrame = serde_json::from_slice(&bytes)
-        .map_err(|error| GroupError::Storage(format!("invalid upstream epoch JSON: {error}")))?;
+        .map_err(|error| GroupError::Upstream(format!("invalid upstream epoch JSON: {error}")))?;
     let frame = frame.normalized()?;
     frame.verify_authority(group_id)?;
     if epoch.is_some_and(|requested| frame.epoch != requested) {
@@ -670,11 +789,7 @@ async fn get_group_epoch_impl(
         }
         let resp = match client.get(&url).send().await {
             Ok(r) => r,
-            Err(e) => {
-                return group_error_response(GroupError::Storage(format!(
-                    "upstream proxy error: {e}"
-                )))
-            }
+            Err(e) => return group_error_response(upstream_send_error(e)),
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -689,7 +804,7 @@ async fn get_group_epoch_impl(
                     Err(error) => return group_error_response(error),
                 },
                 Err(error) => {
-                    return group_error_response(GroupError::Storage(format!(
+                    return group_error_response(GroupError::Upstream(format!(
                         "invalid upstream epoch JSON: {error}"
                     )))
                 }
@@ -733,7 +848,8 @@ async fn handle_put_group_message(
         Ok(s) => s,
         Err(e) => return group_error_response(e),
     };
-    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    let writes = server.group_writes.clone();
+    let response = put_group_message_impl(store, writes, group_id.clone(), headers, body).await;
     if response.status().is_success()
         && response
             .headers()
@@ -754,6 +870,7 @@ async fn handle_put_group_message_store(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
+    Extension(writes): Extension<Option<std::sync::Arc<GroupWriteRuntime>>>,
     Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
     RawBody(body): RawBody,
 ) -> Response {
@@ -761,7 +878,7 @@ async fn handle_put_group_message_store(
         Ok(body) => body,
         Err(response) => return response,
     };
-    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    let response = put_group_message_impl(store, writes, group_id.clone(), headers, body).await;
     if response.status().is_success()
         && response
             .headers()
@@ -780,6 +897,7 @@ async fn handle_put_group_message_store(
 
 async fn put_group_message_impl(
     store: GroupStore,
+    writes: Option<std::sync::Arc<GroupWriteRuntime>>,
     group_id: String,
     headers: HeaderMap,
     body: Bytes,
@@ -788,20 +906,21 @@ async fn put_group_message_impl(
     if let Err(e) = parse_group_id_hex(&group_id) {
         return group_error_response(e);
     }
-    let envelope = match decode_message_envelope(&headers, &body) {
-        Ok(env) => env,
+    let request = match decode_write_request(&headers, &body) {
+        Ok(request) => request,
         Err(e) => return group_error_response(e),
     };
 
     // If this group is hosted on a foreign upstream relay, proxy the write server-to-server
-    // so the foreign relay only ever sees the Home Relay's IP.
+    // so the foreign relay only ever sees the Home Relay's IP. Only the host verifies the
+    // payment: it pays the host, under the host's policy.
     if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
         let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
             Ok(transport) => transport,
             Err(error) => return group_error_response(error),
         };
         let url = format!("{upstream}/groups/{group_id}/messages");
-        let payload = serde_json::to_vec(&envelope).unwrap_or_default();
+        let payload = serde_json::to_vec(&request).unwrap_or_default();
         let resp = match client
             .put(&url)
             .header(header::CONTENT_TYPE, "application/json")
@@ -810,11 +929,7 @@ async fn put_group_message_impl(
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                return group_error_response(GroupError::Storage(format!(
-                    "upstream proxy error: {e}"
-                )))
-            }
+            Err(e) => return group_error_response(upstream_send_error(e)),
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -826,7 +941,7 @@ async fn put_group_message_impl(
             Some("appended") => "appended",
             Some("existing") => "existing",
             _ if status.is_success() => {
-                return group_error_response(GroupError::Storage(
+                return group_error_response(GroupError::Upstream(
                     "upstream omitted valid append disposition".into(),
                 ))
             }
@@ -860,28 +975,77 @@ async fn put_group_message_impl(
             .into_response();
     }
 
-    match on_store(&store, move |store| store.put_message(&group_id, envelope)).await {
-        Ok(outcome) => (
-            StatusCode::OK,
-            [
-                (
-                    header::HeaderName::from_static(HEADER_GROUP_RELAY_MODE),
-                    HeaderValue::from_static("local"),
-                ),
-                (
-                    header::HeaderName::from_static(HEADER_GROUP_APPEND),
-                    HeaderValue::from_static(if outcome.appended {
-                        "appended"
-                    } else {
-                        "existing"
-                    }),
-                ),
-            ],
-            Json(outcome.message),
-        )
-            .into_response(),
-        Err(e) => group_error_response(e),
+    // A retry of a write this relay already accepted gets its original receipt before its
+    // payment is looked at: the receipt stands whatever the price or payee is now, and nothing
+    // is handed to the chain again.
+    let GroupWriteRequest { envelope, payment } = request;
+    let receipt = {
+        let (group_id, envelope) = (group_id.clone(), envelope.clone());
+        on_store(&store, move |store| {
+            store.accepted_receipt(&group_id, envelope)
+        })
+        .await
+    };
+    match receipt {
+        Ok(Some(message)) => return local_write_response(false, message),
+        Ok(None) => {}
+        Err(e) => return group_error_response(e),
     }
+    // A new write to a group hosted here pays this relay. Every check reads only the request and
+    // the policy, and all of them run before anything is stored or any sequence is allocated.
+    let Some(writes) = writes else {
+        return group_writes_unavailable_response();
+    };
+    let Some(payment) = payment else {
+        return payment_required_response();
+    };
+    let verified = match writes.verify(&group_id, &envelope, &payment) {
+        Ok(verified) => verified,
+        Err(refusal) => return payment_refusal_response(refusal),
+    };
+    // The payment must be able to land now; the node is asked before anything is stored.
+    if let Err(refusal) = writes.check_funded(&verified).await {
+        return payment_refusal_response(refusal);
+    }
+    // The payment's record is written in the write's acceptance transaction, so one payment
+    // funds one write even when replicas race.
+    let fact = writes.fact(&verified);
+    let accepted = {
+        let group_id = group_id.clone();
+        on_store(&store, move |store| {
+            store.put_paid_message(&group_id, envelope, &fact)
+        })
+        .await
+    };
+    let outcome = match accepted {
+        Ok(outcome) => outcome,
+        Err(e) => return group_error_response(e),
+    };
+    // The write is committed. Only now may its payment reach the chain. A write accepted
+    // meanwhile by a racing request is answered with the original receipt and hands nothing
+    // over: a different payment presented with it would be a second payment for one write.
+    if outcome.appended {
+        writes.broadcast(&group_id, &verified).await;
+    }
+    local_write_response(outcome.appended, outcome.message)
+}
+
+fn local_write_response(appended: bool, message: StoredGroupMessage) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::HeaderName::from_static(HEADER_GROUP_RELAY_MODE),
+                HeaderValue::from_static("local"),
+            ),
+            (
+                header::HeaderName::from_static(HEADER_GROUP_APPEND),
+                HeaderValue::from_static(if appended { "appended" } else { "existing" }),
+            ),
+        ],
+        Json(message),
+    )
+        .into_response()
 }
 
 async fn handle_get_group_messages(
@@ -988,7 +1152,7 @@ async fn get_group_messages_impl(
         {
             Ok(response) => response,
             Err(error) => {
-                return group_error_response(GroupError::Storage(format!(
+                return group_error_response(GroupError::Upstream(format!(
                     "upstream read failed: {error}"
                 )))
             }
@@ -1005,7 +1169,7 @@ async fn get_group_messages_impl(
         let mut upstream_body: GroupMessagesResponse = match serde_json::from_slice(&bytes) {
             Ok(body) => body,
             Err(error) => {
-                return group_error_response(GroupError::Storage(format!(
+                return group_error_response(GroupError::Upstream(format!(
                     "invalid upstream read JSON: {error}"
                 )))
             }
@@ -1067,7 +1231,7 @@ async fn get_group_messages_impl(
         {
             Ok(r) => r,
             Err(e) => {
-                return group_error_response(GroupError::Storage(format!(
+                return group_error_response(GroupError::Upstream(format!(
                     "upstream mirror sync error: {e}"
                 )))
             }
@@ -1097,7 +1261,7 @@ async fn get_group_messages_impl(
         let synced_batch: GroupMessagesResponse = match serde_json::from_slice(&synced_bytes) {
             Ok(b) => b,
             Err(e) => {
-                return group_error_response(GroupError::Storage(format!(
+                return group_error_response(GroupError::Upstream(format!(
                     "invalid upstream mirror sync JSON: {e}"
                 )))
             }
@@ -1199,10 +1363,81 @@ async fn get_group_messages_impl(
         .into_response()
 }
 
+async fn handle_get_write_policy(
+    Path(group_id): Path<String>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+) -> Response {
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
+        Err(e) => return group_error_response(e),
+    };
+    get_write_policy_impl(store, server.group_writes.clone(), group_id, headers).await
+}
+
+async fn handle_get_write_policy_store(
+    Path(group_id): Path<String>,
+    headers: HeaderMap,
+    Extension(store): Extension<GroupStore>,
+    Extension(writes): Extension<Option<std::sync::Arc<GroupWriteRuntime>>>,
+) -> Response {
+    get_write_policy_impl(store, writes, group_id, headers).await
+}
+
+/// The hosting relay's policy for writes to `group_id`: this relay's own, or the upstream's
+/// when the caller names one.
+async fn get_write_policy_impl(
+    store: GroupStore,
+    writes: Option<std::sync::Arc<GroupWriteRuntime>>,
+    group_id: String,
+    headers: HeaderMap,
+) -> Response {
+    let group_id = group_id.to_lowercase();
+    if let Err(e) = parse_group_id_hex(&group_id) {
+        return group_error_response(e);
+    }
+    if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
+        };
+        let response = match client
+            .get(format!("{upstream}/groups/{group_id}/write-policy"))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return group_error_response(upstream_send_error(error)),
+        };
+        let status =
+            StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let bytes = match read_upstream_body(response, UPSTREAM_EPOCH_BUDGET).await {
+            Ok(bytes) => bytes,
+            Err(error) => return group_error_response(error),
+        };
+        if !status.is_success() {
+            return (status, bytes).into_response();
+        }
+        return match serde_json::from_slice::<GroupWritePolicyBody>(&bytes) {
+            Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+            Err(error) => group_error_response(GroupError::Upstream(format!(
+                "invalid upstream write policy: {error}"
+            ))),
+        };
+    }
+    match writes {
+        Some(writes) => (StatusCode::OK, Json(writes.body().clone())).into_response(),
+        None => group_writes_unavailable_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{groups::derive_group_id, kv_store::RocksDbKvStore};
+    use crate::store::{
+        groups::{derive_group_id, GroupMessageEnvelope},
+        kv_store::RocksDbKvStore,
+    };
     use axum::http::Request;
     use hyper::Body;
     use secp256k1_abc::{Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
@@ -1229,11 +1464,100 @@ mod tests {
         frame
     }
 
+    /// Host origin of the oneshot routers, which have no address of their own.
+    pub(super) const TEST_HOST: &str = "http://group-host.test";
+    /// Price of a test group write, in wei.
+    pub(super) const TEST_PRICE: u128 = 1_000;
+
+    /// Burn-paid group writes on monad-testnet hosted at `host_origin`, with no node.
+    pub(super) fn test_writes(host_origin: &str) -> Arc<GroupWriteRuntime> {
+        Arc::new(
+            GroupWriteRuntime::loopback_fixture(
+                "monad-testnet",
+                &cashweb_config::GroupWritesConf {
+                    price_wei: TEST_PRICE.to_string(),
+                    payee: cashweb_config::GroupWritePayeeConf::Burn,
+                },
+                &host_origin.parse().unwrap(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The standalone router with [`test_writes`] at [`TEST_HOST`].
+    pub(super) fn test_router(store: GroupStore) -> Router {
+        router_with_store(store, test_writes(TEST_HOST))
+    }
+
+    /// A payment signed by a real secp256k1 key, built like the TypeScript writer builds one.
+    pub(super) fn payment_tx(
+        chain_id: u64,
+        to: [u8; 20],
+        value_wei: u128,
+        network: &str,
+        host_origin: &str,
+        envelope: &GroupMessageEnvelope,
+    ) -> GroupWritePaymentWire {
+        use crate::group_write_payment::{
+            group_write_calldata, group_write_commitment, GroupWriteTarget,
+        };
+        let target = GroupWriteTarget {
+            group_id: parse_group_id_hex(&envelope.group_id.to_lowercase()).unwrap(),
+            epoch: envelope.epoch,
+            signing_digest: envelope.signing_digest().unwrap(),
+        };
+        let calldata = group_write_calldata(&group_write_commitment(network, host_origin, &target));
+        let payer = bitcoinsuite_core::ecc::Ecc::seckey_from_array(
+            &bitcoinsuite_ecc_secp256k1::EccSecp256k1::default(),
+            [0x42; 32],
+        )
+        .unwrap();
+        // One accepted write per payer nonce: each write's payment takes its own nonce.
+        let nonce = u64::from_be_bytes(target.signing_digest[..8].try_into().unwrap()) >> 1;
+        let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+            &payer,
+            chain_id,
+            nonce,
+            crate::monad_http::Address(to),
+            value_wei,
+            &calldata,
+        );
+        GroupWritePaymentWire {
+            network: network.into(),
+            raw_transaction: hex::encode(raw),
+        }
+    }
+
+    /// `envelope` with the payment that pays for it on the relay hosted at `host_origin`.
+    pub(super) fn paid_for(
+        host_origin: &str,
+        envelope: &GroupMessageEnvelope,
+    ) -> GroupWriteRequest {
+        GroupWriteRequest {
+            envelope: envelope.clone(),
+            payment: Some(payment_tx(
+                10143,
+                crate::group_write_payment::BURN_ADDRESS,
+                TEST_PRICE,
+                "monad-testnet",
+                &canonical(host_origin),
+                envelope,
+            )),
+        }
+    }
+
+    /// `envelope` paid for on the oneshot routers' [`TEST_HOST`].
+    pub(super) fn paid(envelope: &GroupMessageEnvelope) -> GroupWriteRequest {
+        paid_for(TEST_HOST, envelope)
+    }
+
+    fn canonical(origin: &str) -> String {
+        crate::group_write_payment::canonical_host_origin(&origin.parse().unwrap()).unwrap()
+    }
+
     #[tokio::test]
     async fn a_1_mib_message_is_accepted_over_http_and_a_larger_body_is_refused() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let (root_sk, root_pk) = keypair(7);
         let (write_sk, write_pk) = keypair(70);
         let group_id = hex::encode(derive_group_id(&root_pk));
@@ -1272,19 +1596,16 @@ mod tests {
                 .body(Body::from(body))
                 .unwrap()
         };
-        let body = serde_json::to_vec(&message).unwrap();
+        let body = serde_json::to_vec(&paid(&message)).unwrap();
         assert!(body.len() > 2 * 1024 * 1024, "beyond axum's default limit");
-        let response = router_with_store(store.clone())
-            .oneshot(put(body))
-            .await
-            .unwrap();
+        let response = test_router(store.clone()).oneshot(put(body)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[HEADER_GROUP_APPEND], "appended");
         assert_eq!(
             store.list_messages(&group_id, 0, 10).unwrap()[0].ciphertext,
             message.ciphertext
         );
-        let response = router_with_store(store.clone())
+        let response = test_router(store.clone())
             .oneshot(put(vec![b' '; MAX_GROUP_MESSAGE_BODY + 1]))
             .await
             .unwrap();
@@ -1375,15 +1696,10 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let (_, client) = upstream_transport(
-            &GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            }),
-            &"00".repeat(32),
-            &origin,
-        )
-        .await
-        .unwrap();
+        let (_, client) =
+            upstream_transport(&GroupStore::new_temporary(), &"00".repeat(32), &origin)
+                .await
+                .unwrap();
         for path in ["/chunked", "/error", "/declared"] {
             let response = client.get(format!("{origin}{path}")).send().await.unwrap();
             assert!(read_upstream_body(response, 32).await.is_err(), "{path}");
@@ -1434,11 +1750,7 @@ mod tests {
         }
         assert!(public_upstream_ip("8.8.8.8".parse().unwrap()));
         assert!(public_upstream_ip("2606:4700:4700::1111".parse().unwrap()));
-        let app = router_with_store(GroupStore::new_temporary(
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        ));
+        let app = test_router(GroupStore::new_temporary());
         for origin in [
             "http://169.254.169.254",
             "http://10.0.0.1",
@@ -1461,10 +1773,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_epochs_cas_and_sealed_sender_messages_enforce_w_g_e() {
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
-        let app = router_with_store(store);
+        let store = GroupStore::new_temporary();
+        let app = test_router(store);
 
         let (group_sk, group_pk) = keypair(5);
         let group_id = hex::encode(derive_group_id(&group_pk));
@@ -1555,7 +1865,7 @@ mod tests {
                     .method("PUT")
                     .uri(format!("/groups/{group_id}/messages"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&msg).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&paid(&msg)).unwrap()))
                     .unwrap(),
             )
             .await
@@ -1573,7 +1883,7 @@ mod tests {
                     .method("PUT")
                     .uri(format!("/groups/{group_id}/messages"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&bad_msg).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&paid(&bad_msg)).unwrap()))
                     .unwrap(),
             )
             .await
@@ -1617,9 +1927,7 @@ mod tests {
     #[tokio::test]
     async fn mirror_pages_maximum_size_messages_without_exhausting_body_budget_or_losing_cursor_progress(
     ) {
-        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let upstream = GroupStore::new_temporary();
         let (root_sk, root_pk) = keypair(7);
         let (write_sk, write_pk) = keypair(70);
         let group_id = hex::encode(derive_group_id(&root_pk));
@@ -1660,7 +1968,7 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::Server::from_tcp(listener)
                 .unwrap()
-                .serve(router_with_store(upstream).into_make_service())
+                .serve(test_router(upstream).into_make_service())
                 .await
                 .unwrap();
         });
@@ -1668,11 +1976,8 @@ mod tests {
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
-        let router = router_with_store(home.clone());
+        let router = test_router(home.clone());
         for (cursor, count, next) in [(0, 8, 8), (8, 2, 10)] {
             let response = router
                 .clone()
@@ -1708,10 +2013,12 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
+        // Each spawned relay hosts its groups at its own origin, as a deployed relay does.
+        let writes = test_writes(&origin);
         let task = tokio::spawn(async move {
             axum::Server::from_tcp(listener)
                 .unwrap()
-                .serve(router_with_store(store).into_make_service())
+                .serve(router_with_store(store, writes).into_make_service())
                 .await
                 .unwrap();
         });
@@ -1823,9 +2130,6 @@ mod tests {
             let store = GroupStore::new(
                 Arc::clone(&kv) as Arc<dyn crate::store::kv_store::RelayKvStore>,
                 Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
-                cashweb_config::GroupAppendPolicy {
-                    per_message_price_credits: 0,
-                },
             );
             let (root_sk, root_pk) = keypair(8);
             let (write_sk, write_pk) = keypair(80);
@@ -1863,7 +2167,7 @@ mod tests {
                 client
                     .put(format!("{origin}/groups/{id}/messages"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(serde_json::to_vec(&message).unwrap())
+                    .body(serde_json::to_vec(&paid_for(&origin, &message)).unwrap())
                     .send()
             };
             kv.armed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1887,16 +2191,13 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn group_credit_admission_is_owned_by_host_not_home_policy() {
-        for (host_price, home_price) in [(0, 7), (7, 0)] {
-            let host = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: host_price,
-            });
-            let (root_sk, root_pk) = keypair(7);
-            let (write_sk, write_pk) = keypair(70);
-            let id = hex::encode(derive_group_id(&root_pk));
-            host.put_epoch(
+    /// A group on `store` with one epoch; returns its id and write key.
+    fn hosted_group(store: &GroupStore, root_byte: u8) -> (String, SecretKey) {
+        let (root_sk, root_pk) = keypair(root_byte);
+        let (write_sk, write_pk) = keypair(root_byte.wrapping_add(63));
+        let id = hex::encode(derive_group_id(&root_pk));
+        store
+            .put_epoch(
                 &id,
                 signed_epoch(
                     &root_sk,
@@ -1914,67 +2215,500 @@ mod tests {
                 ),
             )
             .unwrap();
-            let mut message = GroupMessageEnvelope {
-                group_id: id.clone(),
-                epoch: 0,
-                nonce: hex::encode([1u8; 24]),
-                ciphertext: hex::encode(b"content"),
-                write_sig: String::new(),
-            };
-            message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
-            let (origin, origin_task) = spawn_group_router(host.clone()).await;
-            let home = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: home_price,
-            });
-            let (home_url, home_task) = spawn_group_router(home.clone()).await;
-            let client = reqwest::Client::new();
-            let mut receipt = None;
-            for attempt in 0..2 {
-                let response = client
-                    .put(format!("{home_url}/groups/{id}/messages"))
-                    .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(serde_json::to_vec(&message).unwrap())
-                    .send()
-                    .await
-                    .unwrap();
-                if host_price == 0 {
-                    assert_eq!(response.status(), StatusCode::OK);
-                    assert_eq!(
-                        response.headers().get(HEADER_GROUP_APPEND).unwrap(),
-                        if attempt == 0 { "appended" } else { "existing" }
-                    );
-                    let row: StoredGroupMessage =
-                        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-                    if let Some(original) = &receipt {
-                        assert_eq!(&row, original);
-                    }
-                    receipt = Some(row);
-                } else {
-                    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-                    let error: serde_json::Value =
-                        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-                    assert_eq!(
-                        error,
-                        serde_json::json!({"error":"group_credit_funding_unavailable"})
-                    );
-                }
-            }
-            assert_eq!(
-                host.list_messages(&id, 0, 10).unwrap().len(),
-                if host_price == 0 { 1 } else { 0 }
-            );
-            assert!(home.get_current_epoch(&id).unwrap().is_none());
-            origin_task.abort();
-            home_task.abort();
+        (id, write_sk)
+    }
+
+    fn sealed(id: &str, write_sk: &SecretKey, nonce: u8) -> GroupMessageEnvelope {
+        let mut message = GroupMessageEnvelope {
+            group_id: id.to_owned(),
+            epoch: 0,
+            nonce: hex::encode([nonce; 24]),
+            ciphertext: hex::encode(b"content"),
+            write_sig: String::new(),
+        };
+        message.write_sig = sign_digest(write_sk, &message.signing_digest().unwrap());
+        message
+    }
+
+    async fn put_json(
+        url: String,
+        upstream: Option<&str>,
+        body: &impl Serialize,
+    ) -> reqwest::Response {
+        let mut request = reqwest::Client::new()
+            .put(url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(body).unwrap());
+        if let Some(upstream) = upstream {
+            request = request.header(HEADER_GROUP_UPSTREAM_RELAY, upstream);
         }
+        request.send().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn unpaid_and_misdirected_writes_are_refused_before_any_sequence_is_consumed() {
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 7);
+        let message = sealed(&id, &write_sk, 1);
+        let (host, task) = spawn_group_router(store.clone()).await;
+        let url = format!("{host}/groups/{id}/messages");
+        let burn = crate::group_write_payment::BURN_ADDRESS;
+        let host_origin = canonical(&host);
+        let other = |payment: GroupWritePaymentWire| GroupWriteRequest {
+            envelope: message.clone(),
+            payment: Some(payment),
+        };
+        let mut other_write = message.clone();
+        other_write.nonce = hex::encode([9u8; 24]);
+        let cases = [
+            (
+                GroupWriteRequest {
+                    envelope: message.clone(),
+                    payment: None,
+                },
+                "group_payment_required",
+                "missing",
+            ),
+            (
+                other(payment_tx(
+                    10143,
+                    burn,
+                    TEST_PRICE - 1,
+                    "monad-testnet",
+                    &host_origin,
+                    &message,
+                )),
+                "group_payment_invalid",
+                "underpaid",
+            ),
+            (
+                other(payment_tx(
+                    10143,
+                    [0xaa; 20],
+                    TEST_PRICE,
+                    "monad-testnet",
+                    &host_origin,
+                    &message,
+                )),
+                "group_payment_invalid",
+                "wrong_payee",
+            ),
+            (
+                other(payment_tx(
+                    11_155_111,
+                    burn,
+                    TEST_PRICE,
+                    "monad-testnet",
+                    &host_origin,
+                    &message,
+                )),
+                "group_payment_invalid",
+                "wrong_chain",
+            ),
+            (
+                other(payment_tx(
+                    10143,
+                    burn,
+                    TEST_PRICE,
+                    "ethereum-sepolia",
+                    &host_origin,
+                    &message,
+                )),
+                "group_payment_invalid",
+                "wrong_network",
+            ),
+            (
+                // Pays for another write on this relay.
+                other(payment_tx(
+                    10143,
+                    burn,
+                    TEST_PRICE,
+                    "monad-testnet",
+                    &host_origin,
+                    &other_write,
+                )),
+                "group_payment_invalid",
+                "wrong_commitment",
+            ),
+            (
+                // Pays for this write on another relay.
+                other(payment_tx(
+                    10143,
+                    burn,
+                    TEST_PRICE,
+                    "monad-testnet",
+                    "https://other.example",
+                    &message,
+                )),
+                "group_payment_invalid",
+                "wrong_commitment",
+            ),
+            (
+                other(GroupWritePaymentWire {
+                    network: "monad-testnet".into(),
+                    raw_transaction: "02c0".into(),
+                }),
+                "group_payment_invalid",
+                "malformed",
+            ),
+        ];
+        for (request, error, reason) in cases {
+            let response = put_json(url.clone(), None, &request).await;
+            assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED, "{reason}");
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(body["error"], error, "{reason}");
+            assert_eq!(body["reason"], reason, "{body}");
+            assert!(
+                store.list_messages(&id, 0, 10).unwrap().is_empty(),
+                "{reason}"
+            );
+        }
+        // Nothing above consumed a sequence: the first paid write is still number 1.
+        let accepted = put_json(url.clone(), None, &paid_for(&host, &message)).await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(accepted.headers()[HEADER_GROUP_APPEND], "appended");
+        let row: StoredGroupMessage =
+            serde_json::from_slice(&accepted.bytes().await.unwrap()).unwrap();
+        assert_eq!(row.server_seq, 1);
+        // An accepted retry, with the same payment, returns the original receipt.
+        let retry = put_json(url, None, &paid_for(&host, &message)).await;
+        assert_eq!(retry.headers()[HEADER_GROUP_APPEND], "existing");
+        assert_eq!(
+            serde_json::from_slice::<StoredGroupMessage>(&retry.bytes().await.unwrap()).unwrap(),
+            row
+        );
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![row]);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_payment_is_verified_only_by_the_host_and_replays_nowhere_else() {
+        let host_store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&host_store, 7);
+        let (host, host_task) = spawn_group_router(host_store.clone()).await;
+        // The home relay has its own, different policy (another origin and payee rules); it
+        // forwards the host's write without judging the payment.
+        let home_store = GroupStore::new_temporary();
+        let (home, home_task) = spawn_group_router(home_store.clone()).await;
+        let message = sealed(&id, &write_sk, 1);
+
+        // Paid to the home relay instead of the host: the host refuses it, through the proxy.
+        let misdirected = put_json(
+            format!("{home}/groups/{id}/messages"),
+            Some(&host),
+            &paid_for(&home, &message),
+        )
+        .await;
+        assert_eq!(misdirected.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(host_store.list_messages(&id, 0, 10).unwrap().is_empty());
+
+        let proxied = put_json(
+            format!("{home}/groups/{id}/messages"),
+            Some(&host),
+            &paid_for(&host, &message),
+        )
+        .await;
+        assert_eq!(proxied.status(), StatusCode::OK);
+        assert_eq!(proxied.headers()[HEADER_GROUP_RELAY_MODE], "proxy");
+        assert_eq!(proxied.headers()[HEADER_GROUP_APPEND], "appended");
+        assert_eq!(host_store.list_messages(&id, 0, 10).unwrap().len(), 1);
+        assert!(home_store.get_current_epoch(&id).unwrap().is_none());
+
+        // The policy a writer reads through its home relay is the host's.
+        let policy: GroupWritePolicyBody = serde_json::from_slice(
+            &reqwest::Client::new()
+                .get(format!("{home}/groups/{id}/write-policy"))
+                .header(HEADER_GROUP_UPSTREAM_RELAY, &host)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(policy.host_origin, canonical(&host));
+        assert_eq!(policy.network, "monad-testnet");
+        assert_eq!(policy.price_wei, TEST_PRICE.to_string());
+        assert_eq!(
+            policy.payee,
+            GroupWritePayeeBody::Burn {
+                address: "0x000000000000000000000000000000000000dead".into()
+            }
+        );
+
+        // The same group and write hosted by another relay: the host's payment is refused there.
+        let replica_of_group = GroupStore::new_temporary();
+        let (same_id, _) = hosted_group(&replica_of_group, 7);
+        assert_eq!(same_id, id);
+        let (other, other_task) = spawn_group_router(replica_of_group.clone()).await;
+        let replay = put_json(
+            format!("{other}/groups/{id}/messages"),
+            None,
+            &paid_for(&host, &message),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::PAYMENT_REQUIRED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&replay.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["reason"], "wrong_commitment");
+        assert!(replica_of_group
+            .list_messages(&id, 0, 10)
+            .unwrap()
+            .is_empty());
+        host_task.abort();
+        home_task.abort();
+        other_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_payment_sent_to_two_replicas_at_once_gives_one_append() {
+        // Two replicas of one relay share its storage and its origin.
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 7);
+        let message = sealed(&id, &write_sk, 1);
+        let request = paid(&message);
+        let replica_a = test_router(store.clone());
+        let replica_b = test_router(store.clone());
+        let send = |router: Router| {
+            let body = serde_json::to_vec(&request).unwrap();
+            let id = id.clone();
+            async move {
+                router
+                    .oneshot(
+                        Request::builder()
+                            .method("PUT")
+                            .uri(format!("/groups/{id}/messages"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let (a, b) = tokio::join!(tokio::spawn(send(replica_a)), tokio::spawn(send(replica_b)));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.status(), StatusCode::OK);
+        assert_eq!(b.status(), StatusCode::OK);
+        let mut dispositions = [
+            a.headers()[HEADER_GROUP_APPEND]
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            b.headers()[HEADER_GROUP_APPEND]
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        ];
+        dispositions.sort();
+        assert_eq!(dispositions, ["appended", "existing"]);
+        let a: StoredGroupMessage =
+            serde_json::from_slice(&hyper::body::to_bytes(a.into_body()).await.unwrap()).unwrap();
+        let b: StoredGroupMessage =
+            serde_json::from_slice(&hyper::body::to_bytes(b.into_body()).await.unwrap()).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![a.clone()]);
+        // The payment's record was written with the write it funded.
+        let verified = test_writes(TEST_HOST)
+            .verify(&id, &message, request.payment.as_ref().unwrap())
+            .unwrap();
+        let record = store.payment_record(&verified.tx_hash.0).unwrap().unwrap();
+        assert_eq!(
+            (record.group_id.as_str(), record.server_seq),
+            (id.as_str(), a.server_seq)
+        );
+        assert_eq!(record.value_wei, TEST_PRICE.to_string());
+        assert_eq!(record.network, "monad-testnet");
+    }
+
+    #[test]
+    fn a_payment_lands_in_the_payers_nonce_window_with_its_value_and_gas_covered() {
+        use super::payment::{judge_funding, FundingProblem, PayerAccount, PAYMENT_NONCE_WINDOW};
+        let payment = |nonce| crate::group_write_payment::VerifiedGroupPayment {
+            tx_hash: crate::monad_http::Hash32([1; 32]),
+            sender: crate::monad_http::Address([2; 20]),
+            payee: [3; 20],
+            value_wei: 1_000,
+            nonce,
+            max_gas_cost_wei: 500,
+            raw_transaction: vec![],
+        };
+        let account = |pending_nonce, balance_wei| PayerAccount {
+            pending_nonce,
+            balance_wei,
+        };
+        assert_eq!(judge_funding(&payment(5), &account(5, 1_500), false), None);
+        // Behind the wallet's own self-sends, shuffled before it in its set, or a stacked
+        // successor: the predecessors are broadcast after the relay holds the write.
+        assert_eq!(judge_funding(&payment(6), &account(5, 1_500), false), None);
+        assert_eq!(
+            judge_funding(
+                &payment(5 + PAYMENT_NONCE_WINDOW),
+                &account(5, 1_500),
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            judge_funding(
+                &payment(6 + PAYMENT_NONCE_WINDOW),
+                &account(5, 1_500),
+                false
+            ),
+            Some(FundingProblem::NonceGap)
+        );
+        assert_eq!(
+            judge_funding(&payment(5), &account(5, 1_499), false),
+            Some(FundingProblem::InsufficientBalance)
+        );
+        assert_eq!(
+            judge_funding(&payment(5), &account(6, 10_000), false),
+            Some(FundingProblem::StaleNonce)
+        );
+        // The node already holds this very payment: an earlier attempt's copy, or mined.
+        assert_eq!(judge_funding(&payment(5), &account(6, 0), true), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_upstream_is_a_gateway_error_never_a_refusal() {
+        // The group is hosted elsewhere; this relay only proxies to the named upstream.
+        let (id, write_sk) = hosted_group(&GroupStore::new_temporary(), 12);
+        let message = sealed(&id, &write_sk, 1);
+        let response = test_router(GroupStore::new_temporary())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{id}/messages"))
+                    .header("content-type", "application/json")
+                    .header(HEADER_GROUP_UPSTREAM_RELAY, "https://no-such-relay.invalid")
+                    .body(Body::from(serde_json::to_vec(&paid(&message)).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT
+            ),
+            "{}",
+            response.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_relay_without_an_upstream_refuses_new_writes_retryably() {
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 11);
+        let message = sealed(&id, &write_sk, 1);
+        let writes = Arc::new(
+            GroupWriteRuntime::without_upstream(
+                "monad-testnet",
+                &cashweb_config::GroupWritesConf {
+                    price_wei: TEST_PRICE.to_string(),
+                    payee: cashweb_config::GroupWritePayeeConf::Burn,
+                },
+                &TEST_HOST.parse().unwrap(),
+            )
+            .unwrap(),
+        );
+        let response = router_with_store(store.clone(), writes)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&paid(&message)).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value =
+            serde_json::from_slice(&hyper::body::to_bytes(response.into_body()).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"], "group_payment_check_unavailable");
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_accepted_retry_gets_its_receipt_after_the_price_and_payee_change() {
+        async fn put(
+            router: Router,
+            id: &str,
+            body: &impl Serialize,
+        ) -> (StatusCode, String, Vec<u8>) {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/groups/{id}/messages"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let disposition = response
+                .headers()
+                .get(HEADER_GROUP_APPEND)
+                .map(|value| value.to_str().unwrap().to_owned())
+                .unwrap_or_default();
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            (status, disposition, body.to_vec())
+        }
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 9);
+        let message = sealed(&id, &write_sk, 1);
+        let request = paid(&message);
+        let (status, disposition, receipt) = put(test_router(store.clone()), &id, &request).await;
+        assert_eq!((status, disposition.as_str()), (StatusCode::OK, "appended"));
+
+        // The operator raises the price and moves the payee; the same relay, the same store.
+        let changed = || {
+            router_with_store(
+                store.clone(),
+                Arc::new(
+                    GroupWriteRuntime::loopback_fixture(
+                        "monad-testnet",
+                        &cashweb_config::GroupWritesConf {
+                            price_wei: (TEST_PRICE * 10).to_string(),
+                            payee: cashweb_config::GroupWritePayeeConf::Address(
+                                "0x00000000000000000000000000000000000000aa".into(),
+                            ),
+                        },
+                        &TEST_HOST.parse().unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            )
+        };
+        // The retry, with its original payment or with none, gets its original receipt.
+        for retry in [
+            request.clone(),
+            GroupWriteRequest {
+                envelope: message.clone(),
+                payment: None,
+            },
+        ] {
+            let (status, disposition, body) = put(changed(), &id, &retry).await;
+            assert_eq!((status, disposition.as_str()), (StatusCode::OK, "existing"));
+            assert_eq!(body, receipt);
+        }
+        // A new write is held to the new policy.
+        let (status, _, body) = put(changed(), &id, &paid(&sealed(&id, &write_sk, 2))).await;
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "wrong_payee");
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn foreign_latest_refresh_and_write_ack_preserve_contiguous_backlog() {
-        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let upstream = GroupStore::new_temporary();
         let (root_sk, root_pk) = keypair(7);
         let (write_sk, write_pk) = keypair(70);
         let id = hex::encode(derive_group_id(&root_pk));
@@ -2015,11 +2749,8 @@ mod tests {
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
-        let router = router_with_store(home.clone());
+        let router = test_router(home.clone());
         let read = |after| {
             Request::builder()
                 .uri(format!("/groups/{id}/messages?after_seq={after}"))
@@ -2046,7 +2777,9 @@ mod tests {
                     .uri(format!("/groups/{id}/messages"))
                     .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&message(4)).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&paid_for(&origin, &message(4))).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2112,18 +2845,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "Requires Node dependencies; runs the real TypeScript client against two Rust relay routers"]
     async fn typescript_foreign_client_against_real_rust_relays() {
-        let (origin, origin_task) = spawn_group_router(GroupStore::new_temporary(
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        ))
-        .await;
-        let (home, home_task) = spawn_group_router(GroupStore::new_temporary(
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        ))
-        .await;
+        let (origin, origin_task) = spawn_group_router(GroupStore::new_temporary()).await;
+        let (home, home_task) = spawn_group_router(GroupStore::new_temporary()).await;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
@@ -2162,10 +2885,8 @@ mod tests {
     #[tokio::test]
     async fn home_relay_proxies_below_threshold_and_auto_promotes_to_local_mirror_at_threshold() {
         // Spawn an authoritative Upstream Foreign Relay (`Relay_G`)
-        let upstream_store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
-        let upstream_app = router_with_store(upstream_store.clone());
+        let upstream_store = GroupStore::new_temporary();
+        let upstream_app = test_router(upstream_store.clone());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let upstream_addr: SocketAddr = listener.local_addr().unwrap();
         let upstream_url = format!("http://{upstream_addr}");
@@ -2254,11 +2975,8 @@ mod tests {
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             2,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
-        let home_app = router_with_store(home_store.clone());
+        let home_app = test_router(home_store.clone());
 
         let attacker_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = attacker_calls.clone();
@@ -2409,7 +3127,9 @@ mod tests {
                     .method("PUT")
                     .uri(format!("/groups/{group_id}/messages"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&local_message).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&paid(&local_message)).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -2432,9 +3152,7 @@ mod tests {
     async fn json_cbor_retries_return_original_receipt_without_second_wakeup() {
         use crate::events::{RelayEventBus, StandaloneEventBus};
         use frank_cbor::{cbor_map, encode_canonical, CborValue};
-        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        });
+        let store = GroupStore::new_temporary();
         let (root, public) = keypair(7);
         let (write, write_public) = keypair(42);
         let id = hex::encode(derive_group_id(&public));
@@ -2465,6 +3183,7 @@ mod tests {
                 routing::put(handle_put_group_message_store),
             )
             .layer(Extension(store.clone()))
+            .layer(Extension(Some(test_writes(TEST_HOST))))
             .layer(Extension(bus.clone() as Arc<dyn RelayEventBus>));
         let mut envelope = GroupMessageEnvelope {
             group_id: id.clone(),
@@ -2481,7 +3200,7 @@ mod tests {
                     .method("PUT")
                     .uri(format!("/groups/{id}/messages"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&envelope).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&paid(&envelope)).unwrap()))
                     .unwrap(),
             )
             .await
@@ -2496,8 +3215,9 @@ mod tests {
                 .await
                 .is_ok()
         );
+        let payment = paid(&envelope).payment.unwrap();
         let signature =
-            secp256k1_abc::Signature::from_compact(&hex::decode(envelope.write_sig).unwrap())
+            secp256k1_abc::Signature::from_compact(&hex::decode(&envelope.write_sig).unwrap())
                 .unwrap();
         let cbor = encode_canonical(&cbor_map(vec![
             (0, CborValue::Text(id.clone())),
@@ -2511,6 +3231,16 @@ mod tests {
                 CborValue::Bytes(hex::decode(envelope.ciphertext).unwrap()),
             ),
             (4, CborValue::Bytes(signature.serialize_der().to_vec())),
+            (
+                5,
+                cbor_map(vec![
+                    (0, CborValue::Text(payment.network)),
+                    (
+                        1,
+                        CborValue::Bytes(hex::decode(payment.raw_transaction).unwrap()),
+                    ),
+                ]),
+            ),
         ]))
         .unwrap();
         let retry = app

@@ -1205,7 +1205,7 @@ pub mod group_epoch_frame {
     };
 }
 
-/// `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored.
+/// `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. 'payment' is the group-write-payment that pays the hosting relay for this write; the relay requires it for every new write and never stores it in the message row. It may be absent on a retry of a write the relay already accepted: the relay answers such a retry with the original receipt before it looks at any payment.
 pub mod group_message_envelope {
     use super::MapShape;
 
@@ -1219,9 +1219,28 @@ pub mod group_message_envelope {
     pub const CIPHERTEXT: u64 = 3;
     /// Field `write-sig`.
     pub const WRITE_SIG: u64 = 4;
+    /// Field `payment`.
+    pub const PAYMENT: u64 = 5;
     /// `group-message-envelope` map shape.
     pub const SHAPE: MapShape = MapShape {
         required: &[GROUP_ID, EPOCH, NONCE, CIPHERTEXT, WRITE_SIG],
+        optional: &[PAYMENT],
+        open: true,
+        open_from: 0,
+    };
+}
+
+/// `group-write-payment` field keys: Payment carried by a group write (group-message-envelope 'payment'): one signed raw EVM transaction paying the hosting relay's configured payee at least its price, on 'network' (a canonical chain identifier from docs/protocol/chains/v1.json). Its calldata commits to the hosting relay, group, epoch and the envelope's signing digest. 'raw-transaction' is bytes (or hex text).
+pub mod group_write_payment {
+    use super::MapShape;
+
+    /// Field `network`.
+    pub const NETWORK: u64 = 0;
+    /// Field `raw-transaction`.
+    pub const RAW_TRANSACTION: u64 = 1;
+    /// `group-write-payment` map shape.
+    pub const SHAPE: MapShape = MapShape {
+        required: &[NETWORK, RAW_TRANSACTION],
         optional: &[],
         open: true,
         open_from: 0,

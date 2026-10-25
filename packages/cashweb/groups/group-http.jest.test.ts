@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import {
   GroupRelayClient,
+  GroupWriteRefusedError,
   createGroupOnRelay,
   rotateGroupEpochOnRelay,
   prepareGroupEpochRotation,
@@ -13,7 +14,12 @@ import {
   sealGroupMessage,
   verifyEpochFrame,
 } from './group-crypto'
-import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
+import {
+  GROUP_TEST_ACCOUNTS,
+  groupTestPaymentFor,
+  groupTestSigningKey,
+  paidSend,
+} from './group-test.testutil'
 
 async function main() {
   const executable = process.env.FRANK_GROUP_HTTP_FIXTURE
@@ -21,7 +27,9 @@ async function main() {
     executable,
     'Set FRANK_GROUP_HTTP_FIXTURE to the compiled example path',
   )
-  const server = spawn(executable, [], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const server = spawn(executable, [], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
   try {
     const lines = createInterface({ input: server.stdout! })
     const url = await new Promise<string>((resolve, reject) => {
@@ -59,7 +67,7 @@ async function main() {
       payload: new TextEncoder().encode('real HTTP message'),
       timestampMs: 1700000001234,
     })
-    const acknowledgement = await client.sendGroupMessage(id, envelope)
+    const acknowledgement = await paidSend(client, id, envelope)
     assert.equal(acknowledgement.server_seq, 1)
     assert(Number.isSafeInteger(acknowledgement.server_time_ms))
     await assert.rejects(client.fetchGroupMessages(id, '00'.repeat(32)))
@@ -90,8 +98,43 @@ async function main() {
       ).messages.length,
       0,
     )
+    // A definitive refusal: nothing stored, so the writer may release its payment.
     await assert.rejects(
-      client.sendGroupMessage(id, { ...envelope, write_sig: '00'.repeat(64) }),
+      paidSend(client, id, { ...envelope, write_sig: '00'.repeat(64) }),
+      GroupWriteRefusedError,
+    )
+    // A new underpaid write is refused with its reason.
+    const policy = await client.getWritePolicy(id)
+    const underpaid = { ...policy, priceWei: policy.priceWei - 1n }
+    const next = sealGroupMessage({
+      epochKeys: created.epochKeys,
+      senderIndex: 1,
+      senderEpochKeyPair: groupTestSigningKey(bob.address, id, 0),
+      senderAddress: bob.address,
+      payload: new TextEncoder().encode('underpaid message'),
+      timestampMs: 1700000001235,
+    })
+    // A retry of the accepted write gets its receipt before its payment is looked at.
+    assert.equal(
+      (
+        await client.sendGroupMessage(
+          id,
+          envelope,
+          groupTestPaymentFor(underpaid, id, envelope),
+        )
+      ).server_seq,
+      1,
+    )
+    await assert.rejects(
+      client.sendGroupMessage(
+        id,
+        next,
+        groupTestPaymentFor(underpaid, id, next),
+      ),
+      (error: unknown) =>
+        error instanceof GroupWriteRefusedError &&
+        error.status === 402 &&
+        error.reason === 'underpaid',
     )
     const params = {
       client,
@@ -116,9 +159,10 @@ async function main() {
     const rotated = await rotateGroupEpochOnRelay(params)
     assert.equal(rotated.epoch, 1)
     // A retried accepted envelope returns its original receipt; new old-epoch content rejects.
-    assert.deepEqual(await client.sendGroupMessage(id, envelope), acknowledgement)
+    assert.deepEqual(await paidSend(client, id, envelope), acknowledgement)
     await assert.rejects(
-      client.sendGroupMessage(
+      paidSend(
+        client,
         id,
         sealGroupMessage({
           epochKeys: created.epochKeys,

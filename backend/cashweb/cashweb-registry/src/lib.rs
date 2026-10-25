@@ -15,6 +15,7 @@ pub mod directory_runtime;
 pub mod disabled_chain_adapter;
 pub mod events;
 pub(crate) mod forum;
+pub mod group_write_payment;
 pub mod http;
 pub mod lotus_adapter;
 pub mod metrics;

@@ -182,6 +182,16 @@ fn read_and_validate_conf_with_env(
     // on, its `[[registry.evm_rpc.chains]]` row must have an upstream. Nothing defaults.
     let chains = RelayChains::from_conf(&conf.registry, env)
         .wrap_err("Invalid relay network or chain configuration")?;
+    // Group writes are always paid: the price, the payee (including an xpub) and the public
+    // origin payments commit to are checked here, before any database or session effect.
+    let public_origin = conf.public_origin().wrap_err("Invalid relay url")?.clone();
+    cashweb_registry::http::groups::GroupWriteRuntime::without_upstream(
+        &chains.network().id,
+        &conf.registry.group_writes,
+        &public_origin,
+    )
+    .map_err(bitcoinsuite_error::Report::msg)
+    .wrap_err("Invalid registry.group_writes")?;
     Ok((conf, mailbox_mode, chains))
 }
 
@@ -474,13 +484,11 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
 async fn probe_shared_groups(
     groups: &GroupBackend,
     objects: &Arc<dyn cashweb_registry::store::large_values::ObjectStore>,
-    policy: cashweb_config::GroupAppendPolicy,
 ) -> Result<()> {
     let GroupBackend::Shared(_) = groups else {
         return Ok(());
     };
-    let owner =
-        cashweb_registry::store::groups::Owner::new(groups.clone(), Arc::clone(objects), policy);
+    let owner = cashweb_registry::store::groups::Owner::new(groups.clone(), Arc::clone(objects));
     tokio::task::spawn_blocking(move || owner.get().map(drop))
         .await
         .wrap_err("FoundationDB probe task failed")?
@@ -601,7 +609,7 @@ async fn run(
     let messages = message_backend(&driver)?;
     // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
     let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
-    probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
+    probe_shared_groups(&groups, &objects).await?;
     probe_shared_registry(&db, &driver)?;
     probe_shared_messages(messages.as_ref()).await?;
     let directory = directory_backend(&driver, &conf.registry.db_path)?;
@@ -665,7 +673,6 @@ async fn run(
             directory,
             groups,
             objects,
-            group_policy: conf.registry.groups,
             messages,
         },
     ));
@@ -762,6 +769,34 @@ async fn run(
             None
         }
     };
+    // Every write to a group this relay hosts is paid; there is no free or disabled mode. The
+    // host reads each payer's account through the network's upstream before accepting a write,
+    // so without one it refuses every new write (retryably) rather than accept unchecked ones.
+    let public_origin = conf.public_origin().wrap_err("Invalid relay url")?.clone();
+    let group_writes = Arc::new(
+        match chains.network_adapter() {
+            Some(chain) => cashweb_registry::http::groups::GroupWriteRuntime::new(
+                Arc::clone(chain),
+                &conf.registry.group_writes,
+                &public_origin,
+            ),
+            None => {
+                tracing::event!(
+                    tracing::Level::WARN,
+                    network = chains.network().id.as_str(),
+                    "Group writes are refused by this relay: registry.network has no \
+                     [[registry.evm_rpc.chains]] upstream to check payments through"
+                );
+                cashweb_registry::http::groups::GroupWriteRuntime::without_upstream(
+                    &chains.network().id,
+                    &conf.registry.group_writes,
+                    &public_origin,
+                )
+            }
+        }
+        .map_err(bitcoinsuite_error::Report::msg)
+        .wrap_err("Invalid registry.group_writes")?,
+    );
     let our_peers = conf
         .registry
         .peers
@@ -856,6 +891,7 @@ async fn run(
         solana_proxy,
         chains: Arc::clone(&chains),
         forum,
+        group_writes: Some(group_writes),
         spa_dir,
         event_bus: Arc::clone(&event_bus),
     };
@@ -1170,9 +1206,15 @@ max_get_logs_range = 10\n\n\
 
     #[test]
     fn the_cluster_lab_relay_configuration_is_valid_and_shares_the_directory() {
-        // The template lab-init fills in, with the proxy origin it substitutes.
+        // The template lab-init fills in, with the proxy origin and the solonet checkpoint it
+        // substitutes.
         let config = include_str!("../../../labs/cluster/relay.toml.in")
-            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18080");
+            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18080")
+            .replace("@SOLONET_CHECKPOINT_NUMBER@", "52000")
+            .replace(
+                "@SOLONET_CHECKPOINT_HASH@",
+                &format!("0x{}", "ab".repeat(32)),
+            );
         let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
         assert!(conf.registry.directory.is_some());

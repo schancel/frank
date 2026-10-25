@@ -24,6 +24,11 @@ import {
   type GroupRosterMember,
   type SealedGroupMessageEnvelope,
 } from './group-crypto'
+import {
+  parseGroupWritePolicy,
+  type GroupWritePaymentWire,
+  type GroupWritePolicy,
+} from './group-write-payment'
 
 export interface PublishEpochResponse {
   epoch: number
@@ -98,9 +103,72 @@ export function normalizeGroupRelayOrigin(relayUrl: string): string {
  * HTTP client for the shared group mailbox endpoints on `cashweb-registry` (Issues #70 & #1365):
  * - `PUT /groups/:group_id/epochs` (with optional `If-Match` CAS header)
  * - `GET /groups/:group_id/epochs` (public root-signed certificate)
- * - `PUT /groups/:group_id/messages` (authenticated via outer shared write signature `write_sig`)
+ * - `PUT /groups/:group_id/messages` (authenticated via outer shared write signature `write_sig`,
+ *   paid for with one signed transaction to the hosting relay's payee)
+ * - `GET /groups/:group_id/write-policy` (the hosting relay's price and payee)
  * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Group-Read-Token`)
  */
+/**
+ * A group write refused for good, before anything was stored: a `402` naming a
+ * `group_payment_*` refusal, which only the hosting relay produces after checking the payment,
+ * or a `403`/`404`, which the relay the writer submits to produces itself (a home relay, for
+ * example, refusing a write to a group it only mirrors) or passes on from the host. Nothing was
+ * stored, so no relay handed the payment to a node. Every other answer (a timeout, a gateway or
+ * server error, a `400`, any other `503`) is not a refusal: the write may have been stored and
+ * its payment broadcast.
+ */
+export class GroupWriteRefusedError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    readonly reason: string | undefined,
+  ) {
+    super(
+      `Group write refused (${status}${code ? ` ${code}` : ''}${
+        reason ? `: ${reason}` : ''
+      })`,
+    )
+    this.name = 'GroupWriteRefusedError'
+  }
+}
+
+/**
+ * The hosting relay checked the write's payment and stored nothing, but cannot accept it yet: a
+ * `503` naming a `group_payment_*` code (`group_payment_not_ready` with `nonce_gap` or
+ * `insufficient_balance`, or `group_payment_check_unavailable`). Not a refusal: the same write
+ * is retried with the same bytes.
+ */
+export class GroupWriteDeferredError extends Error {
+  constructor(readonly code: string, readonly reason: string | undefined) {
+    super(`Group write deferred (${code}${reason ? `: ${reason}` : ''})`)
+    this.name = 'GroupWriteDeferredError'
+  }
+}
+
+function groupWriteRefusal(
+  error: unknown,
+): GroupWriteRefusedError | GroupWriteDeferredError | undefined {
+  if (!axios.isAxiosError(error) || !error.response) return undefined
+  const status = error.response.status
+  const body = error.response.data as Record<string, unknown> | undefined
+  const code = typeof body?.error === 'string' ? body.error : undefined
+  const definitive =
+    status === 403 ||
+    status === 404 ||
+    (status === 402 && code !== undefined && code.startsWith('group_payment_'))
+  if (status === 503 && code !== undefined && code.startsWith('group_payment_'))
+    return new GroupWriteDeferredError(
+      code,
+      typeof body?.reason === 'string' ? body.reason : undefined,
+    )
+  if (!definitive) return undefined
+  return new GroupWriteRefusedError(
+    status,
+    code,
+    typeof body?.reason === 'string' ? body.reason : undefined,
+  )
+}
+
 export class GroupRelayClient {
   readonly relayUrl: string
   private readonly http: AxiosInstance
@@ -115,7 +183,7 @@ export class GroupRelayClient {
     )
     this.subscriberTag = options.subscriberTag
     this.webSocketFactory =
-      options.webSocketFactory ?? ((url) => new WebSocket(url))
+      options.webSocketFactory ?? (url => new WebSocket(url))
     this.http =
       options.axiosInstance ??
       axios.create({
@@ -186,7 +254,7 @@ export class GroupRelayClient {
             }),
           )
         }
-        current.onmessage = (event) => {
+        current.onmessage = event => {
           if (
             closed ||
             socket !== current ||
@@ -330,25 +398,45 @@ export class GroupRelayClient {
     }
   }
 
+  /** What a write to this group pays its hosting relay (proxied by a home relay). */
+  async getWritePolicy(groupIdHex: string): Promise<GroupWritePolicy> {
+    const cleanGroupId = normalizeGroupId(groupIdHex)
+    const response = await this.http.get<unknown>(
+      `${this.transportUrl}/groups/${cleanGroupId}/write-policy`,
+      { headers: this.routingHeaders() },
+    )
+    return parseGroupWritePolicy(response.data, this.relayUrl)
+  }
+
   /**
-   * Appends a sealed-sender group message (`SealedGroupMessageEnvelope`) to the group mailbox.
+   * Appends a sealed-sender group message (`SealedGroupMessageEnvelope`) to the group mailbox,
+   * with the payment that pays the hosting relay for it. A retry must send the same payment.
    */
   async sendGroupMessage(
     groupIdHex: string,
     envelope: SealedGroupMessageEnvelope,
+    payment: GroupWritePaymentWire,
   ): Promise<SendGroupMessageResponse> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
-    const response = await this.http.put<SendGroupMessageResponse>(
-      `${this.transportUrl}/groups/${cleanGroupId}/messages`,
-      {
-        group_id: cleanGroupId,
-        epoch: envelope.epoch,
-        nonce: envelope.nonce,
-        ciphertext: envelope.ciphertext,
-        write_sig: envelope.write_sig,
-      },
-      { headers: this.routingHeaders() },
-    )
+    const response = await this.http
+      .put<SendGroupMessageResponse>(
+        `${this.transportUrl}/groups/${cleanGroupId}/messages`,
+        {
+          group_id: cleanGroupId,
+          epoch: envelope.epoch,
+          nonce: envelope.nonce,
+          ciphertext: envelope.ciphertext,
+          write_sig: envelope.write_sig,
+          payment: {
+            network: payment.network,
+            raw_transaction: payment.raw_transaction,
+          },
+        },
+        { headers: this.routingHeaders() },
+      )
+      .catch(error => {
+        throw groupWriteRefusal(error) ?? error
+      })
     const row = response.data
     if (
       row.group_id !== cleanGroupId ||
@@ -489,7 +577,7 @@ export function prepareGroupCreation(
 
   if (
     rosterMembers.length > 256 ||
-    rosterMembers.filter((member) => member.role === 'admin').length !== 1
+    rosterMembers.filter(member => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
@@ -642,7 +730,7 @@ export function prepareGroupEpochRotation(
 
   if (
     rosterMembers.length > 256 ||
-    rosterMembers.filter((member) => member.role === 'admin').length !== 1
+    rosterMembers.filter(member => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
@@ -761,7 +849,7 @@ export function openGroupEpochCertificate(params: {
     if (expected !== member.epochSigningPubKeyHex)
       throw new Error('Group member signing key mismatch')
   }
-  if (roster.members.filter((member) => member.role === 'admin').length !== 1)
+  if (roster.members.filter(member => member.role === 'admin').length !== 1)
     throw new Error('Group must have one founding administrator')
   return { roster, epochKeys }
 }

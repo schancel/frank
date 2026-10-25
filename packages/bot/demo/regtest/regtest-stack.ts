@@ -41,7 +41,10 @@ const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const RELAY_DIR = join(REPO_ROOT, 'backend', 'cashweb')
 
 export interface RegtestStack {
+  /** The first relay; `relayUrls[0]`. */
   readonly relayUrl: string
+  /** Every relay of the stack, each its own process and database on the same networks. */
+  readonly relayUrls: readonly string[]
   /** The running networks by canonical chain identifier. */
   readonly chains: Readonly<Record<string, RegtestChain>>
   readonly stateDir: string
@@ -91,7 +94,8 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     `url = "http://127.0.0.1:${port}"`,
     '',
     '[registry]',
-    'groups = { per_message_price_credits = 0 }',
+    // Group writes are always paid. The stack burns by default; a test names its own payee.
+    `group_writes = { price_wei = "1000000000000", payee = "burn" }`,
     `db_path = ${JSON.stringify(dbPath)}`,
     `network = "${mailbox?.chain.chainIdentifier ?? 'monad-regtest'}"`,
     'net = "regtest"',
@@ -140,6 +144,70 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
   ].join('\n')
 }
 
+/** One relay process of the stack, started and waited for until it forwards to every network. */
+async function startRelay(params: {
+  supervisor: Supervisor
+  cashwebd: string
+  stateDir: string
+  chains: RegtestChain[]
+  relayPort: number
+  name: string
+  logPath: string
+  dbPath: string
+}): Promise<string> {
+  const { supervisor, cashwebd, stateDir, chains, relayPort, name, logPath, dbPath } = params
+  const relayUrl = `http://127.0.0.1:${relayPort}`
+  const configPath = join(stateDir, `${name}.toml`)
+  writeFileSync(configPath, relayConfig(relayPort, dbPath, chains), { mode: 0o600 })
+  const relayEnv = Object.assign({}, ...chains.map(chain => chain.relay.env)) as Record<string, string>
+  const relay = supervisor.start({
+    name,
+    command: cashwebd,
+    args: [configPath],
+    cwd: stateDir,
+    logPath,
+    env: relayEnv,
+  })
+  // The relay answers only after it has found each network's checkpoint block on its upstream.
+  const deadline = Date.now() + 60_000
+  for (;;) {
+    try {
+      const response = await fetch(`${relayUrl}/chains`)
+      if (response.ok) {
+        const advertised = JSON.stringify(await response.json())
+        const missing = chains.filter(chain => !advertised.includes(`"${chain.chainIdentifier}"`))
+        if (missing.length > 0) {
+          throw new Error(`the relay does not serve ${missing.map(chain => chain.chainIdentifier).join(', ')}`)
+        }
+        // The relay lists an EVM network before it has verified it, and forwards nothing
+        // until the upstream has shown the checkpoint block. Ready means it forwards.
+        const forwarding = await Promise.all(
+          chains
+            .filter(chain => chain.relay.section === 'evm_rpc')
+            .map(async chain => {
+              const answer = await fetch(`${relayUrl}/chain-rpc/${chain.chainIdentifier}/rpc`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+              })
+              return typeof ((await answer.json()) as { result?: unknown }).result === 'string'
+            }),
+        )
+        if (forwarding.every(Boolean)) break
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('the relay does not serve')) throw err
+    }
+    if (relay.hasExited() || Date.now() > deadline) {
+      throw new Error(
+        `the relay ${relay.hasExited() ? 'exited during startup' : 'did not answer, or did not verify its chains, in time'}:\n${relay.tail().join('\n')}`,
+      )
+    }
+    await sleep(250)
+  }
+  return relayUrl
+}
+
 export async function startRegtestStack(
   options: {
     env?: Record<string, string | undefined>
@@ -147,6 +215,8 @@ export async function startRegtestStack(
     chains?: ReadonlyArray<'xec-regtest' | 'monad-regtest'>
     /** How often eCash makes a block without being asked (default 3000 ms). */
     blockIntervalMs?: number
+    /** How many independent relays to run on the same networks (default 1). */
+    relays?: number
   } = {},
 ): Promise<RegtestStack> {
   const env = options.env ?? process.env
@@ -158,7 +228,7 @@ export async function startRegtestStack(
   const relayLogPath = join(stateDir, 'logs', 'relay.log')
   const supervisor = new Supervisor(env, () => {})
   const chains: RegtestChain[] = []
-  let relayPort: number | undefined
+  const relayPorts: number[] = []
   let stopped: Promise<void> | undefined
   const removeState = () => {
     if (env.FRANK_REGTEST_KEEP !== '1') rmSync(stateDir, { recursive: true, force: true })
@@ -181,9 +251,10 @@ export async function startRegtestStack(
       await supervisor.stopAll()
       const failures: unknown[] = []
       for (const chain of chains) await chain.stop().catch(err => failures.push(err))
-      if (relayPort !== undefined && (await isListening(relayPort))) {
-        failures.push(new Error(`the relay's port ${relayPort} is still open after stop`))
-      }
+      for (const relayPort of relayPorts)
+        if (await isListening(relayPort)) {
+          failures.push(new Error(`the relay's port ${relayPort} is still open after stop`))
+        }
       removeState()
       process.off('exit', onExit)
       for (const signal of signals) process.off(signal, onSignal)
@@ -197,58 +268,27 @@ export async function startRegtestStack(
       chains.push(await startEcashRegtest({ stateDir, blockIntervalMs: options.blockIntervalMs, env }))
     }
 
-    relayPort = await freePort()
-    const relayUrl = `http://127.0.0.1:${relayPort}`
-    const configPath = join(stateDir, 'relay.toml')
-    writeFileSync(configPath, relayConfig(relayPort, join(stateDir, 'relay-db'), chains), { mode: 0o600 })
-    const relayEnv = Object.assign({}, ...chains.map(chain => chain.relay.env)) as Record<string, string>
-    const relay = supervisor.start({
-      name: 'relay',
-      command: cashwebd,
-      args: [configPath],
-      cwd: stateDir,
-      logPath: relayLogPath,
-      env: relayEnv,
-    })
-    // The relay answers only after it has found each network's checkpoint block on its upstream.
-    const deadline = Date.now() + 60_000
-    for (;;) {
-      try {
-        const response = await fetch(`${relayUrl}/chains`)
-        if (response.ok) {
-          const advertised = JSON.stringify(await response.json())
-          const missing = chains.filter(chain => !advertised.includes(`"${chain.chainIdentifier}"`))
-          if (missing.length > 0) {
-            throw new Error(`the relay does not serve ${missing.map(chain => chain.chainIdentifier).join(', ')}`)
-          }
-          // The relay lists an EVM network before it has verified it, and forwards nothing
-          // until the upstream has shown the checkpoint block. Ready means it forwards.
-          const forwarding = await Promise.all(
-            chains
-              .filter(chain => chain.relay.section === 'evm_rpc')
-              .map(async chain => {
-                const answer = await fetch(`${relayUrl}/chain-rpc/${chain.chainIdentifier}/rpc`, {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
-                })
-                return typeof ((await answer.json()) as { result?: unknown }).result === 'string'
-              }),
-          )
-          if (forwarding.every(Boolean)) break
-        }
-      } catch (err) {
-        if (err instanceof Error && err.message.startsWith('the relay does not serve')) throw err
-      }
-      if (relay.hasExited() || Date.now() > deadline) {
-        throw new Error(
-          `the relay ${relay.hasExited() ? 'exited during startup' : 'did not answer, or did not verify its chains, in time'}:\n${relay.tail().join('\n')}`,
-        )
-      }
-      await sleep(250)
+    const relayUrls: string[] = []
+    for (let index = 0; index < (options.relays ?? 1); index++) {
+      const suffix = index === 0 ? '' : `-${index}`
+      const relayPort = await freePort()
+      relayPorts.push(relayPort)
+      relayUrls.push(
+        await startRelay({
+          supervisor,
+          cashwebd,
+          stateDir,
+          chains,
+          relayPort,
+          name: `relay${suffix}`,
+          logPath: index === 0 ? relayLogPath : join(stateDir, 'logs', `relay${suffix}.log`),
+          dbPath: join(stateDir, `relay-db${suffix}`),
+        }),
+      )
     }
     return {
-      relayUrl,
+      relayUrl: relayUrls[0]!,
+      relayUrls,
       chains: Object.fromEntries(chains.map(chain => [chain.chainIdentifier, chain])),
       stateDir,
       relayLogPath,

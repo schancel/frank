@@ -80,14 +80,7 @@ impl cashweb_payload::chain_adapter::ChainAdapter for NeverCalledChainAdapter {
 
 fn open_registry(path: &std::path::Path, net: Net) -> Registry {
     let db = Db::open(path.join("db.rocksdb")).unwrap();
-    Registry::new(
-        db,
-        Arc::new(NeverCalledChainAdapter),
-        net,
-        cashweb_config::GroupAppendPolicy {
-            per_message_price_credits: 0,
-        },
-    )
+    Registry::new(db, Arc::new(NeverCalledChainAdapter), net)
 }
 
 fn make_server(registry: Registry) -> RegistryServer {
@@ -106,6 +99,7 @@ fn make_server(registry: Registry) -> RegistryServer {
             cashweb_registry::chains::RelayChains::network_only("monad-testnet").unwrap(),
         ),
         forum: None,
+        group_writes: None,
         spa_dir: None,
         event_bus,
     }

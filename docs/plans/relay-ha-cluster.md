@@ -104,6 +104,7 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      - the same transaction sent to A and B concurrently gives one append;
      - underpaid, wrong-payee, wrong-chain and wrong-commitment payments are rejected with no sequence consumed;
      - a proxied foreign write is verified only by the host.
+   - The cluster lab's relays run on solonet and every contract append pays (`backend/labs/solonet_payer.rs`). Its paid case covers the list above across A, B and C, with another relay's origin standing in for the replay, plus two payments at one payer nonce giving one append; the proxied foreign write runs in the ignored `typescript_foreign_client_against_real_rust_relays` test.
 6. **DM owner port.**
    - Per-mailbox delivery times, challenges with a conflicting capacity check, notification policy, VAPID from file, publish on every commit, and a fixed websocket fallback.
    - Delete the in-process broadcast.
@@ -144,9 +145,36 @@ the owner ports, and the ports are written against the new formats.
     commitment, so both sides compute the same address without a round trip.
   - A burn costs the writer and funds nobody, so it is opt-in.
   - The calldata commitment is required: without it, one burn could fund writes on several relays.
-  - Confirmation is not awaited, as with DM stamps. A replaced nonce can therefore buy one free write, which is the same exposure DMs have.
+  - Confirmation is not awaited, as with DM stamps. Before accepting, the host reads the payer's
+    pending nonce and balance from its node. It accepts a nonce in `[pending, pending + 63]`,
+    because the wallet shuffles the payment among up to 63 of its own self-sends on the account
+    (ruling of 2026-10-20: random order; self-sends never go to the relay; the wallet broadcasts
+    the whole set in (account, nonce) order after the relay holds the write). It needs value plus
+    gas in the balance. A nonce below pending is refused (402, definitive). A nonce past the
+    window or too little balance is deferred (503 `group_payment_not_ready`, retried with the same
+    bytes), and so is an unreadable node (503).
+  - One accepted write per (network, payer, nonce): the accept transaction writes `G_pnonce`
+    beside `G_pay`, and a different payment at a used nonce is refused (402 `nonce_used`).
+  - Remaining exposure: an accepted payment that never lands, because another transaction of the
+    payer's lands at its nonce. Each such write costs the payer one landed transaction at that
+    nonce, with at most 64 of its writes outstanding unlanded: the same class as the
+    replaced-nonce exposure DMs have.
   - The payer's address links a wallet to its group writes at the host, as DM stamps already do.
   - Still open: the price, and the exact xpub derivation path and index rule.
+    - Proposed (implemented on the paid-group-writes branch, awaiting confirmation): child
+      `xpub/0/i`, non-hardened, with `i = u32_be(commitment[0..4]) & 0x7fffffff`. Both sides
+      compute it from the commitment alone; a collision between two writes only means two
+      payments reach one address. Accepted key versions: `xpub` and `tpub`.
+    - Price: a required decimal-wei `price_wei`; the shipped development and lab configs use
+      1e12 wei and the docker image's payee is `burn` until an operator sets one.
+    - The writer follows persist, submit to the relay, then broadcast: its wallet broadcasts
+      only after the host holds the write; a definitive refusal (a host 402 `group_payment_*`,
+      or a 403 or 404 from the relay written to) releases the coin only after the chain shows no
+      copy, and never after an attempt whose outcome was unknown; a payment the chain shows is
+      tracked as spent and the write is retried until a relay holds it.
+    - Each accepted write's payment record (`G_pay:<tx_hash>`: payer, payee, value, group and
+      sequence) is written in its accept transaction. Also open: an operator view that lists
+      which xpub children were paid from those records.
 - **B. Session secret and VAPID key.** Decided 2026-10-25: operator-provisioned files, the same on every replica, never auto-created in cluster mode. Changing the VAPID key orphans every push subscription.
 - **C. Signet data at cutover.**
   - Decided 2026-10-25: no migration (AGENTS §6). The old databases and disks are kept as

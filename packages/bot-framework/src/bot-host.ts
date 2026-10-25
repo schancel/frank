@@ -42,6 +42,7 @@ import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import type {
+  DirectMessageReceived,
   DirectMessageSendResult,
   StampPaymentInfo,
 } from "@frank/wallet/chain/active-chain";
@@ -193,6 +194,10 @@ interface ActiveBotInstance {
   lastPollTimestamp: number;
   /** This bot's poll pass, while one runs. */
   polling?: Promise<void>;
+  /** This bot's mailbox read until a poll uses its result: it may outlive the poll that started it. */
+  mailboxRead?: Promise<MailboxRead>;
+  /** The record last reported as not translatable yet, so the warning is not repeated. */
+  incompleteWarned?: number;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
@@ -215,6 +220,12 @@ interface ActiveBotInstance {
   /** Direct replies waiting for this bot's next poll pass before they are sent again. */
   pollWaiters: Set<() => void>;
   evmMainPrivateKey?: string;
+}
+
+interface MailboxRead {
+  messages: DirectMessageReceived[];
+  passed: number;
+  incomplete?: number;
 }
 
 export class FrankBotHost {
@@ -1291,14 +1302,25 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
-        const messages = await bounded(
-          this.chain.directMessages.fetchSince({
-            wallet: instance.wallet,
-            sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
-          }),
+        // A read that outlived an earlier poll's bound is joined, or its result used, not
+        // started again beside it: abandoned reads would pile up and starve every bot of CPU.
+        instance.mailboxRead ??= this.readMailbox(instance).catch((error) => {
+          instance.mailboxRead = undefined;
+          throw error;
+        });
+        const { messages, passed, incomplete } = await bounded(
+          instance.mailboxRead,
           "Reading the mailbox",
           this.options.callTimeoutMs
         );
+        instance.mailboxRead = undefined;
+        if (incomplete !== undefined && incomplete !== instance.incompleteWarned)
+          console.warn(
+            `[bot-host] [${id}] Mailbox record at ${incomplete} cannot be read yet; it is read again on every poll and holds the cursor`
+          );
+        instance.incompleteWarned = incomplete;
+        // Set when a message of this read is not durable here: the cursor must not pass it.
+        let unsettled = false;
         const accepted: {
           identity: InboundIdentity;
           items: MessageItem[];
@@ -1359,11 +1381,17 @@ export class FrankBotHost {
             console.warn(
               `[bot-host] [${id}] Inbound retention held; preserve state`
             );
+            unsettled = true;
             continue;
           }
           if (outcome === "finished") continue;
           fetched.set(identity.digest, entry);
         }
+        // Every message of the read is now finished, retained, or never to be handled (a peer
+        // bot over its reply budget included); what this bot sent itself needs nothing. The cursor passes them all, so the next read
+        // opens only newer records; a retained row still pins the scan until it is started.
+        if (!unsettled && passed > instance.lastPollTimestamp)
+          instance.lastPollTimestamp = await instance.operations.advance(passed);
         for (const row of instance.operations.listDeferred()) {
           const match = fetched.get(row.digest);
           if (!match) {
@@ -1773,7 +1801,31 @@ export class FrankBotHost {
     return undefined;
   }
 
-  /** Finishes a started message: its row goes and the scan cursor moves past it. */
+  /** Reads this bot's mailbox from its scan floor. `passed` is the inclusive position the read
+   * covers completely: its newest record, inbound or sent, or a terminally unreadable one, but
+   * never past `incomplete`, the earliest record the wallet could not translate yet. The other
+   * messages are still handled; that record is read again until it can be. */
+  private async readMailbox(instance: ActiveBotInstance): Promise<MailboxRead> {
+    const sinceMs = instance.operations.scanFloor(instance.lastPollTimestamp);
+    let passed = sinceMs;
+    let incomplete: number | undefined;
+    const messages = await this.chain.directMessages.fetchSince({
+      wallet: instance.wallet,
+      sinceMs,
+      onIncompleteTimestamp: (receivedTime) => {
+        incomplete = Math.min(incomplete ?? receivedTime, receivedTime);
+      },
+      onQuarantinedTimestamp: (receivedTime) => {
+        passed = Math.max(passed, receivedTime);
+      },
+    });
+    for (const message of messages)
+      passed = Math.max(passed, message.receivedTime);
+    if (incomplete !== undefined) passed = Math.min(passed, incomplete);
+    return { messages, passed, ...(incomplete === undefined ? {} : { incomplete }) };
+  }
+
+  /** Finishes a started message: its row goes, with the scan cursor the reads reached. */
   private async finish(
     instance: ActiveBotInstance,
     digest: string,
@@ -1781,9 +1833,11 @@ export class FrankBotHost {
   ): Promise<void> {
     const row = instance.operations.get(digest);
     if (row?.phase !== "started") return;
+    // Only a read moves the cursor, to what it covered completely; finishing a message does
+    // not, so it can never pass a record that is not read yet.
     const committedCursor = await instance.operations.complete(
       digest,
-      Math.max(instance.lastPollTimestamp, row.receivedTime + 1)
+      instance.lastPollTimestamp
     );
     instance.lastPollTimestamp = Math.max(
       instance.lastPollTimestamp,
@@ -2268,7 +2322,10 @@ export class FrankBotHost {
     // An in-flight relay or wallet call is waited for, never abandoned. A handler's own slow
     // call (a model request) is the handler's to end, on the `stopping` signal.
     await Promise.allSettled(
-      [...this.instances.values()].map((instance) => instance.polling)
+      [...this.instances.values()].flatMap((instance) => [
+        instance.polling,
+        instance.mailboxRead,
+      ])
     );
     for (const [id, instance] of this.instances.entries()) {
       try {

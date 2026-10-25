@@ -102,6 +102,16 @@ it("finishes a message by deleting its row and leaving a marker, and never admit
   expect(await store.complete(numbered(1).digest, 6)).toBe(101);
 });
 
+it("advances the scan cursor durably and never backwards", async () => {
+  expect(await store.advance(200)).toBe(200);
+  await reopen();
+  expect(await state.get("cursor:lastPollTimestamp")).toBe("200");
+  expect(await store.advance(150)).toBe(200);
+  expect(await state.get("cursor:lastPollTimestamp")).toBe("200");
+  await retainThenStart(input);
+  expect(await store.complete(input.digest, 101)).toBe(200);
+});
+
 // The owner's rule: nothing may make a bot stop accepting messages. On 05c93db0 rows were never
 // deleted and the 1,025th message of a bot's life got "full".
 it("goes on accepting after 1,100 finished messages and with 1,100 unfinished ones", async () => {

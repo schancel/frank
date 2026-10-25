@@ -469,7 +469,8 @@ describe("FrankBotHost Reliability Features", () => {
       expect(mockDirectMessagesFetchSince.mock.calls.at(-1)?.[0].sinceMs).toBe(initial);
       await instance.peerQueue.enqueue(mockPeer.address.toLowerCase(), async () => {});
       expect(handled).toEqual(["22".repeat(32)]);
-      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(receivedTime + 1));
+      // Inclusive: the read covered everything up to and including the newest record.
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(receivedTime));
       await host.stop();
     });
 
@@ -520,7 +521,7 @@ describe("FrankBotHost Reliability Features", () => {
       const persistedCursor = await instance1.state.get(
         "cursor:lastPollTimestamp"
       );
-      expect(persistedCursor).toBe(String(messageTime + 1));
+      expect(persistedCursor).toBe(String(messageTime));
 
       await host1.stop();
 
@@ -534,7 +535,7 @@ describe("FrankBotHost Reliability Features", () => {
       const instance2 = (host2 as any).instances.get("cursor-bot");
 
       // Verify restored cursor is used as lastPollTimestamp
-      expect(instance2.lastPollTimestamp).toBe(messageTime + 1);
+      expect(instance2.lastPollTimestamp).toBe(messageTime);
 
       await host2.stop();
     });
@@ -685,7 +686,7 @@ describe("FrankBotHost Reliability Features", () => {
         true
       );
       expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
-        String(base + 301)
+        String(base + 300)
       );
 
       await host.stop();
@@ -920,6 +921,161 @@ describe("FrankBotHost Reliability Features", () => {
         expect(warn).not.toHaveBeenCalled();
       } finally {
         warn.mockRestore();
+        await host.stop();
+      }
+    });
+
+    // On 1a2326ce the cursor moved only when an inbound message finished, so every poll opened
+    // each record the bot had sent since its last answer. Its newsletters and welcomes grew
+    // that window until each read outlasted its bound, and the bots stopped answering.
+    const sent = (digit: string, receivedTime: number) => ({
+      outbound: true,
+      senderAddress: { raw: mockLocalAddress },
+      senderPublicKey: getBytes("0x" + mockLocalSubject),
+      recipientPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+      recipientAddress: { raw: mockPeer.address.toLowerCase() },
+      messageId: "03030303-0303-0303-0303-03030303030" + digit,
+      conversationId: "01010101-0101-0101-0101-010101010101",
+      items: [{ type: "text", text: "welcome" }],
+      payloadDigest: digit.repeat(64),
+      receivedTime,
+    });
+
+    it("are passed by the cursor, so the next read starts at the newest record", async () => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/own-sends-cursor`,
+      });
+      await host.register({
+        id: "own-sends-cursor",
+        getProfile: () => ({ name: "OwnSendsCursor", bot: true }),
+        onMessage: async () => [],
+      });
+      const instance = (host as any).instances.get("own-sends-cursor");
+      const initial = instance.lastPollTimestamp;
+      try {
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([
+          sent("6", initial + 10),
+          sent("7", initial + 20),
+        ]);
+        await (host as any).pollAllBots();
+        expect(instance.lastPollTimestamp).toBe(initial + 20);
+        expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
+          String(initial + 20)
+        );
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([]);
+        await (host as any).pollAllBots();
+        // Inclusive: a record sharing the newest timestamp is still offered.
+        expect(mockDirectMessagesFetchSince.mock.calls.at(-1)[0].sinceMs).toBe(
+          initial + 20
+        );
+        // An empty read never moves the cursor back.
+        expect(instance.lastPollTimestamp).toBe(initial + 20);
+      } finally {
+        mockDirectMessagesFetchSince.mockResolvedValue([]);
+        await host.stop();
+      }
+    });
+
+    it("hold the cursor at a record the wallet cannot translate yet, while later messages are handled", async () => {
+      const handled: string[] = [];
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/own-sends-incomplete`,
+      });
+      await host.register({
+        id: "own-sends-incomplete",
+        getProfile: () => ({ name: "OwnSendsIncomplete", bot: true }),
+        onMessage: async (context) => {
+          handled.push(context.payloadDigest);
+          return [];
+        },
+      });
+      const instance = (host as any).instances.get("own-sends-incomplete");
+      const initial = instance.lastPollTimestamp;
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        // The wallet reports one record it cannot translate yet and returns the others.
+        mockDirectMessagesFetchSince.mockImplementationOnce(async (params) => {
+          params.onIncompleteTimestamp(initial + 10);
+          return [
+            {
+              senderAddress: { raw: mockPeer.address.toLowerCase() },
+              senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+              recipientPublicKey: getBytes("0x" + mockLocalSubject),
+              recipientAddress: { raw: mockLocalAddress },
+              messageId: "02020202-0202-0202-0202-020202020202",
+              conversationId: "01010101-0101-0101-0101-010101010101",
+              items: [{ type: "text", text: "Later" }],
+              payloadDigest: "44".repeat(32),
+              receivedTime: initial + 20,
+            },
+            sent("6", initial + 30),
+          ];
+        });
+        await (host as any).pollAllBots();
+        await instance.peerQueue.enqueue(
+          mockPeer.address.toLowerCase(),
+          async () => {}
+        );
+        expect(handled).toEqual(["44".repeat(32)]);
+        // Neither the read nor the finished message moves the cursor past the record.
+        expect(instance.lastPollTimestamp).toBe(initial + 10);
+        expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
+          String(initial + 10)
+        );
+        expect(warn.mock.calls.flat().join(" ")).toContain(
+          `record at ${initial + 10} cannot be read yet`
+        );
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([]);
+        await (host as any).pollAllBots();
+        expect(mockDirectMessagesFetchSince.mock.calls.at(-1)[0].sinceMs).toBe(
+          initial + 10
+        );
+      } finally {
+        warn.mockRestore();
+        mockDirectMessagesFetchSince.mockResolvedValue([]);
+        await host.stop();
+      }
+    });
+
+    it("are read once: a poll joins, or uses the result of, a read that outlived an earlier poll's bound", async () => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/own-sends-join`,
+        callTimeoutMs: 50,
+      });
+      await host.register({
+        id: "own-sends-join",
+        getProfile: () => ({ name: "OwnSendsJoin", bot: true }),
+        onMessage: async () => [],
+      });
+      const instance = (host as any).instances.get("own-sends-join");
+      const initial = instance.lastPollTimestamp;
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      let finishRead!: () => void;
+      try {
+        mockDirectMessagesFetchSince.mockReset().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              finishRead = () => resolve([sent("6", initial + 10)]);
+            })
+        );
+        await (host as any).pollAllBots();
+        await (host as any).pollAllBots();
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+        finishRead();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await (host as any).pollAllBots();
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+        expect(instance.lastPollTimestamp).toBe(initial + 10);
+        await (host as any).pollAllBots();
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(2);
+      } finally {
+        // stop() waits for a read still running; this one would never end on its own.
+        finishRead?.();
+        warn.mockRestore();
+        mockDirectMessagesFetchSince.mockReset().mockResolvedValue([]);
         await host.stop();
       }
     });

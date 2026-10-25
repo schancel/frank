@@ -667,7 +667,7 @@ describe("durable retention before dispatch", () => {
     await open();
     await poll(other.address);
     expect(await bot().state.get("cursor:lastPollTimestamp")).toBe(
-      String(b.receivedTime + 1)
+      String(b.receivedTime)
     );
     const spy = cutStart(a2.payloadDigest);
     releaseA1();
@@ -708,7 +708,7 @@ describe("durable retention before dispatch", () => {
     for (let pass = 0; pass < 2; pass++) await pollBoth();
     expect(prompts()).toEqual(["B"]);
     expect(await bot().state.get("cursor:lastPollTimestamp")).toBe(
-      String(b.receivedTime + 1)
+      String(b.receivedTime)
     );
     expect(scans()).toHaveLength(12);
     // Before B completes there is no cursor yet; afterwards A1 alone holds the floor down.

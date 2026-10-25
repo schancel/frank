@@ -15,7 +15,12 @@ import { formatEther, parseEther } from 'ethers'
 import { checkStampOnChain } from '../two-wallets'
 import type { RealWallet } from '../real-stack'
 import { MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
-import { deployMonadContracts, monadOf, openMonadWallet } from './monad-wallets'
+import {
+  deployMonadContracts,
+  monadOf,
+  openMonadWallet,
+  returnToFaucet,
+} from './monad-wallets'
 import { RegtestStack, startRegtestStack } from './regtest-stack'
 
 // The wallet refuses a stamp smaller than the fee of moving it (21,000 gas at the node's price),
@@ -83,6 +88,16 @@ async function main() {
     await exchange(stack, alice, bob, 'free ping', 0n)
     await exchange(stack, bob, alice, 'free pong', 0n)
   } finally {
+    // The wallets' keys go with the stack's directory: what they hold goes back first.
+    try {
+      const { returnedWei, leftWei } = await returnToFaucet(stack)
+      const [returned, left] = [formatEther(returnedWei), formatEther(leftWei)]
+      console.log(
+        `returned ${returned} MON to the faucet; ${left} MON left (dust, or a failed transfer)`,
+      )
+    } catch (error) {
+      console.error("could not return the wallets' funds to the faucet:", error)
+    }
     await stack.stop()
   }
   console.log(`Monad regtest: OK (${Math.round((Date.now() - startedAt) / 1000)} s; the chain keeps running, stop it with regtest:monad-stop)`)

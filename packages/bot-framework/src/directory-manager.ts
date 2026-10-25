@@ -13,6 +13,7 @@ import {
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 
 import { fetchMonadProfile } from "@frank/wallet/evm-identity";
+import { usernamesOfAddresses } from "@frank/cashweb/relay/username-client";
 import { toChainAddress, type DirectoryPeerInfo } from "./types";
 import type { DirectoryFetch } from "@frank/cashweb/relay/directory-client";
 
@@ -168,6 +169,19 @@ export class DirectoryManager {
       // Profile lookup failure does not invalidate directory entry
     }
 
+    // The @username comes from the relay's name store only: a profile cannot claim one.
+    let username: string | undefined;
+    try {
+      username = (
+        await usernamesOfAddresses({
+          relayBaseUrl: this.relayBaseUrl,
+          addresses: [address],
+        })
+      ).find((entry) => entry.address === address)?.username;
+    } catch {
+      // A name lookup failure does not invalidate the directory entry either.
+    }
+
     return {
       address,
       subject,
@@ -175,6 +189,7 @@ export class DirectoryManager {
       displayName,
       bio,
       isBot,
+      ...(username ? { username } : {}),
     };
   }
 

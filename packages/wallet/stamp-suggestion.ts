@@ -104,6 +104,9 @@ export interface StampHistoryPaymentEntry {
 
 export interface StampHistoryMessage {
   outbound: boolean;
+  /** The message's items. When given, only a message of conversation content counts toward the
+   * suggestion (see {@link isConversationStampMessage}). */
+  items?: ReadonlyArray<{ type: string }>;
   stampValueWei?: bigint;
   verifiedStampValueWei?: bigint | string | number;
   stampPaymentStatus?:
@@ -186,8 +189,30 @@ export function getVerifiedReceivedMessageStampWei(
   return getMessageStampWei(msg);
 }
 
+/** Items that are the conversation itself: what a person writes. A message made only of these
+ * carries a stamp in the ordinary sense, the price of being read. */
+const CONVERSATION_ITEM_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "reply",
+  "image",
+]);
+
 /**
- * Derives stamp metrics (last sent, last received, net balance) for a conversation.
+ * Whether the value a message carried is a stamp. A message that carries anything besides
+ * conversation content (a bet, a game move, a purchase, a raffle entry, a payment) carries a
+ * value set by that content's own rules: a bet, a price, a payout or a refund is a payment, not
+ * a stamp, and never moves the stamp suggestion. A message whose items are not known is counted.
+ */
+export function isConversationStampMessage(msg: StampHistoryMessage): boolean {
+  return (
+    msg.items === undefined ||
+    msg.items.every((item) => CONVERSATION_ITEM_TYPES.has(item?.type))
+  );
+}
+
+/**
+ * Derives stamp metrics (last sent, last received, net balance) for a conversation. Only
+ * conversation messages count ({@link isConversationStampMessage}).
  */
 export function derivePeerStampMetrics(
   messages: ReadonlyArray<StampHistoryMessage>
@@ -200,7 +225,7 @@ export function derivePeerStampMetrics(
   let receivedCount = 0;
 
   for (const msg of messages) {
-    if (msg.status === "error") {
+    if (msg.status === "error" || !isConversationStampMessage(msg)) {
       continue;
     }
     const stamp = msg.outbound

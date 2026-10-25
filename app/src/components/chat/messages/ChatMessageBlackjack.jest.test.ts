@@ -427,11 +427,11 @@ describe('the player', () => {
     expect(followUp(wrapper)).toHaveLength(1)
   })
 
-  it('sends hit and stand with the ordinary stamp', async () => {
+  it('sends hit and stand with no money: a move is not mail and never pays the chat stamp', async () => {
     const wrapper = await mountLast(hand(false, WIN, 400n, []))
     await button(wrapper, 'stand').trigger('click')
     expect(followUp(wrapper)[0].items[0].action).toBe('stand')
-    expect(followUp(wrapper)[0].stampValueWei).toBeUndefined()
+    expect(followUp(wrapper)[0].stampValueWei).toBe(0n)
   })
 
   it('cannot double without the money for a second wager', async () => {
@@ -630,7 +630,7 @@ describe('the dealer', () => {
     await input.setValue('300')
     await button(wrapper, 'accept').trigger('click')
     const [sent] = followUp(wrapper)
-    expect(sent.stampValueWei).toBeUndefined()
+    expect(sent.stampValueWei).toBe(0n)
     expect(sent.items[0]).toMatchObject({ action: 'accept', maxBetWei: '300' })
     expect(commitmentOf(loadSeed(ME, PEER, GAME)!)).toBe(
       sent.items[0].commitment,

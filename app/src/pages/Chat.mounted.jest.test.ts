@@ -313,8 +313,8 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
         maxBetWei: (10n ** 17n).toString(),
       },
     ])
-    // A challenge carries the chat's ordinary stamp, nothing more.
-    expect(sent.stampValue).toBe(activeChain.fromDisplayAmount(vm.stampAmount))
+    // A challenge carries no money and no chat stamp.
+    expect(sent.stampValue).toBe(0n)
     expect(wrapper.findComponent(FormStub).exists()).toBe(false)
   })
 

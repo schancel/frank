@@ -919,7 +919,10 @@ export default defineComponent({
           })
         : this.$t(`blackjackP2p.${move}`)
     },
-    send(item: unknown, stampValueWei?: bigint) {
+    /** Sends one message of the hand. `stampValueWei` is all the money it carries: the bet, a
+     * double or split's second bet, a payout or a refund; every other message pays nothing.
+     * Never the conversation's stamp: a hand's messages are moves, not mail. */
+    send(item: unknown, stampValueWei: bigint) {
       if (this.busy) return
       this.sending = true
       this.$emit('sendFollowUp', {
@@ -944,7 +947,7 @@ export default defineComponent({
       if ('error' in built) return
       // The seed is kept before its commitment leaves this device.
       saveSeed(this.own, this.address, state.gameId, seed)
-      this.send(built.item)
+      this.send(built.item, 0n)
     },
     onBet() {
       if (!this.state || this.amountError || this.amountWei === null) return
@@ -962,7 +965,7 @@ export default defineComponent({
       if (!item) return
       this.send(
         item,
-        move === 'double' || move === 'split' ? this.state.wagerWei : undefined,
+        move === 'double' || move === 'split' ? this.state.wagerWei : 0n,
       )
     },
     onPay() {

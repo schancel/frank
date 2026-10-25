@@ -19,6 +19,7 @@ export {
   computePeerStampSuggestion,
   getMessageStampWei,
   getVerifiedReceivedMessageStampWei,
+  isConversationStampMessage,
   type StampSuggestionParams,
   type PeerStampMetrics,
   type PeerStampSuggestionResult,

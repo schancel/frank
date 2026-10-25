@@ -402,6 +402,8 @@ describe('ChatMessageRaffle leave button', () => {
       [
         {
           items: [{ type: 'raffle', raffleId: 'r1', action: 'leave' }],
+          // Leaving pays nothing.
+          stampValueWei: 0n,
         },
       ],
     ])

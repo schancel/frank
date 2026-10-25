@@ -9,6 +9,9 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MODERATOR } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 
+/** How long a looked-up member name is reused. */
+const NAME_TTL_MS = 10 * 60 * 1000;
+
 export class ChatRoomBot implements FrankBotDefinition {
   readonly id = "lobby";
   readonly label = "Lobby";
@@ -40,12 +43,37 @@ export class ChatRoomBot implements FrankBotDefinition {
     }
   }
 
-  private async getDisplayName(address: string, ctx: BotContext): Promise<string> {
-    const nick = await ctx.state.get(`nick:${address.toLowerCase()}`);
-    if (nick && nick.trim()) {
-      return nick.trim();
+  /** What the relay said a member is called, kept for a while so a busy room does not look
+   * every sender up for every message. */
+  private readonly names = new Map<string, { name: string | undefined; atMs: number }>();
+
+  /** How a member is named in a room: the nickname they set here, else their @username, else
+   * their profile name; `undefined` when they have none of these. */
+  private async memberName(address: string, ctx: BotContext): Promise<string | undefined> {
+    const key = address.toLowerCase();
+    const nick = (await ctx.state.get(`nick:${key}`))?.trim();
+    if (nick) return nick;
+    const known = this.names.get(key);
+    if (known && Date.now() - known.atMs < NAME_TTL_MS) return known.name;
+    let name: string | undefined;
+    try {
+      const peer = await ctx.lookupPeer(key);
+      name = peer?.username
+        ? `@${peer.username}`
+        : peer?.displayName?.trim() || undefined;
+    } catch {
+      // A missing profile must not hide a room member.
     }
-    return `${address.slice(0, 6)}...${address.slice(-4)}`;
+    this.names.set(key, { name, atMs: Date.now() });
+    return name;
+  }
+
+  /** A member as shown on a room message: named, else the short address. */
+  private async getDisplayName(address: string, ctx: BotContext): Promise<string> {
+    return (
+      (await this.memberName(address, ctx)) ??
+      `${address.slice(0, 6)}...${address.slice(-4)}`
+    );
   }
 
   private async getKnownRooms(ctx: BotContext): Promise<string[]> {
@@ -167,15 +195,8 @@ export class ChatRoomBot implements FrankBotDefinition {
       const subs = await ctx.subscriptions.listSubscribers(`room:${currentRoom}`);
       const memberNames: string[] = [];
       for (const sub of subs) {
-        let name = (await ctx.state.get(`nick:${sub.toLowerCase()}`))?.trim();
-        if (!name) {
-          try {
-            name = (await ctx.lookupPeer(sub))?.displayName?.trim();
-          } catch {
-            // A missing profile must not hide a room member.
-          }
-        }
-        const display = name || sub;
+        // A member with no name is listed by its whole address.
+        const display = (await this.memberName(sub, ctx)) ?? sub;
         memberNames.push(sub === sender ? `• **${display}** (you)` : `• ${display}`);
       }
 

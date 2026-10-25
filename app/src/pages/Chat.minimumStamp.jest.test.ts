@@ -271,6 +271,12 @@ describe('Chat.vue converged geometric stamp suggestion and per-message override
     Object.defineProperty(self, 'isDefaultStampMode', {
       get: () => page.computed.isDefaultStampMode.call(self),
     })
+    Object.defineProperty(self, 'peerStampSuggestion', {
+      get: () => page.computed.peerStampSuggestion.call(self),
+    })
+    Object.defineProperty(self, 'suggestedStampWei', {
+      get: () => page.computed.suggestedStampWei.call(self),
+    })
     Object.defineProperty(self, 'stampAmount', {
       get: () => page.computed.stampAmount.get.call(self),
     })
@@ -292,5 +298,51 @@ describe('Chat.vue converged geometric stamp suggestion and per-message override
     })
     expect(self.isDefaultStampMode).toBe(true)
     expect(self.stampAmount).toBe('2000')
+  })
+
+  it('offers a bot the default stamp: its payouts and refunds never raise the suggestion', () => {
+    const self = fakeThis({
+      defaultStampWei: 1_000n,
+      minimumStampWei: 500n,
+      isEmailThread: false,
+      contact: { profile: { isBot: true } },
+      peerMessages: [
+        { outbound: true, items: [{ type: 'text' }], stampValueWei: 1_000n },
+        {
+          outbound: false,
+          items: [{ type: 'text' }],
+          stampValueWei: 50_000n,
+          stampPaymentStatus: 'received',
+        },
+      ],
+    })
+    const suggestion = page.computed.peerStampSuggestion.call(self)
+    expect(suggestion?.suggestedStampWei).toBe(1_000n)
+    expect(suggestion?.isSuggestedIncrease).toBe(false)
+  })
+
+  it('does not raise the suggestion from bets: a game message is not a stamp', () => {
+    const self = fakeThis({
+      defaultStampWei: 1_000n,
+      minimumStampWei: 500n,
+      isEmailThread: false,
+      contact: { profile: { isBot: false } },
+      peerMessages: [
+        {
+          outbound: true,
+          items: [{ type: 'blackjack-hand' }],
+          stampValueWei: 50_000n,
+        },
+        {
+          outbound: false,
+          items: [{ type: 'rps' }],
+          stampValueWei: 100_000n,
+          stampPaymentStatus: 'received',
+        },
+      ],
+    })
+    expect(
+      page.computed.peerStampSuggestion.call(self)?.suggestedStampWei,
+    ).toBe(1_000n)
   })
 })

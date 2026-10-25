@@ -476,6 +476,63 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(statusReads).toBeLessThanOrEqual(historySize)
     })
 
+    it('a read-back of our sent message that names no payments keeps the payments we signed', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      const payments = [
+        {
+          txHash: '0xbet',
+          destinationAddress: RECIPIENT_ADDRESS,
+          valueWei: 5000n,
+        },
+      ]
+      jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
+        payloadDigest: 'bet-digest',
+        stampValueWei: 5000n,
+        stampPayments: payments,
+        preparationTxHashes: [],
+      })
+      await chats.sendMessage({
+        wallet,
+        address: RECIPIENT_ADDRESS,
+        items: [{ type: 'text', text: 'bet' }],
+        stampValue: 5000n,
+      })
+      const readBackTime = Date.now() + 1000
+      // Our note to self, read back: it carries the stamp value but no payments.
+      await chats.receiveMessages([
+        {
+          outbound: true,
+          senderAddress: SENDER_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          copartyPubKey: {} as any,
+          index: 'bet-digest',
+          stampValue: 5000,
+          message: {
+            outbound: true,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'bet' }],
+            serverTime: readBackTime,
+            receivedTime: readBackTime,
+            outpoints: [],
+            stampValueWei: 5000n,
+            stampPayments: [],
+            senderAddress: SENDER_ADDRESS,
+            destinationAddress: RECIPIENT_ADDRESS,
+          },
+        },
+      ])
+      const sent = chats.chats[RECIPIENT_ADDRESS]?.messages
+      expect(sent).toHaveLength(1)
+      expect(sent?.[0]).toEqual(
+        expect.objectContaining({
+          payloadDigest: 'bet-digest',
+          stampPayments: payments,
+        }),
+      )
+    })
+
     it('keeps one outbound stamped message when a self-send loops back from the relay (#420)', async () => {
       const chats = useChatStore()
       const contacts = useContactStore()

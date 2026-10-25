@@ -235,6 +235,10 @@ export interface DirectMessageReceived {
   paymentTransfers?: PaymentMember[];
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number;
+  /** A sent message read back from this account's note to self: when the message itself was
+   * sent, as the note records it. `receivedTime` is when the note arrived, which follows the
+   * message's payment settling, after the peer may already have answered. */
+  sentTime?: number;
 }
 
 export interface StampPaymentInfo {

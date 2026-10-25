@@ -41,6 +41,7 @@
               availableBalanceAtomic === undefined ? 'text-italic' : 'text-bold'
             "
             data-testid="wallet-balance-value"
+            :title="exactBalanceDisplay"
             aria-live="polite"
             >{{ currentWalletBalanceDisplay }}</span
           >
@@ -80,7 +81,7 @@
         />
       </q-card-section>
       <q-card-section
-        v-if="quote.status === 'error'"
+        v-if="quote.status === 'error' && !quoteErrorStale"
         role="alert"
         class="text-negative text-caption q-pt-none"
         data-testid="stealth-quote-error"
@@ -113,6 +114,7 @@
 import { defineComponent, type PropType } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { useBalance } from '../../composables/useBalance'
+import { shortenDisplayAmount } from '../../utils/chain-amount'
 import {
   formatStealthAmount,
   parseStealthAmount,
@@ -176,6 +178,8 @@ export default defineComponent({
       memo: '',
       available: undefined as AvailableState | undefined,
       availableSequence: 0,
+      /** The last failure was for another asset or amount than the one now chosen. */
+      quoteErrorStale: false,
     }
   },
   computed: {
@@ -244,13 +248,25 @@ export default defineComponent({
         ? available.atomic
         : undefined
     },
+    /** The exact available amount, for the shortened row's title. */
+    exactBalanceDisplay(): string | undefined {
+      const option = this.selectedOption
+      const balance = this.availableBalanceAtomic
+      return option && balance !== undefined
+        ? `${formatStealthAmount(balance, option.decimals)} ${option.unit}`
+        : undefined
+    },
     /** Never an endless "…": loading, a real figure, or why there is none. */
     currentWalletBalanceDisplay(): string {
       const option = this.selectedOption
       if (!option) return '…'
       const balance = this.availableBalanceAtomic
       if (balance !== undefined)
-        return `${formatStealthAmount(balance, option.decimals)} ${option.unit}`
+        // Read like every other balance (digits cut, never rounded up); the exact amount is in
+        // the row's title.
+        return `${shortenDisplayAmount(
+          formatStealthAmount(balance, option.decimals),
+        )} ${option.unit}`
       if (this.usesActiveBalance)
         return this.balanceFailed
           ? this.$t('sendStealthDialog.balanceUnavailable')
@@ -279,7 +295,14 @@ export default defineComponent({
   watch: {
     selectedKey() {
       this.amount = ''
+      this.quoteErrorStale = true
       void this.refreshAvailable()
+    },
+    amount() {
+      this.quoteErrorStale = true
+    },
+    quote() {
+      this.quoteErrorStale = false
     },
     options() {
       if (!this.options.some(option => option.key === this.selectedKey))
@@ -394,7 +417,11 @@ export default defineComponent({
 
 .send-stealth-actions {
   position: sticky;
-  bottom: 0;
+  // Sticky stops at the sheet's padding (Chat.vue `.chat-inline-sheet`, q-pa-sm = 8px); the
+  // memo field scrolled below showed through that strip under Send/Cancel. The row reaches the
+  // sheet's edge instead and keeps the same space inside itself.
+  bottom: -8px;
+  padding-bottom: 16px;
   z-index: 1;
   background: #fff;
 }

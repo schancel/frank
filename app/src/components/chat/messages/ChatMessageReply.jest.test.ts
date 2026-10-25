@@ -68,12 +68,16 @@ describe('ChatMessageReply', () => {
     const wrapper = mountReply('digest-outbound')
     expect(wrapper.text()).toContain('You')
     expect(wrapper.classes()).toContain('message-color-sent')
+    expect(wrapper.classes()).toContain('text-message-sent-text')
   })
 
   it('renders contact name for inbound messages', () => {
     const wrapper = mountReply('digest-inbound')
     expect(wrapper.text()).toContain('Alice')
     expect(wrapper.classes()).toContain('message-color')
+    // Quoted inside our own white-text bubble, the peer's message keeps the peer's text color.
+    expect(wrapper.classes()).toContain('text-message-received-text')
+    expect(wrapper.classes()).not.toContain('text-message-sent-text')
   })
 
   it('renders "Not Found" for unknown contacts without throwing', () => {

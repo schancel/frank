@@ -50,6 +50,8 @@ export interface DirectoryPeerInfo {
   subject: string;
   pubKey: Uint8Array;
   displayName?: string;
+  /** The name the relay's username store says this address holds, without the "@". */
+  username?: string;
   bio?: string;
   isBot?: boolean;
 }

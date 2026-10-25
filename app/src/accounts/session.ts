@@ -134,7 +134,6 @@ function startupFailureCategory(error: unknown): AccountStartupFailureCategory {
         'storage-failed',
         'closed',
         'capacity',
-        'profile-unreachable',
         'outdated-attempt',
       ] as const
     ).find(code => code === error.code)
@@ -318,11 +317,7 @@ export function createAccountSession(deps: {
         ? error.code
         : 'unavailable'
     state.error = code
-    state.status = [
-      'unavailable',
-      'profile-unreachable',
-      'wallet-chain-mismatch',
-    ].includes(code)
+    state.status = ['unavailable', 'wallet-chain-mismatch'].includes(code)
       ? 'unavailable'
       : 'locked'
   }
@@ -1845,6 +1840,39 @@ export async function resetMessageAndChatStorage(
 }
 
 let accountChannel: BroadcastChannel | undefined
+/**
+ * The application restoration of an account opened in this app: a recovered account (no name
+ * typed at setup) takes the profile it published. The profile is presentation, not required
+ * restoration, so this never fails the opening; a lookup the relay does not answer keeps being
+ * retried in the background (see `restoreOwnProfileAtStartup`).
+ */
+export async function restoreRecoveredProfile({
+  wallet,
+  account,
+  isCancelled,
+}: {
+  wallet: RuntimeWallet
+  account: PublicAccount
+  isCancelled: () => boolean
+}): Promise<void> {
+  if (account.displayName || !wallet.identity) return
+  const { restoreOwnProfileAtStartup } = await import('../utils/own-profile')
+  const isExtensionSurface =
+    typeof window !== 'undefined' &&
+    ((typeof window.location?.search === 'string' &&
+      window.location.search.includes('extMode=')) ||
+      /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
+        window.location?.protocol || '',
+      ))
+  await restoreOwnProfileAtStartup({
+    identity: wallet.identity as MonadIdentity,
+    accountId: account.receipt.context.accountId,
+    relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+    isCancelled,
+    background: isExtensionSurface,
+  })
+}
+
 export const accountSession = createAccountSession({
   listen(invalidate, foreground) {
     const channel =
@@ -1877,56 +1905,7 @@ export const accountSession = createAccountSession({
     return openAccountCustody({ namespace: 'local-account-v1' })
   },
   createWallet: roots => activeChain.createWallet(roots),
-  async restoreApplicationState({ wallet, account, isCancelled }) {
-    if (account.displayName || !wallet.identity) return
-    const accountId = account.receipt.context.accountId
-    const ownerAddress = wallet.identity.address.raw.toLowerCase()
-    let store: import('../stores/my-profile').State | undefined
-    try {
-      const { useProfileStore } = await import('../stores/my-profile')
-      const profileStore = useProfileStore()
-      await profileStore.restored
-      store = profileStore
-    } catch {
-      store = undefined
-    }
-    if (
-      store &&
-      store.restoredAccountId === accountId &&
-      store.owner?.toLowerCase() === ownerAddress
-    ) {
-      return
-    }
-    const { claimProfileStore, restoreOwnProfileWithRelay } = await import(
-      '../utils/own-profile'
-    )
-    const isExtensionSurface =
-      typeof window !== 'undefined' &&
-      ((typeof window.location?.search === 'string' &&
-        window.location.search.includes('extMode=')) ||
-        /^(chrome-extension|moz-extension|safari-web-extension):$/i.test(
-          window.location?.protocol || '',
-        ))
-    if (isExtensionSurface && store) {
-      claimProfileStore(store, wallet.identity.address.raw)
-      store.restoredAccountId = accountId
-      void restoreOwnProfileWithRelay({
-        identity: wallet.identity as MonadIdentity,
-        relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
-        isCancelled,
-      }).catch(() => undefined)
-      return
-    }
-    const outcome = await restoreOwnProfileWithRelay({
-      identity: wallet.identity as MonadIdentity,
-      relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
-      isCancelled,
-    })
-    if (outcome === 'unreachable') throw new CustodyError('profile-unreachable')
-    if (store && store.owner?.toLowerCase() === ownerAddress) {
-      store.restoredAccountId = accountId
-    }
-  },
+  restoreApplicationState: restoreRecoveredProfile,
 })
 export const accountStatus = accountSession.state
 

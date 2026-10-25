@@ -419,7 +419,7 @@ test('positive evidence cannot activate a different staged attempt', async () =>
 })
 
 test.each(['adopted', 'missing', 'unreachable'] as const)(
-  'automatic login keeps required profile restoration observable: %s',
+  'automatic login opens the account whatever the profile lookup answers: %s',
   async profileOutcome => {
     const staged = {
       ...pending,
@@ -452,16 +452,12 @@ test.each(['adopted', 'missing', 'unreachable'] as const)(
         'attempt',
         pending.expectedActive,
       )
-      if (profileOutcome === 'adopted')
-        expect(mockPush).toHaveBeenCalledWith('/wallet')
-      else if (profileOutcome === 'missing')
+      // A relay that did not answer does not hold the account back: it opens, and the
+      // profile is adopted in the background once the relay answers.
+      if (profileOutcome === 'missing')
         expect(mockPush).toHaveBeenCalledWith('/profile')
-      else {
-        expect(mockPush).not.toHaveBeenCalled()
-        expect(view.get('[data-test="account-error"]').text()).toBe(
-          t('en')('accountRecovery.profile_restore_unreachable'),
-        )
-      }
+      else expect(mockPush).toHaveBeenCalledWith('/wallet')
+      expect(view.find('[data-test="account-error"]').exists()).toBe(false)
     } finally {
       view.unmount()
     }

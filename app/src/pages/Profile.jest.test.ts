@@ -177,6 +177,55 @@ describe('Profile.vue', () => {
     )
   })
 
+  it('does not save over a published profile the relay has not answered for yet', async () => {
+    const { ownProfileCheck } = await import('src/utils/own-profile')
+    const owner = '0x1234567890123456789012345678901234567890'
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: { address: { raw: owner } },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    })
+    ownProfileCheck.unchecked = owner
+    try {
+      const wrapper = mount(ProfilePage, {
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+            $router: { push: jest.fn() },
+            $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+          },
+          stubs: {
+            ...defaultStubs,
+            'q-banner': { template: '<div v-bind="$attrs"><slot /></div>' },
+            'q-icon': true,
+          },
+        },
+      })
+      expect(
+        wrapper.get('[data-test="own-profile-unchecked"]').text(),
+      ).toContain('accountRecovery.profile_relay_unchecked_save_waits')
+      ;(wrapper.vm as any).name = 'Bob'
+      await (wrapper.vm as any).updateRelayData()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+
+      // The relay answered: the notice goes and saving works again.
+      ownProfileCheck.unchecked = null
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-test="own-profile-unchecked"]').exists()).toBe(
+        false,
+      )
+      ;(wrapper.vm as any).name = 'Bob'
+      await (wrapper.vm as any).updateRelayData()
+      expect(registerMonadIdentityCbor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ name: 'Bob' }),
+        }),
+      )
+    } finally {
+      ownProfileCheck.unchecked = null
+    }
+  })
+
   it('rejects a profile form kept open across an account revision change', async () => {
     const wrapper = mount(ProfilePage, {
       global: {

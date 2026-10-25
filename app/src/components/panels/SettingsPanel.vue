@@ -15,6 +15,7 @@
       :acceptance-price="inbox.acceptancePrice"
       @open-profile="openProfile"
     />
+    <own-profile-unchecked-notice />
 
     <div class="flex-break" />
     <!-- Drawer -->
@@ -102,6 +103,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 
 import ContactCard from './ContactCard.vue'
+import OwnProfileUncheckedNotice from '../OwnProfileUncheckedNotice.vue'
 import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
@@ -111,6 +113,7 @@ import { isNarrowWidth } from '../../utils/layout'
 export default defineComponent({
   components: {
     ContactCard,
+    OwnProfileUncheckedNotice,
   },
   props: {
     drawerOpen: {

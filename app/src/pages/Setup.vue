@@ -83,16 +83,6 @@
             data-test="retry-existing-account"
             @click="retry"
           />
-          <q-btn
-            v-if="profileRecoveryFailed && account.status === 'ready'"
-            outline
-            color="primary"
-            no-caps
-            :label="$t('accountRecovery.profile_restore_retry')"
-            :disable="busy"
-            data-test="retry-profile-recovery"
-            @click="retryProfileRecovery"
-          />
           <div
             v-if="shareReport.length && mode !== 'restore-choose'"
             role="status"
@@ -186,8 +176,6 @@
                 $t(
                   account.error === 'wallet-chain-mismatch'
                     ? 'accountRecovery.wallet_chain_mismatch'
-                    : account.error === 'profile-unreachable'
-                    ? 'accountRecovery.profile_restore_unreachable'
                     : account.failureStage === 'wallet-open'
                     ? 'accountRecovery.wallet_state_open_failed'
                     : account.failureStage === 'application-restore'
@@ -225,7 +213,6 @@
               />
               <q-btn
                 v-if="
-                  account.error !== 'profile-unreachable' &&
                   account.error !== 'wallet-chain-mismatch' &&
                   account.failureStage !== 'wallet-open' &&
                   account.failureStage !== 'application-restore'
@@ -1011,8 +998,13 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
+import { useProfileStore } from '../stores/my-profile'
 import { nameOwnProfile } from '../utils/identity-session'
-import { restoreOwnProfileWithRelay } from '../utils/own-profile'
+import {
+  keepRestoringOwnProfile,
+  ownProfileCheck,
+  restoreOwnProfileWithRelay,
+} from '../utils/own-profile'
 import {
   PendingProfilePreviewError,
   readPendingProfilePreview,
@@ -1181,7 +1173,6 @@ const heading = ref<HTMLElement>()
 const busy = ref(false)
 const activating = ref(false)
 const error = ref('')
-const profileRecoveryFailed = ref(false)
 const threshold = ref<2 | 3>(2)
 const shareCount = ref<3 | 5>(3)
 const shareIndex = ref(0)
@@ -1270,7 +1261,6 @@ function changeMode(value: Mode) {
 }
 function cancel() {
   request++
-  profileRecoveryFailed.value = false
   ceremony.cancel()
   clearSecrets()
   shareReport.value = []
@@ -1552,32 +1542,48 @@ async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
     account.revision === revision
   const wallet = await accountSession.getWallet()
   if (!current()) return
-  const outcome = await restoreOwnProfileWithRelay({
-    relayBaseUrl:
-      (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
-      (customRelayUrl.value.trim() || defaultRelayUrl),
-    identity: wallet.identity as MonadIdentity,
-    isCancelled: () => !current(),
-  })
+  const identity = wallet.identity as MonadIdentity
+  const relayBaseUrl =
+    (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+    (customRelayUrl.value.trim() || defaultRelayUrl)
+  // The account opened while the relay did not answer: the opening keeps asking it in the
+  // background and adopts the profile then. The account is usable now; it is not waited for.
+  const openingRetries =
+    ownProfileCheck.unchecked !== null &&
+    ownProfileCheck.unchecked === identity?.address?.raw?.toLowerCase()
+  const outcome = openingRetries
+    ? 'unreachable'
+    : await restoreOwnProfileWithRelay({
+        relayBaseUrl,
+        identity,
+        isCancelled: () => !current(),
+      })
   if (!current()) return
-  profileRecoveryFailed.value = outcome === 'unreachable'
-  if (profileRecoveryFailed.value) {
-    error.value = t('accountRecovery.profile_restore_unreachable')
-    return
+  if (
+    !openingRetries &&
+    outcome === 'unreachable' &&
+    ownProfileCheck.unchecked !== null &&
+    account.account
+  ) {
+    // This lookup failed where the opening's own may have succeeded: keep asking until the
+    // relay answers or the account changes.
+    const accountId = account.account.receipt.context.accountId
+    void keepRestoringOwnProfile({
+      relayBaseUrl,
+      identity,
+      isCancelled: () =>
+        account.revision !== revision ||
+        account.account?.receipt.context.accountId !== accountId,
+      onAnswered: () => {
+        const store = useProfileStore()
+        if (store.owner === identity.address.raw.toLowerCase())
+          store.restoredAccountId = accountId
+      },
+    }).catch(() => undefined)
   }
   emit('setupCompleted')
+  // Only a relay that answered "no profile" sends the owner to create one.
   await router.push(outcome === 'missing' ? '/profile' : '/wallet')
-}
-
-function retryProfileRecovery() {
-  return run(async () => {
-    activating.value = true
-    try {
-      await completeProfileRecovery()
-    } finally {
-      activating.value = false
-    }
-  })
 }
 function cancelPending() {
   return run(async () => {

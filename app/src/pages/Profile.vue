@@ -35,6 +35,7 @@
           flat
           class="profile-card col column full-width full-height bg-transparent"
         >
+          <own-profile-unchecked-notice save-waits />
           <profile
             v-model:name="name"
             v-model:username="username"
@@ -73,6 +74,7 @@
               unelevated
               no-caps
               data-test="profile-update"
+              :disable="profileUnchecked"
               @click="updateRelayData"
             />
           </q-card-actions>
@@ -163,12 +165,15 @@ type RelayData = {
 }
 
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
+import OwnProfileUncheckedNotice from 'src/components/OwnProfileUncheckedNotice.vue'
+import { ownProfileCheck } from 'src/utils/own-profile'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
     Profile,
     ExtensionPopoutBtn,
+    OwnProfileUncheckedNotice,
   },
   setup() {
     const myProfile = useProfileStore()
@@ -208,6 +213,14 @@ export default defineComponent({
     }
   },
   computed: {
+    /** The relay has not answered for this account's published profile yet. An edit saved now
+     * would replace a profile this device has not seen, so saving waits (see own-profile.ts). */
+    profileUnchecked(): boolean {
+      return (
+        ownProfileCheck.unchecked !== null &&
+        ownProfileCheck.unchecked === this.profileOwner?.toLowerCase()
+      )
+    },
     /** The name the relay confirms this account holds, or '' when it holds none. */
     heldUsername(): string {
       return ownUsername.held ?? ''
@@ -280,7 +293,29 @@ export default defineComponent({
       )
     },
   },
+  watch: {
+    profileUnchecked(unchecked: boolean) {
+      // The relay answered: show the profile it holds, which is now this device's copy.
+      if (!unchecked) this.loadStoredProfile()
+    },
+  },
   methods: {
+    loadStoredProfile() {
+      const profile = this.storedRelayData.profile
+      this.name = profile.name
+      this.username = profile.username
+      this.location = profile.location
+      this.bio = profile.bio
+      this.avatar = profile.avatar
+      this.links = profile.links
+        ? (JSON.parse(JSON.stringify(profile.links)) as ProfileLinkItem[])
+        : []
+      this.accountType =
+        profile.accountType === undefined
+          ? ACCOUNT_TYPE_PERSON
+          : profile.accountType
+      this.botRole = profile.botRole
+    },
     profileFormIsCurrent(): boolean {
       const current =
         !!this.profileOwner &&
@@ -293,7 +328,7 @@ export default defineComponent({
       return current
     },
     async updateRelayData() {
-      if (!this.profileFormIsCurrent()) return
+      if (this.profileUnchecked || !this.profileFormIsCurrent()) return
       if (!this.relayData) {
         errorNotify(new Error('invalid profile account type or bot role'))
         return

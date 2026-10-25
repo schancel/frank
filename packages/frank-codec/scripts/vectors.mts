@@ -4,8 +4,9 @@
  * docs/protocol/cbor/vectors/README.md.
  *
  * 1. Frozen corpora are re-encoded for the registry's type identifiers (vectors-renumber.mts).
- * 2. Builder corpora are rewritten from the codec fixture builders (vectors-builders.ts), and
- *    the message-stamp-derivation proposal from its generator (it also pins source hashes).
+ * 2. Builder corpora are rewritten from the codec fixture builders (vectors-builders.ts), the
+ *    sealed-sender DM corpus from the renumbered suite-1 corpus (dm-sealed-sender-corpus.mts),
+ *    and the message-stamp-derivation proposal from its generator (it also pins source hashes).
  * 3. The suite-1 directory and Forum proposals are rebuilt by their own proposal checkers.
  *    The suite-1 proposal pins hashes of the manifest and of docs/protocol/cbor/README.md and
  *    directory.cddl, so it follows the builders. The suite-1 Rust checker (`check.rs --write`)
@@ -79,6 +80,12 @@ const builders = () =>
   node('packages/frank-codec/scripts/vectors-builders.ts', ...flag)
 node('packages/frank-codec/scripts/vectors-renumber.mts', ...flag)
 if (!check) builders()
+// Derived from the renumbered named suite-1 corpus.
+printed('docs/protocol/cbor/vectors/dm-sealed-sender.json', 'node', [
+  '--import',
+  'tsx',
+  'packages/frank-codec/scripts/dm-sealed-sender-corpus.mts',
+])
 printed(
   'docs/protocol/proposals/message-stamp-derivation/vectors.json',
   'node',

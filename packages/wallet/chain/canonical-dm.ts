@@ -2925,6 +2925,43 @@ async function readMailbox(
         roles.dispose()
       }
       if (authenticatedOnly) {
+        // A note to self that copies a sent message (a sealed send leaves no outbox row) reads
+        // as that outbound message, as the relay's outbox row of a named send does.
+        const copied = isOwnSubject(owner, peerSubjectHex, peer.subject)
+          ? items.find(
+              (item): item is OutboxMessageItem => item.type === 'outbox-message',
+            )
+          : undefined
+        if (copied?.recipientPublicKey !== undefined) {
+          const projected = projectOutboxMessageRecord(
+            {
+              senderAddress: { raw: owner.identityAddress },
+              recipientAddress: { raw: owner.identityAddress },
+              items: [copied],
+              receivedTime: record.timestampMs,
+              payloadDigest: digest,
+              stampValueWei: 0n,
+              stampPayments: [],
+            },
+            registry,
+          )
+          authenticated.push({
+            chainIdentifier: directory.network,
+            senderPublicKey: fromHex(owner.subject),
+            recipientPublicKey: fromHex(copied.recipientPublicKey),
+            direction: 'outbound',
+            payloadDigest: copied.payloadDigest,
+            receivedTime: record.timestampMs,
+            items: projected.items,
+            ...(projected.conversationId === undefined
+              ? {}
+              : { conversationId: projected.conversationId }),
+            ...(projected.messageId === undefined
+              ? {}
+              : { messageId: projected.messageId }),
+          })
+          continue
+        }
         authenticated.push({
           chainIdentifier: directory.network,
           senderPublicKey: fromHex(isOutbound ? owner.subject : peer.subject),

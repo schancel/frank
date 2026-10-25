@@ -728,6 +728,7 @@ export function walletBotAccount(
         wallet: unknown
         recipient: { raw: string }
         items: HandItem[]
+        sealedSender?: boolean
         stampValue?: bigint
         onAttemptCreated?: (digest: string) => void | Promise<void>
       }): Promise<{ payloadDigest: string; stampValueWei: bigint }>
@@ -765,6 +766,8 @@ export function walletBotAccount(
         wallet,
         recipient,
         items: [item],
+        // Sealed: the relay learns the recipient, not who wrote to them.
+        sealedSender: true,
         stampValue: stampWei,
         onAttemptCreated,
       })

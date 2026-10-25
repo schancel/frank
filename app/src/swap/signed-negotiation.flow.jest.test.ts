@@ -294,8 +294,9 @@ beforeEach(async () => {
   f = await fixture()
   setActiveChain(f.chain)
   directories = [
-    await f.directoryFor('alice', f.alice, f.bob),
-    await f.directoryFor('bob', f.bob, f.alice),
+    // Sealed sends copy themselves to their sender: the relay answers for each own entry.
+    await f.directoryFor('alice', f.alice, f.bob, { answersForSelf: true }),
+    await f.directoryFor('bob', f.bob, f.alice, { answersForSelf: true }),
   ]
   installCanonicalDirectory(f.alice, directories[0])
   installCanonicalDirectory(f.bob, directories[1])
@@ -303,23 +304,33 @@ beforeEach(async () => {
   installMessageItemRegistry(f.bob, messageItems)
   mailbox.fetchCanonicalMailboxPage.mockImplementation(
     async (auth: { subject: string; sinceMs: number }) => ({
-      records: f.requests
-        .map((request: unknown, i: number) => {
+      // As a relay pages it: the subject's inbox, and its outbox of named sends. A sealed send
+      // names no sender, so the relay keeps no outbox row for it; its sender's copy to itself
+      // (in `selfNotes`) is an ordinary inbox record of that sender.
+      records: [...f.requests, ...f.selfNotes]
+        .flatMap((request: unknown, i: number) => {
           const r = restoreCanonicalRequest(request)
-          return {
-            direction:
-              toHex(
-                require('@frank/codec').decodeDirectMessageCryptoContext(
-                  r.parts.context,
-                ).sender.keyBytes,
-              ) === auth.subject
-                ? 'out'
-                : 'in',
-            delivery: r.parts.delivery,
-            context: r.parts.context,
-            submissionIdentity: r.identity.submission_identity,
-            timestampMs: 1000 + i,
-          }
+          const context = require('@frank/codec').decodeDirectMessageCryptoContext(
+            r.parts.context,
+          )
+          const direction =
+            toHex(context.recipient.keyBytes) === auth.subject
+              ? 'in'
+              : context.sender &&
+                toHex(context.sender.keyBytes) === auth.subject
+              ? 'out'
+              : undefined
+          return direction === undefined
+            ? []
+            : [
+                {
+                  direction,
+                  delivery: r.parts.delivery,
+                  context: r.parts.context,
+                  submissionIdentity: r.identity.submission_identity,
+                  timestampMs: 1000 + i,
+                },
+              ]
         })
         .filter((r: { timestampMs: number }) => r.timestampMs >= auth.sinceMs),
     }),

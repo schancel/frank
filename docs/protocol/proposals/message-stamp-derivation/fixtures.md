@@ -95,3 +95,7 @@ Its regeneration preserves every non-metadata corpus value exactly, including
 all derivation inputs, keys, addresses, paths and frames. This remains
 historical proposal evidence, with no new derivation or runtime activation
 claim.
+
+A later refresh for the same file adds `openSealedMessage`, the recipient role that
+opens a sealed-sender envelope so a peek can compare field 9 with the unmasked
+envelope key. Again only the SHA-256 metadata changes.

@@ -215,7 +215,13 @@ it.each([
     Object.assign(activeChain, f.chain)
     const inbox: InboxRecord[] = []
     f.setMailbox(inbox)
-    const directory = await f.directoryFor('alice', wallet, f.bob)
+    // A free sealed send completes only once its copy to self is delivered, so the relay
+    // answers for Alice's own entry there. A paid one owes its copy and retries it later; its
+    // consolidator notes to self would also settle the operations these cases inspect, so the
+    // paid cases keep the relay that answers only for Bob.
+    const directory = await f.directoryFor('alice', wallet, f.bob, {
+      answersForSelf: stampValue === 0n,
+    })
     installCanonicalDirectory(wallet, directory)
     const location = join(f.root, 'presentation')
     mkdirSync(location, { recursive: true })

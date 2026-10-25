@@ -11,7 +11,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { Wallet, computeAddress, getBytes, hexlify } from "ethers";
-import { toHex } from "@frank/codec";
+import { decodeDirectMessageCryptoContext, toHex } from "@frank/codec";
 import { deriveDomainRoot } from "@frank/domain-roots";
 import {
   restoreCanonicalRequest,
@@ -1405,16 +1405,29 @@ describe("with the real canonical wallet", () => {
     const relayState: { phase: "down" | "retained" | "delivered" } = {
       phase: "delivered",
     };
+    // Requests to the peer, and the sealed sends' notes to the bot itself, kept apart.
     const submitted: string[] = [];
     const submittedBodies: string[] = [];
+    const selfCopies: { payloadHash: string; transactions: number }[] = [];
     const fetch: CanonicalFetch = async (url, init) => {
       const request = {
         body: new Uint8Array(init.body!),
         contentType: init.headers["Content-Type"],
       };
-      const identity = restoreCanonicalRequest(request).identity;
-      submitted.push(identity.payload_hash);
-      submittedBodies.push(hexlify(request.body));
+      const restored = restoreCanonicalRequest(request);
+      const identity = restored.identity;
+      const recipient = toHex(
+        decodeDirectMessageCryptoContext(restored.parts.context).recipient.keyBytes
+      );
+      if (recipient === own.subject)
+        selfCopies.push({
+          payloadHash: identity.payload_hash,
+          transactions: restored.parts.transactions.length,
+        });
+      else {
+        submitted.push(identity.payload_hash);
+        submittedBodies.push(hexlify(request.body));
+      }
       const phase = relayState.phase;
       if (phase === "down") throw new Error("connect ECONNREFUSED");
       const answer = new TextEncoder().encode(
@@ -1451,19 +1464,20 @@ describe("with the real canonical wallet", () => {
       network: "monad-testnet",
       homeEndpoint: RELAY + "/",
       selfCurrent: own.current,
+      // The relay answers for both admitted subjects: the peer, and the bot itself (a sealed
+      // send's note to self is addressed to the bot's own entry).
       peerCurrent: async (wanted) => {
-        const subject =
+        const entry = [peerEntry, own].find((candidate) =>
           "subject" in wanted
-            ? wanted.subject
-            : computeAddress("0x" + peerEntry.subject).toLowerCase() ===
+            ? wanted.subject === candidate.subject
+            : computeAddress("0x" + candidate.subject).toLowerCase() ===
               wanted.address.toLowerCase()
-            ? peerEntry.subject
-            : undefined;
-        return subject === peerEntry.subject
+        );
+        return entry
           ? {
-              subject,
+              subject: entry.subject,
               endpoint: RELAY + "/",
-              current: await peerEntry.current(),
+              current: await entry.current(),
             }
           : undefined;
       },
@@ -1562,6 +1576,7 @@ describe("with the real canonical wallet", () => {
       relayState,
       submitted,
       submittedBodies,
+      selfCopies,
       rejections,
       prompt,
       pass,
@@ -1606,8 +1621,16 @@ describe("with the real canonical wallet", () => {
   }, 60_000);
 
   it("retains the original encrypted reply while unfunded and delivers that message after funding", async () => {
-    const { botWallet, submitted, submittedBodies, rejections, prompt, pass, intents } =
-      await setUp(false);
+    const {
+      botWallet,
+      submitted,
+      submittedBodies,
+      selfCopies,
+      rejections,
+      prompt,
+      pass,
+      intents,
+    } = await setUp(false);
     const writes: StoredMessage[] = [];
     const put = LevelOutgoingMessageStore.prototype.put;
     jest
@@ -1633,6 +1656,7 @@ describe("with the real canonical wallet", () => {
     ).toBe(true);
     expect(rejections.every((error) => !isDirectMessageNotAttempted(error))).toBe(true);
     expect(submitted).toEqual([]);
+    expect(selfCopies).toEqual([]);
     expect(await intents()).toEqual([original.digest]);
     expect(await done(prompt)).toBe(false);
     expect(reply).toHaveBeenCalledTimes(1);
@@ -1650,6 +1674,11 @@ describe("with the real canonical wallet", () => {
     expect(submitted.length).toBeGreaterThan(0);
     expect(new Set(submitted)).toEqual(new Set([original.digest]));
     expect(new Set(submittedBodies)).toEqual(new Set(["0x" + completed.request!.body]));
+    // The sealed reply left no outbox row: the bot's other devices learn of it from one
+    // unpaid note to self, sent after the reply was delivered.
+    expect(selfCopies.length).toBeGreaterThan(0);
+    expect(new Set(selfCopies.map((copy) => copy.payloadHash)).size).toBe(1);
+    expect(selfCopies.every((copy) => copy.transactions === 0)).toBe(true);
     const signed = botWallet.getNativeOperations!().flatMap((row) =>
       row.members.map((member) => member.signed!.rawTransaction)
     );
@@ -1714,7 +1743,7 @@ describe("with the real canonical wallet", () => {
   // chain or relay harness exists in the tree yet). The process dies after the wallet has
   // journalled and linked the payment and before the host has recorded it.
   it("after a crash once the wallet holds the payment: the restarted bot delivers that reply once, as the one payment set", async () => {
-    const { relayState, submitted, rejections, prompt, pass, intents, restart } =
+    const { relayState, submitted, selfCopies, rejections, prompt, pass, intents, restart } =
       await setUp(true);
     relayState.phase = "down";
     // The host's own record of the attempt is lost with the process.
@@ -1743,6 +1772,9 @@ describe("with the real canonical wallet", () => {
     // One payment set ever reached the relay, and the reopened journal holds one intent.
     expect(new Set(submitted)).toEqual(new Set([first]));
     expect(await intents()).toEqual([first]);
+    // Its note to self went out once the reply was delivered, unpaid.
+    expect(selfCopies.length).toBeGreaterThan(0);
+    expect(selfCopies.every((copy) => copy.transactions === 0)).toBe(true);
     // How it got there: the restarted host sent under the same identity once, and the wallet
     // answered with the payment it already held instead of making another.
     expect(

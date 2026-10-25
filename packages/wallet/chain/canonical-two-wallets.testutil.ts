@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { computeAddress, getBytes, hexlify } from 'ethers'
-import { toHex } from '@frank/codec'
+import { decodeDirectMessageCryptoContext, toHex } from '@frank/codec'
 import {
   restoreCanonicalRequest,
   type CanonicalFetch,
@@ -421,13 +421,21 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     }
   }
   const requests: { body: Uint8Array; contentType: string }[] = []
+  /** Requests addressed to a wallet's own entry, for owners that `directoryFor` answers for. */
+  const selfNotes: { body: Uint8Array; contentType: string }[] = []
   /** The mailbox the relay stores the next delivered message in. */
   let deliverTo: InboxRecord[] | undefined
   let clock = 1_000
   let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
   /** Opt-in barrier armed by `holdNextRelayRequest`: the next request waits here. */
   let gate: { entered: () => void; opened: Promise<void> } | undefined
-  const fetch: CanonicalFetch = async (url, init) => {
+  /** The relay stand-in. `selfSubject`: the sending wallet's own subject, when its directory
+   * answers for it (see `directoryFor`). */
+  const relayFetch = async (
+    url: Parameters<CanonicalFetch>[0],
+    init: Parameters<CanonicalFetch>[1],
+    selfSubject?: string,
+  ): ReturnType<CanonicalFetch> => {
     if (gate && (init.method === 'POST' || init.method === 'PUT')) {
       const held = gate
       gate = undefined
@@ -441,11 +449,18 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
       throw new Error(`unexpected relay request ${init.method} ${url}`)
     if (phase === 'fail') throw new Error('relay unreachable')
     const body = new Uint8Array(init.body!)
-    requests.push({ body, contentType: init.headers['Content-Type'] })
     const restored = restoreCanonicalRequest({
       body,
       contentType: init.headers['Content-Type'],
     })
+    // A note to a wallet that asked for its own entry to be answered (see `directoryFor`) is
+    // kept apart: it is in neither `requests` nor the mailbox under test.
+    const toSelf =
+      selfSubject !== undefined &&
+      toHex(decodeDirectMessageCryptoContext(restored.parts.context).recipient.keyBytes) ===
+        selfSubject
+    if (toSelf) selfNotes.push({ body, contentType: init.headers['Content-Type'] })
+    else requests.push({ body, contentType: init.headers['Content-Type'] })
     // A relay that stores a message broadcasts its payments, once each.
     if (phase === 'delivered' && offlineChain.relayBroadcasts)
       for (const raw of restored.parts.transactions) {
@@ -455,7 +470,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
           // The relay only logs a broadcast it could not make.
         }
       }
-    if (phase === 'delivered' && deliverTo)
+    if (phase === 'delivered' && deliverTo && !toSelf)
       deliverTo.push({
         delivery: restored.parts.delivery,
         context: restored.parts.context,
@@ -498,30 +513,43 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
       },
     }
   }
+  const fetch: CanonicalFetch = (url, init) => relayFetch(url, init)
+  /**
+   * `options.answersForSelf`: the directory also answers for the owner's own entry, as a real
+   * relay does, so notes to self (a sealed send's self copy, the consolidator's wallet-sync
+   * notes) are sent; they are recorded in `selfNotes`. Without it they fail before any request.
+   */
   const directoryFor = async (
     owner: string,
     self: EvmChainWalletHandle,
     peer: EvmChainWalletHandle,
+    options: { answersForSelf?: boolean } = {},
   ): Promise<CanonicalDirectory> => {
     const own = await admit(owner, self),
       other = await admit(owner, peer)
+    const answered = options.answersForSelf ? [other, own] : [other]
     return {
       network: 'monad-testnet',
       homeEndpoint: RELAY + '/',
       selfCurrent: own.current,
       peerCurrent: async wanted => {
-        const subject =
+        const entry = answered.find(candidate =>
           'subject' in wanted
-            ? wanted.subject
-            : computeAddress('0x' + other.subject).toLowerCase() ===
-              wanted.address.toLowerCase()
-            ? other.subject
-            : undefined
-        return subject === other.subject
-          ? { subject, endpoint: RELAY + '/', current: await other.current() }
+            ? wanted.subject === candidate.subject
+            : computeAddress('0x' + candidate.subject).toLowerCase() ===
+              wanted.address.toLowerCase(),
+        )
+        return entry
+          ? {
+              subject: entry.subject,
+              endpoint: RELAY + '/',
+              current: await entry.current(),
+            }
           : undefined
       },
-      fetch,
+      fetch: options.answersForSelf
+        ? (url, init) => relayFetch(url, init, own.subject)
+        : fetch,
     }
   }
   return {
@@ -533,6 +561,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     /** The temp directory holding the wallets' storage (`<root>/wallet-evm-<address>`). */
     root: directory,
     requests,
+    selfNotes,
     setPhase: (next: typeof phase) => (phase = next),
     /**
      * Makes the NEXT message relay request (a POST or PUT) stay unanswered until the test lets it

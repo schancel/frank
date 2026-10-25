@@ -26,7 +26,11 @@ import { getBytes, SigningKey, Wallet, Transaction, type Provider } from 'ethers
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
-import { toHex, verifyPreviewDirectoryEvidence } from '@frank/codec'
+import {
+  decodeDirectMessageCryptoContext,
+  toHex,
+  verifyPreviewDirectoryEvidence,
+} from '@frank/codec'
 import { openNodeDirectoryStore } from '@frank/directory-admission/node'
 import {
   CanonicalTransportError,
@@ -1579,6 +1583,33 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         },
         mode: { kind: 'new' },
       })
+      // A sealed send leaves no outbox row, so the wallet sends itself a copy once the message
+      // is delivered: the relay stand-in also answers for Alice's own entry, and the copies are
+      // counted apart from the requests to Bob.
+      const aliceSubject = toHex(alice.identity.compressedPubKey)
+      const toAlice = (request: { body: Uint8Array; contentType: string }) =>
+        toHex(
+          decodeDirectMessageCryptoContext(
+            restoreCanonicalRequest(request).parts.context,
+          ).recipient.keyBytes,
+        ) === aliceSubject
+      const peerOrSelf: CanonicalDirectory['peerCurrent'] = async wanted =>
+        ('subject' in wanted
+          ? wanted.subject === aliceSubject
+          : wanted.address.toLowerCase() ===
+            alice.identity.address.raw.toLowerCase())
+          ? {
+              subject: aliceSubject,
+              endpoint: directory.homeEndpoint,
+              current: await directory.selfCurrent(),
+            }
+          : bobOnly(wanted)
+      const bobOnly = directory.peerCurrent
+      directory = { ...directory, peerCurrent: peerOrSelf }
+      uninstall()
+      uninstall = installCanonicalDirectory(alice, directory)
+      const toBob = () => relayBodies.filter(request => !toAlice(request))
+      const selfCopies = () => relayBodies.filter(toAlice)
       try {
         await history.enroll([originalCurrent.evidence], context)
         f.setPhase('retained')
@@ -1598,6 +1629,8 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         expect(digest).toMatch(/^[0-9a-f]{64}$/)
         const beforeRequests = recovery === 'resend' ? 0 : 1
         expect(relayBodies).toHaveLength(beforeRequests)
+        // Nothing is delivered yet, so no copy is owed yet.
+        expect(selfCopies()).toEqual([])
         let exact: { body: Uint8Array; contentType: string }
         if (recovery === 'resend') {
           const address = (await alice.getReceiveAddress()).raw.toLowerCase()
@@ -1676,13 +1709,33 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
             subject: toHex(original.statement.subject.keyBytes),
             statementHash: toHex(original.statementHash),
           })
-        expect(relayBodies).toHaveLength(beforeRequests + 1)
-        expect(relayBodies[beforeRequests]).toEqual({
+        expect(toBob()).toHaveLength(beforeRequests + 1)
+        expect(toBob()[beforeRequests]).toEqual({
           body: exactBody,
           contentType: exactType,
         })
+        // Unpaid notes to Alice herself: the sealed message's copy, and for a paid one also the
+        // consolidator's per-transaction notes, which go out as its payments settle. An unpaid
+        // message has only its copy, sent after the original was delivered.
+        const copies = selfCopies()
+        for (const copy of copies)
+          expect(restoreCanonicalRequest(copy).parts.transactions).toEqual([])
+        if (stampValue === 0n) {
+          expect(copies).toHaveLength(1)
+          expect(relayBodies.indexOf(copies[0])).toBeGreaterThan(
+            relayBodies.indexOf(toBob()[beforeRequests]),
+          )
+        } else expect(copies.length).toBeGreaterThan(0)
         expect(sign).toHaveBeenCalledTimes(stampValue === 0n ? 0 : 1)
-        expect(paymentSets()).toBe(1)
+        // One payment set ever went to Bob.
+        expect(
+          new Set(
+            toBob().map(
+              request =>
+                restoreCanonicalRequest(request).identity.submission_identity,
+            ),
+          ).size,
+        ).toBe(1)
       } finally {
         await history.close()
       }

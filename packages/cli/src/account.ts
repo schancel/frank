@@ -247,6 +247,8 @@ export async function openCliAccount(params: {
               wallet: handle,
               recipient: { raw: to },
               items,
+              // Sealed: the relay learns the recipient, not who wrote to them.
+              sealedSender: true,
               stampValue: stampValueWei,
               onAttemptCreated,
             })

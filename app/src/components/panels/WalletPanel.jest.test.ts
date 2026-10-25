@@ -263,16 +263,41 @@ test('marks configured test networks and removes badges when the selected networ
   }
 })
 
-test('identifies a relay without the selected network instead of implying a balance read failed', () => {
+test('identifies a relay without the selected network instead of implying a balance read failed', async () => {
   mockPresentations.value.bnb = {
     status: 'unavailable',
     reason: 'relay-unavailable',
   }
+  mockPresentations.value.polygon = {
+    status: 'unavailable',
+    reason: 'relay-unavailable',
+  }
   const view = render()
+  // Folded into one line, not one "not available" row per network.
+  expect(view.find('[data-test="bnb-wallet-row"]').exists()).toBe(false)
+  const toggle = view.get('[data-test="wallet-relay-unavailable-toggle"]')
+  expect(toggle.text()).toContain('Not available through this relay')
+  expect(view.findAll('[data-test$="wallet-row"]').length).toBeGreaterThan(0)
+  expect(toggle.attributes('aria-expanded')).toBe('false')
+  await toggle.trigger('click')
   expect(view.get('[data-test="bnb-wallet-balance"]').text()).toBe(
     'Not available through this relay.',
   )
   expect(view.get('[data-test="bnb-wallet-row"]').exists()).toBe(true)
+})
+
+test('keeps a selected network the relay does not serve visible', () => {
+  mockPresentations.value.bnb = {
+    status: 'unavailable',
+    reason: 'relay-unavailable',
+  }
+  mockRoute.value = { path: '/wallet/bnb', query: { chain: 'monad' } }
+  try {
+    const view = render()
+    expect(view.get('[data-test="bnb-wallet-row"]').exists()).toBe(true)
+  } finally {
+    mockRoute.value = { path: '/wallet', query: { chain: 'monad' } }
+  }
 })
 
 test('preserves every supported balance presentation without mutating observations', async () => {

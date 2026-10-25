@@ -244,6 +244,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   readNativeOperation!: EvmChainWalletHandle["readNativeOperation"];
   getNativeOperationHistory!: EvmChainWalletHandle["getNativeOperationHistory"];
   getNativeOperations!: EvmChainWalletHandle["getNativeOperations"];
+  readBlockTimes!: EvmChainWalletHandle["readBlockTimes"];
   nativeOperationSyncFailed!: EvmChainWalletHandle["nativeOperationSyncFailed"];
   flushNativeSync!: EvmChainWalletHandle["flushNativeSync"];
   resumeNativeOperation!: EvmChainWalletHandle["resumeNativeOperation"];

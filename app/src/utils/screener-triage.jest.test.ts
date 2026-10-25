@@ -357,6 +357,21 @@ describe('screener-triage ("The Tollbooth")', () => {
       expect(formatted.combinedDisplay).toBe('100 XPI (~5.00 AVU)')
       expect(String(formatted)).toBe('100 XPI (~5.00 AVU)')
     })
+
+    it('shows the coin alone when there is no AVU rate, never an invented or zero AVU', () => {
+      const chain = {
+        chainIdentifier: 'monad-regtest',
+        unit: 'MONR',
+        toDisplayAmount: (raw: bigint) => (Number(raw) / 1e18).toString(),
+        fromDisplayAmount: (d: string) => BigInt(Math.round(Number(d) * 1e18)),
+      }
+      const stamp = formatScreenerStampValue(10_000_000_000_000_000n, { chain })
+      expect(stamp.combinedDisplay).toBe('0.01 MONR')
+      expect(stamp.avuDisplay).toBe('')
+      expect(formatScreenerStampValue(0n, { chain }).combinedDisplay).toBe(
+        '0 MONR',
+      )
+    })
   })
 
   describe('approveScreenerConversation and dismissScreenerConversation', () => {

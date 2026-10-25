@@ -159,9 +159,13 @@
                         balanceObservation
                           ? balanceObservation.stale
                             ? $t('walletPanel.balanceStale', {
-                                balance: balanceObservation.formattedBalance,
+                                balance: displayAmountText(
+                                  balanceObservation.formattedBalance,
+                                ),
                               })
-                            : balanceObservation.formattedBalance
+                            : displayAmountText(
+                                balanceObservation.formattedBalance,
+                              )
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
@@ -456,10 +460,13 @@
                                   ? currentWalletHasError ||
                                     balanceObservation.stale
                                     ? $t('walletPanel.balanceStale', {
-                                        balance:
+                                        balance: displayAmountText(
                                           balanceObservation.formattedBalance,
+                                        ),
                                       })
-                                    : balanceObservation.formattedBalance
+                                    : displayAmountText(
+                                        balanceObservation.formattedBalance,
+                                      )
                                   : $t(
                                       balancePresentation.status === 'loading'
                                         ? 'walletPanel.balanceLoading'
@@ -607,7 +614,9 @@
 
                   <!-- dApp Persona EOA & Extension Bridge Card -->
                   <div v-if="isPrimaryStampChain" class="q-px-md q-py-md">
-                    <dapp-bridge-panel />
+                    <dapp-bridge-panel
+                      :chain-identifier="sendChainIdentifier"
+                    />
                   </div>
                 </q-tab-panel>
 
@@ -686,13 +695,8 @@ import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
 import {
-  inspectNativeTransferOperations,
-  type NativeOperationInspection,
-} from 'src/accounts/native-transfer'
-import {
   activeChain,
   onActiveChainChange,
-  findEvmNativeOperationStatus,
   getChainRegistryEntry,
 } from '@frank/wallet/chain'
 import {
@@ -702,7 +706,8 @@ import {
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapActivity } from 'src/swap/useSwapActivity'
 import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
-import { getExplorerUrl } from 'src/utils/explorer'
+import { transactionExplorerUrl } from 'src/utils/explorer'
+import { displayAmountText } from 'src/utils/chain-amount'
 import { MAIN_WALLET_ID, WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
@@ -710,7 +715,11 @@ import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import WalletNetworkSwitcher from 'src/components/wallet/WalletNetworkSwitcher.vue'
-import type { WalletHistoryRow } from 'src/components/wallet/wallet-history'
+import {
+  buildWalletHistoryGroups,
+  loadWalletHistory,
+  type WalletHistoryLoad,
+} from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
 import { viewportPageStyle } from 'src/utils/layout'
@@ -930,6 +939,8 @@ export default defineComponent({
     // Coming back from the swap tab, the token balances are read again at once.
     watch(activeTab, tab => {
       if (tab === 'balance') void refreshEvmTokens()
+      // History is read again from its owners each time it is opened.
+      if (tab === 'history') reloadHistory?.()
     })
 
     // The account's swaps on this network, as its own notes record them, with what each did
@@ -949,65 +960,21 @@ export default defineComponent({
     }
 
     const transactionExplorerLink = (hash: string, chainIdentifier: string) =>
-      getExplorerUrl(hash, chainIdentifier, { isTestnet: isTestnet.value })
+      transactionExplorerUrl(hash, chainIdentifier)
 
-    const nativeOperations = shallowRef<NativeOperationInspection>({
+    const nativeOperations = shallowRef<WalletHistoryLoad>({
       status: 'unsupported',
     })
-    // A derived view only: journal operations and swap history retain their existing owners.
-    // A matching final transaction is one activity, with both the swap and transfer details.
-    const historyGroups = computed(() => {
-      const operations =
-        nativeOperations.value.status === 'available'
-          ? nativeOperations.value.operations
-          : []
-      const attached = new Set<string>()
-      const rows: WalletHistoryRow[] = recentSwaps.value
-        .filter(swap => swap.chainIdentifier === sendChainIdentifier.value)
-        .sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id))
-        .map(swap => {
-          const operation = findEvmNativeOperationStatus(
-            operations,
-            swap.chainIdentifier,
-            swap.txHash,
-          )
-          if (operation) attached.add(operation.operationId)
-          return { kind: 'swap', id: `swap:${swap.id}`, swap, operation }
-        })
-      for (const operation of operations) {
-        if (!attached.has(operation.operationId))
-          rows.push({
-            kind: 'native',
-            id: `native:${operation.operationId}`,
-            operation,
-          })
-      }
-      const pending = (row: WalletHistoryRow) =>
-        row.kind === 'swap'
-          ? row.swap.status === 'pending'
-          : !['included', 'reverted', 'cancelled'].includes(
-              row.operation.payment,
-            )
-      return [
-        {
-          id: 'pending',
-          label: 'walletPanel.historyPending',
-          rows: rows.filter(pending),
-        },
-        {
-          id: 'dated',
-          label: 'walletPanel.tabHistory',
-          rows: rows.filter(row => !pending(row) && row.kind === 'swap'),
-        },
-        // The public native inspection currently has no event/block timestamp. Keep these
-        // explicitly undated, rather than assigning an invented date or older ordering.
-        {
-          id: 'undated',
-          label: 'walletHistory.transfers',
-          rows: rows.filter(row => !pending(row) && row.kind === 'native'),
-        },
-      ].filter(group => group.rows.length > 0)
-    })
+    // Re-reads History for the wallet the address watcher captured; unset while there is none.
+    let reloadHistory: (() => void) | undefined
+    // A derived view only: see wallet-history.ts for the owners it reads and when it is rebuilt.
+    const historyGroups = computed(() =>
+      buildWalletHistoryGroups({
+        chainIdentifier: sendChainIdentifier.value,
+        load: nativeOperations.value,
+        swaps: recentSwaps.value,
+      }),
+    )
     const networkName = (chainIdentifier: string) =>
       getChainRegistryEntry(chainIdentifier)?.name ?? ''
 
@@ -1040,6 +1007,7 @@ export default defineComponent({
       async ([status, , chain], _previous, onCleanup) => {
         const isMainChain = chain === MAIN_WALLET_ID
         addressAvailability.value = 'loading'
+        reloadHistory = undefined
         nativeOperations.value = {
           status: isMainChain ? 'unavailable' : 'unsupported',
         }
@@ -1081,15 +1049,26 @@ export default defineComponent({
             nativePresentation.value = capturedChain
             // Financial acquisition is separate from the local receive address. A failed
             // operation inspection must not hide an address the ready session owns.
-            void useActiveWallet()
-              .then(wallet => {
-                if (current)
-                  nativeOperations.value = inspectNativeTransferOperations(
-                    wallet,
-                    capturedChain.chainIdentifier,
-                  )
-              })
-              .catch(() => undefined)
+            let loads = 0
+            const reload = () => {
+              const load = ++loads
+              void useActiveWallet()
+                .then(wallet =>
+                  current
+                    ? loadWalletHistory(wallet, capturedChain.chainIdentifier)
+                    : undefined,
+                )
+                .then(history => {
+                  // Only the latest load for the still-current wallet is shown.
+                  if (history && current && load === loads)
+                    nativeOperations.value = history
+                })
+                .catch(() => undefined)
+            }
+            reloadHistory = () => {
+              if (current) reload()
+            }
+            reload()
           } else if (rotatesAddress) {
             const { wallet } = await openUtxoWallet(capability.entry.id)
             // The lead address is derived here. Show it before the indexer confirms it is unused.
@@ -1199,6 +1178,7 @@ export default defineComponent({
       recentSwaps,
       formatSwapTime,
       transactionExplorerLink,
+      displayAmountText,
       pageStyle: viewportPageStyle,
     }
   },

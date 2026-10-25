@@ -22,6 +22,10 @@ export interface EvmNativeOperationStatus {
     | "cancelled";
   readonly finalTransactionHash?: string;
   readonly members: readonly {
+    /** What the transaction does for the operation: `payment` moves value to the recipient,
+     * `funding` gathers the sender's coins into the account that pays, `change` returns what
+     * is left to the wallet's own accounts. Every member of a non-set operation is `payment`. */
+    readonly role: "payment" | "funding" | "change";
     readonly transactionHash?: string;
     readonly state:
       | "unknown"
@@ -30,6 +34,8 @@ export interface EvmNativeOperationStatus {
       | "included-success"
       | "included-revert";
     readonly blockNumber?: number;
+    /** The block the transaction was included in; with `blockNumber`, only once included. */
+    readonly blockHash?: string;
     readonly feeWei?: string;
   }[];
   readonly observedFeeWei: string;
@@ -83,10 +89,15 @@ export function summarizeEvmNativeOperation(
         "Native operation observation does not match signed transaction"
       );
     return {
+      role: member.transactionSet?.role ?? "payment",
       transactionHash: member.signed?.transactionHash,
       state: observation.state,
       ...(included
-        ? { blockNumber: observation.blockNumber, feeWei: observation.feeWei }
+        ? {
+            blockNumber: observation.blockNumber,
+            blockHash: observation.blockHash,
+            feeWei: observation.feeWei,
+          }
         : {}),
     };
   });

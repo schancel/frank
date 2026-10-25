@@ -1,151 +1,58 @@
 import enUs from '../i18n/en-us'
 import frFr from '../i18n/fr-fr'
-import {
-  DEFAULT_NETWORK_TAG,
-  hasTransactionExplorer,
-  transactionExplorerUrl,
-  multiChainExplorerUrl,
-  hasMultiChainExplorer,
-  getExplorerUrl,
-} from './explorer'
+import protocol from '../../../docs/protocol/chains/v1.json'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+import { transactionExplorerUrl } from './explorer'
 
-describe('Monad transaction explorer configuration', () => {
-  it('uses Monadscan testnet for the default MONT NetworkTag', () => {
-    expect(DEFAULT_NETWORK_TAG).toBe('MONT')
-    expect(transactionExplorerUrl('0xabc/def')).toBe(
+describe('transaction explorer links', () => {
+  it("opens each network's own explorer, by canonical identifier", () => {
+    expect(transactionExplorerUrl('0xabc/def', 'monad-testnet')).toBe(
       'https://testnet.monadscan.com/tx/0xabc%2Fdef',
     )
-  })
-
-  it('rejects a network without an explicitly configured explorer', () => {
-    expect(() => transactionExplorerUrl('0xabc', 'MON1')).toThrow(
-      'No transaction explorer configured for NetworkTag MON1',
-    )
-  })
-
-  it('detects local RPC chain and handles explorer links gracefully', () => {
-    // When forced local or targeting local stack
-    expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', { isLocal: true }),
-    ).toBeUndefined()
-    expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'anvil' }),
-    ).toBeUndefined()
-    expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', {
-        relayBaseUrl: 'http://127.0.0.1:8545',
-      }),
-    ).toBeUndefined()
-
-    // hasTransactionExplorer returns false on local chain without custom explorer
-    expect(hasTransactionExplorer('MONT', { isLocal: true })).toBe(false)
-    expect(hasTransactionExplorer('MONT', { isLocal: false })).toBe(true)
-
-    // When a custom local explorer URL is provided
-    expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', {
-        isLocal: true,
-        localExplorerUrl: 'http://127.0.0.1:3000/tx',
-      }),
-    ).toBe('http://127.0.0.1:3000/tx/0x71f8b14d')
-    expect(
-      hasTransactionExplorer('MONT', {
-        isLocal: true,
-        localExplorerUrl: 'http://127.0.0.1:3000/tx',
-      }),
-    ).toBe(true)
-  })
-})
-
-describe('Multi-chain transaction explorer configuration', () => {
-  it('generates correct explorer URLs for Monad, Solana, and eCash', () => {
-    // Monad
-    expect(multiChainExplorerUrl('0x123', 'MONT')).toBe(
-      'https://testnet.monadscan.com/tx/0x123',
-    )
-    expect(multiChainExplorerUrl('0x123', 'monad-testnet')).toBe(
-      'https://testnet.monadscan.com/tx/0x123',
-    )
-    expect(multiChainExplorerUrl('0x123', 'MON1')).toBe(
+    expect(transactionExplorerUrl('0x123', 'monad-mainnet')).toBe(
       'https://monadscan.com/tx/0x123',
     )
-    expect(multiChainExplorerUrl('0x123', 'monad-mainnet')).toBe(
-      'https://monadscan.com/tx/0x123',
+    expect(transactionExplorerUrl('sig5', 'solana-devnet')).toBe(
+      'https://explorer.solana.com/tx/sig5?cluster=devnet',
     )
-
-    // Solana
-    expect(multiChainExplorerUrl('sig5abc', 'SOLD')).toBe(
-      'https://explorer.solana.com/tx/sig5abc?cluster=devnet',
+    expect(transactionExplorerUrl('sig5', 'solana-testnet')).toBe(
+      'https://explorer.solana.com/tx/sig5?cluster=testnet',
     )
-    expect(multiChainExplorerUrl('sig5abc', 'solana-devnet')).toBe(
-      'https://explorer.solana.com/tx/sig5abc?cluster=devnet',
+    expect(transactionExplorerUrl('ab', 'btc-testnet')).toBe(
+      'https://mempool.space/testnet/tx/ab',
     )
-    expect(multiChainExplorerUrl('sig5abc', 'SOL1')).toBe(
-      'https://explorer.solana.com/tx/sig5abc',
-    )
-    expect(multiChainExplorerUrl('sig5abc', 'solana-mainnet')).toBe(
-      'https://explorer.solana.com/tx/sig5abc',
-    )
-    expect(
-      multiChainExplorerUrl('sig5abc', 'solana', { isTestnet: true }),
-    ).toBe('https://explorer.solana.com/tx/sig5abc?cluster=devnet')
-
-    // eCash
-    expect(multiChainExplorerUrl('ecash123', 'XECT')).toBe(
-      'https://testnet.blockchair.com/ecash/transaction/ecash123',
-    )
-    expect(multiChainExplorerUrl('ecash123', 'ecash-testnet')).toBe(
-      'https://testnet.blockchair.com/ecash/transaction/ecash123',
-    )
-    expect(multiChainExplorerUrl('ecash123', 'XEC1')).toBe(
-      'https://blockchair.com/ecash/transaction/ecash123',
-    )
-    expect(multiChainExplorerUrl('ecash123', 'ecash-mainnet')).toBe(
-      'https://blockchair.com/ecash/transaction/ecash123',
-    )
-
-    // Bitcoin
-    expect(multiChainExplorerUrl('btc123', 'btc-testnet')).toBe(
-      'https://mempool.space/testnet/tx/btc123',
-    )
-    expect(multiChainExplorerUrl('btc123', 'btc-mainnet')).toBe(
-      'https://mempool.space/tx/btc123',
-    )
-    expect(
-      multiChainExplorerUrl('btc123', 'bitcoin', { isTestnet: true }),
-    ).toBe('https://mempool.space/testnet/tx/btc123')
-    expect(multiChainExplorerUrl('btc123', 'bitcoin')).toBe(
-      'https://mempool.space/tx/btc123',
-    )
-
-    // Bitcoin Cash
-    expect(multiChainExplorerUrl('bch123', 'bch-testnet')).toBe(
-      'https://chipnet.imaginary.cash/tx/bch123',
-    )
-    expect(multiChainExplorerUrl('bch123', 'bch-mainnet')).toBe(
-      'https://blockchair.com/bitcoin-cash/transaction/bch123',
-    )
-
-    // Dogecoin
-    expect(multiChainExplorerUrl('doge123', 'doge-mainnet')).toBe(
-      'https://blockchair.com/dogecoin/transaction/doge123',
-    )
-
-    // Ethereum
-    expect(multiChainExplorerUrl('0xeth', 'ethereum-sepolia')).toBe(
-      'https://sepolia.etherscan.io/tx/0xeth',
-    )
-    expect(multiChainExplorerUrl('0xeth', 'ethereum-mainnet')).toBe(
-      'https://etherscan.io/tx/0xeth',
+    expect(transactionExplorerUrl('0x1', 'ethereum-sepolia')).toBe(
+      'https://sepolia.etherscan.io/tx/0x1',
     )
   })
 
-  it('safely returns undefined for unknown network without throwing', () => {
-    expect(multiChainExplorerUrl('0x123', 'UNKNOWN')).toBeUndefined()
-    expect(hasMultiChainExplorer('UNKNOWN')).toBe(false)
-    expect(getExplorerUrl('0x123', 'monad-testnet')).toBe(
-      'https://testnet.monadscan.com/tx/0x123',
-    )
+  it('gives a regtest network no link, never another network explorer', () => {
+    expect(transactionExplorerUrl('0x123', 'monad-regtest')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', 'xec-regtest')).toBeUndefined()
+  })
+
+  it('gives no link for an alias, an unknown network or no network', () => {
+    // Network tags and family names are not network keys.
+    expect(transactionExplorerUrl('0x123', 'MONT')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', 'monad')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', 'ecash-testnet')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', 'UNKNOWN')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', 'toString')).toBeUndefined()
+    expect(transactionExplorerUrl('0x123', undefined)).toBeUndefined()
+    expect(transactionExplorerUrl('', 'monad-testnet')).toBeUndefined()
+  })
+
+  it('configures explorers only for protocol networks, each with the placeholder', () => {
+    const ids = new Set(protocol.chains.map(chain => chain.id))
+    for (const [id, entry] of Object.entries(PROTOCOL_CHAINS)) {
+      expect(ids.has(id)).toBe(true)
+      if (entry.transactionExplorerUrl === undefined) continue
+      expect(entry.transactionExplorerUrl).toMatch(
+        /^https:\/\/[^{}]+\{transaction\}[^{}]*$/,
+      )
+      // A regtest chain is a private local network: no public explorer indexes it.
+      expect(entry.network).not.toBe('regtest')
+    }
   })
 })
 

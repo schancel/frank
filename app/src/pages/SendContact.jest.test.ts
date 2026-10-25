@@ -110,6 +110,7 @@ function t(
 }
 
 const mockWallet = {
+  chainIdentifier: 'monad-testnet',
   prepareContactPayment: (params: unknown) => mockPrepare(params),
   identity: {
     address: { raw: '0x1111111111111111111111111111111111111111' },
@@ -313,6 +314,7 @@ describe('SendContact.vue (dual-send model)', () => {
       stampValue: 0n,
     })
     expect(sentTransactionNotify).toHaveBeenCalledWith(
+      'monad-testnet',
       '0xabc123',
       'Payment sent',
     )
@@ -439,5 +441,48 @@ describe('SendContact.vue (dual-send model)', () => {
       false,
     )
     expect(mockPrepare).not.toHaveBeenCalled()
+  })
+
+  it('shows the wallet quote for the network fee and the total before confirming', async () => {
+    const estimateLegacyFee = jest.fn().mockResolvedValue({
+      totalFee: 4_242_000_000_000_000n,
+      deliveryFee: 4_242_000_000_000_000n,
+      inputCount: 1,
+    })
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      ...mockWallet,
+      estimateLegacyFee,
+    })
+    const wrapper = mountSendContact()
+    await flushPromises()
+    await wrapper.find('[data-test="contact-item"]').trigger('click')
+    await wrapper
+      .find('[data-test="send-contact-amount-input"]')
+      .setValue('1.5')
+    await wrapper
+      .find('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-fee"]').text()).toContain('0.004242')
+    expect(wrapper.get('[data-test="review-total"]').text()).toContain(
+      '1.504242',
+    )
+    expect(mockPrepare).not.toHaveBeenCalled()
+  })
+
+  it('says when the fee cannot be estimated, with the reason', async () => {
+    const wrapper = mountSendContact()
+    await flushPromises()
+    await wrapper.find('[data-test="contact-item"]').trigger('click')
+    await wrapper
+      .find('[data-test="send-contact-amount-input"]')
+      .setValue('1.5')
+    await wrapper
+      .find('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-fee"]').text()).toContain(
+      'Cannot be estimated: This wallet gives no fee quote.',
+    )
   })
 })

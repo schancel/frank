@@ -51,11 +51,9 @@
                 v-if="
                   tx.txHash &&
                   group.chainIdentifier &&
-                  multiChainExplorerUrl(tx.txHash, group.chainIdentifier)
+                  transactionExplorerUrl(tx.txHash, group.chainIdentifier)
                 "
-                :href="
-                  multiChainExplorerUrl(tx.txHash, group.chainIdentifier || '')
-                "
+                :href="transactionExplorerUrl(tx.txHash, group.chainIdentifier)"
                 target="_blank"
                 rel="noopener noreferrer"
                 >{{ tx.txHash }}</a
@@ -118,8 +116,8 @@
             </q-item-label>
             <q-item-label lines="1" class="q-mt-xs">
               <a
-                v-if="transactionExplorerUrl(payment.txHash)"
-                :href="transactionExplorerUrl(payment.txHash)"
+                v-if="stampExplorerUrl(payment.txHash)"
+                :href="stampExplorerUrl(payment.txHash)"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="ellipsis block text-primary"
@@ -149,13 +147,13 @@
                 <q-tooltip>{{ $t('transactionDialog.copyTxHash') }}</q-tooltip>
               </q-btn>
               <q-btn
-                v-if="transactionExplorerUrl(payment.txHash)"
+                v-if="stampExplorerUrl(payment.txHash)"
                 flat
                 round
                 dense
                 icon="open_in_new"
                 :aria-label="$t('a11y.openInExplorer')"
-                :href="transactionExplorerUrl(payment.txHash)"
+                :href="stampExplorerUrl(payment.txHash)"
                 target="_blank"
               />
             </div>
@@ -182,8 +180,8 @@
               </span>
               <q-item-label>
                 <a
-                  v-if="transactionExplorerUrl(outpoint.txId)"
-                  :href="transactionExplorerUrl(outpoint.txId)"
+                  v-if="stampExplorerUrl(outpoint.txId)"
+                  :href="stampExplorerUrl(outpoint.txId)"
                   target="_blank"
                   rel="noopener noreferrer"
                   >{{ outpoint.txId }}</a
@@ -227,10 +225,7 @@ import { defineComponent, PropType } from 'vue'
 import { copyToClipboard } from 'quasar'
 import { toDisplayAddress } from 'src/utils/address'
 import { Utxo } from '@frank/cashweb/types/utxo'
-import {
-  transactionExplorerUrl,
-  multiChainExplorerUrl,
-} from 'src/utils/explorer'
+import { transactionExplorerUrl } from 'src/utils/explorer'
 import type { StealthTransactionGroup } from 'src/utils/stealth-transaction-details'
 import { infoNotify } from 'src/utils/notifications'
 import { translateMessage } from 'src/i18n'
@@ -288,8 +283,11 @@ export default defineComponent({
 
     return {
       copyTxHash,
+      // Stamp payments and outpoints carry no network of their own: they are paid on the
+      // installed stamp network, whose units this dialog already shows them in.
+      stampExplorerUrl: (txHash: string) =>
+        transactionExplorerUrl(txHash, activeChain.chainIdentifier),
       transactionExplorerUrl,
-      multiChainExplorerUrl,
       groupValue(value: bigint, group: StealthTransactionGroup) {
         return group.chainIdentifier === activeChain.chainIdentifier
           ? `${activeChain.toDisplayAmount(value)} ${activeChain.unit}`

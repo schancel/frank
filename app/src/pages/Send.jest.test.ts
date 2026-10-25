@@ -275,8 +275,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       expect(wrapper.get('[data-test="review-fee"]').text()).toBe(
         `0.004242 ${metadata.unit}`,
       )
-      expect(wrapper.get('[data-test="review-total"]').text()).toContain(
-        `0.01 ${metadata.unit}`,
+      expect(wrapper.get('[data-test="review-total"]').text()).toBe(
+        `0.014242 ${metadata.unit}`,
       )
       expect(mockSend).not.toHaveBeenCalled()
     },
@@ -402,7 +402,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
           expect(card.get('[data-test="review-fee"]').text()).toBe(
             available ? '0.004242 MON' : unavailable,
           )
-          expect(card.get('[data-test="review-total"]').text()).toBe(total)
+          // With the wallet's quote the exact sum; without one, the amount and a note.
+          expect(card.get('[data-test="review-total"]').text()).toBe(
+            available ? '0.014242 MON' : total,
+          )
           expect(card.get('[data-test="review-amount"]').text()).toBe(
             '0.01 MON',
           )
@@ -496,7 +499,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     resolveSend({ txHash: '0xhash123' })
     await flushPromises()
 
-    expect(sentTransactionNotify).toHaveBeenCalledWith('0xhash123')
+    expect(sentTransactionNotify).toHaveBeenCalledWith(
+      'monad-testnet',
+      '0xhash123',
+    )
     expect(navigateBack).toHaveBeenCalled()
   })
 
@@ -766,7 +772,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       maxFee: 5_000n,
       onSigned: expect.any(Function),
     })
-    expect(sentTransactionNotify).toHaveBeenCalledWith('solana-signature')
+    expect(sentTransactionNotify).toHaveBeenCalledWith(
+      'solana-devnet',
+      'solana-signature',
+    )
     wrapper.unmount()
   })
 
@@ -897,7 +906,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         fixture.operationId,
       )
       expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
-      expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+      expect(sentTransactionNotify).toHaveBeenCalledWith(
+        'monad-testnet',
+        fixture.hash,
+      )
       expect(mockSend).toHaveBeenCalledTimes(1)
     } finally {
       wrapper.unmount()
@@ -1459,7 +1471,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         // its other devices ('unrecorded'): the page says Sent with the block and the fee, and
         // stays on that until the user goes back.
         if (evidence === 'complete' || evidence === 'unrecorded') {
-          expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+          expect(sentTransactionNotify).toHaveBeenCalledWith(
+            'monad-testnet',
+            fixture.hash,
+          )
           expect(navigateBack).not.toHaveBeenCalled()
           const outcome = wrapper.get('[data-test="native-operation-outcome"]')
           expect(outcome.text()).toContain('Sent on Monad Testnet.')
@@ -1579,7 +1594,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         expect(
           wrapper.find('[data-test="native-operation-watching"]').exists(),
         ).toBe(false)
-        expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+        expect(sentTransactionNotify).toHaveBeenCalledWith(
+          'monad-testnet',
+          fixture.hash,
+        )
         // Final: nothing looks again.
         expect(watchNativeOperation).toHaveBeenCalledTimes(2)
         // And the same review can never send a second payment.
@@ -1593,4 +1611,50 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       }
     },
   )
+
+  it('says why the fee cannot be estimated instead of a bare "Unavailable"', async () => {
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest
+          .fn()
+          .mockRejectedValue(
+            new RangeError('Insufficient unreserved native funds'),
+          ),
+      },
+    }
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe(
+      'Cannot be estimated: Insufficient unreserved native funds',
+    )
+    expect(wrapper.get('[data-test="review-total"]').text()).toContain(
+      '(+ network fee)',
+    )
+    wrapper.unmount()
+  })
+
+  it('takes a recipient handed over by another page, still to be reviewed here', async () => {
+    mockRoute.query = {
+      chainIdentifier: 'monad-testnet',
+      to: '0x000000000000000000000000000000000000beef',
+    }
+    const wrapper = mountSend()
+    await flushPromises()
+    expect(
+      (
+        wrapper.get('[data-test="send-address-input"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe('0x000000000000000000000000000000000000beef')
+    expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(false)
+    expect(mockSend).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })

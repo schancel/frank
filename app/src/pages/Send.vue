@@ -121,8 +121,17 @@
               <span class="text-caption text-grey-7">{{
                 $t('sendAddressDialog.estimatedFee')
               }}</span>
-              <span class="text-grey-7" data-test="review-fee">
-                {{ estimatedFeeText || $t('sendAddressDialog.feeUnavailable') }}
+              <span class="text-grey-7 text-right" data-test="review-fee">
+                {{
+                  estimatedFeeText ||
+                  (feeEstimating
+                    ? $t('sendAddressDialog.feeEstimating')
+                    : feeUnavailableReason
+                    ? $t('sendAddressDialog.feeUnavailableBecause', {
+                        reason: feeUnavailableReason,
+                      })
+                    : $t('sendAddressDialog.feeUnavailable'))
+                }}
               </span>
             </div>
 
@@ -343,7 +352,11 @@ export default defineComponent({
         showScanner.value = false
       }),
     )
-    const address = ref('')
+    const route = useRoute()
+    // A recipient handed over by another page (a persona top-up), still reviewed here.
+    const address = ref(
+      typeof route.query.to === 'string' ? route.query.to : '',
+    )
     const amount = ref('')
     const isReviewing = ref(false)
     const sending = ref(false)
@@ -354,6 +367,10 @@ export default defineComponent({
     const watching = ref(false)
     const outcomeHash = ref<string>()
     const estimatedFeeText = ref('')
+    // The wallet's own quote for the reviewed transfer, and why there is none when it fails.
+    const estimatedFeeWei = ref<bigint>()
+    const feeEstimating = ref(false)
+    const feeUnavailableReason = ref('')
     // Set when the network refused the last attempt outright; holds the node's reason.
     const refusal = ref<string>()
     // The fee the review screen showed, in base units: the ceiling the send may not exceed.
@@ -361,7 +378,6 @@ export default defineComponent({
     // Set when the fee rose above the reviewed one, so the new fee is reviewed before sending.
     const feeChanged = ref(false)
 
-    const route = useRoute()
     const context = shallowRef<NativeTransferContext>()
     const review = shallowRef<{
       context: NativeTransferContext
@@ -430,12 +446,18 @@ export default defineComponent({
         '',
     )
     const unit = computed(() => chain.value?.unit ?? '')
-    const maxTotal = computed(() =>
-      $t('sendAddressDialog.maxTotalWithFee', {
-        amount: reviewedAmount.value,
-        unit: unit.value,
-      }),
-    )
+    // With the wallet's quote, the exact sum; without one, the amount and a note that the fee
+    // comes on top.
+    const maxTotal = computed(() => {
+      const fee = estimatedFeeWei.value
+      const value = review.value?.transfer.value
+      return fee !== undefined && value !== undefined && chain.value
+        ? `${chain.value.toDisplayAmount(value + fee)} ${unit.value}`
+        : $t('sendAddressDialog.maxTotalWithFee', {
+            amount: reviewedAmount.value,
+            unit: unit.value,
+          })
+    })
 
     const router = useRouter()
 
@@ -471,6 +493,8 @@ export default defineComponent({
           : '',
       ),
       estimatedFeeText,
+      feeEstimating,
+      feeUnavailableReason,
       refusal,
       feeChanged,
       isValid: computed(() => parsedTransfer.value !== undefined),
@@ -491,6 +515,8 @@ export default defineComponent({
         }
         sending.value = true
         estimatedFeeText.value = ''
+        estimatedFeeWei.value = undefined
+        feeUnavailableReason.value = ''
         reviewedFee = undefined
         feeChanged.value = false
         try {
@@ -503,6 +529,7 @@ export default defineComponent({
             amount: capturedAmount,
           }
           isReviewing.value = true
+          feeEstimating.value = true
           try {
             const estimate =
               await captured.chain.nativeTransfers.estimateLegacyFee?.({
@@ -512,12 +539,20 @@ export default defineComponent({
               })
             if (estimate && !disposed) {
               reviewedFee = estimate.totalFee
+              estimatedFeeWei.value = estimate.totalFee
               estimatedFeeText.value = `${captured.chain.toDisplayAmount(
                 estimate.totalFee,
               )} ${captured.chain.unit}`
             }
-          } catch {
-            if (!disposed) estimatedFeeText.value = ''
+          } catch (err) {
+            // Said, with the wallet's reason: never a silent "unavailable".
+            if (!disposed) {
+              estimatedFeeText.value = ''
+              feeUnavailableReason.value =
+                err instanceof Error && err.message ? err.message : String(err)
+            }
+          } finally {
+            if (!disposed) feeEstimating.value = false
           }
         } catch (err) {
           if (disposed) return
@@ -618,7 +653,10 @@ export default defineComponent({
               reviewed.binding.isCurrent() &&
               operation.value?.payment === 'included'
             )
-              sentTransactionNotify(signedTxHash ?? '')
+              sentTransactionNotify(
+                reviewed.context.chain.chainIdentifier,
+                signedTxHash,
+              )
           } catch {
             // The wallet was closed: what is shown stays; the journal keeps the transfer.
           } finally {
@@ -667,11 +705,17 @@ export default defineComponent({
           if (reviewed.binding.wallet.family === 'evm') {
             // The page stays on the outcome: sent, its block and its fee, from the journal.
             if (operation.value?.payment === 'included')
-              sentTransactionNotify(result.txHash)
+              sentTransactionNotify(
+                reviewed.context.chain.chainIdentifier,
+                result.txHash,
+              )
             else void watch()
             return
           }
-          sentTransactionNotify(result.txHash)
+          sentTransactionNotify(
+            reviewed.context.chain.chainIdentifier,
+            result.txHash,
+          )
           navigateBack(router)
         } catch (err) {
           if (disposed) return
@@ -693,6 +737,7 @@ export default defineComponent({
             dispatched.value = false
             feeChanged.value = true
             reviewedFee = err.fee
+            estimatedFeeWei.value = err.fee
             estimatedFeeText.value = `${reviewed.context.chain.toDisplayAmount(
               err.fee,
             )} ${reviewed.context.chain.unit}`

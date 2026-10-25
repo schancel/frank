@@ -116,7 +116,7 @@ import { useQuasar } from 'quasar'
 import { Transaction } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
 import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
-import { multiChainExplorerUrl } from '../../../utils/explorer'
+import { transactionExplorerUrl } from '../../../utils/explorer'
 import { useReceivedPayment } from '../../../composables/useReceivedPayment'
 import { useTranslate } from '../../../composables/useTranslate'
 import { errorNotify } from '../../../utils/notifications'
@@ -353,7 +353,11 @@ export default defineComponent({
     explorerUrl(): string | undefined {
       const tx = this.primaryTx
       if (!tx) return undefined
-      return multiChainExplorerUrl(tx, this.networkIdentifier)
+      // The item's network, resolved to its canonical identifier; an unknown one gets no link.
+      const chain = resolveChainIdentifier(
+        this.networkTag || this.chainId || '',
+      )
+      return transactionExplorerUrl(tx, chain?.id)
     },
   },
 })

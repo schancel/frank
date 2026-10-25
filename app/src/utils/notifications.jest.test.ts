@@ -149,65 +149,26 @@ describe('sentTransactionNotify', () => {
     openURL.mockClear()
   })
 
-  it('opens the default Monad explorer from a browser notification', () => {
-    sentTransactionNotify('0xabc')
+  it("opens the transaction's own network explorer", () => {
+    sentTransactionNotify('monad-mainnet', '0xabc')
 
     const notification = createNotification.mock.calls[0]?.[0]
     expect(notification.actions).toHaveLength(1)
 
     notification.actions[0].handler()
 
-    expect(openURL).toHaveBeenCalledWith(
-      'https://testnet.monadscan.com/tx/0xabc',
-    )
+    expect(openURL).toHaveBeenCalledWith('https://monadscan.com/tx/0xabc')
   })
 
-  it('does not navigate when the local chain has no explorer URL', () => {
-    const rpcChain = process.env.QCLI_MONAD_RPC_CHAIN
-    const explorer = process.env.QCLI_MONAD_EXPLORER_URL
-    const fallbackExplorer = process.env.MONAD_EXPLORER_URL
-    process.env.QCLI_MONAD_RPC_CHAIN = 'anvil'
-    delete process.env.QCLI_MONAD_EXPLORER_URL
-    delete process.env.MONAD_EXPLORER_URL
-    try {
-      sentTransactionNotify('0xabc')
-      const notification = createNotification.mock.calls[0]?.[0]
-      expect(notification.actions).toHaveLength(1)
-      notification.actions[0].handler()
-      expect(openURL).not.toHaveBeenCalled()
-    } finally {
-      if (rpcChain === undefined) delete process.env.QCLI_MONAD_RPC_CHAIN
-      else process.env.QCLI_MONAD_RPC_CHAIN = rpcChain
-      if (explorer === undefined) delete process.env.QCLI_MONAD_EXPLORER_URL
-      else process.env.QCLI_MONAD_EXPLORER_URL = explorer
-      if (fallbackExplorer === undefined) delete process.env.MONAD_EXPLORER_URL
-      else process.env.MONAD_EXPLORER_URL = fallbackExplorer
-    }
-  })
+  it('offers no explorer action on a network without an explorer', () => {
+    sentTransactionNotify('monad-regtest', '0xabc')
 
-  it('resolves the configured local explorer when the action is invoked', () => {
-    const rpcChain = process.env.QCLI_MONAD_RPC_CHAIN
-    const explorer = process.env.QCLI_MONAD_EXPLORER_URL
-    process.env.QCLI_MONAD_RPC_CHAIN = 'anvil'
-    process.env.QCLI_MONAD_EXPLORER_URL = 'http://localhost:3000/original'
-    try {
-      sentTransactionNotify('0xabc/def')
-      process.env.QCLI_MONAD_EXPLORER_URL = 'http://localhost:3000/tx'
-      const notification = createNotification.mock.calls[0]?.[0]
-      notification.actions[0].handler()
-      expect(openURL).toHaveBeenCalledWith(
-        'http://localhost:3000/tx/0xabc%2Fdef',
-      )
-    } finally {
-      if (rpcChain === undefined) delete process.env.QCLI_MONAD_RPC_CHAIN
-      else process.env.QCLI_MONAD_RPC_CHAIN = rpcChain
-      if (explorer === undefined) delete process.env.QCLI_MONAD_EXPLORER_URL
-      else process.env.QCLI_MONAD_EXPLORER_URL = explorer
-    }
+    expect(createNotification.mock.calls[0]?.[0].actions).toEqual([])
+    expect(openURL).not.toHaveBeenCalled()
   })
 
   it('does not offer an explorer action without a transaction hash', () => {
-    sentTransactionNotify()
+    sentTransactionNotify('monad-testnet')
 
     expect(createNotification.mock.calls[0]?.[0].actions).toEqual([])
     expect(openURL).not.toHaveBeenCalled()
@@ -380,7 +341,7 @@ describe('localized notifications (#589)', () => {
   })
 
   it('translates sentTransactionNotify message and view action in en-us and fr-fr', () => {
-    sentTransactionNotify('0x123')
+    sentTransactionNotify('monad-testnet', '0x123')
     expect(createNotification).toHaveBeenLastCalledWith(
       expect.objectContaining({
         message: '<div class="text-center"> Sent transaction </div>',
@@ -389,7 +350,7 @@ describe('localized notifications (#589)', () => {
     )
 
     useAppearanceStore().locale = 'fr-fr'
-    sentTransactionNotify('0x123')
+    sentTransactionNotify('monad-testnet', '0x123')
     expect(createNotification).toHaveBeenLastCalledWith(
       expect.objectContaining({
         message: '<div class="text-center"> Transaction envoyée </div>',
@@ -404,7 +365,7 @@ describe('localized notifications (#589)', () => {
       expect.objectContaining({ message: 'Custom copy message' }),
     )
 
-    sentTransactionNotify('0x123', 'Custom sent')
+    sentTransactionNotify('monad-testnet', '0x123', 'Custom sent')
     expect(createNotification).toHaveBeenLastCalledWith(
       expect.objectContaining({
         message: '<div class="text-center"> Custom sent </div>',

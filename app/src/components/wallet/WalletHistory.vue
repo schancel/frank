@@ -22,7 +22,13 @@
         >
           <q-item-section avatar top class="wallet-history-icon">
             <q-icon
-              :name="entry.kind === 'swap' ? 'swap_horiz' : 'north_east'"
+              :name="
+                entry.kind === 'swap'
+                  ? 'swap_horiz'
+                  : entry.kind === 'received'
+                  ? 'south_west'
+                  : 'north_east'
+              "
               color="primary"
               size="24px"
               aria-hidden="true"
@@ -36,6 +42,10 @@
                   {{ entry.swap.status === 'pending' ? '≥' : ''
                   }}{{ entry.swap.toAmount }} {{ entry.swap.toAsset }}
                 </template>
+                <template v-else-if="entry.kind === 'received'"
+                  >+{{ nativeAmount(receivedAmount(entry.payment)) }}
+                  {{ nativeUnit }}</template
+                >
                 <template v-else
                   >{{ nativeAmount(entry.operation.intendedValueWei) }}
                   {{ nativeUnit }}</template
@@ -54,20 +64,70 @@
               {{ entry.swap.route }} ·
               {{ formatSwapTime(entry.swap.timestamp) }}
             </q-item-label>
+            <template v-else-if="entry.kind === 'received'">
+              <q-item-label caption class="q-mt-xs">
+                {{
+                  $t(
+                    entry.payment.origin === 'stamp'
+                      ? 'walletHistory.receivedStamp'
+                      : 'walletHistory.receivedPayment',
+                  )
+                }}
+                ·
+                <time
+                  :datetime="new Date(entry.timeMs).toISOString()"
+                  data-testid="wallet-activity-date"
+                  >{{ formatSwapTime(entry.timeMs) }}</time
+                >
+              </q-item-label>
+              <p
+                v-if="entry.payment.partial"
+                class="text-caption q-mt-xs q-mb-none"
+                data-testid="wallet-received-partial"
+              >
+                {{
+                  $t('walletHistory.receivedPartial', {
+                    amount: nativeAmount(
+                      String(entry.payment.receivedAmountWei ?? 0n),
+                    ),
+                    claimed: nativeAmount(
+                      String(entry.payment.claimedAmountWei),
+                    ),
+                    unit: nativeUnit,
+                  })
+                }}
+              </p>
+              <p
+                v-else-if="entry.payment.status !== 'received'"
+                class="text-caption q-mt-xs q-mb-none"
+              >
+                {{ $t('walletHistory.receivedClaimed') }}
+              </p>
+            </template>
             <template v-else>
-              <q-item-label caption class="q-mt-xs">{{
-                $t(
-                  entry.operation.kind === 'contract'
-                    ? 'walletHistory.contract'
-                    : 'walletHistory.to',
-                )
-              }}</q-item-label>
+              <q-item-label caption class="q-mt-xs">
+                {{
+                  $t(
+                    entry.operation.kind === 'contract'
+                      ? 'walletHistory.contract'
+                      : 'walletHistory.to',
+                  )
+                }}
+                <template v-if="entry.timeMs !== undefined">
+                  ·
+                  <time
+                    :datetime="new Date(entry.timeMs).toISOString()"
+                    data-testid="wallet-activity-date"
+                    >{{ formatSwapTime(entry.timeMs) }}</time
+                  >
+                </template>
+              </q-item-label>
               <div class="wallet-history-address">
                 <address-text :address="entry.operation.recipient" copyable />
               </div>
             </template>
             <details
-              v-if="entry.operation"
+              v-if="entry.kind !== 'received' && entry.operation"
               data-testid="wallet-native-operation"
               class="wallet-history-details q-mt-sm"
             >
@@ -94,20 +154,36 @@
                 >
                   {{ $t('walletHistory.intended') }}
                 </p>
-                <p class="text-caption text-grey-7">
-                  {{ $t('walletHistory.dateUnknown') }}
+                <p
+                  class="text-caption text-grey-7"
+                  data-testid="wallet-native-operation-date"
+                >
+                  {{
+                    entry.timeMs !== undefined
+                      ? $t('walletHistory.includedAt', {
+                          date: formatDate(entry.timeMs),
+                        })
+                      : $t('walletHistory.notYetInBlock')
+                  }}
                 </p>
                 <p>
                   {{
-                    $t(`nativeOperation.fee${entry.operation.feeCoverage}`, {
-                      amount: nativeAmount(entry.operation.observedFeeWei),
-                      unit: nativeUnit,
-                    })
+                    $t(
+                      `nativeOperation.fee${
+                        observedFees(paymentMembers(entry.operation)).coverage
+                      }`,
+                      {
+                        amount: nativeAmount(
+                          observedFees(paymentMembers(entry.operation)).feeWei,
+                        ),
+                        unit: nativeUnit,
+                      },
+                    )
                   }}
                 </p>
                 <div
-                  v-for="(member, index) in entry.operation.members"
-                  :key="index"
+                  v-for="(member, index) in paymentMembers(entry.operation)"
+                  :key="`payment-${index}`"
                   class="wallet-history-transaction"
                 >
                   <div class="wallet-history-heading">
@@ -152,6 +228,81 @@
                     }}
                   </p>
                 </div>
+                <details
+                  v-if="changeMembers(entry.operation).length"
+                  class="wallet-history-change"
+                  data-testid="wallet-native-operation-change"
+                >
+                  <summary class="wallet-history-action">
+                    {{
+                      $t('walletHistory.change', {
+                        count: changeMembers(entry.operation).length,
+                      })
+                    }}
+                  </summary>
+                  <p class="text-caption q-mt-sm">
+                    {{ $t('walletHistory.changeNote') }}
+                  </p>
+                  <p class="text-caption">
+                    {{
+                      $t(
+                        `nativeOperation.fee${
+                          observedFees(changeMembers(entry.operation)).coverage
+                        }`,
+                        {
+                          amount: nativeAmount(
+                            observedFees(changeMembers(entry.operation)).feeWei,
+                          ),
+                          unit: nativeUnit,
+                        },
+                      )
+                    }}
+                  </p>
+                  <div
+                    v-for="(member, index) in changeMembers(entry.operation)"
+                    :key="`change-${index}`"
+                    class="wallet-history-transaction"
+                  >
+                    <div class="wallet-history-heading">
+                      <span class="text-weight-medium">{{
+                        $t('walletHistory.changeTransaction', {
+                          number: index + 1,
+                        })
+                      }}</span>
+                      <span class="text-caption">{{
+                        $t(`walletHistory.memberStatus.${member.state}`)
+                      }}</span>
+                    </div>
+                    <div
+                      v-if="member.transactionHash"
+                      class="wallet-history-address"
+                    >
+                      <address-text
+                        :address="member.transactionHash"
+                        copyable
+                      />
+                    </div>
+                    <a
+                      v-if="
+                        member.transactionHash &&
+                        transactionExplorerLink(
+                          member.transactionHash,
+                          entry.operation.chainIdentifier,
+                        )
+                      "
+                      :href="
+                        transactionExplorerLink(
+                          member.transactionHash,
+                          entry.operation.chainIdentifier,
+                        )
+                      "
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="wallet-history-action"
+                      >{{ $t('walletPanel.viewInExplorer') }}</a
+                    >
+                  </div>
+                </details>
                 <p
                   class="text-caption text-grey-7"
                   data-testid="wallet-native-operation-sync"
@@ -206,13 +357,20 @@
 </template>
 
 <script setup lang="ts">
+import type { ReceivedPayment } from '@frank/wallet/chain'
 import AddressText from '../AddressText.vue'
-import type { NativeOperationInspection } from 'src/accounts/native-transfer'
-import type { WalletHistoryGroup, WalletHistoryRow } from './wallet-history'
+import {
+  changeMembers,
+  observedFees,
+  paymentMembers,
+  type WalletHistoryGroup,
+  type WalletHistoryLoad,
+  type WalletHistoryRow,
+} from './wallet-history'
 
 defineProps<{
   groups: WalletHistoryGroup[]
-  inspectionStatus: NativeOperationInspection['status']
+  inspectionStatus: WalletHistoryLoad['status']
   nativeUnit: string
   nativeAmount: (value: string) => string
   networkName: (chainIdentifier: string) => string
@@ -223,8 +381,22 @@ defineProps<{
   formatSwapTime: (timestamp: number) => string
 }>()
 
+function formatDate(timeMs: number): string {
+  return new Date(timeMs).toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+}
+
+/** What arrived, once the chain showed it; until then what the sender's message claimed. */
+function receivedAmount(payment: ReceivedPayment): string {
+  return String(payment.receivedAmountWei ?? payment.claimedAmountWei)
+}
+
 function statusLabel(entry: WalletHistoryRow) {
   if (entry.kind === 'swap') return `swap.status.${entry.swap.status}`
+  if (entry.kind === 'received')
+    return `walletHistory.receivedStatus.${entry.payment.status}`
   if (
     entry.operation.kind === 'contract' &&
     entry.operation.payment === 'included'
@@ -235,10 +407,15 @@ function statusLabel(entry: WalletHistoryRow) {
 
 function statusColor(entry: WalletHistoryRow) {
   const status =
-    entry.kind === 'swap' ? entry.swap.status : entry.operation.payment
-  if (status === 'confirmed' || status === 'included') return 'positive'
+    entry.kind === 'swap'
+      ? entry.swap.status
+      : entry.kind === 'received'
+      ? entry.payment.status
+      : entry.operation.payment
+  if (status === 'confirmed' || status === 'included' || status === 'received')
+    return 'positive'
   if (status === 'failed' || status === 'reverted') return 'negative'
-  if (status === 'cancelled') return 'grey-7'
+  if (status === 'cancelled' || status === 'not-received') return 'grey-7'
   return 'warning'
 }
 </script>
@@ -300,6 +477,9 @@ summary.wallet-history-action {
   background: rgba(128, 128, 128, 0.06);
   border-radius: 8px;
   overflow-wrap: anywhere;
+}
+.wallet-history-change {
+  margin-top: 8px;
 }
 .wallet-history-transaction {
   padding: 12px 0;

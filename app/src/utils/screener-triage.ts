@@ -1,12 +1,7 @@
 import type { ChatMessage, Conversation } from '../stores/chats'
 import type { EmailItem } from '@frank/cashweb/types/messages'
 import { activeChain, type ActiveChain } from '@frank/wallet/chain'
-import {
-  convertRawToAvu,
-  DEFAULT_STAMP_TARGET_AVU,
-  defaultStaticStampForChain,
-  type SupportedAsset,
-} from '@frank/wallet/oracle'
+import type { SupportedAsset } from '@frank/wallet/oracle'
 import { formatCompactAmount, formatDisplayAmount } from './chain-amount'
 import { formatAvu } from './avu-units'
 import { sameCanonicalAddress } from './own-address'
@@ -423,26 +418,6 @@ export function rankScreenerConversations<T extends Partial<Conversation>>(
   })
 }
 
-function inferImpliedAvuRate(chain: ChainDisplayAdapter): number {
-  try {
-    const chainId = chain.chainIdentifier || 'monad-testnet'
-    const fallbackCoinStr = defaultStaticStampForChain(chainId)
-    const fallbackCoin = Number(fallbackCoinStr)
-    const targetAvu = Number(DEFAULT_STAMP_TARGET_AVU)
-    if (
-      Number.isFinite(fallbackCoin) &&
-      fallbackCoin > 0 &&
-      Number.isFinite(targetAvu) &&
-      targetAvu > 0
-    ) {
-      return targetAvu / fallbackCoin
-    }
-  } catch {
-    // ignore
-  }
-  return 10 // 0.1 AVU per 0.01 MON = 10 AVU / MON
-}
-
 /**
  * Formats a stamp value in both native chain units (e.g. `0.05 MON` / `100 XPI`)
  * and AVU (e.g. `~5.00 AVU`), so the user can immediately evaluate the economic stake.
@@ -462,7 +437,6 @@ export function formatScreenerStampValue(
       : optionsOrRate ?? {}
   const valueWei = safeBigInt(rawValue)
   const chain: ChainDisplayAdapter = options.chain ?? activeChain
-  const asset = (options.asset ?? 'monad') as SupportedAsset
 
   let nativeDisplay = `0 ${chain.unit}`
   let compactNativeDisplay = `0 ${chain.unit}`
@@ -474,50 +448,28 @@ export function formatScreenerStampValue(
     compactNativeDisplay = nativeDisplay
   }
 
-  const effectiveRate =
+  // An AVU figure only from a real rate for this asset (the oracle's). Without one, the
+  // stamp is shown in its coin alone: never a rate inferred from defaults, never "0 AVU".
+  const rate =
     options.avuRate !== undefined &&
     Number.isFinite(options.avuRate) &&
     options.avuRate > 0
       ? options.avuRate
-      : inferImpliedAvuRate(chain)
+      : undefined
 
   let avuValue = 0
-  if (valueWei > 0n) {
-    let converted: number | undefined
-    // If custom chain adapter is passed, compute directly from its display amount first
-    if (options.chain) {
-      try {
-        const displayNum = Number(chain.toDisplayAmount(valueWei))
-        if (Number.isFinite(displayNum) && displayNum > 0) {
-          converted = displayNum * effectiveRate
-        }
-      } catch {
-        // fallback below
-      }
-    }
-    if (converted === undefined) {
-      try {
-        converted = convertRawToAvu(valueWei, asset, effectiveRate)
-      } catch {
-        converted = undefined
-      }
-    }
-    if (converted !== undefined && converted > 0) {
-      avuValue = converted
-    } else {
-      try {
-        const displayNum = Number(chain.toDisplayAmount(valueWei))
-        if (Number.isFinite(displayNum) && displayNum > 0) {
-          avuValue = displayNum * effectiveRate
-        }
-      } catch {
-        avuValue = 0
-      }
+  if (valueWei > 0n && rate !== undefined) {
+    try {
+      const displayNum = Number(chain.toDisplayAmount(valueWei))
+      if (Number.isFinite(displayNum) && displayNum > 0)
+        avuValue = displayNum * rate
+    } catch {
+      avuValue = 0
     }
   }
 
-  let avuDisplay = '0 AVU'
-  if (valueWei > 0n && avuValue > 0) {
+  let avuDisplay = ''
+  if (avuValue > 0) {
     if (avuValue >= 0.01) {
       avuDisplay = `~${avuValue.toFixed(2)} AVU`
     } else {
@@ -525,10 +477,9 @@ export function formatScreenerStampValue(
       avuDisplay = formatted ? `~${formatted}` : '~0.00 AVU'
     }
   }
-  const combinedDisplay =
-    valueWei > 0n
-      ? `${nativeDisplay} (${avuDisplay})`
-      : `${nativeDisplay} (0 AVU)`
+  const combinedDisplay = avuDisplay
+    ? `${nativeDisplay} (${avuDisplay})`
+    : nativeDisplay
 
   return {
     valueWei,

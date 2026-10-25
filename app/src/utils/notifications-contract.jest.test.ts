@@ -15,10 +15,7 @@ function notificationDiagnostics(restoreUnsafeCall = false) {
   host.readFile = file => {
     const source = readFile(file)
     return file === sourcePath && restoreUnsafeCall
-      ? source?.replace(
-          /const url = transactionExplorerUrl\(txId\)\s+if \(url\) \{\s+openURL\(url\)\s+\}/,
-          'openURL(transactionExplorerUrl(txId))',
-        )
+      ? source?.replace(/if \(url\) openURL\(url\)/, 'openURL(url)')
       : source
   }
   const program = ts.createProgram([sourcePath], parsed.options, host)

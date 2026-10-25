@@ -300,6 +300,20 @@ beforeEach(() => {
 })
 
 describe('Settings list and section navigation', () => {
+  it('states the inbound email stamp in the running network unit from the registry', async () => {
+    const router = await openAt('/settings/gateways')
+    const wrapper = mountSettings(router, NARROW)
+    const { activeChain, getChainRegistryEntry } = await import(
+      '@frank/wallet/chain'
+    )
+    expect(
+      (wrapper.vm as unknown as { emailGatewayFee: unknown }).emailGatewayFee,
+    ).toEqual({
+      amount: '0.01',
+      unit: getChainRegistryEntry(activeChain.chainIdentifier)!.unit,
+    })
+  })
+
   it('shows the grouped list with a profile row, every section, and the other pages', async () => {
     const router = await openAt('/settings')
     const wrapper = mountSettings(router, NARROW)

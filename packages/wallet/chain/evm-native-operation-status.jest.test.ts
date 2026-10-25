@@ -107,6 +107,11 @@ it.each([
       expect(status.members[0]!.transactionHash).toBe(
         fixture.row.members[0]!.signed!.transactionHash
       );
+      // Every member of an operation that is not a transaction set pays the recipient.
+      expect(status.members[0]!.role).toBe("payment");
+      expect(status.members[0]!.blockHash).toBe(
+        state.startsWith("included") ? hash : undefined
+      );
       const serialized = JSON.stringify(status);
       for (const forbidden of [
         "rawTransaction",

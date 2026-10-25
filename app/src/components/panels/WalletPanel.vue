@@ -16,7 +16,7 @@
         <q-separator />
 
         <!-- Wallets (Monad Main Wallet is pinned first) -->
-        <template v-for="(wallet, index) in visibleWallets" :key="wallet.id">
+        <template v-for="(wallet, index) in reachableWallets" :key="wallet.id">
           <q-separator v-if="index > 0" />
           <q-item
             clickable
@@ -74,6 +74,98 @@
             </q-item-section>
           </q-item>
         </template>
+        <!-- Networks this relay does not serve: listed once, folded away, not one row each. -->
+        <template v-if="relayUnavailableWallets.length">
+          <q-separator />
+          <q-item
+            clickable
+            dense
+            class="wallet-unavailable-toggle"
+            data-test="wallet-relay-unavailable-toggle"
+            :aria-expanded="relayUnavailableShown ? 'true' : 'false'"
+            @click="showRelayUnavailable = !relayUnavailableShown"
+          >
+            <q-item-section>
+              <q-item-label caption>
+                {{
+                  $t('walletPanel.relayUnavailableGroup', {
+                    count: relayUnavailableWallets.length,
+                  })
+                }}
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-icon
+                :name="relayUnavailableShown ? 'expand_less' : 'expand_more'"
+              />
+            </q-item-section>
+          </q-item>
+          <template v-if="relayUnavailableShown">
+            <template
+              v-for="(wallet, index) in relayUnavailableWallets"
+              :key="wallet.id"
+            >
+              <q-separator v-if="index > 0" />
+              <q-item
+                clickable
+                v-ripple
+                dense
+                :data-test="wallet.dataTest"
+                :active="selectedChain === wallet.id"
+                active-class="active-chat-list-item"
+                class="wallet-list-item"
+                @click="selectWallet(wallet.id)"
+              >
+                <q-item-section avatar class="wallet-icon-slot">
+                  <q-icon :name="wallet.icon" />
+                </q-item-section>
+                <q-item-section class="wallet-row-content">
+                  <q-item-label
+                    class="wallet-row-name"
+                    :data-test="wallet.nameDataTest"
+                  >
+                    <span
+                      class="ellipsis block"
+                      :data-test="wallet.nameTextDataTest"
+                    >
+                      {{
+                        getCustomName(wallet.id) || $t(wallet.defaultNameKey)
+                      }}
+                    </span>
+                    <q-badge
+                      v-if="walletIsTestnet(wallet.id)"
+                      outline
+                      color="amber-9"
+                      class="wallet-network-badge"
+                      :label="$t('walletPanel.testnet')"
+                      :data-test="wallet.badgeDataTest"
+                    />
+                  </q-item-label>
+                  <q-item-label
+                    caption
+                    class="wallet-row-balance ellipsis"
+                    :data-test="wallet.balanceDataTest"
+                    :title="nativeBalanceTitle(wallet.id)"
+                    :aria-label="nativeBalanceTitle(wallet.id)"
+                  >
+                    <q-icon
+                      v-if="isBalanceStale(wallet.id)"
+                      name="history"
+                      size="14px"
+                      class="q-mr-xs"
+                      aria-hidden="true"
+                      :data-test="`${wallet.id}-balance-stale-indicator`"
+                    />{{ nativeBalance(wallet.id) }}
+                    <mailbox-status-indicator
+                      v-if="wallet.isMain"
+                      class="q-ml-xs"
+                    />
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+            </template>
+          </template>
+        </template>
       </q-list>
     </q-scroll-area>
     <footer class="wallet-backup-footer" data-test="wallet-backup-footer">
@@ -96,7 +188,7 @@ import { computed, getCurrentInstance, onBeforeUnmount, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useMultichainBalance } from '../../composables/useChainBalance'
-import { compactAmountText } from '../../utils/chain-amount'
+import { displayAmountText } from '../../utils/chain-amount'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import { walletSupport } from '../../utils/wallet-support'
@@ -120,9 +212,36 @@ const visibleWallets = computed(() =>
 )
 const router = useRouter()
 const route = useRoute()
+const showRelayUnavailable = shallowRef(false)
 const instance = getCurrentInstance()
 const { getCustomName } = useWalletNames()
 const { getPresentation } = useMultichainBalance()
+/** A wallet the relay does not serve, with no balance ever read: nothing to show for it. */
+function relayUnavailable(wallet: string): boolean {
+  const presentation = getPresentation(wallet)
+  return (
+    presentation.status === 'unavailable' &&
+    presentation.reason === 'relay-unavailable' &&
+    !presentation.lastKnown
+  )
+}
+// The main wallet always stays in the list, whatever the relay serves.
+const folded = (wallet: { id: string; isMain?: boolean }) =>
+  !wallet.isMain && relayUnavailable(wallet.id)
+const reachableWallets = computed(() =>
+  visibleWallets.value.filter(wallet => !folded(wallet)),
+)
+const relayUnavailableWallets = computed(() =>
+  visibleWallets.value.filter(folded),
+)
+// The selected wallet is never folded away.
+const relayUnavailableShown = computed(
+  () =>
+    showRelayUnavailable.value ||
+    relayUnavailableWallets.value.some(
+      wallet => wallet.id === selectedChain.value,
+    ),
+)
 function walletIsTestnet(wallet: string): boolean {
   return walletSupport(wallet, isTestnet.value).entry?.isTestnet ?? false
 }
@@ -135,7 +254,7 @@ function nativeBalance(wallet: string): string {
       : presentation.status === 'unavailable'
       ? presentation.lastKnown
       : undefined
-  if (observation) return compactAmountText(observation.formattedBalance)
+  if (observation) return displayAmountText(observation.formattedBalance)
   const key =
     presentation.status === 'loading'
       ? 'walletPanel.balanceLoading'

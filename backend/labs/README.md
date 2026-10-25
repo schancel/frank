@@ -10,11 +10,12 @@ NATS. There are no chain RPC credentials or wallet keys in these files.
 ## Ownership and scope
 
 This ordinary implementation adds local test infrastructure only. The daemon
-currently opens the registry and direct-message stores with raw RocksDB APIs.
+currently opens the direct-message store with raw RocksDB APIs.
 `RelayKvStore` is a separate transaction contract with RocksDB and FoundationDB
-drivers; only the group store uses it. A daemon built with `--features foundationdb`
-can select FoundationDB for groups (`registry.cluster.driver = "foundationdb"`); every
-other owner stays on the replica's RocksDB.
+drivers; the group store and the registry `Db` (profiles, usernames, metadata, topics)
+use it. A daemon built with `--features foundationdb` can select FoundationDB for both
+(`registry.cluster.driver = "foundationdb"`); every other owner stays on the replica's
+RocksDB.
 NATS carries ephemeral wakeups, while durable store reads supply catch-up data.
 No persistent or wire format changes, migrations, production configuration changes,
 or deployment commands are part of these labs.
@@ -114,13 +115,30 @@ The third test (`cashwebd-exe/tests/foundationdb_daemon.rs`) starts the real
 `cashwebd-exe`, built with `--features foundationdb`, in cluster mode with the preview
 flag and freshly provisioned session-secret and VAPID files: replica A creates a group,
 replica B reads it and appends, A is killed, and replica C on an empty local disk reads
-the message. It checks that the startup log names the replica-local owners (and not
-groups) and that no session secret is generated beside the database. It uses a fresh
-cluster name and subspace per run and does not clear them.
+the message. A profile registered and then replaced on A is the only record B lists and
+finds, and C reads it after A is gone. It checks that the startup log reports the
+registry store readable, does not list the registry database or groups as replica-local,
+and that no session secret is generated beside the database. It uses a fresh cluster
+name and subspace per run and does not clear them.
 
 ```sh
 FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster FRANK_LAB_NATS_URL=nats://nats:4222 \
   cargo test -p cashwebd-exe --features foundationdb --test foundationdb_daemon -- --ignored
+```
+
+The fourth test (`cashweb-registry/src/store/registry_fdb_tests.rs`) starts two relay
+processes from its own executable, each with its own FDB client and local disk, serving
+the real HTTP routes over one fresh registry subspace. Each of 40 usernames is claimed at
+the same moment by one key on A and another on B: exactly one claim succeeds, the other is
+refused as taken, both relays resolve the name and both addresses identically, and the
+stored name and reverse-index rows agree one to one. A profile replaced on A is the only
+record B lists, searches and serves, its stale replay to B is refused, and only the new
+record's index rows exist.
+
+```sh
+FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster cargo test -p cashweb-registry \
+  --features foundationdb --lib -- --ignored --exact \
+  store::registry_fdb_tests::registry_is_shared_by_two_relays_through_foundationdb --nocapture
 ```
 
 FDB advertises its container IP, so tests run inside the Compose network. Merely
@@ -150,11 +168,11 @@ on your machine (the file's fallback, 18080, is often already taken by another l
 service).
 
 **What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
-app can use. Message routes are off, profiles, usernames and the directory are still
-replica-local (each relay has its own), and there is no chain upstream unless you supply
-one. Those owners move to the shared store in HA steps 6 (direct messages), 7 (registry
-database) and 8 (directory); until they land, an app pointed at the proxy sees a
-different profile store on each request.
+app can use. Message routes are off, the directory is off and still replica-local, and
+there is no chain upstream unless you supply one. Profiles, usernames, metadata and topics
+are in the shared registry database (HA step 7). Direct messages and the directory move to
+the shared store in HA steps 6 and 8; until they land, an app cannot message through the
+proxy.
 
 Overrides, all optional:
 
@@ -195,9 +213,9 @@ Services:
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
   policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
-  its own RocksDB registry database in its own volume. Groups are the only owner they
-  share. The other owners are still replica-local, so the preview flag is set, and each
-  relay's startup log names them:
+  its own RocksDB volume. Groups and the registry database are shared through
+  FoundationDB, and large values through MinIO; the other owners are still replica-local, so the preview flag is set,
+  and each relay's startup log names them:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'

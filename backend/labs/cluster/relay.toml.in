@@ -34,7 +34,8 @@ driver = "foundationdb"
 fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
-# Every owner but groups still keeps its state on each replica; the startup log names them.
+# Every owner but groups, large values and the registry database still keeps its state on
+# each replica; the startup log names them.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]

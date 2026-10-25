@@ -10,7 +10,7 @@ use super::{
     CF_DIRECTORY_ADDRESSES_V1, CF_DIRECTORY_FIRST_ACCEPTED_V1, CF_DIRECTORY_SUBJECTS_V1,
     CF_FORWARDS_V1, CF_FORWARD_BODIES_V1,
 };
-use crate::store::db::{DbError, CF};
+use crate::store::db::DbError;
 
 pub(super) struct RocksDirectorySubjects {
     db: rocksdb::DB,
@@ -51,7 +51,7 @@ impl RocksDirectorySubjects {
         })
     }
 
-    fn cf(&self, name: &str) -> Result<&CF> {
+    fn cf(&self, name: &str) -> Result<&rocksdb::ColumnFamily> {
         Ok(self
             .db
             .cf_handle(name)

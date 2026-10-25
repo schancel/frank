@@ -1,5 +1,6 @@
-# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests, and the
-# cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`).
+# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests, the
+# cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`), and the
+# two-relay registry test (usernames raced across relays, profiles replaced across relays).
 # Keep server/client release versions identical. FDB's image supplies native libfdb_c.
 FROM foundationdb/foundationdb:7.3.63 AS fdb-client
 FROM rust:1-bookworm
@@ -29,7 +30,10 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
     cargo test --locked -p cashwebd-exe --features foundationdb --test foundationdb_daemon --no-run --message-format=json > /tmp/daemon-artifacts.json && \
     python3 /copy-test-artifact.py /tmp/daemon-artifacts.json /foundationdb-daemon cluster_mode_daemons_share_groups_through_foundationdb && \
+    find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
+    cargo test --locked -p cashweb-registry --features foundationdb --lib --no-run --message-format=json > /tmp/registry-artifacts.json && \
+    python3 /copy-test-artifact.py /tmp/registry-artifacts.json /registry-cluster registry_is_shared_by_two_relays_through_foundationdb && \
     cp target/debug/cashwebd-exe /cashwebd-exe
 ENV FRANK_CASHWEBD_EXE=/cashwebd-exe
 # The transaction contract starts its two FDB worker processes from its own executable.
-ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture"]
+ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture && /registry-cluster --exact store::registry_fdb_tests::registry_is_shared_by_two_relays_through_foundationdb --ignored --nocapture"]

@@ -43,8 +43,8 @@
 //! [`proto::ListMonadProfilesResponse`]/[`proto::ListMonadProfilesEntry`] -- the exact same shape
 //! ticket #75's `since`-listing route already defined -- since the entry shape (`address` +
 //! `signed_payload`) is identical here; only the query/filter differs, so no new proto message was
-//! needed. See `crate::store::monad_profiles`'s module docs for the `CF_MONAD_PROFILES_BY_NAME`
-//! index this reads, and `crate::http::server`'s module docs on `into_router()` for why this is a
+//! needed. See `crate::store::monad_profiles`'s module docs for the by-name index (`pn/`)
+//! this reads, and `crate::http::server`'s module docs on `into_router()` for why this is a
 //! static path segment (so it can't collide with the dynamic `/metadata/monad/:addr` route).
 
 use std::str::FromStr;
@@ -236,7 +236,9 @@ impl IntoResponse for ListMonadProfilesError {
 
 /// `GET /metadata/monad?since=<timestamp>`: list every Monad profile registered at or after
 /// `since` (milliseconds since the Unix epoch), ordered by registration timestamp ascending
-/// (ticket #75). See this module's docs for the registration-discovery use case.
+/// (ticket #75). See this module's docs for the registration-discovery use case. The relay reads
+/// the listing in batches, so it may repeat an address whose profile was replaced while paging;
+/// clients dedupe by address.
 pub async fn handle_list_monad_profiles(
     Query(params): Query<ListMonadProfilesQuery>,
     Extension(server): Extension<RegistryServer>,

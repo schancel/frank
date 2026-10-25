@@ -21,3 +21,5 @@ pub mod topics;
 
 #[cfg(feature = "foundationdb")]
 pub mod foundationdb_driver;
+#[cfg(all(test, feature = "foundationdb"))]
+mod registry_fdb_tests;

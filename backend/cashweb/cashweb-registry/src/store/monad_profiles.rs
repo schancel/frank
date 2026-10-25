@@ -14,8 +14,8 @@
 //!
 //! ## `list_since` (ticket #75)
 //!
-//! `CF_MONAD_PROFILES_BY_TIME` is a secondary index, keyed by `timestamp.to_be_bytes() ++ address`
-//! (value: the raw address), maintained alongside the primary `CF_MONAD_PROFILES` on every
+//! The by-time index (`pt/`) is a secondary index, keyed by `timestamp.to_be_bytes() ++ address`
+//! (value: the raw address), maintained alongside the primary profile record (`p/`) on every
 //! [`DbMonadProfiles::put`] -- mirrors `DbMonadMessages`'s identical `CF_MONAD_MESSAGES_BY_TIME`/
 //! `list_since` pattern exactly. `timestamp` here is the *registration's own* timestamp (the
 //! decoded `proto::MonadProfile.timestamp` inside `signed.payload` -- not any storage-write
@@ -36,8 +36,8 @@
 //!
 //! ## `search_by_name` (ticket #48)
 //!
-//! `CF_MONAD_PROFILES_BY_NAME` is a second secondary index, keyed by `normalized_name.as_bytes()
-//! ++ address` (value: the raw address), maintained alongside `CF_MONAD_PROFILES_BY_TIME` on
+//! The by-name index (`pn/`) is a second secondary index, keyed by `normalized_name.as_bytes()
+//! ++ address` (value: the raw address), maintained alongside the by-time index (`pt/`) on
 //! every [`DbMonadProfiles::put`]. `normalized_name` is the first `entries` item with `kind ==
 //! "display_name"`, its `body` decoded as UTF-8 and lowercased -- see
 //! [`normalized_display_name`]. A profile with no `display_name` entry, an empty/whitespace-only
@@ -48,19 +48,39 @@
 //! would destroy the sort order a prefix scan depends on. Search is intentionally prefix-only (not
 //! fuzzy) for this first pass, matching ticket #48's own scoping decision.
 
+//!
+//! ## Storage
+//!
+//! In the registry's transaction store (see `crate::store::db`): `p/` + address holds the
+//! profile bytes, `pt/` and `pn/` are the two indexes above, and `pc` counts profiles. A replace
+//! ([`DbMonadProfiles::replace`]) reads the stored record, lets the caller decide on the new one,
+//! and writes the record, removes the old record's index rows and adds the new ones, all in one
+//! transaction: two replicas replacing one profile leave exactly one record and its own rows.
+
 use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use std::fmt::Debug;
 
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use prost::Message;
-use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use thiserror::Error;
 
 use crate::{
     monad_http::Address,
     proto,
-    store::db::{Db, CF, CF_MONAD_PROFILES, CF_MONAD_PROFILES_BY_NAME, CF_MONAD_PROFILES_BY_TIME},
+    store::{
+        db::{get_value, mark_format, prefix_end, put_value, Db, SCAN_BATCH},
+        kv_store::{key_after, KvTransaction},
+    },
 };
+
+const PROFILES_PREFIX: &[u8] = b"p/";
+const BY_TIME_PREFIX: &[u8] = b"pt/";
+const BY_NAME_PREFIX: &[u8] = b"pn/";
+const COUNT_KEY: &[u8] = b"pc";
+
+fn profile_key(address: &[u8]) -> Vec<u8> {
+    [PROFILES_PREFIX, address].concat()
+}
 
 /// Server-side clamp on how many results [`DbMonadProfiles::search_by_name`] (and therefore `GET
 /// /metadata/monad/search`) will ever return in one page, regardless of what a caller requests --
@@ -68,18 +88,18 @@ use crate::{
 /// (`crate::http::server::handle_get_metadata_range`'s `MAX_NUM_ITEMS`).
 pub const MAX_SEARCH_RESULTS: usize = 100;
 
-/// Build the `CF_MONAD_PROFILES_BY_TIME` key for a given `(timestamp, address)` pair. Kept as a
+/// Build the by-time index (`pt/`) key for a given `(timestamp, address)` pair. Kept as a
 /// free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::list_since`] can't disagree on
 /// the encoding -- mirrors `store::monad_messages::by_time_key` exactly.
 fn by_time_key(timestamp: i64, address: &[u8]) -> Vec<u8> {
-    [timestamp.to_be_bytes().as_ref(), address].concat()
+    [BY_TIME_PREFIX, timestamp.to_be_bytes().as_ref(), address].concat()
 }
 
-/// Build the `CF_MONAD_PROFILES_BY_NAME` key for a given `(normalized_name, address)` pair. Kept
+/// Build the by-name index (`pn/`) key for a given `(normalized_name, address)` pair. Kept
 /// as a free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::search_by_name`] can't
 /// disagree on the encoding -- mirrors [`by_time_key`] exactly.
 fn by_name_key(normalized_name: &str, address: &[u8]) -> Vec<u8> {
-    [normalized_name.as_bytes(), address].concat()
+    [BY_NAME_PREFIX, normalized_name.as_bytes(), address].concat()
 }
 
 /// Lowercase-normalize a raw display-name string -- the same normalization applied both when
@@ -112,9 +132,30 @@ fn normalized_display_name(profile: &proto::MonadProfile) -> Option<String> {
 /// Allows access to stored Monad-native profile registrations.
 pub struct DbMonadProfiles<'a> {
     db: &'a Db,
-    cf_monad_profiles: &'a CF,
-    cf_monad_profiles_by_time: &'a CF,
-    cf_monad_profiles_by_name: &'a CF,
+}
+
+/// The record a profile replace writes, with the index facts derived from it.
+#[derive(Debug, Clone)]
+pub struct ProfileRow {
+    /// Exact stored bytes (`SignedPayload` or Frank-CBOR frame).
+    pub raw: Vec<u8>,
+    /// Registration timestamp, milliseconds since the Unix epoch.
+    pub timestamp_ms: i64,
+    /// Normalized display name to index, if any.
+    pub normalized_name: Option<String>,
+}
+
+impl ProfileRow {
+    /// The row for a protobuf registration.
+    pub fn protobuf(signed: &cashweb_payload::proto::SignedPayload) -> Result<Self> {
+        let profile = proto::MonadProfile::decode(signed.payload.as_slice())
+            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
+        Ok(Self {
+            raw: signed.encode_to_vec(),
+            timestamp_ms: profile.timestamp,
+            normalized_name: normalized_display_name(&profile),
+        })
+    }
 }
 
 /// Errors indicating some Monad-profile store error.
@@ -258,24 +299,92 @@ fn parse_index_info(raw_bytes: &[u8]) -> Option<StoredProfileIndexInfo> {
     }
 }
 
+/// Statement metadata (revision, timestamp_ms and type-1 statement frame bytes) of stored
+/// Frank-CBOR registration bytes, for monotonic revision checks; `None` for anything else.
+pub fn cbor_statement_info(raw: &[u8]) -> Option<CborStatementInfo> {
+    if !is_cbor_frame(raw) {
+        return None;
+    }
+    let (statement, type_4_frame) = extract_cbor_directory_statement(raw)?;
+    let frank_cbor::TypedPayload::DirectoryStatement {
+        revision,
+        timestamp,
+        ..
+    } = statement.typed.as_deref()?
+    else {
+        return None;
+    };
+    let timestamp_ms = frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
+        .ok()
+        .and_then(|ms| ms.try_into().ok())
+        .unwrap_or(0);
+    Some(CborStatementInfo {
+        revision: *revision,
+        timestamp_ms,
+        type_4_frame,
+    })
+}
+
+fn indexed_address(bytes: &[u8]) -> Result<Address> {
+    Ok(Address(
+        bytes
+            .try_into()
+            .map_err(|_| InvalidIndexedAddress(hex::encode(bytes)))?,
+    ))
+}
+
+/// The primary record an index row points to; its absence is an inconsistent database.
+fn indexed_record(tx: &mut dyn KvTransaction, address: &Address) -> Result<Vec<u8>> {
+    Ok(get_value(tx, &profile_key(&address.0))?.ok_or_else(|| {
+        CannotDecodeSignedPayload(format!(
+            "indexed address {} has no primary record",
+            hex::encode(address.0)
+        ))
+    })?)
+}
+
 impl<'a> DbMonadProfiles<'a> {
     /// Create a new [`DbMonadProfiles`] instance.
     pub fn new(db: &'a Db) -> Self {
-        let cf_monad_profiles = db.cf(CF_MONAD_PROFILES).unwrap();
-        let cf_monad_profiles_by_time = db.cf(CF_MONAD_PROFILES_BY_TIME).unwrap();
-        let cf_monad_profiles_by_name = db.cf(CF_MONAD_PROFILES_BY_NAME).unwrap();
-        DbMonadProfiles {
-            db,
-            cf_monad_profiles,
-            cf_monad_profiles_by_time,
-            cf_monad_profiles_by_name,
-        }
+        DbMonadProfiles { db }
+    }
+
+    /// Replace the profile at `address` in one transaction. `decide` receives the stored bytes
+    /// (if any) read in that transaction and returns the new row, or an error that leaves the
+    /// stored profile untouched. It may run more than once and must have no other effects.
+    /// The new record is written, the old record's index rows (whether protobuf or CBOR) are
+    /// removed and the new ones added, together.
+    pub fn replace(
+        &self,
+        address: &Address,
+        mut decide: impl FnMut(Option<&[u8]>) -> Result<ProfileRow>,
+    ) -> Result<()> {
+        let key = profile_key(&address.0);
+        self.db.transact(|tx| {
+            let existing = get_value(tx, &key)?;
+            let row = decide(existing.as_deref())?;
+            match existing.as_deref().and_then(parse_index_info) {
+                Some(info) => {
+                    tx.clear(&by_time_key(info.timestamp_ms, &address.0))?;
+                    if let Some(old_name) = info.normalized_name {
+                        tx.clear(&by_name_key(&old_name, &address.0))?;
+                    }
+                }
+                None if existing.is_none() => tx.atomic_add(COUNT_KEY, 1)?,
+                None => {}
+            }
+            mark_format(tx)?;
+            put_value(tx, &key, &row.raw)?;
+            tx.set(&by_time_key(row.timestamp_ms, &address.0), &address.0)?;
+            if let Some(name) = &row.normalized_name {
+                tx.set(&by_name_key(name, &address.0), &address.0)?;
+            }
+            Ok(())
+        })
     }
 
     /// Store raw profile bytes (`SignedPayload` or Frank-CBOR frame) under `address`,
-    /// atomically updating primary storage and secondary indices (`CF_MONAD_PROFILES_BY_TIME`
-    /// and `CF_MONAD_PROFILES_BY_NAME`). Any stale secondary index entries from a previously
-    /// stored profile (whether protobuf or CBOR) are cleaned up in the same batch.
+    /// unconditionally replacing any stored profile and its index rows.
     pub fn put_raw(
         &self,
         address: &Address,
@@ -283,36 +392,13 @@ impl<'a> DbMonadProfiles<'a> {
         timestamp_ms: i64,
         normalized_name: Option<&str>,
     ) -> Result<()> {
-        let mut batch = rocksdb::WriteBatch::default();
-        if let Some(existing_bytes) = self.get_raw(address)? {
-            if let Some(info) = parse_index_info(&existing_bytes) {
-                batch.delete_cf(
-                    self.cf_monad_profiles_by_time,
-                    by_time_key(info.timestamp_ms, &address.0),
-                );
-                if let Some(old_name) = info.normalized_name {
-                    batch.delete_cf(
-                        self.cf_monad_profiles_by_name,
-                        by_name_key(&old_name, &address.0),
-                    );
-                }
-            }
-        }
-        batch.put_cf(self.cf_monad_profiles, address.0, raw_bytes);
-        batch.put_cf(
-            self.cf_monad_profiles_by_time,
-            by_time_key(timestamp_ms, &address.0),
-            address.0,
-        );
-        if let Some(new_name) = normalized_name {
-            batch.put_cf(
-                self.cf_monad_profiles_by_name,
-                by_name_key(new_name, &address.0),
-                address.0,
-            );
-        }
-        self.db.write_batch(batch)?;
-        Ok(())
+        self.replace(address, |_| {
+            Ok(ProfileRow {
+                raw: raw_bytes.to_vec(),
+                timestamp_ms,
+                normalized_name: normalized_name.map(str::to_owned),
+            })
+        })
     }
 
     /// Store a [`cashweb_payload::proto::SignedPayload`] under `address`, overwriting any
@@ -322,15 +408,8 @@ impl<'a> DbMonadProfiles<'a> {
         address: &Address,
         signed: &cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
-        let profile = proto::MonadProfile::decode(signed.payload.as_slice())
-            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
-        let name = normalized_display_name(&profile);
-        self.put_raw(
-            address,
-            &signed.encode_to_vec(),
-            profile.timestamp,
-            name.as_deref(),
-        )
+        let row = ProfileRow::protobuf(signed)?;
+        self.replace(address, |_| Ok(row.clone()))
     }
 
     /// Store a canonical Frank-CBOR type-2 account registration frame under `address`.
@@ -346,25 +425,19 @@ impl<'a> DbMonadProfiles<'a> {
 
     /// Retrieve raw bytes previously registered under `address`, or [`None`] if not found.
     pub fn get_raw(&self, address: &Address) -> Result<Option<Vec<u8>>> {
-        let serialized = match self.db.get(self.cf_monad_profiles, address.0)? {
-            Some(serialized) => serialized.as_ref().to_vec(),
-            None => return Ok(None),
-        };
-        Ok(Some(serialized))
+        let key = profile_key(&address.0);
+        self.db.transact(|tx| get_value(tx, &key))
     }
 
     /// Count current profile rows without decoding payloads or returning addresses.
     pub fn count_records(&self) -> Result<u64> {
-        let iter = self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_monad_profiles, IteratorMode::Start);
-        let mut count = 0u64;
-        for row in iter {
-            row?;
-            count = count.saturating_add(1);
-        }
-        Ok(count)
+        let count = self.db.transact(|tx| Ok(tx.get(COUNT_KEY)?))?;
+        Ok(count.map_or(0, |bytes| {
+            let mut le = [0u8; 8];
+            let len = bytes.len().min(8);
+            le[..len].copy_from_slice(&bytes[..len]);
+            u64::from_le_bytes(le)
+        }))
     }
 
     /// Retrieve a [`cashweb_payload::proto::SignedPayload`] previously registered under
@@ -407,59 +480,38 @@ impl<'a> DbMonadProfiles<'a> {
     /// Extract statement metadata (revision, timestamp_ms, and type-1 statement frame bytes)
     /// from a stored Frank-CBOR directory registration, for monotonic revision checks.
     pub fn get_cbor_statement_info(&self, address: &Address) -> Result<Option<CborStatementInfo>> {
-        let raw = match self.get_raw(address)? {
-            Some(raw) => raw,
-            None => return Ok(None),
-        };
-        if !is_cbor_frame(&raw) {
-            return Ok(None);
-        }
-        if let Some((statement, type_4_frame)) = extract_cbor_directory_statement(&raw) {
-            if let Some(frank_cbor::TypedPayload::DirectoryStatement {
-                revision,
-                timestamp,
-                ..
-            }) = statement.typed.as_deref()
-            {
-                let timestamp_ms = frank_cbor::join_ms(timestamp.seconds, timestamp.nanoseconds)
-                    .ok()
-                    .and_then(|ms| ms.try_into().ok())
-                    .unwrap_or(0);
-                return Ok(Some(CborStatementInfo {
-                    revision: *revision,
-                    timestamp_ms,
-                    type_4_frame,
-                }));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .get_raw(address)?
+            .and_then(|raw| cbor_statement_info(&raw)))
     }
 
     /// List every `(address, raw_bytes)` registered with timestamp >= `since`, ordered by
-    /// timestamp ascending.
+    /// timestamp ascending. Each transaction reads [`SCAN_BATCH`] index rows and their records,
+    /// so a batch is consistent; a profile replaced during the listing can appear at both its
+    /// old and its new timestamp, still in ascending order.
     pub fn list_since_raw(&self, since: i64) -> Result<Vec<(Address, Vec<u8>)>> {
-        let start_key = by_time_key(since, &[]);
-        let iter = self.db.rocksdb().iterator_cf(
-            self.cf_monad_profiles_by_time,
-            IteratorMode::From(&start_key, Direction::Forward),
-        );
-        iter.map(|item| {
-            let (_, address_bytes) = item?;
-            let address = Address(
-                address_bytes
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| InvalidIndexedAddress(hex::encode(&address_bytes)))?,
-            );
-            let raw = self.get_raw(&address)?.ok_or_else(|| {
-                CannotDecodeSignedPayload(format!(
-                    "indexed address {} has no primary record",
-                    hex::encode(address.0)
-                ))
+        let mut start = by_time_key(since, &[]);
+        let end = prefix_end(BY_TIME_PREFIX);
+        let mut results = Vec::new();
+        loop {
+            let (batch, next) = self.db.transact(|tx| {
+                let rows = tx.get_range(&start, &end, SCAN_BATCH)?;
+                let next = (rows.len() == SCAN_BATCH)
+                    .then(|| rows.last().map(|(key, _)| key_after(key)))
+                    .flatten();
+                let mut batch = Vec::with_capacity(rows.len());
+                for (_, address_bytes) in rows {
+                    let address = indexed_address(&address_bytes)?;
+                    batch.push((address, indexed_record(tx, &address)?));
+                }
+                Ok((batch, next))
             })?;
-            Ok((address, raw))
-        })
-        .collect()
+            results.extend(batch);
+            match next {
+                Some(next) => start = next,
+                None => return Ok(results),
+            }
+        }
     }
 
     /// List every `(address, SignedPayload)` registered with the profile's own `timestamp >=
@@ -481,48 +533,27 @@ impl<'a> DbMonadProfiles<'a> {
         Ok(results)
     }
 
-    /// Prefix-search `CF_MONAD_PROFILES_BY_NAME` for every profile whose normalized `display_name`
-    /// starts with `prefix`, returning `(address, raw_bytes)` pairs.
+    /// Prefix-search the by-name index for every profile whose normalized `display_name`
+    /// starts with `prefix`, returning `(address, raw_bytes)` pairs, in one transaction.
     pub fn search_by_name_raw(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
         let limit = limit.min(MAX_SEARCH_RESULTS);
-        let normalized_prefix = normalize_name(prefix);
-        let prefix_bytes = normalized_prefix.as_bytes();
-        let start_key = by_name_key(&normalized_prefix, &[]);
-        let iter = self.db.rocksdb().iterator_cf(
-            self.cf_monad_profiles_by_name,
-            IteratorMode::From(&start_key, Direction::Forward),
-        );
-        let mut results = Vec::new();
-        for item in iter {
-            if results.len() == limit {
-                break;
+        let start = by_name_key(&normalize_name(prefix), &[]);
+        self.db.transact(|tx| {
+            let rows = tx.scan_prefix(&start, None, limit)?;
+            let mut results = Vec::with_capacity(rows.len());
+            for (_, address_bytes) in rows {
+                let address = indexed_address(&address_bytes)?;
+                results.push((address, indexed_record(tx, &address)?));
             }
-            let (key, address_bytes) = item?;
-            if !key.starts_with(prefix_bytes) {
-                break;
-            }
-            let address = Address(
-                address_bytes
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| InvalidIndexedAddress(hex::encode(&address_bytes)))?,
-            );
-            let raw = self.get_raw(&address)?.ok_or_else(|| {
-                CannotDecodeSignedPayload(format!(
-                    "indexed address {} has no primary record",
-                    hex::encode(address.0)
-                ))
-            })?;
-            results.push((address, raw));
-        }
-        Ok(results)
+            Ok(results)
+        })
     }
 
-    /// Prefix-search `CF_MONAD_PROFILES_BY_NAME` returning decoded protobuf `SignedPayload`s.
+    /// Prefix-search the by-name index returning decoded protobuf `SignedPayload`s.
     /// CBOR records are omitted from this legacy view.
     pub fn search_by_name(
         &self,
@@ -540,21 +571,6 @@ impl<'a> DbMonadProfiles<'a> {
             results.push((address, signed));
         }
         Ok(results)
-    }
-
-    pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_MONAD_PROFILES,
-            rocksdb::Options::default(),
-        ));
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_MONAD_PROFILES_BY_TIME,
-            rocksdb::Options::default(),
-        ));
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_MONAD_PROFILES_BY_NAME,
-            rocksdb::Options::default(),
-        ));
     }
 }
 

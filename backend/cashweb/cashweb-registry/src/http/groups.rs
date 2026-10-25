@@ -1746,6 +1746,14 @@ mod tests {
         ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::store::kv_store::KvError> {
             self.tx.get_range(start, end, limit)
         }
+        fn get_range_reverse(
+            &mut self,
+            start: &[u8],
+            end: &[u8],
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::store::kv_store::KvError> {
+            self.tx.get_range_reverse(start, end, limit)
+        }
         fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), crate::store::kv_store::KvError> {
             self.wrote = true;
             self.tx.set(key, value)

@@ -181,6 +181,48 @@ fn point_read_conflicts_with_clear_and_add(a: &dyn RelayKvStore, b: &dyn RelayKv
     assert_eq!(attempts(b"point/added", |tx, key| tx.atomic_add(key, 1)), 2);
 }
 
+/// Reverse reads return descending rows, and conflict with an insert into the part they read.
+fn reverse_range_reads(a: &dyn RelayKvStore, b: &dyn RelayKvStore) {
+    a.transact(|tx| {
+        for key in [b"rev/a", b"rev/c", b"rev/e"] {
+            tx.set(key, b"v")?;
+        }
+        Ok::<_, KvError>(())
+    })
+    .unwrap();
+    let keys = |rows: Vec<(Vec<u8>, Vec<u8>)>| rows.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+    assert_eq!(
+        keys(
+            a.transact(|tx| tx.get_range_reverse(b"rev/", b"rev0", 10))
+                .unwrap()
+        ),
+        [b"rev/e".to_vec(), b"rev/c".to_vec(), b"rev/a".to_vec()]
+    );
+    assert_eq!(
+        keys(
+            a.transact(|tx| tx.get_range_reverse(b"rev/", b"rev/d", 1))
+                .unwrap()
+        ),
+        [b"rev/c".to_vec()]
+    );
+    let attempts = |inserted: &'static [u8]| {
+        let count = AtomicU32::new(0);
+        a.transact(|tx| {
+            let attempt = count.fetch_add(1, Ordering::SeqCst) + 1;
+            tx.get_range_reverse(b"rev/", b"rev0", 1)?;
+            if attempt == 1 {
+                b.transact(|other| other.set(inserted, b"concurrent"))?;
+            }
+            tx.set(b"rev-summary", b"seen")
+        })
+        .unwrap();
+        count.load(Ordering::SeqCst)
+    };
+    // The limited read covered only `rev/e` to the end: an insert below it does not conflict.
+    assert_eq!(attempts(b"rev/b"), 1);
+    assert_eq!(attempts(b"rev/f"), 2);
+}
+
 fn limits_return_typed_errors(store: &dyn RelayKvStore) {
     store
         .transact(|tx| tx.set(b"limits/max", &vec![1; MAX_VALUE_BYTES]))
@@ -305,6 +347,7 @@ fn rocksdb_transaction_contract() {
     second_thread.join().unwrap();
     range_read_conflicts_with_insert(store.as_ref(), store.as_ref());
     point_read_conflicts_with_clear_and_add(store.as_ref(), store.as_ref());
+    reverse_range_reads(store.as_ref(), store.as_ref());
     limits_return_typed_errors(store.as_ref());
     atomic_adds_commute(store.clone(), store);
 }
@@ -408,6 +451,7 @@ mod live_fdb {
         }
         range_read_conflicts_with_insert(a.as_ref(), b.as_ref());
         point_read_conflicts_with_clear_and_add(a.as_ref(), b.as_ref());
+        reverse_range_reads(a.as_ref(), b.as_ref());
         limits_return_typed_errors(a.as_ref());
         atomic_adds_commute(a.clone(), b.clone());
 

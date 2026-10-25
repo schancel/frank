@@ -56,14 +56,20 @@ impl Snapshot {
                 &self.forum_post_count_available,
             ),
         }
-        self.update(
-            REGISTRY_BYTES_NAME,
-            registry
-                .registry_estimated_live_data_size_bytes()
-                .map_err(|e| e.to_string()),
-            &self.registry_bytes,
-            &self.registry_bytes_available,
-        );
+        // A shared registry store has no size this replica owns: the gauge is not offered.
+        match registry.registry_estimated_live_data_size_bytes() {
+            Ok(None) => self
+                .registry_bytes_available
+                .store(false, Ordering::Relaxed),
+            result => self.update(
+                REGISTRY_BYTES_NAME,
+                result
+                    .map(|bytes| bytes.unwrap_or(0))
+                    .map_err(|e| e.to_string()),
+                &self.registry_bytes,
+                &self.registry_bytes_available,
+            ),
+        }
         self.update(
             DIRECT_MESSAGE_BYTES_NAME,
             registry

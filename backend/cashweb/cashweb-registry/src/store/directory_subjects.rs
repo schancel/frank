@@ -822,7 +822,7 @@ mod tests {
         // General Db returns this typed facade; the extracted owner is an actual runtime path.
         let db = include_str!("db.rs");
         assert!(db.contains("Result<super::directory_subjects::DbDirectorySubjects<'_>>"));
-        assert!(db.contains("self.directory_subjects.rows(self.db.path())"));
+        assert!(db.contains("self.directory_subjects.rows(&self.path)"));
     }
 
     #[test]

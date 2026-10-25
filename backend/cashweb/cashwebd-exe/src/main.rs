@@ -311,8 +311,27 @@ fn boot_fdb_network(driver: &RelayStorageDriver) -> Result<Option<FdbNetwork>> {
     }
 }
 
+/// One FoundationDB store under `<fdb_subspace_prefix><owner>/`, so each owner has its own
+/// sub-prefix of the cluster's subspace.
+#[cfg(feature = "foundationdb")]
+fn foundationdb_store(
+    cluster_file: &std::path::Path,
+    subspace_prefix: &str,
+    owner: &str,
+) -> Result<Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>> {
+    let cluster_file = cluster_file.to_str().ok_or_else(|| {
+        bitcoinsuite_error::Report::msg("registry.cluster.fdb_cluster_file is not UTF-8")
+    })?;
+    let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
+        cluster_file,
+        format!("{subspace_prefix}{owner}/"),
+    )
+    .map_err(|error| bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}")))?;
+    Ok(Arc::new(store))
+}
+
 /// The group backend selected by `registry.cluster.driver`. FoundationDB keys live under
-/// `<fdb_subspace_prefix>groups-v1/`, so later owners can take their own sub-prefixes.
+/// `<fdb_subspace_prefix>groups-v1/`.
 fn group_backend(
     driver: &RelayStorageDriver,
     registry_db: &std::path::Path,
@@ -323,19 +342,30 @@ fn group_backend(
         RelayStorageDriver::FoundationDb {
             cluster_file,
             subspace_prefix,
-        } => {
-            let cluster_file = cluster_file.to_str().ok_or_else(|| {
-                bitcoinsuite_error::Report::msg("registry.cluster.fdb_cluster_file is not UTF-8")
-            })?;
-            let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
-                cluster_file,
-                format!("{subspace_prefix}groups-v1/"),
-            )
-            .map_err(|error| {
-                bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}"))
-            })?;
-            Ok(GroupBackend::Shared(Arc::new(store)))
-        }
+        } => Ok(GroupBackend::Shared(foundationdb_store(
+            cluster_file,
+            subspace_prefix,
+            "groups-v1",
+        )?)),
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by boot_fdb_network"),
+    }
+}
+
+/// The registry `Db` selected by `registry.cluster.driver`: RocksDB at `db_path`, or the
+/// FoundationDB subspace `<fdb_subspace_prefix>registry-v1/` with `db_path` as this replica's
+/// directory for the owners that are still local.
+fn registry_db(driver: &RelayStorageDriver, db_path: &std::path::Path) -> Result<Db> {
+    match driver {
+        RelayStorageDriver::RocksDb => Db::open(db_path),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => Db::open_shared(
+            db_path,
+            foundationdb_store(cluster_file, subspace_prefix, "registry-v1")?,
+        ),
         #[cfg(not(feature = "foundationdb"))]
         RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by require_driver_built"),
     }
@@ -351,6 +381,11 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
         info!(
             subspace_prefix = %subspace_prefix,
             "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/"
+        );
+        info!(
+            subspace_prefix = %subspace_prefix,
+            "The registry (profiles, usernames, metadata, topics) is stored in FoundationDB \
+             under {subspace_prefix}registry-v1/"
         );
     }
     if !registry.is_cluster_mode() {
@@ -393,6 +428,19 @@ async fn probe_shared_groups(
             ))
         })?;
     info!("FoundationDB group store is readable");
+    Ok(())
+}
+
+/// Read a shared registry store's format marker. The FoundationDB transaction timeout bounds
+/// the wait, so an unreachable cluster or a store of another format fails here.
+fn probe_shared_registry(db: &Db, driver: &RelayStorageDriver) -> Result<()> {
+    if !matches!(driver, RelayStorageDriver::FoundationDb { .. }) {
+        return Ok(());
+    }
+    db.check_format().map_err(|error| {
+        bitcoinsuite_error::Report::msg(format!("Reading the FoundationDB registry store: {error}"))
+    })?;
+    info!("FoundationDB registry store is readable");
     Ok(())
 }
 
@@ -442,11 +490,12 @@ async fn run(
             )
         })?;
     }
-    let db = Db::open(&conf.registry.db_path)?;
+    let db = registry_db(&driver, &conf.registry.db_path)?;
     let groups = group_backend(&driver, &conf.registry.db_path)?;
     // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
     let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
     probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
+    probe_shared_registry(&db, &driver)?;
     if check_db {
         return Ok(());
     }
@@ -976,7 +1025,6 @@ max_get_logs_range = 10\n\n\
             .unwrap_err();
         let text = format!("{error:#}");
         for owner in [
-            "registry database",
             "direct messages",
             "directory",
             "forum",
@@ -986,14 +1034,15 @@ max_get_logs_range = 10\n\n\
         ] {
             assert!(text.contains(owner), "{owner}: {text}");
         }
-        // Groups are on FoundationDB here, so they are not replica-local.
+        // The registry database and groups are on FoundationDB here, so not replica-local.
         assert!(!text.contains("groups"), "{text}");
+        assert!(!text.contains("registry database"), "{text}");
         let previewed = format!("{base}\n{cluster}preview_replica_local_owners = true\n{nats}");
         let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 6);
+        assert_eq!(conf.registry.replica_local_owners().len(), 5);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");

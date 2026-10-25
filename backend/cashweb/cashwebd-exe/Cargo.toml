@@ -46,3 +46,7 @@ sha2 = "0.10"
 # ... and subscribes to a group's live socket on one replica while another appends.
 futures = "0.3"
 tokio-tungstenite = "0.17"
+# ... and signs a real profile registration, read back across relays.
+bitcoinsuite-ecc-secp256k1 = { path = "../../bitcoinsuite/bitcoinsuite-ecc-secp256k1" }
+frank-cbor = { path = "../frank-cbor" }
+prost = "0.11"

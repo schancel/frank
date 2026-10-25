@@ -1143,30 +1143,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retired_protobuf_topic_rows_remain_opaque_and_unserved() {
+    async fn retired_protobuf_topic_tables_are_refused_and_their_routes_serve_nothing() {
         if isolated(
-            "http::monad_topics::tests::retired_protobuf_topic_rows_remain_opaque_and_unserved",
+            "http::monad_topics::tests::retired_protobuf_topic_tables_are_refused_and_their_routes_serve_nothing",
             "FRANK_FORUM_RETENTION_ROUTE_CHILD",
         ) {
             return;
         }
         use tower::ServiceExt;
-        let (dir, registry) = test_registry();
-        drop(registry);
-        let db_path = dir.path().join("db.rocksdb");
-        let db = Db::open(&db_path).unwrap();
-        let hash = [0xab; 32];
-        let legacy_value = b"opaque-retired-protobuf-row";
-        db.put(db.cf("monad_topic_posts").unwrap(), hash, legacy_value)
-            .unwrap();
-        let registry = Registry::new(
-            db,
-            Arc::new(UnusedChainAdapter),
-            Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
+        // The retired protobuf topic tables are deleted, not kept open: a database that still
+        // holds one is refused at startup with the development reset (no migration, AGENTS §6).
+        let old = TempDir::new("cashweb-registry--retired-topic-tables").unwrap();
+        let old_path = old.path().join("db.rocksdb");
+        {
+            let mut options = rocksdb::Options::default();
+            options.create_if_missing(true);
+            options.create_missing_column_families(true);
+            let legacy = rocksdb::DB::open_cf(&options, &old_path, ["monad_topic_posts"]).unwrap();
+            legacy
+                .put_cf(
+                    legacy.cf_handle("monad_topic_posts").unwrap(),
+                    [0xab; 32],
+                    b"opaque-retired-protobuf-row",
+                )
+                .unwrap();
+        }
+        let refusal = format!("{:#}", Db::open(&old_path).unwrap_err());
+        assert!(refusal.contains("monad_topic_posts"), "{refusal}");
+        assert!(refusal.contains("Development reset"), "{refusal}");
+        // The refusal neither moved nor deleted the old row.
+        let legacy = rocksdb::DB::open_cf(
+            &rocksdb::Options::default(),
+            &old_path,
+            ["monad_topic_posts"],
+        )
+        .unwrap();
+        assert_eq!(
+            legacy
+                .get_cf(legacy.cf_handle("monad_topic_posts").unwrap(), [0xab; 32])
+                .unwrap(),
+            Some(b"opaque-retired-protobuf-row".to_vec())
         );
+        drop(legacy);
+
+        let (_dir, registry) = test_registry();
+        let hash = [0xab; 32];
         let router = test_server(registry).into_router();
         for accept in ["application/cbor", "application/x-protobuf"] {
             let response = router
@@ -1224,16 +1245,6 @@ mod tests {
                 _ => panic!("canonical family required"),
             }
         }
-        drop(router);
-        let reopened = Db::open(&db_path).unwrap();
-        assert_eq!(
-            reopened
-                .get(reopened.cf("monad_topic_posts").unwrap(), hash)
-                .unwrap()
-                .map(|value| value.to_vec()),
-            Some(legacy_value.to_vec()),
-            "retiring protobuf support must preserve old rows without exposing them"
-        );
     }
 
     #[tokio::test]

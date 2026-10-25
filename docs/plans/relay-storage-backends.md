@@ -24,9 +24,11 @@ be restarted in-process.
 `fdb_subspace_prefix` is one or more segments of letters, digits, `-` or `_`, each ending in
 `/` (for example `frank-prod/`), so `frank/` and `frank2/` never share keys. Two relays must
 not use a prefix that is a leading run of the other's segments. The driver currently backs
-one owner, groups, under `<fdb_subspace_prefix>groups-v1/`; group store calls run on
-blocking workers. `--check-db` opens and reads that store. Every other owner below still
-opens its own RocksDB.
+two owners: groups under `<fdb_subspace_prefix>groups-v1/`, and the registry `Db` under
+`<fdb_subspace_prefix>registry-v1/`. Group store calls run on blocking workers; registry
+calls on a shared store hand their async worker over with `block_in_place`. Startup and
+`--check-db` open both stores and read their format markers, and fail if either cannot be
+read. Every other owner below still opens its own RocksDB.
 
 Cluster mode is `registry.cluster.enabled = true`. It requires an enabled
 `[registry.cluster.nats]`, a `cluster_name` (one NATS subject token), and the
@@ -40,7 +42,8 @@ reads and checks both. A single node without these keys
 keeps creating its session secret beside the database. Cluster mode refuses to start while
 any enabled owner is still replica-local (`RegistryConf::replica_local_owners`) unless
 `registry.cluster.preview_replica_local_owners = true`, in which case each is logged by name.
-The flag is refused when cluster mode is off.
+The flag is refused when cluster mode is off. `reserved_usernames` must be identical on every
+replica, because it guards the username namespace they now share.
 
 Core NATS is selected separately by `registry.cluster.nats`. It carries ephemeral
 notifications, not durable messages, on `frank.<cluster>.dm.<address>` and
@@ -51,7 +54,7 @@ replicas share data. Clients recover missed notifications by reading durable sta
 
 | State | Owner | Current persistence |
 | --- | --- | --- |
-| Registry metadata, profiles, topics, usernames and derived indexes | `store/db.rs` and its typed stores | RocksDB column families and atomic write batches |
+| Registry metadata, profiles, topics, usernames and derived indexes | `store/db.rs` and its typed stores over `RelayKvStore` | RocksDB at the registry path, or FoundationDB (`driver = "foundationdb"`); one transaction per claim or replace, including its index rows (key layout in `store/db.rs`) |
 | Canonical messages, payment claims, inboxes, challenges, notification policies and VAPID identity (the provisioned `registry.vapid_private_key_file` when set) | `store/monad_dm_cbor.rs::Owner` | Separate RocksDB database, lazy opening and process-local mutation locks |
 | Directory preview history | `store/directory_preview_owner.rs` | Separate RocksDB owner |
 | Self-published directory subjects and continuity | `store/directory_subjects.rs` | Separate RocksDB database owned by the registry |
@@ -60,9 +63,17 @@ replicas share data. Clients recover missed notifications by reading durable sta
 | Notification delivery hints | `events::RelayEventBus` | In-memory broadcast or Core NATS; no durable authority |
 
 `RelayKvStore` is a component transaction interface. Its existence does not replace the
-owners above: only `GroupStore` uses it today, so it is not evidence that canonical message
-admission or registry writes do. Groups are the only owner a FoundationDB-backed relay
-shares between replicas.
+owners above: `GroupStore` and the registry `Db` use it today, so it is not evidence that
+canonical message admission or the directory do. Groups and the registry are the owners a
+FoundationDB-backed relay shares between replicas.
+
+The registry's earlier RocksDB column families (including the retired protobuf topic
+tables) have no reader: a registry database holding any of them is refused at startup with
+the development reset, which deletes only that registry path and its message stores (no
+keys, no funds). A shared store holding rows of another format, or rows without the
+`registry-kv-v1` marker, is refused too; the reset is clearing that cluster's registry
+subspace. Profile and topic values longer than 100 KB are split into parts in the same
+transaction until large values move to the object store.
 
 ## Required predecessor stack
 

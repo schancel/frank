@@ -715,3 +715,365 @@ async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
     assert_every_acknowledged_append_readable(&group, &acknowledged).await;
     println!("PASS relay-b killed mid-load: every acknowledged append is readable");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Directory (HA step 8): one directory store on FoundationDB, large evidence in MinIO
+// ---------------------------------------------------------------------------------------------
+
+/// The lab relay tuple, as in `cluster/relay.toml`'s `[registry.directory]`.
+const LAB_RELAY_ID: &str = "000102030405060708090a0b0c0d0e0f";
+const LAB_RELAY_IDENTITY: &str =
+    "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13";
+const LAB_RELAY_ENDPOINT: &str = "https://relay.example.invalid";
+const LAB_BINDING_EXPIRY_S: i64 = 1_830_297_600;
+const DIRECTORY_NETWORK: &str = "monad-testnet";
+const DIRECTORY_MEDIA: &str = "application/vnd.frank.cbor";
+
+/// One account's key and the entries it signs.
+struct Account {
+    secret: SecretKey,
+    point: [u8; 33],
+}
+
+/// One signed entry: the exact attestation bytes and its statement hash (T1).
+#[derive(Clone)]
+struct Signed {
+    attestation: Vec<u8>,
+    hash: [u8; 32],
+}
+
+fn cbor_timestamp(seconds: i64, nanoseconds: u32) -> frank_cbor::CborValue {
+    frank_cbor::cbor_map(vec![
+        (0, frank_cbor::CborValue::Int(seconds.into())),
+        (1, frank_cbor::CborValue::Int(nanoseconds.into())),
+    ])
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+impl Account {
+    fn new() -> Self {
+        let (secret, point) = key();
+        Self { secret, point }
+    }
+    fn subject(&self) -> String {
+        hex::encode(self.point)
+    }
+    /// The reviewed bootstrap statement, made this account's: its key as subject, the lab
+    /// relay tuple, a current validity window, then signed by this key. `nanos` varies the
+    /// timestamp so two entries of one revision differ.
+    fn sign(&self, revision: u64, predecessor: Option<[u8; 32]>, nanos: u32) -> Signed {
+        use frank_cbor::{cbor_map, decode_canonical, encode_frame, CborValue};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/protocol/proposals/suite1-directory/vectors.json"
+        ))
+        .unwrap();
+        let bootstrap = vectors["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == "bootstrap")
+            .unwrap();
+        let original = hex::decode(bootstrap["type4_hex"].as_str().unwrap()).unwrap();
+        let CborValue::Map(envelope) = decode_canonical(&original[9..]).unwrap() else {
+            panic!("envelope")
+        };
+        let Some((_, CborValue::Bytes(body))) = envelope.iter().find(|(key, _)| *key == 3) else {
+            panic!("body")
+        };
+        let CborValue::Map(mut fields) = decode_canonical(body).unwrap() else {
+            panic!("payload")
+        };
+        let subject = cbor_map(vec![
+            (0, CborValue::Int(1)),
+            (1, CborValue::Bytes(self.point.to_vec())),
+        ]);
+        let relay = cbor_map(vec![
+            (0, CborValue::Bytes(hex::decode(LAB_RELAY_ID).unwrap())),
+            (1, CborValue::Text(LAB_RELAY_ENDPOINT.into())),
+            (
+                2,
+                cbor_map(vec![
+                    (0, CborValue::Int(1)),
+                    (
+                        1,
+                        CborValue::Bytes(hex::decode(LAB_RELAY_IDENTITY).unwrap()),
+                    ),
+                ]),
+            ),
+            (3, cbor_timestamp(LAB_BINDING_EXPIRY_S, 0)),
+        ]);
+        // Issued a little in the past so a replica's clock slightly behind still accepts it.
+        let issued = unix_now() - 120 + revision as i64;
+        for (key, value) in &mut fields {
+            match *key {
+                1 => *value = subject.clone(),
+                2 => *value = CborValue::Int(revision.into()),
+                3 => *value = cbor_timestamp(issued, nanos),
+                4 => *value = CborValue::Array(vec![relay.clone()]),
+                6 => *value = cbor_timestamp(issued + 7 * 24 * 3600, 0),
+                13 => {
+                    if let Some(predecessor) = predecessor {
+                        *value = CborValue::Bytes(predecessor.to_vec());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let statement = encode_frame(
+            frank_cbor::EnvelopeFields {
+                type_id: frank_cbor::message_types::TYPE_DIRECTORY_STATEMENT,
+                schema_version: 4,
+                min_reader_version: 4,
+            },
+            frank_cbor::FramePayload::Value(&CborValue::Map(fields)),
+        )
+        .unwrap();
+        let hash: [u8; 32] = Sha256::digest(
+            frank_cbor::common_transcript(
+                "frank/content-hash/v1",
+                DIRECTORY_NETWORK,
+                &statement,
+                &[],
+            )
+            .unwrap(),
+        )
+        .into();
+        let digest = frank_cbor::directory_signature_digest(DIRECTORY_NETWORK, &statement).unwrap();
+        let signature = Secp256k1::new()
+            .sign(&Message::from_slice(&digest).unwrap(), &self.secret)
+            .serialize_der()
+            .to_vec();
+        let wrapper = cbor_map(vec![
+            (0, CborValue::Bytes(statement)),
+            (
+                1,
+                CborValue::Array(vec![cbor_map(vec![
+                    (0, CborValue::Int(1)),
+                    (1, subject),
+                    (2, CborValue::Bytes(signature)),
+                ])]),
+            ),
+        ]);
+        let attestation = encode_frame(
+            frank_cbor::EnvelopeFields {
+                type_id: frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION,
+                schema_version: 1,
+                min_reader_version: 1,
+            },
+            frank_cbor::FramePayload::Value(&wrapper),
+        )
+        .unwrap();
+        Signed { attestation, hash }
+    }
+}
+
+fn head_url(origin: &str, subject: &str) -> String {
+    format!("{origin}/directory/v1/{DIRECTORY_NETWORK}/{subject}/head")
+}
+
+async fn publish(client: &reqwest::Client, origin: &str, subject: &str, entry: &Signed) -> u16 {
+    match client
+        .put(head_url(origin, subject))
+        .header("content-type", DIRECTORY_MEDIA)
+        .body(entry.attestation.clone())
+        .send()
+        .await
+    {
+        Ok(response) => response.status().as_u16(),
+        Err(_) => 0,
+    }
+}
+
+async fn resolve(client: &reqwest::Client, url: &str) -> (u16, Vec<u8>) {
+    let response = client.get(url).send().await.unwrap();
+    let status = response.status().as_u16();
+    (status, response.bytes().await.unwrap().to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn directory_an_entry_published_on_a_resolves_on_b_and_c() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    for origin in [&a, &b, &c] {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let account = Account::new();
+    let first = account.sign(0, None, 0);
+    assert_eq!(publish(&client, &a, &account.subject(), &first).await, 200);
+    let address = format!(
+        "0x{}",
+        hex::encode(
+            cashweb_registry::monad_stamp_stealth::recipient_address_from_public_key(
+                &account.point
+            )
+            .unwrap()
+            .0
+        )
+    );
+    for origin in [&b, &c, &proxy()] {
+        let by_key = resolve(&client, &head_url(origin, &account.subject())).await;
+        assert_eq!(by_key, (200, first.attestation.clone()), "{origin} by key");
+        let by_address = resolve(
+            &client,
+            &format!("{origin}/directory/v1/{DIRECTORY_NETWORK}/address/{address}"),
+        )
+        .await;
+        assert_eq!(
+            by_address,
+            (200, first.attestation.clone()),
+            "{origin} by address"
+        );
+    }
+    // A renewal accepted on C is what A and B serve next.
+    let renewal = account.sign(1, Some(first.hash), 0);
+    assert_eq!(
+        publish(&client, &c, &account.subject(), &renewal).await,
+        200
+    );
+    for origin in [&a, &b] {
+        assert_eq!(
+            resolve(&client, &head_url(origin, &account.subject())).await,
+            (200, renewal.attestation.clone()),
+            "{origin}"
+        );
+    }
+    println!("PASS directory: published on A, resolved on B, C and the proxy; renewed on C");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn directory_conflicting_revisions_to_a_and_b_accept_exactly_one_and_never_fork() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    for origin in [&a, &b, &c] {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let mut first_wins = [0usize; 2];
+    for round in 0..20 {
+        let account = Account::new();
+        let subject = account.subject();
+        let first = account.sign(0, None, 0);
+        assert_eq!(publish(&client, &a, &subject, &first).await, 200);
+        // Two devices renew the same revision at once, one through A and one through B.
+        let left = account.sign(1, Some(first.hash), 1);
+        let right = account.sign(1, Some(first.hash), 2);
+        let (on_a, on_b) = tokio::join!(
+            publish(&client, &a, &subject, &left),
+            publish(&client, &b, &subject, &right)
+        );
+        let statuses = [on_a, on_b];
+        assert_eq!(
+            statuses.iter().filter(|status| **status == 200).count(),
+            1,
+            "round {round}: {statuses:?}"
+        );
+        assert_eq!(
+            statuses.iter().filter(|status| **status == 409).count(),
+            1,
+            "round {round}: {statuses:?}"
+        );
+        let winner = if on_a == 200 { &left } else { &right };
+        first_wins[usize::from(on_a != 200)] += 1;
+        // Every replica serves the winner, and the subject is not quarantined: the account
+        // keeps working (a forked subject answers 409).
+        for origin in [&a, &b, &c] {
+            assert_eq!(
+                resolve(&client, &head_url(origin, &subject)).await,
+                (200, winner.attestation.clone()),
+                "round {round}: {origin}"
+            );
+        }
+        // The account adopts the winner and renews again, on C.
+        let next = account.sign(2, Some(winner.hash), 0);
+        assert_eq!(
+            publish(&client, &c, &subject, &next).await,
+            200,
+            "round {round}"
+        );
+        // The same first entry raced to two replicas enrolls once and both succeed.
+        let twin = Account::new();
+        let entry = twin.sign(0, None, 0);
+        let (on_a, on_b) = tokio::join!(
+            publish(&client, &a, &twin.subject(), &entry),
+            publish(&client, &b, &twin.subject(), &entry)
+        );
+        assert_eq!((on_a, on_b), (200, 200), "round {round}: same first entry");
+    }
+    println!(
+        "PASS directory: 20 rounds of conflicting renewals to A and B, one accepted each \
+         (A won {}, B won {}), no fork; identical first entries enrolled once",
+        first_wins[0], first_wins[1]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn directory_every_acknowledged_publication_survives_relay_a_killed_mid_load() {
+    let origins = Arc::new(relays());
+    for origin in origins.iter() {
+        wait_ready(origin).await;
+    }
+    let acked = Arc::new(AtomicUsize::new(0));
+    let mut writers = Vec::new();
+    for writer in 0..3usize {
+        let (origins, acked) = (Arc::clone(&origins), Arc::clone(&acked));
+        writers.push(tokio::spawn(async move {
+            let client = http();
+            let deadline = Instant::now() + Duration::from_secs(300);
+            let mut published = Vec::new();
+            for _ in 0..40 {
+                let account = Account::new();
+                // Revision 0 and one renewal, each retried on the next relay until accepted.
+                let mut chain = vec![account.sign(0, None, 0)];
+                chain.push(account.sign(1, Some(chain[0].hash), 0));
+                let mut target = writer;
+                for entry in &chain {
+                    loop {
+                        assert!(Instant::now() < deadline, "writer {writer} never finished");
+                        let status =
+                            publish(&client, &origins[target % 3], &account.subject(), entry).await;
+                        if status == 200 {
+                            break;
+                        }
+                        target += 1;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+                acked.fetch_add(1, Ordering::SeqCst);
+                published.push((account.subject(), chain.pop().unwrap()));
+            }
+            published
+        }));
+    }
+    while acked.load(Ordering::SeqCst) < 20 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    container_action("relay-a", "kill");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    container_action("relay-a", "start");
+    let mut published = Vec::new();
+    for writer in writers {
+        published.extend(writer.await.unwrap());
+    }
+    assert_eq!(published.len(), 120);
+    let client = http();
+    for origin in origins.iter() {
+        wait_ready(origin).await;
+        for (subject, head) in &published {
+            assert_eq!(
+                resolve(&client, &head_url(origin, subject)).await,
+                (200, head.attestation.clone()),
+                "{origin} {subject}"
+            );
+        }
+    }
+    println!(
+        "PASS directory: relay-a killed mid-load; all {} acknowledged accounts resolve at \
+         their acknowledged head on every relay",
+        published.len()
+    );
+}

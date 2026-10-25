@@ -246,14 +246,13 @@ fn boot_fdb_network(driver: &RelayStorageDriver) -> Result<Option<FdbNetwork>> {
     }
 }
 
-/// The group backend selected by `registry.cluster.driver`. FoundationDB keys live under
-/// `<fdb_subspace_prefix>groups-v1/`, so later owners can take their own sub-prefixes.
-fn group_backend(
+/// One owner's FoundationDB store under `<fdb_subspace_prefix><owner>`, or `None` on RocksDB.
+fn shared_store(
     driver: &RelayStorageDriver,
-    registry_db: &std::path::Path,
-) -> Result<GroupBackend> {
+    owner: &str,
+) -> Result<Option<Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>> {
     match driver {
-        RelayStorageDriver::RocksDb => Ok(GroupBackend::rocksdb_beside(registry_db)),
+        RelayStorageDriver::RocksDb => Ok(None),
         #[cfg(feature = "foundationdb")]
         RelayStorageDriver::FoundationDb {
             cluster_file,
@@ -264,16 +263,41 @@ fn group_backend(
             })?;
             let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
                 cluster_file,
-                format!("{subspace_prefix}groups-v1/"),
+                format!("{subspace_prefix}{owner}"),
             )
             .map_err(|error| {
                 bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}"))
             })?;
-            Ok(GroupBackend::Shared(Arc::new(store)))
+            Ok(Some(Arc::new(store)))
         }
         #[cfg(not(feature = "foundationdb"))]
         RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by boot_fdb_network"),
     }
+}
+
+/// The group backend selected by `registry.cluster.driver`. FoundationDB keys live under
+/// `<fdb_subspace_prefix>groups-v1/`, so later owners can take their own sub-prefixes.
+fn group_backend(
+    driver: &RelayStorageDriver,
+    registry_db: &std::path::Path,
+) -> Result<GroupBackend> {
+    Ok(match shared_store(driver, "groups-v1/")? {
+        Some(store) => GroupBackend::Shared(store),
+        None => GroupBackend::rocksdb_beside(registry_db),
+    })
+}
+
+/// The directory backend selected by `registry.cluster.driver`: FoundationDB keys under
+/// `<fdb_subspace_prefix>directory-v1/`, or a RocksDB store inside the registry database.
+fn directory_backend(
+    driver: &RelayStorageDriver,
+    registry_db: &std::path::Path,
+) -> Result<cashweb_registry::store::directory_store::DirectoryBackend> {
+    use cashweb_registry::store::directory_store::DirectoryBackend;
+    Ok(match shared_store(driver, "directory-v1/")? {
+        Some(store) => DirectoryBackend::Shared(store),
+        None => DirectoryBackend::RocksDbInside(registry_db.to_path_buf()),
+    })
 }
 
 /// Log the cluster shape once at startup: the shared backend and every owner whose state still
@@ -287,6 +311,12 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
             subspace_prefix = %subspace_prefix,
             "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/"
         );
+        if registry.directory.is_some() {
+            info!(
+                subspace_prefix = %subspace_prefix,
+                "The directory is stored in FoundationDB under {subspace_prefix}directory-v1/"
+            );
+        }
     }
     if !registry.is_cluster_mode() {
         return;
@@ -354,6 +384,7 @@ async fn run(
     }
     log_cluster_shape(&conf.registry, &driver);
     let groups = group_backend(&driver, &conf.registry.db_path)?;
+    let directory = directory_backend(&driver, &conf.registry.db_path)?;
     // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.
     // A single node keeps it beside the database (not in it); it is not a wallet key.
     let session = match provisioned_session {
@@ -405,6 +436,7 @@ async fn run(
         conf.registry.net,
         Arc::clone(&event_bus),
         RegistryBackends {
+            directory,
             groups,
             objects,
             group_policy: conf.registry.groups,
@@ -429,6 +461,24 @@ async fn run(
             ))
         })?;
         info!("FoundationDB group store is readable");
+        if conf.registry.directory.is_some() {
+            let probe = Arc::clone(&registry);
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                tokio::task::spawn_blocking(move || probe.check_directory_store()),
+            )
+            .await
+            .map_err(|_| {
+                bitcoinsuite_error::Report::msg("FoundationDB did not answer within 30 seconds")
+            })?
+            .wrap_err("FoundationDB probe task failed")?
+            .map_err(|error| {
+                bitcoinsuite_error::Report::msg(format!(
+                    "Reading the FoundationDB directory store: {error}"
+                ))
+            })?;
+            info!("FoundationDB directory store is readable");
+        }
     }
     // Collect unreferenced large values. Replicas compete for one lease; the others skip.
     {
@@ -439,14 +489,29 @@ async fn run(
             loop {
                 interval.tick().await;
                 let registry = Arc::clone(&registry);
-                let sweep =
-                    tokio::task::spawn_blocking(move || registry.sweep_large_values(holder));
+                let sweep = tokio::task::spawn_blocking(move || {
+                    (
+                        registry
+                            .sweep_large_values(holder)
+                            .map_err(|e| e.to_string()),
+                        registry.sweep_directory_large_values(holder),
+                    )
+                });
                 match sweep.await {
-                    Ok(Ok(report)) if report.deleted > 0 => {
-                        info!("Large-value sweep deleted {} objects", report.deleted)
+                    Ok(results) => {
+                        for (owner, result) in [("group", results.0), ("directory", results.1)] {
+                            match result {
+                                Ok(report) if report.deleted > 0 => info!(
+                                    "Large-value sweep deleted {} {owner} objects",
+                                    report.deleted
+                                ),
+                                Ok(_) => {}
+                                Err(error) => {
+                                    tracing::warn!("Large-value sweep of {owner}s failed: {error}")
+                                }
+                            }
+                        }
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(error)) => tracing::warn!("Large-value sweep failed: {error}"),
                     Err(error) => tracing::warn!("Large-value sweep panicked: {error}"),
                 }
             }
@@ -883,6 +948,21 @@ max_get_logs_range = 10\n\n\
             format!("{error:#}").contains("requires an enabled [registry.cluster.nats] bus"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn the_cluster_lab_relay_configuration_is_valid_and_shares_the_directory() {
+        let config = include_str!("../../../labs/cluster/relay.toml");
+        let (conf, _, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+        assert!(conf.registry.directory.is_some());
+        let owners = conf.registry.replica_local_owners();
+        assert!(owners.contains(&cashweb_config::ReplicaLocalOwner::DirectoryEnrollmentQuotas));
+        assert!(!owners.contains(&cashweb_config::ReplicaLocalOwner::Directory));
+        assert!(matches!(
+            conf.registry.large_values,
+            Some(cashweb_config::LargeValuesConf::S3 { .. })
+        ));
     }
 
     #[test]

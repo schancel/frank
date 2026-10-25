@@ -1,4 +1,5 @@
-# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests, and the
+# Builds the cashweb-registry FoundationDB transaction contract, the directory's cross-process
+# forward-claim test, the NATS lab tests, and the
 # cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`).
 # Keep server/client release versions identical. FDB's image supplies native libfdb_c.
 FROM foundationdb/foundationdb:7.3.63 AS fdb-client
@@ -24,6 +25,9 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     cargo test --locked -p cashweb-registry --features foundationdb --test kv_transaction_contract --no-run --message-format=json > /tmp/kv-artifacts.json && \
     python3 /copy-test-artifact.py /tmp/kv-artifacts.json /kv-transaction-contract foundationdb_transaction_contract && \
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
+    cargo test --locked -p cashweb-registry --features foundationdb --lib --no-run --message-format=json > /tmp/lib-artifacts.json && \
+    python3 /copy-test-artifact.py /tmp/lib-artifacts.json /registry-lib forward_claims_and_counters_across_processes && \
+    find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
     cargo test --locked -p cashweb-registry --features foundationdb --test lab_backend_contract --no-run --message-format=json > /tmp/lab-artifacts.json && \
     python3 /copy-test-artifact.py /tmp/lab-artifacts.json /backend-contract real_nats_notification_and_durable_offline_catch_up && \
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
@@ -32,4 +36,5 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     cp target/debug/cashwebd-exe /cashwebd-exe
 ENV FRANK_CASHWEBD_EXE=/cashwebd-exe
 # The transaction contract starts its two FDB worker processes from its own executable.
-ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture"]
+# The directory's forward-claim test starts and SIGKILLs worker processes of its own executable.
+ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /registry-lib --exact store::directory_subjects::fdb::forward_claims_and_counters_across_processes --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture"]

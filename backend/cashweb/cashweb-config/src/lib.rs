@@ -643,7 +643,15 @@ impl RegistryConf {
             owners.push(ReplicaLocalOwner::DirectMessages);
         }
         if self.directory.is_some() {
-            owners.push(ReplicaLocalOwner::Directory);
+            // On FoundationDB the directory's state is shared; only the per-source hourly
+            // enrollment quota is still counted by each replica (step 10 makes it shared).
+            owners.push(
+                if matches!(self.storage_driver(), Ok(RelayStorageDriver::RocksDb)) {
+                    ReplicaLocalOwner::Directory
+                } else {
+                    ReplicaLocalOwner::DirectoryEnrollmentQuotas
+                },
+            );
         }
         if self.forum.is_some() {
             owners.push(ReplicaLocalOwner::Forum);
@@ -745,8 +753,12 @@ pub enum ReplicaLocalOwner {
     RegistryDb,
     /// Direct-message owner (`registry.monad_mailbox`).
     DirectMessages,
-    /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`).
+    /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`) on
+    /// the RocksDB driver.
     Directory,
+    /// The directory's per-source hourly enrollment quota, counted in process memory, when the
+    /// rest of the directory is on FoundationDB.
+    DirectoryEnrollmentQuotas,
     /// Forum (`registry.forum`).
     Forum,
     /// Hourly RPC proxy quotas, counted in process memory.
@@ -761,7 +773,12 @@ impl ReplicaLocalOwner {
         match self {
             Self::RegistryDb => "registry database (profiles, usernames, metadata)",
             Self::DirectMessages => "direct messages (registry.monad_mailbox)",
-            Self::Directory => "directory (registry.directory)",
+            Self::Directory => {
+                "directory (registry.directory, registry.cluster.driver = \"rocksdb\")"
+            }
+            Self::DirectoryEnrollmentQuotas => {
+                "directory enrollment quotas per source per hour (registry.directory)"
+            }
             Self::Forum => "forum (registry.forum)",
             Self::HourlyQuotas => {
                 "hourly RPC proxy quotas (registry.evm_rpc, bitcoin_proxy, solana_proxy)"
@@ -3211,7 +3228,8 @@ continuity_file = "/var/lib/frank/continuity"
         let every_enabled = vec![
             ReplicaLocalOwner::RegistryDb,
             ReplicaLocalOwner::DirectMessages,
-            ReplicaLocalOwner::Directory,
+            // The directory itself is on FoundationDB here; its hourly quota is not yet.
+            ReplicaLocalOwner::DirectoryEnrollmentQuotas,
             ReplicaLocalOwner::Forum,
             ReplicaLocalOwner::HourlyQuotas,
         ];
@@ -3230,7 +3248,7 @@ continuity_file = "/var/lib/frank/continuity"
 
         // Disabled owners are not listed; the registry database always is, so far.
         conf.monad_mailbox.enabled = false;
-        conf.directory = None;
+        let directory = conf.directory.take();
         conf.forum = None;
         conf.evm_rpc.enabled = false;
         conf.bitcoin_proxy.enabled = false;
@@ -3249,6 +3267,16 @@ continuity_file = "/var/lib/frank/continuity"
         assert_eq!(
             conf.replica_local_owners(),
             vec![ReplicaLocalOwner::RegistryDb, ReplicaLocalOwner::Groups]
+        );
+        // On RocksDB the whole directory is replica-local.
+        conf.directory = directory;
+        assert_eq!(
+            conf.replica_local_owners(),
+            vec![
+                ReplicaLocalOwner::RegistryDb,
+                ReplicaLocalOwner::Directory,
+                ReplicaLocalOwner::Groups
+            ]
         );
     }
 

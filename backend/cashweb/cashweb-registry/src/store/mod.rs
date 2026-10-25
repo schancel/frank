@@ -4,7 +4,7 @@
 pub mod blob_store;
 pub mod db;
 pub(crate) mod directory_preview;
-mod directory_preview_owner;
+pub mod directory_store;
 pub(crate) mod directory_subjects;
 pub mod directory_usernames;
 pub(crate) mod forum;

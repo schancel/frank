@@ -2,8 +2,18 @@
 //!
 //! Any key may publish its own signed entry. The first valid revision 0 a key publishes for
 //! itself pins that key's chain; later revisions must extend it. There is no per-account
-//! configuration: continuity lives in the relay's own database, one row per subject.
-use crate::{directory_admission::*, registry::Registry, store::directory_subjects::SubjectRow};
+//! configuration: continuity lives in the relay's directory store, one row per subject.
+//!
+//! The store may be shared by every replica of a relay. Each subject's evidence, continuity row,
+//! indexes and the relay-wide subject counters change in one transaction that compares the
+//! subject's previous checkpoint, so a conflicting revision raced to two replicas is accepted
+//! once and the subject never forks. Open handles here are a cache of verified opens only;
+//! every operation reads the subject's current durable state.
+use crate::{
+    directory_admission::*,
+    registry::Registry,
+    store::directory_subjects::{self, DbDirectorySubjects, Enrollment},
+};
 /// Length of a position in the listing of new accounts.
 pub const FIRST_ACCEPTED_POSITION_BYTES: usize =
     crate::store::directory_subjects::FIRST_ACCEPTED_POSITION_BYTES;
@@ -19,7 +29,7 @@ use cashweb_config::{DirectoryConf, EmailGatewayConf};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread,
@@ -64,6 +74,8 @@ impl From<AdmissionError> for RuntimeError {
             AdmissionError::Evidence => Self::Invalid,
             AdmissionError::Validity | AdmissionError::Binding => Self::Expired,
             AdmissionError::Fork => Self::Forked,
+            // Another replica kept changing this subject; nothing was decided.
+            AdmissionError::Contended => Self::Busy,
             _ => Self::Trust,
         }
     }
@@ -229,8 +241,6 @@ impl RelayInfo {
 struct Shared {
     closed: AtomicBool,
     ready: AtomicBool,
-    subjects: AtomicU64,
-    replicated: AtomicU64,
     stopped: watch::Sender<bool>,
 }
 struct Owner {
@@ -326,9 +336,6 @@ impl Submission {
 struct Principal<'a> {
     anchor: Anchor,
     directory: Directory<'a>,
-    /// Last continuity row written for this subject.
-    row: SubjectRow,
-    unavailable: bool,
     used: u64,
 }
 fn nanos(text: &str) -> Result<Timestamp> {
@@ -386,7 +393,6 @@ struct Worker<'a> {
     last: Timestamp,
     handles: HashMap<Key, Principal<'a>>,
     tick: u64,
-    shared: Arc<Shared>,
 }
 impl<'a> Worker<'a> {
     /// System time, never earlier than a time this worker already used.
@@ -397,7 +403,7 @@ impl<'a> Worker<'a> {
         }
         Ok(self.last)
     }
-    fn rows(&self) -> Result<crate::store::directory_subjects::DbDirectorySubjects<'a>> {
+    fn rows(&self) -> Result<DbDirectorySubjects> {
         self.registry
             .directory_subjects()
             .map_err(|_| RuntimeError::NotStarted)
@@ -412,9 +418,6 @@ impl<'a> Worker<'a> {
         else {
             return Ok(None);
         };
-        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
-            .map_err(|_| RuntimeError::Invalid)?
-            .0;
         let anchor = Anchor {
             network: key.0.clone(),
             subject: AccountRef {
@@ -426,35 +429,14 @@ impl<'a> Worker<'a> {
         if row.version != 1 || row.checkpoint.anchor != row.anchor {
             return Err(RuntimeError::Trust);
         }
-        match self
+        let directory = self
             .registry
-            .directory_preview(anchor.clone(), OpenMode::Reopen(row.checkpoint))
-        {
-            Ok(directory) => Ok(Some(Principal {
-                anchor,
-                directory,
-                row,
-                unavailable: false,
-                used: 0,
-            })),
-            Err(_) if row.checkpoint.kind == CheckpointKind::ProspectiveEnrollment => {
-                // The process stopped between writing the row and accepting the first entry.
-                // Nothing was ever served for this key, so it is simply unpublished again.
-                match self
-                    .registry
-                    .directory_preview(anchor, OpenMode::NewEnrollment)
-                {
-                    Ok(_) => {
-                        self.rows()?
-                            .delete(&key.0, &subject, &address, None)
-                            .map_err(|_| RuntimeError::NotStarted)?;
-                        Ok(None)
-                    }
-                    Err(_) => Err(RuntimeError::Trust),
-                }
-            }
-            Err(error) => Err(error.into()),
-        }
+            .directory_preview(anchor.clone(), OpenMode::Reopen(row.checkpoint))?;
+        Ok(Some(Principal {
+            anchor,
+            directory,
+            used: 0,
+        }))
     }
     fn evict(&mut self) {
         while self.handles.len() >= MAX_OPEN_HANDLES {
@@ -501,14 +483,11 @@ impl<'a> Worker<'a> {
         let local = relays
             .first()
             .is_some_and(|relay| self.info.is_local(relay));
-        let (counter, budget) = if local {
-            (&self.shared.subjects, self.max_subjects)
+        let budget = if local {
+            self.max_subjects
         } else {
-            (&self.shared.replicated, self.max_replicated_subjects)
+            self.max_replicated_subjects
         };
-        if counter.load(Ordering::Acquire) >= budget {
-            return Err(RuntimeError::Resource);
-        }
         let anchor = Anchor {
             network: key.0.clone(),
             subject: signer.clone(),
@@ -519,57 +498,51 @@ impl<'a> Worker<'a> {
             statement: &statement,
             attestation: &bytes,
         };
-        let prospective = Checkpoint::for_enrollment(&anchor, candidate, now)?;
         let address = crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
             .map_err(|_| RuntimeError::Invalid)?
             .0;
-        let mut row = SubjectRow {
-            version: 1,
-            anchor: anchor.revision_zero,
-            checkpoint: prospective,
-            local,
-        };
-        let rows = self.rows()?;
         // When this first publication happened, for the public listing of new accounts.
         let accepted_ms = u64::try_from(now.seconds)
             .unwrap_or(0)
             .saturating_mul(1000)
             .saturating_add(u64::from(now.nanoseconds / 1_000_000));
-        rows.put(&key.0, &subject, Some((&address, accepted_ms)), &row)
-            .map_err(|_| RuntimeError::OutcomeUnknown)?;
-        let forget = |rows: &crate::store::directory_subjects::DbDirectorySubjects<'_>| {
-            rows.delete(&key.0, &subject, &address, Some(accepted_ms))
-                .map_err(|_| RuntimeError::OutcomeUnknown)
+        let enrollment = Enrollment {
+            address,
+            accepted_ms,
+            anchor: anchor.revision_zero,
+            local,
+            budget,
         };
         let directory = match self
             .registry
             .directory_preview(anchor.clone(), OpenMode::NewEnrollment)
         {
             Ok(directory) => directory,
+            // Another replica published this key since the row was read: serve it as published.
+            Err(AdmissionError::AlreadyEnrolled) => return self.published(key, &subject, bytes),
+            Err(error) => return Err(error.into()),
+        };
+        // The subject row, its indexes and the counter (refused at the cap) are written in the
+        // same transaction as the first evidence, so a failed or interrupted enrollment leaves
+        // nothing behind and two replicas cannot both take the last place.
+        let recorder =
+            |tx: &mut dyn crate::store::kv_store::KvTransaction,
+             commit: &crate::store::directory_preview::Commit<'_>| {
+                directory_subjects::record(Some(&enrollment), &key.0, &subject, tx, commit)
+            };
+        let current = match directory.advance_declared_recording(&[candidate], Some(now), &recorder)
+        {
+            Ok(current) => current,
             Err(error) => {
-                forget(&rows)?;
-                return Err(error.into());
+                // A concurrent enrollment of the same key on another replica won the commit.
+                return match error {
+                    AdmissionError::Unavailable | AdmissionError::AlreadyEnrolled => {
+                        self.published(key, &subject, bytes)
+                    }
+                    error => Err(error.into()),
+                };
             }
         };
-        let result = directory.advance_declared(&[candidate], Some(now));
-        let enrolled = match &result {
-            Ok(_) => true,
-            Err(_) => !matches!(directory.status(), Ok(None)),
-        };
-        if !enrolled {
-            forget(&rows)?;
-            return Err(result.unwrap_err().into());
-        }
-        if let Ok(Some(status)) = directory.status() {
-            row.checkpoint = status.checkpoint;
-            rows.put(&key.0, &subject, None, &row)
-                .map_err(|_| RuntimeError::OutcomeUnknown)?;
-        }
-        if local {
-            self.shared.subjects.fetch_add(1, Ordering::AcqRel);
-        } else {
-            self.shared.replicated.fetch_add(1, Ordering::AcqRel);
-        }
         self.evict();
         self.tick += 1;
         self.handles.insert(
@@ -577,13 +550,19 @@ impl<'a> Worker<'a> {
             Principal {
                 anchor,
                 directory,
-                row,
-                unavailable: false,
                 used: self.tick,
             },
         );
-        let current = result?;
         self.finish(current)
+    }
+    /// Retry a first publication that lost to another replica's: once the key's row exists it
+    /// is served like any published key, and only the original error stands otherwise.
+    fn published(&mut self, key: &Key, subject: &[u8], bytes: Vec<u8>) -> Result<AdmittedSnapshot> {
+        match self.rows()?.get(&key.0, subject) {
+            Ok(Some(_)) => self.execute(key, Operation::Put(bytes)),
+            Ok(None) => Err(RuntimeError::Trust),
+            Err(_) => Err(RuntimeError::NotStarted),
+        }
     }
     /// The entry and its relay binding must still be unexpired when the answer leaves.
     fn finish(&mut self, current: Current) -> Result<AdmittedSnapshot> {
@@ -605,7 +584,13 @@ impl<'a> Worker<'a> {
         else {
             return Err(RuntimeError::Trust);
         };
+        // Replicas share the checked time but not a clock; the answer is checked at the later.
         let finished = self.now()?;
+        let finished = if tuple(finished) < tuple(current.status.checked_time) {
+            current.status.checked_time
+        } else {
+            finished
+        };
         if tuple(finished) < tuple(current.status.checked_time)
             || tuple(finished) >= tuple(*expiry)
             || tuple(finished) >= tuple(current.relay.expiry)
@@ -648,18 +633,31 @@ impl<'a> Worker<'a> {
         }
         self.tick += 1;
         let tick = self.tick;
-        let rows = self.rows()?;
+        let result = self.execute_open(key, op, now, tick);
+        if matches!(result, Err(Failure::Unavailable)) {
+            // A storage failure disables that handle; the next operation reopens and verifies.
+            self.handles.remove(key);
+        }
+        result.map_err(|failure| match failure {
+            Failure::Unavailable => RuntimeError::Trust,
+            Failure::Runtime(error) => error,
+        })
+    }
+    fn execute_open(
+        &mut self,
+        key: &Key,
+        op: Operation,
+        now: Timestamp,
+        tick: u64,
+    ) -> std::result::Result<AdmittedSnapshot, Failure> {
         let p = self.handles.get_mut(key).ok_or(RuntimeError::NotFound)?;
         p.used = tick;
-        if p.unavailable {
-            return Err(RuntimeError::Trust);
-        }
         if let Operation::Historical(hash) = op {
             return p
                 .directory
                 .historical_evidence(hash)?
                 .map(AdmittedSnapshot::Historical)
-                .ok_or(RuntimeError::NotFound);
+                .ok_or(RuntimeError::NotFound.into());
         }
         if matches!(op, Operation::Chain) {
             let records = p
@@ -676,41 +674,26 @@ impl<'a> Worker<'a> {
                 hash: [0; 32],
             }));
         }
-        // Persist a changed head, length or quarantine. A later checked time alone is not
-        // rewritten: an older floor still reopens the same history.
-        let remember = |p: &mut Principal<'_>, checkpoint: Checkpoint| -> Result<()> {
-            let mut same_but_time = checkpoint;
-            same_but_time.checked_time = p.row.checkpoint.checked_time;
-            if same_but_time == p.row.checkpoint {
-                return Ok(());
-            }
-            let row = SubjectRow {
-                version: 1,
-                anchor: p.row.anchor,
-                checkpoint,
-                local: p.row.local,
+        let (network, subject) = (p.anchor.network.clone(), p.anchor.subject.key_bytes.clone());
+        // Rewrites the continuity row in the commit's transaction when the head changed.
+        let recorder =
+            |tx: &mut dyn crate::store::kv_store::KvTransaction,
+             commit: &crate::store::directory_preview::Commit<'_>| {
+                directory_subjects::record(None, &network, &subject, tx, commit)
             };
-            if rows
-                .put(&p.anchor.network, &p.anchor.subject.key_bytes, None, &row)
-                .is_err()
-            {
-                p.unavailable = true;
-                return Err(RuntimeError::OutcomeUnknown);
-            }
-            p.row = row;
-            Ok(())
-        };
         let result = match op {
-            Operation::Current => p.directory.current_declared(Some(now)),
+            Operation::Current => p
+                .directory
+                .advance_declared_recording(&[], Some(now), &recorder),
             Operation::Put(bytes) => {
                 if bytes.len() > MAX_FRAME_BYTES {
-                    return Err(RuntimeError::Resource);
+                    return Err(RuntimeError::Resource.into());
                 }
                 let verified =
                     frank_cbor::verify_preview_directory_evidence(&bytes, &p.anchor.network)
                         .map_err(|_| RuntimeError::Invalid)?;
                 if verified.statement_frame().schema_version != 4 {
-                    return Err(RuntimeError::Invalid);
+                    return Err(RuntimeError::Invalid.into());
                 }
                 let statement = &verified.statement_frame().frame;
                 let candidate = Candidate {
@@ -719,11 +702,13 @@ impl<'a> Worker<'a> {
                 };
                 if let Some(existing) = p.directory.historical_evidence(verified.statement_hash)? {
                     if existing.statement != *statement || existing.attestation != bytes {
-                        return Err(RuntimeError::Invalid);
+                        return Err(RuntimeError::Invalid.into());
                     }
-                    p.directory.current_declared(Some(now))
+                    p.directory
+                        .advance_declared_recording(&[], Some(now), &recorder)
                 } else {
-                    p.directory.advance_declared(&[candidate], Some(now))
+                    p.directory
+                        .advance_declared_recording(&[candidate], Some(now), &recorder)
                 }
             }
             Operation::Historical(_) | Operation::Chain => unreachable!(),
@@ -731,21 +716,27 @@ impl<'a> Worker<'a> {
             Operation::Barrier { .. } => unreachable!(),
         };
         match result {
-            Ok(current) => {
-                remember(p, current.status.checkpoint)?;
-                self.finish(current)
-            }
-            Err(error) => {
-                if error == AdmissionError::Fork {
-                    if let Some(status) = p.directory.status()? {
-                        remember(p, status.checkpoint)?;
-                    }
-                }
-                if error == AdmissionError::Unavailable {
-                    p.unavailable = true;
-                }
-                Err(error.into())
-            }
+            Ok(current) => Ok(self.finish(current)?),
+            Err(AdmissionError::Unavailable) => Err(Failure::Unavailable),
+            Err(error) => Err(Failure::Runtime(error.into())),
+        }
+    }
+}
+/// An operation's failure, keeping storage unavailability apart so the handle is dropped.
+enum Failure {
+    Unavailable,
+    Runtime(RuntimeError),
+}
+impl From<RuntimeError> for Failure {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+impl From<AdmissionError> for Failure {
+    fn from(error: AdmissionError) -> Self {
+        match error {
+            AdmissionError::Unavailable => Self::Unavailable,
+            error => Self::Runtime(error.into()),
         }
     }
 }
@@ -796,8 +787,6 @@ impl DirectoryRuntime {
         let shared = Arc::new(Shared {
             closed: AtomicBool::new(false),
             ready: AtomicBool::new(false),
-            subjects: AtomicU64::new(0),
-            replicated: AtomicU64::new(0),
             stopped,
         });
         let worker_shared = shared.clone();
@@ -811,8 +800,10 @@ impl DirectoryRuntime {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let started =
                         clock().filter(|now| tuple(*now) < tuple(worker_info.binding.expiry));
-                    let count = registry.directory_subjects().and_then(|rows| rows.count());
-                    let (Some(started), Ok(count)) = (started, count) else {
+                    // Opens the directory store (creating a single-node one) and reads its format,
+                    // so an unreadable or foreign store fails readiness instead of a request.
+                    let store = registry.directory_subjects().and_then(|rows| rows.counts());
+                    let (Some(started), Ok(_)) = (started, store) else {
                         let _ = ready_send.send(Err(RuntimeError::Trust));
                         return;
                     };
@@ -820,8 +811,6 @@ impl DirectoryRuntime {
                         let _ = ready_send.send(Err(RuntimeError::NotStarted));
                         return;
                     }
-                    worker_shared.subjects.store(count.0, Ordering::Release);
-                    worker_shared.replicated.store(count.1, Ordering::Release);
                     let mut worker = Worker {
                         registry: &registry,
                         info: worker_info,
@@ -831,7 +820,6 @@ impl DirectoryRuntime {
                         last: started,
                         handles: HashMap::new(),
                         tick: 0,
-                        shared: worker_shared.clone(),
                     };
                     worker_shared.ready.store(true, Ordering::Release);
                     let _ = ready_send.send(Ok(()));
@@ -956,26 +944,39 @@ impl DirectoryRuntime {
     pub fn enrollments_per_source_per_hour(&self) -> u32 {
         self.owner.enrollments_per_source_per_hour
     }
+    /// Run a read of the directory store on a blocking worker. `None` when the store cannot be
+    /// opened or read.
+    async fn read<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(DbDirectorySubjects) -> Option<T> + Send + 'static,
+    ) -> Option<T> {
+        let registry = self.owner.registry.clone();
+        tokio::task::spawn_blocking(move || read(registry.directory_subjects().ok()?))
+            .await
+            .ok()
+            .flatten()
+    }
     /// Whether this key already has a continuity row here. A cheap read, not an admission.
-    pub fn is_published(&self, network: &str, subject: &str) -> bool {
+    pub async fn is_published(&self, network: &str, subject: &str) -> bool {
         let Ok(subject) = exact(subject, 33) else {
             return false;
         };
-        self.owner
-            .registry
-            .directory_subjects()
-            .and_then(|rows| rows.get(network, &subject))
-            .is_ok_and(|row| row.is_some())
+        let network = network.to_owned();
+        self.read(move |rows| rows.get(&network, &subject).ok())
+            .await
+            .is_some_and(|row| row.is_some())
     }
     /// What this relay would list for `subject`: head hash, retained record count, quarantine.
-    pub fn listed(&self, network: &str, subject: &str) -> Option<(Option<String>, u64, bool)> {
+    pub async fn listed(
+        &self,
+        network: &str,
+        subject: &str,
+    ) -> Option<(Option<String>, u64, bool)> {
         let subject = exact(subject, 33).ok()?;
+        let network = network.to_owned();
         let row = self
-            .owner
-            .registry
-            .directory_subjects()
-            .and_then(|rows| rows.get(network, &subject))
-            .ok()??;
+            .read(move |rows| rows.get(&network, &subject).ok())
+            .await??;
         Some((
             row.checkpoint.head.map(hex::encode),
             row.checkpoint.retained as u64,
@@ -983,7 +984,7 @@ impl DirectoryRuntime {
         ))
     }
     /// One page of the keys this relay holds, in key order after `after`, for a peer to compare.
-    pub fn list(
+    pub async fn list(
         &self,
         network: &str,
         after: Option<&str>,
@@ -993,12 +994,10 @@ impl DirectoryRuntime {
             Some(after) => Some(exact(after, 33).ok()?),
             None => None,
         };
+        let network = network.to_owned();
         let rows = self
-            .owner
-            .registry
-            .directory_subjects()
-            .and_then(|rows| rows.list(network, after.as_deref(), limit))
-            .ok()?;
+            .read(move |rows| rows.list(&network, after.as_deref(), limit).ok())
+            .await?;
         Some(
             rows.into_iter()
                 .map(|(subject, row)| {
@@ -1014,12 +1013,10 @@ impl DirectoryRuntime {
     }
     /// The published key whose address is `address`, as lowercase hex. Callers must still ask
     /// for its current entry; the index alone proves nothing.
-    pub fn subject_for_address(&self, network: &str, address: &[u8; 20]) -> Option<String> {
-        self.owner
-            .registry
-            .directory_subjects()
-            .and_then(|rows| rows.subject_for_address(network, address))
-            .ok()
+    pub async fn subject_for_address(&self, network: &str, address: &[u8; 20]) -> Option<String> {
+        let (network, address) = (network.to_owned(), *address);
+        self.read(move |rows| rows.subject_for_address(&network, &address).ok())
+            .await
             .flatten()
             .map(hex::encode)
     }
@@ -1027,7 +1024,7 @@ impl DirectoryRuntime {
     /// from `since_ms` (inclusive), or strictly after the position `after` when one is given.
     /// Returns the accepted accounts and the position to continue from. Cheap reads of public
     /// data; `None` when the network is not this relay's or storage cannot be read.
-    pub fn first_accepted(
+    pub async fn first_accepted(
         &self,
         network: &str,
         since_ms: u64,
@@ -1040,26 +1037,21 @@ impl DirectoryRuntime {
         if network != self.owner.info.network {
             return None;
         }
-        let rows = self.owner.registry.directory_subjects().ok()?;
         let mut start = [0; FIRST_ACCEPTED_POSITION_BYTES];
         start[..8].copy_from_slice(&since_ms.to_be_bytes());
         // `since` is inclusive: the starting position has an all-zero address part, so every row
         // at that millisecond sorts after it (only the zero address itself would not, and no
         // key is known to hash to it).
-        let scanned = rows
-            .first_accepted(network, after.unwrap_or(&start), limit)
-            .ok()?;
+        let from = *after.unwrap_or(&start);
+        let network = network.to_owned();
+        // A position is written in the same transaction as the account's first accepted entry,
+        // so every listed position belongs to an accepted account.
+        let scanned = self
+            .read(move |rows| rows.first_accepted(&network, &from, limit).ok())
+            .await?;
         let next = scanned.last().map(|(position, ..)| *position);
         let accounts = scanned
             .into_iter()
-            .filter(|(_, _, address)| {
-                // Listed only once the first entry was accepted, not while it is being checked.
-                rows.subject_for_address(network, address)
-                    .ok()
-                    .flatten()
-                    .and_then(|subject| rows.get(network, &subject).ok().flatten())
-                    .is_some_and(|row| row.checkpoint.kind != CheckpointKind::ProspectiveEnrollment)
-            })
             .map(|(_, accepted_ms, address)| FirstAccepted {
                 address,
                 accepted_ms,

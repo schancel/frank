@@ -1,5 +1,6 @@
-//! Actual RocksDB/process/fault proof. Fixed public fixture scalars and temporary databases only.
+//! Actual directory-store/process/fault proof. Fixed public fixture scalars and temporary databases only.
 use super::*;
+use crate::store::kv_store::{RocksDbKvStore, Transact};
 use frank_cbor::{
     cbor_map, common_transcript, decode_canonical, directory_signature_digest, encode_frame,
     CborValue, EnvelopeFields, FramePayload,
@@ -107,7 +108,7 @@ fn directory_preview_check_current_is_nonmutating_and_preserves_current_policy()
         .unwrap();
     let original = enroll(&d, &["bootstrap", "renew"]);
     let before = d.status().unwrap().unwrap();
-    let metadata = d.header().unwrap().unwrap(); // Includes the private durable sequence.
+    let metadata = d.header_now().unwrap().unwrap(); // Includes the private durable sequence.
     let bootstrap_hash = anchor().revision_zero;
     let history = d.historical_evidence(bootstrap_hash).unwrap().unwrap();
     let binding = relay();
@@ -120,7 +121,7 @@ fn directory_preview_check_current_is_nonmutating_and_preserves_current_policy()
     };
     d.check_current(future).unwrap();
     assert_eq!(d.status().unwrap().unwrap(), before);
-    assert_eq!(d.header().unwrap().unwrap(), metadata);
+    assert_eq!(d.header_now().unwrap().unwrap(), metadata);
     assert_eq!(
         d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
         history
@@ -167,7 +168,7 @@ fn directory_preview_check_current_is_nonmutating_and_preserves_current_policy()
         Err(AdmissionError::Validity)
     );
     assert_eq!(d.status().unwrap().unwrap(), before);
-    assert_eq!(d.header().unwrap().unwrap(), metadata);
+    assert_eq!(d.header_now().unwrap().unwrap(), metadata);
     assert_eq!(
         d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
         history
@@ -184,25 +185,18 @@ fn directory_preview_check_current_is_nonmutating_and_preserves_current_policy()
         AdmissionError::Fork
     );
     let quarantine = d.status().unwrap().unwrap();
-    let fork_metadata = d.header().unwrap().unwrap();
+    let fork_metadata = d.header_now().unwrap().unwrap();
     assert_eq!(d.check_current(future), Err(AdmissionError::Fork));
     assert_eq!(d.status().unwrap().unwrap(), quarantine);
-    assert_eq!(d.header().unwrap().unwrap(), fork_metadata);
+    assert_eq!(d.header_now().unwrap().unwrap(), fork_metadata);
     assert_eq!(
         d.historical_evidence(bootstrap_hash).unwrap().unwrap(),
         history
     );
     // A missing durable marker cannot be validated from the caller's remembered status.
-    d.db.rocksdb()
-        .delete_cf(d.db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1).unwrap(), &d.key)
-        .unwrap();
+    d.raw_delete(&d.marker_key());
     assert_eq!(d.check_current(future), Err(AdmissionError::Unavailable));
-    assert!(d
-        .db
-        .rocksdb()
-        .get_cf(d.db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1).unwrap(), &d.key)
-        .unwrap()
-        .is_none());
+    assert!(d.raw_get(&d.marker_key()).is_none());
 }
 
 #[test]
@@ -328,22 +322,26 @@ fn directory_preview_valid_older_database_requires_external_continuity() {
     let temp = tempdir::TempDir::new("directory-preview-rollback").unwrap();
     let live = temp.path().join("live");
     let old_copy = temp.path().join("old");
-    let (older, later) = {
+    let older = {
         let db = Db::open(&live).unwrap();
         let d = db
             .directory_preview(anchor(), OpenMode::NewEnrollment)
             .unwrap();
-        let older = enroll(&d, &["bootstrap"]);
-        rocksdb::checkpoint::Checkpoint::new(db.rocksdb())
-            .unwrap()
-            .create_checkpoint(&old_copy)
+        enroll(&d, &["bootstrap"])
+    };
+    // A complete copy of the closed registry, directory store included.
+    copy_tree(&live, &old_copy);
+    let later = {
+        let db = Db::open(&live).unwrap();
+        let d = db
+            .directory_preview(anchor(), OpenMode::Reopen(older.status.checkpoint))
             .unwrap();
-        rocksdb::checkpoint::Checkpoint::new(d.db.rocksdb())
-            .unwrap()
-            .create_checkpoint(old_copy.join(super::super::directory_preview_owner::SIDECAR))
-            .unwrap();
-        let later = enroll(&d, &["renew", "rotate-stamp"]);
-        (older, later)
+        let pairs = [fixture("renew"), fixture("rotate-stamp")];
+        d.advance(
+            &pairs.iter().map(candidate).collect::<Vec<_>>(),
+            context(&relay()),
+        )
+        .unwrap()
     };
     let db = Db::open(&old_copy).unwrap();
     // A complete, internally valid old disk is indistinguishable without the later external floor.
@@ -377,20 +375,33 @@ fn directory_preview_valid_older_database_requires_external_continuity() {
 #[test]
 fn directory_preview_owner_lock_child() {
     if let Ok(path) = std::env::var("FRANK_DIRECTORY_TEST_LOCKED_DB") {
-        assert!(
-            super::super::directory_preview_owner::Owner::new(path.into())
-                .open(OpenMode::NewEnrollment)
-                .is_err()
+        let owner = super::super::directory_store::Owner::new(
+            super::super::directory_store::DirectoryBackend::RocksDbInside(path.into()),
+            std::sync::Arc::new(super::super::large_values::LocalFsObjectStore::temporary()),
         );
+        assert!(owner.open(true).is_err());
+    }
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else if entry.file_name() != "LOCK" {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
     }
 }
 
 #[test]
 fn directory_preview_missing_or_corrupt_sidecar_never_recreates_on_reopen() {
-    for fault in ["missing", "empty", "file", "current", "missing-cf"] {
+    for fault in ["missing", "empty", "file", "current", "format"] {
         let temp = tempdir::TempDir::new("directory-preview-sidecar-loss").unwrap();
         let root = temp.path().join("registry");
-        let sidecar = root.join(super::super::directory_preview_owner::SIDECAR);
+        let sidecar = root.join(super::super::directory_store::ROCKSDB_STORE);
         let saved = temp.path().join("preserved-sidecar");
         let prepared = Checkpoint::for_enrollment(
             &anchor(),
@@ -420,15 +431,12 @@ fn directory_preview_missing_or_corrupt_sidecar_never_recreates_on_reopen() {
                     .unwrap();
                 std::fs::write(sidecar.join("CURRENT"), b"invalid manifest pointer\n").unwrap();
             }
-            "missing-cf" => {
-                let names = rocksdb::DB::list_cf(&rocksdb::Options::default(), &sidecar).unwrap();
-                let mut raw =
-                    rocksdb::DB::open_cf(&rocksdb::Options::default(), &sidecar, names).unwrap();
-                rocksdb::checkpoint::Checkpoint::new(&raw)
-                    .unwrap()
-                    .create_checkpoint(&saved)
+            "format" => {
+                // A store that lost its format marker is not this format's store.
+                copy_tree(&sidecar, &saved);
+                let raw = RocksDbKvStore::open_existing(&sidecar).unwrap();
+                raw.transact(|tx| tx.clear(super::super::directory_store::FORMAT_KEY))
                     .unwrap();
-                raw.drop_cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
             }
             _ => unreachable!(),
         }
@@ -465,13 +473,12 @@ fn directory_preview_missing_or_corrupt_sidecar_never_recreates_on_reopen() {
                 b"invalid manifest pointer\n"
             );
         }
-        if fault == "missing-cf" {
-            assert!(
-                !rocksdb::DB::list_cf(&rocksdb::Options::default(), &sidecar)
-                    .unwrap()
-                    .iter()
-                    .any(|name| name == CF_DIRECTORY_PREVIEW_EVIDENCE_V1)
-            );
+        if fault == "format" {
+            let raw = RocksDbKvStore::open_existing(&sidecar).unwrap();
+            let format = raw
+                .transact(|tx| tx.get(super::super::directory_store::FORMAT_KEY))
+                .unwrap();
+            assert!(format.is_none(), "nothing rewrote the format marker");
         }
     }
 }
@@ -574,14 +581,9 @@ fn directory_preview_initial_fork_corruption_cannot_reopen_with_prospective_toke
             .unwrap_err(),
             AdmissionError::Fork
         );
-        let meta = d.header().unwrap().unwrap();
-        let state = d.load(Some(&meta)).unwrap().unwrap();
-        d.db.rocksdb()
-            .delete_cf(
-                d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap(),
-                d.record_key(2, &state.proof[2]),
-            )
-            .unwrap();
+        let meta = d.header_now().unwrap().unwrap();
+        let state = d.load_now(Some(&meta)).unwrap().unwrap();
+        d.raw_delete(&d.record_key(2, &state.proof[2]));
     }
     let db = Db::open(temp.path()).unwrap();
     assert_eq!(
@@ -622,85 +624,40 @@ fn directory_preview_corruption_and_partial_loss_fail_closed_without_deleting_ot
             checkpoint = enroll(&d, &["bootstrap", "renew", "rotate-stamp"])
                 .status
                 .checkpoint;
-            let db = &d.db; // Fault only the isolated sidecar, never the legacy registry.
-            let mut meta = d.header().unwrap().unwrap();
-            let state = d.load(Some(&meta)).unwrap().unwrap();
-            let cf = db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
+            // Fault only the directory store, never the registry database.
+            let mut meta = d.header_now().unwrap().unwrap();
+            let state = d.load_now(Some(&meta)).unwrap().unwrap();
             match fault {
-                "marker" => db
-                    .rocksdb()
-                    .delete_cf(db.cf(CF_DIRECTORY_PREVIEW_ENROLLMENT_V1).unwrap(), &d.key)
-                    .unwrap(),
-                "head" => db
-                    .rocksdb()
-                    .delete_cf(db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1).unwrap(), &d.key)
-                    .unwrap(),
-                "row" => db
-                    .rocksdb()
-                    .delete_cf(cf, d.record_key(1, &state.history.records[1]))
-                    .unwrap(),
-                "truncated" => db
-                    .rocksdb()
-                    .put_cf(cf, d.record_key(2, &state.history.records[2]), [0, 1, 2])
-                    .unwrap(),
+                "marker" => d.raw_delete(&d.marker_key()),
+                "head" => d.raw_delete(&d.head_key()),
+                "row" => d.raw_delete(&d.record_key(1, &state.history.records[1])),
+                "truncated" => {
+                    d.raw_put_evidence(&d.record_key(2, &state.history.records[2]), &[0, 1, 2])
+                }
                 "version" => {
                     meta.version += 1;
-                    db.rocksdb()
-                        .put_cf(
-                            db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1).unwrap(),
-                            &d.key,
-                            meta.bytes().unwrap(),
-                        )
-                        .unwrap();
+                    d.raw_put(&d.head_key(), &meta.bytes().unwrap());
                 }
                 "over-budget" => {
                     meta.charged = MAX_CHARGED_BYTES + 1;
-                    db.rocksdb()
-                        .put_cf(
-                            db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1).unwrap(),
-                            &d.key,
-                            meta.bytes().unwrap(),
-                        )
-                        .unwrap();
+                    d.raw_put(&d.head_key(), &meta.bytes().unwrap());
                 }
                 "charge" => {
                     meta.charged -= 1;
-                    db.rocksdb()
-                        .put_cf(
-                            db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1).unwrap(),
-                            &d.key,
-                            meta.bytes().unwrap(),
-                        )
-                        .unwrap();
+                    d.raw_put(&d.head_key(), &meta.bytes().unwrap());
                 }
                 "pair" => {
                     meta.previous_stamp = None;
-                    db.rocksdb()
-                        .put_cf(
-                            db.cf(CF_DIRECTORY_PREVIEW_HEAD_V1).unwrap(),
-                            &d.key,
-                            meta.bytes().unwrap(),
-                        )
-                        .unwrap();
+                    d.raw_put(&d.head_key(), &meta.bytes().unwrap());
                 }
                 "orphan" => {
-                    for name in [
-                        CF_DIRECTORY_PREVIEW_ENROLLMENT_V1,
-                        CF_DIRECTORY_PREVIEW_HEAD_V1,
-                    ] {
-                        db.rocksdb()
-                            .delete_cf(db.cf(name).unwrap(), &d.key)
-                            .unwrap();
-                    }
+                    d.raw_delete(&d.marker_key());
+                    d.raw_delete(&d.head_key());
                 }
-                "extra" => db
-                    .rocksdb()
-                    .put_cf(
-                        cf,
-                        d.record_key(3, &state.history.records[2]),
-                        &state.history.records[2].evidence.attestation,
-                    )
-                    .unwrap(),
+                "extra" => d.raw_put_evidence(
+                    &d.record_key(3, &state.history.records[2]),
+                    &state.history.records[2].evidence.attestation,
+                ),
                 _ => unreachable!(),
             }
             assert_eq!(
@@ -984,15 +941,10 @@ fn directory_preview_actual_retention_count_and_byte_caps_are_terminal_and_linea
                 .unwrap_err(),
             AdmissionError::Resource
         );
-        let cf = d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
-        let rows: Vec<_> =
-            d.db.rocksdb()
-                .iterator_cf(cf, IteratorMode::Start)
-                .map(|r| r.unwrap())
-                .collect();
+        let rows = d.stored_evidence();
         assert_eq!(rows.len(), accepted);
         assert_eq!(
-            rows.iter().map(|(_, v)| v.len()).sum::<usize>(),
+            rows.iter().map(Vec::len).sum::<usize>(),
             pairs[..accepted].iter().map(|p| p.1.len()).sum::<usize>()
         );
         assert_eq!(
@@ -1056,12 +1008,7 @@ fn directory_preview_wrapper_heavy_advance_persists_more_than_ten_mib_atomically
         assert_eq!(result.status.accepted, 48);
         assert_eq!(result.status.retained, 48);
         assert_eq!(result.status.charged_bytes, charge);
-        let cf = d.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
-        let mut values: Vec<_> =
-            d.db.rocksdb()
-                .iterator_cf(cf, IteratorMode::Start)
-                .map(|row| row.unwrap().1.to_vec())
-                .collect();
+        let mut values = d.stored_evidence();
         assert_eq!(values.iter().map(Vec::len).sum::<usize>(), evidence_bytes);
         values.sort();
         assert!(
@@ -1078,13 +1025,7 @@ fn directory_preview_wrapper_heavy_advance_persists_more_than_ten_mib_atomically
     let current = reopened.current(context(&relay())).unwrap();
     assert_eq!(current.evidence.statement, pairs.last().unwrap().0);
     assert!(current.evidence.attestation == pairs.last().unwrap().1);
-    let cf = reopened.db.cf(CF_DIRECTORY_PREVIEW_EVIDENCE_V1).unwrap();
-    let mut values: Vec<_> = reopened
-        .db
-        .rocksdb()
-        .iterator_cf(cf, IteratorMode::Start)
-        .map(|row| row.unwrap().1.to_vec())
-        .collect();
+    let mut values = reopened.stored_evidence();
     assert_eq!(values.iter().map(Vec::len).sum::<usize>(), evidence_bytes);
     values.sort();
     assert!(

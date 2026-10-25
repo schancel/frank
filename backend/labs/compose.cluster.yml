@@ -3,6 +3,10 @@
 name: frank-lab-cluster
 
 x-relay: &relay
+  # The lab bucket's synthetic credentials (see minio); nothing here is a real secret.
+  environment:
+    FRANK_S3_ACCESS_KEY_ID: frank-lab
+    FRANK_S3_SECRET_ACCESS_KEY: frank-lab-disposable-secret
   build:
     context: ../..
     dockerfile: backend/labs/Dockerfile.cluster

@@ -29,7 +29,9 @@ imports are issue #257. Topic CBOR that the registry verifies is decoded with
 
 `@frank/wallet` is the usual caller. The dependency runs one way: production
 modules here never import the wallet, including type-only imports, re-exports
-and dynamic loads. Tests may use the wallet as a devDependency. Check with:
+and dynamic loads. Tests may use the wallet as a devDependency. The one shared
+file is the third-party `level` declaration (`../wallet/level.d.ts`), which
+`tsconfig.json` includes; it is not wallet code. Check with:
 
 ```sh
 yarn workspace @frank/cashweb test --ci --runInBand wallet-dependency-boundary.jest.test.ts

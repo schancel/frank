@@ -69,7 +69,7 @@ payee = "burn"
 # group write is answered 503 group_payment_check_unavailable, and no message is admitted. Set,
 # the relay checks the upstream's chain id and the checkpoint block before serving it. No
 # WebSocket upstream: each new one is verified against the checkpoint, which solonet prunes
-# after about half an hour.
+# within an hour.
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000

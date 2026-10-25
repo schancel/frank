@@ -67,6 +67,7 @@ import { fetchMonadProfile, type MonadIdentity } from "./evm-identity";
 import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
+  evmReceiptClaimsFromItem,
   evmStealthItem,
   stealthCoinFromItem,
   stealthItemTransfer,
@@ -236,6 +237,12 @@ export async function consumeEvmSelfNotes(
   return { kind: "consumed", rest };
 }
 
+/** Where the coin list's own read of the whole mailbox stands. The key names what that read
+ * records: a read made before the coin list recorded `stealth-asset` items (the app's stealth
+ * send) passed those payments by, so a wallet with only the older record reads its mailbox
+ * from the start once more. Recording is idempotent; the read records coins only. */
+const MAILBOX_SCAN_KEY = "scan-with-stealth-asset";
+
 export async function recordEvmReceivedCoins(
   wallet: EvmChainWalletHandle,
   messages: readonly DirectMessageReceived[]
@@ -281,6 +288,13 @@ export async function recordEvmReceivedCoins(
         await owner.recordStealthItem(item, {
           payloadDigest: message.payloadDigest,
           timestampMs: message.receivedTime ?? Date.now(),
+        });
+      } else if (item.type === "stealth-asset" && message.payloadDigest) {
+        // The item the app's stealth send writes: each transfer names its chain, one-time
+        // account and signed transaction. What it pays on this chain becomes coins.
+        await yieldIfNeeded();
+        await owner.recordStealthAssetItem(item, {
+          payloadDigest: message.payloadDigest,
         });
       }
     }
@@ -1428,7 +1442,7 @@ export function createEvmReceivedCoinAndContactManager(
   const noteCoins = (): Promise<void> => {
     const wallet = getWallet();
     notingCoins ??= (async () => {
-      if (scanState.get("scan")?.complete !== true) return;
+      if (scanState.get(MAILBOX_SCAN_KEY)?.complete !== true) return;
       const waiting = coinStore
         .all()
         .filter((coin) => coin.notedAtMs === undefined)
@@ -2288,11 +2302,42 @@ export function createEvmReceivedCoinAndContactManager(
         });
         if (coin !== undefined) await recordCoin(coin);
       },
+      async recordStealthAssetItem(item, origin) {
+        assertFinancialActive();
+        for (const claim of evmReceiptClaimsFromItem(
+          item,
+          chainIdentifier,
+          origin.payloadDigest
+        )) {
+          // Not addressed to this wallet, or its transactions do not pay what it says: ignored,
+          // like any item this wallet cannot act on; the rest of the message stands.
+          try {
+            verifyReceiptClaim(snapshotReceiptClaim(claim));
+          } catch {
+            assertFinancialActive();
+            continue;
+          }
+          try {
+            await recordFinancialReceipt(claim);
+          } catch (error) {
+            // The account already holds a different claim (an earlier message to the same
+            // one-time account): the first claim stays, this one is ignored.
+            if (
+              error instanceof Error &&
+              /Conflicting native receipt account claim|derivation conflicts with its owner/.test(
+                error.message
+              )
+            )
+              continue;
+            throw error;
+          }
+        }
+      },
       resumeContactPayments,
       retryContactPayment,
       mailboxScan: () =>
-        scanState.get("scan") ?? { complete: false, sinceMs: 0 },
-      recordMailboxScan: (progress) => scanState.put("scan", progress),
+        scanState.get(MAILBOX_SCAN_KEY) ?? { complete: false, sinceMs: 0 },
+      recordMailboxScan: (progress) => scanState.put(MAILBOX_SCAN_KEY, progress),
       contactMessageIdentity: (ephemeralPubKeys) => {
         const payments = paymentStore.all().filter(payment => ephemeralPubKeys.includes(payment.ephemeralPubKey));
         const messageIds = new Set(payments.map(payment => payment.messageId));

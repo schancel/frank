@@ -55,3 +55,59 @@ export function contactPaymentState(
     ) ?? 'paid'
   )
 }
+
+/** How a received `stealth-asset` item is shown with the stealth payment card: one native
+ * payment to one one-time account (what the app's stealth send writes). The amount is the sum
+ * of the transfers the sender wrote; the card's status and received amount come from the
+ * wallet's coin for that account, never from the item. Anything else (several accounts, a
+ * token) is left to the item's plain preview. */
+export function stealthAssetCard(item: {
+  transfers: readonly {
+    chainIdentifier: string
+    asset: { kind: string }
+    amountAtomic: string
+    rawTx?: string
+    txId: string
+    stealthMetadata: { ephemeralPubKey: string }
+  }[]
+  memo?: string
+}):
+  | {
+      networkTag: string
+      ephemeralPubKey: string
+      /** The card's approximate figure; `amountWei` is exact. */
+      amount: number
+      amountWei: string
+      transactions: string[]
+      memo?: string
+    }
+  | undefined {
+  const first = item.transfers[0]
+  if (
+    first === undefined ||
+    item.transfers.some(
+      transfer =>
+        transfer.asset.kind !== 'native' ||
+        transfer.chainIdentifier !== first.chainIdentifier ||
+        transfer.stealthMetadata.ephemeralPubKey !==
+          first.stealthMetadata.ephemeralPubKey ||
+        !/^[1-9][0-9]*$/.test(transfer.amountAtomic),
+    )
+  )
+    return undefined
+  const amountWei = item.transfers.reduce(
+    (sum, transfer) => sum + BigInt(transfer.amountAtomic),
+    0n,
+  )
+  return {
+    // The card resolves the unit and chain from the canonical identifier.
+    networkTag: first.chainIdentifier,
+    ephemeralPubKey: first.stealthMetadata.ephemeralPubKey,
+    amount: Number(amountWei),
+    amountWei: amountWei.toString(),
+    transactions: item.transfers.map(
+      transfer => transfer.rawTx ?? transfer.txId,
+    ),
+    ...(item.memo === undefined ? {} : { memo: item.memo }),
+  }
+}

@@ -1451,7 +1451,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // A stealth payment, or a note about a received coin, is recorded in the coin list
             // before the record is handed on.
             void (record.items.some(
-              (item) => item.type === "stealth" || item.type === "received-coin"
+              (item) =>
+                item.type === "stealth" ||
+                item.type === "stealth-asset" ||
+                item.type === "received-coin"
             )
               ? recordReceivedCoins(wallet, [record]).then(() =>
                   consumeSelfNotes(wallet, record)

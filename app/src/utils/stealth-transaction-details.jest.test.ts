@@ -1,6 +1,7 @@
 import { Wallet, Transaction } from 'ethers'
 import {
   contactPaymentState,
+  stealthAssetCard,
   stealthTransactionDetails,
 } from './stealth-transaction-details'
 import type { ContactPaymentInfo } from '@frank/wallet/chain'
@@ -50,4 +51,55 @@ it('accepts only the transfer owner entry matching both ephemeral key and carrie
   expect(contactPaymentState([payment], '02aa', ['0x1234', '0x5678'])).toBe(
     'unknown',
   )
+})
+
+describe('stealthAssetCard', () => {
+  const transfer = (
+    amountAtomic: string,
+    rawTx: string,
+    ephemeralPubKey = '02' + 'aa'.repeat(32),
+  ) => ({
+    chainIdentifier: 'monad-regtest',
+    asset: { kind: 'native' },
+    amountAtomic,
+    rawTx,
+    txId: 'ff'.repeat(32),
+    stealthMetadata: { ephemeralPubKey },
+  })
+
+  it('shows a native payment to one one-time account as one card, with the summed amount', () => {
+    expect(
+      stealthAssetCard({
+        transfers: [
+          transfer('1500000000000000000', 'aa'),
+          transfer('500000000000000000', 'bb'),
+        ],
+        memo: 'for you',
+      }),
+    ).toEqual({
+      networkTag: 'monad-regtest',
+      ephemeralPubKey: '02' + 'aa'.repeat(32),
+      amount: 2e18,
+      amountWei: '2000000000000000000',
+      transactions: ['aa', 'bb'],
+      memo: 'for you',
+    })
+  })
+
+  it('leaves tokens and payments to several accounts to the plain preview', () => {
+    expect(
+      stealthAssetCard({
+        transfers: [{ ...transfer('1', 'aa'), asset: { kind: 'token' } }],
+      }),
+    ).toBeUndefined()
+    expect(
+      stealthAssetCard({
+        transfers: [
+          transfer('1', 'aa'),
+          transfer('1', 'bb', '03' + 'bb'.repeat(32)),
+        ],
+      }),
+    ).toBeUndefined()
+    expect(stealthAssetCard({ transfers: [] })).toBeUndefined()
+  })
 })

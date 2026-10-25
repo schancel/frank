@@ -1,12 +1,49 @@
-//! Private canonical Forum authority. Callers serialize access with the Forum owner lock.
-use std::path::{Path, PathBuf};
+//! Where the relay keeps the forum, over the [`RelayKvStore`] transaction contract, so every
+//! replica of a cluster serves the same posts, votes, counts and cursors.
+//!
+//! Keys (inside the store; FoundationDB adds `<fdb_subspace_prefix>forum-v1/`):
+//!
+//! | key | value | what it is |
+//! |---|---|---|
+//! | `format` | [`FORMAT`] | the store's format; anything else stops with the reset path |
+//! | `h` | `forum-store-header` | the network, chain id and burn address the store is bound to |
+//! | `e/` tx hash | stored frame | the exact submitted post or vote frame (authority, immutable) |
+//! | `o/` tx hash | `forum-observation-row` | that burn's state: pending, or confirmed at block/index |
+//! | `p/` post hash | `forum-post-row` | the post's topic, author burn, first visibility, aggregate and pending reservations |
+//! | `t/` sha256(topic) time post hash | post hash | a topic's visible posts in first-visible order |
+//! | `d/` topic | `forum-discovery-row` | the topic's visible post count and last activity |
+//! | `q` | `forum-pending-accounting` | pending burns and their byte charge, for the capacity limits |
+//! | `r` | revision (u64 BE) | advanced by every new admission and every first confirmation |
+//! | `n` | count (u64 LE, atomic add) | visible posts, for metrics |
+//! | `lv/` | | this store's large-value index |
+//!
+//! A stored frame is inline up to [`INLINE_LIMIT`]; a larger one is an object in the store
+//! composition passes in, named `forum/sha256/<hex>/<upload>`, whose reference commits in the
+//! admission transaction. Frames never change, so a vote never re-uploads its post.
+//!
+//! Only `e/` and `o/` are authority. `p/`, `t/`, `d/`, `q`, `r` and `n` are derived from them,
+//! and every admission or confirmation writes the authority and everything derived from it in
+//! one transaction, so they never disagree and nothing is rebuilt on open. A derived row that
+//! does not match its authority is a corrupt store: reads fail closed (`Unavailable`), and
+//! nothing is repaired or reset.
+//!
+//! Exactly-once burn accounting: a burn is keyed by its transaction hash. Admission reserves
+//! its value on the post once (a repeat finds `o/` and changes nothing), and confirmation moves
+//! the reservation into the aggregate once (a repeat finds the burn confirmed). Two replicas
+//! racing on one burn conflict on `o/` and `q`, so one commits and the other sees its row.
+//! A commit whose outcome is unknown is settled by a fence: one transaction that rewrites `q`
+//! unchanged, which the first attempt read, so once the fence commits that attempt either
+//! landed (the fence sees its row) or never will.
+//!
+//! The store's calls block (FoundationDB waits on its own network thread), so async callers
+//! hand the worker over for each call.
+use std::sync::Arc;
 
 use frank_cbor::message_fields::{
     forum_discovery_row, forum_observation_row, forum_observation_state, forum_pending_accounting,
     forum_post_row, forum_store_header, forum_store_row_version, timestamp as time_fields,
 };
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue, Timestamp};
-use rocksdb::{Direction, IteratorMode, Options, WriteBatch, WriteOptions};
 use thiserror::Error;
 
 use crate::monad_topic_cbor::{
@@ -14,6 +51,10 @@ use crate::monad_topic_cbor::{
     TopicEvent, VerifiedTopicBurn,
 };
 use crate::monad_topic_verify::VoteDirection;
+use crate::store::kv_store::{KvError, KvTransaction, RelayKvStore, Transact};
+use crate::store::large_values::{
+    LargeValueError, LargeValues, ObjectStore, Staged, Stored, SweepReport, INLINE_LIMIT,
+};
 
 pub(crate) type Result<T> = std::result::Result<T, ForumError>;
 
@@ -31,19 +72,72 @@ pub(crate) enum ForumError {
     Capacity,
     #[error("Forum cursor expired or unknown")]
     Expired,
-    #[error("Forum snapshot capacity exhausted")]
-    SnapshotCapacity,
-    #[error("Forum snapshot exceeds retained memory bound")]
-    SnapshotTooLarge,
     #[error("Forum row cannot fit an encoded page")]
     RowTooLarge,
     #[error("topic burn outcome unknown: {0}")]
     OutcomeUnknown(String),
+    /// A store commit whose outcome is unknown. Settled by a fence before anything is reported.
+    #[error("Forum store commit outcome unknown: {0}")]
+    CommitUnknown(String),
+    /// A large frame's upload intent was swept before the admission committed; stage it again.
+    #[error("Forum large-value intent lost")]
+    IntentLost,
+}
+
+impl From<KvError> for ForumError {
+    fn from(error: KvError) -> Self {
+        match error {
+            KvError::CommitUnknownResult(reason) => Self::CommitUnknown(reason),
+            other => {
+                tracing::warn!("Forum store: {other}");
+                Self::Unavailable
+            }
+        }
+    }
+}
+
+impl From<LargeValueError> for ForumError {
+    fn from(error: LargeValueError) -> Self {
+        match error {
+            LargeValueError::Kv(error) => error.into(),
+            LargeValueError::IntentLost => Self::IntentLost,
+            other => {
+                tracing::warn!("Forum large values: {other}");
+                Self::Unavailable
+            }
+        }
+    }
 }
 
 pub(crate) fn invalid(error: impl std::fmt::Display) -> ForumError {
     ForumError::Invalid(error.to_string())
 }
+
+/// Format marker key and value of this store.
+pub(crate) const FORMAT_KEY: &[u8] = b"format";
+pub(crate) const FORMAT: &[u8] = b"frank-forum-kv-v1";
+/// A single-node relay keeps the store beside its registry database, at the database's file
+/// name plus this suffix.
+pub(crate) const STORE_SUFFIX: &str = ".forum-kv-v1";
+/// Suffixes of forum stores written by earlier development builds. None can be read.
+pub(crate) const OLD_STORE_SUFFIXES: &[&str] = &[".forum-cbor-v1"];
+/// The forum's namespace in the shared object store.
+pub(crate) const OBJECT_NAMESPACE: &str = "forum";
+const HEADER: &[u8] = b"h";
+const FRAMES: &[u8] = b"e/";
+const STATES: &[u8] = b"o/";
+const POSTS: &[u8] = b"p/";
+const TOPIC_INDEX: &[u8] = b"t/";
+const DISCOVERY: &[u8] = b"d/";
+const PENDING: &[u8] = b"q";
+const REVISION: &[u8] = b"r";
+const VISIBLE_POSTS: &[u8] = b"n";
+const LARGE_VALUES: &[u8] = b"lv/";
+/// Pending burns the store holds at once, and their byte charge.
+pub(crate) const MAX_PENDING_COUNT: u64 = 4096;
+pub(crate) const MAX_PENDING_BYTES: u64 = 64 * 1024 * 1024;
+/// How many times one call settles an unknown commit or restages a lost upload.
+const SETTLE_ATTEMPTS: usize = 8;
 
 pub(crate) fn time_value(time: Timestamp) -> CborValue {
     cbor_map(vec![
@@ -94,7 +188,7 @@ fn bytes(value: &CborValue) -> Result<&[u8]> {
     }
 }
 
-fn timestamp(value: &CborValue) -> Result<Timestamp> {
+pub(crate) fn timestamp(value: &CborValue) -> Result<Timestamp> {
     closed(value, time_fields::SHAPE.required)?;
     let CborValue::Int(seconds) = field(value, time_fields::SECONDS)? else {
         return Err(ForumError::Unavailable);
@@ -115,10 +209,14 @@ fn encode(value: &CborValue) -> Result<Vec<u8>> {
 fn decode(bytes: &[u8]) -> Result<CborValue> {
     decode_canonical(bytes).map_err(|_| ForumError::Unavailable)
 }
-fn key(prefix: u8, suffix: &[u8]) -> Vec<u8> {
-    let mut key = vec![prefix];
-    key.extend_from_slice(suffix);
-    key
+fn key(prefix: &[u8], suffix: &[u8]) -> Vec<u8> {
+    [prefix, suffix].concat()
+}
+fn version_ok(map: &CborValue, key: u64) -> Result<()> {
+    if uint(field(map, key)?)? != u64::from(forum_store_row_version::V1) {
+        return Err(ForumError::Unavailable);
+    }
+    Ok(())
 }
 
 /// Checked magnitude, deliberately independent of host integer width.
@@ -144,7 +242,7 @@ impl Magnitude {
         }
         Ok(Self(out))
     }
-    fn sub(self, rhs: Self) -> Result<Self> {
+    pub(crate) fn sub(self, rhs: Self) -> Result<Self> {
         if self < rhs {
             return Err(ForumError::Unavailable);
         }
@@ -196,14 +294,16 @@ impl Observation {
             TopicEvent::Vote(vote) => &vote.frame,
         }
     }
-    fn value(&self) -> CborValue {
+    pub(crate) fn hash(&self) -> [u8; 32] {
+        self.checked.decoded.tx_hash.0
+    }
+    fn state_value(&self) -> CborValue {
         use forum_observation_row as R;
         let mut fields = vec![
             (
                 R::VERSION,
                 CborValue::Int(forum_store_row_version::V1.into()),
             ),
-            (R::FRAME, CborValue::Bytes(self.frame().to_vec())),
             (R::FIRST_SEEN, time_value(self.first_seen)),
             (
                 R::STATE,
@@ -226,26 +326,75 @@ impl Observation {
         }
         cbor_map(fields)
     }
-    fn charge(&self) -> Result<u64> {
-        // Includes the authoritative key/value, worst-case duplicated pending post/index,
-        // reservation/accounting records and fixed bookkeeping. Deliberately conservative.
+    /// The byte charge of a pending burn against [`MAX_PENDING_BYTES`]: its frame, the post it
+    /// may create, and fixed bookkeeping. The same at admission and at confirmation.
+    pub(crate) fn charge(&self) -> u64 {
         let post = match &self.event {
             TopicEvent::Post(p) => p.post_frame.len() + p.topic.len(),
             _ => 0,
         };
-        Ok((encode(&self.value())?.len() + post + 1024) as u64)
+        (self.frame().len() + post + 1024) as u64
+    }
+    /// This request with the state stored for it (`o/`).
+    fn with_state(&self, state: &[u8]) -> Result<Self> {
+        let (first_seen, confirmed) = decode_state(state)?;
+        Ok(Self {
+            first_seen,
+            confirmed,
+            ..self.clone()
+        })
     }
 }
 
-#[derive(Debug, Clone)]
+type State = (Timestamp, Option<(u64, u64, Timestamp)>);
+
+fn decode_state(value: &[u8]) -> Result<State> {
+    use forum_observation_row as R;
+    let map = decode(value)?;
+    let state = uint(field(&map, R::STATE)?)?;
+    let confirmed = state == u64::from(forum_observation_state::CONFIRMED);
+    closed(
+        &map,
+        if confirmed {
+            &[
+                R::VERSION,
+                R::FIRST_SEEN,
+                R::STATE,
+                R::BLOCK,
+                R::TRANSACTION_INDEX,
+                R::VISIBLE,
+            ]
+        } else {
+            R::SHAPE.required
+        },
+    )?;
+    version_ok(&map, R::VERSION)?;
+    if !(state == u64::from(forum_observation_state::PENDING) || confirmed) {
+        return Err(ForumError::Unavailable);
+    }
+    Ok((
+        timestamp(field(&map, R::FIRST_SEEN)?)?,
+        if confirmed {
+            Some((
+                uint(field(&map, R::BLOCK)?)?,
+                uint(field(&map, R::TRANSACTION_INDEX)?)?,
+                timestamp(field(&map, R::VISIBLE)?)?,
+            ))
+        } else {
+            None
+        },
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Post {
-    pub(crate) frame: Vec<u8>,
     pub(crate) topic: String,
+    /// The confirmed burn that authored the post: its frame holds the post frame.
     pub(crate) author: Option<[u8; 32]>,
     pub(crate) visible: Option<Timestamp>,
     pub(crate) aggregate: Aggregate,
-    reserved_up: Magnitude,
-    reserved_down: Magnitude,
+    pub(crate) reserved_up: Magnitude,
+    pub(crate) reserved_down: Magnitude,
 }
 
 impl Post {
@@ -256,7 +405,6 @@ impl Post {
                 R::VERSION,
                 CborValue::Int(forum_store_row_version::V1.into()),
             ),
-            (R::FRAME, CborValue::Bytes(self.frame.clone())),
             (R::NEGATIVE, CborValue::Bool(self.aggregate.negative)),
             (
                 R::MAGNITUDE,
@@ -288,7 +436,6 @@ impl Post {
             if known {
                 &[
                     R::VERSION,
-                    R::FRAME,
                     R::AUTHOR,
                     R::VISIBLE,
                     R::NEGATIVE,
@@ -301,9 +448,7 @@ impl Post {
                 R::SHAPE.required
             },
         )?;
-        if uint(field(value, R::VERSION)?)? != u64::from(forum_store_row_version::V1) {
-            return Err(ForumError::Unavailable);
-        }
+        version_ok(value, R::VERSION)?;
         let mag = |k| -> Result<Magnitude> {
             Ok(Magnitude(
                 bytes(field(value, k)?)?
@@ -317,12 +462,11 @@ impl Post {
         let CborValue::Text(topic) = field(value, R::TOPIC)? else {
             return Err(ForumError::Unavailable);
         };
-        let magnitude = mag(5)?;
+        let magnitude = mag(R::MAGNITUDE)?;
         if *negative && magnitude == Magnitude::default() {
             return Err(ForumError::Unavailable);
         }
         Ok(Self {
-            frame: bytes(field(value, R::FRAME)?)?.to_vec(),
             topic: topic.clone(),
             author: if known {
                 Some(
@@ -342,20 +486,49 @@ impl Post {
                 negative: *negative,
                 magnitude,
             },
-            reserved_up: mag(6)?,
-            reserved_down: mag(7)?,
+            reserved_up: mag(R::RESERVED_UP)?,
+            reserved_down: mag(R::RESERVED_DOWN)?,
         })
     }
 }
 
+/// The parts of a visible post read in one transaction; the author's frame may still be an
+/// object to read ([`Store::resolve_row`]).
+#[derive(Debug, Clone)]
+pub(crate) struct StoredRow {
+    pub(crate) hash: [u8; 32],
+    pub(crate) post: Post,
+    author: [u8; 32],
+    author_frame: Stored,
+    author_state: Vec<u8>,
+}
+
+/// A visible post and the confirmed burn that authored it.
+#[derive(Debug, Clone)]
+pub(crate) struct Row {
+    pub(crate) hash: [u8; 32],
+    pub(crate) post: Post,
+    pub(crate) author: Observation,
+}
+
+enum Admission {
+    New(Observation),
+    Existing(Observation),
+}
+
+fn stored_matches(stored: &Stored, frame: &[u8]) -> bool {
+    match stored {
+        Stored::Inline(bytes) => bytes == frame,
+        Stored::Large(reference) => reference.matches(frame),
+    }
+}
+
+/// The open forum store of one network and burn policy.
 pub(crate) struct Store {
-    db: rocksdb::DB,
+    kv: Arc<dyn RelayKvStore>,
+    large: LargeValues,
     pub(crate) network: String,
     pub(crate) policy: TopicBurnPolicy,
-    pending_count: u64,
-    pending_bytes: u64,
-    #[cfg(test)]
-    fail_write: std::cell::Cell<u8>,
 }
 
 impl std::fmt::Debug for Store {
@@ -367,31 +540,17 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
-    pub(crate) fn pending_count(&self) -> u64 {
-        self.pending_count
-    }
-    pub(crate) fn path(legacy: &Path) -> Result<PathBuf> {
-        let mut name = legacy
-            .file_name()
-            .ok_or(ForumError::Unavailable)?
-            .to_os_string();
-        name.push(".forum-cbor-v1");
-        Ok(legacy.with_file_name(name))
-    }
-    pub(crate) fn open(legacy: &Path, network: &str, policy: TopicBurnPolicy) -> Result<Self> {
-        let path = Self::path(legacy)?;
-        let exists = match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => true,
-            Ok(_) => return Err(ForumError::Unavailable),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => return Err(ForumError::Unavailable),
-        };
-        if exists && !path.join("CURRENT").is_file() {
-            return Err(ForumError::Unavailable);
-        }
-        let mut options = Options::default();
-        options.create_if_missing(!exists);
-        let db = rocksdb::DB::open(&options, path).map_err(|_| ForumError::Unavailable)?;
+    /// Open the store on `kv`. Without `create`, a store with no format marker is `None` and
+    /// nothing is written. A store of another format, or bound to another network or burn
+    /// policy, is refused (`Unavailable`) with `reset` logged: it is never adopted or rewritten.
+    pub(crate) fn open(
+        kv: Arc<dyn RelayKvStore>,
+        objects: Arc<dyn ObjectStore>,
+        network: &str,
+        policy: TopicBurnPolicy,
+        create: bool,
+        reset: &str,
+    ) -> Result<Option<Self>> {
         let header = encode(&cbor_map(vec![
             (
                 forum_store_header::VERSION,
@@ -407,37 +566,68 @@ impl Store {
                 CborValue::Bytes(policy.burn_address.0.to_vec()),
             ),
         ]))?;
-        let mut store = Self {
-            db,
-            network: network.into(),
-            policy,
-            pending_count: 0,
-            pending_bytes: 0,
-            #[cfg(test)]
-            fail_write: std::cell::Cell::new(0),
-        };
-        match store.get(b"h")? {
-            Some(old) if old == header => (),
-            None if !exists => {
-                let mut batch = WriteBatch::default();
-                batch.put(b"h", header);
-                store.write(batch)?;
-            }
-            _ => return Err(ForumError::Unavailable),
+        enum Found {
+            Ready,
+            Missing,
+            OtherFormat,
+            OtherPolicy,
         }
-        store.rebuild()?;
-        Ok(store)
+        let found = kv.transact(|tx| -> Result<Found> {
+            match (tx.get(FORMAT_KEY)?, tx.get(HEADER)?) {
+                (Some(format), Some(stored)) if format == FORMAT => Ok(if stored == header {
+                    Found::Ready
+                } else {
+                    Found::OtherPolicy
+                }),
+                (Some(_), _) => Ok(Found::OtherFormat),
+                (None, _) if !tx.scan_prefix(b"", None, 1)?.is_empty() => Ok(Found::OtherFormat),
+                (None, _) if create => {
+                    tx.set(FORMAT_KEY, FORMAT)?;
+                    tx.set(HEADER, &header)?;
+                    Ok(Found::Ready)
+                }
+                (None, _) => Ok(Found::Missing),
+            }
+        })?;
+        match found {
+            Found::Ready => Ok(Some(Self {
+                large: LargeValues::new(kv.clone(), objects, LARGE_VALUES, OBJECT_NAMESPACE),
+                kv,
+                network: network.into(),
+                policy,
+            })),
+            Found::Missing => Ok(None),
+            Found::OtherFormat => {
+                tracing::error!("{reset}");
+                Err(ForumError::Unavailable)
+            }
+            Found::OtherPolicy => {
+                tracing::error!(
+                    network,
+                    "The forum store is bound to another network, chain id or burn address \
+                     than [registry.forum] configures; it is never rewritten. {reset}"
+                );
+                Err(ForumError::Unavailable)
+            }
+        }
     }
-    pub(crate) fn db(&self) -> &rocksdb::DB {
-        &self.db
+
+    /// Run a read-only transaction.
+    pub(crate) fn read<T>(
+        &self,
+        body: impl FnMut(&mut dyn KvTransaction) -> Result<T>,
+    ) -> Result<T> {
+        self.kv.transact(body)
     }
-    pub(crate) fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.db.get(key).map_err(|_| ForumError::Unavailable)
-    }
+
     pub(crate) fn topic_index_prefix(topic: &str) -> Vec<u8> {
         use bitcoinsuite_core::{Hashed, Sha256};
-        key(b't', Sha256::digest(topic.as_bytes().into()).as_slice())
+        key(
+            TOPIC_INDEX,
+            Sha256::digest(topic.as_bytes().into()).as_slice(),
+        )
     }
+
     pub(crate) fn topic_index_key(
         topic: &str,
         time: Option<Timestamp>,
@@ -453,129 +643,135 @@ impl Store {
         }
         key
     }
-    fn write(&self, batch: WriteBatch) -> Result<()> {
-        #[cfg(test)]
-        if self.fail_write.get() == 1 {
-            return Err(ForumError::Unavailable);
-        }
-        let mut options = WriteOptions::default();
-        options.set_sync(true);
-        self.db
-            .write_opt(batch, &options)
-            .map_err(|_| ForumError::Unavailable)?;
-        #[cfg(test)]
-        if self.fail_write.get() == 2 {
-            return Err(ForumError::Unavailable);
-        }
-        Ok(())
+
+    pub(crate) fn discovery_prefix() -> &'static [u8] {
+        DISCOVERY
     }
-    fn decode_observation(&self, hash: &[u8], value: &[u8]) -> Result<Observation> {
-        use forum_observation_row as R;
-        let map = decode(value)?;
-        let state = uint(field(&map, R::STATE)?)?;
-        let confirmed = state == u64::from(forum_observation_state::CONFIRMED);
-        closed(
-            &map,
-            if confirmed {
-                &[
-                    R::VERSION,
-                    R::FRAME,
-                    R::FIRST_SEEN,
-                    R::STATE,
-                    R::BLOCK,
-                    R::TRANSACTION_INDEX,
-                    R::VISIBLE,
-                ]
-            } else {
-                R::SHAPE.required
-            },
-        )?;
-        if uint(field(&map, R::VERSION)?)? != u64::from(forum_store_row_version::V1)
-            || !(state == u64::from(forum_observation_state::PENDING) || confirmed)
-        {
-            return Err(ForumError::Unavailable);
-        }
-        let event = parse_topic_event(bytes(field(&map, R::FRAME)?)?, &self.network)
-            .map_err(|_| ForumError::Unavailable)?;
-        if matches!(&event, TopicEvent::Post(p) if p.schema_version < 2) {
-            return Err(ForumError::Unavailable);
-        }
-        let checked = check_topic_burn_before_broadcast(&event, &self.policy)
-            .map_err(|_| ForumError::Unavailable)?;
-        if checked.decoded.tx_hash.0.as_slice() != hash
-            || checked.decoded.value_wei > i64::MAX as u128
-        {
-            return Err(ForumError::Unavailable);
-        }
-        Ok(Observation {
-            event,
-            checked,
-            first_seen: timestamp(field(&map, R::FIRST_SEEN)?)?,
-            confirmed: if confirmed {
-                Some((
-                    uint(field(&map, R::BLOCK)?)?,
-                    uint(field(&map, R::TRANSACTION_INDEX)?)?,
-                    timestamp(field(&map, R::VISIBLE)?)?,
-                ))
-            } else {
-                None
-            },
-        })
+
+    pub(crate) fn discovery_key(topic: &str) -> Vec<u8> {
+        key(DISCOVERY, topic.as_bytes())
     }
-    pub(crate) fn operation(&self, hash: &[u8; 32]) -> Result<Option<Observation>> {
-        self.get(&key(b'e', hash))?
-            .map(|v| self.decode_observation(hash, &v))
+
+    /// The stored frame and state of the burn `hash`.
+    pub(crate) fn operation(
+        tx: &mut dyn KvTransaction,
+        hash: &[u8; 32],
+    ) -> Result<Option<(Stored, Vec<u8>)>> {
+        let Some(state) = tx.get(&key(STATES, hash))? else {
+            return Ok(None);
+        };
+        let frame = tx
+            .get(&key(FRAMES, hash))?
+            .and_then(|raw| Stored::decode(&raw))
+            .ok_or(ForumError::Unavailable)?;
+        Ok(Some((frame, state)))
+    }
+
+    /// The stored burn `hash` when its frame is exactly `request`'s, with its stored state.
+    pub(crate) fn retained(
+        tx: &mut dyn KvTransaction,
+        request: &Observation,
+    ) -> Result<Option<Observation>> {
+        match Self::operation(tx, &request.hash())? {
+            Some((frame, state)) if stored_matches(&frame, request.frame()) => {
+                Ok(Some(request.with_state(&state)?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn post(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Result<Option<Post>> {
+        tx.get(&key(POSTS, hash))?
+            .map(|v| Post::parse(&decode(&v)?))
             .transpose()
     }
-    pub(crate) fn post(&self, hash: &[u8; 32]) -> Result<Option<Post>> {
-        let post = self
-            .get(&key(b'p', hash))?
-            .map(|v| Post::parse(&decode(&v)?))
-            .transpose()?;
-        if let Some(post) = &post {
-            crate::monad_topic_cbor::validate_topic_post_target(&post.frame, &self.network, hash)
-                .map_err(|_| ForumError::Unavailable)?;
-            let parsed = frank_cbor::validate_frame(&post.frame, &frank_cbor::default_context())
-                .map_err(|_| ForumError::Unavailable)?;
-            let frank_cbor::ValidationResult::Parsed(parsed) = parsed else {
-                return Err(ForumError::Unavailable);
-            };
-            if !matches!(parsed.typed.as_deref(),Some(frank_cbor::TypedPayload::TopicPost {topic,..}) if topic==&post.topic)
-            {
-                return Err(ForumError::Unavailable);
-            }
+
+    pub(crate) fn revision(tx: &mut dyn KvTransaction) -> Result<u64> {
+        match tx.get(REVISION)? {
+            None => Ok(0),
+            Some(raw) => Ok(u64::from_be_bytes(
+                raw.try_into().map_err(|_| ForumError::Unavailable)?,
+            )),
         }
-        Ok(post)
     }
-    fn accounting(batch: &mut WriteBatch, count: u64, bytes: u64) -> Result<()> {
-        batch.put(
-            b"q",
-            encode(&cbor_map(vec![
+
+    fn pending(tx: &mut dyn KvTransaction) -> Result<(u64, u64)> {
+        use forum_pending_accounting as Q;
+        let Some(raw) = tx.get(PENDING)? else {
+            return Ok((0, 0));
+        };
+        let map = decode(&raw)?;
+        closed(&map, Q::SHAPE.required)?;
+        version_ok(&map, Q::VERSION)?;
+        Ok((uint(field(&map, Q::COUNT)?)?, uint(field(&map, Q::BYTES)?)?))
+    }
+
+    fn put_pending(tx: &mut dyn KvTransaction, count: u64, bytes: u64) -> Result<()> {
+        use forum_pending_accounting as Q;
+        tx.set(
+            PENDING,
+            &encode(&cbor_map(vec![
                 (
-                    forum_pending_accounting::VERSION,
+                    Q::VERSION,
                     CborValue::Int(forum_store_row_version::V1.into()),
                 ),
-                (
-                    forum_pending_accounting::COUNT,
-                    CborValue::Int(count.into()),
-                ),
-                (
-                    forum_pending_accounting::BYTES,
-                    CborValue::Int(bytes.into()),
-                ),
+                (Q::COUNT, CborValue::Int(count.into())),
+                (Q::BYTES, CborValue::Int(bytes.into())),
             ]))?,
-        );
+        )?;
         Ok(())
     }
-    fn pending_post(&self, observation: &Observation) -> Result<Post> {
-        if let Some(post) = self.post(observation.event.target_hash())? {
+
+    /// Pending burns and their byte charge.
+    #[cfg(test)]
+    pub(crate) fn pending_accounting(&self) -> Result<(u64, u64)> {
+        self.read(|tx| Self::pending(tx))
+    }
+
+    pub(crate) fn decode_discovery_entry(value: &[u8]) -> Result<(u64, Timestamp)> {
+        use forum_discovery_row as D;
+        let map = decode(value)?;
+        closed(&map, D::SHAPE.required)?;
+        version_ok(&map, D::VERSION)?;
+        Ok((
+            uint(field(&map, D::COUNT)?)?,
+            timestamp(field(&map, D::LAST_ACTIVITY)?)?,
+        ))
+    }
+
+    pub(crate) fn discovery_entry(
+        tx: &mut dyn KvTransaction,
+        topic: &str,
+    ) -> Result<Option<(u64, Timestamp)>> {
+        tx.get(&Self::discovery_key(topic))?
+            .map(|v| Self::decode_discovery_entry(&v))
+            .transpose()
+    }
+
+    /// Visible posts, from the `n` counter.
+    pub(crate) fn stored_post_count(&self) -> Result<u64> {
+        self.read(|tx| match tx.get(VISIBLE_POSTS)? {
+            None => Ok(0),
+            Some(raw) => Ok(u64::from_le_bytes(
+                raw.try_into().map_err(|_| ForumError::Unavailable)?,
+            )),
+        })
+    }
+
+    /// Delete unreferenced forum objects as sweep lease holder `holder`.
+    pub(crate) fn sweep_large_values(&self, holder: [u8; 16]) -> Result<SweepReport> {
+        Ok(self.large.sweep(holder)?)
+    }
+
+    /// The post a request targets, or the post a new post request creates.
+    fn pending_post(tx: &mut dyn KvTransaction, observation: &Observation) -> Result<Post> {
+        if let Some(post) = Self::post(tx, observation.event.target_hash())? {
             return Ok(post);
         }
         let TopicEvent::Post(post) = &observation.event else {
             return Err(ForumError::NotFound);
         };
         Ok(Post {
-            frame: post.post_frame.clone(),
             topic: post.topic.clone(),
             author: None,
             visible: None,
@@ -584,7 +780,8 @@ impl Store {
             reserved_down: Magnitude::default(),
         })
     }
-    fn reserve(&self, observation: &Observation, mut post: Post) -> Result<Post> {
+
+    pub(crate) fn reserve(observation: &Observation, mut post: Post) -> Result<Post> {
         let amount = Magnitude::from_u64(observation.checked.decoded.value_wei as u64);
         let negative = observation.checked.direction == VoteDirection::Down;
         let reserved = if negative {
@@ -593,26 +790,134 @@ impl Store {
             &mut post.reserved_up
         };
         *reserved = reserved.add(amount)?;
+        // Headroom: the aggregate must absorb every reservation in either receipt order.
         post.aggregate.add(negative, *reserved)?;
         Ok(post)
     }
-    pub(crate) fn admit(&mut self, observation: Observation) -> Result<Observation> {
-        let hash = observation.checked.decoded.tx_hash.0;
-        if let Some(old) = self.operation(&hash)? {
-            return if old.frame() == observation.frame() {
-                Ok(old)
-            } else {
-                Err(ForumError::Conflict)
-            };
+
+    /// Admit a burn: store its exact frame and reserve its value, once. A repeat of the same
+    /// frame returns the stored burn; another frame for the same transaction is a conflict.
+    pub(crate) fn admit(&self, observation: Observation) -> Result<Observation> {
+        let frame = observation.frame();
+        if frame.len() > INLINE_LIMIT {
+            // A repeat of a large frame is answered without uploading it again.
+            if let Some(op) = self.read(|tx| match Self::operation(tx, &observation.hash())? {
+                Some((stored, _)) if !stored_matches(&stored, frame) => Err(ForumError::Conflict),
+                Some((_, state)) => Ok(Some(observation.with_state(&state)?)),
+                None => Ok(None),
+            })? {
+                return Ok(op);
+            }
         }
-        let post = self.pending_post(&observation)?;
+        let mut staged: Option<Staged> = None;
+        let mut attempts = 0;
+        let result = loop {
+            attempts += 1;
+            if frame.len() > INLINE_LIMIT && staged.is_none() {
+                staged = Some(self.large.stage(frame)?);
+            }
+            match self
+                .kv
+                .transact(|tx| self.admit_body(tx, &observation, staged.as_ref()))
+            {
+                Err(ForumError::IntentLost) if attempts < SETTLE_ATTEMPTS => {
+                    // The sweep judged the upload dead; it collects the object. Upload anew.
+                    staged = None;
+                }
+                Err(ForumError::CommitUnknown(reason)) if attempts < SETTLE_ATTEMPTS => {
+                    tracing::warn!(
+                        tx_hash = %hex::encode(observation.hash()),
+                        %reason,
+                        "Forum admission commit outcome unknown; fencing and reading the store"
+                    );
+                    match self.fence(&observation)? {
+                        Some(op) => {
+                            break Ok(if self.is_ours(&observation, staged.as_ref())? {
+                                Admission::New(op)
+                            } else {
+                                Admission::Existing(op)
+                            })
+                        }
+                        // The first attempt can no longer commit: admit afresh.
+                        None => {}
+                    }
+                }
+                other => break other,
+            }
+        };
+        if let Some(staged) = &staged {
+            // Expiring the intent is safe even for a committed reference: the sweep keeps every
+            // referenced object. Skip the work when this call's upload is the stored one.
+            if !matches!(result, Ok(Admission::New(_))) {
+                self.large.abandon(staged);
+            }
+        }
+        match result? {
+            Admission::New(op) | Admission::Existing(op) => Ok(op),
+        }
+    }
+
+    fn is_ours(&self, observation: &Observation, staged: Option<&Staged>) -> Result<bool> {
+        let Some(staged) = staged else {
+            return Ok(false);
+        };
+        let hash = observation.hash();
+        Ok(self.read(|tx| Self::operation(tx, &hash))?.is_some_and(
+            |(frame, _)| matches!(frame, Stored::Large(r) if r.upload == staged.reference.upload),
+        ))
+    }
+
+    /// Settle an unknown commit for `request`'s burn: rewrite `q` unchanged (every admission
+    /// and confirmation read it), then report what is stored for the burn. Once this commits,
+    /// the unknown attempt has landed or never will.
+    fn fence(&self, request: &Observation) -> Result<Option<Observation>> {
+        let found = self.kv.transact(|tx| {
+            let (count, bytes) = Self::pending(tx)?;
+            Self::put_pending(tx, count, bytes)?;
+            Self::operation(tx, &request.hash())
+        });
+        match found {
+            Ok(Some((frame, state))) => {
+                if !stored_matches(&frame, request.frame()) {
+                    return Err(ForumError::Conflict);
+                }
+                Ok(Some(request.with_state(&state)?))
+            }
+            Ok(None) => Ok(None),
+            Err(ForumError::CommitUnknown(reason)) => Err(ForumError::OutcomeUnknown(reason)),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn admit_body(
+        &self,
+        tx: &mut dyn KvTransaction,
+        observation: &Observation,
+        staged: Option<&Staged>,
+    ) -> Result<Admission> {
+        let hash = observation.hash();
+        let frame = observation.frame();
+        if let Some((stored, state)) = Self::operation(tx, &hash)? {
+            if !stored_matches(&stored, frame) {
+                return Err(ForumError::Conflict);
+            }
+            let ours = matches!((&stored, staged),
+                (Stored::Large(r), Some(s)) if r.upload == s.reference.upload);
+            let op = observation.with_state(&state)?;
+            return Ok(if ours {
+                Admission::New(op)
+            } else {
+                Admission::Existing(op)
+            });
+        }
+        let post = Self::pending_post(tx, observation)?;
+        let (count, bytes) = Self::pending(tx)?;
         if matches!(observation.event, TopicEvent::Post(_)) && post.visible.is_none() {
-            if let Some(value) = self.get(&key(b'd', post.topic.as_bytes()))? {
-                let map = decode(&value)?;
+            if let Some((topic_count, _)) = Self::discovery_entry(tx, &post.topic)? {
                 // Conservative headroom for every pending operation: a count may
                 // never overflow after its newly admitted post has already burned.
-                uint(field(&map, forum_discovery_row::COUNT)?)?
-                    .checked_add(self.pending_count)
+                topic_count
+                    .checked_add(count)
                     .and_then(|v| v.checked_add(1))
                     .ok_or(ForumError::Capacity)?;
             }
@@ -620,123 +925,91 @@ impl Store {
         if matches!(observation.event, TopicEvent::Vote(_)) && post.visible.is_none() {
             return Err(ForumError::NotFound);
         }
-        let post = self.reserve(&observation, post)?;
-        let count = self
-            .pending_count
-            .checked_add(1)
+        let post = Self::reserve(observation, post)?;
+        let count = count.checked_add(1).ok_or(ForumError::Capacity)?;
+        let bytes = bytes
+            .checked_add(observation.charge())
             .ok_or(ForumError::Capacity)?;
-        let bytes = self
-            .pending_bytes
-            .checked_add(observation.charge()?)
-            .ok_or(ForumError::Capacity)?;
-        if count > 4096 || bytes > 64 * 1024 * 1024 {
+        if count > MAX_PENDING_COUNT || bytes > MAX_PENDING_BYTES {
             return Err(ForumError::Capacity);
         }
-        let mut batch = WriteBatch::default();
-        batch.put(key(b'e', &hash), encode(&observation.value())?);
-        batch.put(
-            key(b'p', observation.event.target_hash()),
-            encode(&post.value())?,
-        );
-        Self::accounting(&mut batch, count, bytes)?;
-        self.write(batch)?;
-        self.pending_count = count;
-        self.pending_bytes = bytes;
-        Ok(observation)
-    }
-    fn author_order(&self, hash: &[u8; 32]) -> Result<(u64, u64, [u8; 32])> {
-        let op = self.operation(hash)?.ok_or(ForumError::Unavailable)?;
-        let (block, index, _) = op.confirmed.ok_or(ForumError::Unavailable)?;
-        Ok((block, index, *hash))
-    }
-    fn publish_projection(
-        &self,
-        batch: &mut WriteBatch,
-        op: &Observation,
-        mut post: Post,
-    ) -> Result<()> {
-        let (block, index, visible) = op.confirmed.ok_or(ForumError::Unavailable)?;
-        let amount = Magnitude::from_u64(op.checked.decoded.value_wei as u64);
-        post.aggregate = post
-            .aggregate
-            .add(op.checked.direction == VoteDirection::Down, amount)?;
-        if let TopicEvent::Post(_) = op.event {
-            let hash = op.checked.decoded.tx_hash.0;
-            if post
-                .author
-                .map(|old| self.author_order(&old))
-                .transpose()?
-                .is_none_or(|old| (block, index, hash) < old)
-            {
-                post.author = Some(hash);
+        // Revision headroom for every pending burn's confirmation as well as this admission:
+        // no later successful burn may force a wrapped revision.
+        let revision = Self::revision(tx)?;
+        revision
+            .checked_add(count)
+            .and_then(|v| v.checked_add(1))
+            .ok_or(ForumError::Capacity)?;
+        let frame_key = key(FRAMES, &hash);
+        let stored = match staged {
+            Some(staged) => {
+                self.large.commit_reference(tx, staged, &frame_key)?;
+                Stored::Large(staged.reference)
             }
-            if post.visible.is_none() {
-                post.visible = Some(visible);
-                let discovery_key = key(b'd', post.topic.as_bytes());
-                let (count, last) = match self.get(&discovery_key)? {
-                    Some(v) => {
-                        use forum_discovery_row as D;
-                        let map = decode(&v)?;
-                        closed(&map, D::SHAPE.required)?;
-                        if uint(field(&map, D::VERSION)?)? != u64::from(forum_store_row_version::V1)
-                        {
-                            return Err(ForumError::Unavailable);
-                        }
-                        (
-                            uint(field(&map, D::COUNT)?)?,
-                            timestamp(field(&map, D::LAST_ACTIVITY)?)?,
-                        )
-                    }
-                    None => (0, visible),
-                };
-                let count = count.checked_add(1).ok_or(ForumError::Capacity)?;
-                let last = if time_key(visible) > time_key(last) {
-                    visible
-                } else {
-                    last
-                };
-                batch.put(
-                    discovery_key,
-                    encode(&cbor_map(vec![
-                        (
-                            forum_discovery_row::VERSION,
-                            CborValue::Int(forum_store_row_version::V1.into()),
-                        ),
-                        (forum_discovery_row::COUNT, CborValue::Int(count.into())),
-                        (forum_discovery_row::LAST_ACTIVITY, time_value(last)),
-                    ]))?,
-                );
-                let index_key =
-                    Self::topic_index_key(&post.topic, Some(visible), Some(op.event.target_hash()));
-                batch.put(index_key, op.event.target_hash());
-            } else if post.visible != Some(visible) {
-                return Err(ForumError::Unavailable);
-            }
-        }
-        batch.put(key(b'p', op.event.target_hash()), encode(&post.value())?);
-        Ok(())
+            None => Stored::Inline(frame.to_vec()),
+        };
+        tx.set(&frame_key, &stored.encode())?;
+        tx.set(&key(STATES, &hash), &encode(&observation.state_value())?)?;
+        tx.set(
+            &key(POSTS, observation.event.target_hash()),
+            &encode(&post.value())?,
+        )?;
+        Self::put_pending(tx, count, bytes)?;
+        tx.set(REVISION, &(revision + 1).to_be_bytes())?;
+        Ok(Admission::New(observation.clone()))
     }
+
+    /// Record the chain's confirmation of an admitted burn, once: its reservation moves into
+    /// the post's aggregate and a post's first confirmation makes it visible.
     pub(crate) fn confirm(
-        &mut self,
-        hash: &[u8; 32],
+        &self,
+        request: &Observation,
         facts: &VerifiedTopicBurn,
         now: Timestamp,
     ) -> Result<Observation> {
-        let mut op = self.operation(hash)?.ok_or(ForumError::Unavailable)?;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self
+                .kv
+                .transact(|tx| Self::confirm_body(tx, request, facts, now))
+            {
+                Err(ForumError::CommitUnknown(reason)) if attempts < SETTLE_ATTEMPTS => {
+                    tracing::warn!(
+                        tx_hash = %hex::encode(request.hash()),
+                        %reason,
+                        "Forum confirmation commit outcome unknown; fencing and reading the store"
+                    );
+                    match self.fence(request)? {
+                        Some(op) if op.confirmed.is_some() => return Ok(op),
+                        Some(_) => {}
+                        None => return Err(ForumError::Unavailable),
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    fn confirm_body(
+        tx: &mut dyn KvTransaction,
+        request: &Observation,
+        facts: &VerifiedTopicBurn,
+        now: Timestamp,
+    ) -> Result<Observation> {
+        let hash = request.hash();
+        let mut op = Self::retained(tx, request)?.ok_or(ForumError::Unavailable)?;
         if op.confirmed.is_some() {
             return Ok(op);
         }
-        if facts.tx_hash.0 != *hash
+        if facts.tx_hash.0 != hash
             || facts.sender != op.checked.decoded.sender
             || facts.value_wei != op.checked.decoded.value_wei
             || facts.direction != op.checked.direction
         {
             return Err(ForumError::Unavailable);
         }
-        let mut post = self
-            .post(op.event.target_hash())?
-            .ok_or(ForumError::Unavailable)?;
-        let charge = op.charge()?;
+        let mut post = Self::post(tx, op.event.target_hash())?.ok_or(ForumError::Unavailable)?;
         let reserved = if op.checked.direction == VoteDirection::Down {
             &mut post.reserved_down
         } else {
@@ -749,180 +1022,153 @@ impl Store {
             now
         };
         op.confirmed = Some((facts.block_number, facts.transaction_index, visible));
-        let count = self
-            .pending_count
-            .checked_sub(1)
+        let (count, bytes) = Self::pending(tx)?;
+        let count = count.checked_sub(1).ok_or(ForumError::Unavailable)?;
+        let bytes = bytes
+            .checked_sub(op.charge())
             .ok_or(ForumError::Unavailable)?;
-        let bytes = self
-            .pending_bytes
-            .checked_sub(charge)
+        let revision = Self::revision(tx)?
+            .checked_add(1)
             .ok_or(ForumError::Unavailable)?;
-        let mut batch = WriteBatch::default();
-        batch.put(key(b'e', hash), encode(&op.value())?);
-        self.publish_projection(&mut batch, &op, post)?;
-        Self::accounting(&mut batch, count, bytes)?;
-        self.write(batch)?;
-        self.pending_count = count;
-        self.pending_bytes = bytes;
+        tx.set(&key(STATES, &hash), &encode(&op.state_value())?)?;
+        Self::publish_projection(tx, &op, post)?;
+        Self::put_pending(tx, count, bytes)?;
+        tx.set(REVISION, &revision.to_be_bytes())?;
         Ok(op)
     }
-    /// Always rebuild on open, making interrupted/missing/corrupt projections harmless.
-    /// Each batch is bounded to one operation's derived records; authority is never rewritten.
-    fn rebuild(&mut self) -> Result<()> {
-        // Validate authority before touching projections; reject unknown private prefixes.
-        for row in self.db.iterator(IteratorMode::Start) {
-            let (k, v) = row.map_err(|_| ForumError::Unavailable)?;
-            match k.first() {
-                Some(b'e') if k.len() == 33 => {
-                    self.decode_observation(&k[1..], &v)?;
-                }
-                Some(b'h') if k.as_ref() == b"h" => (),
-                Some(b'p' | b't' | b'd' | b'q') => (),
-                _ => return Err(ForumError::Unavailable),
+
+    fn author_order(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Result<(u64, u64, [u8; 32])> {
+        let state = tx.get(&key(STATES, hash))?.ok_or(ForumError::Unavailable)?;
+        let (_, confirmed) = decode_state(&state)?;
+        let (block, index, _) = confirmed.ok_or(ForumError::Unavailable)?;
+        Ok((block, index, *hash))
+    }
+
+    fn publish_projection(
+        tx: &mut dyn KvTransaction,
+        op: &Observation,
+        mut post: Post,
+    ) -> Result<()> {
+        let (block, index, visible) = op.confirmed.ok_or(ForumError::Unavailable)?;
+        let amount = Magnitude::from_u64(op.checked.decoded.value_wei as u64);
+        post.aggregate = post
+            .aggregate
+            .add(op.checked.direction == VoteDirection::Down, amount)?;
+        if let TopicEvent::Post(_) = op.event {
+            let hash = op.hash();
+            let current = match post.author {
+                Some(old) => Some(Self::author_order(tx, &old)?),
+                None => None,
+            };
+            if current.is_none_or(|old| (block, index, hash) < old) {
+                post.author = Some(hash);
             }
-        }
-        for prefix in [b'p', b't', b'd', b'q'] {
-            for row in self
-                .db
-                .iterator(IteratorMode::From(&[prefix], Direction::Forward))
-            {
-                let (k, _) = row.map_err(|_| ForumError::Unavailable)?;
-                if k.first() != Some(&prefix) {
-                    break;
-                }
-                let mut batch = WriteBatch::default();
-                batch.delete(k);
-                self.write(batch)?;
-            }
-        }
-        self.pending_count = 0;
-        self.pending_bytes = 0;
-        // Posts before votes, then pending reservations. Transaction order is irrelevant
-        // to unsigned author selection and immutable per-post publication timestamps.
-        for phase in 0..3 {
-            for row in self
-                .db
-                .iterator(IteratorMode::From(b"e", Direction::Forward))
-            {
-                let (k, v) = row.map_err(|_| ForumError::Unavailable)?;
-                if k.first() != Some(&b'e') {
-                    break;
-                }
-                let op = self.decode_observation(&k[1..], &v)?;
-                let selected = match phase {
-                    0 => op.confirmed.is_some() && matches!(op.event, TopicEvent::Post(_)),
-                    1 => op.confirmed.is_some() && matches!(op.event, TopicEvent::Vote(_)),
-                    _ => op.confirmed.is_none(),
-                };
-                if !selected {
-                    continue;
-                }
-                // A missing target in retained authority is an inconsistent store,
-                // whereas a new request for an unknown target remains NotFound.
-                let post = self.pending_post(&op).map_err(|error| match error {
-                    ForumError::NotFound => ForumError::Unavailable,
-                    other => other,
-                })?;
-                let mut batch = WriteBatch::default();
-                if phase < 2 {
-                    self.publish_projection(&mut batch, &op, post)?;
+            if post.visible.is_none() {
+                post.visible = Some(visible);
+                let discovery_key = Self::discovery_key(&post.topic);
+                let (count, last) = Self::discovery_entry(tx, &post.topic)?.unwrap_or((0, visible));
+                let count = count.checked_add(1).ok_or(ForumError::Capacity)?;
+                let last = if time_key(visible) > time_key(last) {
+                    visible
                 } else {
-                    if matches!(op.event, TopicEvent::Vote(_)) && post.visible.is_none() {
-                        return Err(ForumError::Unavailable);
-                    }
-                    let post = self.reserve(&op, post)?;
-                    self.pending_count = self
-                        .pending_count
-                        .checked_add(1)
-                        .ok_or(ForumError::Unavailable)?;
-                    self.pending_bytes = self
-                        .pending_bytes
-                        .checked_add(op.charge()?)
-                        .ok_or(ForumError::Unavailable)?;
-                    if self.pending_count > 4096 || self.pending_bytes > 64 * 1024 * 1024 {
-                        return Err(ForumError::Unavailable);
-                    }
-                    batch.put(key(b'p', op.event.target_hash()), encode(&post.value())?);
-                }
-                Self::accounting(&mut batch, self.pending_count, self.pending_bytes)?;
-                self.write(batch)?;
+                    last
+                };
+                tx.set(
+                    &discovery_key,
+                    &encode(&cbor_map(vec![
+                        (
+                            forum_discovery_row::VERSION,
+                            CborValue::Int(forum_store_row_version::V1.into()),
+                        ),
+                        (forum_discovery_row::COUNT, CborValue::Int(count.into())),
+                        (forum_discovery_row::LAST_ACTIVITY, time_value(last)),
+                    ]))?,
+                )?;
+                let index_key =
+                    Self::topic_index_key(&post.topic, Some(visible), Some(op.event.target_hash()));
+                tx.set(&index_key, op.event.target_hash())?;
+                tx.atomic_add(VISIBLE_POSTS, 1)?;
+            } else if post.visible != Some(visible) {
+                return Err(ForumError::Unavailable);
             }
         }
-        Ok(())
-    }
-    pub(crate) fn visit_posts(
-        &self,
-        topic: &str,
-        since: Timestamp,
-        mut visit: impl FnMut([u8; 32], Post) -> Result<()>,
-    ) -> Result<()> {
-        use bitcoinsuite_core::{Hashed, Sha256};
-        let prefix = key(b't', Sha256::digest(topic.as_bytes().into()).as_slice());
-        for row in self
-            .db
-            .iterator(IteratorMode::From(&prefix, Direction::Forward))
-        {
-            let (k, v) = row.map_err(|_| ForumError::Unavailable)?;
-            if !k.starts_with(&prefix) {
-                break;
-            }
-            let hash: [u8; 32] = v.as_ref().try_into().map_err(|_| ForumError::Unavailable)?;
-            let post = self.post(&hash)?.ok_or(ForumError::Unavailable)?;
-            let visible = post.visible.ok_or(ForumError::Unavailable)?;
-            if post.topic == topic && time_key(visible) >= time_key(since) {
-                visit(hash, post)?;
-            }
-        }
-        Ok(())
-    }
-    pub(crate) fn decode_discovery_entry(&self, value: &[u8]) -> Result<(u64, Timestamp)> {
-        use forum_discovery_row as D;
-        let map = decode(value)?;
-        closed(&map, D::SHAPE.required)?;
-        if uint(field(&map, D::VERSION)?)? != u64::from(forum_store_row_version::V1) {
-            return Err(ForumError::Unavailable);
-        }
-        Ok((
-            uint(field(&map, D::COUNT)?)?,
-            timestamp(field(&map, D::LAST_ACTIVITY)?)?,
-        ))
-    }
-    pub(crate) fn discovery_entry(&self, topic: &str) -> Result<Option<(u64, Timestamp)>> {
-        let key = key(b'd', topic.as_bytes());
-        let Some(v) = self.get(&key)? else {
-            return Ok(None);
-        };
-        Ok(Some(self.decode_discovery_entry(&v)?))
-    }
-    pub(crate) fn visit_topics(
-        &self,
-        mut visit: impl FnMut(String, u64, Timestamp) -> Result<()>,
-    ) -> Result<()> {
-        for row in self
-            .db
-            .iterator(IteratorMode::From(b"d", Direction::Forward))
-        {
-            let (k, v) = row.map_err(|_| ForumError::Unavailable)?;
-            if k.first() != Some(&b'd') {
-                break;
-            }
-            let topic = std::str::from_utf8(&k[1..])
-                .map_err(|_| ForumError::Unavailable)?
-                .to_string();
-            let (count, last) = self.decode_discovery_entry(&v)?;
-            visit(topic, count, last)?;
-        }
+        tx.set(&key(POSTS, op.event.target_hash()), &encode(&post.value())?)?;
         Ok(())
     }
 
-    /// Sum the confirmed post counts in the canonical Forum discovery index.
-    pub(crate) fn stored_post_count(&self) -> Result<u64> {
-        let mut total = 0u64;
-        self.visit_topics(|_, count, _| {
-            total = total.checked_add(count).ok_or(ForumError::Capacity)?;
-            Ok(())
-        })?;
-        Ok(total)
+    /// Read a visible post and its author's stored burn. `None` when no post is visible there.
+    pub(crate) fn stored_row(
+        tx: &mut dyn KvTransaction,
+        hash: &[u8; 32],
+    ) -> Result<Option<StoredRow>> {
+        let Some(post) = Self::post(tx, hash)? else {
+            return Ok(None);
+        };
+        if post.visible.is_none() {
+            return Ok(None);
+        }
+        let author = post.author.ok_or(ForumError::Unavailable)?;
+        let (author_frame, author_state) =
+            Self::operation(tx, &author)?.ok_or(ForumError::Unavailable)?;
+        Ok(Some(StoredRow {
+            hash: *hash,
+            post,
+            author,
+            author_frame,
+            author_state,
+        }))
+    }
+
+    /// Read a referenced author frame (outside any transaction) and check the row: the author
+    /// burn must be a confirmed post burn of exactly this post and topic.
+    pub(crate) fn resolve_row(&self, row: StoredRow) -> Result<Row> {
+        let frame = match row.author_frame {
+            Stored::Inline(bytes) => bytes,
+            Stored::Large(reference) => self.large.read(&reference)?,
+        };
+        let author = self.decode_observation(&row.author, &frame, &row.author_state)?;
+        if author.confirmed.is_none() || author.event.target_hash() != &row.hash {
+            return Err(ForumError::Unavailable);
+        }
+        let TopicEvent::Post(author_post) = &author.event else {
+            return Err(ForumError::Unavailable);
+        };
+        crate::monad_topic_cbor::validate_topic_post_target(
+            &author_post.post_frame,
+            &self.network,
+            &row.hash,
+        )
+        .map_err(|_| ForumError::Unavailable)?;
+        if author_post.topic != row.post.topic {
+            return Err(ForumError::Unavailable);
+        }
+        Ok(Row {
+            hash: row.hash,
+            post: row.post,
+            author,
+        })
+    }
+
+    /// A stored burn from its frame and state, validated as on admission.
+    fn decode_observation(&self, hash: &[u8], frame: &[u8], state: &[u8]) -> Result<Observation> {
+        let event = parse_topic_event(frame, &self.network).map_err(|_| ForumError::Unavailable)?;
+        if matches!(&event, TopicEvent::Post(p) if p.schema_version < 2) {
+            return Err(ForumError::Unavailable);
+        }
+        let checked = check_topic_burn_before_broadcast(&event, &self.policy)
+            .map_err(|_| ForumError::Unavailable)?;
+        if checked.decoded.tx_hash.0.as_slice() != hash
+            || checked.decoded.value_wei > i64::MAX as u128
+        {
+            return Err(ForumError::Unavailable);
+        }
+        let (first_seen, confirmed) = decode_state(state)?;
+        Ok(Observation {
+            event,
+            checked,
+            first_seen,
+            confirmed,
+        })
     }
 }
 

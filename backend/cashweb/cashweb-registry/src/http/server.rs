@@ -768,6 +768,10 @@ impl RegistryServer {
                     .allow_headers([
                         header::CONTENT_TYPE,
                         header::ACCEPT,
+                        // The group client sends the previous epoch hash as If-Match on
+                        // `PUT /groups/<id>/epochs`; without it a member removal fails the
+                        // preflight and the browser reports only "Network Error".
+                        header::IF_MATCH,
                         header::HeaderName::from_static("x-frank-mailbox-epoch"),
                         header::HeaderName::from_static("x-frank-mailbox-nonce"),
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
@@ -799,6 +803,9 @@ impl RegistryServer {
                     ])
                     .expose_headers([
                         header::CONTENT_TYPE,
+                        // Not CORS-safelisted; the mailbox client and the EVM provider read it
+                        // to back off on a 429.
+                        header::RETRY_AFTER,
                         header::HeaderName::from_static("x-frank-mailbox-next-cursor"),
                         header::HeaderName::from_static("x-frank-directory-evidence"),
                         header::HeaderName::from_static("x-frank-directory-disposition"),
@@ -1457,6 +1464,51 @@ mod spa_tests {
             let body = response_bytes(response).await;
             assert_eq!(std::str::from_utf8(&body).unwrap(), index_html);
         }
+    }
+
+    #[tokio::test]
+    async fn cors_allows_if_match_and_exposes_retry_after() {
+        let (_db_dir, server) = test_server(None);
+        let router = server.into_router();
+        let preflight = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/groups/00/epochs")
+                    .header("origin", "https://app.example")
+                    .header("access-control-request-method", "PUT")
+                    .header("access-control-request-headers", "content-type,if-match")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), StatusCode::OK);
+        let allowed = preflight
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("if-match"), "allowed: {allowed}");
+
+        let response = router
+            .oneshot(
+                Request::get("/.well-known/cashweb.json")
+                    .header("origin", "https://app.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let exposed = response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(exposed.contains("retry-after"), "exposed: {exposed}");
     }
 
     #[tokio::test]

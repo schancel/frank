@@ -436,6 +436,28 @@ fn message_backend(
     }
 }
 
+/// Where the forum keeps its state, selected by `registry.cluster.driver`: `None` for this
+/// replica's RocksDB beside the registry database, or the shared FoundationDB store under
+/// `<fdb_subspace_prefix>forum-v1/`.
+fn forum_backend(
+    driver: &RelayStorageDriver,
+) -> Result<Option<Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>> {
+    match driver {
+        RelayStorageDriver::RocksDb => Ok(None),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => Ok(Some(foundationdb_store(
+            cluster_file,
+            subspace_prefix,
+            "forum-v1",
+        )?)),
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by require_driver_built"),
+    }
+}
+
 /// Log the cluster shape once at startup: the shared backend and every owner whose state still
 /// lives on this replica. Validation already refused cluster mode without the preview flag.
 fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStorageDriver) {
@@ -457,6 +479,12 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
             info!(
                 subspace_prefix = %subspace_prefix,
                 "The directory is stored in FoundationDB under {subspace_prefix}directory-v1/"
+            );
+        }
+        if registry.forum.is_some() {
+            info!(
+                subspace_prefix = %subspace_prefix,
+                "The forum is stored in FoundationDB under {subspace_prefix}forum-v1/"
             );
         }
     }
@@ -538,6 +566,27 @@ async fn probe_shared_directory(
     Ok(())
 }
 
+/// Read the format marker of a shared forum store, so an unreachable cluster fails the start.
+/// The store is created (bound to the forum's network and burn policy) by its first write.
+async fn probe_shared_forum(
+    forum: Option<&Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>,
+) -> Result<()> {
+    use cashweb_registry::store::kv_store::{KvError, Transact};
+    let Some(store) = forum.cloned() else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || store.transact(|tx| tx.get(b"format")))
+        .await
+        .wrap_err("FoundationDB probe task failed")?
+        .map_err(|error: KvError| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Reading the FoundationDB forum store: {error}"
+            ))
+        })?;
+    info!("FoundationDB forum store is readable");
+    Ok(())
+}
+
 /// Read one key of a shared direct-message store, so an unreachable cluster fails the start.
 async fn probe_shared_messages(
     messages: Option<&Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>,
@@ -616,6 +665,10 @@ async fn run(
     if conf.registry.directory.is_some() {
         probe_shared_directory(&directory, &objects).await?;
     }
+    let forum = forum_backend(&driver)?;
+    if conf.registry.forum.is_some() {
+        probe_shared_forum(forum.as_ref()).await?;
+    }
     if check_db {
         return Ok(());
     }
@@ -674,6 +727,7 @@ async fn run(
             groups,
             objects,
             messages,
+            forum,
         },
     ));
     // Collect unreferenced large values. Replicas compete for one lease; the others skip.
@@ -691,11 +745,16 @@ async fn run(
                             .sweep_large_values(holder)
                             .map_err(|e| e.to_string()),
                         registry.sweep_directory_large_values(holder),
+                        registry.sweep_forum_large_values(holder),
                     )
                 });
                 match sweep.await {
                     Ok(results) => {
-                        for (owner, result) in [("group", results.0), ("directory", results.1)] {
+                        for (owner, result) in [
+                            ("group", results.0),
+                            ("directory", results.1),
+                            ("forum", results.2),
+                        ] {
                             match result {
                                 Ok(report) if report.deleted > 0 => info!(
                                     "Large-value sweep deleted {} {owner} objects",
@@ -1245,15 +1304,15 @@ max_get_logs_range = 10\n\n\
         let text = format!("{error:#}");
         for owner in [
             "directory",
-            "forum",
             "hourly RPC proxy quotas",
             // No [registry.large_values]: the local driver beside the database.
             "large values",
         ] {
             assert!(text.contains(owner), "{owner}: {text}");
         }
-        // The registry database, groups and direct messages are on FoundationDB here, so
-        // none is replica-local.
+        // The registry database, groups, direct messages and the forum are on FoundationDB
+        // here, so none is replica-local.
+        assert!(!text.contains("forum"), "{text}");
         assert!(!text.contains("groups"), "{text}");
         assert!(!text.contains("registry database"), "{text}");
         assert!(!text.contains("direct messages"), "{text}");
@@ -1262,7 +1321,7 @@ max_get_logs_range = 10\n\n\
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 4);
+        assert_eq!(conf.registry.replica_local_owners().len(), 3);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");

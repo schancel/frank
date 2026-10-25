@@ -28,8 +28,10 @@ use std::{
 
 use crate::store::{
     kv_store::{KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact},
-    large_values::{LargeValueRef, LargeValues, ObjectStore, SweepReport},
+    large_values::{LargeValues, ObjectStore, SweepReport},
 };
+
+pub(crate) use crate::store::large_values::Stored;
 
 /// Format marker key and value of this store.
 pub(crate) const FORMAT_KEY: &[u8] = b"format";
@@ -85,51 +87,6 @@ impl std::error::Error for StoreError {}
 pub struct DirectoryStore {
     kv: Arc<dyn RelayKvStore>,
     large: LargeValues,
-}
-
-/// A value that may live in the object store: inline bytes or a reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Stored {
-    Inline(Vec<u8>),
-    Large(LargeValueRef),
-}
-
-impl Stored {
-    const INLINE: u8 = 0;
-    const LARGE: u8 = 1;
-
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        match self {
-            Self::Inline(bytes) => [&[Self::INLINE][..], bytes].concat(),
-            Self::Large(reference) => [
-                &[Self::LARGE][..],
-                &reference.digest,
-                &reference.len.to_be_bytes(),
-                &reference.upload,
-            ]
-            .concat(),
-        }
-    }
-
-    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
-        match bytes.split_first()? {
-            (&Self::INLINE, rest) => Some(Self::Inline(rest.to_vec())),
-            (&Self::LARGE, rest) if rest.len() == 56 => Some(Self::Large(LargeValueRef {
-                digest: rest[..32].try_into().ok()?,
-                len: u64::from_be_bytes(rest[32..40].try_into().ok()?),
-                upload: rest[40..].try_into().ok()?,
-            })),
-            _ => None,
-        }
-    }
-
-    /// Length of the value itself, before any object is read.
-    pub(crate) fn len(&self) -> u64 {
-        match self {
-            Self::Inline(bytes) => bytes.len() as u64,
-            Self::Large(reference) => reference.len,
-        }
-    }
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -334,7 +291,7 @@ impl Owner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::large_values::LocalFsObjectStore;
+    use crate::store::large_values::{LargeValueRef, LocalFsObjectStore};
 
     #[test]
     fn stored_values_round_trip_and_reject_unknown_tags() {

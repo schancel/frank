@@ -1,3 +1,5 @@
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
+import { TopicVoteAbandonedError } from '@frank/wallet/topic-vote-client'
 import { errorNotify, infoNotify } from './notifications'
 
 /**
@@ -32,7 +34,8 @@ export async function refreshAfterBurn(
 type Translate = (key: string) => string
 
 /** Reports a failed vote/post: a read-back failure after a landed burn is an info notice that says
- * to reload (and not to retry); everything else is an error. */
+ * to reload (and not to retry); a signed burn the wallet retained pending (for example after the
+ * relay refused it) says it may still land and must not be repeated; everything else is an error. */
 export function notifyBurnFailure(err: unknown, t: Translate): void {
   if (err instanceof BurnRefreshError) {
     infoNotify(
@@ -42,6 +45,16 @@ export function notifyBurnFailure(err: unknown, t: Translate): void {
           : 'stampPreparation.votedRefreshFailed',
       ),
     )
+    return
+  }
+  // The wallet keeps the original signed operation: a relay refusal does not prove the burn
+  // cannot land, so the notice must not invite a second burn. The relay's text stays in the log.
+  if (err instanceof TopicVoteAbandonedError) {
+    errorNotify(err, { fallbackKey: 'stampPreparation.voteOutcomeUnknown' })
+    return
+  }
+  if (err instanceof TopicPostOutcomeUnknownError) {
+    errorNotify(err, { fallbackKey: 'stampPreparation.postOutcomeUnknown' })
     return
   }
   errorNotify(err instanceof Error ? err : new Error(String(err)))

@@ -1472,3 +1472,378 @@ async fn directory_every_acknowledged_publication_survives_relay_a_killed_mid_lo
         published.len()
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Forum (HA step 9): one shared store behind every replica
+// ---------------------------------------------------------------------------------------------
+
+/// The lab's forum burn address (`[registry.forum]` in `cluster/relay.toml.in`).
+const FORUM_BURN_ADDRESS: [u8; 20] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xde, 0xad,
+];
+/// What every contract post or vote burns: 0.000001 MON.
+const FORUM_BURN_WEI: u128 = 1_000_000_000_000;
+
+fn forum_frame(type_id: u32, target: frank_cbor::CborValue, burn: Vec<u8>) -> Vec<u8> {
+    use frank_cbor::{cbor_map, encode_frame, CborValue, EnvelopeFields, FramePayload};
+    encode_frame(
+        EnvelopeFields {
+            type_id,
+            schema_version: 1,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&cbor_map(vec![
+            (0, CborValue::Text(solonet_payer::SOLONET_NETWORK.into())),
+            (1, target),
+            (2, CborValue::Bytes(burn)),
+        ])),
+    )
+    .unwrap()
+}
+
+/// A post (`target = None`) or an up-vote of `target`, burned by `payer` at its nonce 0 and
+/// committing to the event, exactly as the wallet builds it.
+fn forum_event(
+    solonet: &Solonet,
+    payer: &Payer,
+    topic: &str,
+    title: &str,
+    target: Option<[u8; 32]>,
+) -> Vec<u8> {
+    use frank_cbor::{message_types, CborValue, ForumEntry, Timestamp};
+    let (type_id, item) = match target {
+        Some(hash) => (
+            message_types::TYPE_TOPIC_VOTE_SUBMISSION,
+            CborValue::Bytes(hash.to_vec()),
+        ),
+        None => {
+            let post = frank_cbor::encode_forum_post(
+                solonet_payer::SOLONET_NETWORK,
+                topic,
+                None,
+                &Timestamp {
+                    seconds: unix_now(),
+                    nanoseconds: 0,
+                },
+                &[ForumEntry::Post {
+                    title: Some(title.into()),
+                    url: None,
+                    message: Some("cluster contract".into()),
+                    unknown: vec![],
+                }],
+            )
+            .unwrap();
+            (
+                message_types::TYPE_TOPIC_POST_SUBMISSION,
+                CborValue::Bytes(post),
+            )
+        }
+    };
+    let preliminary = cashweb_registry::monad_topic_cbor::parse_topic_event(
+        &forum_frame(type_id, item.clone(), vec![1]),
+        solonet_payer::SOLONET_NETWORK,
+    )
+    .unwrap();
+    let mut calldata = b"TPIC".to_vec();
+    calldata.extend([2, 1]);
+    calldata.extend(preliminary.commitment());
+    let (payment, _) = solonet.payment_tx(
+        payer,
+        solonet_payer::SOLONET_NETWORK,
+        solonet_payer::SOLONET_CHAIN_ID,
+        FORUM_BURN_ADDRESS,
+        FORUM_BURN_WEI,
+        &calldata,
+    );
+    let raw = hex::decode(payment["raw_transaction"].as_str().unwrap()).unwrap();
+    forum_frame(type_id, item, raw)
+}
+
+fn target_of(event: &[u8]) -> [u8; 32] {
+    *cashweb_registry::monad_topic_cbor::parse_topic_event(event, solonet_payer::SOLONET_NETWORK)
+        .unwrap()
+        .target_hash()
+}
+
+fn forum_typed(bytes: &[u8]) -> frank_cbor::TypedPayload {
+    let frank_cbor::ValidationResult::Parsed(parsed) =
+        frank_cbor::validate_frame(bytes, &frank_cbor::default_context()).unwrap()
+    else {
+        panic!("not a canonical forum frame")
+    };
+    *parsed.typed.unwrap()
+}
+
+/// `PUT /topics` (post) or `/topics/vote`: the status and the body.
+async fn forum_put(
+    client: &reqwest::Client,
+    origin: &str,
+    event: &[u8],
+    vote: bool,
+) -> (u16, Vec<u8>) {
+    let path = if vote { "/topics/vote" } else { "/topics" };
+    let response = client
+        .put(format!("{origin}{path}"))
+        .header("content-type", "application/cbor")
+        .header("accept", "application/cbor")
+        .body(event.to_vec())
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.bytes().await.unwrap().to_vec())
+}
+
+async fn forum_get(client: &reqwest::Client, url: &str) -> Vec<u8> {
+    let response = client
+        .get(url)
+        .header("accept", "application/cbor")
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.bytes().await.unwrap().to_vec();
+    assert_eq!(status, 200, "{url}: {}", String::from_utf8_lossy(&body));
+    body
+}
+
+/// A topic page from `origin`: its posts (target hash, aggregate magnitude) and next cursor.
+async fn forum_page(
+    client: &reqwest::Client,
+    origin: &str,
+    topic: &str,
+    cursor: Option<&[u8]>,
+) -> (Vec<([u8; 32], [u8; 32])>, Option<Vec<u8>>, u64) {
+    let mut url = format!("{origin}/topics?topic={topic}&since=0");
+    if let Some(cursor) = cursor {
+        url.push_str("&cursor=");
+        url.push_str(&frank_cbor::forum_cursor_to_transport(cursor).unwrap());
+    }
+    let frank_cbor::TypedPayload::ForumTopicPage(page) =
+        forum_typed(&forum_get(client, &url).await)
+    else {
+        panic!("not a topic page")
+    };
+    let rows = page
+        .rows
+        .iter()
+        .map(|row| {
+            let frank_cbor::TypedPayload::ForumView(view) = forum_typed(&row.frame) else {
+                panic!("not a view")
+            };
+            // The post's hash, as a submission of its frame names it.
+            let hash = target_of(&forum_frame(
+                frank_cbor::message_types::TYPE_TOPIC_POST_SUBMISSION,
+                frank_cbor::CborValue::Bytes(view.post_frame.frame.clone()),
+                vec![1],
+            ));
+            (hash, view.aggregate.magnitude)
+        })
+        .collect();
+    (rows, page.next_cursor.map(|c| c.bytes), page.revision)
+}
+
+fn wei_magnitude(wei: u128) -> [u8; 32] {
+    let mut out = [0; 32];
+    out[16..].copy_from_slice(&wei.to_be_bytes());
+    out
+}
+
+fn fresh_topic(name: &str) -> String {
+    format!("lab.{name}.{:08x}", rand::random::<u32>())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forum_a_post_on_a_reads_on_b_and_c_and_a_vote_on_c_counts_everywhere() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    for origin in [&a, &b, &c] {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let solonet = Solonet::from_env().await;
+    let payers = solonet.fund(2).await;
+    let topic = fresh_topic("read");
+    let post = forum_event(&solonet, payers.take(), &topic, "posted on A", None);
+    let target = target_of(&post);
+    let (status, body) = forum_put(&client, &a, &post, false).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    for origin in [&b, &c, &proxy()] {
+        let (rows, _, _) = forum_page(&client, origin, &topic, None).await;
+        assert_eq!(
+            rows,
+            vec![(target, wei_magnitude(FORUM_BURN_WEI))],
+            "{origin}"
+        );
+    }
+    let vote = forum_event(&solonet, payers.take(), &topic, "", Some(target));
+    let (status, body) = forum_put(&client, &c, &vote, true).await;
+    assert_eq!(status, 200, "vote on C: {}", String::from_utf8_lossy(&body));
+    for origin in [&a, &b, &c] {
+        let (rows, _, _) = forum_page(&client, origin, &topic, None).await;
+        assert_eq!(
+            rows,
+            vec![(target, wei_magnitude(2 * FORUM_BURN_WEI))],
+            "{origin}"
+        );
+        let view = forum_get(&client, &format!("{origin}/topics/{}", hex::encode(target))).await;
+        let frank_cbor::TypedPayload::ForumView(view) = forum_typed(&view) else {
+            panic!()
+        };
+        assert_eq!(view.aggregate.magnitude, wei_magnitude(2 * FORUM_BURN_WEI));
+    }
+    // Through the round-robin proxy, every answer is the same.
+    let through_proxy = forum_get(
+        &client,
+        &format!("{}/topics?topic={topic}&since=0", proxy()),
+    )
+    .await;
+    for _ in 0..5 {
+        assert_eq!(
+            forum_get(
+                &client,
+                &format!("{}/topics?topic={topic}&since=0", proxy())
+            )
+            .await,
+            through_proxy
+        );
+    }
+    println!(
+        "PASS forum: post on A read on B, C and the proxy; vote on C counted on every replica"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forum_one_burn_sent_to_a_and_b_and_replayed_gives_one_post_counted_once() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    for origin in [&a, &b, &c] {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let solonet = Solonet::from_env().await;
+    let payers = solonet.fund(2).await;
+    let topic = fresh_topic("once");
+    let post = forum_event(&solonet, payers.take(), &topic, "sent to A and B", None);
+    let target = target_of(&post);
+    let (to_a, to_b) = tokio::join!(
+        forum_put(&client, &a, &post, false),
+        forum_put(&client, &b, &post, false)
+    );
+    assert_eq!(to_a.0, 200, "A: {}", String::from_utf8_lossy(&to_a.1));
+    assert_eq!(to_b.0, 200, "B: {}", String::from_utf8_lossy(&to_b.1));
+    let (_, _, revision) = forum_page(&client, &c, &topic, None).await;
+    // A replay on C, and on A again, is answered from the store and changes nothing.
+    for origin in [&c, &a] {
+        let (status, body) = forum_put(&client, origin, &post, false).await;
+        assert_eq!(status, 200, "{origin}: {}", String::from_utf8_lossy(&body));
+        let frank_cbor::TypedPayload::ForumOperationStatus(status) = forum_typed(&body) else {
+            panic!()
+        };
+        assert!(matches!(
+            status.evidence,
+            frank_cbor::ForumOperationEvidence::Confirmed { .. }
+        ));
+    }
+    let vote = forum_event(&solonet, payers.take(), &topic, "", Some(target));
+    let (v_b, v_c) = tokio::join!(
+        forum_put(&client, &b, &vote, true),
+        forum_put(&client, &c, &vote, true)
+    );
+    assert_eq!((v_b.0, v_c.0), (200, 200));
+    let (status, _) = forum_put(&client, &a, &vote, true).await;
+    assert_eq!(status, 200, "a replayed vote on A");
+    for origin in [&a, &b, &c] {
+        let (rows, _, now) = forum_page(&client, origin, &topic, None).await;
+        assert_eq!(
+            rows,
+            vec![(target, wei_magnitude(2 * FORUM_BURN_WEI))],
+            "{origin}"
+        );
+        // One admission and one confirmation for the vote since the first read.
+        assert_eq!(now, revision + 2, "{origin}");
+    }
+    let discover = forum_get(&client, &format!("{c}/topics/discover")).await;
+    let frank_cbor::TypedPayload::ForumDiscoveryPage(mut page) = forum_typed(&discover) else {
+        panic!()
+    };
+    // Pages through discovery until this topic shows up, with each next page on another replica.
+    let relays = [&a, &b, &c];
+    let mut hop = 0;
+    let entry = loop {
+        if let Some(entry) = page.entries.iter().find(|e| e.topic == topic) {
+            break entry.clone();
+        }
+        let cursor = page.next_cursor.expect("the topic is listed").bytes;
+        hop += 1;
+        let url = format!(
+            "{}/topics/discover?cursor={}",
+            relays[hop % 3],
+            frank_cbor::forum_cursor_to_transport(&cursor).unwrap()
+        );
+        let frank_cbor::TypedPayload::ForumDiscoveryPage(next) =
+            forum_typed(&forum_get(&client, &url).await)
+        else {
+            panic!()
+        };
+        page = next;
+    };
+    assert_eq!(entry.count, 1, "one burn sent to two replicas is one post");
+    println!("PASS forum: one burn to A and B, replays on C and A, one post counted once");
+}
+
+/// More posts than one page holds, so the second page needs a cursor.
+const FORUM_PAGED_POSTS: usize = 130;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn forum_a_cursor_from_a_continues_on_b_and_c() {
+    let relays = relays();
+    for origin in &relays {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let solonet = Solonet::from_env().await;
+    let payers = Arc::new(solonet.fund(FORUM_PAGED_POSTS).await);
+    let topic = fresh_topic("paged");
+    let in_flight = Arc::new(tokio::sync::Semaphore::new(30));
+    let mut tasks = Vec::new();
+    for index in 0..FORUM_PAGED_POSTS {
+        let event = forum_event(
+            &solonet,
+            payers.take(),
+            &topic,
+            &format!("post {index}"),
+            None,
+        );
+        let (client, origin, in_flight) =
+            (client.clone(), relays[index % 3].clone(), in_flight.clone());
+        tasks.push(tokio::spawn(async move {
+            let _slot = in_flight.acquire().await.unwrap();
+            let (status, body) = forum_put(&client, &origin, &event, false).await;
+            assert_eq!(status, 200, "{origin}: {}", String::from_utf8_lossy(&body));
+            target_of(&event)
+        }));
+    }
+    let mut posted = BTreeSet::new();
+    for task in tasks {
+        posted.insert(task.await.unwrap());
+    }
+    let (first, cursor, _) = forum_page(&client, &relays[0], &topic, None).await;
+    assert_eq!(first.len(), 128);
+    let cursor = cursor.expect("a cursor to the second page");
+    let mut seconds = Vec::new();
+    for origin in &relays[1..] {
+        let (second, last, _) = forum_page(&client, origin, &topic, Some(&cursor)).await;
+        assert!(last.is_none(), "{origin}");
+        seconds.push(second);
+    }
+    assert_eq!(
+        seconds[0], seconds[1],
+        "B and C continue A's cursor identically"
+    );
+    let seen: BTreeSet<[u8; 32]> = first.iter().chain(&seconds[0]).map(|(h, _)| *h).collect();
+    assert_eq!(first.len() + seconds[0].len(), FORUM_PAGED_POSTS);
+    assert_eq!(seen, posted);
+    println!(
+        "PASS forum: {FORUM_PAGED_POSTS} posts over three relays; A's cursor continues on B and C"
+    );
+}

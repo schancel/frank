@@ -875,7 +875,7 @@ export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire). */
+/** `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; relay transaction store value, never on the wire). */
 export const FORUM_DISCOVERY_ROW = {
   version: 0,
   count: 1,
@@ -938,10 +938,9 @@ export const FORUM_GAME_ENTRY_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `forum-observation-row` field keys: One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
+/** `forum-observation-row` field keys: The state of one observed topic post or vote burn, keyed by transaction hash; the exact submitted frame is stored beside it (cashweb-registry forum store; relay transaction store value, never on the wire). */
 export const FORUM_OBSERVATION_ROW = {
   version: 0,
-  frame: 1,
   firstSeen: 2,
   state: 3,
   block: 4,
@@ -952,7 +951,6 @@ export const FORUM_OBSERVATION_ROW = {
 export const FORUM_OBSERVATION_ROW_SHAPE: MapShape = {
   required: [
     FORUM_OBSERVATION_ROW.version,
-    FORUM_OBSERVATION_ROW.frame,
     FORUM_OBSERVATION_ROW.firstSeen,
     FORUM_OBSERVATION_ROW.state,
   ],
@@ -1002,7 +1000,7 @@ export const FORUM_OPERATION_STATUS_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire). */
+/** `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; relay transaction store value, never on the wire). */
 export const FORUM_PENDING_ACCOUNTING = {
   version: 0,
   count: 1,
@@ -1039,10 +1037,9 @@ export const FORUM_POST_ENTRY_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
+/** `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash; the post frame is read from its author's submitted frame (cashweb-registry forum store; relay transaction store value, never on the wire). */
 export const FORUM_POST_ROW = {
   version: 0,
-  frame: 1,
   author: 2,
   visible: 3,
   negative: 4,
@@ -1055,7 +1052,6 @@ export const FORUM_POST_ROW = {
 export const FORUM_POST_ROW_SHAPE: MapShape = {
   required: [
     FORUM_POST_ROW.version,
-    FORUM_POST_ROW.frame,
     FORUM_POST_ROW.negative,
     FORUM_POST_ROW.magnitude,
     FORUM_POST_ROW.reservedUp,
@@ -1101,7 +1097,7 @@ export const FORUM_SINGLE_VIEW_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire). */
+/** `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; relay transaction store value, never on the wire). */
 export const FORUM_STORE_HEADER = {
   version: 0,
   network: 1,

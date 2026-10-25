@@ -156,6 +156,8 @@ export const rawFrFR = {
       'Votre message a peut-être été publié. Rechargez pour le vérifier. Ne le publiez pas à nouveau.',
     votedRefreshFailed:
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
+    voteOutcomeUnknown:
+      'Votre vote n’a pas été confirmé. Votre portefeuille le garde en attente et il peut encore compter. Rechargez plus tard pour vérifier. Ne votez pas à nouveau.',
   },
   chatLayout: {
     invalidSubject:

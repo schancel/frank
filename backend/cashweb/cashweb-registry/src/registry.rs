@@ -47,7 +47,7 @@ pub(crate) fn recipient_signature_work() -> usize {
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.
     db: Db,
-    /// Lazy private canonical Forum sidecar and serialized publication/snapshot owner.
+    /// The forum's transaction store (posts, votes, burns), opened on first use.
     forum: crate::forum::Owner,
     /// Lazy isolated exact canonical DM owner; shares the registry lifetime.
     canonical_dm: crate::store::monad_dm_cbor::Owner,
@@ -78,6 +78,11 @@ pub struct RegistryBackends {
     /// replica's RocksDB beside the registry database (`<db>.messages-v3`), `Some` a
     /// transaction store every replica shares (FoundationDB, under `<prefix>messages-v3/`).
     pub messages: Option<Arc<dyn crate::store::kv_store::RelayKvStore>>,
+    /// Where the forum keeps its state (`registry.cluster.driver`): `None` is this replica's
+    /// RocksDB beside the registry database (`<db>.forum-kv-v1`), `Some` a transaction store
+    /// every replica shares (FoundationDB, under `<prefix>forum-v1/`). Frames over the inline
+    /// limit go to `objects`.
+    pub forum: Option<Arc<dyn crate::store::kv_store::RelayKvStore>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -233,6 +238,7 @@ impl Registry {
                 groups,
                 objects,
                 messages: None,
+                forum: None,
             },
         )
     }
@@ -256,7 +262,13 @@ impl Registry {
         backends: RegistryBackends,
     ) -> Self {
         db.set_directory_backend(backends.directory, Arc::clone(&backends.objects));
-        let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
+        let forum = match backends.forum {
+            Some(store) => crate::forum::Owner::shared(store, Arc::clone(&backends.objects)),
+            None => crate::forum::Owner::beside(
+                db.owned_path().to_path_buf(),
+                Arc::clone(&backends.objects),
+            ),
+        };
         let canonical_dm = match backends.messages {
             Some(store) => crate::store::monad_dm_cbor::Owner::with_store(store),
             None => crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
@@ -359,6 +371,17 @@ impl Registry {
     /// Return confirmed canonical Forum posts when the Forum owner is already open.
     pub(crate) fn stored_forum_post_count(&self) -> crate::store::forum::Result<Option<u64>> {
         self.forum.stored_post_count()
+    }
+
+    /// Delete unreferenced forum objects (frames over the inline limit) as sweep lease holder
+    /// `holder`. Nothing is done before a request has opened the forum store. Blocks.
+    pub fn sweep_forum_large_values(
+        &self,
+        holder: [u8; 16],
+    ) -> std::result::Result<crate::store::large_values::SweepReport, String> {
+        self.forum
+            .sweep_large_values(holder)
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {

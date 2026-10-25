@@ -34,9 +34,9 @@ driver = "foundationdb"
 fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
-# Groups, direct messages, large values, the registry database and the directory are shared; the
-# forum and the hourly quotas still keep their state on each replica, and the startup log names
-# them.
+# Groups, direct messages, large values, the registry database, the directory and the forum are
+# shared; the hourly quotas (and the directory's per-source enrollment quota) still keep their
+# state on each replica, and the startup log names them.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]
@@ -89,9 +89,9 @@ max_get_logs_range = 10
 enabled = true
 min_value_wei = "1000000000000"
 
-# The forum (`/topics`): every post and vote burns to this address on solonet. Its state is still
-# replica-local (HA step 9), which the startup log names; the app works, but a cursor from one
-# replica may not continue on another.
+# The forum (`/topics`): every post and vote burns to this address on solonet. Its posts, votes
+# and burn records are shared by all three replicas through FoundationDB (HA step 9), with frames
+# over 64 KiB in the MinIO above.
 [registry.forum]
 burn_address = "0x000000000000000000000000000000000000dEaD"
 

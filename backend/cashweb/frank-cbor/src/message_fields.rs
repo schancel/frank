@@ -812,7 +812,7 @@ pub mod forum_discovery_page {
     };
 }
 
-/// `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire).
+/// `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; relay transaction store value, never on the wire).
 pub mod forum_discovery_row {
     use super::MapShape;
 
@@ -879,14 +879,12 @@ pub mod forum_game_entry {
     };
 }
 
-/// `forum-observation-row` field keys: One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire).
+/// `forum-observation-row` field keys: The state of one observed topic post or vote burn, keyed by transaction hash; the exact submitted frame is stored beside it (cashweb-registry forum store; relay transaction store value, never on the wire).
 pub mod forum_observation_row {
     use super::MapShape;
 
     /// Field `version`.
     pub const VERSION: u64 = 0;
-    /// Field `frame`.
-    pub const FRAME: u64 = 1;
     /// Field `first-seen`.
     pub const FIRST_SEEN: u64 = 2;
     /// Field `state`.
@@ -899,7 +897,7 @@ pub mod forum_observation_row {
     pub const VISIBLE: u64 = 6;
     /// `forum-observation-row` map shape.
     pub const SHAPE: MapShape = MapShape {
-        required: &[VERSION, FRAME, FIRST_SEEN, STATE],
+        required: &[VERSION, FIRST_SEEN, STATE],
         optional: &[BLOCK, TRANSACTION_INDEX, VISIBLE],
         open: false,
         open_from: 0,
@@ -943,7 +941,7 @@ pub mod forum_operation_status {
     };
 }
 
-/// `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire).
+/// `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; relay transaction store value, never on the wire).
 pub mod forum_pending_accounting {
     use super::MapShape;
 
@@ -983,14 +981,12 @@ pub mod forum_post_entry {
     };
 }
 
-/// `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire).
+/// `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash; the post frame is read from its author's submitted frame (cashweb-registry forum store; relay transaction store value, never on the wire).
 pub mod forum_post_row {
     use super::MapShape;
 
     /// Field `version`.
     pub const VERSION: u64 = 0;
-    /// Field `frame`.
-    pub const FRAME: u64 = 1;
     /// Field `author`.
     pub const AUTHOR: u64 = 2;
     /// Field `visible`.
@@ -1007,7 +1003,7 @@ pub mod forum_post_row {
     pub const TOPIC: u64 = 8;
     /// `forum-post-row` map shape.
     pub const SHAPE: MapShape = MapShape {
-        required: &[VERSION, FRAME, NEGATIVE, MAGNITUDE, RESERVED_UP, RESERVED_DOWN, TOPIC],
+        required: &[VERSION, NEGATIVE, MAGNITUDE, RESERVED_UP, RESERVED_DOWN, TOPIC],
         optional: &[AUTHOR, VISIBLE],
         open: false,
         open_from: 0,
@@ -1049,7 +1045,7 @@ pub mod forum_single_view {
     };
 }
 
-/// `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire).
+/// `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; relay transaction store value, never on the wire).
 pub mod forum_store_header {
     use super::MapShape;
 

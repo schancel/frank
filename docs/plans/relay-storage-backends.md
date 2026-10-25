@@ -33,7 +33,9 @@ Cluster mode is `registry.cluster.enabled = true`. It requires an enabled
 operator-provisioned files `registry.session_secret_file` (32 raw bytes) and
 `registry.vapid_private_key_file` (the P-256 scalar as hex or base64url, between 1 and n - 1;
 it is refused, not reduced). Both files are read, never created, must be readable by their
-owner only (mode `0400` or `0600`), and must be identical on every replica. `--check-config`
+owner only (mode `0400` or `0600`; on Kubernetes set the Secret volume's
+`defaultMode: 0400` and run as the file owner, and `chmod 0400` host files that are bind
+mounted), and must be identical on every replica. `--check-config`
 reads and checks both. A single node without these keys
 keeps creating its session secret beside the database. Cluster mode refuses to start while
 any enabled owner is still replica-local (`RegistryConf::replica_local_owners`) unless

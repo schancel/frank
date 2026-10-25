@@ -387,23 +387,28 @@ async fn wakes_for_append_elsewhere(
 // ---------------------------------------------------------------------------------------------
 
 /// What a load run saw: each envelope's acknowledged sequence number by nonce, and how the
-/// relays behaved while the fault was in effect.
+/// writers' attempts behaved while the fault was in effect.
 struct LoadOutcome {
     acknowledged: BTreeMap<String, u64>,
-    /// Failed or unanswered attempts that started after the fault began.
-    failed_after_fault: usize,
-    /// The slowest attempt before the fault began, and the slowest after.
-    slowest_before_fault: Duration,
-    slowest_after_fault: Duration,
+    /// Failed or unanswered attempts that overlapped the fault window.
+    failed_in_fault: usize,
+    /// The slowest attempt that overlapped the fault window.
+    slowest_in_fault: Duration,
+    /// The slowest attempt that ended before the fault, after each writer's warm-up.
+    /// Reported only: an early slow attempt must not move what counts as felt.
+    slowest_baseline: Duration,
 }
 
+/// Attempts at least this long that overlap the fault window show the writers felt it.
+const FELT_LATENCY: Duration = Duration::from_secs(1);
+/// Each writer's first attempts (connection setup, first transactions) are not baseline.
+const WARMUP_ATTEMPTS: usize = 10;
+
 impl LoadOutcome {
-    /// The fault was felt by the writers: an attempt failed, or one took far longer than any
-    /// attempt before the fault (at least 1 s and 5 x the slowest earlier one).
-    fn fault_was_observed(&self) -> bool {
-        self.failed_after_fault > 0
-            || self.slowest_after_fault
-                >= (self.slowest_before_fault * 5).max(Duration::from_secs(1))
+    /// The writers felt the fault: an attempt that overlapped the fault window failed, or
+    /// took at least [`FELT_LATENCY`].
+    fn fault_was_felt(&self) -> bool {
+        self.failed_in_fault > 0 || self.slowest_in_fault >= FELT_LATENCY
     }
 }
 
@@ -428,7 +433,6 @@ where
     let relays = Arc::new(relays());
     let acked = Arc::new(AtomicUsize::new(0));
     let retries = Arc::new(AtomicUsize::new(0));
-    let fault_started = Arc::new(std::sync::OnceLock::<Instant>::new());
     let mut writers = Vec::new();
     for writer in 0..3 {
         let (group, relays, acked, retries) = (
@@ -480,20 +484,20 @@ where
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let before = acked.load(Ordering::SeqCst);
-    fault_started.set(Instant::now()).unwrap();
+    let fault_start = Instant::now();
     tokio::time::timeout(LOAD_DEADLINE.saturating_sub(started.elapsed()), fault())
         .await
         .expect("the fault did not finish before the deadline");
+    let fault_end = Instant::now();
     println!(
         "load: fault injected after {before} acknowledgements; {} when it finished",
         acked.load(Ordering::SeqCst)
     );
-    let fault_at = *fault_started.get().unwrap();
     let mut outcome = LoadOutcome {
         acknowledged: BTreeMap::new(),
-        failed_after_fault: 0,
-        slowest_before_fault: Duration::ZERO,
-        slowest_after_fault: Duration::ZERO,
+        failed_in_fault: 0,
+        slowest_in_fault: Duration::ZERO,
+        slowest_baseline: Duration::ZERO,
     };
     for writer in writers {
         let remaining = LOAD_DEADLINE.saturating_sub(started.elapsed());
@@ -504,24 +508,25 @@ where
         for (nonce, seq) in receipts {
             assert!(outcome.acknowledged.insert(nonce, seq).is_none());
         }
-        for (at, took, failed) in attempts {
-            // An attempt still running when the fault began felt it too.
-            if at + took >= fault_at {
-                outcome.slowest_after_fault = outcome.slowest_after_fault.max(took);
-                outcome.failed_after_fault += usize::from(failed);
-            } else {
-                outcome.slowest_before_fault = outcome.slowest_before_fault.max(took);
+        for (index, (at, took, failed)) in attempts.into_iter().enumerate() {
+            let end = at + took;
+            if at < fault_end && end > fault_start {
+                outcome.slowest_in_fault = outcome.slowest_in_fault.max(took);
+                outcome.failed_in_fault += usize::from(failed);
+            } else if end <= fault_start && index >= WARMUP_ATTEMPTS {
+                outcome.slowest_baseline = outcome.slowest_baseline.max(took);
             }
         }
     }
     println!(
-        "load: {} acknowledged appends, {} failed attempts retried ({} after the fault); \
-         slowest attempt {:?} before the fault, {:?} after",
+        "load: {} acknowledged appends, {} failed attempts retried; in the {:?} fault \
+         window {} failed and the slowest took {:?} (baseline after warm-up {:?})",
         outcome.acknowledged.len(),
         retries.load(Ordering::SeqCst),
-        outcome.failed_after_fault,
-        outcome.slowest_before_fault,
-        outcome.slowest_after_fault,
+        fault_end - fault_start,
+        outcome.failed_in_fault,
+        outcome.slowest_in_fault,
+        outcome.slowest_baseline,
     );
     outcome
 }
@@ -722,6 +727,11 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     assert!(cursor.is_empty());
 
     container_action("nats", "kill");
+    // A wakeup buffered before the kill must not pass the check below: drain the socket.
+    while next_wakeup(&mut socket, Duration::from_millis(200))
+        .await
+        .is_some()
+    {}
     let mut nonces = Vec::new();
     for index in 0..20 {
         let envelope = group.envelope(group.current(), &format!("while NATS is down {index}"));
@@ -785,11 +795,11 @@ async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
         "FoundationDB was not restarted"
     );
     assert!(
-        outcome.fault_was_observed(),
-        "the writers never felt the FoundationDB restart: no failed attempt, slowest {:?} \
-         after it against {:?} before",
-        outcome.slowest_after_fault,
-        outcome.slowest_before_fault
+        outcome.fault_was_felt(),
+        "the writers never felt the FoundationDB restart: no attempt overlapping it failed \
+         or took {FELT_LATENCY:?} (slowest {:?}, baseline {:?})",
+        outcome.slowest_in_fault,
+        outcome.slowest_baseline
     );
     assert_every_acknowledged_append_readable(&group, &outcome.acknowledged).await;
     println!("PASS FoundationDB restarted mid-load: every acknowledged append is readable");
@@ -813,7 +823,7 @@ async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
         "relay-b was not restarted"
     );
     assert!(
-        outcome.failed_after_fault > 0,
+        outcome.failed_in_fault > 0,
         "no append failed while relay-b was down"
     );
     assert_every_acknowledged_append_readable(&group, &outcome.acknowledged).await;

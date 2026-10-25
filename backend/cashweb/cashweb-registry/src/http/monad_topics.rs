@@ -175,14 +175,15 @@ fn forum_error(error: crate::store::forum::ForumError) -> Response {
         Conflict => (StatusCode::CONFLICT, "topic_operation_conflict"),
         Capacity => (StatusCode::SERVICE_UNAVAILABLE, "topic_pending_capacity"),
         Expired => (StatusCode::GONE, "forum_cursor_expired"),
-        SnapshotCapacity => (StatusCode::SERVICE_UNAVAILABLE, "forum_snapshot_capacity"),
-        SnapshotTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "forum_snapshot_too_large"),
         RowTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "forum_row_too_large"),
         OutcomeUnknown(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "topic_burn_outcome_unknown",
         ),
-        Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "forum_unavailable"),
+        // Settled inside the store; reaching here means it could not be settled.
+        Unavailable | CommitUnknown(_) | IntentLost => {
+            (StatusCode::SERVICE_UNAVAILABLE, "forum_unavailable")
+        }
     };
     vary_accept(
         (
@@ -717,7 +718,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
-        assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
+        assert!(!directory.path().join("db.rocksdb.forum-kv-v1").exists());
         let post = observation(1, None, false);
         let vote = observation(2, Some(*post.event.target_hash()), true);
         let TopicEvent::Post(post) = post.event else {
@@ -735,7 +736,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(transport.call_count(), 0);
-        assert!(!directory.path().join("db.rocksdb.forum-cbor-v1").exists());
+        assert!(!directory.path().join("db.rocksdb.forum-kv-v1").exists());
     }
 
     #[tokio::test]
@@ -801,10 +802,8 @@ mod tests {
             );
             return;
         }
-        use crate::store::forum::{
-            tests::{facts, observation},
-            Store,
-        };
+        use crate::store::forum::tests::{facts, observation, open_beside, state_key};
+        use crate::store::kv_store::Transact;
         use frank_cbor::Timestamp;
         use tower::ServiceExt;
         let (healthy_directory, healthy_registry) = test_registry();
@@ -842,39 +841,33 @@ mod tests {
             );
         }
         assert!(
-            !Store::path(&healthy_directory.path().join("db.rocksdb"))
-                .unwrap()
+            !healthy_directory
+                .path()
+                .join("db.rocksdb.forum-kv-v1")
                 .exists(),
             "unknown targets must not create Forum obligations"
         );
         drop(healthy);
         let (directory, registry) = test_registry();
         let legacy = directory.path().join("db.rocksdb");
-        let policy = crate::forum::policy(10143, burn_address());
         let post = observation(0, None, false);
         let vote = observation(1, Some(*post.event.target_hash()), true);
         let at = Timestamp {
             seconds: 200,
             nanoseconds: 0,
         };
-        let mut store = Store::open(&legacy, "monad-testnet", policy).unwrap();
-        for op in [&post, &vote] {
-            store.admit(op.clone()).unwrap();
-            store
-                .confirm(&op.checked.decoded.tx_hash.0, &facts(op, 10, 0), at)
-                .unwrap();
-        }
-        drop(store);
-        let mut vote_key = vec![b'e'];
-        vote_key.extend(vote.checked.decoded.tx_hash.0);
+        let vote_key = state_key(&vote.checked.decoded.tx_hash.0);
         let retained;
         {
-            let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
-            retained = db.get(&vote_key).unwrap().unwrap();
-            let mut key = vec![b'e'];
-            key.extend(post.checked.decoded.tx_hash.0);
-            db.delete(key).unwrap();
-            db.flush().unwrap();
+            let (kv, store) = open_beside(&legacy);
+            for op in [&post, &vote] {
+                let admitted = store.admit(op.clone()).unwrap();
+                store.confirm(&admitted, &facts(op, 10, 0), at).unwrap();
+            }
+            retained = kv.transact(|tx| tx.get(&vote_key)).unwrap().unwrap();
+            // The post's author burn disappears from the authority.
+            let author = state_key(&post.checked.decoded.tx_hash.0);
+            kv.transact(|tx| tx.clear(&author)).unwrap();
         }
         let router = test_server(registry).into_router();
         let response = router
@@ -894,9 +887,9 @@ mod tests {
         let status = response.status();
         let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
         drop(router);
-        let db = rocksdb::DB::open_default(Store::path(&legacy).unwrap()).unwrap();
+        let (kv, _) = open_beside(&legacy);
         assert_eq!(
-            db.get(&vote_key).unwrap().unwrap(),
+            kv.transact(|tx| tx.get(&vote_key)).unwrap().unwrap(),
             retained,
             "retained authority must not be rewritten"
         );
@@ -1240,29 +1233,21 @@ mod tests {
     #[tokio::test]
     async fn actual_router_restart_returns_410_for_both_old_cursor_families() {
         if isolated("http::monad_topics::tests::actual_router_restart_returns_410_for_both_old_cursor_families", "FRANK_FORUM_CURSOR_HTTP_CHILD") { return; }
-        use crate::store::forum::{
-            tests::{distinct_post, facts},
-            Store,
-        };
+        use crate::store::forum::tests::{distinct_post, facts, open_beside};
         use frank_cbor::{Timestamp, TypedPayload, ValidationResult};
         use tower::ServiceExt;
         let (dir, registry) = test_registry();
         let legacy = dir.path().join("db.rocksdb");
-        let mut store = Store::open(
-            &legacy,
-            "monad-testnet",
-            crate::forum::policy(10143, burn_address()),
-        )
-        .unwrap();
+        let (kv, store) = open_beside(&legacy);
         for i in 0..129 {
             for op in [
                 distinct_post(i, "test.topic"),
                 distinct_post(1000 + i, &format!("topic.{i:03}")),
             ] {
-                store.admit(op.clone()).unwrap();
+                let admitted = store.admit(op.clone()).unwrap();
                 store
                     .confirm(
-                        &op.checked.decoded.tx_hash.0,
+                        &admitted,
                         &facts(&op, i, 0),
                         Timestamp {
                             seconds: 200,
@@ -1272,6 +1257,7 @@ mod tests {
                     .unwrap();
             }
         }
+        drop(kv);
         drop(store);
         let router = test_server(registry).into_router();
         let paths = [

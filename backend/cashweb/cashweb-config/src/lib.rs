@@ -755,7 +755,7 @@ impl RegistryConf {
                 ReplicaLocalOwner::DirectoryEnrollmentQuotas
             });
         }
-        if self.forum.is_some() {
+        if self.forum.is_some() && local_driver {
             owners.push(ReplicaLocalOwner::Forum);
         }
         if self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled {

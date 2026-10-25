@@ -151,6 +151,7 @@ impl Db {
         let path = path.as_ref();
         Self::refuse_old_message_store(path)?;
         Self::refuse_old_directory_sidecars(path)?;
+        Self::refuse_old_forum_store(path)?;
         let local = match RocksDbKvStore::open(path) {
             Ok(store) => Arc::new(store),
             // RocksDB refuses to open a database holding tables it was not told about, which is
@@ -190,6 +191,7 @@ impl Db {
         let path = path.as_ref();
         Self::refuse_old_message_store(path)?;
         Self::refuse_old_directory_sidecars(path)?;
+        Self::refuse_old_forum_store(path)?;
         if path.join("CURRENT").exists() {
             return Err(Self::old_format(
                 path,
@@ -316,6 +318,33 @@ impl Db {
         Err(OldFormat {
             path: path.display().to_string(),
             found: "earlier directory stores".to_owned(),
+            delete: left
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+        .into())
+    }
+
+    /// The forum once kept a RocksDB sidecar of its own format beside the registry database.
+    /// This build keeps the forum on the transaction contract and has no reader for it.
+    fn refuse_old_forum_store(path: &Path) -> Result<()> {
+        let left: Vec<_> = super::forum::OLD_STORE_SUFFIXES
+            .iter()
+            .map(|suffix| {
+                let mut name = path.as_os_str().to_owned();
+                name.push(suffix);
+                std::path::PathBuf::from(name)
+            })
+            .filter(|old| old.exists())
+            .collect();
+        if left.is_empty() {
+            return Ok(());
+        }
+        Err(OldFormat {
+            path: path.display().to_string(),
+            found: "an earlier forum store (public posts and burn records only)".to_owned(),
             delete: left
                 .iter()
                 .map(|path| path.display().to_string())
@@ -624,6 +653,17 @@ mod tests {
         assert!(!beside_old_store.exists());
         std::fs::remove_dir(&old_store)?;
         drop(Db::open(&beside_old_store)?);
+
+        // A registry database beside the forum's earlier RocksDB sidecar.
+        let beside_old_forum = tempdir.path().join("forum.rocksdb");
+        let old_forum = tempdir.path().join("forum.rocksdb.forum-cbor-v1");
+        std::fs::create_dir(&old_forum)?;
+        let error = format!("{:#}", Db::open(&beside_old_forum).unwrap_err());
+        assert!(error.contains("an earlier forum store"), "{error}");
+        assert!(error.contains(&old_forum.display().to_string()), "{error}");
+        assert!(!beside_old_forum.exists());
+        std::fs::remove_dir(&old_forum)?;
+        drop(Db::open(&beside_old_forum)?);
         Ok(())
     }
 

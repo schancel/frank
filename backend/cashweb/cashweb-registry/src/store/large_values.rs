@@ -149,6 +149,53 @@ pub struct Staged {
     pub reference: LargeValueRef,
 }
 
+/// A value an owner keeps in its row: inline bytes (tag 0), or a reference to an object (tag 1,
+/// then the digest, length and upload id). Owners store a value over [`INLINE_LIMIT`] as a
+/// reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Stored {
+    Inline(Vec<u8>),
+    Large(LargeValueRef),
+}
+
+impl Stored {
+    const INLINE: u8 = 0;
+    const LARGE: u8 = 1;
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Inline(bytes) => [&[Self::INLINE][..], bytes].concat(),
+            Self::Large(reference) => [
+                &[Self::LARGE][..],
+                &reference.digest,
+                &reference.len.to_be_bytes(),
+                &reference.upload,
+            ]
+            .concat(),
+        }
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        match bytes.split_first()? {
+            (&Self::INLINE, rest) => Some(Self::Inline(rest.to_vec())),
+            (&Self::LARGE, rest) if rest.len() == 56 => Some(Self::Large(LargeValueRef {
+                digest: rest[..32].try_into().ok()?,
+                len: u64::from_be_bytes(rest[32..40].try_into().ok()?),
+                upload: rest[40..].try_into().ok()?,
+            })),
+            _ => None,
+        }
+    }
+
+    /// Length of the value itself, before any object is read.
+    pub(crate) fn len(&self) -> u64 {
+        match self {
+            Self::Inline(bytes) => bytes.len() as u64,
+            Self::Large(reference) => reference.len,
+        }
+    }
+}
+
 /// What one sweep did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepReport {

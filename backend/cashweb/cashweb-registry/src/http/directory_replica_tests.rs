@@ -37,6 +37,7 @@ impl Replicas {
                 groups: crate::store::groups::GroupBackend::rocksdb_beside(&path),
                 objects: self.objects.clone(),
                 messages: None,
+                forum: None,
             },
         ));
         let runtime = start(registry, relay_config(), clock).await;
@@ -260,6 +261,7 @@ async fn the_relay_wide_subject_cap_holds_across_replicas() {
                 groups: crate::store::groups::GroupBackend::rocksdb_beside(&path(name)),
                 objects: replicas.objects.clone(),
                 messages: None,
+                forum: None,
             },
         ));
         let runtime = start(registry, config.clone(), &clock).await;

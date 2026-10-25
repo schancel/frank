@@ -1530,6 +1530,16 @@ export const rawEnUS = {
     potentiallyBroadcast:
       'Transaction was signed ({txHash}) and may have been broadcast. Check your balance or transaction status before retrying.',
     invalidTransfer: 'Enter a valid Monad address and MON amount.',
+    walletCheckpointUnavailable:
+      "The wallet can't open on this network: the relay doesn't name the checkpoint block this network needs. Nothing was sent.",
+    walletIdentityUnverified:
+      "The wallet can't open on this network: the relay's chain doesn't match the network's checkpoint block. A local chain may need a fresh checkpoint. Nothing was sent.",
+    walletRouteUnavailable:
+      "The wallet can't open on this network: your relay doesn't serve it. Nothing was sent.",
+    walletUnreachable:
+      "The wallet can't reach this network right now. Try again in a moment. Nothing was sent.",
+    walletOpenFailed:
+      "The wallet couldn't open on this network. Nothing was sent.",
     failedSendTransaction: 'Failed to send Monad transaction',
   },
   sendContactDialog: {

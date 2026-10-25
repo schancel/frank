@@ -59,12 +59,22 @@ async function main() {
       `stack up in ${Math.round((Date.now() - startedAt) / 1000)} s: relay ${stack.relayUrl} on ${monad.chainIdentifier} (checkpoint block ${monad.checkpoint.height} ${monad.checkpoint.hash}), chain at block ${await monad.provider.getBlockNumber()}`,
     )
     const chains = (await (await fetch(`${stack.relayUrl}/chains`)).json()) as {
-      chains: Array<{ id: string; network: string; native_chain_id: string }>
+      chains: Array<{
+        id: string
+        network: string
+        native_chain_id: string
+        operator_checkpoint?: { block_number: number; block_hash: string }
+      }>
     }
     assert.deepEqual(
       chains.chains.map(chain => [chain.id, chain.network, chain.native_chain_id]),
       [['monad-regtest', 'regtest', '20143']],
     )
+    // The app opens a monad-regtest wallet only against the checkpoint the relay names here.
+    assert.deepEqual(chains.chains[0].operator_checkpoint, {
+      block_number: monad.checkpoint.height,
+      block_hash: monad.checkpoint.hash,
+    })
 
     const record = await deployMonadContracts(stack)
     for (const [name, contract] of Object.entries(record.contracts)) {

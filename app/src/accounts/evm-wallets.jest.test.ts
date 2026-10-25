@@ -13,6 +13,10 @@ import {
   recoverSecondaryEvmWallets,
 } from './evm-wallets'
 import { createNativeTransferContext } from './native-transfer'
+import {
+  RelayOperatorCheckpointUnavailableError,
+  requireRelayOperatorCheckpoint,
+} from './relay-wallet-route'
 const mockState = {
   status: 'ready',
   account: { receipt: { context: { accountId: 'a' } } },
@@ -524,17 +528,114 @@ it('verifies an actual reused primary checkpoint and numeric identity without cl
   }
 })
 
-it('requires and verifies the operator anchor even for an actual regtest primary', async () => {
-  const primary = await actualEvmOwner('monad-regtest')
-  mockPrimary = primary as unknown as typeof mockPrimary
+let mockRelayCount = 0
+/** A relay of its own per test (discovery is cached per relay), advertising `route`. */
+function relayAdvertising(route: Record<string, unknown> | undefined) {
+  mockRelay = `https://relay-${++mockRelayCount}.invalid`
+  const request = jest.fn(async (url: string) => {
+    if (url !== `${mockRelay}/chains`) throw new Error(`unexpected ${url}`)
+    return {
+      ok: true,
+      json: async () => ({ schema_version: 1, chains: route ? [route] : [] }),
+    }
+  })
+  globalThis.fetch = request as unknown as typeof fetch
+  return request
+}
+const regtestRoute = (operatorCheckpoint?: unknown) => ({
+  id: 'monad-regtest',
+  family: 'evm',
+  network: 'regtest',
+  caip2: 'eip155:20143',
+  native_chain_id: '20143',
+  capabilities: ['json-rpc'],
+  ...(operatorCheckpoint === undefined
+    ? {}
+    : { operator_checkpoint: operatorCheckpoint }),
+})
+
+describe('a network whose registry row requires an operator block checkpoint', () => {
+  const originalFetch = globalThis.fetch
   const anchor = { blockNumber: 12, blockHash: '0x' + 'ab'.repeat(32) }
-  const block = jest.mocked(primary.provider.getBlock)
-  const close = jest.spyOn(primary, 'close')
-  try {
-    expect(() => openEvmWallet('monad-regtest')).toThrow(
-      /operator checkpoint is required/,
+  const advertised = { block_number: 12, block_hash: anchor.blockHash }
+  let primary: EvmChainWalletHandle
+  let original: string
+  beforeEach(async () => {
+    expect(
+      getChainRegistryEntry('monad-regtest')!.identityProbes.map(p => p.kind),
+    ).toContain('operator-block-checkpoint')
+    relayAdvertising(regtestRoute(advertised))
+    primary = await actualEvmOwner('monad-regtest')
+    mockPrimary = primary as unknown as typeof mockPrimary
+    original = activeChain.chainIdentifier
+    Object.assign(activeChain, { chainIdentifier: 'monad-regtest' })
+  })
+  afterEach(async () => {
+    Object.assign(activeChain, { chainIdentifier: original })
+    globalThis.fetch = originalFetch
+    await closeOpenedEvmWallets()
+    await primary.close()
+  })
+
+  // Native Send and a stealth payment's review both open through createNativeTransferContext;
+  // balance reads, foreign wallet sync items and dApp requests call openEvmWallet(chain).
+  it.each([
+    [
+      'native send and stealth payment context',
+      () => createNativeTransferContext('monad-regtest'),
+    ],
+    [
+      'balance read, foreign sync apply and dApp request',
+      () => openEvmWallet('monad-regtest'),
+    ],
+  ])(
+    '%s open the wallet with the checkpoint the relay verified, checked on the route',
+    async (_, open) => {
+      const block = jest.mocked(primary.provider.getBlock)
+      block.mockResolvedValue({
+        number: 12,
+        hash: anchor.blockHash,
+      } as never)
+      await expect(open()).resolves.toBeDefined()
+      expect(block).toHaveBeenCalledWith(12)
+      expect(peekOpenedEvmWallets()).toHaveLength(1)
+      expect(peekOpenedEvmWallets()[0].wallet).toBe(primary)
+      // Every path shares the one opened owner and the checkpoint it was verified with.
+      expect((await openEvmWallet('monad-regtest')).wallet).toBe(primary)
+      expect(peekOpenedEvmWallets()).toHaveLength(1)
+    },
+  )
+
+  it('refuses a route whose chain does not have the checkpoint block', async () => {
+    jest.mocked(primary.provider.getBlock).mockResolvedValueOnce({
+      number: 12,
+      hash: '0x' + 'ff'.repeat(32),
+    } as never)
+    await expect(createNativeTransferContext('monad-regtest')).rejects.toThrow(
+      /checkpoint mismatch/,
     )
-    expect(block).not.toHaveBeenCalled()
+    expect(peekOpenedEvmWallets()).toEqual([])
+  })
+
+  it.each([
+    ['names none', undefined],
+    ['names a malformed one', { block_number: 12, block_hash: 'ab' }],
+    ['names genesis', { block_number: 0, block_hash: anchor.blockHash }],
+  ])(
+    'refuses to open, without touching the chain, when the relay %s',
+    async (_, checkpoint) => {
+      relayAdvertising(regtestRoute(checkpoint))
+      const block = jest.mocked(primary.provider.getBlock)
+      await expect(
+        createNativeTransferContext('monad-regtest'),
+      ).rejects.toBeInstanceOf(RelayOperatorCheckpointUnavailableError)
+      expect(block).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps an explicit checkpoint and still verifies it', async () => {
+    const block = jest.mocked(primary.provider.getBlock)
     block.mockResolvedValueOnce({
       number: 12,
       hash: '0x' + 'ff'.repeat(32),
@@ -542,13 +643,37 @@ it('requires and verifies the operator anchor even for an actual regtest primary
     await expect(openEvmWallet('monad-regtest', anchor)).rejects.toThrow(
       /checkpoint mismatch/,
     )
-    expect(peekOpenedEvmWallets()).toEqual([])
     block.mockResolvedValueOnce({ number: 12, hash: anchor.blockHash } as never)
     expect((await openEvmWallet('monad-regtest', anchor)).wallet).toBe(primary)
-    expect(mockCreate).not.toHaveBeenCalled()
-    await closeOpenedEvmWallets()
-    expect(close).not.toHaveBeenCalled()
+  })
+})
+
+it('never takes a relay checkpoint for a network whose registry pins one', async () => {
+  const originalFetch = globalThis.fetch
+  const request = relayAdvertising({
+    ...regtestRoute(),
+    id: 'monad-testnet',
+    network: 'testnet',
+    caip2: 'eip155:10143',
+    native_chain_id: '10143',
+    operator_checkpoint: {
+      block_number: 5,
+      block_hash: '0x' + 'cd'.repeat(32),
+    },
+  })
+  const primary = await actualEvmOwner('monad-testnet')
+  mockPrimary = primary as unknown as typeof mockPrimary
+  try {
+    expect((await openEvmWallet('monad-testnet')).wallet).toBe(primary)
+    expect(primary.provider.getBlock).toHaveBeenCalledWith(0)
+    expect(primary.provider.getBlock).not.toHaveBeenCalledWith(5)
+    expect(request).not.toHaveBeenCalled()
+    await expect(
+      requireRelayOperatorCheckpoint(mockRelay, 'monad-testnet'),
+    ).rejects.toThrow(/protocol checkpoint/)
   } finally {
+    globalThis.fetch = originalFetch
+    await closeOpenedEvmWallets()
     await primary.close()
   }
 })
@@ -678,23 +803,6 @@ it('rejects an active financial context with an actual primary on the wrong chec
     expect(peekOpenedEvmWallets()).toEqual([])
     expect(mockCreate).not.toHaveBeenCalled()
   } finally {
-    await primary.close()
-  }
-})
-
-it('rejects an active regtest financial context without its operator anchor', async () => {
-  const primary = await actualEvmOwner('monad-regtest')
-  mockPrimary = primary as unknown as typeof mockPrimary
-  const original = activeChain.chainIdentifier
-  try {
-    Object.assign(activeChain, { chainIdentifier: 'monad-regtest' })
-    await expect(createNativeTransferContext('monad-regtest')).rejects.toThrow(
-      /operator checkpoint is required/,
-    )
-    expect(peekOpenedEvmWallets()).toEqual([])
-    expect(mockCreate).not.toHaveBeenCalled()
-  } finally {
-    Object.assign(activeChain, { chainIdentifier: original })
     await primary.close()
   }
 })

@@ -2,7 +2,9 @@
 
 use std::{fmt, time::Duration};
 
-use cashweb_config::{EvmRpcChainConf, ProtocolChainDescriptor, ProtocolProxyCapability};
+use cashweb_config::{
+    EvmRpcChainConf, ProtocolChainDescriptor, ProtocolIdentityProbe, ProtocolProxyCapability,
+};
 use serde_json::{json, Value};
 use url::Url;
 
@@ -142,6 +144,24 @@ impl EvmChainAdapter {
     /// The block `(number, hash)` every upstream must have.
     pub fn checkpoint(&self) -> (u64, &str) {
         (self.checkpoint.0, self.checkpoint.1.as_str())
+    }
+
+    /// The operator's checkpoint, for a chain whose registry row leaves its JSON-RPC checkpoint
+    /// to the operator (`operator-block-checkpoint`). `None` when the registry pins it: a
+    /// protocol-pinned checkpoint is protocol data, never relay data.
+    pub fn operator_checkpoint(&self) -> Option<(u64, &str)> {
+        self.descriptor
+            .identity_probes
+            .iter()
+            .any(|probe| {
+                matches!(
+                    probe,
+                    ProtocolIdentityProbe::OperatorBlockCheckpoint {
+                        capability: ProtocolProxyCapability::JsonRpc
+                    }
+                )
+            })
+            .then(|| self.checkpoint())
     }
 
     /// Largest inclusive block range `eth_getLogs` may ask for.

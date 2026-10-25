@@ -66,11 +66,67 @@ async function routes(relay: string): Promise<unknown[]> {
   return document
 }
 
+export class RelayOperatorCheckpointUnavailableError extends Error {
+  constructor(readonly chainIdentifier: string) {
+    super(
+      `The relay does not name the operator checkpoint ${chainIdentifier} requires`,
+    )
+  }
+}
+
+export interface RelayOperatorCheckpoint {
+  readonly blockNumber: number
+  readonly blockHash: string
+}
+
+/**
+ * The block the relay verified its upstreams against, for a network whose registry row leaves
+ * the checkpoint to the operator (`operator-block-checkpoint`, as on a local regtest chain). The
+ * caller still checks the RPC route against it. A network with a protocol-pinned checkpoint never
+ * takes one from a relay.
+ */
+export async function requireRelayOperatorCheckpoint(
+  relayBaseUrl: string,
+  chainIdentifier: string,
+): Promise<RelayOperatorCheckpoint> {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  if (
+    !entry?.identityProbes.some(
+      probe => probe.kind === 'operator-block-checkpoint',
+    )
+  )
+    throw new Error(
+      `${chainIdentifier} has a protocol checkpoint, not an operator one`,
+    )
+  const route = await relayWalletRoute(relayBaseUrl, chainIdentifier)
+  const checkpoint = route.operator_checkpoint
+  if (typeof checkpoint !== 'object' || checkpoint === null)
+    throw new RelayOperatorCheckpointUnavailableError(chainIdentifier)
+  const { block_number: blockNumber, block_hash: blockHash } =
+    checkpoint as Record<string, unknown>
+  if (
+    typeof blockNumber !== 'number' ||
+    !Number.isSafeInteger(blockNumber) ||
+    blockNumber < 1 ||
+    typeof blockHash !== 'string' ||
+    !/^0x[0-9a-fA-F]{64}$/.test(blockHash)
+  )
+    throw new RelayOperatorCheckpointUnavailableError(chainIdentifier)
+  return { blockNumber, blockHash }
+}
+
 /** Read-only discovery before acquiring custody or querying balances. RPC identity probes remain required. */
 export async function requireRelayWalletRoute(
   relayBaseUrl: string,
   chainIdentifier: string,
 ): Promise<void> {
+  await relayWalletRoute(relayBaseUrl, chainIdentifier)
+}
+
+async function relayWalletRoute(
+  relayBaseUrl: string,
+  chainIdentifier: string,
+): Promise<Readonly<Record<string, unknown>>> {
   const entry = getChainRegistryEntry(chainIdentifier)
   if (!entry?.wallet || entry.id !== chainIdentifier)
     throw new Error(`Unsupported wallet network ${chainIdentifier}`)
@@ -102,4 +158,5 @@ export async function requireRelayWalletRoute(
     throw new Error(`Invalid relay wallet route for ${chainIdentifier}`)
   if (!route.capabilities.includes(entry.wallet.indexer))
     throw new RelayWalletRouteUnavailableError(chainIdentifier)
+  return route
 }

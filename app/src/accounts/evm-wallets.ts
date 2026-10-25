@@ -21,6 +21,7 @@ import type {
 import { accountSession } from './session'
 import {
   RelayWalletRouteUnavailableError,
+  requireRelayOperatorCheckpoint,
   requireRelayWalletRoute,
 } from './relay-wallet-route'
 import {
@@ -40,6 +41,7 @@ export interface OpenEvmWallet {
 interface Opened {
   readonly scope: string
   readonly checkpoint: string
+  readonly operatorCheckpoint?: EvmOperatorCheckpoint
   readonly cancellation: AbortController
   readonly opening: Promise<OpenEvmWallet>
   value?: OpenEvmWallet
@@ -131,16 +133,69 @@ function configured(
         : BigInt(entry.reserveBalanceWei),
   }
 }
+/**
+ * Opens the configured EVM owner for one canonical network. Every wallet-open path (sends,
+ * payment contexts, balance reads, foreign sync items, dApp requests) comes through here.
+ *
+ * A network whose registry row requires an operator block checkpoint (a local regtest chain is
+ * new on every start) takes it from the relay that serves the route: the operator gave that relay
+ * the checkpoint and the relay verified its upstreams against it. The wallet then checks the route
+ * against the same block before custody is used, as it checks a protocol-pinned block elsewhere.
+ * An owner already open for this account session keeps the checkpoint it was verified with.
+ */
 export function openEvmWallet(
   chainIdentifier: string,
   operatorCheckpoint?: EvmOperatorCheckpoint,
 ): Promise<OpenEvmWallet> {
-  const checkpointInput = operatorCheckpoint && { ...operatorCheckpoint }
   // A secondary chain emits a transport-free sync event. Capture the primary messaging service
   // now, so a later UI network change cannot redirect a pending operation's self note.
   const messenger = { ...activeChain }
   const homeWallet = accountSession.peekWallet()
   if (!homeWallet) throw new Error('No account wallet is open')
+  if (
+    operatorCheckpoint ||
+    !getChainRegistryEntry(chainIdentifier)?.identityProbes.some(
+      probe => probe.kind === 'operator-block-checkpoint',
+    )
+  )
+    return openEvmWalletAt(
+      chainIdentifier,
+      operatorCheckpoint,
+      messenger,
+      homeWallet,
+    )
+  const { relayBaseUrl } = configured(chainIdentifier, homeWallet)
+  const scope = scopeOf(relayBaseUrl)
+  const existing = opened.get(chainIdentifier)
+  if (
+    existing?.operatorCheckpoint &&
+    existing.scope === scope &&
+    sameSessionOwner(existing)
+  )
+    return openEvmWalletAt(
+      chainIdentifier,
+      existing.operatorCheckpoint,
+      messenger,
+      homeWallet,
+    )
+  return requireRelayOperatorCheckpoint(relayBaseUrl, chainIdentifier).then(
+    checkpoint => {
+      if (
+        accountSession.peekWallet() !== homeWallet ||
+        scopeOf(relayBaseUrl) !== scope
+      )
+        throw new Error('Account changed')
+      return openEvmWalletAt(chainIdentifier, checkpoint, messenger, homeWallet)
+    },
+  )
+}
+function openEvmWalletAt(
+  chainIdentifier: string,
+  operatorCheckpoint: EvmOperatorCheckpoint | undefined,
+  messenger: typeof activeChain,
+  homeWallet: NativeWalletHandle,
+): Promise<OpenEvmWallet> {
+  const checkpointInput = operatorCheckpoint && { ...operatorCheckpoint }
   const baseConfig = configured(chainIdentifier, homeWallet)
   const emitWalletSync = async (
     item: WalletSyncItem,
@@ -227,6 +282,7 @@ export function openEvmWallet(
   const entry: Opened = {
     scope,
     checkpoint,
+    operatorCheckpoint: checkpointInput,
     cancellation,
     opening: Promise.resolve().then(async () => {
       await retirementBarrier

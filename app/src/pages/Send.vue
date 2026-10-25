@@ -58,6 +58,17 @@
             @click="reviewTransfer"
           />
         </q-card-actions>
+        <!-- The wallet could not open on this network: say why, instead of blaming the input. -->
+        <q-card-section
+          v-if="openFailure"
+          class="q-pt-none"
+          role="alert"
+          data-test="send-wallet-unavailable"
+        >
+          <q-banner dense rounded class="bg-red-1 text-red-10">
+            {{ $t(openFailure) }}
+          </q-banner>
+        </q-card-section>
       </q-card>
 
       <!-- Review State -->
@@ -332,6 +343,10 @@ import {
   type ParsedNativeTransfer,
 } from 'src/utils/native-transfer'
 import { useTranslate } from 'src/composables/useTranslate'
+import {
+  walletOpenFailureKey,
+  type WalletOpenFailureKey,
+} from 'src/accounts/wallet-open-failure'
 
 export default defineComponent({
   components: { QrScannerDialog },
@@ -356,6 +371,8 @@ export default defineComponent({
     const estimatedFeeText = ref('')
     // Set when the network refused the last attempt outright; holds the node's reason.
     const refusal = ref<string>()
+    // Set when this network's wallet could not open: an app-owned reason, shown on the page.
+    const openFailure = ref<WalletOpenFailureKey>()
     // The fee the review screen showed, in base units: the ceiling the send may not exceed.
     let reviewedFee: bigint | undefined
     // Set when the fee rose above the reviewed one, so the new fee is reviewed before sending.
@@ -394,8 +411,9 @@ export default defineComponent({
         const captured = await createNativeTransferContext(requestedChain)
         if (!disposed) context.value = captured
       } catch (err) {
-        if (!disposed)
-          errorNotify(err, { fallbackKey: 'sendAddressDialog.invalidTransfer' })
+        if (disposed) return
+        openFailure.value = walletOpenFailureKey(err)
+        errorNotify(err, { fallbackKey: openFailure.value })
       }
     })()
     onBeforeUnmount(() => {
@@ -472,6 +490,7 @@ export default defineComponent({
       ),
       estimatedFeeText,
       refusal,
+      openFailure,
       feeChanged,
       isValid: computed(() => parsedTransfer.value !== undefined),
       formattedRecipient,
@@ -485,7 +504,8 @@ export default defineComponent({
         const capturedAmount = amount.value
         if (!transfer || !captured) {
           errorNotify(new Error('invalid transfer'), {
-            fallbackKey: 'sendAddressDialog.invalidTransfer',
+            fallbackKey:
+              openFailure.value ?? 'sendAddressDialog.invalidTransfer',
           })
           return
         }

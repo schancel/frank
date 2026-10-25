@@ -13,6 +13,7 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { deriveEvmStealthAddress } from '../evm-stealth'
 import { getEvmDexDeployment } from './dex-deployments'
 import type { StealthPaymentReceiptClaim } from '../stealth-payment'
+import { describeWalletFailure } from '../wallet-failure'
 
 import {
   EVM_COIN_NAMESPACE,
@@ -562,6 +563,50 @@ test('the native fee authorization covers private change as well as the recipien
   )
   expect(state.broadcast).not.toHaveBeenCalled()
 })
+test('an ERC20 quote does not read the balances of received coins that hold no such token', async () => {
+  const asset = { kind: 'erc20' as const, contractAddress: token }
+  // Message stamps: received native coins, one per message.
+  for (let i = 0; i < 12; i++) await importOwned(22000n)
+  const funded = await importOwned(5n, asset, 50000n)
+  const provider = wallet.provider
+  const tokenReads = provider.call as unknown as jest.Mock
+  const nativeReads = provider.getBalance as unknown as jest.Mock
+  tokenReads.mockClear()
+  nativeReads.mockClear()
+  const { maxNativeFeeAtomic: _, ...unsigned } = intent('few-reads', 3n, asset)
+  const quote = await wallet.stealthPayments!.quote!(unsigned)
+  expect(quote.sources!.map(source => source.sourceAddress)).toEqual([
+    funded.address,
+  ])
+  const read = (mock: jest.Mock) =>
+    new Set(
+      mock.mock.calls.map(([value]) =>
+        String(
+          typeof value === 'string'
+            ? value
+            : abi.decodeFunctionData('balanceOf', String(value.data))[0],
+        ).toLowerCase(),
+      ),
+    )
+  // Main and identity have no coin record, so they are read; the stamp coins are not.
+  expect(read(tokenReads)).toEqual(
+    new Set([MAIN, wallet.identity!.address.raw.toLowerCase(), funded.address]),
+  )
+  expect(tokenReads).toHaveBeenCalledTimes(3)
+  // Native gas only where the token is: the funded coin (and its fee quote).
+  expect([...read(nativeReads)]).toEqual([funded.address])
+
+  // What the dialog shows as available: the same accounts, read the same few times. A token
+  // account without gas cannot pay, so it is not counted.
+  await importOwned(7n, asset, 0n)
+  tokenReads.mockClear()
+  await expect(wallet.stealthPayments!.available!(asset)).resolves.toBe(5n)
+  expect(tokenReads).toHaveBeenCalledTimes(4)
+  // The stamp coins plus the gas held beside the funded token.
+  await expect(
+    wallet.stealthPayments!.available!({ kind: 'native' }),
+  ).resolves.toBe(12n * 22000n + 50000n)
+})
 test('honestly rejects more than sixteen required members and gasless-only token funds without funding them', async () => {
   for (let i = 0; i < 17; i++) await importOwned(22000n)
   const tooMany = intent('over-member-cap', 17000n),
@@ -583,9 +628,12 @@ test('honestly rejects more than sixteen required members and gasless-only token
     kind: 'erc20',
     contractAddress: token,
   })
-  await expect(
-    wallet.stealthPayments!.prepare(tokenIntent),
-  ).rejects.toThrow(/native gas/)
+  const gaslessFailure = await wallet
+    .stealthPayments!.prepare(tokenIntent)
+    .catch(error => error)
+  expect(String(gaslessFailure)).toMatch(/native gas/)
+  // The app tells the user "insufficient funds" from this diagnosis, not from the error class.
+  expect(describeWalletFailure(gaslessFailure).kind).toBe('insufficient-funds')
   expect(state.balances.get(gasless.address)).toBe(0n)
   expect(state.broadcast).not.toHaveBeenCalled()
   expect(wallet.getNativeOperations!()).toHaveLength(0)

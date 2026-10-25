@@ -77,6 +77,8 @@ import type {
   StealthDialogRequest,
 } from '../stealth-payments/options'
 import { errorNotify } from '../utils/notifications'
+import { makeError } from 'ethers'
+import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus, accountSession } from '../accounts/session'
 import { useActiveWallet } from '../composables/useActiveWallet'
@@ -436,7 +438,7 @@ describe('Chat.vue reviewed stealth financial handoff', () => {
     await methods.reviewStealthPayment.call(f.self, request)
     expect(f.self.stealthQuote).toEqual({
       status: 'error',
-      message: 'Error: localized missing rate',
+      message: 'localized missing rate',
     })
     expect(getWallet).not.toHaveBeenCalled()
     expect(mockCaptureFinancialWallet).not.toHaveBeenCalled()
@@ -683,10 +685,91 @@ describe('Chat.vue reviewed stealth financial handoff', () => {
     })
     await methods.reviewStealthPayment.call(f.self, request)
     expect(f.self.stealthQuote.status).toBe('error')
-    expect(f.self.stealthQuote.message).toContain('quoting is unavailable')
+    // The wallet's own wording stays in the console; the dialog shows app-authored text.
+    expect(f.self.stealthQuote.message).toBe('sendStealthDialog.notSent')
     expect(legacy).not.toHaveBeenCalled()
     expect(f.prepare).not.toHaveBeenCalled()
     expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+
+  /** What ethers throws for the relay's `rpc_upstream_rate_limited` once retries are spent. */
+  function throttled() {
+    return recordEvmRpcFailure(
+      makeError('server response 429 ', 'SERVER_ERROR', {
+        request: {} as never,
+        response: { statusCode: 429 } as never,
+        info: {
+          requestUrl: 'https://relay.example/chain-rpc/monad-testnet/rpc',
+          responseBody: '{"error":"rpc_upstream_rate_limited"}',
+          responseStatus: '429 ',
+        },
+      }),
+    )
+  }
+
+  it('a persistent 429 while quoting says the network is busy, reserves nothing and sends nothing', async () => {
+    const f = fixture()
+    f.self.reviewStealthPayment = (r: StealthDialogRequest) =>
+      methods.reviewStealthPayment.call(f.self, r)
+    f.quote.mockRejectedValue(throttled())
+    await methods.sendStealthPayment.call(f.self, request)
+    expect(f.self.stealthQuote).toEqual({
+      status: 'error',
+      message: 'sendStealthDialog.networkBusy',
+    })
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'sendStealthDialog.networkBusy',
+    })
+    expect(JSON.stringify(jest.mocked(errorNotify).mock.calls)).not.toContain(
+      'relay.example',
+    )
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.release).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(f.self.stealthDialog).toBe(true)
+    expect(f.self.sendingMessage).toBe(false)
+  })
+
+  it('a 429 while preparing, released by the owner, says nothing was sent and keeps the dialog open', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    f.prepare.mockRejectedValueOnce(throttled())
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.release).toHaveBeenCalledWith(intent.quote.operationId)
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendStealthDialog.networkBusy',
+    })
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(f.self.stealthDialog).toBe(true)
+    expect(f.self.stealthQuote).toEqual({
+      status: 'error',
+      message: 'sendStealthDialog.networkBusy',
+    })
+  })
+
+  it('never says nothing was sent once a signed payment may have been exposed', async () => {
+    // Messaging adopted the signed payment, then the relay answered 429.
+    const adopted = fixture()
+    const intent = await review(adopted)
+    adopted.self.sendDirectMessage.mockRejectedValueOnce(throttled())
+    await methods.sendStealthPayment.call(adopted.self, intent)
+    expect(adopted.release).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      fallbackKey: 'sendStealthDialog.messageEnded',
+    })
+
+    // Before adoption, but the owner cannot prove the bytes reached nobody.
+    const unproven = fixture()
+    const second = await review(unproven)
+    unproven.prepare.mockRejectedValueOnce(throttled())
+    unproven.release.mockResolvedValueOnce(false)
+    await methods.sendStealthPayment.call(unproven.self, second)
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      fallbackKey: 'sendStealthDialog.messageEnded',
+    })
+    for (const call of jest.mocked(errorNotify).mock.calls)
+      expect(call[1]).not.toEqual({ fallbackKey: 'sendStealthDialog.notSent' })
+    expect(unproven.self.stealthQuote).toEqual({ status: 'idle' })
   })
 })
 

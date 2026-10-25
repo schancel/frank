@@ -106,6 +106,8 @@ export interface EvmStealthPaymentDriver {
   observe(id: string): Promise<void>
   release(id: string): Promise<unknown>
   tokenBalance(contractAddress: string, sourceAddress: string): Promise<bigint>
+  /** The token a payment could draw on now: unreserved owned accounts that also hold gas. */
+  tokenAvailable?(contractAddress: string): Promise<bigint>
   tokenReceipt(
     raw: string,
     recipientAddress: string,
@@ -556,6 +558,15 @@ export function createEvmStealthPayments(
   }
   return {
     supportsCombinedStamp: true,
+    async available(input) {
+      driver.assertActive()
+      const asset = assetOf(driver.chainIdentifier, input)
+      if (asset.kind === 'native')
+        return (await driver.quoteNative(0n)).assetBalanceAtomic
+      if (!driver.tokenAvailable || asset.kind !== 'erc20')
+        throw new Error('Token availability is unavailable for this wallet')
+      return driver.tokenAvailable(asset.contractAddress)
+    },
     quote: (input) => {
       const intent = {
         ...input,

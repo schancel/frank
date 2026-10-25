@@ -23,12 +23,24 @@ A held original still invokes the canonical durability callback before it can le
 - Per-message exclusion prevents duplicate local processing while a rotating bounded batch lets other bindings advance. There is no new wallet-wide send lock.
 - Existing records without trustworthy financial associations cannot be reconstructed by guessing. Completed bindings are retained; no cleanup policy or new persistent index is introduced here.
 
+## What a failed send tells the user
+
+`failure.ts` maps a failure to app-authored text; provider and relay text (an ethers dump with
+URLs and response bodies) stays in the console. "Nothing was sent" is said only while nothing
+signed has left the financial owner: during review, which only reads, or when
+`sendReviewedStealthPayment` throws `StealthPaymentNotSentError` because the owner's `release`
+proved the prepared operation unexposed. Once messaging has adopted the payment, or the release
+cannot be proven, a 429 or a timeout is no proof the payment failed: the user is told the payment
+is saved and to retry the message, which reuses the same operation. Throttled chain reads are
+retried in the relay RPC transport (`packages/wallet/evm-provider.ts`), never a transaction.
+
 ## Verification
 
 From the repository root:
 
 ```sh
 yarn --cwd app test:unit:ci --runInBand financial-envelope-recovery.jest.test.ts financial-envelope-recovery-boundary.jest.test.ts recovery.jest.test.ts outgoing.jest.test.ts
+yarn --cwd app test:unit:ci --runInBand failure.jest.test.ts review-payment.jest.test.ts Chat.sendFollowUp.jest.test.ts SendStealthDialog.jest.test.ts
 yarn --cwd app test:unit:ci --runInBand chats.financial-retained-recovery.jest.test.ts chats.outgoing.jest.test.ts pinia-chain-adapter.outgoing.jest.test.ts pinia-chain-adapter.retained-scheduling.jest.test.ts
 yarn typecheck:fast
 ```

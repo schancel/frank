@@ -70,13 +70,17 @@ import {
   stealthItemTransfer,
 } from "./evm-stealth";
 import type { MonadWalletMaterial } from "./evm-wallet-material";
+import { READS_AT_ONCE } from "./evm-rpc-read-budget";
+import { recordWalletFailure } from "./wallet-failure";
 import { DefaultStampUnavailableError } from "./oracle/stamp-policy";
-import type {
-  StealthPaymentReceiptCapability,
-  StealthPaymentReceiptClaim,
+import {
+  StealthPaymentMemberLimitError,
+  type StealthPaymentReceiptCapability,
+  type StealthPaymentReceiptClaim,
 } from "./stealth-payment";
 import {
   applyStoredNativeCoinObservation,
+  fundedErc20Coins,
   markStoredEvmCoinNoted,
   messagePaymentOf,
   pendingCoinDue,
@@ -1599,6 +1603,41 @@ export function createEvmReceivedCoinAndContactManager(
     const topicOwner = getTopicOwner();
     const owner = evmWalletInternals(wallet).nativeOperationOwner!;
 
+    /** The owned, unreserved accounts holding this token with some native gas: what a token
+     * payment can draw on. Read-only. */
+    const fundedTokenSources = async (contractAddress: string, requested?: string) => {
+      const owned = [...new Map((await getSources()).map(source => [source.address, source])).values()];
+      if (requested !== undefined && !owned.some(source => source.address === requested)) throw new Error("Requested financial source is not owned");
+      // A received coin's own record says whether it holds this token. Every message stamp is
+      // such a coin, so reading each one's balances put a burst of reads on the chain's RPC
+      // large enough for its provider to refuse the payment (HTTP 429). Accounts without a
+      // coin record (main, identity, journal sources) are still read from the chain.
+      const tokenCoins = new Set(fundedErc20Coins(coinStore.all(), contractAddress).map(coin => coin.address.toLowerCase()));
+      const inspect = requested === undefined
+        ? owned.filter(source => source.kind !== "spend" && source.kind !== "change" &&
+            (coinStore.get(source.address) === undefined || tokenCoins.has(source.address)))
+        : owned.filter(source => source.address === requested);
+      let lacksGas = false;
+      const inspectOne = async (source: (typeof inspect)[number]) => {
+        if (sourceIsHeld(wallet, source.address) || owner.holdsSource(source.address)) return null;
+        const balance = await tokenBalance(contractAddress, source.address);
+        assertFinancialActive();
+        if (balance <= 0n) return null;
+        // Native gas is read only where the token is.
+        const native = await provider.getBalance(source.address);
+        assertFinancialActive();
+        if (native === 0n) { lacksGas = true; return null; }
+        return { source, balance };
+      };
+      const inspected: Awaited<ReturnType<typeof inspectOne>>[] = [];
+      for (let start = 0; start < inspect.length; start += READS_AT_ONCE)
+        inspected.push(...await Promise.all(inspect.slice(start, start + READS_AT_ONCE).map(inspectOne)));
+      return {
+        candidates: inspected.filter((item): item is NonNullable<typeof item> => item !== null),
+        lacksGas,
+      };
+    };
+
     const financialPayments = createEvmStealthPayments({
       chainIdentifier,
       nativeChainId,
@@ -1684,19 +1723,9 @@ export function createEvmReceivedCoinAndContactManager(
         if (input.asset.kind !== "erc20") throw new Error("Native quotes use the shared inventory snapshot");
         const contractAddress = input.asset.contractAddress;
         const requested = input.sourceAddress === undefined ? undefined : getAddress(input.sourceAddress).toLowerCase();
-        const owned = [...new Map((await getSources()).map(source => [source.address, source])).values()];
-        if (requested !== undefined && !owned.some(source => source.address === requested)) throw new Error("Requested financial source is not owned");
-        const inspect = requested === undefined ? owned.filter(source => source.kind !== "spend" && source.kind !== "change") : owned.filter(source => source.address === requested);
-        let lacksGas = false;
-        const inspected = await Promise.all(inspect.map(async source => {
-          if (sourceIsHeld(wallet, source.address) || owner.holdsSource(source.address)) return null;
-          const [native, balance] = await Promise.all([provider.getBalance(source.address), tokenBalance(contractAddress, source.address)]);
-          assertFinancialActive();
-          if (balance <= 0n) return null;
-          if (native === 0n) { lacksGas = true; return null; }
-          return { source, balance };
-        }));
-        const candidates = inspected.filter((item): item is NonNullable<typeof item> => item !== null);
+        const found = await fundedTokenSources(contractAddress, requested);
+        const candidates = found.candidates;
+        let lacksGas = found.lacksGas;
         candidates.sort((a, b) => a.source.kind === "main" && b.source.kind !== "main" ? 1 : b.source.kind === "main" && a.source.kind !== "main" ? -1 : a.balance === b.balance ? a.source.address.localeCompare(b.source.address) : a.balance < b.balance ? -1 : 1);
         const sources: { sourceAddress: string; recipientAmountAtomic: bigint; nativeBalanceAtomic: bigint; assetBalanceAtomic: bigint; estimatedNativeFeeAtomic: bigint }[] = [];
         let remaining = input.amountAtomic;
@@ -1715,8 +1744,16 @@ export function createEvmReceivedCoinAndContactManager(
         await allocate(candidates);
         if (remaining > 0n && sources.length === 16) await allocate([...candidates].sort((a, b) => a.balance === b.balance ? candidates.indexOf(a) - candidates.indexOf(b) : a.balance > b.balance ? -1 : 1));
         assertFinancialActive();
-        if (remaining > 0n) throw new RangeError(sources.length === 16 ? "Payment cannot fit the 16-member limit" : lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds");
+        if (remaining > 0n) {
+          if (sources.length === 16) throw new StealthPaymentMemberLimitError(16);
+          // Token or its gas is short: the same fact the native path reports.
+          throw recordWalletFailure(new RangeError(lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds"), { diagnosis: "insufficient-funds" });
+        }
         return { sources };
+      },
+      async tokenAvailable(contractAddress) {
+        const { candidates } = await fundedTokenSources(contractAddress);
+        return candidates.reduce((sum, candidate) => sum + candidate.balance, 0n);
       },
       tokenBalance,
       tokenReceipt: verifiedFinancialReceipt,

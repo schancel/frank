@@ -3,6 +3,7 @@ import {
   reviewStealthPayment,
   sendReviewedStealthPayment,
 } from './review-payment'
+import { StealthPaymentNotSentError } from './failure'
 import type {
   StealthPaymentQuote,
   PreparedStealthPayment,
@@ -531,4 +532,30 @@ test('a shared-constructor native payment on another chain keeps an independent 
     stampValue: 7n,
     excludedAddresses: undefined,
   })
+})
+
+test('only a release the owner proves turns a pre-handoff failure into "nothing was sent"', async () => {
+  const captured = await reviewStealthPayment({
+    request,
+    stampValue: 0n,
+    isCurrent: () => true,
+  })
+  const failure = new Error('server response 429')
+  mockPrepare.mockRejectedValue(failure)
+  const released = await sendReviewedStealthPayment(
+    captured,
+    undefined,
+    jest.fn(),
+  ).catch(error => error)
+  expect(released).toBeInstanceOf(StealthPaymentNotSentError)
+  expect((released as StealthPaymentNotSentError).failure).toBe(failure)
+  // The owner cannot prove the signed bytes reached nobody: the original failure, never
+  // "nothing was sent".
+  mockRelease.mockResolvedValue(false)
+  const kept = await sendReviewedStealthPayment(
+    captured,
+    undefined,
+    jest.fn(),
+  ).catch(error => error)
+  expect(kept).toBe(failure)
 })

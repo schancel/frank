@@ -663,6 +663,47 @@ export async function issueMonadRelayRpcCapability(
   }
 }
 
+/** How many times one read is asked again after the relay reports its upstream throttled it. */
+export const RELAY_UPSTREAM_RATE_LIMIT_RETRIES = 3;
+const RELAY_UPSTREAM_RATE_LIMIT_BASE_DELAY_MS = 1_000;
+/** A longer Retry-After is not waited out inside one request: the caller sees the 429. */
+const RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS = 10_000;
+
+/** The wait before asking a throttled read again, or undefined when it should not be asked again
+ * here: only the relay's `rpc_upstream_rate_limited` (the provider behind the relay said 429)
+ * clears within seconds. The relay's own hourly quota does not. A Retry-After header is honoured
+ * when it is short enough; otherwise the wait doubles from one second, with jitter. */
+export function relayUpstreamRateLimitDelayMs(
+  response: {
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body: Uint8Array | null;
+  },
+  retry: number
+): number | undefined {
+  let code: unknown;
+  try {
+    code = response.body
+      ? (JSON.parse(new TextDecoder().decode(response.body)) as { error?: unknown })
+          ?.error
+      : undefined;
+  } catch {
+    return undefined;
+  }
+  if (code !== "rpc_upstream_rate_limited") return undefined;
+  const retryAfter = response.headers["retry-after"];
+  if (retryAfter !== undefined && retryAfter.trim() !== "") {
+    const seconds = Number(retryAfter.trim());
+    if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+    const ms = seconds * 1000;
+    return ms <= RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS ? ms : undefined;
+  }
+  const base = RELAY_UPSTREAM_RATE_LIMIT_BASE_DELAY_MS * 2 ** retry;
+  return Math.min(
+    RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS,
+    base / 2 + Math.random() * (base / 2)
+  );
+}
+
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
  * expiring bearer capability; subsequent requests are ordinary JSON-RPC POSTs to that URL. The
  * upstream provider URL never reaches this process or the browser bundle. */
@@ -748,6 +789,7 @@ export function createMonadRelayRpcConnection(
     connection.getUrlFunc = async (relayRequest, signal) => {
       try {
         let attempts = 0;
+        let rateLimitRetries = 0;
         const maxAttempts = 3;
         let currentRequest = relayRequest;
 
@@ -809,6 +851,27 @@ export function createMonadRelayRpcConnection(
             response.statusCode === 503 ||
             response.statusCode === 504 ||
             hasTransientRpcRateLimit;
+
+          // The relay's upstream provider throttled a read. Unlike the relay's own hourly
+          // quota (`rpc_hourly_quota`), this clears within seconds. A read changes nothing, so
+          // it is asked again; a request carrying a transaction is never repeated here.
+          if (
+            response.statusCode === 429 &&
+            isReadOnlyRequest &&
+            rateLimitRetries < RELAY_UPSTREAM_RATE_LIMIT_RETRIES &&
+            !destroyed &&
+            !signal?.cancelled
+          ) {
+            const delayMs = relayUpstreamRateLimitDelayMs(
+              response,
+              rateLimitRetries
+            );
+            if (delayMs !== undefined) {
+              rateLimitRetries++;
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              if (!destroyed && !signal?.cancelled) continue;
+            }
+          }
 
           if (
             isTransientGateway &&

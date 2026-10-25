@@ -406,6 +406,7 @@
           :busy="sendingMessage"
           :options="stealthAssets"
           :quote="stealthQuote"
+          :load-available="loadStealthAvailable"
           @review="reviewStealthPayment"
           @send="sendStealthPayment"
           @cancel="stealthDialog = false"
@@ -490,6 +491,12 @@ import {
   sendReviewedStealthPayment,
   type CapturedStealthReview,
 } from '../stealth-payments/review-payment'
+import { stealthAvailableBalance } from '../stealth-payments/available'
+import {
+  notSentFailureKey,
+  sendFailureKey,
+  StealthPaymentNotSentError,
+} from '../stealth-payments/failure'
 import {
   sameStealthRequest,
   type StealthAssetOption,
@@ -1616,19 +1623,26 @@ export default defineComponent({
         if (!this.stealthDialog || sequence !== this.stealthReviewSequence)
           return
         this.stealthAssets = options
+        if (options.length === 0 && unavailable.length > 0)
+          console.error('No stealth payment asset is available', unavailable)
         this.stealthQuote =
           options.length > 0
             ? { status: 'idle' }
             : {
                 status: 'error',
-                message: String(
-                  unavailable[0]?.error || this.$t('sendStealthDialog.notSent'),
-                ),
+                message: this.$t('sendStealthDialog.notSent'),
               }
       } catch (error) {
+        console.error(error)
         if (sequence === this.stealthReviewSequence)
-          this.stealthQuote = { status: 'error', message: String(error) }
+          this.stealthQuote = {
+            status: 'error',
+            message: this.$t('sendStealthDialog.notSent'),
+          }
       }
+    },
+    loadStealthAvailable(option: StealthAssetOption) {
+      return stealthAvailableBalance(option)
     },
     async reviewStealthPayment(request: StealthDialogRequest) {
       const sequence = ++this.stealthReviewSequence
@@ -1636,12 +1650,16 @@ export default defineComponent({
       const conversationId = this.conversation?.id
       this.stealthReview = null
       this.stealthReviewedRequest = null
+      if (request.address !== recipient || this.stampUnavailable) {
+        // Both are app-authored and already localized.
+        this.stealthQuote = {
+          status: 'error',
+          message: this.stampUnavailable || this.$t('chat.sendContextChanged'),
+        }
+        return
+      }
       this.stealthQuote = { status: 'pending' }
       try {
-        if (request.address !== recipient || this.stampUnavailable)
-          throw new Error(
-            this.stampUnavailable || this.$t('chat.sendContextChanged'),
-          )
         let stampValue = 0n
         try {
           stampValue = activeChain.fromDisplayAmount(this.stampAmount || '0')
@@ -1682,8 +1700,14 @@ export default defineComponent({
           ),
         }
       } catch (error) {
+        // Reviewing only reads (quotes, balances, fees): nothing is signed or handed to anyone.
+        // The provider's own text stays in the console; the dialog says what it means.
+        console.error(error)
         if (sequence === this.stealthReviewSequence)
-          this.stealthQuote = { status: 'error', message: String(error) }
+          this.stealthQuote = {
+            status: 'error',
+            message: this.$t(notSentFailureKey(error)),
+          }
       }
     },
     /** The financial owner saves the original signed payment; the message owner then binds
@@ -1709,7 +1733,7 @@ export default defineComponent({
         ) {
           if (this.stealthQuote.status === 'error') {
             errorNotify(new Error(this.stealthQuote.message), {
-              fallbackKey: 'sendStealthDialog.notSent',
+              safeMessage: this.stealthQuote.message,
             })
           }
           return
@@ -1736,6 +1760,7 @@ export default defineComponent({
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       const conversationId = this.conversation?.id
+      let notSentMessage: string | undefined
       try {
         await sendReviewedStealthPayment(
           captured,
@@ -1759,7 +1784,10 @@ export default defineComponent({
           },
         )
       } catch (error) {
-        errorNotify(error, { fallbackKey: 'sendStealthDialog.messageEnded' })
+        const key = sendFailureKey(error)
+        errorNotify(error, { fallbackKey: key })
+        if (error instanceof StealthPaymentNotSentError)
+          notSentMessage = this.$t(key)
       } finally {
         this.stealthReview = null
         this.stealthReviewedRequest = null
@@ -1767,6 +1795,9 @@ export default defineComponent({
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
+      // Released before messaging adopted it: the dialog is still open and says why.
+      if (notSentMessage && this.stealthDialog)
+        this.stealthQuote = { status: 'error', message: notSentMessage }
       if (!this.bottom) this.$nextTick(this.buttonScrollBottom)
     },
     newSwapId(): Uint8Array {
@@ -2927,6 +2958,10 @@ export default defineComponent({
 .chat-container {
   display: flex;
   flex-direction: column;
+  // Quasar's `.column` wraps. With the phone keyboard up, a footer (an open action sheet and
+  // the composer) taller than what is left wrapped into a second column off to the right,
+  // outside the clipped chat: the sheet vanished and only the messages stayed in view.
+  flex-wrap: nowrap;
   flex: 1 1 0%;
   width: 100%;
   height: 100%;
@@ -2981,7 +3016,12 @@ export default defineComponent({
   bottom: auto !important;
   left: auto !important;
   right: auto !important;
-  flex: 0 0 auto !important;
+  // It may shrink (never below the composer): with an action sheet open and the phone keyboard
+  // up, the sheet scrolls inside what is left instead of pushing the footer out of the column.
+  flex: 0 1 auto !important;
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
   width: auto !important;
   min-height: 64px;
   margin-left: var(--frank-drawer-offset, 0px);
@@ -2991,7 +3031,11 @@ export default defineComponent({
 
 .chat-inline-sheet {
   max-height: min(72vh, 560px);
+  // In the footer's column: gives up height first, then scrolls (a scroll box's minimum is 0).
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   border-top: 1px solid rgba(128, 128, 128, 0.2);
 }
 

@@ -12,24 +12,28 @@
 //! - a key claiming a different name releases the one it held, but only with a claim issued
 //!   later than the one it replaces, so an old claim cannot be replayed to move a key back.
 //!
-//! Layout of the `directory_usernames` column family: `n` + name -> record (JSON), and
-//! `a` + 20-byte address -> name.
+//! Layout, in the registry's transaction store under `u/`: `n` + name -> record (JSON), and
+//! `a` + 20-byte address -> name. A claim reads both rows it depends on and writes the record
+//! and its reverse row in one transaction, so a name claimed on two replicas at once has one
+//! holder and the reverse index agrees with it.
 
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use bitcoinsuite_error::Result;
 use prost::Message;
-use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
 use crate::{
     monad_profile_verify::verify_signed_payload,
-    store::db::{Db, CF},
+    store::{
+        db::{mark_format, Db},
+        kv_store::KvTransaction,
+    },
 };
 
-/// Column family holding username records.
-pub const CF_DIRECTORY_USERNAMES: &str = "directory_usernames";
+/// Prefix of every username row in the registry store.
+pub(crate) const USERNAMES_PREFIX: &[u8] = b"u/";
 /// First line of every claim. Nothing else an account signs starts with it.
 pub const CLAIM_DOMAIN: &str = "frank-username-claim-v1";
 /// Largest claim accepted. A real one is under 250 bytes.
@@ -225,17 +229,31 @@ struct Stored {
 }
 
 fn name_key(name: &str) -> Vec<u8> {
-    [b"n", name.as_bytes()].concat()
+    [USERNAMES_PREFIX, b"n", name.as_bytes()].concat()
 }
 
 fn address_key(address: &[u8; 20]) -> Vec<u8> {
-    [b"a".as_slice(), address].concat()
+    [USERNAMES_PREFIX, b"a", address].concat()
 }
 
-/// RocksDB store of username records.
+fn get_in(tx: &mut dyn KvTransaction, username: &str) -> Result<Option<UsernameRecord>> {
+    match tx.get(&name_key(username))? {
+        Some(bytes) => Ok(Some(DbDirectoryUsernames::decode(username, &bytes)?)),
+        None => Ok(None),
+    }
+}
+
+fn of_address_in(tx: &mut dyn KvTransaction, address: &[u8; 20]) -> Result<Option<UsernameRecord>> {
+    let Some(name) = tx.get(&address_key(address))? else {
+        return Ok(None);
+    };
+    let name = String::from_utf8(name)?;
+    get_in(tx, &name)
+}
+
+/// Store of username records in the registry's transaction store.
 pub struct DbDirectoryUsernames<'a> {
     db: &'a Db,
-    cf: &'a CF,
 }
 
 impl std::fmt::Debug for DbDirectoryUsernames<'_> {
@@ -246,15 +264,7 @@ impl std::fmt::Debug for DbDirectoryUsernames<'_> {
 
 impl<'a> DbDirectoryUsernames<'a> {
     pub(crate) fn new(db: &'a Db) -> Self {
-        let cf = db.cf(CF_DIRECTORY_USERNAMES).unwrap();
-        Self { db, cf }
-    }
-
-    pub(crate) fn add_cfs(cfs: &mut Vec<ColumnFamilyDescriptor>) {
-        cfs.push(ColumnFamilyDescriptor::new(
-            CF_DIRECTORY_USERNAMES,
-            rocksdb::Options::default(),
-        ));
+        Self { db }
     }
 
     fn decode(username: &str, bytes: &[u8]) -> Result<UsernameRecord> {
@@ -281,42 +291,31 @@ impl<'a> DbDirectoryUsernames<'a> {
 
     /// The record of a canonical name, if someone holds it.
     pub fn get(&self, username: &str) -> Result<Option<UsernameRecord>> {
-        match self.db.rocksdb().get_cf(self.cf, name_key(username))? {
-            Some(bytes) => Ok(Some(Self::decode(username, &bytes)?)),
-            None => Ok(None),
-        }
+        self.db.transact(|tx| get_in(tx, username))
     }
 
     /// The record of the name `address` holds, if any.
     pub fn of_address(&self, address: &[u8; 20]) -> Result<Option<UsernameRecord>> {
-        let Some(name) = self.db.rocksdb().get_cf(self.cf, address_key(address))? else {
-            return Ok(None);
-        };
-        let name = String::from_utf8(name)?;
-        self.get(&name)
+        self.db.transact(|tx| of_address_in(tx, address))
     }
 
     /// Up to `limit` records whose name starts with the canonical `prefix`, in name order.
     pub fn search(&self, prefix: &str, limit: usize) -> Result<Vec<UsernameRecord>> {
         let start = name_key(prefix);
-        let iter = self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf, IteratorMode::From(&start, Direction::Forward));
-        let mut found = Vec::new();
-        for item in iter {
-            let (key, value) = item?;
-            if found.len() == limit.min(MAX_SEARCH_RESULTS) || !key.starts_with(&start) {
-                break;
+        let names_start = USERNAMES_PREFIX.len() + 1;
+        self.db.transact(|tx| {
+            let rows = tx.scan_prefix(&start, None, limit.min(MAX_SEARCH_RESULTS))?;
+            let mut found = Vec::with_capacity(rows.len());
+            for (key, value) in rows {
+                let name = std::str::from_utf8(&key[names_start..])?;
+                found.push(Self::decode(name, &value)?);
             }
-            let name = std::str::from_utf8(&key[1..])?;
-            found.push(Self::decode(name, &value)?);
-        }
-        Ok(found)
+            Ok(found)
+        })
     }
 
-    /// Store a verified claim under the rules in the module docs. The outer error is storage;
-    /// the inner one is a refusal.
+    /// Store a verified claim under the rules in the module docs, in one transaction. The
+    /// outer error is storage; the inner one is a refusal.
     ///
     /// `reserved_for_claimant`: the operator reserved this name for the claiming key. Whoever
     /// took it before it was reserved loses it to that key.
@@ -329,42 +328,42 @@ impl<'a> DbDirectoryUsernames<'a> {
         if is_operational_local_part(&record.username) {
             return Ok(Err(Reserved));
         }
-        let _guard = self.db.lock_usernames();
-        let mut batch = rocksdb::WriteBatch::default();
-        if let Some(holder) = self.get(&record.username)? {
-            if holder.subject == record.subject {
-                return Ok(Ok(ClaimOutcome::Unchanged));
-            }
-            if !reserved_for_claimant {
-                return Ok(Err(Taken));
-            }
-            batch.delete_cf(self.cf, address_key(&holder.address));
-        }
-        if let Some(previous) = self.of_address(&record.address)? {
-            if record.issued_ms <= previous.issued_ms {
-                return Ok(Err(Stale));
-            }
-            batch.delete_cf(self.cf, name_key(&previous.username));
-        }
-        let stored = Stored {
+        let stored = serde_json::to_vec(&Stored {
             subject: hex::encode(record.subject),
             address: hex::encode(record.address),
             issued_ms: record.issued_ms,
             accepted_ms,
             claim: hex::encode(&record.claim),
-        };
-        batch.put_cf(
-            self.cf,
-            name_key(&record.username),
-            serde_json::to_vec(&stored)?,
-        );
-        batch.put_cf(
-            self.cf,
-            address_key(&record.address),
-            record.username.as_bytes(),
-        );
-        self.db.write_batch(batch)?;
-        Ok(Ok(ClaimOutcome::Claimed))
+        })?;
+        self.db.transact(|tx| {
+            let mut displaced = None;
+            if let Some(holder) = get_in(tx, &record.username)? {
+                if holder.subject == record.subject {
+                    return Ok(Ok(ClaimOutcome::Unchanged));
+                }
+                if !reserved_for_claimant {
+                    return Ok(Err(Taken));
+                }
+                displaced = Some(holder.address);
+            }
+            let mut released = None;
+            if let Some(previous) = of_address_in(tx, &record.address)? {
+                if record.issued_ms <= previous.issued_ms {
+                    return Ok(Err(Stale));
+                }
+                released = Some(previous.username);
+            }
+            mark_format(tx)?;
+            if let Some(address) = displaced {
+                tx.clear(&address_key(&address))?;
+            }
+            if let Some(name) = released {
+                tx.clear(&name_key(&name))?;
+            }
+            tx.set(&name_key(&record.username), &stored)?;
+            tx.set(&address_key(&record.address), record.username.as_bytes())?;
+            Ok(Ok(ClaimOutcome::Claimed))
+        })
     }
 }
 
@@ -373,7 +372,6 @@ pub(crate) mod tests {
     use bitcoinsuite_core::{ecc::Ecc, Hashed, Sha256};
     use cashweb_payload::proto::signed_payload::SignatureScheme;
     use pretty_assertions::assert_eq;
-    use rocksdb::IteratorMode;
 
     use super::*;
 
@@ -629,7 +627,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    // Independent fixtures pin the durable CF/key allocation and JSON field order.
+    // Independent fixtures pin the durable key allocation (under `u/`) and JSON field order.
     fn raw_name(name: &str) -> Vec<u8> {
         let mut key = vec![b'n'];
         key.extend_from_slice(name.as_bytes());
@@ -650,23 +648,17 @@ pub(crate) mod tests {
         ).into_bytes()
     }
 
+    /// Every username row, with the store's `u/` prefix removed.
     fn raw_rows(db: &Db) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        db.rocksdb()
-            .iterator_cf(
-                db.rocksdb().cf_handle("directory_usernames").unwrap(),
-                IteratorMode::Start,
-            )
-            .map(|row| Ok(row.map(|(k, v)| (k.to_vec(), v.to_vec()))?))
-            .collect()
+        Ok(db
+            .raw_rows(b"u/")?
+            .into_iter()
+            .map(|(k, v)| (k[2..].to_vec(), v))
+            .collect())
     }
 
     fn raw_put(db: &Db, key: Vec<u8>, value: &[u8]) -> Result<()> {
-        db.rocksdb().put_cf(
-            db.rocksdb().cf_handle("directory_usernames").unwrap(),
-            key,
-            value,
-        )?;
-        Ok(())
+        db.raw_set(&[b"u/".as_slice(), &key].concat(), value)
     }
 
     fn expected_rows(mut rows: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {

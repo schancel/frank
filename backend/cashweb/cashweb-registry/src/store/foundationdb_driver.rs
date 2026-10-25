@@ -186,6 +186,42 @@ impl FdbTransaction<'_> {
         Ok(full)
     }
 
+    /// Rows of `[start, end)`, descending when `reverse`. FDB adds the conflict range for the
+    /// part of the range it actually read.
+    fn read_range(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+        let (start, end) = (self.key(start)?, self.key(end)?);
+        if limit == 0 || start >= end {
+            return Ok(Vec::new());
+        }
+        self.limits.charge(start.len() + end.len())?;
+        let mut range = RangeOption::from((start.as_slice(), end.as_slice()));
+        range.limit = Some(limit.min(i32::MAX as usize));
+        range.reverse = reverse;
+        let rows = block_on(
+            self.tx
+                .get_ranges_keyvalues(range, false)
+                .try_collect::<Vec<_>>(),
+        );
+        match rows {
+            Ok(rows) => Ok(rows
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.key()[self.subspace.len()..].to_vec(),
+                        row.value().to_vec(),
+                    )
+                })
+                .collect()),
+            Err(error) => Err(self.failed(error)),
+        }
+    }
+
     fn failed(&mut self, error: FdbError) -> KvError {
         if error.code() == TRANSACTION_TOO_OLD && self.limits.timed_out() {
             return KvError::TransactionTimedOut;
@@ -214,30 +250,16 @@ impl KvTransaction for FdbTransaction<'_> {
         end: &[u8],
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
-        let (start, end) = (self.key(start)?, self.key(end)?);
-        if limit == 0 || start >= end {
-            return Ok(Vec::new());
-        }
-        self.limits.charge(start.len() + end.len())?;
-        let mut range = RangeOption::from((start.as_slice(), end.as_slice()));
-        range.limit = Some(limit.min(i32::MAX as usize));
-        let rows = block_on(
-            self.tx
-                .get_ranges_keyvalues(range, false)
-                .try_collect::<Vec<_>>(),
-        );
-        match rows {
-            Ok(rows) => Ok(rows
-                .into_iter()
-                .map(|row| {
-                    (
-                        row.key()[self.subspace.len()..].to_vec(),
-                        row.value().to_vec(),
-                    )
-                })
-                .collect()),
-            Err(error) => Err(self.failed(error)),
-        }
+        self.read_range(start, end, limit, false)
+    }
+
+    fn get_range_reverse(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+        self.read_range(start, end, limit, true)
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), KvError> {

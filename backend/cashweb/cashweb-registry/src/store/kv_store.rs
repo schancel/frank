@@ -108,6 +108,16 @@ pub trait KvTransaction {
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError>;
 
+    /// Read up to `limit` rows in `[start, end)` in descending key order. The range actually
+    /// read (from `start`, or from the last row returned when `limit` was reached, to `end`)
+    /// becomes a read-conflict range, as for [`KvTransaction::get_range`].
+    fn get_range_reverse(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError>;
+
     /// Write `value` at `key`.
     fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), KvError>;
 
@@ -340,6 +350,20 @@ impl RocksDbKvStore {
         Ok(store)
     }
 
+    /// RocksDB's estimate of the live key and value bytes (not filesystem usage).
+    pub fn estimated_live_data_size_bytes(&self) -> Result<u64, KvError> {
+        self.db
+            .property_int_value("rocksdb.estimate-live-data-size")
+            .map_err(backend)?
+            .ok_or_else(|| KvError::Backend("no live data size estimate".into()))
+    }
+
+    /// The underlying database, for tests that copy or inspect it directly.
+    #[cfg(test)]
+    pub(crate) fn rocksdb(&self) -> &rocksdb::DB {
+        &self.db
+    }
+
     fn resolver(&self) -> MutexGuard<'_, Resolver> {
         // Every resolver update is completed before the guard is released. A commit records its
         // writes before the synced write, so a panic or error there leaves a safe superset.
@@ -401,6 +425,91 @@ enum CommitError {
 }
 
 impl RocksTransaction<'_> {
+    /// Rows of `[start, end)` in key order (descending when `reverse`), merging this attempt's
+    /// own writes over the snapshot, and recording the range actually read as a conflict range.
+    fn read_range(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+        self.limits.key(start.len())?;
+        self.limits.key(end.len())?;
+        if limit == 0 || start >= end {
+            return Ok(Vec::new());
+        }
+        self.limits.charge(start.len() + end.len())?;
+        let mut options = ReadOptions::default();
+        options.set_iterate_lower_bound(start.to_vec());
+        options.set_iterate_upper_bound(end.to_vec());
+        let mode = if reverse {
+            IteratorMode::End
+        } else {
+            IteratorMode::From(start, Direction::Forward)
+        };
+        let mut stored = self.snapshot.iterator_opt(mode, options).peekable();
+        let local = self
+            .writes
+            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)));
+        let mut local: std::iter::Peekable<Box<dyn Iterator<Item = (&Vec<u8>, &Write)>>> =
+            if reverse {
+                (Box::new(local.rev()) as Box<dyn Iterator<Item = _>>).peekable()
+            } else {
+                (Box::new(local) as Box<dyn Iterator<Item = _>>).peekable()
+            };
+        let mut rows = Vec::new();
+        let mut resolved_adds = Vec::new();
+        while rows.len() < limit {
+            let stored_key = match stored.peek() {
+                Some(Ok((key, _))) => Some(key.to_vec()),
+                Some(Err(error)) => return Err(backend(error)),
+                None => None,
+            };
+            let take_local = match (&stored_key, local.peek()) {
+                (None, None) => break,
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                (Some(stored_key), Some((local_key, _))) if reverse => *local_key >= stored_key,
+                (Some(stored_key), Some((local_key, _))) => *local_key <= stored_key,
+            };
+            if !take_local {
+                let (key, value) = stored.next().expect("peeked").map_err(backend)?;
+                rows.push((key.to_vec(), value.to_vec()));
+                continue;
+            }
+            let (key, write) = local.next().expect("peeked");
+            // A local write shadows the stored row with the same key.
+            let shadowed = if stored_key.as_ref() == Some(key) {
+                Some(stored.next().expect("peeked").map_err(backend)?.1.to_vec())
+            } else {
+                None
+            };
+            match write {
+                Write::Set(value) => rows.push((key.clone(), value.clone())),
+                Write::Clear => {}
+                Write::Add(delta) => {
+                    let value = add_le(shadowed.as_deref(), *delta).to_vec();
+                    resolved_adds.push((key.clone(), value.clone()));
+                    rows.push((key.clone(), value));
+                }
+            }
+        }
+        drop(local);
+        // Like FDB, reading a pending add resolves it against the snapshot (under the
+        // range's read conflict), so later reads in this attempt see the same value.
+        for (key, value) in resolved_adds {
+            self.writes.insert(key, Write::Set(value));
+        }
+        let read = match rows.last() {
+            Some((last, _)) if rows.len() == limit && reverse => (last.clone(), end.to_vec()),
+            Some((last, _)) if rows.len() == limit => (start.to_vec(), key_after(last)),
+            _ => (start.to_vec(), end.to_vec()),
+        };
+        self.range_reads.push(read);
+        Ok(rows)
+    }
+
     fn read_stored(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
         self.snapshot.get(key).map_err(backend)
     }
@@ -493,70 +602,16 @@ impl KvTransaction for RocksTransaction<'_> {
         end: &[u8],
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
-        self.limits.key(start.len())?;
-        self.limits.key(end.len())?;
-        if limit == 0 || start >= end {
-            return Ok(Vec::new());
-        }
-        self.limits.charge(start.len() + end.len())?;
-        let mut options = ReadOptions::default();
-        options.set_iterate_upper_bound(end.to_vec());
-        let mut stored = self
-            .snapshot
-            .iterator_opt(IteratorMode::From(start, Direction::Forward), options)
-            .peekable();
-        let mut local = self
-            .writes
-            .range::<[u8], _>((Bound::Included(start), Bound::Excluded(end)))
-            .peekable();
-        let mut rows = Vec::new();
-        let mut resolved_adds = Vec::new();
-        while rows.len() < limit {
-            let stored_key = match stored.peek() {
-                Some(Ok((key, _))) => Some(key.to_vec()),
-                Some(Err(error)) => return Err(backend(error)),
-                None => None,
-            };
-            let take_local = match (&stored_key, local.peek()) {
-                (None, None) => break,
-                (Some(_), None) => false,
-                (None, Some(_)) => true,
-                (Some(stored_key), Some((local_key, _))) => *local_key <= stored_key,
-            };
-            if !take_local {
-                let (key, value) = stored.next().expect("peeked").map_err(backend)?;
-                rows.push((key.to_vec(), value.to_vec()));
-                continue;
-            }
-            let (key, write) = local.next().expect("peeked");
-            // A local write shadows the stored row with the same key.
-            let shadowed = if stored_key.as_ref() == Some(key) {
-                Some(stored.next().expect("peeked").map_err(backend)?.1.to_vec())
-            } else {
-                None
-            };
-            match write {
-                Write::Set(value) => rows.push((key.clone(), value.clone())),
-                Write::Clear => {}
-                Write::Add(delta) => {
-                    let value = add_le(shadowed.as_deref(), *delta).to_vec();
-                    resolved_adds.push((key.clone(), value.clone()));
-                    rows.push((key.clone(), value));
-                }
-            }
-        }
-        drop(local);
-        // Like FDB, reading a pending add resolves it against the snapshot (under the
-        // range's read conflict), so later reads in this attempt see the same value.
-        for (key, value) in resolved_adds {
-            self.writes.insert(key, Write::Set(value));
-        }
-        let read_end = match rows.last() {
-            Some((last, _)) if rows.len() == limit => key_after(last),
-            _ => end.to_vec(),
-        };
-        self.range_reads.push((start.to_vec(), read_end));
-        Ok(rows)
+        self.read_range(start, end, limit, false)
+    }
+
+    fn get_range_reverse(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+        self.read_range(start, end, limit, true)
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
@@ -669,6 +724,58 @@ mod tests {
             .transact(|tx| tx.scan_prefix(b"k", Some(b"k2"), 1))
             .unwrap();
         assert_eq!(after, vec![(b"k4".to_vec(), b"replaced".to_vec())]);
+    }
+
+    #[test]
+    fn reverse_reads_merge_own_writes_and_conflict_over_what_they_read() {
+        let store = RocksDbKvStore::open_temporary().unwrap();
+        store
+            .transact(|tx| {
+                for key in [b"r1", b"r3", b"r5"] {
+                    tx.set(key, b"stored")?;
+                }
+                Ok::<_, KvError>(())
+            })
+            .unwrap();
+        let rows = store
+            .transact(|tx| {
+                tx.set(b"r4", b"local")?;
+                tx.clear(b"r5")?;
+                tx.atomic_add(b"r2", 3)?;
+                tx.get_range_reverse(b"r", b"s", 10)
+            })
+            .unwrap();
+        let keys: Vec<_> = rows.iter().map(|(k, _)| k.as_slice()).collect();
+        assert_eq!(keys, [b"r4".as_slice(), b"r3", b"r2", b"r1"]);
+        assert_eq!(rows[2].1, 3u64.to_le_bytes());
+        assert_eq!(
+            store.transact(|tx| tx.get_range_reverse(b"r", b"r3", 1)),
+            Ok(vec![(b"r2".to_vec(), 3u64.to_le_bytes().to_vec())])
+        );
+        // A limited reverse read conflicts only from its last row up to the end.
+        let attempts = std::cell::Cell::new(0);
+        store
+            .transact(|tx| {
+                attempts.set(attempts.get() + 1);
+                assert!(!tx.get_range_reverse(b"r", b"s", 1)?.is_empty());
+                if attempts.get() == 1 {
+                    store.transact(|other| other.set(b"r0", b"below the read"))?;
+                }
+                tx.set(b"z", b"summary")
+            })
+            .unwrap();
+        assert_eq!(attempts.get(), 1);
+        store
+            .transact(|tx| {
+                attempts.set(attempts.get() + 1);
+                tx.get_range_reverse(b"r", b"s", 1)?;
+                if attempts.get() == 2 {
+                    store.transact(|other| other.set(b"r9", b"inside the read"))?;
+                }
+                tx.set(b"z", b"summary")
+            })
+            .unwrap();
+        assert_eq!(attempts.get(), 3);
     }
 
     #[test]

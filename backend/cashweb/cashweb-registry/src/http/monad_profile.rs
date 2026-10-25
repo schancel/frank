@@ -43,7 +43,7 @@
 //! [`proto::ListMonadProfilesResponse`]/[`proto::ListMonadProfilesEntry`] -- the exact same shape
 //! ticket #75's `since`-listing route already defined -- since the entry shape (`address` +
 //! `signed_payload`) is identical here; only the query/filter differs, so no new proto message was
-//! needed. See `crate::store::monad_profiles`'s module docs for the `CF_MONAD_PROFILES_BY_NAME`
+//! needed. See `crate::store::monad_profiles`'s module docs for the the by-name index (`pn/`)
 //! index this reads, and `crate::http::server`'s module docs on `into_router()` for why this is a
 //! static path segment (so it can't collide with the dynamic `/metadata/monad/:addr` route).
 

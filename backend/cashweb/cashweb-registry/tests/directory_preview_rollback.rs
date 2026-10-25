@@ -9,24 +9,9 @@ use frank_cbor::{verify_preview_directory_evidence, TypedPayload};
 use serde_json::Value;
 use std::path::Path;
 
-// The registry database's tables, sorted (including RocksDB's default one). Written out here,
-// not read back from the opener under test.
-const REGISTRY_CFS: &[&str] = &[
-    "default",
-    "directory_usernames",
-    "message_payloads",
-    "metadata",
-    "monad_profiles",
-    "monad_profiles_by_name",
-    "monad_profiles_by_time",
-    "monad_topic_discovery",
-    "monad_topic_posts",
-    "monad_topic_posts_by_topic",
-    "monad_topic_votes",
-    "pkh_by_time",
-    "topic_burn_txs",
-    "topic_messages",
-];
+// The registry database's tables: its rows live in RocksDB's default table, under key
+// prefixes (see `store/db.rs`). Written out here, not read back from the opener under test.
+const REGISTRY_CFS: &[&str] = &["default"];
 
 fn names(path: &Path) -> Vec<String> {
     let mut names = rocksdb::DB::list_cf(&rocksdb::Options::default(), path).unwrap();

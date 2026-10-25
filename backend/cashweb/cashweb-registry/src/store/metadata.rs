@@ -1,25 +1,39 @@
 //! Contains `DbMetadata`, allowing access to keyserver metadata.
+//!
+//! `m/` + pkh holds the entry; `mt/` + [`TimePkh`] is its by-time index, replaced in the same
+//! transaction as the entry. The monotonic-timestamp rule is checked again inside that
+//! transaction, so two replicas writing one address cannot leave a stale index row.
 
 use std::fmt::Debug;
 
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use cashweb_payload::payload::SignedPayload;
-use rocksdb::ColumnFamilyDescriptor;
+use prost::Message;
 use thiserror::Error;
 
 use crate::{
     proto,
     store::{
-        db::{Db, DbError, CF, CF_METADATA, CF_PKH_BY_TIME},
+        db::{mark_format, prefix_end, Db, SCAN_BATCH},
+        kv_store::{key_after, KvTransaction},
         pubkeyhash::{PubKeyHash, TimePkh},
     },
 };
 
+pub(crate) const METADATA_PREFIX: &[u8] = b"m/";
+pub(crate) const PKH_BY_TIME_PREFIX: &[u8] = b"mt/";
+
+pub(crate) fn metadata_key(pkh: &PubKeyHash) -> Vec<u8> {
+    [METADATA_PREFIX, &pkh.to_storage_bytes()].concat()
+}
+
+pub(crate) fn by_time_key(time_pkh: &TimePkh) -> Vec<u8> {
+    [PKH_BY_TIME_PREFIX, &time_pkh.to_storage_bytes()].concat()
+}
+
 /// Allows access to registry metadata.
 pub struct DbMetadata<'a> {
     db: &'a Db,
-    cf_metadata: &'a CF,
-    cf_pkh_by_time: &'a CF,
 }
 
 /// Errors indicating some registry metadata error.
@@ -43,107 +57,142 @@ pub enum DbMetadataError {
 
 use self::DbMetadataError::*;
 
+/// Why [`DbMetadata::put`] did not replace the stored entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataRefusal {
+    /// The stored entry has the same payload hash; nothing changed.
+    SamePayload,
+    /// The stored entry's timestamp is not older than the new one.
+    NotNewer {
+        /// Stored timestamp.
+        previous: i64,
+        /// Offered timestamp.
+        next: i64,
+    },
+}
+
+fn get_in(
+    tx: &mut dyn KvTransaction,
+    pkh: &PubKeyHash,
+) -> Result<Option<SignedPayload<proto::AddressMetadata>>> {
+    let Some(serialized) = tx.get(&metadata_key(pkh))? else {
+        return Ok(None);
+    };
+    let entry = cashweb_payload::proto::SignedPayload::decode(serialized.as_slice())
+        .wrap_err_with(|| CannotDecodeMetadataEntry(hex::encode(&serialized)))?;
+    let entry = SignedPayload::parse_proto(&entry).wrap_err(InvalidSignedPayloadInDb)?;
+    Ok(Some(entry))
+}
+
+fn decode_time_pkh(key: &[u8]) -> Result<TimePkh> {
+    TimePkh::from_storage_bytes(key[PKH_BY_TIME_PREFIX.len()..].to_vec().into())
+}
+
 impl<'a> DbMetadata<'a> {
     /// Create a new [`DbMetadata`] instance.
     pub fn new(db: &'a Db) -> Self {
-        let cf_metadata = db.cf(CF_METADATA).unwrap();
-        let cf_pkh_by_time = db.cf(CF_PKH_BY_TIME).unwrap();
-        DbMetadata {
-            db,
-            cf_metadata,
-            cf_pkh_by_time,
-        }
+        DbMetadata { db }
     }
 
-    /// Store a [`cashweb_payload::proto::SignedPayload`] in the db.
+    /// Store a [`cashweb_payload::proto::SignedPayload`], replacing the entry for `pkh` and its
+    /// by-time index row in one transaction. The outer error is storage; the inner one says why
+    /// the stored entry was kept (checked against the entry read in this same transaction).
     pub fn put(
         &self,
         pkh: &PubKeyHash,
         metadata_entry: &SignedPayload<proto::AddressMetadata>,
-    ) -> Result<()> {
-        use prost::Message;
-        let mut batch = rocksdb::WriteBatch::default();
-        if let Some(existing_entry) = self.get(pkh)? {
-            let payload = existing_entry
-                .payload()
-                .as_ref()
-                .ok_or(InvalidSignedPayloadInDb)?;
-            // Note: This can sometimes result in a race condition, leaving a redundant and stale
-            // entry in "pkh_by_time". We handle this by ignoring stale entries elsewhere.
-            let time_pkh = TimePkh {
-                timestamp: payload.timestamp,
-                pkh: pkh.clone(),
-            };
-            batch.delete_cf(self.cf_pkh_by_time, time_pkh.to_storage_bytes());
-        }
+    ) -> Result<std::result::Result<(), MetadataRefusal>> {
         let new_payload = metadata_entry
             .payload()
             .as_ref()
             .ok_or(MissingMetadataPayload)?;
-
-        batch.put_cf(
-            self.cf_metadata,
-            pkh.to_storage_bytes(),
-            metadata_entry.to_proto().encode_to_vec(),
-        );
-        let time_pkh = TimePkh {
-            timestamp: new_payload.timestamp,
-            pkh: pkh.clone(),
-        };
-        batch.put_cf(self.cf_pkh_by_time, time_pkh.to_storage_bytes(), []);
-        self.db.write_batch(batch)?;
-        Ok(())
+        let encoded = metadata_entry.to_proto().encode_to_vec();
+        self.db.transact(|tx| {
+            if let Some(existing) = get_in(tx, pkh)? {
+                let payload = existing
+                    .payload()
+                    .as_ref()
+                    .ok_or(InvalidSignedPayloadInDb)?;
+                if existing.payload_hash() == metadata_entry.payload_hash() {
+                    return Ok(Err(MetadataRefusal::SamePayload));
+                }
+                if payload.timestamp >= new_payload.timestamp {
+                    return Ok(Err(MetadataRefusal::NotNewer {
+                        previous: payload.timestamp,
+                        next: new_payload.timestamp,
+                    }));
+                }
+                tx.clear(&by_time_key(&TimePkh {
+                    timestamp: payload.timestamp,
+                    pkh: pkh.clone(),
+                }))?;
+            }
+            mark_format(tx)?;
+            tx.set(&metadata_key(pkh), &encoded)?;
+            tx.set(
+                &by_time_key(&TimePkh {
+                    timestamp: new_payload.timestamp,
+                    pkh: pkh.clone(),
+                }),
+                &[],
+            )?;
+            Ok(Ok(()))
+        })
     }
 
     /// Retrieve a [`cashweb_payload::proto::SignedPayload`] from the db.
     pub fn get(&self, pkh: &PubKeyHash) -> Result<Option<SignedPayload<proto::AddressMetadata>>> {
-        use prost::Message;
-        let serialized_entry = match self.db.get(self.cf_metadata, pkh.to_storage_bytes())? {
-            Some(serialized_entry) => serialized_entry,
-            None => return Ok(None),
-        };
-        let entry = cashweb_payload::proto::SignedPayload::decode(serialized_entry.as_ref())
-            .wrap_err_with(|| CannotDecodeMetadataEntry(hex::encode(&serialized_entry)))?;
-        let entry = SignedPayload::parse_proto(&entry).wrap_err(InvalidSignedPayloadInDb)?;
-        Ok(Some(entry))
+        self.db.transact(|tx| get_in(tx, pkh))
     }
 
-    /// Iterate public key hashes by time ascendingly from a given `start_timestamp`.
-    /// Note: This could return stale entries (due to a race condition in `put`), those should be
-    /// ignored.
+    /// Iterate public key hashes by time ascendingly from a given `start_timestamp`, reading
+    /// [`SCAN_BATCH`] index rows per transaction.
     pub fn iter_by_time(&self, start_timestamp: i64) -> impl Iterator<Item = Result<TimePkh>> + 'a {
-        let start_timestamp = start_timestamp.to_be_bytes();
-        let iter = self.db.rocksdb().iterator_cf(
-            self.cf_pkh_by_time,
-            rocksdb::IteratorMode::From(&start_timestamp, rocksdb::Direction::Forward),
-        );
-        iter.map(|result| {
-            let (key, _) = result.wrap_err(DbError::RocksDb)?;
-            TimePkh::from_storage_bytes(Vec::from(key).into())
-        })
+        ByTime {
+            db: self.db,
+            next: Some([PKH_BY_TIME_PREFIX, &start_timestamp.to_be_bytes()].concat()),
+            buffered: std::collections::VecDeque::new(),
+        }
     }
 
     /// Return the last public key hash, by time.
     pub fn get_latest(&self) -> Result<Option<TimePkh>> {
-        let mut iter = self
-            .db
-            .rocksdb()
-            .iterator_cf(self.cf_pkh_by_time, rocksdb::IteratorMode::End);
-        let key = match iter.next() {
-            Some(result) => {
-                let (key, _) = result.wrap_err(DbError::RocksDb)?;
-                key
-            }
-            None => return Ok(None),
-        };
-        let time_pkh = TimePkh::from_storage_bytes(Vec::from(key).into())?;
-        Ok(Some(time_pkh))
+        let rows = self.db.transact(|tx| {
+            Ok(tx.get_range_reverse(PKH_BY_TIME_PREFIX, &prefix_end(PKH_BY_TIME_PREFIX), 1)?)
+        })?;
+        rows.first()
+            .map(|(key, _)| decode_time_pkh(key))
+            .transpose()
     }
+}
 
-    pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
-        let options = rocksdb::Options::default();
-        columns.push(ColumnFamilyDescriptor::new(CF_METADATA, options.clone()));
-        columns.push(ColumnFamilyDescriptor::new(CF_PKH_BY_TIME, options));
+/// [`DbMetadata::iter_by_time`]: one transaction per batch of index rows.
+struct ByTime<'a> {
+    db: &'a Db,
+    next: Option<Vec<u8>>,
+    buffered: std::collections::VecDeque<Vec<u8>>,
+}
+
+impl Iterator for ByTime<'_> {
+    type Item = Result<TimePkh>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffered.is_empty() {
+            let start = self.next.take()?;
+            let end = prefix_end(PKH_BY_TIME_PREFIX);
+            let rows = match self
+                .db
+                .transact(|tx| Ok(tx.get_range(&start, &end, SCAN_BATCH)?))
+            {
+                Ok(rows) => rows,
+                Err(error) => return Some(Err(error)),
+            };
+            if rows.len() == SCAN_BATCH {
+                self.next = rows.last().map(|(key, _)| key_after(key));
+            }
+            self.buffered = rows.into_iter().map(|(key, _)| key).collect();
+        }
+        self.buffered.pop_front().map(|key| decode_time_pkh(&key))
     }
 }
 
@@ -158,8 +207,8 @@ mod tests {
     use crate::{
         proto,
         store::{
-            db::{Db, CF_METADATA, CF_PKH_BY_TIME},
-            metadata::DbMetadataError,
+            db::Db,
+            metadata::{by_time_key, metadata_key, DbMetadataError},
             pubkeyhash::{PkhAlgorithm, PkhError, PubKeyHash, TimePkh},
         },
     };
@@ -213,7 +262,7 @@ mod tests {
             }],
         };
         let entry = SignedPayload::parse_proto(&entry_proto)?;
-        db.metadata().put(&pkh, &entry)?;
+        db.metadata().put(&pkh, &entry)?.unwrap();
         assert_eq!(db.metadata().get(&pkh)?, Some(entry));
         assert_eq!(
             db.metadata()
@@ -241,7 +290,7 @@ mod tests {
             .as_slice()
             .to_vec();
         let entry = SignedPayload::parse_proto(&entry_proto)?;
-        db.metadata().put(&pkh, &entry)?;
+        db.metadata().put(&pkh, &entry)?.unwrap();
         assert_eq!(db.metadata().get(&pkh)?, Some(entry));
         assert_eq!(
             db.metadata()
@@ -264,7 +313,7 @@ mod tests {
         assert_eq!(db.metadata().iter_by_time(1236).count(), 0);
 
         // Put data with invalid Protobuf encoding
-        db.put(db.cf(CF_METADATA)?, pkh.to_storage_bytes(), b"foobar")?;
+        db.raw_set(&metadata_key(&pkh), b"foobar")?;
         // Results in CannotDecodeMetadataEntry
         assert_eq!(
             db.metadata()
@@ -275,7 +324,7 @@ mod tests {
         );
 
         // Put data with invalid TimePkh encoding
-        db.put(db.cf(CF_PKH_BY_TIME)?, b"foobar", b"")?;
+        db.raw_set(b"mt/foobar", b"")?;
         assert_eq!(
             db.metadata()
                 .iter_by_time(0)
@@ -320,7 +369,7 @@ mod tests {
                 burn_txs: vec![],
             };
             let entry = SignedPayload::parse_proto(&entry_proto)?;
-            db.metadata().put(&pkh, &entry)?;
+            db.metadata().put(&pkh, &entry)?.unwrap();
             // even gets overridden by odd
             if i % 2 == 1 {
                 pkhs.push(pkh);
@@ -361,6 +410,61 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
 
+        Ok(())
+    }
+
+    /// The monotonic rule is decided in the replacing transaction itself, so a refused or
+    /// repeated entry leaves exactly the stored entry and its one index row.
+    #[test]
+    fn a_replacement_is_checked_against_the_entry_it_replaces() -> Result<()> {
+        use crate::store::metadata::MetadataRefusal;
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--metadata-replace")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let pkh = PubKeyHash::new(PkhAlgorithm::Sha256Ripemd160, [9; 20].into())?;
+        let entry = |timestamp: i64, ttl: i64| {
+            SignedPayload::parse_proto(&cashweb_payload::proto::SignedPayload {
+                pubkey: vec![2; 33],
+                sig: vec![4, 5, 6, 7, 8],
+                sig_scheme: SignatureScheme::Ecdsa.into(),
+                payload: proto::AddressMetadata {
+                    timestamp,
+                    ttl,
+                    entries: vec![],
+                }
+                .encode_to_vec(),
+                payload_hash: vec![],
+                burn_amount: 0,
+                burn_txs: vec![],
+            })
+        };
+        let first = entry(2000, 1)?;
+        db.metadata().put(&pkh, &first)?.unwrap();
+        let rows = || -> Result<_> { Ok((db.raw_rows(b"m/")?, db.raw_rows(b"mt/")?)) };
+        let stored = rows()?;
+        assert_eq!(
+            stored.1,
+            vec![(
+                by_time_key(&TimePkh {
+                    timestamp: 2000,
+                    pkh: pkh.clone()
+                }),
+                vec![]
+            )]
+        );
+        assert_eq!(
+            db.metadata().put(&pkh, &first)?,
+            Err(MetadataRefusal::SamePayload)
+        );
+        for timestamp in [2000, 1999] {
+            assert_eq!(
+                db.metadata().put(&pkh, &entry(timestamp, 2)?)?,
+                Err(MetadataRefusal::NotNewer {
+                    previous: 2000,
+                    next: timestamp
+                })
+            );
+        }
+        assert_eq!(rows()?, stored);
         Ok(())
     }
 

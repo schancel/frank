@@ -44,17 +44,16 @@ they are not application records and are never federated.
 
 ## 2. Durable-Data Classification
 
-| RocksDB column family                                                                           | Class                                   | Public peer replication            |
-| ----------------------------------------------------------------------------------------------- | --------------------------------------- | ---------------------------------- |
-| `metadata`, `pkh_by_time`                                                                       | public address directory (legacy Lotus) | allowed                            |
-| `monad_profiles`, `monad_profiles_by_time`, `monad_profiles_by_name`                            | relay-local presentation profile        | forbidden                          |
-| `topic_messages`, `message_payloads`, `topic_burn_txs`                                          | deprecated Lotus broadcasts             | forbidden                          |
-| `monad_topic_posts`, `monad_topic_posts_by_topic`, `monad_topic_discovery`, `monad_topic_votes` | public pubsub                           | allowed                            |
-| `monad_messages`, `monad_messages_by_time`                                                      | private mailbox                         | forbidden                          |
-| `monad_message_attempts`                                                                        | private mailbox/payment state           | forbidden                          |
-| future outbox, delivery-job, tombstone, and notification column families                        | private mailbox                         | forbidden                          |
-| future address-directory and relay-descriptor families                                          | public directory                        | allowed through an explicit facade |
-| future peer health, crawl frontier, schema version, and migration journal                       | node-local operational                  | forbidden                          |
+| Registry store key prefix or column family                                | Class                                   | Public peer replication            |
+| ------------------------------------------------------------------------- | --------------------------------------- | ---------------------------------- |
+| `m/`, `mt/`                                                               | public address directory (legacy Lotus) | allowed                            |
+| `p/`, `pt/`, `pn/`, `pc`                                                  | relay-local presentation profile        | forbidden                          |
+| `tm/`, `tp/`, `tb/`                                                       | deprecated Lotus broadcasts             | forbidden                          |
+| `monad_messages`, `monad_messages_by_time`                                | private mailbox                         | forbidden                          |
+| `monad_message_attempts`                                                  | private mailbox/payment state           | forbidden                          |
+| future outbox, delivery-job, tombstone, and notification column families  | private mailbox                         | forbidden                          |
+| future address-directory and relay-descriptor families                    | public directory                        | allowed through an explicit facade |
+| future peer health, crawl frontier, schema version, and migration journal | node-local operational                  | forbidden                          |
 
 The security boundary is enforced by typed store facades and explicit replication allowlists, not by giving
 federation code a generic `Db` handle. Separate database paths remain a later deployment option;

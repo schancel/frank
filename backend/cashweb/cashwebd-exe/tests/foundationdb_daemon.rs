@@ -180,6 +180,57 @@ fn sign(secret: &SecretKey, digest: &[u8; 32]) -> String {
     hex::encode(signature.serialize_compact())
 }
 
+/// A protobuf profile registration signed by a fresh key, and the `0x` address it is for.
+fn signed_profile(timestamp: i64, name: &str) -> (Vec<u8>, String) {
+    use bitcoinsuite_core::{ecc::Ecc, Hashed, Sha256};
+    use prost::Message;
+    let ecc = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default();
+    let seckey = ecc.seckey_from_array(PROFILE_KEY).unwrap();
+    let pubkey = ecc.derive_pubkey(&seckey);
+    let address = frank_cbor::address_from_compressed_pubkey(pubkey.as_slice()).unwrap();
+    let payload = cashweb_registry::proto::MonadProfile {
+        timestamp,
+        ttl: 0,
+        entries: vec![cashweb_registry::proto::AddressEntry {
+            kind: "display_name".into(),
+            headers: Default::default(),
+            body: name.as_bytes().to_vec(),
+        }],
+    }
+    .encode_to_vec();
+    let payload_hash = Sha256::digest(payload.clone().into());
+    let signed = cashweb_payload::proto::SignedPayload {
+        pubkey: pubkey.as_slice().to_vec(),
+        sig: ecc
+            .sign(&seckey, payload_hash.byte_array().clone())
+            .to_vec(),
+        sig_scheme: 1,
+        payload,
+        payload_hash: payload_hash.as_slice().to_vec(),
+        burn_amount: 0,
+        burn_txs: vec![],
+    };
+    (
+        signed.encode_to_vec(),
+        format!("0x{}", hex::encode(address)),
+    )
+}
+
+const PROFILE_KEY: [u8; 32] = [0x5a; 32];
+
+/// `(address, stored bytes)` of a profile listing or search.
+async fn list_profiles(http: &reqwest::Client, url: String) -> Vec<(String, Vec<u8>)> {
+    use prost::Message;
+    let response = http.get(url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    cashweb_registry::proto::ListMonadProfilesResponse::decode(response.bytes().await.unwrap())
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| (entry.address, entry.signed_payload))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs the FoundationDB + NATS lab: FRANK_FDB_CLUSTER_FILE and FRANK_LAB_NATS_URL"]
 async fn cluster_mode_daemons_share_groups_through_foundationdb() {
@@ -205,9 +256,14 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
             "{log}"
         );
         assert!(log.contains(&format!("subjects frank.{cluster}.")), "{log}");
-        // The preview names every still replica-local owner; groups are not among them.
         assert!(
-            log.contains("Replica-local owner: registry database"),
+            log.contains("FoundationDB registry store is readable"),
+            "{log}"
+        );
+        // The preview names every still replica-local owner; the registry database and groups
+        // are not among them.
+        assert!(
+            !log.contains("Replica-local owner: registry database"),
             "{log}"
         );
         assert!(!log.contains("Replica-local owner: groups"), "{log}");
@@ -312,6 +368,24 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     );
     drop(socket);
 
+    // The registry is shared too: a profile replaced on A is the only record B lists or finds.
+    let (old, address) = signed_profile(1_000, "OldName");
+    let (new, _) = signed_profile(2_000, "NewName");
+    for profile in [&old, &new] {
+        let response = http
+            .put(format!("{}/metadata/monad/{address}", a.origin))
+            .body(profile.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+    let listed = list_profiles(&http, format!("{}/metadata/monad?since=0", b.origin)).await;
+    assert_eq!(listed, vec![(address.clone(), new.clone())]);
+    let found = |prefix: &str| format!("{}/metadata/monad/search?prefix={prefix}", b.origin);
+    assert_eq!(list_profiles(&http, found("old")).await, vec![]);
+    assert_eq!(list_profiles(&http, found("new")).await.len(), 1);
+
     // A third replica on an empty disk reads the same message: the state is in FoundationDB.
     a.kill();
     let c = Relay::start(&temp.path().join("c"), &shared, &cluster, &subspace);
@@ -331,6 +405,13 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     assert_eq!(messages.len(), 1, "{page}");
     assert_eq!(messages[0]["server_seq"], 1);
     assert_eq!(messages[0]["nonce"], envelope.nonce);
+    // ... and the profile, with A gone.
+    let fetched = http
+        .get(format!("{}/metadata/monad/{address}", c.origin))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fetched.bytes().await.unwrap().to_vec(), new);
     b.kill();
     c.kill();
 }

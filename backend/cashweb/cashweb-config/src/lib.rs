@@ -644,7 +644,11 @@ impl RegistryConf {
     /// process), in the order they are reported. In cluster mode each replica would hold its own
     /// copy. The oracle is not listed: it is derived data and stays per replica by design.
     pub fn replica_local_owners(&self) -> Vec<ReplicaLocalOwner> {
-        let mut owners = vec![ReplicaLocalOwner::RegistryDb];
+        let mut owners = Vec::new();
+        let local_driver = matches!(self.storage_driver(), Ok(RelayStorageDriver::RocksDb));
+        if local_driver {
+            owners.push(ReplicaLocalOwner::RegistryDb);
+        }
         if self.monad_mailbox.enabled {
             owners.push(ReplicaLocalOwner::DirectMessages);
         }
@@ -657,7 +661,7 @@ impl RegistryConf {
         if self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled {
             owners.push(ReplicaLocalOwner::HourlyQuotas);
         }
-        if matches!(self.storage_driver(), Ok(RelayStorageDriver::RocksDb)) {
+        if local_driver {
             owners.push(ReplicaLocalOwner::Groups);
         }
         if !matches!(self.large_values, Some(LargeValuesConf::S3 { .. })) {
@@ -770,7 +774,8 @@ pub enum RelayStorageDriver {
 /// An enabled owner whose durable state is still kept by this replica alone.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReplicaLocalOwner {
-    /// Registry `Db`: profiles, usernames, metadata and their indexes.
+    /// Registry `Db` on the RocksDB driver: profiles, usernames, metadata, topics and their
+    /// indexes.
     RegistryDb,
     /// Direct-message owner (`registry.monad_mailbox`).
     DirectMessages,
@@ -3314,8 +3319,8 @@ continuity_file = "/var/lib/frank/continuity"
         use super::{ClusterConfigError, ReplicaLocalOwner};
         let mut conf = cluster_mode_conf();
         // The shipped local config enables the mailbox, directory, forum and the RPC proxies.
+        // The registry database and groups are on FoundationDB here, so neither is listed.
         let every_enabled = vec![
-            ReplicaLocalOwner::RegistryDb,
             ReplicaLocalOwner::DirectMessages,
             ReplicaLocalOwner::Directory,
             ReplicaLocalOwner::Forum,
@@ -3334,20 +3339,17 @@ continuity_file = "/var/lib/frank/continuity"
         }
         assert!(text.contains("preview_replica_local_owners"));
 
-        // Disabled owners are not listed; the registry database always is, so far.
+        // Disabled owners are not listed; with all of them off, nothing on FoundationDB is
+        // replica-local and cluster mode starts without the preview flag.
         conf.monad_mailbox.enabled = false;
         conf.directory = None;
         conf.forum = None;
         conf.evm_rpc.enabled = false;
         conf.bitcoin_proxy.enabled = false;
         conf.solana_proxy.enabled = false;
-        assert_eq!(
-            conf.validate_cluster(),
-            Err(ClusterConfigError::ReplicaLocalOwners(vec![
-                ReplicaLocalOwner::RegistryDb
-            ]))
-        );
-        // Groups on RocksDB are replica-local; on FoundationDB they are not.
+        assert_eq!(conf.replica_local_owners(), vec![]);
+        assert_eq!(conf.validate_cluster(), Ok(()));
+        // The registry database and groups on RocksDB are replica-local.
         let cluster = conf.cluster.as_mut().unwrap();
         cluster.driver = "rocksdb".into();
         cluster.fdb_cluster_file = None;

@@ -1,25 +1,41 @@
 //! Contains `DbTopics`, allowing access to topic data.
+//!
+//! `tp/` + payload hash holds the message with every burn known for it; each new burn adds one
+//! `tm/` row per topic prefix (`sha256(prefix) ++ timestamp_be ++ txid`, value: the message
+//! without its payload) and marks the burn in `tb/`. A put is one transaction, so a burn
+//! offered to two replicas at once is indexed once.
 
 use crate::{
     proto,
-    store::db::{Db, CF, CF_MESSAGES, CF_PAYLOADS, CF_TOPIC_BURNS},
+    store::{
+        db::{get_value, mark_format, put_value, Db, SCAN_BATCH},
+        kv_store::key_after,
+    },
 };
 use bitcoinsuite_core::{lotus_txid, Hashed, Sha256};
 use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
 use cashweb_payload::payload::SignedPayload;
 use prost::Message;
-use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, Options};
 use std::fmt::Debug;
 use thiserror::Error;
 
 type TopicPayload = SignedPayload<proto::BroadcastMessage>;
 
+const PAYLOADS_PREFIX: &[u8] = b"tp/";
+const MESSAGES_PREFIX: &[u8] = b"tm/";
+const BURNS_PREFIX: &[u8] = b"tb/";
+
+fn payload_key(payload_hash: &[u8]) -> Vec<u8> {
+    [PAYLOADS_PREFIX, payload_hash].concat()
+}
+
+fn burn_key(txid: &[u8]) -> Vec<u8> {
+    [BURNS_PREFIX, txid].concat()
+}
+
 /// Allows access to registry metadata.
 pub struct DbTopics<'a> {
     db: &'a Db,
-    cf_messages: &'a CF,
-    cf_payloads: &'a CF,
-    cf_burns: &'a CF,
 }
 
 /// Errors indicating some registry topic error.
@@ -57,149 +73,81 @@ pub enum DbTopicsError {
 }
 use self::DbTopicsError::*;
 
-/// Support partial merge operations on full message payloads
-pub fn partial_merge_message(
-    _key: &[u8],
-    _existing_value: Option<&[u8]>,
-    _operands: &rocksdb::MergeOperands,
-) -> Option<Vec<u8>> {
-    None // or find a way to merge `operands` somehow
-}
-
-fn full_merge_message(
-    _key: &[u8],
-    existing_value: Option<&[u8]>,
-    operands: &rocksdb::MergeOperands,
-) -> Option<Vec<u8>> {
-    let mut signed_payloads: Vec<TopicPayload> = operands
-        .into_iter()
-        .map(|signed_payload| {
-            cashweb_payload::proto::SignedPayload::decode(signed_payload)
-                .map_or_else(|_err| None, |proto| TopicPayload::parse_proto(&proto).ok())
-        })
-        .flatten()
-        .collect();
-    // We want to use pop;
-    signed_payloads.reverse();
-
-    if signed_payloads.len() != operands.len() {
-        return None;
-    }
-
-    if let Some(existing_payload) = existing_value {
-        let payload = cashweb_payload::proto::SignedPayload::decode(existing_payload)
-            .map_or_else(|_err| None, |proto| TopicPayload::parse_proto(&proto).ok());
-
-        if let Some(payload) = payload {
-            signed_payloads.push(payload);
-        }
-    }
-
-    let new_payload = signed_payloads
-        .into_iter()
-        .reduce(|mut merged, new_payload| {
-            merged.add_burn_txs(new_payload.txs());
-            merged
-        });
-
-    Some(new_payload.unwrap().to_proto().encode_to_vec())
+fn decode(bytes: &[u8]) -> Result<TopicPayload> {
+    let proto = cashweb_payload::proto::SignedPayload::decode(bytes)?;
+    TopicPayload::parse_proto(&proto).wrap_err(InvalidSignedPayloadInDb)
 }
 
 /// Allows access to registry topics.
 impl<'a> DbTopics<'a> {
     /// Create a new [`DbTopic`] instance.
     pub fn new(db: &'a Db) -> Self {
-        let cf_messages = db.cf(CF_MESSAGES).unwrap();
-        let cf_payloads = db.cf(CF_PAYLOADS).unwrap();
-        let cf_burns = db.cf(CF_TOPIC_BURNS).unwrap();
-
-        DbTopics {
-            db,
-            cf_messages,
-            cf_payloads,
-            cf_burns,
-        }
+        DbTopics { db }
     }
 
-    /// Put a serialized `Message` to database.
+    /// Put a `Message`, or another burn for a known one, in one transaction: the stored
+    /// message gains the new burns, and each burn not seen before is indexed under every topic
+    /// prefix.
     pub fn put_message(&self, timestamp: u64, message: &TopicPayload) -> Result<()> {
         let payload_hash = message.payload_hash().as_slice();
-        let possibly_existing_message = self.get_message(payload_hash);
-        let db = self.db.rocksdb();
-        let wrapper_buf = message.to_proto().encode_to_vec();
-        let mut batch = rocksdb::WriteBatch::default();
-        let mut new_burns = vec![];
-        let topic = if let Ok(mut found_message) = possibly_existing_message {
-            new_burns.extend(found_message.add_burn_txs(message.txs()));
-            // Update existing key.
-            batch.merge_cf(
-                self.cf_payloads,
-                payload_hash,
-                message.to_proto().encode_to_vec(),
-            );
-            found_message
+        let index_value = message.to_proto_without_payload().encode_to_vec();
+        self.db.transact(|tx| {
+            let (stored, new_burns) = match get_value(tx, &payload_key(payload_hash))? {
+                Some(bytes) => {
+                    let mut found = decode(&bytes)?;
+                    let new_burns = found.add_burn_txs(message.txs());
+                    (found, new_burns)
+                }
+                None => {
+                    message.payload().as_ref().ok_or(MissingPayload())?;
+                    (message.clone(), message.txs().iter().collect())
+                }
+            };
+            let topic = stored
                 .payload()
                 .as_ref()
                 .ok_or(MissingPayload())?
                 .topic
-                .clone()
-        } else {
-            new_burns.extend(message.txs());
-            batch.put_cf(self.cf_payloads, payload_hash, &wrapper_buf);
-            message
-                .payload()
-                .as_ref()
-                .ok_or(MissingPayload())?
-                .topic
-                .clone()
-        };
-
-        let split_topic = topic.split('.').collect::<Vec<_>>();
-        if split_topic.len() > 10 {
-            return Err(TopicTooLong(split_topic.len()))?;
-        }
-        if split_topic.iter().any(|segment| segment.is_empty()) {
-            return Err(TopicInvalidSegments())?;
-        }
-        for burn_tx in new_burns {
-            let tx_id = lotus_txid(burn_tx.tx().unhashed_tx()).to_vec_be();
-            // If we've already recorded an entry for this burn tx, don't record again.
-            if db.key_may_exist_cf(self.cf_burns, &tx_id) {
-                continue;
+                .clone();
+            let split_topic = topic.split('.').collect::<Vec<_>>();
+            if split_topic.len() > 10 {
+                return Err(TopicTooLong(split_topic.len()))?;
             }
-            batch.put_cf(self.cf_burns, &tx_id, vec![]);
-
-            let mut partial_message = message.clone();
-            partial_message.set_burn_txs(vec![burn_tx.clone()]);
-            let buf = message.to_proto_without_payload().encode_to_vec();
-            for idx in 0..split_topic.len() + 1 {
-                let base_topic_parts = split_topic[..idx].join(".");
-                let topic_digest = Sha256::digest(base_topic_parts.as_bytes().into()).to_vec_be();
-                let topical_key =
-                    [&topic_digest, timestamp.to_be_bytes().as_ref(), &tx_id].concat();
-
-                batch.put_cf(self.cf_messages, &topical_key, &buf);
+            if split_topic.iter().any(|segment| segment.is_empty()) {
+                return Err(TopicInvalidSegments())?;
             }
-        }
-        self.db.write_batch(batch)?;
-        Ok(())
+            mark_format(tx)?;
+            put_value(
+                tx,
+                &payload_key(payload_hash),
+                &stored.to_proto().encode_to_vec(),
+            )?;
+            for burn_tx in new_burns {
+                let tx_id = lotus_txid(burn_tx.tx().unhashed_tx()).to_vec_be();
+                // A burn already recorded is not indexed again.
+                if tx.get(&burn_key(&tx_id))?.is_some() {
+                    continue;
+                }
+                tx.set(&burn_key(&tx_id), &[])?;
+                for idx in 0..split_topic.len() + 1 {
+                    let base_topic_parts = split_topic[..idx].join(".");
+                    let topic_digest =
+                        Sha256::digest(base_topic_parts.as_bytes().into()).to_vec_be();
+                    let topical_key = [
+                        MESSAGES_PREFIX,
+                        &topic_digest,
+                        timestamp.to_be_bytes().as_ref(),
+                        &tx_id,
+                    ]
+                    .concat();
+                    tx.set(&topical_key, &index_value)?;
+                }
+            }
+            Ok(())
+        })
     }
 
-    /// Replace a serialized `Message` to database. No need to update
-    /// indexes as they are all pointing to this entry.
-    pub fn update_message(&self, message: &TopicPayload) -> Result<()> {
-        let buf = message.to_proto().encode_to_vec();
-
-        let payload_hash = message.payload_hash().as_slice();
-
-        // TODO: This should really use a merge operation that combines the burn_outputs.
-        self.db
-            .rocksdb()
-            .put_cf(self.cf_payloads, payload_hash, &buf)?;
-        Ok(())
-    }
-
-    /// Get serialized `messages` from database.
+    /// Get serialized `messages` from database, [`SCAN_BATCH`] index rows per transaction.
     pub fn get_messages_to(&self, topic: &str, from: i64, to: i64) -> Result<Vec<TopicPayload>> {
         let valid_topic = topic
             .chars()
@@ -209,27 +157,25 @@ impl<'a> DbTopics<'a> {
         }
 
         let topic_digest = Sha256::digest(topic.as_bytes().into()).to_vec_be();
-        let start_prefix = [&topic_digest, from.to_be_bytes().as_ref()].concat();
-        let end_prefix = [&topic_digest, to.to_be_bytes().as_ref()].concat();
-
-        let iter = self.db.rocksdb().iterator_cf(
-            self.cf_messages,
-            IteratorMode::From(&start_prefix, Direction::Forward),
-        );
-
-        iter.take_while(|item| match item {
-            Ok(item) => {
-                let (key, _) = item;
-                key.to_vec() <= end_prefix
+        let mut start = [MESSAGES_PREFIX, &topic_digest, from.to_be_bytes().as_ref()].concat();
+        // Rows with timestamps in `[from, to)`.
+        let end = [MESSAGES_PREFIX, &topic_digest, to.to_be_bytes().as_ref()].concat();
+        let mut messages = Vec::new();
+        loop {
+            let rows = self
+                .db
+                .transact(|tx| Ok(tx.get_range(&start, &end, SCAN_BATCH)?))?;
+            let full = rows.len() == SCAN_BATCH;
+            if let Some((last, _)) = rows.last() {
+                start = key_after(last);
             }
-            Err(_) => false,
-        })
-        .map(|item| {
-            let (_, wrapper) = item?;
-            let proto = cashweb_payload::proto::SignedPayload::decode(&*wrapper)?;
-            TopicPayload::parse_proto(&proto).wrap_err(InvalidSignedPayloadInDb)
-        })
-        .collect()
+            for (_, wrapper) in rows {
+                messages.push(decode(&wrapper)?);
+            }
+            if !full {
+                return Ok(messages);
+            }
+        }
     }
 
     /// Get a vector of messages starting at some unix timestamp.
@@ -241,41 +187,17 @@ impl<'a> DbTopics<'a> {
     pub fn get_message(&self, payload_digest: &[u8]) -> Result<TopicPayload> {
         let wrapper_bytes = self
             .db
-            .rocksdb()
-            .get_cf(self.cf_payloads, payload_digest)?
+            .transact(|tx| get_value(tx, &payload_key(payload_digest)))?
             .ok_or_else(|| MissingValue(hex::encode(payload_digest)))?;
-
-        let proto = cashweb_payload::proto::SignedPayload::decode(wrapper_bytes.as_slice())?;
-        TopicPayload::parse_proto(&proto).wrap_err(InvalidSignedPayloadInDb)
+        decode(&wrapper_bytes)
     }
 
-    /// Get a specific message by payload hash.
-    pub fn does_message_exist(&self, payload_digest: &[u8]) -> bool {
-        self.db
-            .rocksdb()
-            .key_may_exist_cf(self.cf_payloads, payload_digest)
-    }
-
-    pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
-        let mut payload_mesage_opts = Options::default();
-        payload_mesage_opts.set_merge_operator(
-            "topic-message.MergeMessages",
-            full_merge_message,
-            partial_merge_message,
-        );
-
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_MESSAGES,
-            rocksdb::Options::default(),
-        ));
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_PAYLOADS,
-            payload_mesage_opts,
-        ));
-        columns.push(ColumnFamilyDescriptor::new(
-            CF_TOPIC_BURNS,
-            rocksdb::Options::default(),
-        ));
+    /// Whether a message with this payload hash is stored.
+    pub fn does_message_exist(&self, payload_digest: &[u8]) -> Result<bool> {
+        Ok(self
+            .db
+            .transact(|tx| Ok(tx.get(&payload_key(payload_digest))?))?
+            .is_some())
     }
 }
 

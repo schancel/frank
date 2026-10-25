@@ -40,12 +40,11 @@ they are not application records and are never federated.
 
 ## Current durable-data classification
 
-| RocksDB column family | Class | Public peer replication |
+| Registry store key prefix (`store/db.rs`) or RocksDB column family | Class | Public peer replication |
 | --- | --- | --- |
-| `metadata`, `pkh_by_time` | public address directory (legacy Lotus) | allowed |
-| `monad_profiles`, `monad_profiles_by_time`, `monad_profiles_by_name` | relay-local presentation profile | forbidden |
-| `topic_messages`, `message_payloads`, `topic_burn_txs` | deprecated Lotus broadcasts | forbidden |
-| `monad_topic_posts`, `monad_topic_posts_by_topic`, `monad_topic_discovery`, `monad_topic_votes` | public pubsub | allowed |
+| `m/`, `mt/` | public address directory (legacy Lotus) | allowed |
+| `p/`, `pt/`, `pn/`, `pc` | relay-local presentation profile | forbidden |
+| `tm/`, `tp/`, `tb/` | deprecated Lotus broadcasts | forbidden |
 | `monad_messages`, `monad_messages_by_time` | private mailbox | forbidden |
 | `monad_message_attempts` | private mailbox/payment state | forbidden |
 | future outbox, delivery-job, tombstone, and notification column families | private mailbox | forbidden |

@@ -201,6 +201,16 @@ pub enum RegistryError {
 
 use self::RegistryError::*;
 
+/// The registration timestamp of stored protobuf profile bytes, when they decode.
+fn stored_protobuf_timestamp(raw: &[u8]) -> Option<i64> {
+    let signed = cashweb_payload::proto::SignedPayload::decode(raw).ok()?;
+    Some(
+        proto::MonadProfile::decode(signed.payload.as_slice())
+            .ok()?
+            .timestamp,
+    )
+}
+
 impl Registry {
     /// Construct new [`Registry`] with the default in-process event bus, keeping large values
     /// in a local directory beside the database (single-node relays and tests).
@@ -272,8 +282,9 @@ impl Registry {
         self.db.monad_profiles().count_records()
     }
 
-    /// Estimated live key/value bytes in the registry RocksDB (not filesystem or PVC usage).
-    pub fn registry_estimated_live_data_size_bytes(&self) -> Result<u64> {
+    /// Estimated live key/value bytes in the registry RocksDB (not filesystem or PVC usage);
+    /// `None` when the registry is on a shared store.
+    pub fn registry_estimated_live_data_size_bytes(&self) -> Result<Option<u64>> {
         self.db.estimated_live_data_size_bytes()
     }
 
@@ -444,8 +455,14 @@ impl Registry {
 
         let (txids, blockchain_action) = self.validate_burn_txs(signed_metadata.txs()).await?;
 
-        // Write new metadata into the database
-        self.db.metadata().put(&pkh, &signed_metadata)?;
+        // Write new metadata into the database. The checks above are repeated in the writing
+        // transaction against whatever another replica may have stored meanwhile.
+        match self.db.metadata().put(&pkh, &signed_metadata)? {
+            Ok(()) | Err(crate::store::metadata::MetadataRefusal::SamePayload) => {}
+            Err(crate::store::metadata::MetadataRefusal::NotNewer { previous, next }) => {
+                return Err(TimestampNotMonotonicallyIncreasing { previous, next }.into())
+            }
+        }
         Ok(PutMetadataResult {
             txids,
             blockchain_action,
@@ -626,7 +643,7 @@ impl Registry {
         let (txids, blockchain_action) = self.validate_burn_txs(signed_message.txs()).await?;
 
         let topics_db = self.db.topics();
-        if signed_message.payload().is_none() && !topics_db.does_message_exist(payload_hash) {
+        if signed_message.payload().is_none() && !topics_db.does_message_exist(payload_hash)? {
             return Err(PayloadMissing.into());
         }
 
@@ -658,99 +675,79 @@ impl Registry {
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
-        let _lock = self.db.lock_monad_profiles();
         let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
-
-        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
-            if crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
-                if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                    if info.timestamp_ms >= verified.profile.timestamp {
-                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                            previous: info.timestamp_ms,
-                            next: verified.profile.timestamp,
-                        }
-                        .into());
-                    }
+        let row = crate::store::monad_profiles::ProfileRow::protobuf(&signed_profile)?;
+        // The monotonic check runs in the replacing transaction, against the stored record it
+        // replaces, so concurrent writes on any replica cannot both pass it.
+        self.db.monad_profiles().replace(&address, |existing| {
+            let previous = existing.and_then(|existing| {
+                if crate::store::monad_profiles::is_cbor_frame(existing) {
+                    crate::store::monad_profiles::cbor_statement_info(existing)
+                        .map(|info| info.timestamp_ms)
+                } else {
+                    stored_protobuf_timestamp(existing)
                 }
-            } else if let Ok(existing_signed) =
-                cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
-            {
-                if let Ok(existing_profile) =
-                    proto::MonadProfile::decode(existing_signed.payload.as_slice())
-                {
-                    if existing_profile.timestamp >= verified.profile.timestamp {
-                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                            previous: existing_profile.timestamp,
-                            next: verified.profile.timestamp,
-                        }
-                        .into());
+            });
+            match previous {
+                Some(previous) if previous >= verified.profile.timestamp => {
+                    Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                        previous,
+                        next: verified.profile.timestamp,
                     }
+                    .into())
                 }
+                _ => Ok(row.clone()),
             }
-        }
-
-        self.db.monad_profiles().put(&address, &signed_profile)?;
-        Ok(())
+        })
     }
 
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605)
     /// for the relay network `network`. Enforces stage 10.6 signature verification and monotonic
-    /// revision/timestamp invariants.
+    /// revision/timestamp invariants, against the record read in the replacing transaction.
     pub fn put_monad_profile_cbor(
         &self,
         address: Address,
         network: &str,
         frame_bytes: &[u8],
     ) -> Result<()> {
-        let _lock = self.db.lock_monad_profiles();
-        let prior_statement =
-            if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                frank_cbor::PriorStatement::Frame(info.type_4_frame)
-            } else {
-                frank_cbor::PriorStatement::None
+        self.db.monad_profiles().replace(&address, |existing| {
+            let info = existing.and_then(crate::store::monad_profiles::cbor_statement_info);
+            let prior_statement = match &info {
+                Some(info) => frank_cbor::PriorStatement::Frame(info.type_4_frame.clone()),
+                None => frank_cbor::PriorStatement::None,
             };
-
-        let verified =
-            verify_cbor_account_registration(address, network, frame_bytes, prior_statement)?;
-
-        if let Some(existing_bytes) = self.db.monad_profiles().get_raw(&address)? {
-            if !crate::store::monad_profiles::is_cbor_frame(&existing_bytes) {
-                if let Ok(signed) =
-                    cashweb_payload::proto::SignedPayload::decode(existing_bytes.as_slice())
-                {
-                    if let Ok(existing_profile) =
-                        proto::MonadProfile::decode(signed.payload.as_slice())
-                    {
-                        if existing_profile.timestamp >= verified.timestamp_ms {
+            let verified =
+                verify_cbor_account_registration(address, network, frame_bytes, prior_statement)?;
+            if let Some(existing) = existing {
+                if !crate::store::monad_profiles::is_cbor_frame(existing) {
+                    if let Some(previous) = stored_protobuf_timestamp(existing) {
+                        if previous >= verified.timestamp_ms {
                             return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                                previous: existing_profile.timestamp,
+                                previous,
                                 next: verified.timestamp_ms,
                             }
                             .into());
                         }
                     }
-                }
-            } else if let Some(info) = self.db.monad_profiles().get_cbor_statement_info(&address)? {
-                if info.timestamp_ms > verified.timestamp_ms
-                    || (info.timestamp_ms == verified.timestamp_ms
-                        && info.revision >= verified.revision)
-                {
-                    return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
-                        previous: info.timestamp_ms,
-                        next: verified.timestamp_ms,
+                } else if let Some(info) = &info {
+                    if info.timestamp_ms > verified.timestamp_ms
+                        || (info.timestamp_ms == verified.timestamp_ms
+                            && info.revision >= verified.revision)
+                    {
+                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
+                            previous: info.timestamp_ms,
+                            next: verified.timestamp_ms,
+                        }
+                        .into());
                     }
-                    .into());
                 }
             }
-        }
-
-        self.db.monad_profiles().put_cbor(
-            &address,
-            frame_bytes,
-            verified.timestamp_ms,
-            verified.display_name.as_deref(),
-        )?;
-        Ok(())
+            Ok(crate::store::monad_profiles::ProfileRow {
+                raw: frame_bytes.to_vec(),
+                timestamp_ms: verified.timestamp_ms,
+                normalized_name: verified.display_name.clone(),
+            })
+        })
     }
 
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
@@ -946,7 +943,8 @@ mod tests {
             Registry, RegistryError,
         },
         store::{
-            db::{Db, CF_PKH_BY_TIME},
+            db::Db,
+            metadata::by_time_key,
             pubkeyhash::{PkhAlgorithm, PubKeyHash, TimePkh},
         },
     };
@@ -1489,14 +1487,11 @@ mod tests {
         assert_eq!(items, index_entries(&[4, 2]));
 
         // Add stale timestamp for some pkh
-        let cf_pkh_by_time = registry.db.cf(CF_PKH_BY_TIME)?;
-        registry.db.rocksdb().put_cf(
-            cf_pkh_by_time,
-            TimePkh {
+        registry.db.raw_set(
+            &by_time_key(&TimePkh {
                 timestamp: 1000,
                 pkh: PubKeyHash::from_address(&entries[3].0, Net::Regtest)?,
-            }
-            .to_storage_bytes(),
+            }),
             &[],
         )?;
 

@@ -6,8 +6,9 @@
 //! registry path ([`ROCKSDB_STORE`]). Both run behind the [`RelayKvStore`] transaction contract,
 //! so a subject's evidence, its continuity row and its indexes change in one transaction.
 //! Values over [`INLINE_LIMIT`](crate::store::large_values::INLINE_LIMIT) (evidence frames and
-//! forward bodies) are content-addressed objects in the [`ObjectStore`] composition passes in,
-//! named `directory/sha256/<hex>`, with their references committed in the same transaction.
+//! forward bodies) are objects in the [`ObjectStore`] composition passes in, one per upload,
+//! named `directory/sha256/<hex>/<upload>`, with their references committed in the same
+//! transaction.
 //!
 //! Keys (inside the store; FoundationDB adds the subspace prefix):
 //! - `format`: [`FORMAT`]. A store holding anything else stops with the reset path.
@@ -104,6 +105,7 @@ impl Stored {
                 &[Self::LARGE][..],
                 &reference.digest,
                 &reference.len.to_be_bytes(),
+                &reference.upload,
             ]
             .concat(),
         }
@@ -112,9 +114,10 @@ impl Stored {
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         match bytes.split_first()? {
             (&Self::INLINE, rest) => Some(Self::Inline(rest.to_vec())),
-            (&Self::LARGE, rest) if rest.len() == 40 => Some(Self::Large(LargeValueRef {
+            (&Self::LARGE, rest) if rest.len() == 56 => Some(Self::Large(LargeValueRef {
                 digest: rest[..32].try_into().ok()?,
-                len: u64::from_be_bytes(rest[32..].try_into().ok()?),
+                len: u64::from_be_bytes(rest[32..40].try_into().ok()?),
+                upload: rest[40..].try_into().ok()?,
             })),
             _ => None,
         }
@@ -318,7 +321,11 @@ mod tests {
     fn stored_values_round_trip_and_reject_unknown_tags() {
         let inline = Stored::Inline(b"exact".to_vec());
         assert_eq!(Stored::decode(&inline.encode()), Some(inline));
-        let large = Stored::Large(LargeValueRef::of(&[7; 70_000]));
+        let large = Stored::Large(LargeValueRef {
+            digest: [3; 32],
+            len: 70_000,
+            upload: [9; 16],
+        });
         assert_eq!(Stored::decode(&large.encode()), Some(large.clone()));
         assert_eq!(large.len(), 70_000);
         assert_eq!(Stored::decode(&[2, 1, 2]), None);

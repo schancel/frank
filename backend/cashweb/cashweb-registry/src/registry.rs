@@ -233,9 +233,13 @@ impl Registry {
         )
     }
 
-    /// Where a single-node relay keeps large values: beside `registry_db`.
+    /// Where a single-node relay keeps large values: beside `registry_db`, at its full name plus
+    /// `.large-values`. The suffix is appended, never substituted for an extension, so two
+    /// registries whose names differ only after their last dot keep separate objects.
     pub fn local_large_values_path(registry_db: &std::path::Path) -> std::path::PathBuf {
-        registry_db.with_extension("large-values")
+        let mut name = registry_db.as_os_str().to_owned();
+        name.push(".large-values");
+        name.into()
     }
 
     /// Construct new [`Registry`] with a custom notification event bus and the backends daemon
@@ -2109,5 +2113,25 @@ mod tests {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod local_large_values_path_tests {
+    use super::Registry;
+    use std::path::Path;
+
+    #[test]
+    fn the_suffix_is_appended_so_names_differing_after_a_dot_stay_apart() {
+        assert_eq!(
+            Registry::local_large_values_path(Path::new("/r/registry.rocksdb")),
+            Path::new("/r/registry.rocksdb.large-values")
+        );
+        // Temporary directories end in a random dotted suffix; substituting it would make
+        // every such registry share one object namespace.
+        assert_ne!(
+            Registry::local_large_values_path(Path::new("/t/cap.Ab12")),
+            Registry::local_large_values_path(Path::new("/t/cap.Cd34"))
+        );
     }
 }

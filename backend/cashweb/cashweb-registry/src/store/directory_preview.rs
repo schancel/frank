@@ -52,7 +52,7 @@ struct Marker {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Metadata {
+pub(crate) struct Metadata {
     version: u32,
     identity: [u8; 32],
     anchor: [u8; 32],
@@ -72,7 +72,7 @@ struct Metadata {
 }
 
 #[derive(Debug)]
-struct State {
+pub(crate) struct State {
     history: History,
     // A single bounded fork proof: zero or more private staged links followed by its competitor.
     // These records never become accepted history or fresh output.
@@ -589,7 +589,8 @@ impl<'a> Directory<'a> {
                         Stored::Large(staged.reference),
                         Some(staged),
                     )),
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!("could not upload directory evidence: {error}");
                         abandon(&writes);
                         return Err(Round::Fail(AdmissionError::Unavailable));
                     }

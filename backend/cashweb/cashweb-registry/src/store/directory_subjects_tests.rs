@@ -480,15 +480,33 @@ fn the_persisted_layout_is_pinned_and_forward_bodies_live_inline_or_in_objects()
     let other = [8; 32];
     rows.put_forward(&other, &forward_row(), Some(&large))?;
     let stored = raw(&rows, &[&b"f/b/"[..], &other].concat());
-    let reference = crate::store::large_values::LargeValueRef::of(&large);
+    let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&large).into();
+    // Tag 1, the SHA-256, the big-endian length, then the 16-byte upload id of this upload.
+    assert_eq!(stored[0].1.len(), 1 + 32 + 8 + 16);
     assert_eq!(
-        stored[0].1,
-        [
-            &[1u8][..],
-            &reference.digest,
-            &(large.len() as u64).to_be_bytes()
-        ]
-        .concat()
+        stored[0].1[..41],
+        [&[1u8][..], &digest, &(large.len() as u64).to_be_bytes()].concat()[..]
+    );
+    let upload: [u8; 16] = stored[0].1[41..].try_into().unwrap();
+    let object = rows
+        .store
+        .large()
+        .object_key(&crate::store::large_values::LargeValueRef {
+            digest,
+            len: large.len() as u64,
+            upload,
+        });
+    assert_eq!(
+        object,
+        format!(
+            "directory/sha256/{}/{}",
+            hex::encode(digest),
+            hex::encode(upload)
+        )
+    );
+    assert_eq!(
+        rows.store.large().objects().get(&object).unwrap(),
+        Some(large.clone())
     );
     assert_eq!(rows.forward_body(&other)?, Some(large));
     // A final answer drops the body and its reference, so the object becomes collectable.

@@ -442,6 +442,25 @@ export class EvmCoinList {
     return coin
   }
 
+  /** The coins selection would consider once the chain is at `head`, read only: unspent, of an
+   * account no mutation holds, of a listed origin, spendable by then and accepted by `canSelect`. */
+  selectableAt(params: {
+    head: number
+    sourceOrder: readonly EvmCoinListOrigin[]
+    canSelect?: (coin: EvmListCoin) => boolean
+  }): EvmListCoin[] {
+    const origins = new Set(params.sourceOrder)
+    return this.all().filter(
+      coin =>
+        coin.state === 'unspent' &&
+        this.accountSelectable(coin.account) &&
+        origins.has(coin.origin) &&
+        (coin.spendableFromBlock === undefined ||
+          coin.spendableFromBlock <= params.head) &&
+        (params.canSelect?.(coin) ?? coin.after === undefined),
+    )
+  }
+
   /** Selection and ownership change form one synchronous section; no provider work occurs. */
   reserveTransactionSetSources(params: {
     ownedCandidates?: readonly EvmListCoin[]
@@ -471,13 +490,12 @@ export class EvmCoinList {
       return !existing || (existing.state === 'unspent' && (!existing.holder || existing.holder === params.holder))
     })
     const privateAccounts = new Set(privateCandidates.map(coin => coin.account))
-    const free = [...privateCandidates, ...this.all().filter(
-      coin =>
-        !privateAccounts.has(coin.account) && coin.state === 'unspent' &&
-        this.accountSelectable(coin.account) && rank.has(coin.origin) &&
-        (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= params.head) &&
-        (params.canSelect?.(coin) ?? coin.after === undefined),
-    )]
+    const free = [
+      ...privateCandidates,
+      ...this.selectableAt(params).filter(
+        coin => !privateAccounts.has(coin.account),
+      ),
+    ]
     free.sort(
       (a, b) =>
         Number(privateAccounts.has(b.account)) - Number(privateAccounts.has(a.account)) ||

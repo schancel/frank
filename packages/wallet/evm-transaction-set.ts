@@ -613,6 +613,19 @@ export class EvmTransactionSetPreparer {
     }
     context(0)
     const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
+    const eligible = (coin: EvmListCoin) =>
+      (admittedInput?.(coin.account, coin.nonce) ?? true) &&
+      journal.canSelect(coin.account, coin.nonce) &&
+      (this.options.canSelectCoin?.(coin) ?? true) &&
+      this.dependencyReady(coin, policy)
+    const capacityWei = (fanIn: boolean, continuation?: unknown) => (coin: EvmListCoin, fee: bigint) => {
+      const capacity = coin.valueWei - fee, rule = policy.spendRule
+      if (continuation && capacity < policy.dustWei) return 0n
+      if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
+      // Fan-in and change-only continuation move the complete source; partial capacity is insufficient.
+      if (fanIn || continuation) return 0n
+      return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
+    }
     const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) => coins.reserveTransactionSetSources({
       holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
       // Independent selection funds recipients only. Actual private change determines the
@@ -625,22 +638,19 @@ export class EvmTransactionSetPreparer {
       // final recipient transaction; actual change members are checked after planning.
       maxCoins: Math.min(remainingMemberBudget - (fanIn ? 1 : 0),
         continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts ?? remainingMemberBudget)),
-      canSelect: coin => (admittedInput?.(coin.account, coin.nonce) ?? true) && journal.canSelect(coin.account, coin.nonce) && (this.options.canSelectCoin?.(coin) ?? true) && this.dependencyReady(coin, policy),
-      capacityWei: (coin, fee) => {
-        const capacity = coin.valueWei - fee, rule = policy.spendRule
-        if (continuation && capacity < policy.dustWei) return 0n
-        if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
-        // Fan-in and change-only continuation move the complete source; partial capacity is insufficient.
-        if (fanIn || continuation) return 0n
-        return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
-      },
+      canSelect: eligible,
+      capacityWei: capacityWei(fanIn, continuation),
     })
     const beforeSelection = coins.all()
     let parts = select(false), fanIn = false
     if (!parts && legacy) { parts = select(true); fanIn = true }
     if (!parts) {
       this.options.assertFundingObserved?.()
-      throw new EvmTransactionSetInsufficientFundsError()
+      throw new EvmTransactionSetInsufficientFundsError(
+        this.spendableLater(policy, eligible, request.amountWei, coin =>
+          capacityWei(false)(coin, context(0).gas * policy.gasPriceWei),
+        ),
+      )
     }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
@@ -805,6 +815,38 @@ export class EvmTransactionSetPreparer {
           policy.spendRule.waitBlocks < 0))
     )
       throw new Error('Invalid reviewed EVM transaction-set policy')
+  }
+
+  /** The block from which every coin selection passed over only for the chain's spacing rule
+   * may be spent, when what selection could then draw on covers `amountWei`; otherwise
+   * undefined (nothing is waiting, or waiting would not be enough). */
+  private spendableLater(
+    policy: EvmTransactionSetPolicy,
+    eligible: (coin: EvmListCoin) => boolean,
+    amountWei: bigint,
+    capacity: (coin: EvmListCoin) => bigint,
+  ): number | undefined {
+    const { coins } = this.options
+    const query = { sourceOrder: policy.sourceOrder, canSelect: eligible }
+    let block: number | undefined
+    for (const coin of coins.selectableAt({
+      ...query,
+      head: Number.MAX_SAFE_INTEGER,
+    }))
+      if (
+        coin.spendableFromBlock !== undefined &&
+        coin.spendableFromBlock > policy.head
+      )
+        block = Math.max(block ?? 0, coin.spendableFromBlock)
+    if (block === undefined) return undefined
+    const then = coins
+      .selectableAt({ ...query, head: block })
+      .reduce((sum, coin) => {
+        // A coin worth less than its fee adds nothing; it never takes from the others.
+        const part = capacity(coin)
+        return part > 0n ? sum + part : sum
+      }, 0n)
+    return then >= amountWei ? block : undefined
   }
 
   private dependencyReady(
@@ -1146,5 +1188,32 @@ export class EvmTransactionSetPreparer {
         (_, index) => row.members[index]!.transactionSet!.role !== 'payment' && (stageId === null || row.members[index]!.transactionSet!.stageId === stageId),
       ),
     }
+  }
+}
+
+/**
+ * Runs a construction. When selection had to pass over coins the chain lets be spent only from a
+ * later block (on Monad, money that arrived a few blocks ago), waits for that block once,
+ * refreshes the wallet's observations and runs the construction again. Nothing is reserved while
+ * it waits, so other sends go on meanwhile; a second refusal is the answer.
+ */
+export async function constructWhenSpendable<T>(
+  construct: () => Promise<T>,
+  chain: {
+    untilBlock(block: number): Promise<unknown>
+    refresh(): Promise<void>
+  },
+): Promise<T> {
+  try {
+    return await construct()
+  } catch (error) {
+    if (
+      !(error instanceof EvmTransactionSetInsufficientFundsError) ||
+      error.spendableFromBlock === undefined
+    )
+      throw error
+    await chain.untilBlock(error.spendableFromBlock)
+    await chain.refresh()
+    return construct()
   }
 }

@@ -7,6 +7,7 @@ import type {
   UnpaidEnvelope,
 } from '../storage/outgoing-message-store'
 import { EvmTransactionSetInsufficientFundsError } from '../evm-transaction-set-types'
+import { constructWhenSpendable } from '../evm-transaction-set'
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
  * Canonical (#778) direct messages for a typed Monad wallet: type20 -> type12 -> type11/schema2/suite1
@@ -270,6 +271,8 @@ export interface CanonicalMessagingOwner {
     lifecycle: import('../evm-transaction-set-lifecycle').EvmTransactionSetLifecycle
     provider: import('ethers').Provider
     refresh: () => Promise<void>
+    /** Resolves once the chain is at `block` or past it. */
+    untilBlock: (block: number) => Promise<unknown>
     resolvePaymentOperation?: (id: string, amount: bigint) => Promise<string>
     sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
@@ -993,6 +996,9 @@ async function finishSharedConstruction(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
   mode: 'construct' | 'restore' = 'construct',
+  /** The user's own send is waiting on this: it may wait the few blocks a fresh deposit needs.
+   * The resend pass never waits; it retries on its next turn. */
+  waitForSpendable = false,
 ): Promise<StoredMessage> {
   if (!sharedConstructionPending(row)) return row
   let intent = row.construction!
@@ -1077,9 +1083,18 @@ async function finishSharedConstruction(
       childIndex,
     }).address),
   }
-  const prepared = row.transactionSetStageId
-    ? await shared.preparer.appendTransactionSet({ ...request, stageId: row.transactionSetStageId })
-    : await shared.preparer.constructTransactionSet(request)
+  // Money that reached the wallet a few blocks ago may be spendable only from a later block
+  // (Monad's spacing rule): the send waits for that block rather than report no funds.
+  const construct = () =>
+    row.transactionSetStageId
+      ? shared.preparer.appendTransactionSet({
+          ...request,
+          stageId: row.transactionSetStageId,
+        })
+      : shared.preparer.constructTransactionSet(request)
+  const prepared = waitForSpendable
+    ? await constructWhenSpendable(construct, shared)
+    : await construct()
   const frozenRequest = freezePaidMessage(
     intent.network, sealed, fromHex(row.digest),
     prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,
@@ -2248,7 +2263,9 @@ async function send(
     try {
       await owner.lifetime(() => owner.messages.put(row))
       recorded = true
-      row = await owner.lifetime(() => finishSharedConstruction(owner, row))
+      row = await owner.lifetime(() =>
+        finishSharedConstruction(owner, row, 'construct', true),
+      )
     } catch (error) {
       // The journal or message write may have reached durable storage. Keep the stable ID
       // and every reservation; reopen will finish this same operation.

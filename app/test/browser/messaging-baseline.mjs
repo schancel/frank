@@ -1,6 +1,7 @@
 /** Offline real-App interaction fixture. See messaging-baseline/README.md for boundaries. */
 import assert from 'node:assert/strict'
 import ts from 'typescript'
+import { runHistory } from './messaging-baseline/history.mjs'
 import { OwnedProcesses } from './messaging-baseline/processes.mjs'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -29,6 +30,11 @@ const option = (name, fallback) =>
   args.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ??
   fallback
 const ref = option('source-ref', 'HEAD')
+const scenario = option('scenario', 'queue-route')
+assert.ok(
+  ['queue-route', 'history-desktop', 'history-narrow'].includes(scenario),
+  'Unknown scenario',
+)
 const out = resolve(
   option('out', join(tmpdir(), `messaging-baseline-evidence-${randomUUID()}`)),
 )
@@ -53,6 +59,7 @@ const processes = new OwnedProcesses()
 let browser, socket, server
 const report = {
   sourceSha: sha,
+  scenario,
   fixtureHash: '',
   mode: 'SPA with synthetic session/wallet service boundaries',
   browser: '',
@@ -166,6 +173,7 @@ try {
   const hash = createHash('sha256')
   hash.update(await readFile(fileURLToPath(import.meta.url)))
   hash.update(await readFile(join(fixture, 'processes.mjs')))
+  hash.update(await readFile(join(fixture, 'history.mjs')))
   for (const name of names) hash.update(await readFile(join(fixture, name)))
   report.fixtureHash = hash.digest('hex')
   await cp(fixture, join(tree, 'app/test/browser/messaging-baseline'), {
@@ -367,7 +375,7 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
   for (const domain of ['Runtime', 'Page', 'Network', 'Fetch'])
     await call(domain + '.enable')
   await call('Emulation.setDeviceMetricsOverride', {
-    width: 1280,
+    width: scenario === 'history-narrow' ? 390 : 1280,
     height: 860,
     deviceScaleFactor: 1,
     mobile: false,
@@ -414,52 +422,53 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
   await evaluate(
     'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',
   )
-  const text = 'Fixture queued message'
-  await evaluate(
-    `(()=>{const el=document.querySelector('.chat-footer textarea, .chat-footer [contenteditable=true]');el.focus();if(el.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,${JSON.stringify(
-      text,
-    )});el.dispatchEvent(new Event('input',{bubbles:true}))}else{el.textContent=${JSON.stringify(
-      text,
-    )};el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(
-      text,
-    )}}))}const obs=new MutationObserver(()=>{if(document.querySelector('.chat-message-list')?.textContent.includes(${JSON.stringify(
-      text,
-    )})){window.__baselineMetrics.queuedDom=performance.now();requestAnimationFrame(()=>window.__baselineMetrics.queuedFrame=performance.now());obs.disconnect()}});obs.observe(document.querySelector('.chat-message-list'),{childList:true,subtree:true,characterData:true})})()`,
-  )
-  await call('Input.dispatchKeyEvent', {
-    type: 'keyDown',
-    key: 'Enter',
-    code: 'Enter',
-    windowsVirtualKeyCode: 13,
-  })
-  await call('Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    key: 'Enter',
-    code: 'Enter',
-    windowsVirtualKeyCode: 13,
-  })
-  await until(
-    "window.__baselineMetrics.queuedFrame && window.__messagingBaseline.state.sends.some(s=>s.text === 'Fixture queued message')",
-  )
-  assert.equal(
+  if (scenario === 'queue-route') {
+    const text = 'Fixture queued message'
     await evaluate(
-      "window.__messagingBaseline.messageState('Fixture queued message').status",
-    ),
-    'pending',
-  )
-  const sendSlot = await evaluate(
-    "window.__messagingBaseline.state.sends.findIndex(s=>s.text === 'Fixture queued message')",
-  )
-  await new Promise(r => setTimeout(r, 2000))
-  assert.equal(
-    await evaluate(
-      `window.__messagingBaseline.state.sends[${sendSlot}].released`,
-    ),
-    undefined,
-    'Synthetic service must still be held',
-  )
-  const navigate = async (control, route, content) => {
-    return evaluate(`new Promise((resolve,reject)=>{
+      `(()=>{const el=document.querySelector('.chat-footer textarea, .chat-footer [contenteditable=true]');el.focus();if(el.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,${JSON.stringify(
+        text,
+      )});el.dispatchEvent(new Event('input',{bubbles:true}))}else{el.textContent=${JSON.stringify(
+        text,
+      )};el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:${JSON.stringify(
+        text,
+      )}}))}const obs=new MutationObserver(()=>{if(document.querySelector('.chat-message-list')?.textContent.includes(${JSON.stringify(
+        text,
+      )})){window.__baselineMetrics.queuedDom=performance.now();requestAnimationFrame(()=>window.__baselineMetrics.queuedFrame=performance.now());obs.disconnect()}});obs.observe(document.querySelector('.chat-message-list'),{childList:true,subtree:true,characterData:true})})()`,
+    )
+    await call('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    })
+    await call('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Enter',
+      code: 'Enter',
+      windowsVirtualKeyCode: 13,
+    })
+    await until(
+      "window.__baselineMetrics.queuedFrame && window.__messagingBaseline.state.sends.some(s=>s.text === 'Fixture queued message')",
+    )
+    assert.equal(
+      await evaluate(
+        "window.__messagingBaseline.messageState('Fixture queued message').status",
+      ),
+      'pending',
+    )
+    const sendSlot = await evaluate(
+      "window.__messagingBaseline.state.sends.findIndex(s=>s.text === 'Fixture queued message')",
+    )
+    await new Promise(r => setTimeout(r, 2000))
+    assert.equal(
+      await evaluate(
+        `window.__messagingBaseline.state.sends[${sendSlot}].released`,
+      ),
+      undefined,
+      'Synthetic service must still be held',
+    )
+    const navigate = async (control, route, content) => {
+      return evaluate(`new Promise((resolve,reject)=>{
       const tab=document.querySelector(${JSON.stringify(control)});
       if(!tab){reject(Error('Navigation control missing'));return}
       const start=performance.now();let settled=false;
@@ -469,42 +478,53 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
       function check(){const el=document.querySelector(${JSON.stringify(
         content,
       )});if(!settled && location.hash.includes(${JSON.stringify(
-      route,
-    )}) && el?.getBoundingClientRect().width>0){finish();requestAnimationFrame(()=>resolve(performance.now()-start))}}
+        route,
+      )}) && el?.getBoundingClientRect().width>0){finish();requestAnimationFrame(()=>resolve(performance.now()-start))}}
       observer.observe(document.body,{childList:true,subtree:true,attributes:true});window.addEventListener('hashchange',check);tab.click();check();
     })`)
+    }
+    const forumRouteMs = await navigate(
+      '#rail-tab-forum',
+      '/forum',
+      '.forum-feed-container',
+    )
+    const conversationRouteMs = await navigate(
+      '#rail-tab-chats',
+      '/chat/',
+      '.chat-message-list',
+    )
+    assert.equal(
+      await evaluate(
+        "window.__messagingBaseline.messageState('Fixture queued message')?.status",
+      ),
+      'pending',
+      'Message must remain pending through delayed service and navigation',
+    )
+    assert.equal(
+      await evaluate(
+        "window.__messagingBaseline.state.sends.filter(s=>s.text === 'Fixture queued message').length",
+      ),
+      1,
+      'Exactly one matching send must be submitted',
+    )
+    await evaluate(`window.__messagingBaseline.release(${sendSlot})`)
+    await until(
+      "window.__messagingBaseline.messageState('Fixture queued message')?.status === 'confirmed'",
+    )
+    report.metrics = await evaluate(
+      `(()=>{const m=window.__baselineMetrics;const enter=m.marks.find(x=>x.kind==='enter').time;return {enterToQueuedDomMs:m.queuedDom-enter,enterToQueuedFrameMs:m.queuedFrame-enter,conversationRouteFrameMs:${conversationRouteMs},forumRouteFrameMs:${forumRouteMs},maxInteractionLongTaskMs:Math.max(0,...m.longtasks.filter(t=>t.start+t.duration>=enter).map(t=>t.duration)),longtasks:m.longtasks.filter(t=>t.start+t.duration>=enter),startupLongtasks:m.longtasks.filter(t=>t.start+t.duration<enter),syntheticService:window.__messagingBaseline.state.sends}})()`,
+    )
+  } else {
+    try {
+      await runHistory({ evaluate, call, report })
+    } finally {
+      const shot = await call('Page.captureScreenshot', { format: 'png' })
+      await writeFile(
+        join(out, 'history.png'),
+        Buffer.from(shot.data, 'base64'),
+      )
+    }
   }
-  const forumRouteMs = await navigate(
-    '#rail-tab-forum',
-    '/forum',
-    '.forum-feed-container',
-  )
-  const conversationRouteMs = await navigate(
-    '#rail-tab-chats',
-    '/chat/',
-    '.chat-message-list',
-  )
-  assert.equal(
-    await evaluate(
-      "window.__messagingBaseline.messageState('Fixture queued message')?.status",
-    ),
-    'pending',
-    'Message must remain pending through delayed service and navigation',
-  )
-  assert.equal(
-    await evaluate(
-      "window.__messagingBaseline.state.sends.filter(s=>s.text === 'Fixture queued message').length",
-    ),
-    1,
-    'Exactly one matching send must be submitted',
-  )
-  await evaluate(`window.__messagingBaseline.release(${sendSlot})`)
-  await until(
-    "window.__messagingBaseline.messageState('Fixture queued message')?.status === 'confirmed'",
-  )
-  report.metrics = await evaluate(
-    `(()=>{const m=window.__baselineMetrics;const enter=m.marks.find(x=>x.kind==='enter').time;return {enterToQueuedDomMs:m.queuedDom-enter,enterToQueuedFrameMs:m.queuedFrame-enter,conversationRouteFrameMs:${conversationRouteMs},forumRouteFrameMs:${forumRouteMs},maxInteractionLongTaskMs:Math.max(0,...m.longtasks.filter(t=>t.start+t.duration>=enter).map(t=>t.duration)),longtasks:m.longtasks.filter(t=>t.start+t.duration>=enter),startupLongtasks:m.longtasks.filter(t=>t.start+t.duration<enter),syntheticService:window.__messagingBaseline.state.sends}})()`,
-  )
   const shot = await call('Page.captureScreenshot', { format: 'png' })
   await writeFile(
     join(out, 'queued-route.png'),
@@ -539,6 +559,12 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
   )
   report.containmentConsole = report.consoleErrors.splice(appErrorCount)
   report.offlineIsolation = isolation
+  if (scenario !== 'queue-route')
+    assert.deepEqual(
+      report.history.failures,
+      [],
+      'History geometry regressions; see report.history',
+    )
   report.passed = true
 } catch (error) {
   report.failure = String(error.stack ?? error)

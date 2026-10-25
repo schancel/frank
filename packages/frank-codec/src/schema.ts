@@ -1915,9 +1915,6 @@ export function parseDraft(
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
       const K = FORWARDING_DELIVERY_ENVELOPE
-      // raw-cbor-key: key 0 was the removed envelope network tag; C12 rejects it
-      if (isMap(payload) && payload.has(0n))
-        throw bad(P, 'undeclared key 0 (C12)')
       const m = shaped(payload, P, FORWARDING_DELIVERY_ENVELOPE_SHAPE, allow)
       const res: ForwardingDeliveryEnvelope<Uint8Array> = {
         type: TYPE_FORWARDING_DELIVERY_ENVELOPE,

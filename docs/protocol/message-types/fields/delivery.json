@@ -212,7 +212,8 @@
             "payments"
           ],
           "optional": ["endpoint", "expires-at"],
-          "open": true
+          "open": true,
+          "open_from": 7
         }
       ]
     },

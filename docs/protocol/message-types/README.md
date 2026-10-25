@@ -107,7 +107,10 @@ A **struct** names the keys of one map and lists its **shapes**:
 ```
 
 A shape is one CDDL map rule: its required and optional keys, and whether it is open (undeclared
-keys are retained under V6.3) or closed (C12 rejects them). A struct whose key space is shared
+keys are retained under V6.3) or closed (C12 rejects them). An open rule written
+`* (uint .ge N) => frank-value` also sets `"open_from": N`: an undeclared key below `N` is a C12
+`schema` error even under V6.3 (type 13 rejects its retired key 0 this way). `open_from` defaults
+to 0, which is `* uint => frank-value`. A struct whose key space is shared
 by several schema versions or actions (`directory-statement`, blackjack items) has one named
 shape per version or action. `cddl` is `path#rule`, or `path#rule.<key>` for an inline map in
 that rule's field; a shape without `cddl` (for example a historical schema the CDDL no longer
@@ -127,7 +130,8 @@ same constants, and build error paths from them (`at(P, K.payments)`).
 
 `--check` also fails when:
 
-- a shape disagrees with the CDDL rule it names (required keys, optional keys, or open/closed);
+- a shape disagrees with the CDDL rule it names (required keys, optional keys, open/closed, or
+  the `open_from` lower bound);
 - non-test source under `packages/frank-codec/src/` or `backend/cashweb/frank-cbor/src/` spells a
   map key, a field path or a type id as a number literal (`m.get(5)`, `m.set(5, …)`, `${P}.4`,
   `(3, CborValue::…)`, `.push((3, …))`, `type_id == 19`, a key alone on its own line inside a

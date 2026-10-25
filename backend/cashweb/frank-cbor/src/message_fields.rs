@@ -12,6 +12,8 @@ pub struct MapShape {
     pub optional: &'static [u64],
     /// Whether undeclared keys are retained (open) or rejected (closed).
     pub open: bool,
+    /// Lowest undeclared key an open map may retain (CDDL `* (uint .ge N)`); 0 for `* uint`.
+    pub open_from: u64,
 }
 
 /// `account-ref` field keys.
@@ -27,6 +29,7 @@ pub mod account_ref {
         required: &[KEY_TYPE, KEY_BYTES],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -61,48 +64,56 @@ pub mod blackjack_hand_item {
         required: &[GAME_ID, ACTION, ROLE, MAX_BET_WEI, COMMITMENT],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` challenge-player map shape.
     pub const CHALLENGE_PLAYER_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, ROLE, MAX_BET_WEI],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` accept map shape.
     pub const ACCEPT_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, MAX_BET_WEI, COMMITMENT],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` deal map shape.
     pub const DEAL_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, PLAYER_CARDS, DEALER_UP_CARD],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` card map shape.
     pub const CARD_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, PLAYER_CARDS],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` reveal map shape.
     pub const REVEAL_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, DEALER_CARDS, SEED, OUTCOME],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` refund map shape.
     pub const REFUND_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, REF],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-item` action-only map shape.
     pub const ACTION_ONLY_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -133,36 +144,42 @@ pub mod blackjack_hand_v3_item {
         required: &[GAME_ID, ACTION, SEQ, ROLE, MAX_BET_WEI, COMMITMENT],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-v3-item` challenge-player map shape.
     pub const CHALLENGE_PLAYER_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, ROLE, MAX_BET_WEI],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-v3-item` accept map shape.
     pub const ACCEPT_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, MAX_BET_WEI, COMMITMENT, PREV],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-v3-item` bet map shape.
     pub const BET_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, COMMITMENT, PREV],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-v3-item` refund map shape.
     pub const REFUND_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, REF, PREV],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-hand-v3-item` move map shape.
     pub const MOVE_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, PREV, LINK],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -203,48 +220,56 @@ pub mod blackjack_item {
         required: &[GAME_ID, ACTION, WAGER_TX_HASH],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` deal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-deal).
     pub const DEAL_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SERVER_SEED_HASH, PLAYER_CARDS, DEALER_UP_CARD],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` hit map shape.
     pub const HIT_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION],
         optional: &[PLAYER_CARDS],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` stand map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-stand).
     pub const STAND_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` double-request map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-request).
     pub const DOUBLE_REQUEST_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, DOUBLE_WAGER_TX_HASH],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` double-response map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-response).
     pub const DOUBLE_RESPONSE_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, PLAYER_CARDS],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` reveal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-reveal).
     pub const REVEAL_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, DEALER_CARDS, SERVER_SEED, OUTCOME],
         optional: &[],
         open: false,
+        open_from: 0,
     };
     /// `blackjack-item` welcome map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-welcome).
     pub const WELCOME_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, MIN_WAGER_WEI, MAX_WAGER_WEI],
         optional: &[FEE_HINT_WEI, RULES],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -267,6 +292,7 @@ pub mod canonical_dm_message_row {
         required: &[VERSION, BODY, CONTENT_TYPE, POLICY, DELIVERED_AT],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -285,6 +311,7 @@ pub mod chain_allocation {
         required: &[NETWORK_TAG, TOKEN, BALANCES],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -311,6 +338,7 @@ pub mod channel_update_item {
         required: &[CHANNEL_ID, APP_ID, SEQUENCE_NUMBER, ALLOCATIONS, APP_STATE, SIGNATURES],
         optional: &[SETTLEMENT_REF],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -325,6 +353,7 @@ pub mod container_message_item {
         required: &[ITEMS],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -349,6 +378,7 @@ pub mod dice_game_payload {
         required: &[ROUND, ACTION, SEED_COMMITMENT, WAGER],
         optional: &[REVEAL_SEED, TARGET_ROLL],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -375,12 +405,14 @@ pub mod direct_message_delivery {
         required: &[NETWORK, DESTINATION, PAYLOAD_FRAME, PAYLOAD_DIGEST, PAYMENTS],
         optional: &[RECIPIENT, DLEQ_PROOF],
         open: true,
+        open_from: 0,
     };
     /// `direct-message-delivery` v2 map shape (docs/protocol/cbor/direct-message.cddl#direct-message-delivery).
     pub const V2_SHAPE: MapShape = MapShape {
         required: &[NETWORK, DESTINATION, PAYLOAD_FRAME, PAYLOAD_DIGEST],
         optional: &[PAYMENTS, RECIPIENT, DLEQ_PROOF],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -397,6 +429,7 @@ pub mod directory_attestation {
         required: &[STATEMENT_FRAME, SIGNATURES],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -413,6 +446,7 @@ pub mod directory_preview_key {
         required: &[KEY_TYPE, KEY_BYTES],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -433,6 +467,7 @@ pub mod directory_preview_relay {
         required: &[RELAY_ID, ENDPOINT, IDENTITY, EXPIRY],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -479,24 +514,28 @@ pub mod directory_statement {
         required: &[NETWORK, SUBJECT, REVISION, TIMESTAMP, RELAYS],
         optional: &[KEY_TRANSITIONS, EXPIRY, RECOVERY_AUTHORITIES, USERNAME, ACCOUNT_TYPE, BOT_ROLE],
         open: true,
+        open_from: 0,
     };
     /// `directory-statement` v2 map shape (docs/protocol/cbor/directory.cddl#directory-statement).
     pub const V2_SHAPE: MapShape = MapShape {
         required: &[NETWORK, SUBJECT, REVISION, TIMESTAMP, RELAYS, STAMP_KEY],
         optional: &[KEY_TRANSITIONS, EXPIRY, RECOVERY_AUTHORITIES, USERNAME, ACCOUNT_TYPE, BOT_ROLE],
         open: true,
+        open_from: 0,
     };
     /// `directory-statement` v3 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v3).
     pub const V3_SHAPE: MapShape = MapShape {
         required: &[NETWORK, SUBJECT, REVISION, TIMESTAMP, RELAYS, STAMP_KEY],
         optional: &[KEY_TRANSITIONS, EXPIRY, RECOVERY_AUTHORITIES, PROFILE_ENTRIES, USERNAME, ACCOUNT_TYPE, BOT_ROLE],
         open: true,
+        open_from: 0,
     };
     /// `directory-statement` v4 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v4).
     pub const V4_SHAPE: MapShape = MapShape {
         required: &[NETWORK, SUBJECT, REVISION, TIMESTAMP, RELAYS, EXPIRY, STAMP_KEY, MESSAGE_DH_KEY, MAILBOX_KEY_GENERATION, STAMP_KEY_GENERATION, PREDECESSOR_HASH],
         optional: &[USERNAME, ACCOUNT_TYPE, BOT_ROLE],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -541,6 +580,7 @@ pub mod dm_crypto_context_v1 {
         required: &[DOMAIN, NETWORK, SENDER, RECIPIENT, SENDER_STATEMENT_HASH, RECIPIENT_STATEMENT_HASH, SENDER_MESSAGE_KEY, RECIPIENT_MESSAGE_KEY, RECIPIENT_STAMP_KEY, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF, SUITE, OBJECT_TYPE, SCHEMA_VERSION, MIN_READER_VERSION],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -561,6 +601,7 @@ pub mod email_attachment {
         required: &[FILENAME, CONTENT_TYPE, CONTENT],
         optional: &[CONTENT_ID],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -595,6 +636,7 @@ pub mod email_message_item {
         required: &[MESSAGE_ID, FROM, TO, SUBJECT, TEXT_BODY],
         optional: &[CC, HTML_BODY, IN_REPLY_TO, REFERENCES, ATTACHMENTS, REPLY_TO],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -613,6 +655,7 @@ pub mod email_party {
         required: &[ADDRESS],
         optional: &[NAME, FRANK_ACCOUNT],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -639,6 +682,7 @@ pub mod encrypted_message_content {
         required: &[NETWORK, MESSAGE_ID, REVISION_FRAME, CONTENT_DIGEST],
         optional: &[CONVERSATION_ID, CONVERSATION_NAME, TOKEN_TRANSFER],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -655,6 +699,7 @@ pub mod forum_aggregate {
         required: &[NEGATIVE, MAGNITUDE],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -671,6 +716,7 @@ pub mod forum_content {
         required: &[AUTHORED, ENTRIES],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -687,6 +733,7 @@ pub mod forum_cursor_last {
         required: &[TIMESTAMP, HASH],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -711,6 +758,7 @@ pub mod forum_discovery_cursor {
         required: &[NETWORK, FAMILY, REVISION, EPOCH, LAST, INCARNATION],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -729,6 +777,7 @@ pub mod forum_discovery_entry {
         required: &[TOPIC, COUNT, LAST_ACTIVITY],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -753,6 +802,7 @@ pub mod forum_discovery_page {
         required: &[NETWORK, REVISION, ENTRIES, EPOCH],
         optional: &[NEXT_CURSOR, REQUEST_CURSOR],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -771,6 +821,7 @@ pub mod forum_discovery_row {
         required: &[VERSION, COUNT, LAST_ACTIVITY],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -785,6 +836,7 @@ pub mod forum_entry {
         required: &[KIND],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -817,6 +869,7 @@ pub mod forum_game_entry {
         required: &[KIND, GAME_TYPE, TABLE_ID, HOST_ADDRESS],
         optional: &[BUY_IN_AMOUNT, CURRENT_PLAYERS, MAX_PLAYERS, BOT_ADDRESS, TITLE, MESSAGE],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -843,6 +896,7 @@ pub mod forum_observation_row {
         required: &[VERSION, FRAME, FIRST_SEEN, STATE],
         optional: &[BLOCK, TRANSACTION_INDEX, VISIBLE],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -879,6 +933,7 @@ pub mod forum_operation_status {
         required: &[NETWORK, SUBMITTED_FRAME, TARGET_HASH, TRANSACTION_HASH, SENDER, DIRECTION, VALUE, STATE, REVISION, EPOCH],
         optional: &[BLOCK, TRANSACTION_INDEX],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -897,6 +952,7 @@ pub mod forum_pending_accounting {
         required: &[VERSION, COUNT, BYTES],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -917,6 +973,7 @@ pub mod forum_post_entry {
         required: &[KIND],
         optional: &[TITLE, URL, MESSAGE],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -947,6 +1004,7 @@ pub mod forum_post_row {
         required: &[VERSION, FRAME, NEGATIVE, MAGNITUDE, RESERVED_UP, RESERVED_DOWN, TOPIC],
         optional: &[AUTHOR, VISIBLE],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -981,6 +1039,7 @@ pub mod forum_single_view {
         required: &[NETWORK, POST_FRAME, AUTHOR, AUTHOR_BURN_TX, TRANSACTION_HASH, FIRST_VISIBLE, BLOCK, TRANSACTION_INDEX, AGGREGATE, REVISION, EPOCH],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1001,6 +1060,7 @@ pub mod forum_store_header {
         required: &[VERSION, NETWORK, CHAIN_ID, BURN_ADDRESS],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1029,6 +1089,7 @@ pub mod forum_topic_cursor {
         required: &[NETWORK, FAMILY, REVISION, EPOCH, LAST, TOPIC, SINCE, INCARNATION],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1057,6 +1118,7 @@ pub mod forum_topic_page {
         required: &[NETWORK, TOPIC, SINCE, REVISION, ROWS, EPOCH],
         optional: &[NEXT_CURSOR, REQUEST_CURSOR],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1081,6 +1143,7 @@ pub mod forwarding_delivery_envelope {
         required: &[DESTINATION, PAYLOAD_FRAME, PAYLOAD_DIGEST, PAYMENTS],
         optional: &[ENDPOINT, EXPIRES_AT],
         open: true,
+        open_from: 7,
     };
 }
 
@@ -1101,6 +1164,7 @@ pub mod frank_envelope {
         required: &[TYPE_ID, SCHEMA_VERSION, MIN_READER_VERSION, PAYLOAD],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1131,6 +1195,7 @@ pub mod group_epoch_frame {
         required: &[GROUP_ID, EPOCH, WRITE_PUBKEY, READ_TOKEN_HASH, ENCRYPTED_EPOCH_DESCRIPTOR, ADMIN_SIG, GROUP_PUBKEY],
         optional: &[PREV_EPOCH_HASH, EPOCH_HASH],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1153,6 +1218,7 @@ pub mod group_message_envelope {
         required: &[GROUP_ID, EPOCH, NONCE, CIPHERTEXT, WRITE_SIG],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1173,6 +1239,7 @@ pub mod journal_fact {
         required: &[TIMESTAMP, FACT_ID, KIND, PAYLOAD],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1193,6 +1260,7 @@ pub mod key_transition {
         required: &[STATEMENT_FRAME, ALGORITHM, SIGNER, SIGNATURE],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1215,6 +1283,7 @@ pub mod key_transition_statement {
         required: &[NETWORK, SUBJECT, PRIOR_AUTHORITY, REVISION, NEW_KEY],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1239,6 +1308,7 @@ pub mod mailbox_checkpoint {
         required: &[NETWORK, OWNER, CHECKPOINT_ID, TIMESTAMP, FACTS],
         optional: &[SECTIONS],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1255,6 +1325,7 @@ pub mod message_content_revision {
         required: &[NETWORK, ITEMS],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1273,6 +1344,7 @@ pub mod opaque_section {
         required: &[SECTION_TYPE, SECTION_SCHEMA_VERSION, VALUE],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1289,6 +1361,7 @@ pub mod participant_balance {
         required: &[PARTICIPANT, BALANCE],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1321,6 +1394,7 @@ pub mod payment_member {
         required: &[NETWORK, TRANSACTION_ID, VALUE, ADDRESS],
         optional: &[COMMITMENT, VOUT, RAW_TX, CHILD_INDEX, STEALTH_METADATA, TOKEN],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1337,6 +1411,7 @@ pub mod plugin_message_item {
         required: &[ITEM_TYPE, DATA],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1359,6 +1434,7 @@ pub mod poker_game_payload {
         required: &[HAND_ID, PHASE, ACTION],
         optional: &[CARD_COMMITMENTS, KEYS],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1377,6 +1453,7 @@ pub mod profile_entry {
         required: &[KIND, HEADERS, BODY],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1393,6 +1470,7 @@ pub mod profile_header {
         required: &[NAME, VALUE],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1413,6 +1491,7 @@ pub mod raffle_payload {
         required: &[RAFFLE_ID, TICKET_PRICE, TICKETS_SOLD],
         optional: &[WINNING_HASH],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1443,6 +1522,7 @@ pub mod recipient_encrypted_payload_v1 {
         required: &[NETWORK, SENDER, RECIPIENT, SUITE, NONCE, CIPHERTEXT, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1471,6 +1551,7 @@ pub mod recipient_encrypted_payload_v2 {
         required: &[NETWORK, SENDER, RECIPIENT, SUITE, CRYPTO_BOX_ENVELOPE, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1491,6 +1572,7 @@ pub mod relay_binding {
         required: &[RELAY_ID, ENDPOINT, IDENTITY, EXPIRY],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1509,6 +1591,7 @@ pub mod signature_entry {
         required: &[ALGORITHM, SIGNER, SIGNATURE],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1527,6 +1610,7 @@ pub mod stamp_economic_binding {
         required: &[VERSION, STAMP_VALUE_WEI, BINDING],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1543,6 +1627,7 @@ pub mod stealth_asset_message_item {
         required: &[TRANSFERS],
         optional: &[MEMO],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1565,6 +1650,7 @@ pub mod stealth_asset_transfer {
         required: &[TRANSFER, DERIVATION_SCHEME, RECIPIENT_SPEND_KEY],
         optional: &[TOKEN_PROGRAM, DERIVATION_CONTEXT],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1587,6 +1673,7 @@ pub mod stealth_message_item {
         required: &[NETWORK_TAG, EPHEMERAL_PUB_KEY, TRANSACTIONS, AMOUNT],
         optional: &[MEMO],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1603,6 +1690,7 @@ pub mod stealth_metadata {
         required: &[EPHEMERAL_PUB_KEY],
         optional: &[VIEW_TAG],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1629,6 +1717,7 @@ pub mod swap_offer_payload {
         required: &[SWAP_ID, MAKER_ASSET, MAKER_AMOUNT, TAKER_ASSET, TAKER_AMOUNT, EXPIRATION],
         optional: &[HTLC_HASH],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1643,6 +1732,7 @@ pub mod text_message_item {
         required: &[TEXT],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1659,6 +1749,7 @@ pub mod timestamp {
         required: &[SECONDS, NANOSECONDS],
         optional: &[],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1683,6 +1774,7 @@ pub mod token_transfer {
         required: &[CHAIN_NAMESPACE, CONTRACT_ADDRESS, AMOUNT, DECIMALS, SYMBOL],
         optional: &[RAW_TX_OR_PERMIT],
         open: false,
+        open_from: 0,
     };
 }
 
@@ -1701,6 +1793,7 @@ pub mod tombstone_fact_payload {
         required: &[OBJECT_FAMILY, OBJECT_ID],
         optional: &[REVISION_DIGEST],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1725,6 +1818,7 @@ pub mod topic_post {
         required: &[NETWORK, TOPIC, BODY],
         optional: &[PARENT_HASH, AUTHOR, SIGNATURE],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1743,6 +1837,7 @@ pub mod topic_post_submission {
         required: &[NETWORK, POST_FRAME, BURN_TX],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 
@@ -1761,6 +1856,7 @@ pub mod topic_vote_submission {
         required: &[NETWORK, TARGET_HASH, BURN_TX],
         optional: &[],
         open: true,
+        open_from: 0,
     };
 }
 

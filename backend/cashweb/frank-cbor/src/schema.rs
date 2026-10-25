@@ -241,17 +241,19 @@ pub(crate) fn shaped<'a>(
         path,
         shape.required,
         shape.optional,
-        shape.open,
+        shape.open.then_some(shape.open_from),
         allow_unknown,
     )
 }
 
+/// `open` is `None` for a closed map, or `Some(n)` for an open one that may retain undeclared keys
+/// from `n` up (CDDL `* (uint .ge n)`; 0 for `* uint`).
 fn fields<'a>(
     v: Option<&'a CborValue>,
     path: &str,
     required: &[u64],
     optional: &[u64],
-    open: bool,
+    open: Option<u64>,
     allow_unknown: bool,
 ) -> Result<MapFields<'a>, CodecError> {
     let entries = match v {
@@ -1253,14 +1255,6 @@ pub(crate) fn parse_draft(
     match type_id {
         TYPE_FORWARDING_DELIVERY_ENVELOPE => {
             use mf::forwarding_delivery_envelope as k;
-            // Key 0 was the retired envelope network tag. Reject it before `shaped` can retain
-            // it under V6.3.
-            if let CborValue::Map(entries) = payload {
-                // raw-cbor-key: key 0 is the retired network tag, rejected by C12
-                if entries.iter().any(|(key, _)| *key == 0) {
-                    return Err(bad(path, "undeclared key 0 (C12)"));
-                }
-            }
             let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
             let payments = as_list(
                 map.get(k::PAYMENTS),
@@ -1686,7 +1680,7 @@ pub(crate) fn parse_draft(
                 path,
                 k::SHAPE.required,
                 &[k::CONVERSATION_ID, k::CONVERSATION_NAME],
-                k::SHAPE.open,
+                k::SHAPE.open.then_some(k::SHAPE.open_from),
                 allow,
             )?;
             let conversation_id = if map.has(k::CONVERSATION_ID) {

@@ -322,3 +322,59 @@ fn stealth_payment_on_an_unregistered_network_is_rejected() {
         }
     }
 }
+
+/// The type 13 payload map of `frame`, and a re-encoding of `fields` as a newer schema version,
+/// which a reader reads through V6.3 (retaining additive keys).
+fn type13_fields(frame: &[u8]) -> Vec<(u64, CborValue)> {
+    let CborValue::Map(envelope) = decode_canonical(&frame[9..]).expect("envelope") else {
+        panic!("envelope map");
+    };
+    let CborValue::Bytes(payload) = map_field(&envelope, frank_envelope::PAYLOAD) else {
+        panic!("payload");
+    };
+    let CborValue::Map(fields) = decode_canonical(payload).expect("payload map") else {
+        panic!("payload map");
+    };
+    fields
+}
+
+fn newer_type13(mut fields: Vec<(u64, CborValue)>) -> Vec<u8> {
+    fields.sort_by_key(|(key, _)| *key);
+    encode_frame(
+        EnvelopeFields {
+            type_id: TYPE_FORWARDING_DELIVERY_ENVELOPE,
+            schema_version: 2,
+            min_reader_version: 1,
+        },
+        FramePayload::Value(&CborValue::Map(fields)),
+    )
+    .expect("re-encode")
+}
+
+#[test]
+fn type13_retains_additive_keys_from_7_and_never_a_key_below() {
+    let frame = encode_forwarding(&direct_message_frame(), vec![stamp(NET, 1, 1)]);
+    let mut additive = type13_fields(&frame);
+    // raw-cbor-key: the first additive key of `* (uint .ge 7)`
+    additive.push((7, CborValue::Text("future".into())));
+    let ValidationResult::Parsed(parsed) =
+        validate_frame(&newer_type13(additive), &default_context()).expect("key 7 is additive")
+    else {
+        panic!("parsed");
+    };
+    let Some(TypedPayload::ForwardingDelivery { unknown, .. }) = parsed.typed.as_deref() else {
+        panic!("type 13");
+    };
+    // raw-cbor-key: the additive key set above
+    assert_eq!(unknown, &vec![(7, CborValue::Text("future".into()))]);
+    let mut retired = type13_fields(&frame);
+    // raw-cbor-key: the retired envelope network tag, below the open bound
+    retired.push((0, CborValue::Text(NET.into())));
+    match validate_frame(&newer_type13(retired), &default_context()) {
+        Err(Error::Codec(err)) => {
+            assert_eq!(err.category, ErrorCategory::Schema);
+            assert!(err.detail.contains("undeclared key 0"), "{}", err.detail);
+        }
+        other => panic!("expected a schema error, got {other:?}"),
+    }
+}

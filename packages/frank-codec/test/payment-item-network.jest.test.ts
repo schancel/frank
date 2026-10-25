@@ -273,4 +273,35 @@ describe('payment item network', () => {
       /forwarding digest requires a type-10 inner frame/,
     )
   })
+
+  it('retains additive type 13 keys from 7 up under V6.3, never a key below 7', () => {
+    const good = encodeForwarding(deliveryFrame(), [stamp(NET, 1, 1)])
+    const envelope = decodeCanonical(good.subarray(9)) as Map<bigint, unknown>
+    const payload = () =>
+      decodeCanonical(
+        envelope.get(BigInt(FRANK_ENVELOPE.payload)) as Uint8Array,
+      ) as Map<bigint, unknown>
+    // A newer schema version is read through V6.3, which retains additive keys.
+    const newer = (map: Map<bigint, unknown>) =>
+      encodeFrame(
+        {
+          typeId: TYPE_FORWARDING_DELIVERY_ENVELOPE,
+          schemaVersion: 2,
+          minReaderVersion: 1,
+        },
+        map,
+      )
+    const additive = payload()
+    additive.set(7n, 'future') // raw-cbor-key: the first additive key of `* (uint .ge 7)`
+    const parsed = validateFrame(newer(additive), ctx)
+    if (parsed.typed?.type !== TYPE_FORWARDING_DELIVERY_ENVELOPE)
+      throw new Error('expected a forwarding envelope')
+    // raw-cbor-key: the additive key set above
+    expect(parsed.typed.unknownFields?.get(7n)).toBe('future')
+    const retired = payload()
+    retired.set(0n, NET) // raw-cbor-key: the retired envelope network tag, below the open bound
+    expect(() => validateFrame(newer(retired), ctx)).toThrow(
+      /undeclared key 0 \(C12\)/,
+    )
+  })
 })

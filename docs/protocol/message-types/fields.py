@@ -36,6 +36,8 @@ class Shape:
     optional: list[str]
     open: bool
     cddl: str | None
+    # Lowest undeclared key an open map may retain: N of CDDL `* (uint .ge N) =>`, 0 for `* uint`.
+    open_from: int = 0
 
 
 @dataclass
@@ -131,10 +133,18 @@ def load(root: Path) -> tuple[list[Struct], list[Enum]]:
                     errors.append(f"{where}: shape {sname!r} lists a field twice")
                 if not isinstance(s.get("open"), bool):
                     errors.append(f"{where}: shape {sname!r} needs a boolean open")
+                open_from = s.get("open_from", 0)
+                if not isinstance(open_from, int) or isinstance(open_from, bool) or not 0 <= open_from <= U64_MAX:
+                    errors.append(f"{where}: shape {sname!r} open_from must be a uint")
+                    open_from = 0
+                elif open_from and not s.get("open"):
+                    errors.append(f"{where}: shape {sname!r} has open_from but is closed")
                 cddl = s.get("cddl")
                 if cddl is not None and (not isinstance(cddl, str) or "#" not in cddl):
                     errors.append(f"{where}: shape {sname!r} cddl must be 'path#rule'")
-                struct.shapes.append(Shape(sname, list(req), list(opt), bool(s.get("open")), cddl))
+                struct.shapes.append(
+                    Shape(sname, list(req), list(opt), bool(s.get("open")), cddl, open_from)
+                )
             structs.append(struct)
         for raw in data.get("enums", []):
             key = raw.get("key")
@@ -189,6 +199,8 @@ def render_ts(structs: list[Struct], enums: list[Enum]) -> str:
         "  readonly required: readonly number[]",
         "  readonly optional: readonly number[]",
         "  readonly open: boolean",
+        "  /** Lowest undeclared key an open map may retain (CDDL `* (uint .ge N)`); 0 for `* uint`. */",
+        "  readonly openFrom: number",
         "}",
         "",
     ]
@@ -205,6 +217,7 @@ def render_ts(structs: list[Struct], enums: list[Enum]) -> str:
             out += _ts_list("required", [f"{const}.{camel(n)}" for n in sh.required])
             out += _ts_list("optional", [f"{const}.{camel(n)}" for n in sh.optional])
             out.append(f"  open: {'true' if sh.open else 'false'},")
+            out.append(f"  openFrom: {sh.open_from},")
             out.append("}")
         out.append("")
     for e in enums:
@@ -231,6 +244,8 @@ def render_rust(structs: list[Struct], enums: list[Enum]) -> str:
         "    pub optional: &'static [u64],",
         "    /// Whether undeclared keys are retained (open) or rejected (closed).",
         "    pub open: bool,",
+        "    /// Lowest undeclared key an open map may retain (CDDL `* (uint .ge N)`); 0 for `* uint`.",
+        "    pub open_from: u64,",
         "}",
         "",
     ]
@@ -249,6 +264,7 @@ def render_rust(structs: list[Struct], enums: list[Enum]) -> str:
             out.append("        required: &[" + ", ".join(upper(n) for n in sh.required) + "],")
             out.append("        optional: &[" + ", ".join(upper(n) for n in sh.optional) + "],")
             out.append(f"        open: {'true' if sh.open else 'false'},")
+            out.append(f"        open_from: {sh.open_from},")
             out.append("    };")
         out.append("}")
         out.append("")
@@ -285,7 +301,7 @@ def _members(body: str) -> list[str]:
 
 
 def cddl_rules(text: str) -> dict[str, dict]:
-    """Map rules `name = { ... }` → {"required": set, "optional": set, "open": bool, "inner": {...}}."""
+    """Map rules `name = { ... }` → {"required", "optional", "open", "open_from", "inner"}."""
 
     text = _strip_comments(text)
     rules: dict[str, dict] = {}
@@ -305,11 +321,13 @@ def cddl_rules(text: str) -> dict[str, dict]:
 
 
 def _parse_map(body: str) -> dict:
-    required, optional, inner, open_ = set(), set(), {}, False
+    required, optional, inner, open_, open_from = set(), set(), {}, False, 0
     for member in _members(body):
-        # `* uint =>` or a lower-bounded `* (uint .ge N) =>` (keys below N stay undeclared).
-        if re.match(r"^\*\s*(?:uint|\(\s*uint\s*\.ge\s*\d+\s*\))\s*=>", member):
-            open_ = True
+        # `* uint =>`, or a lower-bounded `* (uint .ge N) =>`: an undeclared key below N is never
+        # retained (C12), so N is part of the shape.
+        om = re.match(r"^\*\s*(?:uint|\(\s*uint\s*\.ge\s*(\d+)\s*\))\s*=>", member)
+        if om:
+            open_, open_from = True, int(om.group(1) or 0)
             continue
         fm = re.match(r"^(\?\s*)?(\d+)\s*:\s*(.*)$", member, re.S)
         if not fm:
@@ -319,7 +337,13 @@ def _parse_map(body: str) -> dict:
         value = fm.group(3).strip()
         if value.startswith("{") and value.endswith("}"):
             inner[key] = _parse_map(value[1:-1])
-    return {"required": required, "optional": optional, "open": open_, "inner": inner}
+    return {
+        "required": required,
+        "optional": optional,
+        "open": open_,
+        "open_from": open_from,
+        "inner": inner,
+    }
 
 
 def cddl_problems(root: Path, structs: list[Struct]) -> list[str]:
@@ -357,6 +381,11 @@ def cddl_problems(root: Path, structs: list[Struct]) -> list[str]:
                 )
             if sh.open != found["open"]:
                 problems.append(f"{where}: open={sh.open} disagrees with {sh.cddl} (open={found['open']})")
+            if sh.open_from != found["open_from"]:
+                problems.append(
+                    f"{where}: open_from={sh.open_from} disagrees with {sh.cddl} "
+                    f"(* (uint .ge {found['open_from']}))"
+                )
     return problems
 
 

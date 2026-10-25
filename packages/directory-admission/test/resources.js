@@ -47,7 +47,11 @@ function signed(revision, predecessor, padding = 0, entropy = 0) {
     })
     .toDERRawBytes()
   const attestation = encodeFrame(
-    { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_DIRECTORY_ATTESTATION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     new Map([
       [0n, statement],
       [

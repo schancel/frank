@@ -16,8 +16,10 @@ use std::{
 };
 
 use cashweb_registry::store::groups::{derive_group_id, GroupEpochFrame, GroupMessageEnvelope};
+use futures::{SinkExt, StreamExt};
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
+use tokio_tungstenite::{connect_async, tungstenite};
 
 /// The daemon under test: the binary Cargo built, or `FRANK_CASHWEBD_EXE` when the test
 /// executable was copied out of its build tree (the lab image does this).
@@ -125,9 +127,40 @@ min_value_wei = "0"
         }
     }
 
-    fn kill(mut self) {
-        self.child.kill().unwrap();
-        self.child.wait().unwrap();
+    fn kill(self) {
+        drop(self);
+    }
+}
+
+/// A relay never outlives its test, including one that panics.
+impl Drop for Relay {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Write a provisioned file readable by its owner only, as the relay requires.
+fn write_provisioned(path: &Path, contents: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// The next `group-wakeup` on `socket` within `timeout`.
+async fn next_wakeup<S>(socket: &mut S, timeout: Duration) -> Option<Instant>
+where
+    S: futures::Stream<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
+            Ok(Some(Ok(tungstenite::Message::Text(text)))) if text.contains("group-wakeup") => {
+                return Some(Instant::now())
+            }
+            Ok(Some(Ok(_))) => continue,
+            _ => return None,
+        }
     }
 }
 
@@ -148,12 +181,11 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     let temp = tempfile::tempdir().unwrap();
     let shared = temp.path().join("provisioned");
     std::fs::create_dir_all(&shared).unwrap();
-    std::fs::write(shared.join("session-secret"), rand::random::<[u8; 32]>()).unwrap();
-    std::fs::write(
-        shared.join("vapid-private-key"),
-        hex::encode(rand::random::<[u8; 32]>()),
-    )
-    .unwrap();
+    write_provisioned(&shared.join("session-secret"), rand::random::<[u8; 32]>());
+    // Any random 32 bytes below the P-256 order; the top byte keeps it well below n.
+    let mut vapid = rand::random::<[u8; 32]>();
+    vapid[0] = 0x7f;
+    write_provisioned(&shared.join("vapid-private-key"), hex::encode(vapid));
     // A fresh cluster name and subspace per run: nothing else in the lab is read or cleared.
     let run = hex::encode(rand::random::<[u8; 6]>());
     let cluster = format!("daemon-{run}");
@@ -208,6 +240,28 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         .unwrap();
     assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
 
+    // A subscriber on replica A is woken over NATS by B's append. The relay also wakes every
+    // subscriber on its own every 5 s, so wait for one of those first: a wakeup well inside the
+    // next 5 s after the append can only have come from B's commit.
+    let live = format!(
+        "ws://{}/groups/{group_id}/live",
+        a.origin.trim_start_matches("http://")
+    );
+    let (mut socket, _) = connect_async(&live).await.unwrap();
+    socket
+        .send(tungstenite::Message::Text(
+            serde_json::json!({ "epoch": 0, "read_token": hex::encode(token) }).to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        next_wakeup(&mut socket, Duration::from_secs(8))
+            .await
+            .is_some(),
+        "no recovery-tick wakeup on A: {}",
+        a.log()
+    );
+
     // Replica B reads the group A created and appends to it.
     let read = http
         .get(format!("{}/groups/{group_id}/epochs", b.origin))
@@ -231,6 +285,16 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         .await
         .unwrap();
     assert_eq!(appended.status(), 200, "{}", appended.text().await.unwrap());
+    let sent = Instant::now();
+    let woken = next_wakeup(&mut socket, Duration::from_secs(4))
+        .await
+        .expect("A's subscriber was not woken after B's append");
+    assert!(
+        woken.duration_since(sent) < Duration::from_secs(3),
+        "A's wakeup came {:?} after B's append: the recovery tick, not NATS",
+        woken.duration_since(sent)
+    );
+    drop(socket);
 
     // A third replica on an empty disk reads the same message: the state is in FoundationDB.
     a.kill();

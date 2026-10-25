@@ -75,8 +75,9 @@ impl SessionSecret {
 
     /// Read an operator-provisioned secret: exactly 32 bytes. The file is never created, so a
     /// missing file fails instead of giving this replica a secret of its own.
+    /// The file must be readable by its owner only (see [`crate::provisioned`]).
     pub fn load_provisioned(path: &std::path::Path) -> std::io::Result<Self> {
-        let bytes = std::fs::read(path)?;
+        let bytes = crate::provisioned::read_secret_file(path)?;
         bytes.as_slice().try_into().map(Self).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -781,6 +782,15 @@ mod tests {
         assert!(SessionSecret::load_provisioned(&path).is_err());
         assert!(!path.exists(), "a provisioned secret must never be created");
         std::fs::write(&path, [7u8; 32]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // A secret its group or other users can read is refused, then accepted at 0600.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = SessionSecret::load_provisioned(&path).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         // Two replicas reading one provisioned file derive the same keys.
         let a = SessionSecret::load_provisioned(&path).unwrap();
         let b = SessionSecret::load_provisioned(&path).unwrap();

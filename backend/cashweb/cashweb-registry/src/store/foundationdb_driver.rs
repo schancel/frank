@@ -7,11 +7,34 @@
 //! Retryable FDB errors (conflicts, `transaction_too_old`, recoveries) re-run the closure
 //! through FDB's `on_error` backoff, up to [`MAX_ATTEMPTS`]. `commit_unknown_result` is returned
 //! as [`KvError::CommitUnknownResult`] without a retry.
+//!
+//! Every transaction carries the database-level [`FDB_TRANSACTION_TIMEOUT`], which spans its
+//! retries (API 7.3 does not reset it in `on_error`). An unreachable cluster therefore returns
+//! [`KvError::TransactionTimedOut`] (or [`KvError::CommitUnknownResult`] if the commit was
+//! already sent) instead of blocking a worker thread forever. If the network thread itself
+//! stops, it is logged and every later transaction fails with [`KvError::Backend`].
 use super::kv_store::{
     add_le, KvError, KvTransaction, Limits, Outcome, RelayKvStore, MAX_ATTEMPTS,
 };
-use foundationdb::{options::MutationType, Database, FdbError, RangeOption, Transaction};
+use foundationdb::{
+    api::{FdbApiBuilder, NetworkStop},
+    options::{DatabaseOption, MutationType},
+    Database, FdbError, RangeOption, Transaction,
+};
 use futures::{executor::block_on, TryStreamExt};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    thread::JoinHandle,
+    time::Duration,
+};
+
+/// Total time one transaction may take across all of its retries before FDB cancels it.
+pub const FDB_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Set by [`FdbNetwork`]'s drop before it stops the network on purpose.
+static NETWORK_STOPPING: AtomicBool = AtomicBool::new(false);
+/// Set when the network thread returned without being asked to stop.
+static NETWORK_FAILED: AtomicBool = AtomicBool::new(false);
 
 // https://apple.github.io/foundationdb/api-error-codes.html
 const TRANSACTION_TOO_OLD: i32 = 1007;
@@ -21,7 +44,12 @@ const KEY_TOO_LARGE: i32 = 2102;
 const VALUE_TOO_LARGE: i32 = 2103;
 
 /// The process-wide FoundationDB client network, booted once by the host.
-pub struct FdbNetwork(#[allow(dead_code)] foundationdb::api::NetworkAutoStop);
+///
+/// Dropping it stops the network and joins its thread.
+pub struct FdbNetwork {
+    stop: Option<NetworkStop>,
+    thread: Option<JoinHandle<()>>,
+}
 
 impl std::fmt::Debug for FdbNetwork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,12 +60,54 @@ impl std::fmt::Debug for FdbNetwork {
 impl FdbNetwork {
     /// Start the FDB network thread (API version 7.3).
     ///
+    /// If the network loop returns before this value is dropped, the failure is logged and
+    /// every later [`FoundationDbKvStore`] transaction fails with [`KvError::Backend`].
+    ///
     /// # Safety
     /// Call at most once per process. Drop the result after every [`FoundationDbKvStore`] and
-    /// every thread that may still call one has finished, and before the process exits; dropping
-    /// it stops the network and joins its thread.
-    pub unsafe fn boot() -> Self {
-        Self(foundationdb::boot())
+    /// every thread that may still call one has finished, and before the process exits.
+    pub unsafe fn boot() -> Result<Self, KvError> {
+        let (runner, wait) = FdbApiBuilder::default()
+            .build()
+            .and_then(|api| api.build())
+            .map_err(fdb_error)?;
+        let thread = std::thread::Builder::new()
+            .name("fdb-network".into())
+            .spawn(move || {
+                // SAFETY: the network is stopped by `FdbNetwork::drop` before the process exits.
+                let result = unsafe { runner.run() };
+                if !NETWORK_STOPPING.load(Ordering::SeqCst) {
+                    NETWORK_FAILED.store(true, Ordering::SeqCst);
+                    tracing::error!(
+                        ?result,
+                        "FoundationDB network thread stopped; every FoundationDB transaction now fails"
+                    );
+                }
+            })
+            .map_err(|e| KvError::Backend(format!("spawn FoundationDB network thread: {e}")))?;
+        Ok(Self {
+            stop: Some(wait.wait()),
+            thread: Some(thread),
+        })
+    }
+
+    /// Whether the network thread has stopped without being asked to.
+    pub fn failed() -> bool {
+        NETWORK_FAILED.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for FdbNetwork {
+    fn drop(&mut self) {
+        NETWORK_STOPPING.store(true, Ordering::SeqCst);
+        if let Some(stop) = self.stop.take() {
+            if let Err(error) = stop.stop() {
+                tracing::error!(%error, "failed to stop the FoundationDB network");
+            }
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -68,10 +138,12 @@ impl FoundationDbKvStore {
                 "FDB subspace prefix must be non-empty and outside the system key space".into(),
             ));
         }
-        Ok(Self {
-            database: Database::new(Some(cluster_file)).map_err(fdb_error)?,
-            subspace,
-        })
+        let database = Database::new(Some(cluster_file)).map_err(fdb_error)?;
+        let timeout_ms = i32::try_from(FDB_TRANSACTION_TIMEOUT.as_millis()).unwrap_or(i32::MAX);
+        database
+            .set_option(DatabaseOption::TransactionTimeout(timeout_ms))
+            .map_err(fdb_error)?;
+        Ok(Self { database, subspace })
     }
 
     /// The subspace prefix every key is stored under.
@@ -197,6 +269,11 @@ impl RelayKvStore for FoundationDbKvStore {
         &self,
         body: &mut dyn FnMut(&mut dyn KvTransaction) -> Outcome,
     ) -> Result<Outcome, KvError> {
+        if FdbNetwork::failed() {
+            return Err(KvError::Backend(
+                "the FoundationDB network thread has stopped".into(),
+            ));
+        }
         let mut tx = self.database.create_trx().map_err(fdb_error)?;
         for _ in 0..MAX_ATTEMPTS {
             let mut attempt = FdbTransaction {
@@ -220,7 +297,7 @@ impl RelayKvStore for FoundationDbKvStore {
                 Err(error) if error.is_maybe_committed() => {
                     return Err(KvError::CommitUnknownResult(error.to_string()))
                 }
-                // A commit cut off by the client timeout may already be applied.
+                // A commit cut off by `FDB_TRANSACTION_TIMEOUT` may already be applied.
                 Err(error) if error.code() == TRANSACTION_TIMED_OUT => {
                     return Err(KvError::CommitUnknownResult(error.to_string()))
                 }

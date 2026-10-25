@@ -196,14 +196,15 @@ fn local_config(db: &std::path::Path, extra: &str) -> String {
     )
 }
 
-/// Start the real binary (`--check-db` and a full start) and assert both refuse with `expected`
-/// before creating anything under `state`.
+/// Run the real binary (`--check-config`, `--check-db` and a full start) and assert all three
+/// refuse with `expected` before creating anything under `state`.
 fn assert_refused_before_state(temp: &std::path::Path, config: &str, expected: &str) {
     let state = temp.join("must-not-exist");
     let path = temp.join("relay.toml");
     std::fs::write(&path, config).unwrap();
     // Test real startup and the DB-opening preflight, not just --check-config.
     for args in [
+        vec!["--check-config".as_ref(), path.as_os_str()],
         vec!["--check-db".as_ref(), path.as_os_str()],
         vec![path.as_os_str()],
     ] {
@@ -333,14 +334,75 @@ fn cluster_mode_refusals_happen_before_any_state_is_created() {
             }),
             "Reading registry.session_secret_file",
         ),
+        (
+            // A provisioned secret its group or other users can read is refused.
+            Box::new(move |temp| {
+                write_secret(&temp.join("session-secret"), &[7; 32], 0o644);
+                write_secret(
+                    &temp.join("vapid-key"),
+                    hex::encode([9u8; 32]).as_bytes(),
+                    0o600,
+                );
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_network_upstream(
+                        &db,
+                        &cluster_table(temp, "preview_replica_local_owners = true"),
+                    ),
+                    &secrets(temp),
+                )
+            }),
+            "readable by its owner only",
+        ),
+        (
+            // A VAPID scalar of zero is refused rather than replaced by another key.
+            Box::new(move |temp| {
+                write_secret(&temp.join("session-secret"), &[7; 32], 0o600);
+                write_secret(
+                    &temp.join("vapid-key"),
+                    hex::encode([0u8; 32]).as_bytes(),
+                    0o600,
+                );
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_network_upstream(
+                        &db,
+                        &cluster_table(temp, "preview_replica_local_owners = true"),
+                    ),
+                    &secrets(temp),
+                )
+            }),
+            "not a P-256 private key",
+        ),
+        (
+            // The preview flag outside cluster mode would do nothing, so it is refused.
+            Box::new(|temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                local_config_without_chain_routes(
+                    &db,
+                    "[registry.cluster]\npreview_replica_local_owners = true\n",
+                )
+            }),
+            "only applies with registry.cluster.enabled = true",
+        ),
     ];
     for (config, expected) in cases {
         let temp = tempdir::TempDir::new("cluster-refusal").unwrap();
         let config = config(temp.path());
+        let provided = temp.path().join("session-secret").exists();
         assert_refused_before_state(temp.path(), &config, expected);
-        assert!(!temp.path().join("session-secret").exists());
-        assert!(!temp.path().join("vapid-key").exists());
+        // Files are only ever read: a case that did not write them finds none afterwards.
+        if !provided {
+            assert!(!temp.path().join("session-secret").exists());
+            assert!(!temp.path().join("vapid-key").exists());
+        }
     }
+}
+
+fn write_secret(path: &std::path::Path, contents: &[u8], mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
 #[cfg(not(feature = "foundationdb"))]

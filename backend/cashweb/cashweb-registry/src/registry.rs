@@ -321,12 +321,6 @@ impl Registry {
         &self.canonical_dm
     }
 
-    /// Open the group store (on its first use) and read its format marker. Composition calls
-    /// this at startup for a shared backend, so an unreachable cluster fails the start.
-    pub fn check_group_store(&self) -> std::result::Result<(), crate::store::groups::GroupError> {
-        self.groups.get().map(drop)
-    }
-
     pub(crate) fn groups(
         &self,
     ) -> std::result::Result<crate::store::groups::GroupStore, crate::store::groups::GroupError>

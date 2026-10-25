@@ -35,6 +35,7 @@ pub mod monad_ws;
 pub mod network_tag;
 pub mod oracle;
 pub mod p2p;
+pub mod provisioned;
 pub mod registry;
 pub mod store;
 pub mod test_instance;

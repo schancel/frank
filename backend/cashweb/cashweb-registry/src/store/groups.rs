@@ -1326,23 +1326,30 @@ impl Owner {
     }
 
     /// Access or initialize the [`GroupStore`].
+    ///
+    /// The lock covers only opening the backend. Every store read checks the namespace
+    /// baseline in its own transaction, so the cached store is not re-checked here and no
+    /// group request waits on another request's storage round trip.
     pub fn get(&self) -> Result<GroupStore, GroupError> {
-        let mut store = self
-            .store
-            .lock()
-            .map_err(|_| GroupError::Storage("group store owner poisoned".into()))?;
-        if let Some(store) = store.as_ref() {
-            store.check_baseline()?;
-            return Ok(store.clone());
-        }
-        let kv: Arc<dyn RelayKvStore> = match &self.backend {
-            GroupBackend::RocksDbBeside(path) => Arc::new(RocksDbKvStore::open(path)?),
-            GroupBackend::Shared(kv) => Arc::clone(kv),
+        let opened = {
+            let mut store = self
+                .store
+                .lock()
+                .map_err(|_| GroupError::Storage("group store owner poisoned".into()))?;
+            if let Some(store) = store.as_ref() {
+                return Ok(store.clone());
+            }
+            let kv: Arc<dyn RelayKvStore> = match &self.backend {
+                GroupBackend::RocksDbBeside(path) => Arc::new(RocksDbKvStore::open(path)?),
+                GroupBackend::Shared(kv) => Arc::clone(kv),
+            };
+            let opened =
+                GroupStore::with_mirror_threshold(kv, self.mirror_threshold, self.group_policy);
+            *store = Some(opened.clone());
+            opened
         };
-        let opened =
-            GroupStore::with_mirror_threshold(kv, self.mirror_threshold, self.group_policy);
+        // Fail the first request on an unsupported namespace, outside the lock.
         opened.check_baseline()?;
-        *store = Some(opened.clone());
         Ok(opened)
     }
 }

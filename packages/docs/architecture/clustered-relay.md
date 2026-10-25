@@ -250,7 +250,8 @@ pub struct NodeClusterAttestation {
   values, 10,000,000-byte transactions and 5 seconds per attempt.
 - Drivers: `RocksDbKvStore` (one embedded database per process, with an in-process conflict
   resolver over RocksDB snapshots) and `FoundationDbKvStore` (`foundationdb` feature; every key
-  under one subspace prefix, `fdb_subspace_prefix` in `[registry.cluster]`).
+  under one subspace prefix, `fdb_subspace_prefix` in `[registry.cluster]`, which ends in `/`;
+  each transaction carries a 15 s timeout across its retries).
 - Today only `GroupStore` and the unused blob store use the contract. Which owners move onto it,
   and in what order, is the PR sequence in
   [relay-ha-cluster.md](../../../docs/plans/relay-ha-cluster.md); there is no snapshot

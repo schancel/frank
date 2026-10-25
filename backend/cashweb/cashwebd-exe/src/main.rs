@@ -127,10 +127,14 @@ fn main() -> Result<()> {
     };
     let (conf, mailbox_mode, chains) =
         read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
+    let driver = conf.registry.storage_driver()?;
+    // `--check-config` refuses what a start would refuse before touching state: a driver this
+    // build lacks, and missing, unreadable or invalid provisioned identity files.
+    require_driver_built(&driver)?;
+    let provisioned = load_provisioned(&conf.registry)?;
     if check_only {
         return Ok(());
     }
-    let driver = conf.registry.storage_driver()?;
     // The FDB client network is process-wide: boot it once, before any store opens, and stop it
     // only after the runtime and every blocking worker that may call a store have finished.
     let fdb_network = boot_fdb_network(&driver)?;
@@ -138,10 +142,63 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .wrap_err("Starting the async runtime")?;
-    let result = runtime.block_on(run(conf, mailbox_mode, chains, driver, check_db));
-    runtime.shutdown_timeout(Duration::from_secs(30));
+    let result = runtime.block_on(run(
+        conf,
+        mailbox_mode,
+        chains,
+        driver,
+        provisioned,
+        check_db,
+    ));
+    // Dropping the runtime waits for every blocking worker to return (unlike
+    // `shutdown_timeout`, which detaches them). FoundationDB calls return within
+    // `FDB_TRANSACTION_TIMEOUT`, so no store call is still running when the network stops.
+    drop(runtime);
     drop(fdb_network);
     result
+}
+
+/// Operator-provisioned identity files, read before any state opens.
+struct Provisioned {
+    session: Option<SessionSecret>,
+    vapid: Option<VapidKeyPair>,
+}
+
+/// Read `registry.session_secret_file` and `registry.vapid_private_key_file`. They are read,
+/// never created: a replica with a missing, loosely permissioned or wrong file fails without
+/// touching its disk.
+fn load_provisioned(registry: &cashweb_config::RegistryConf) -> Result<Provisioned> {
+    let session = registry
+        .session_secret_file
+        .as_deref()
+        .map(|path| {
+            SessionSecret::load_provisioned(path).wrap_err_with(|| {
+                format!("Reading registry.session_secret_file {}", path.display())
+            })
+        })
+        .transpose()?;
+    let vapid = registry
+        .vapid_private_key_file
+        .as_deref()
+        .map(VapidKeyPair::load_provisioned)
+        .transpose()
+        .map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!("registry.vapid_private_key_file: {error}"))
+        })?;
+    Ok(Provisioned { session, vapid })
+}
+
+/// Refuse a storage driver this binary was built without.
+fn require_driver_built(driver: &RelayStorageDriver) -> Result<()> {
+    match driver {
+        RelayStorageDriver::FoundationDb { .. } if !cfg!(feature = "foundationdb") => {
+            Err(bitcoinsuite_error::Report::msg(
+                "registry.cluster.driver = \"foundationdb\" needs a cashwebd-exe built with \
+                 `--features foundationdb` (which links the FoundationDB 7.3 client library)",
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(feature = "foundationdb")]
@@ -155,13 +212,18 @@ fn boot_fdb_network(driver: &RelayStorageDriver) -> Result<Option<FdbNetwork>> {
         #[cfg(feature = "foundationdb")]
         RelayStorageDriver::FoundationDb { .. } => {
             // SAFETY: called once, from `main`, which drops the guard after the runtime.
-            Ok(Some(unsafe { FdbNetwork::boot() }))
+            let network = unsafe { FdbNetwork::boot() }.map_err(|error| {
+                bitcoinsuite_error::Report::msg(format!(
+                    "Starting the FoundationDB network: {error}"
+                ))
+            })?;
+            Ok(Some(network))
         }
         #[cfg(not(feature = "foundationdb"))]
-        RelayStorageDriver::FoundationDb { .. } => Err(bitcoinsuite_error::Report::msg(
-            "registry.cluster.driver = \"foundationdb\" needs a cashwebd-exe built with \
-             `--features foundationdb` (which links the FoundationDB 7.3 client library)",
-        )),
+        RelayStorageDriver::FoundationDb { .. } => {
+            require_driver_built(driver)?;
+            unreachable!("refused by require_driver_built")
+        }
     }
 }
 
@@ -191,7 +253,7 @@ fn group_backend(
             Ok(GroupBackend::Shared(Arc::new(store)))
         }
         #[cfg(not(feature = "foundationdb"))]
-        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by boot_fdb_network"),
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by require_driver_built"),
     }
 }
 
@@ -226,34 +288,56 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
     }
 }
 
+/// Open a shared group backend and read its format marker. The FoundationDB transaction
+/// timeout bounds the wait, so an unreachable cluster fails here with a typed error.
+async fn probe_shared_groups(
+    groups: &GroupBackend,
+    policy: cashweb_config::GroupAppendPolicy,
+) -> Result<()> {
+    let GroupBackend::Shared(_) = groups else {
+        return Ok(());
+    };
+    let owner = cashweb_registry::store::groups::Owner::new(groups.clone(), policy);
+    tokio::task::spawn_blocking(move || owner.get().map(drop))
+        .await
+        .wrap_err("FoundationDB probe task failed")?
+        .map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Reading the FoundationDB group store: {error}"
+            ))
+        })?;
+    info!("FoundationDB group store is readable");
+    Ok(())
+}
+
+/// A stopped FoundationDB network cannot be restarted in this process, and calls already
+/// waiting on it never return. Exit so the supervisor restarts the replica.
+fn watch_fdb_network() {
+    #[cfg(feature = "foundationdb")]
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            if FdbNetwork::failed() {
+                tracing::error!("FoundationDB network thread stopped; exiting for a restart");
+                std::process::exit(70);
+            }
+        }
+    });
+}
+
 async fn run(
     conf: CashwebdConf,
     mailbox_mode: MonadMailboxMode,
     chains: RelayChains,
     driver: RelayStorageDriver,
+    provisioned: Provisioned,
     check_db: bool,
 ) -> Result<()> {
-    // Operator-provisioned identity files are read, never created, and before any state opens:
-    // a replica with a missing or wrong file fails without touching its disk.
-    let provisioned_session = conf
-        .registry
-        .session_secret_file
-        .as_deref()
-        .map(|path| {
-            SessionSecret::load_provisioned(path).wrap_err_with(|| {
-                format!("Reading registry.session_secret_file {}", path.display())
-            })
-        })
-        .transpose()?;
-    let provisioned_vapid = conf
-        .registry
-        .vapid_private_key_file
-        .as_deref()
-        .map(VapidKeyPair::load_provisioned)
-        .transpose()
-        .map_err(|error| {
-            bitcoinsuite_error::Report::msg(format!("registry.vapid_private_key_file: {error}"))
-        })?;
+    let Provisioned {
+        session: provisioned_session,
+        vapid: provisioned_vapid,
+    } = provisioned;
     if let Some(parent) = conf
         .registry
         .db_path
@@ -268,11 +352,16 @@ async fn run(
         })?;
     }
     let db = Db::open(&conf.registry.db_path)?;
+    let groups = group_backend(&driver, &conf.registry.db_path)?;
+    // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
+    probe_shared_groups(&groups, conf.registry.groups).await?;
     if check_db {
         return Ok(());
     }
+    if matches!(driver, RelayStorageDriver::FoundationDb { .. }) {
+        watch_fdb_network();
+    }
     log_cluster_shape(&conf.registry, &driver);
-    let groups = group_backend(&driver, &conf.registry.db_path)?;
     // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.
     // A single node keeps it beside the database (not in it); it is not a wallet key.
     let session = match provisioned_session {
@@ -328,25 +417,6 @@ async fn run(
             provisioned_vapid,
         },
     ));
-    if matches!(driver, RelayStorageDriver::FoundationDb { .. }) {
-        // Fail the start, not the first request, when the cluster cannot be read.
-        let probe = Arc::clone(&registry);
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            tokio::task::spawn_blocking(move || probe.check_group_store()),
-        )
-        .await
-        .map_err(|_| {
-            bitcoinsuite_error::Report::msg("FoundationDB did not answer within 30 seconds")
-        })?
-        .wrap_err("FoundationDB probe task failed")?
-        .map_err(|error| {
-            bitcoinsuite_error::Report::msg(format!(
-                "Reading the FoundationDB group store: {error}"
-            ))
-        })?;
-        info!("FoundationDB group store is readable");
-    }
     // Every upstream proves it is its chain before it carries traffic; startup waits briefly for
     // the first round and the rest are checked again in the background.
     let chains = Arc::new(chains);

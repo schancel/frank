@@ -440,7 +440,10 @@ pub struct ClusterConf {
     /// Optional FoundationDB `fdb.cluster` configuration file path (`#1575`).
     #[serde(default)]
     pub fdb_cluster_file: Option<PathBuf>,
-    /// Optional FoundationDB tuple subspace prefix (`#1575`).
+    /// FoundationDB key prefix for this relay's state, e.g. `frank-prod/`: one or more
+    /// segments of letters, digits, `-` or `_`, each followed by `/`. The trailing separator
+    /// keeps `frank/` and `frank2/` apart; two relays must not use prefixes where one is a
+    /// leading run of the other's segments (`frank/` and `frank/lab/`).
     #[serde(default)]
     pub fdb_subspace_prefix: Option<String>,
     /// Core NATS pub/sub URL (e.g. `nats://nats-cluster:4222`).
@@ -554,6 +557,9 @@ impl RegistryConf {
                     .clone()
                     .filter(|prefix| !prefix.is_empty())
                     .ok_or(ClusterConfigError::MissingFdbSettings)?;
+                if !is_valid_subspace_prefix(&subspace_prefix) {
+                    return Err(ClusterConfigError::InvalidFdbSubspacePrefix);
+                }
                 Ok(RelayStorageDriver::FoundationDb {
                     cluster_file,
                     subspace_prefix,
@@ -606,6 +612,9 @@ impl RegistryConf {
         let Some(cluster) = &self.cluster else {
             return Ok(());
         };
+        if cluster.preview_replica_local_owners && !cluster.enabled {
+            return Err(ClusterConfigError::PreviewWithoutCluster);
+        }
         let enabled_url = match &cluster.nats {
             Some(nats) if nats.enabled => Some(nats.url.as_str()),
             Some(_) => None,
@@ -624,7 +633,7 @@ impl RegistryConf {
             && !cluster
                 .cluster_name
                 .as_deref()
-                .is_some_and(is_nats_subject_token)
+                .is_some_and(is_valid_cluster_name)
         {
             return Err(ClusterConfigError::InvalidClusterName);
         }
@@ -658,8 +667,25 @@ impl RegistryConf {
     }
 }
 
-/// One NATS subject token: 1 to 64 ASCII letters, digits, `-` or `_` (no `.`, `*`, `>` or space).
-fn is_nats_subject_token(name: &str) -> bool {
+/// `segment/segment/…/`: each segment letters, digits, `-` or `_`, every one ending in `/`.
+fn is_valid_subspace_prefix(prefix: &str) -> bool {
+    prefix.strip_suffix('/').is_some_and(|body| {
+        body.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+    })
+}
+
+/// The cluster-name rule: 1 to 64 ASCII letters, digits, `-` or `_`, so the name is a single
+/// NATS subject token (`frank.<cluster>.…`). This is the one owner of the rule; the event bus
+/// checks subjects with it.
+pub const CLUSTER_NAME_RULE: &str = "cluster name must be 1 to 64 letters, digits, '-' or '_'";
+
+/// Whether `name` satisfies [`CLUSTER_NAME_RULE`].
+pub fn is_valid_cluster_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name
             .bytes()
@@ -724,6 +750,10 @@ pub enum ClusterConfigError {
     UnusedFdbSettings,
     /// The FoundationDB driver needs `fdb_cluster_file` and a non-empty `fdb_subspace_prefix`.
     MissingFdbSettings,
+    /// `fdb_subspace_prefix` is not `segment/…/` (see [`ClusterConf::fdb_subspace_prefix`]).
+    InvalidFdbSubspacePrefix,
+    /// `preview_replica_local_owners` is set but cluster mode is off, so it would do nothing.
+    PreviewWithoutCluster,
     /// Enabled Core NATS requires an explicit NATS/TLS endpoint with a host.
     InvalidNatsUrl,
     /// Enabled Core NATS requires a `cluster_name` that is one NATS subject token.
@@ -745,6 +775,8 @@ impl fmt::Display for ClusterConfigError {
             Self::UnusedKvrocksUrl => formatter.write_str("registry.cluster.kvrocks_url is unsupported: no relay driver uses Kvrocks, so this endpoint would be ignored"),
             Self::UnusedFdbSettings => formatter.write_str("registry.cluster.fdb_cluster_file and fdb_subspace_prefix are only used with driver = \"foundationdb\""),
             Self::MissingFdbSettings => formatter.write_str("registry.cluster.driver = \"foundationdb\" requires fdb_cluster_file and a non-empty fdb_subspace_prefix"),
+            Self::InvalidFdbSubspacePrefix => formatter.write_str("registry.cluster.fdb_subspace_prefix must be one or more segments of letters, digits, '-' or '_', each ending in '/' (for example \"frank-prod/\"), so no two prefixes overlap by accident"),
+            Self::PreviewWithoutCluster => formatter.write_str("registry.cluster.preview_replica_local_owners only applies with registry.cluster.enabled = true; remove it or enable cluster mode"),
             Self::InvalidNatsUrl => formatter.write_str("enabled registry.cluster.nats requires a valid nats:// or tls:// URL with a host"),
             Self::InvalidClusterName => formatter.write_str("enabled registry.cluster.nats requires registry.cluster.cluster_name: 1 to 64 letters, digits, '-' or '_' (it names the NATS subjects frank.<cluster>.…)"),
             Self::ClusterRequiresNats => formatter.write_str("registry.cluster.enabled requires an enabled [registry.cluster.nats] bus"),
@@ -2903,7 +2935,7 @@ continuity_file = "/var/lib/frank/continuity"
             enabled = true
             driver = "foundationdb"
             fdb_cluster_file = "/etc/foundationdb/fdb.cluster"
-            fdb_subspace_prefix = "frank_prod:"
+            fdb_subspace_prefix = "frank_prod/"
             kvrocks_url = "redis://kvrocks-cluster:6666"
             nats_url = "nats://nats-cluster:4222"
             cluster_name = "frank-prod-us"
@@ -2915,7 +2947,7 @@ continuity_file = "/var/lib/frank/continuity"
             parsed.fdb_cluster_file(),
             Some(std::path::Path::new("/etc/foundationdb/fdb.cluster"))
         );
-        assert_eq!(parsed.fdb_subspace_prefix(), Some("frank_prod:"));
+        assert_eq!(parsed.fdb_subspace_prefix(), Some("frank_prod/"));
         assert_eq!(
             parsed.kvrocks_url.as_deref(),
             Some("redis://kvrocks-cluster:6666")
@@ -3018,6 +3050,65 @@ continuity_file = "/var/lib/frank/continuity"
         assert!(!conf
             .replica_local_owners()
             .contains(&super::ReplicaLocalOwner::Groups));
+    }
+
+    #[test]
+    fn foundationdb_subspace_prefix_ends_every_segment_with_a_separator() {
+        use super::{ClusterConfigError, RelayStorageDriver};
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        let with_prefix = |prefix: &str| ClusterConf {
+            driver: "foundationdb".into(),
+            fdb_cluster_file: Some("/cluster/fdb.cluster".into()),
+            fdb_subspace_prefix: Some(prefix.into()),
+            ..ClusterConf::default()
+        };
+        // Without a trailing separator `frank` would be a key prefix of `frank2`'s keys.
+        for prefix in [
+            "frank",
+            "frank:",
+            "/frank/",
+            "frank//",
+            "frank/lab",
+            "fr ank/",
+            "frank.prod/",
+            "\u{ff}/",
+        ] {
+            conf.cluster = Some(with_prefix(prefix));
+            assert_eq!(
+                conf.storage_driver(),
+                Err(ClusterConfigError::InvalidFdbSubspacePrefix),
+                "{prefix:?}"
+            );
+        }
+        for prefix in ["frank/", "frank-prod/", "frank_lab/eu-1/"] {
+            conf.cluster = Some(with_prefix(prefix));
+            assert!(
+                matches!(
+                    conf.storage_driver(),
+                    Ok(RelayStorageDriver::FoundationDb { .. })
+                ),
+                "{prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_flag_is_refused_outside_cluster_mode() {
+        use super::ClusterConfigError;
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        conf.cluster = Some(ClusterConf {
+            enabled: false,
+            preview_replica_local_owners: true,
+            ..ClusterConf::default()
+        });
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::PreviewWithoutCluster)
+        );
     }
 
     /// A cluster table that passes every rule except the one a case removes.

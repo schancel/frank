@@ -593,6 +593,7 @@ dependencies = [
  "cashweb-config",
  "cashweb-payload",
  "cashweb-registry",
+ "futures",
  "hex",
  "rand 0.8.5",
  "reqwest",
@@ -603,6 +604,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]

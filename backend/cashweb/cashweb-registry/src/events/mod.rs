@@ -142,15 +142,11 @@ pub fn normalize_address_hex(hex_str: &str) -> Result<String, EventBusError> {
 
 /// Check that `cluster` is one NATS subject token: 1 to 64 ASCII letters, digits, `-` or `_`.
 pub fn validate_cluster_name(cluster: &str) -> Result<(), EventBusError> {
-    if (1..=64).contains(&cluster.len())
-        && cluster
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
+    if cashweb_config::is_valid_cluster_name(cluster) {
         Ok(())
     } else {
         Err(EventBusError::InvalidSubject(
-            "cluster name must be 1 to 64 letters, digits, '-' or '_'".into(),
+            cashweb_config::CLUSTER_NAME_RULE.into(),
         ))
     }
 }

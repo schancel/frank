@@ -21,7 +21,7 @@ import {
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import type { MonadIdentity } from '@frank/wallet/evm-identity'
 import { accountSession } from '../accounts/session'
-import { BLIND_WAKEUP_HANDLED_TYPE } from '../../src-pwa/custom-service-worker'
+import { BLIND_WAKEUP_HANDLED_TYPE } from '../../src-pwa/blind-wakeup-messages'
 import { messagingWallet } from './identity-session'
 
 const CACHED_PUSH_SUBSCRIPTION_STORAGE_KEY = 'frank-webpush-subscription-v1'

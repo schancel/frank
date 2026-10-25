@@ -35,6 +35,8 @@
     "regtest:monad-status": "node --import tsx demo/regtest/monad-regtest.ts status",
     "regtest:monad-start": "node --import tsx demo/regtest/monad-regtest.ts start",
     "regtest:monad-stop": "node --import tsx demo/regtest/monad-regtest.ts stop",
+    "regtest:monad-fund": "node --import tsx demo/regtest/monad-regtest.ts fund",
+    "regtest:monad-sweep": "node --import tsx demo/regtest/monad-regtest.ts sweep",
     "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
     "test": "jest"
   },

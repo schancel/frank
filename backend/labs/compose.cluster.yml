@@ -3,8 +3,8 @@
 # Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18080), FRANK_LAB_CLUSTER_SUBNET
 # (first three octets of the lab's /24, default 10.89.42), FRANK_LAB_SOLONET_RPC_URL (solonet's
 # JSON-RPC as containers reach it, for example http://host.docker.internal:48080 while
-# `yarn --cwd packages/bot regtest:monad-start` runs it). Every group write pays on solonet, so
-# without it the relays start but refuse every group write with 503.
+# `yarn --cwd packages/bot regtest:monad-start` runs it). Every group write and message stamp pays
+# on solonet, so without it the relays start but refuse every group write and message. scripts/lab-cluster-app.sh starts it all for the app.
 name: frank-lab-cluster
 
 x-relay: &relay

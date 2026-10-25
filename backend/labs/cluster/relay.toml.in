@@ -34,8 +34,9 @@ driver = "foundationdb"
 fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
-# Groups, large values, the registry database and the directory are shared; the other owners
-# still keep their state on each replica, and the startup log names them.
+# Groups, direct messages, large values, the registry database and the directory are shared; the
+# forum and the hourly quotas still keep their state on each replica, and the startup log names
+# them.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]
@@ -65,9 +66,10 @@ payee = "burn"
 
 # solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
 # MONAD_REGTEST_HTTP_RPC_URL; unset, the row is omitted, the relay serves no chain and every
-# group write is answered 503 group_payment_check_unavailable. Set, the relay checks the
-# upstream's chain id and the checkpoint block before serving it. The mailbox below can be
-# switched on once the direct messages owner is shared (HA step 6).
+# group write is answered 503 group_payment_check_unavailable, and no message is admitted. Set,
+# the relay checks the upstream's chain id and the checkpoint block before serving it. No
+# WebSocket upstream: each new one is verified against the checkpoint, which solonet prunes
+# after about half an hour.
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000
@@ -81,9 +83,17 @@ checkpoint_block_number = @SOLONET_CHECKPOINT_NUMBER@
 checkpoint_block_hash = "@SOLONET_CHECKPOINT_HASH@"
 max_get_logs_range = 10
 
-# Message routes off: direct messages are still replica-local until HA step 6.
+# Direct messages, shared by all three replicas through FoundationDB (HA step 6). Stamps are
+# verified and broadcast through the solonet row above. 1000000000000 wei = 0.000001 MON.
 [registry.monad_mailbox]
-enabled = false
+enabled = true
+min_value_wei = "1000000000000"
+
+# The forum (`/topics`): every post and vote burns to this address on solonet. Its state is still
+# replica-local (HA step 9), which the startup log names; the app works, but a cursor from one
+# replica may not continue on another.
+[registry.forum]
+burn_address = "0x000000000000000000000000000000000000dEaD"
 
 [registry.pop]
 enabled = false
@@ -91,3 +101,7 @@ monad_rpc_url = "http://unused.invalid"
 hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"
+
+# The price and energy feed from the relay's bundled history; the lab asks no provider.
+[registry.oracle]
+collect = false

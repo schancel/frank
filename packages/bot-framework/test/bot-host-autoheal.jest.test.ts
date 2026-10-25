@@ -111,6 +111,9 @@ describe("FrankBotHost auto-healing", () => {
         relayBaseUrl: "http://127.0.0.1:8098",
         label: "qwen",
         force: true,
+        // The profile statement is signed for the bot's own network, not a default one.
+        network: instance.directory.network,
+        statementNetwork: instance.directory.network,
       })
     );
   });

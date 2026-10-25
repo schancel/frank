@@ -6,6 +6,8 @@
  *
  *   yarn --cwd packages/bot regtest:monad-status   # is the VM up, is the chain making blocks
  *   yarn --cwd packages/bot regtest:monad-stop     # remove the chain and stop the VM
+ *   yarn --cwd packages/bot regtest:monad-fund 0x... 5   # the faucet pays 5 MON to 0x...
+ *   yarn --cwd packages/bot regtest:monad-sweep < keys  # each key (one per line) pays all back
  *
  * Solonet only runs on x86_64 Linux. On an Apple silicon Mac that is an emulated VM, set up once:
  *
@@ -29,7 +31,7 @@
  */
 import { execFile } from 'child_process'
 
-import { JsonRpcProvider, Wallet } from 'ethers'
+import { JsonRpcProvider, parseEther, Wallet } from 'ethers'
 
 import { RegtestChain, sleep } from './regtest-chain'
 
@@ -307,6 +309,66 @@ export async function startMonadRegtest(
   }
 }
 
+/**
+ * Pays `amount` wei from the faucet to `address` on the running solonet and waits for it to land.
+ * Needs only the chain's JSON-RPC, not a checkpoint: this is the `fund` command, for funding app
+ * accounts and bot funding wallets of a lab by hand. Returns the transaction hash.
+ */
+export async function fundFromFaucet(
+  address: string,
+  amount: bigint,
+  rpcUrl = process.env.FRANK_SOLONET_RPC_URL ?? `http://127.0.0.1:${RPC_PORT}`,
+): Promise<string> {
+  return sendAll(new Wallet(FAUCET_PRIVATE_KEY), address, rpcUrl, amount)
+}
+
+/**
+ * Sends `amount` wei (default: the whole balance less the fee) from `key` to `to` on solonet:
+ * the `sweep` command, which returns a lab's test funds to the faucet. Returns the hash, or
+ * undefined when there is nothing worth sending.
+ */
+export async function sweepToFaucet(
+  key: string,
+  rpcUrl = process.env.FRANK_SOLONET_RPC_URL ?? `http://127.0.0.1:${RPC_PORT}`,
+): Promise<string | undefined> {
+  const faucet = new Wallet(FAUCET_PRIVATE_KEY)
+  try {
+    return await sendAll(new Wallet(key), faucet.address, rpcUrl)
+  } catch (err) {
+    if (err instanceof Error && err.message === 'nothing to sweep') return undefined
+    throw err
+  }
+}
+
+async function sendAll(signer: Wallet, to: string, rpcUrl: string, amount?: bigint): Promise<string> {
+  const provider = new JsonRpcProvider(rpcUrl, MONAD_REGTEST_CHAIN_ID, { staticNetwork: true, cacheTimeout: -1 })
+  provider.pollingInterval = 250
+  try {
+    const reported = BigInt(await provider.send('eth_chainId', []))
+    if (reported !== MONAD_REGTEST_CHAIN_ID) {
+      throw new Error(`${rpcUrl} reports chain id ${reported}, not a Monad solonet (${MONAD_REGTEST_CHAIN_ID})`)
+    }
+    const wallet = signer.connect(provider)
+    const fee = await provider.getFeeData()
+    const maxFeePerGas = (fee.maxFeePerGas ?? fee.gasPrice ?? 0n) * 2n
+    const maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? 0n
+    let value = amount
+    if (value === undefined) {
+      // Monad charges the gas limit at the max fee, so keep exactly that back.
+      const balance = await provider.getBalance(wallet.address, 'pending')
+      value = balance - 21_000n * maxFeePerGas
+      if (value <= 0n) throw new Error('nothing to sweep')
+    }
+    const nonce = await provider.getTransactionCount(wallet.address, 'pending')
+    const tx = await wallet.sendTransaction({ to, value, nonce, gasLimit: 21_000n, maxFeePerGas, maxPriorityFeePerGas })
+    const receipt = await tx.wait(1, 120_000)
+    if (!receipt || receipt.status !== 1) throw new Error(`payment ${tx.hash} did not succeed`)
+    return tx.hash
+  } finally {
+    provider.destroy()
+  }
+}
+
 if (require.main === module) {
   const command = process.argv[2]
   const main = async () => {
@@ -316,8 +378,32 @@ if (require.main === module) {
     } else if (command === 'start') {
       const { rpcUrl } = await ensureSolonet()
       console.log(`solonet is making blocks at ${rpcUrl}`)
+    } else if (command === 'fund') {
+      // fund <address> <amount in MON>
+      const [address, amount] = process.argv.slice(3)
+      if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address) || !amount) {
+        throw new Error('usage: monad-regtest.ts fund <0x address> <amount in MON, for example 5>')
+      }
+      const hash = await fundFromFaucet(address, parseEther(amount))
+      console.log(`faucet paid ${amount} MON to ${address} in ${hash}`)
+      return
+    } else if (command === 'sweep') {
+      // sweep: reads 0x private keys, one per line, from stdin (never from argv, which `ps` shows).
+      const keys = (await new Promise<string>(done => {
+        let text = ''
+        process.stdin.on('data', chunk => (text += chunk))
+        process.stdin.on('end', () => done(text))
+      }))
+        .split(/\s+/)
+        .filter(Boolean)
+      for (const key of keys) {
+        const address = new Wallet(key).address
+        const hash = await sweepToFaucet(key)
+        console.log(hash ? `swept ${address} to the faucet in ${hash}` : `${address}: nothing to sweep`)
+      }
+      return
     } else if (command !== 'status') {
-      throw new Error('usage: monad-regtest.ts status|start|stop')
+      throw new Error('usage: monad-regtest.ts status|start|stop|fund <address> <MON>|sweep (keys on stdin)')
     }
     const status = await solonetStatus()
     console.log(

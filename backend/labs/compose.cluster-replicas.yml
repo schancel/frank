@@ -1,0 +1,11 @@
+# Layered over compose.cluster.yml: each relay also on its own 127.0.0.1 port, for host-side checks
+# that choose which replica answers (packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts runs
+# its own routing proxy on FRANK_LAB_CLUSTER_PORT instead of the lab's nginx). Ports:
+# FRANK_LAB_RELAY_A_PORT, _B_ and _C_ (default 18301, 18302, 18303).
+services:
+  relay-a:
+    ports: ["127.0.0.1:${FRANK_LAB_RELAY_A_PORT:-18301}:8080"]
+  relay-b:
+    ports: ["127.0.0.1:${FRANK_LAB_RELAY_B_PORT:-18302}:8080"]
+  relay-c:
+    ports: ["127.0.0.1:${FRANK_LAB_RELAY_C_PORT:-18303}:8080"]

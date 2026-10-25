@@ -1285,24 +1285,40 @@ impl GroupStore {
     }
 }
 
+/// Where the registry's groups keep their state, chosen by daemon composition.
+#[derive(Debug, Clone)]
+pub enum GroupBackend {
+    /// This replica's RocksDB beside the registry database, opened on the first group request.
+    RocksDbBeside(PathBuf),
+    /// A transaction store shared by every replica (FoundationDB), opened by composition.
+    Shared(Arc<dyn RelayKvStore>),
+}
+
+impl GroupBackend {
+    /// The RocksDB group store beside `registry_db` (`<db>.groups-v1`).
+    pub fn rocksdb_beside(registry_db: &std::path::Path) -> Self {
+        Self::RocksDbBeside(registry_db.with_extension(GROUP_STORE_EXTENSION))
+    }
+}
+
 /// Lazy owner of the registry's durable [`GroupStore`], opened on first group request.
 ///
 /// Opening is serialized by the mutex: concurrent first requests wait for the one open rather
 /// than each opening the RocksDB directory, which would fail on its `LOCK` for all but one.
-/// Opening blocks, so async callers reach this through `spawn_blocking`.
+/// Opening and every store call block, so async callers reach this through `spawn_blocking`.
 #[derive(Debug)]
 pub struct Owner {
-    path: PathBuf,
+    backend: GroupBackend,
     store: Mutex<Option<GroupStore>>,
     mirror_threshold: usize,
     group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 impl Owner {
-    /// Create a lazy group store owner beside `registry_db`.
-    pub fn new(registry_db: PathBuf, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
+    /// Create a lazy group store owner over `backend`.
+    pub fn new(backend: GroupBackend, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
         Self {
-            path: registry_db.with_extension(GROUP_STORE_EXTENSION),
+            backend,
             store: Mutex::new(None),
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
             group_policy,
@@ -1319,11 +1335,12 @@ impl Owner {
             store.check_baseline()?;
             return Ok(store.clone());
         }
-        let opened = GroupStore::with_mirror_threshold(
-            Arc::new(RocksDbKvStore::open(&self.path)?),
-            self.mirror_threshold,
-            self.group_policy,
-        );
+        let kv: Arc<dyn RelayKvStore> = match &self.backend {
+            GroupBackend::RocksDbBeside(path) => Arc::new(RocksDbKvStore::open(path)?),
+            GroupBackend::Shared(kv) => Arc::clone(kv),
+        };
+        let opened =
+            GroupStore::with_mirror_threshold(kv, self.mirror_threshold, self.group_policy);
         opened.check_baseline()?;
         *store = Some(opened.clone());
         Ok(opened)
@@ -1835,7 +1852,7 @@ mod tests {
     fn concurrent_first_requests_share_one_store_open() {
         let dir = tempdir::TempDir::new("group-owner").unwrap();
         let owner = Arc::new(Owner::new(
-            dir.path().join("registry.db"),
+            GroupBackend::rocksdb_beside(&dir.path().join("registry.db")),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2693,7 +2710,7 @@ mod tests {
             kv.put(&key, &raw).unwrap();
         }
         assert!(Owner::new(
-            registry,
+            GroupBackend::rocksdb_beside(&registry),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0
             }

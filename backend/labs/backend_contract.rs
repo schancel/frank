@@ -40,8 +40,8 @@ async fn real_nats_notification_and_durable_offline_catch_up() {
     #[cfg(feature = "foundationdb")]
     let _network = unsafe { foundationdb::boot() };
     let url = std::env::var("FRANK_LAB_NATS_URL").expect("FRANK_LAB_NATS_URL required");
-    let writer_bus = CoreNatsEventBus::connect(&url).await.unwrap();
-    let reader_bus = CoreNatsEventBus::connect(&url).await.unwrap();
+    let writer_bus = CoreNatsEventBus::connect(&url, "nats-lab").await.unwrap();
+    let reader_bus = CoreNatsEventBus::connect(&url, "nats-lab").await.unwrap();
     // Fresh synthetic recipient; no account keys or existing inboxes.
     let recipient = hex::encode(rand::random::<[u8; 20]>());
     let mut events = reader_bus.subscribe(&recipient).await.unwrap();

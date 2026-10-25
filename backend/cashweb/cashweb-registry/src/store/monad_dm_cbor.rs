@@ -143,6 +143,10 @@ pub(crate) struct Owner {
     wakeups: Mutex<Vec<crate::store::notification_policy::BlindWakeupEvent>>,
     /// Per-recipient timestamp (ms) of the last emitted blind wakeup for coalescing.
     last_wakeup_at_ms: Mutex<std::collections::HashMap<Address, i64>>,
+    /// Operator-provisioned VAPID key (`registry.vapid_private_key_file`), read by composition.
+    /// When present it is the relay's only VAPID key: nothing is read from the environment or
+    /// generated into the store.
+    provisioned_vapid: Option<crate::store::notification_policy::VapidKeyPair>,
 }
 impl Owner {
     /// The store that belongs beside the registry database at `registry_db`.
@@ -157,7 +161,17 @@ impl Owner {
             auth_nonces_swept_at_ms: Mutex::new(None),
             wakeups: Default::default(),
             last_wakeup_at_ms: Default::default(),
+            provisioned_vapid: None,
         }
+    }
+
+    /// Use the operator-provisioned VAPID key instead of an environment or stored one.
+    pub(crate) fn with_provisioned_vapid(
+        mut self,
+        vapid: Option<crate::store::notification_policy::VapidKeyPair>,
+    ) -> Self {
+        self.provisioned_vapid = vapid;
+        self
     }
     /// Whether this message's payments may be handed to the node now: at most once per
     /// `interval`, so a client repeating one message cannot make the relay hammer the node.
@@ -517,6 +531,8 @@ impl Owner {
     /// Return the relay's cluster-safe or persisted VAPID P-256 keypair.
     ///
     /// Priority:
+    /// 0. The operator-provisioned key file (`registry.vapid_private_key_file`), required in
+    ///    cluster mode so every replica signs with the same key.
     /// 1. `FRANK_VAPID_PRIVATE_KEY` environment variable (hex or base64url 32-byte P-256 scalar),
     ///    enabling stateless horizontal scaling across multi-pod relay clusters.
     /// 2. Persisted 32-byte key under `b"M_vapid_privkey"` in the canonical DM RocksDB store,
@@ -526,6 +542,9 @@ impl Owner {
     pub(crate) fn get_or_init_vapid_keypair(
         &self,
     ) -> Result<crate::store::notification_policy::VapidKeyPair> {
+        if let Some(provisioned) = &self.provisioned_vapid {
+            return Ok(provisioned.clone());
+        }
         if let Ok(raw_env) = std::env::var("FRANK_VAPID_PRIVATE_KEY") {
             let trimmed = raw_env.trim();
             if !trimmed.is_empty() {

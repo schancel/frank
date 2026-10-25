@@ -46,6 +46,8 @@ monad_rpc_url = "http://unused.invalid"
 hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"
+[registry.cluster]
+cluster_name = "diagnostics"
 [registry.cluster.nats]
 enabled = true
 url = "{url}"

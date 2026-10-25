@@ -47,8 +47,16 @@ async fn replica(
 async fn real_nats_group_replica_wakeup_and_durable_reconnect() {
     let nats_url = std::env::var("FRANK_GROUP_TEST_NATS_URL")
         .expect("set FRANK_GROUP_TEST_NATS_URL to an existing disposable NATS server");
-    let publisher = Arc::new(CoreNatsEventBus::connect(&nats_url).await.unwrap());
-    let subscriber = Arc::new(CoreNatsEventBus::connect(&nats_url).await.unwrap());
+    let publisher = Arc::new(
+        CoreNatsEventBus::connect(&nats_url, "group-nats-test")
+            .await
+            .unwrap(),
+    );
+    let subscriber = Arc::new(
+        CoreNatsEventBus::connect(&nats_url, "group-nats-test")
+            .await
+            .unwrap(),
+    );
     // Synthetic shared KV authority models two replicas of the same relay, not two independent journals.
     let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
         per_message_price_credits: 0,

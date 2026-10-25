@@ -190,7 +190,7 @@ flowchart TD
     subgraph ClusteredBackend ["Clustered Relay Node Architecture"]
         IngressNode["Relay Ingress Node"]
         Kvrocks[("Apache Kvrocks<br/>(Metadata, Stamps, Mailbox Index)")]
-        CoreNATS{{"Ephemeral Core NATS<br/>Subject: frank.relay.notify.&lt;bob_hex&gt;"}}
+        CoreNATS{{"Ephemeral Core NATS<br/>Subject: frank.&lt;cluster&gt;.dm.&lt;bob_hex&gt;"}}
         WSNode["Relay WebSocket Connection Node"]
 
         PushDM --> IngressNode

@@ -1,4 +1,5 @@
-# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests.
+# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests, and the
+# cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`).
 # Keep server/client release versions identical. FDB's image supplies native libfdb_c.
 FROM foundationdb/foundationdb:7.3.63 AS fdb-client
 FROM rust:1-bookworm
@@ -24,6 +25,11 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     python3 /copy-test-artifact.py /tmp/kv-artifacts.json /kv-transaction-contract foundationdb_transaction_contract && \
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
     cargo test --locked -p cashweb-registry --features foundationdb --test lab_backend_contract --no-run --message-format=json > /tmp/lab-artifacts.json && \
-    python3 /copy-test-artifact.py /tmp/lab-artifacts.json /backend-contract real_nats_notification_and_durable_offline_catch_up
+    python3 /copy-test-artifact.py /tmp/lab-artifacts.json /backend-contract real_nats_notification_and_durable_offline_catch_up && \
+    find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
+    cargo test --locked -p cashwebd-exe --features foundationdb --test foundationdb_daemon --no-run --message-format=json > /tmp/daemon-artifacts.json && \
+    python3 /copy-test-artifact.py /tmp/daemon-artifacts.json /foundationdb-daemon cluster_mode_daemons_share_groups_through_foundationdb && \
+    cp target/debug/cashwebd-exe /cashwebd-exe
+ENV FRANK_CASHWEBD_EXE=/cashwebd-exe
 # The transaction contract starts its two FDB worker processes from its own executable.
-ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture"]
+ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture"]

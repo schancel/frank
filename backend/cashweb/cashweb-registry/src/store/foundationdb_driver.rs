@@ -20,6 +20,27 @@ const TRANSACTION_TOO_LARGE: i32 = 2101;
 const KEY_TOO_LARGE: i32 = 2102;
 const VALUE_TOO_LARGE: i32 = 2103;
 
+/// The process-wide FoundationDB client network, booted once by the host.
+pub struct FdbNetwork(#[allow(dead_code)] foundationdb::api::NetworkAutoStop);
+
+impl std::fmt::Debug for FdbNetwork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FdbNetwork")
+    }
+}
+
+impl FdbNetwork {
+    /// Start the FDB network thread (API version 7.3).
+    ///
+    /// # Safety
+    /// Call at most once per process. Drop the result after every [`FoundationDbKvStore`] and
+    /// every thread that may still call one has finished, and before the process exits; dropping
+    /// it stops the network and joins its thread.
+    pub unsafe fn boot() -> Self {
+        Self(foundationdb::boot())
+    }
+}
+
 /// A live FoundationDB cluster, scoped to one subspace prefix.
 pub struct FoundationDbKvStore {
     database: Database,

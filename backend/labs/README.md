@@ -12,7 +12,9 @@ NATS. There are no chain RPC credentials or wallet keys in these files.
 This ordinary implementation adds local test infrastructure only. The daemon
 currently opens the registry and direct-message stores with raw RocksDB APIs.
 `RelayKvStore` is a separate transaction contract with RocksDB and FoundationDB
-drivers; only the group store uses it, and the daemon does not select FoundationDB.
+drivers; only the group store uses it. A daemon built with `--features foundationdb`
+can select FoundationDB for groups (`registry.cluster.driver = "foundationdb"`); every
+other owner stays on the replica's RocksDB.
 NATS carries ephemeral wakeups, while durable store reads supply catch-up data.
 No persistent or wire format changes, migrations, production configuration changes,
 or deployment commands are part of these labs.
@@ -65,10 +67,10 @@ docker compose -f backend/labs/compose.rocks-nats.yml down --volumes
 
 ## FoundationDB + Core NATS infrastructure and driver contract
 
-This Compose file does **not** launch a FoundationDB-backed Frank relay. It
-provides FDB 7.3.63 and Core NATS, plus a `driver-contract` profile that runs the
-`RelayKvStore` transaction contract against the live cluster. Server and native
-client versions are matched.
+This Compose file does not run a long-lived relay service. It provides FDB 7.3.63
+and Core NATS, plus a `driver-contract` profile that runs the `RelayKvStore`
+transaction contract against the live cluster and then starts real cluster-mode
+relays as processes against it. Server and native client versions are matched.
 
 ```sh
 docker compose -f backend/labs/compose.foundationdb-nats.yml up -d fdb nats
@@ -108,6 +110,19 @@ contract as the Rocks lab, with `FoundationDbKvStore` selected at compile time b
 the feature. It reopens an independent client and deletes only its random test
 subspace's inbox rows on success. NATS does not provide the FDB
 durability or CAS.
+The third test (`cashwebd-exe/tests/foundationdb_daemon.rs`) starts the real
+`cashwebd-exe`, built with `--features foundationdb`, in cluster mode with the preview
+flag and freshly provisioned session-secret and VAPID files: replica A creates a group,
+replica B reads it and appends, A is killed, and replica C on an empty local disk reads
+the message. It checks that the startup log names the replica-local owners (and not
+groups) and that no session secret is generated beside the database. It uses a fresh
+cluster name and subspace per run and does not clear them.
+
+```sh
+FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster FRANK_LAB_NATS_URL=nats://nats:4222 \
+  cargo test -p cashwebd-exe --features foundationdb --test foundationdb_daemon -- --ignored
+```
+
 FDB advertises its container IP, so tests run inside the Compose network. Merely
 publishing its coordinator port would not provide a working host client on
 Docker Desktop. The FDB service therefore has no published host port. Its initial

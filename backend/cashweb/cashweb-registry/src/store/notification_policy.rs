@@ -638,6 +638,15 @@ impl VapidKeyPair {
         decode_vapid_private_key(encoded).map(|bytes| Self::from_private_key_bytes(&bytes))
     }
 
+    /// Read an operator-provisioned key file (`registry.vapid_private_key_file`): the 32-byte
+    /// private scalar as 64 hex characters or base64url text, surrounding whitespace ignored.
+    /// The file is never created. The error names the path, never the key.
+    pub fn load_provisioned(path: &std::path::Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("reading VAPID key file {}: {error}", path.display()))?;
+        Self::from_private_key_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+    }
+
     /// Generate a fresh random P-256 VAPID keypair.
     pub fn generate() -> Self {
         use rand::RngCore;
@@ -901,5 +910,23 @@ mod key_validation_tests {
             }
         }
         assert!(VapidKeyPair::from_private_key_str("invalid encoding").is_err());
+    }
+
+    #[test]
+    fn a_provisioned_vapid_key_file_is_read_and_never_created() {
+        let expected = VapidKeyPair::from_private_key_bytes(&[9u8; 32]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vapid-private-key");
+        assert!(VapidKeyPair::load_provisioned(&path).is_err());
+        assert!(!path.exists(), "a provisioned key must never be created");
+        std::fs::write(
+            &path,
+            format!("{}\n", hex::encode(expected.private_key_bytes())),
+        )
+        .unwrap();
+        assert!(VapidKeyPair::load_provisioned(&path).unwrap() == expected);
+        std::fs::write(&path, "not a key").unwrap();
+        let error = VapidKeyPair::load_provisioned(&path).unwrap_err();
+        assert!(error.contains("vapid-private-key"), "{error}");
     }
 }

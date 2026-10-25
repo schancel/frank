@@ -3,6 +3,12 @@ name = "cashwebd-exe"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# The FoundationDB transaction driver (`registry.cluster.driver = "foundationdb"`). It links the
+# FoundationDB 7.3 client library (libfdb_c), so a build with it needs that library installed.
+foundationdb = ["cashweb-registry/foundationdb"]
+
 [dependencies]
 bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
@@ -28,3 +34,10 @@ tracing-subscriber = "0.3.16"
 [dev-dependencies]
 # Temporary directories, automatically removed
 tempdir = "0.3"
+tempfile = "3"
+# The FoundationDB daemon test signs real group frames and talks HTTP to the relays.
+hex = "0.4"
+reqwest = { version = "0.11", features = ["json"] }
+secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
+serde_json = "1.0"
+sha2 = "0.10"

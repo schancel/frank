@@ -24,7 +24,10 @@ fn id_of(key: &str) -> u32 {
 
 #[test]
 fn registry_allocates_every_id_once() {
-    let ids: Vec<u64> = registry().iter().map(|t| t["id"].as_u64().unwrap()).collect();
+    let ids: Vec<u64> = registry()
+        .iter()
+        .map(|t| t["id"].as_u64().unwrap())
+        .collect();
     assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), ids.len());
 }
 
@@ -35,7 +38,10 @@ fn generated_constants_match_the_registry() {
         ("directory-attestation", TYPE_DIRECTORY_ATTESTATION),
         ("mailbox-checkpoint", TYPE_MAILBOX_CHECKPOINT),
         ("directory-statement", TYPE_DIRECTORY_STATEMENT),
-        ("recipient-encrypted-payload", TYPE_RECIPIENT_ENCRYPTED_PAYLOAD),
+        (
+            "recipient-encrypted-payload",
+            TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+        ),
         ("encrypted-message-content", TYPE_ENCRYPTED_MESSAGE_CONTENT),
         ("key-transition-statement", TYPE_KEY_TRANSITION_STATEMENT),
         ("message-content-revision", TYPE_MESSAGE_CONTENT_REVISION),
@@ -51,7 +57,10 @@ fn generated_constants_match_the_registry() {
         ("blackjack-message-item", TYPE_BLACKJACK_MESSAGE_ITEM),
         ("stealth-message-item", TYPE_STEALTH_MESSAGE_ITEM),
         ("channel-update", TYPE_CHANNEL_UPDATE),
-        ("forwarding-delivery-envelope", TYPE_FORWARDING_DELIVERY_ENVELOPE),
+        (
+            "forwarding-delivery-envelope",
+            TYPE_FORWARDING_DELIVERY_ENVELOPE,
+        ),
         ("email-message-item", TYPE_EMAIL_MESSAGE_ITEM),
         ("plugin-message-item", TYPE_PLUGIN_MESSAGE_ITEM),
         ("proof-unknown-item", TYPE_PROOF_UNKNOWN_ITEM),
@@ -66,7 +75,10 @@ fn generated_constants_match_the_registry() {
         .map(|t| u32::try_from(t["id"].as_u64().unwrap()).unwrap())
         .collect();
     assert_eq!(
-        OPEN_ITEM_FIELD_FORBIDDEN_TYPES.iter().copied().collect::<BTreeSet<_>>(),
+        OPEN_ITEM_FIELD_FORBIDDEN_TYPES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
         forbidden
     );
 }

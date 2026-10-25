@@ -516,18 +516,6 @@ export class UnpaidDirectMessageNotDeliveredError extends Error {
   }
 }
 
-/** A free sealed message reached the relay, but the note to self that tells the account's other
- * devices of it did not. Nothing was paid. A named message sent again submits the same bytes. */
-export class SealedSelfCopyNotDeliveredError extends UnpaidDirectMessageNotDeliveredError {
-  constructor(
-    readonly payloadDigest: string,
-    readonly cause?: unknown,
-  ) {
-    super('self-copy-pending')
-    this.name = 'SealedSelfCopyNotDeliveredError'
-  }
-}
-
 /** The type 11 payload of a delivery frame when it is sealed-sender (names no sender). */
 function sealedOriginalPayload(delivery: Uint8Array): Uint8Array | undefined {
   const parsed = parseFrame(delivery)
@@ -1520,6 +1508,30 @@ function spentBySelfCopy(network: string, rawTx: string): WalletSyncItem {
   }
 }
 
+/** A delivered free sealed message whose note to self is owed: sends it, then drops the owed
+ * mark (and the envelope, unless a host is bound to it). */
+async function deliverOwedFreeSelfCopy(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  found: UnpaidEnvelope & { messageId: string },
+): Promise<void> {
+  const payload = sealedOriginalPayload(fromHex(found.delivery))
+  const { messageId, selfCopyOwed: _owed, sentAt, ...envelope } = found
+  if (payload)
+    await deliverSealedSelfCopy(owner, directory, {
+      payload,
+      context: fromHex(found.context),
+      digest: found.digest,
+      recipientSubject: found.recipientSubject,
+      messageId,
+      sentAt: sentAt ?? Date.now(),
+      transactions: [],
+    })
+  await owner.lifetime(() =>
+    owner.messages.setUnpaid(messageId, envelope.hostBound ? envelope : undefined),
+  )
+}
+
 /** A delivered sealed paid message whose self copy is owed: sends it, then records it as sent. */
 async function deliverOwedSelfCopy(
   owner: CanonicalMessagingOwner,
@@ -1613,27 +1625,23 @@ async function resend(
           ),
           fetch: directory.fetch,
         })
-        // A delivered sealed original is finished only once its note to self is delivered too;
-        // until then it stays live, and the next reconcile submits both again.
-        if (accepted.phase === 'delivered') {
-          const sealedOriginal = sealedOriginalPayload(fromHex(envelope.delivery))
-          if (sealedOriginal)
-            await deliverSealedSelfCopy(owner, directory, {
-              payload: sealedOriginal,
-              context: fromHex(envelope.context),
-              digest,
-              recipientSubject: envelope.recipientSubject,
-              messageId: found.messageId,
-              sentAt: accepted.mailbox_committed_at_ms,
-              transactions: [],
-            })
-        }
+        // A delivered sealed original owes its note to self; the owed-copy pass below sends it,
+        // in this same call.
+        const owesCopy =
+          accepted.phase === 'delivered' &&
+          sealedOriginalPayload(fromHex(envelope.delivery)) !== undefined
         if (accepted.phase === 'delivered' || accepted.phase === 'dead')
           await owner.lifetime(() =>
             owner.messages.setUnpaid(found.messageId, {
               ...envelope,
               outcome: accepted.phase as 'delivered' | 'dead',
               ...(accepted.phase === 'dead' ? { reason: accepted.reason } : {}),
+              ...(owesCopy
+                ? {
+                    selfCopyOwed: true as const,
+                    sentAt: accepted.mailbox_committed_at_ms ?? Date.now(),
+                  }
+                : {}),
             }),
           )
       } finally {
@@ -1641,6 +1649,30 @@ async function resend(
         ended()
       }
     }),
+  )
+  // Free sealed messages already delivered whose note to self is still owed (paid rows owe
+  // theirs through `selfCopyOwed` on the row, below).
+  const owedCopies = freeResends.then(() =>
+    Promise.all(
+      owner.messages.owedSelfCopies().map(async found => {
+        const work = workOf(owner, consumerOf(fromHex(found.messageId)))
+        if (work.creating || work.busy) return
+        if (!due(work.submit, SUBMIT_EVERY, options.now === true)) return
+        let ended!: () => void
+        work.busy = new Promise<void>(resolve => (ended = resolve))
+        try {
+          await deliverOwedFreeSelfCopy(owner, directory, found)
+        } catch (error) {
+          console.warn(
+            '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+            error,
+          )
+        } finally {
+          work.busy = undefined
+          ended()
+        }
+      }),
+    ),
   )
   const paidResends = Promise.all(
     owner.messages
@@ -1739,7 +1771,7 @@ async function resend(
         }
       }),
   )
-  await Promise.all([freeResends, paidResends])
+  await Promise.all([owedCopies, paidResends])
 }
 
 /** At open, before the wallet is handed out: the coins every stored message with a pending
@@ -1993,10 +2025,12 @@ async function send(
       /** The original's delivery and context bytes, to reopen it for a sealed self copy. */
       let originalDelivery: Uint8Array
       let originalContext: Uint8Array
+      let originalBoundary: string
       if (kept) {
         digest = kept.digest
         originalDelivery = fromHex(kept.delivery)
         originalContext = fromHex(kept.context)
+        originalBoundary = kept.boundary
         request = freezeCanonicalRequest(
           {
             delivery: fromHex(kept.delivery),
@@ -2023,6 +2057,7 @@ async function send(
         request = unpaid.request
         originalDelivery = unpaid.delivery
         originalContext = unpaid.context
+        originalBoundary = unpaid.boundary
         if (name)
           await owner.messages.setUnpaid(name, {
             digest,
@@ -2073,25 +2108,45 @@ async function send(
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
-      // A sealed message is not finished until the account's other devices are told of it. If
-      // that note does not get through, the send reports so and a named envelope is kept, so a
-      // repeat submits the same original (which the relay answers as delivered) and the same note.
-      if (!selfAddressed) {
-        const sealedOriginal = sealedOriginalPayload(originalDelivery)
-        if (sealedOriginal) {
-          try {
-            await deliverSealedSelfCopy(owner, directory, {
-              payload: sealedOriginal,
-              context: originalContext,
+      // The message is delivered. A sealed one leaves no outbox row, so the account's other
+      // devices learn of it from a note to self. That note is a separate fact: if it does not get
+      // through now, the send still reports delivered, and the envelope is kept (under the
+      // message ID, named or drawn) as owing the note, which every later reconcile pass retries.
+      const sealedOriginal = selfAddressed
+        ? undefined
+        : sealedOriginalPayload(originalDelivery)
+      if (sealedOriginal) {
+        const sentAt = accepted.mailbox_committed_at_ms ?? Date.now()
+        try {
+          await deliverSealedSelfCopy(owner, directory, {
+            payload: sealedOriginal,
+            context: originalContext,
+            digest,
+            recipientSubject: peer.subject,
+            messageId: toHex(messageId),
+            sentAt,
+            transactions: [],
+          })
+        } catch (error) {
+          console.warn(
+            '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+            error,
+          )
+          const owedName = name ?? toHex(messageId)
+          const envelope = owner.messages.unpaid(owedName)
+          await owner.messages.setUnpaid(owedName, {
+            ...(envelope ?? {
               digest,
+              delivery: toHex(originalDelivery),
+              context: toHex(originalContext),
               recipientSubject: peer.subject,
-              messageId: toHex(messageId),
-              sentAt: accepted.mailbox_committed_at_ms ?? Date.now(),
-              transactions: [],
-            })
-          } catch (error) {
-            throw new SealedSelfCopyNotDeliveredError(digest, error)
-          }
+              boundary: originalBoundary,
+            }),
+            outcome: 'delivered',
+            selfCopyOwed: true,
+            sentAt,
+          })
+          return unpaidResult(digest)
         }
       }
       if (name) {

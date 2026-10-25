@@ -190,7 +190,10 @@ describe("applyWalletSyncItem (Issue #1118)", () => {
       rawTx: "0x02ab",
       spentInputs: [{ address: "0x" + "0a".repeat(20), nonce: 3 }],
     };
-    await applyWalletSyncItem(wallet, out);
+    // The result reports the spend the coin list took.
+    expect(await applyWalletSyncItem(wallet, out)).toEqual({
+      syncedSpends: [out.txHash],
+    });
     expect(order).toEqual(["pool", "coins"]);
     expect(wallet.recordSyncedSpend).toHaveBeenCalledWith(out);
     // Without signed bytes, or incoming, there is no spend of this wallet's to record.
@@ -207,6 +210,13 @@ describe("applyWalletSyncItem (Issue #1118)", () => {
       applyWalletSyncItem(wallet, { ...out, chainIdentifier: "ethereum-sepolia" }),
     ).rejects.toBeInstanceOf(WalletSyncItemRejectedError);
     expect(wallet.recordSyncedSpend).toHaveBeenCalledTimes(1);
+    // A coin list that could not record the spend rejects the dispatch: the caller keeps
+    // the item and applies it again later.
+    wallet.recordSyncedSpend.mockRejectedValueOnce(new Error("rpc down"));
+    await expect(applyWalletSyncItem(wallet, out)).rejects.toThrow("rpc down");
+    // A transaction this wallet's keys did not sign is not reported.
+    wallet.recordSyncedSpend.mockResolvedValueOnce(false);
+    expect(await applyWalletSyncItem(wallet, out)).toEqual({});
   });
 
   it("dispatches to wallet.deleteUtxo for spentInputs with outpoints", async () => {

@@ -359,7 +359,9 @@ export interface NativeWalletHandle {
    * the coin `[signer, nonce]` of this wallet. That coin leaves selection, and its account is read
    * from the chain again, which lists what it holds after the spend. True when the transaction is
    * one this wallet's keys signed (marked now, or this device's own spend already); false when it
-   * is not about this wallet. Applying it twice changes nothing. */
+   * is not about this wallet. Applying it twice changes nothing. The spent coin leaves the list
+   * durably, so it is never offered again after a restart, and the account is read until a read
+   * succeeds. Rejects only when that record could not be written. */
   recordSyncedSpend?(item: WalletSyncItem): Promise<boolean>;
   /** Writes, in free notes to self, how the key of each received coin not yet noted is derived,
    * so the account's other devices and a restore from the seed find those coins without their

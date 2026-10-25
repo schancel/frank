@@ -48,7 +48,6 @@ import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
 import { SubAccountSpendRefusedError } from '../evm-account-pool'
 import { evmWalletInternals } from '../evm-wallet'
-import * as canonicalDm from './canonical-dm'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -358,7 +357,20 @@ describe("a wallet's sync note to itself", () => {
         expect(sync.isDirty(coin.account)).toBe(false)
       }
 
+      // The chain cannot be read when the note arrives. The spent coins still leave the list,
+      // durably (never offered again, also after a restart), and their accounts stay due for a
+      // read: the next refresh of the list lists the successors.
+      const down = jest
+        .spyOn(sync, 'refreshAccounts')
+        .mockRejectedValue(new Error('rpc down'))
       const first = await read(other, other.alice)
+      down.mockRestore()
+      for (const coin of known) {
+        expect(coins.get(coin.account, coin.nonce)).toBeUndefined()
+        expect(sync.isDirty(coin.account)).toBe(true)
+      }
+      expect(sync.settled()).toBe(false)
+      await sync.refresh()
       expect(first.held).toEqual([])
       expect(first.messages).toHaveLength(1)
       const shown = first.messages[0]
@@ -374,9 +386,7 @@ describe("a wallet's sync note to itself", () => {
       // carries it.
       const facts = applied.mock.calls.map(call => call[1] as WalletSyncItem)
       for (const rawTx of bundle) expect(facts).toContainEqual(spendFact(rawTx))
-      // The coins they spend left selection at once; the chain's answer lists the successors.
-      for (const coin of known) expect(sync.isDirty(coin.account)).toBe(true)
-      await sync.refreshAccounts(known.map(coin => coin.account))
+      // The coins they spend left selection, and the refresh above listed the successors.
       for (const coin of known) {
         expect(coins.get(coin.account, coin.nonce)?.state ?? 'gone').not.toBe('unspent')
         expect(coins.latestOf(coin.account)?.nonce).toBeGreaterThan(coin.nonce)
@@ -488,44 +498,69 @@ describe("a wallet's sync note to itself", () => {
       expect(one.requests).toHaveLength(requests)
     })
 
-    it('a free sealed message whose note to self does not get through reports it, and its repeat sends the same bytes', async () => {
-      routeByRecipient = true
-      const id = '1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e'
-      selfUnreachable = true
-      const base = one.chain.directMessages
-      const first = await base.send({
-        wallet: one.alice,
-        recipient: one.bob.identity.address,
-        items: [{ type: 'text', text: 'note held back' }],
-        stampValue: 0n,
-        messageId: id,
-        sealedSender: true,
-      }).then(() => undefined, (error: unknown) => error)
-      expect(first).toBeInstanceOf(canonicalDm.SealedSelfCopyNotDeliveredError)
-      expect(bobMailbox).toHaveLength(1)
-      expect(mailbox).toHaveLength(0)
-      const originalBytes = one.requests.find(r =>
-        restoreCanonicalRequest(r).identity.recipient !== one.alice.identity.address.raw.toLowerCase())!
-      selfUnreachable = false
-      const second = await base.send({
-        wallet: one.alice,
-        recipient: one.bob.identity.address,
-        items: [{ type: 'text', text: 'note held back' }],
-        stampValue: 0n,
-        messageId: id,
-        sealedSender: true,
-      })
-      expect(addressed).toEqual(['peer', 'self', 'peer', 'self'])
-      // The same original (one digest, the same bytes), and now the note.
-      const peerRequests = one.requests.filter(r =>
-        restoreCanonicalRequest(r).identity.recipient !== one.alice.identity.address.raw.toLowerCase())
-      expect(peerRequests).toHaveLength(2)
-      expect(peerRequests[1]).toEqual(originalBytes)
-      expect(second.payloadDigest).toBe(
-        restoreCanonicalRequest(originalBytes).identity.payload_hash,
-      )
-      selfCopyOf(second.payloadDigest)
-    })
+    // Delivery to the recipient and the note to self are distinct facts: a note that does not
+    // get through never turns a delivered message into a failed send.
+    it.each([
+      ['named', '1e1e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e'],
+      ['unnamed', undefined],
+    ] as const)(
+      'a free sealed message (%s) whose note to self does not get through is reported delivered, and a later pass, after a restart, delivers the note',
+      async (_kind, id) => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+        routeByRecipient = true
+        selfUnreachable = true
+        const sent = await one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items: [{ type: 'text', text: 'note held back' }],
+          stampValue: 0n,
+          ...(id === undefined ? {} : { messageId: id }),
+          sealedSender: true,
+        })
+        expect(sent.payloadDigest).toMatch(/^[0-9a-f]{64}$/)
+        expect(bobMailbox).toHaveLength(1)
+        expect(mailbox).toHaveLength(0)
+        expect(
+          warn.mock.calls.some(([text]) =>
+            String(text).includes('note to self for a sealed message'),
+          ),
+        ).toBe(true)
+        // A restart: what is owed is in the durable record, not in memory.
+        await one.alice.close()
+        const reopened = (await one.chain.createWallet(roots(0))) as EvmChainWalletHandle
+        ;(one as { alice: EvmChainWalletHandle }).alice = reopened
+        installCanonicalDirectory(reopened, aliceDirectories.get(one)!)
+        selfUnreachable = false
+        addressed = []
+        // Any reconcile pass sends what is owed; the original is not submitted again.
+        await one.chain.directMessages.reconcileAttempts({
+          wallet: reopened,
+          payloadDigests: [],
+        })
+        expect(addressed).toEqual(['self'])
+        expect(bobMailbox).toHaveLength(1)
+        selfCopyOf(sent.payloadDigest)
+        // Nothing more is owed.
+        await one.chain.directMessages.reconcileAttempts({
+          wallet: reopened,
+          payloadDigests: [],
+          maxPutAttempts: 2,
+        })
+        expect(addressed).toEqual(['self'])
+        routeByRecipient = false
+        await reopened.close()
+        const other = await otherDevice()
+        const { messages, held } = await read(other, other.alice)
+        expect(held).toEqual([])
+        expect(messages).toEqual([
+          expect.objectContaining({
+            outbound: true,
+            payloadDigest: sent.payloadDigest,
+            items: [{ type: 'text', text: 'note held back' }],
+          }),
+        ])
+      },
+    )
   })
 
   it('delivers a Sepolia spend through the primary mailbox to the other device’s Sepolia owner', async () => {

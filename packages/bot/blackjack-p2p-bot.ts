@@ -23,7 +23,7 @@
  *
  * All I/O is behind `BotAccount` and `BotStore`.
  */
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import {
   closeSync,
   existsSync,
@@ -74,6 +74,9 @@ export interface BotAccount {
     to: string
     item: HandItem
     stampWei: bigint
+    /** The message's ID, fixed by what it is for: a repeat of it is answered with the message
+     * already sent, never sealed again as a second one. */
+    messageId: string
     onAttemptCreated: (payloadDigest: string) => Promise<void>
   }): Promise<{ payloadDigest: string; stampValueWei: bigint }>
   /** Messages received at or after `sinceMs`, oldest first. */
@@ -399,6 +402,7 @@ export class BlackjackP2pBot {
         to: row.to,
         item: row.item,
         stampWei: BigInt(row.stampWei),
+        messageId: outboxMessageId(this.account.address, row.key),
         onAttemptCreated: async digest => {
           row.digest = digest
           row.phase = 'attempt'
@@ -715,6 +719,22 @@ function messageKey(hand: string, item: HandItem): string {
   }
 }
 
+/** The message ID of an outbox row: derived from the sending account and the row's key (one
+ * message per key, ever), so every retry and every restart names the same message. */
+export function outboxMessageId(account: string, key: string): string {
+  const hex = createHash('sha256')
+    .update(`frank-blackjack-p2p-message:${account.toLowerCase()}:${key}`)
+    .digest('hex')
+  // A version-5-shaped UUID, as the wallet's other derived message IDs are.
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    '5' + hex.slice(13, 16),
+    ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join('-')
+}
+
 const maxBet = (item: HandItem): string =>
   item.action === 'accept' || item.action === 'challenge' ? item.maxBetWei : '0'
 
@@ -729,6 +749,7 @@ export function walletBotAccount(
         recipient: { raw: string }
         items: HandItem[]
         sealedSender?: boolean
+        messageId?: string
         stampValue?: bigint
         onAttemptCreated?: (digest: string) => void | Promise<void>
       }): Promise<{ payloadDigest: string; stampValueWei: bigint }>
@@ -759,7 +780,7 @@ export function walletBotAccount(
   return {
     address: wallet.identity.address.raw,
     spendableWei: () => wallet.getBalance(),
-    send: ({ to, item, stampWei, onAttemptCreated }) => {
+    send: ({ to, item, stampWei, messageId, onAttemptCreated }) => {
       const recipient = chain.parseAddress(to)
       if (!recipient) throw new Error(`not an address: ${to}`)
       return chain.directMessages.send({
@@ -768,6 +789,7 @@ export function walletBotAccount(
         items: [item],
         // Sealed: the relay learns the recipient, not who wrote to them.
         sealedSender: true,
+        messageId,
         stampValue: stampWei,
         onAttemptCreated,
       })

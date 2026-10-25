@@ -1628,9 +1628,10 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         })
         expect(digest).toMatch(/^[0-9a-f]{64}$/)
         const beforeRequests = recovery === 'resend' ? 0 : 1
-        expect(relayBodies).toHaveLength(beforeRequests)
-        // Nothing is delivered yet, so no copy is owed yet.
-        expect(selfCopies()).toEqual([])
+        expect(toBob()).toHaveLength(beforeRequests)
+        // Nothing is delivered yet, so no copy of the message is owed yet. (A paid one's
+        // consolidator may already note its settled payments to self.)
+        if (stampValue === 0n) expect(selfCopies()).toEqual([])
         let exact: { body: Uint8Array; contentType: string }
         if (recovery === 'resend') {
           const address = (await alice.getReceiveAddress()).raw.toLowerCase()
@@ -1648,7 +1649,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
             },
             retained.boundary,
           )
-        } else exact = relayBodies[0]
+        } else exact = toBob()[0]
         const exactBody = new Uint8Array(exact.body)
         const exactType = exact.contentType
         const next = prepareMonadNextRevisionExport(alice, {

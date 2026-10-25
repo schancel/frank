@@ -8,10 +8,14 @@ observations; this repository does not duplicate that authority.
 ## API and durable representation
 
 `OutgoingMessageStore` exposes `all`, `get`, `put`, `unpaid`, `unpaidByDigest`,
-`setUnpaid` and `close`. `LevelOutgoingMessageStore.open(location)` opens the
+`owedSelfCopies`, `setUnpaid` and `close`. `LevelOutgoingMessageStore.open(location)` opens the
 `outgoing-messages-v1` namespace. Paid rows are JSON keyed by `consumerId`; retained
 free envelopes use `unpaid-envelope:<messageId>`. Host-bound free envelopes retain
-their delivery facts for the owning financial workflow.
+their delivery facts for the owning financial workflow. A delivered sealed free
+envelope whose note to self did not get through is kept with `outcome: 'delivered'`,
+`selfCopyOwed` and `sentAt`; `owedSelfCopies` lists those, every reconcile pass
+retries the note, and the mark (with the envelope, unless host-bound) is removed once
+the note is delivered. Paid rows owe theirs through `selfCopyOwed` on the row.
 
 `put` and `setUnpaid` await durable writes/deletes before changing their in-memory
 views. A rejected write leaves the prior memory view intact. There is no private

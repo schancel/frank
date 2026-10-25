@@ -2491,6 +2491,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 (coin.state === "spent" || coin.spendingTx === item.rawTx)
               )
                 return true;
+              // Another device took this nonce. A free coin at it leaves the list, durably, so it
+              // is never offered again, also after a restart; an account with no live coin is
+              // read by every refresh of the list until a read succeeds, which lists its
+              // successor. A coin one of this wallet's own operations holds is left to that
+              // operation's settlement. The read asked for here may fail: the next refresh reads
+              // the account then.
+              if (coin !== undefined && coin.state === "unspent")
+                await coinList.recordGone({ account, nonce: spend.nonce });
               sync.markDirty(account);
               void sync.refreshAccounts([account]).catch(() => undefined);
               return true;

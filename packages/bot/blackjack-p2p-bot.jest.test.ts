@@ -50,6 +50,7 @@ import {
   type BotConfig,
   type BotState,
   type BotStore,
+  outboxMessageId,
   runBlackjackP2pBot,
 } from './blackjack-p2p-bot'
 import { relayNewAccounts, sinceFeed } from './blackjack-p2p-bot.livecheck'
@@ -131,7 +132,10 @@ class NetAccount implements BotAccount {
     this.net.alive(this.process)
     return this.net.balances.get(this.address) ?? 0n
   }
+  /** The message ID of every send asked for, in order. */
+  readonly messageIds: string[] = []
   async send(params: Parameters<BotAccount['send']>[0]) {
+    this.messageIds.push(params.messageId)
     this.net.alive(this.process)
     if (this.fault === 'unreachable') throw new Error('relay unreachable')
     if (params.to === this.unreachableTo) throw new Error('recipient unreachable')
@@ -669,6 +673,32 @@ describe('what the bot risks is bounded', () => {
 })
 
 describe('each debt is paid once and one stuck message does not hold up the rest', () => {
+  // A retry names the same message, so the wallet answers it with the message it already has
+  // (sealed once) instead of sealing a second one for the same debt.
+  it('sends every retry of an outbox row under the one message ID its key gives', async () => {
+    const { account, bot, user } = setup()
+    user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })
+    await settle(bot)
+    user.send({ gameId: gid('g'), action: 'bet' }, 501n, 'over-1')
+    account.fault = 'unreachable'
+    const before = account.messageIds.length
+    await bot.tick()
+    await bot.tick()
+    account.fault = 'none'
+    await settle(bot)
+    const retried = account.messageIds.slice(before)
+    expect(retried.length).toBeGreaterThan(1)
+    const counts = new Map<string, number>()
+    for (const id of retried) counts.set(id, (counts.get(id) ?? 0) + 1)
+    expect([...counts.values()].some(count => count > 1)).toBe(true)
+    expect(outboxMessageId(BOT, 'k')).toBe(outboxMessageId(BOT.toLowerCase(), 'k'))
+    expect(outboxMessageId(BOT, 'k')).not.toBe(outboxMessageId(BOT, 'k2'))
+    expect(outboxMessageId(BOT, 'k')).not.toBe(outboxMessageId(USER, 'k'))
+    expect(outboxMessageId(BOT, 'k')).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+  })
+
   it('refunds each rejected bet once when a refund first failed to send', async () => {
     const { net, account, bot, user } = setup()
     user.send({ gameId: gid('g'), action: 'challenge', role: 'player', maxBetWei: '500' })

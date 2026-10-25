@@ -582,14 +582,7 @@ export class InboundOperationStore {
    * the scan cursor moves, in one batch. Returns the cursor now stored. */
   complete(digest: string, cursor: number): Promise<number> {
     return this.mutate(async () => {
-      if (!Number.isSafeInteger(cursor) || cursor < 0) return hold();
-      const previous = await this.state.get("cursor:lastPollTimestamp");
-      if (
-        previous !== undefined &&
-        (!/^[0-9]+$/.test(previous) || !Number.isSafeInteger(Number(previous)))
-      )
-        return hold();
-      cursor = Math.max(cursor, Number(previous ?? 0));
+      cursor = await this.forward(cursor);
       this.started(digest);
       await this.persist([
         { type: "del", key: ROW + digest },
@@ -600,6 +593,28 @@ export class InboundOperationStore {
       this.rows.delete(digest);
       return cursor;
     });
+  }
+  /** Moves the scan cursor forward to `cursor` once every message before it is retained or
+   * finished. It never moves back. Returns the cursor now stored. */
+  advance(cursor: number): Promise<number> {
+    return this.mutate(async () => {
+      cursor = await this.forward(cursor);
+      await this.persist([
+        { type: "put", key: "cursor:lastPollTimestamp", value: String(cursor) },
+      ]);
+      return cursor;
+    });
+  }
+  /** `cursor`, or the stored cursor when that is further on. */
+  private async forward(cursor: number): Promise<number> {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return hold();
+    const previous = await this.state.get("cursor:lastPollTimestamp");
+    if (
+      previous !== undefined &&
+      (!/^[0-9]+$/.test(previous) || !Number.isSafeInteger(Number(previous)))
+    )
+      return hold();
+    return Math.max(cursor, Number(previous ?? 0));
   }
   async close(): Promise<void> {
     this.closed = true;

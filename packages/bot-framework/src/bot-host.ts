@@ -42,6 +42,7 @@ import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import type {
+  DirectMessageReceived,
   DirectMessageSendResult,
   StampPaymentInfo,
 } from "@frank/wallet/chain/active-chain";
@@ -193,6 +194,8 @@ interface ActiveBotInstance {
   lastPollTimestamp: number;
   /** This bot's poll pass, while one runs. */
   polling?: Promise<void>;
+  /** This bot's mailbox read until a poll uses its result: it may outlive the poll that started it. */
+  mailboxRead?: Promise<MailboxRead>;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
@@ -215,6 +218,11 @@ interface ActiveBotInstance {
   /** Direct replies waiting for this bot's next poll pass before they are sent again. */
   pollWaiters: Set<() => void>;
   evmMainPrivateKey?: string;
+}
+
+interface MailboxRead {
+  messages: DirectMessageReceived[];
+  passed: number;
 }
 
 export class FrankBotHost {
@@ -1291,14 +1299,20 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
-        const messages = await bounded(
-          this.chain.directMessages.fetchSince({
-            wallet: instance.wallet,
-            sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
-          }),
+        // A read that outlived an earlier poll's bound is joined, or its result used, not
+        // started again beside it: abandoned reads would pile up and starve every bot of CPU.
+        instance.mailboxRead ??= this.readMailbox(instance).catch((error) => {
+          instance.mailboxRead = undefined;
+          throw error;
+        });
+        const { messages, passed } = await bounded(
+          instance.mailboxRead,
           "Reading the mailbox",
           this.options.callTimeoutMs
         );
+        instance.mailboxRead = undefined;
+        // Set when a message of this read is not durable here: the cursor must not pass it.
+        let unsettled = false;
         const accepted: {
           identity: InboundIdentity;
           items: MessageItem[];
@@ -1359,11 +1373,17 @@ export class FrankBotHost {
             console.warn(
               `[bot-host] [${id}] Inbound retention held; preserve state`
             );
+            unsettled = true;
             continue;
           }
           if (outcome === "finished") continue;
           fetched.set(identity.digest, entry);
         }
+        // Every message of the read is now finished, retained, or never to be handled; what
+        // this bot sent itself needs nothing. The cursor passes them all, so the next read
+        // opens only newer records; a retained row still pins the scan until it is started.
+        if (!unsettled && passed > instance.lastPollTimestamp)
+          instance.lastPollTimestamp = await instance.operations.advance(passed);
         for (const row of instance.operations.listDeferred()) {
           const match = fetched.get(row.digest);
           if (!match) {
@@ -1771,6 +1791,30 @@ export class FrankBotHost {
     }
     await this.finish(instance, digest, true);
     return undefined;
+  }
+
+  /** Reads this bot's mailbox from its scan floor. `passed` is the inclusive position the read
+   * covers completely: its newest record, inbound or sent, or a terminally unreadable one. A
+   * record the wallet could not translate yet fails the whole read instead, so no later
+   * message moves the cursor past it. */
+  private async readMailbox(instance: ActiveBotInstance): Promise<MailboxRead> {
+    const sinceMs = instance.operations.scanFloor(instance.lastPollTimestamp);
+    let passed = sinceMs;
+    const messages = await this.chain.directMessages.fetchSince({
+      wallet: instance.wallet,
+      sinceMs,
+      onIncompleteTimestamp: (receivedTime) => {
+        throw new Error(
+          `Canonical mailbox read is incomplete at timestamp ${receivedTime}`
+        );
+      },
+      onQuarantinedTimestamp: (receivedTime) => {
+        passed = Math.max(passed, receivedTime);
+      },
+    });
+    for (const message of messages)
+      passed = Math.max(passed, message.receivedTime);
+    return { messages, passed };
   }
 
   /** Finishes a started message: its row goes and the scan cursor moves past it. */

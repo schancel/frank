@@ -35,8 +35,11 @@ For the composed capabilities and caller-owned timing/evidence, see
 [`createOutgoingExecution` in outgoing-execution.ts](outgoing-execution.ts) and its
 production composition in [`chats.ts`](../stores/chats.ts). These are app policy,
 not a shared bot/mail delivery engine. Failure presentation in
-[`chats-self-notes.ts`](../stores/chats-self-notes.ts) retains every known original
-digest, including terminal/rejected and abandoned errors with a different digest.
+[`chats-self-notes.ts`](../stores/chats-self-notes.ts) keeps the same attempt digests as
+before typed facts: an abandoned stamp keeps its own payload digest, an unclassified or
+unreachable failure keeps the message's own digest, and every other reason keeps none.
+Whether recognized terminal reasons should also keep a known digest (so background
+reconciliation keeps checking it) is an open decision outside this change.
 
 Local unit tests pin classification and evaluation order. The AST test enforces
 direct dependency syntax; it is not a whole dependency-graph audit or a runtime

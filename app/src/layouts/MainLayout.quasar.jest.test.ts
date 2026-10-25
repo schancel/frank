@@ -91,9 +91,6 @@ jest.mock('../components/panels/ContactCard.vue', () => ({
 jest.mock('../components/dialogs/ContactBookDialog.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../components/panels/BackupReminder.vue', () => ({
-  template: '<div />',
-}))
 jest.mock('src/stores/wallet', () => ({
   useWalletStore: () => ({ seedPhrase: null, seedConfirmedAt: null }),
 }))

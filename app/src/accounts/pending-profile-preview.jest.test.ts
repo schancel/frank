@@ -9,6 +9,14 @@ import {
   readPendingProfilePreview,
 } from './pending-profile-preview'
 
+/** A home relay as it would describe itself at `/relay/v1/info`. */
+const TEST_RELAY = {
+  relayId: new Uint8Array(16).fill(7),
+  endpoint: 'http://127.0.0.1:18180',
+  identityKey: Uint8Array.from([2, ...new Uint8Array(32).fill(9)]),
+  expiry: { seconds: 2_000_000_000n, nanoseconds: 0 },
+}
+
 jest.mock('axios')
 jest.mock('@frank/cashweb/relay/username-client', () => ({
   usernamesOfAddresses: jest.fn(),
@@ -31,6 +39,7 @@ beforeEach(() => {
 test('shows the signed display name and the username currently held by this address', async () => {
   jest.mocked(axios).mockResolvedValueOnce({
     data: buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Alice', username: 'stale-claim' },
     }),
@@ -64,6 +73,7 @@ test('404 leaves the address-only confirmation and makes no username request', a
 test('rejects a valid signed profile for a different address', async () => {
   jest.mocked(axios).mockResolvedValueOnce({
     data: buildSignedDirectoryStatement(other, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Impostor' },
     }),
@@ -77,6 +87,7 @@ test('rejects a valid signed profile for a different address', async () => {
 test('rejects a signed profile from another canonical network', async () => {
   jest.mocked(axios).mockResolvedValueOnce({
     data: buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-mainnet',
       profile: { name: 'Wrong network' },
     }),
@@ -90,6 +101,7 @@ test('does not show unverified legacy bytes or names when username registry is o
   await expect(read()).rejects.toMatchObject({ code: 'unverified' })
   jest.mocked(axios).mockResolvedValueOnce({
     data: buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Alice' },
     }),
@@ -101,6 +113,7 @@ test('does not show unverified legacy bytes or names when username registry is o
 test('passes an owned exact subarray body and cancellation signal to DOM fetch', async () => {
   jest.mocked(axios).mockResolvedValueOnce({
     data: buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Alice' },
     }),

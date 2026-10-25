@@ -15,7 +15,9 @@
           $t('profileDialog.profile')
         }}</q-toolbar-title>
         <extension-popout-btn />
+        <!-- Phones: back only; the navigation menu belongs to top-level pages. -->
         <q-btn
+          v-if="!narrow"
           flat
           dense
           class="q-px-sm"
@@ -167,6 +169,8 @@ type RelayData = {
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import OwnProfileUncheckedNotice from 'src/components/OwnProfileUncheckedNotice.vue'
 import { ownProfileCheck } from 'src/utils/own-profile'
+import { isNarrowWidth } from 'src/utils/layout'
+import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
 
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
@@ -213,6 +217,12 @@ export default defineComponent({
     }
   },
   computed: {
+    narrow(): boolean {
+      const raw =
+        (this as { $q?: { screen?: { width?: number } } }).$q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      return isNarrowWidth(getEffectiveScreenWidth(raw))
+    },
     /** The relay has not answered for this account's published profile yet. An edit saved now
      * would replace a profile this device has not seen, so saving waits (see own-profile.ts). */
     profileUnchecked(): boolean {

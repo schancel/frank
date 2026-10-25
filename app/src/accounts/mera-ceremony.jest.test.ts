@@ -28,6 +28,14 @@ import {
   restore,
 } from './testing/device'
 
+/** A home relay as it would describe itself at `/relay/v1/info`. */
+const TEST_RELAY = {
+  relayId: new Uint8Array(16).fill(7),
+  endpoint: 'http://127.0.0.1:18180',
+  identityKey: Uint8Array.from([2, ...new Uint8Array(32).fill(9)]),
+  expiry: { seconds: 2_000_000_000n, nanoseconds: 0 },
+}
+
 jest.setTimeout(15000)
 jest.mock('axios')
 jest.mock('./mera-login-proof', () => ({
@@ -275,6 +283,7 @@ test.each([
     let raw: Uint8Array
     if (fixture === 'verified-cbor' || fixture === 'tampered-cbor')
       raw = buildSignedDirectoryStatement(identity, {
+        relay: TEST_RELAY,
         network: 'monad-testnet',
         profile: { name: 'Synthetic profile' },
       })
@@ -307,3 +316,27 @@ test.each([
     expect((await fresh.snapshot()).active).toBeNull()
   },
 )
+
+test('a restore asks the account’s own relay about the account’s own network', async () => {
+  const session = freshDevice()
+  await session.initialize()
+  const home = 'https://current-account-relay.example'
+  setCustomRelayBaseUrl(home)
+  const probe = jest.mocked(probeDirectoryRelay)
+  probe.mockClear()
+  try {
+    await createAccountCeremony()
+      .beginPasskey('login', async () => syntheticRoot())
+      .catch(() => undefined)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(probe.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        relayBaseUrl: home,
+        network: getActiveChain().chainIdentifier,
+      }),
+    )
+  } finally {
+    setCustomRelayBaseUrl(undefined)
+    await session.close()
+  }
+})

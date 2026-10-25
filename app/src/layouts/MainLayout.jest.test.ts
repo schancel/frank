@@ -95,9 +95,6 @@ jest.mock('../components/panels/ContactCard.vue', () => ({
 jest.mock('../components/dialogs/ContactBookDialog.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../components/panels/BackupReminder.vue', () => ({
-  template: '<div />',
-}))
 jest.mock('src/stores/wallet', () => ({
   useWalletStore: () => ({ seedPhrase: null, seedConfirmedAt: null }),
 }))
@@ -855,6 +852,35 @@ describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => 
     await wrapper.find('[data-testid="mobile-nav-chats"]').trigger('click')
     expect(router.push).toHaveBeenCalledWith('/chat')
     expect(mockSetActiveConversation).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('hides while a text field has focus (the keyboard is up) and comes back after', async () => {
+    const { wrapper } = await mountLayout(390, undefined, true, '/forum')
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    try {
+      input.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="mobile-bottom-nav"]').exists()).toBe(
+        false,
+      )
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="mobile-bottom-nav"]').exists()).toBe(
+        true,
+      )
+    } finally {
+      input.remove()
+      wrapper.unmount()
+    }
+  })
+
+  it('the Contacts tab opens the contact list, not the add-contact form', async () => {
+    const { wrapper, router } = await mountLayout(390)
+    await wrapper.find('[data-testid="mobile-nav-contacts"]').trigger('click')
+    expect(router.push).toHaveBeenCalledWith('/contacts')
+    expect(router.push).not.toHaveBeenCalledWith('/add-contact')
     wrapper.unmount()
   })
 

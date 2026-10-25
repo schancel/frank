@@ -67,7 +67,7 @@ export const en = {
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
   cancel_pending_attempt: 'Cancel',
   create_a_frank_account_backup_or_restore:
-    'Create a Frank account and its backup, or restore one from your saved Recovery shares. No funds are required to activate locally.',
+    'Create a Frank account, or restore one from your saved recovery shards. No funds are required to activate locally. Make the backup from the backup page once the account is open.',
   an_existing_legacy_account_is_quarantined_its:
     'An existing legacy account is quarantined. Its saved data remains untouched and is not opened as the normal account.',
   changing_accounts_replaces_the_active_local_account:
@@ -141,13 +141,9 @@ export const en = {
     'Messaging is unavailable for typed accounts in this preview.',
   main_wallet: 'Main wallet',
   frank_account_recovery: 'Frank account recovery',
-  backup_shares_were_verified_before_activation_keep:
-    'Backup shards were verified before activation. Keep your saved copies safe. Resident domain roots cannot recreate the original master or backup shards.',
   public_recovery_descriptor: 'Public recovery descriptor',
   fingerprint: 'Fingerprint:',
   create_or_restore_account: 'Create or restore account',
-  frank_account_backups_were_verified_before_activation:
-    'Frank account backups were verified before activation. Keep the saved shards and public descriptor; this device cannot recreate the original backup shards.',
   browser_storage: 'Browser storage',
   browser_persistence_reduces_automatic_eviction_it_is:
     'Browser persistence reduces automatic eviction. It is not a backup or protection against malicious code or a stolen browser profile.',
@@ -161,7 +157,7 @@ export const en = {
   codex32_threshold_explainer:
     'Write down each shard. Any {threshold} of these {count} shards restore the original account secret and its derivation.',
   codex32_backup_sets_do_not_mix:
-    'This is a new set. Shards from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+    'This is a new set. Shards from different sets, including any set you made on this page before, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
   cancel_scheme: 'Cancel',
   recovery_shares_privacy:
     'Anyone who sees these shards can take this account. Make sure nobody else can see your screen.',
@@ -287,7 +283,7 @@ export const fr = {
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
   cancel_pending_attempt: 'Annuler',
   create_a_frank_account_backup_or_restore:
-    'Créez un compte Frank et sa sauvegarde, ou restaurez-en un avec vos parts de récupération enregistrées. Aucun fonds n’est nécessaire pour l’activation locale.',
+    'Créez un compte Frank, ou restaurez-en un avec vos parts de récupération enregistrées. Aucun fonds n’est nécessaire pour l’activation locale. Faites la sauvegarde depuis la page de sauvegarde une fois le compte ouvert.',
   an_existing_legacy_account_is_quarantined_its:
     'Un ancien compte est en quarantaine. Ses données enregistrées restent intactes et ne sont pas ouvertes comme compte courant.',
   changing_accounts_replaces_the_active_local_account:
@@ -364,13 +360,9 @@ export const fr = {
     'La messagerie est indisponible pour les comptes typés dans cet aperçu.',
   main_wallet: 'Portefeuille principal',
   frank_account_recovery: 'Récupération du compte Frank',
-  backup_shares_were_verified_before_activation_keep:
-    'Les parts de sauvegarde ont été vérifiées avant l’activation. Gardez vos copies en sécurité. Les racines de domaine stockées ne permettent pas de recréer le secret maître ni les parts d’origine.',
   public_recovery_descriptor: 'Descripteur public de récupération',
   fingerprint: 'Empreinte :',
   create_or_restore_account: 'Créer ou restaurer un compte',
-  frank_account_backups_were_verified_before_activation:
-    'Les sauvegardes du compte Frank ont été vérifiées avant l’activation. Conservez les parts et le descripteur public ; cet appareil ne peut pas recréer les parts d’origine.',
   browser_storage: 'Stockage du navigateur',
   browser_persistence_reduces_automatic_eviction_it_is:
     'La persistance du navigateur réduit l’effacement automatique. Ce n’est ni une sauvegarde ni une protection contre le code malveillant ou le vol du profil du navigateur.',
@@ -384,7 +376,7 @@ export const fr = {
   codex32_threshold_explainer:
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
-    'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
+    'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles d’un jeu créé auparavant sur cette page, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
   cancel_scheme: 'Annuler',
   recovery_shares_privacy:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',

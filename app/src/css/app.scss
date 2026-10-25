@@ -727,3 +727,16 @@ body.body--dark {
     font-size: 16px !important;
   }
 }
+
+// Quasar's dark greys (grey-7 to grey-10) are written for a light page; on the dark page they
+// fall below readable contrast. In dark mode they become the light-on-dark secondary text tones.
+body.body--dark {
+  .text-grey-7,
+  .text-grey-8 {
+    color: rgba(255, 255, 255, 0.7) !important;
+  }
+  .text-grey-9,
+  .text-grey-10 {
+    color: rgba(255, 255, 255, 0.82) !important;
+  }
+}

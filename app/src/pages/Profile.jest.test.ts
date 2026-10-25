@@ -58,6 +58,14 @@ jest.mock('src/utils/navigate-back', () => ({
 }))
 import { navigateBack } from 'src/utils/navigate-back'
 
+/** A home relay as it would describe itself at `/relay/v1/info`. */
+const TEST_RELAY = {
+  relayId: new Uint8Array(16).fill(7),
+  endpoint: 'http://127.0.0.1:18180',
+  identityKey: Uint8Array.from([2, ...new Uint8Array(32).fill(9)]),
+  expiry: { seconds: 2_000_000_000n, nanoseconds: 0 },
+}
+
 const defaultStubs = {
   'Profile': {
     name: 'Profile',
@@ -911,6 +919,7 @@ describe('profile protocol field admission', () => {
       .mocked(registerMonadIdentityCbor)
       .mockImplementation(async ({ identity, profile, network }) => {
         const wire = real.buildSignedDirectoryStatement(identity, {
+          relay: TEST_RELAY,
           profile,
           network,
         })

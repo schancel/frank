@@ -301,6 +301,27 @@ describe('BackupAccount page', () => {
     }
   })
 
+  it('on a phone the header has back and no navigation menu', async () => {
+    const width = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', {
+      value: 390,
+      configurable: true,
+    })
+    try {
+      await device()
+      const wrapper = mountPage()
+      await shownShares(wrapper, 3)
+      expect(wrapper.find('[data-test="backup-back"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="backup-menu"]').exists()).toBe(false)
+      wrapper.unmount()
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        value: width,
+        configurable: true,
+      })
+    }
+  })
+
   it('shows shares on explicit route entry and preserves the exact set while configuring or cancelling', async () => {
     await device()
     const wrapper = mountPage()

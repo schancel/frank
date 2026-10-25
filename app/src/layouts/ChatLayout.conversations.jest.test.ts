@@ -853,3 +853,33 @@ it('gives the group info close control an accessible name', async () => {
     app.root.unmount()
   }
 })
+
+it('a link to a conversation this account does not have shows not-found, never a chat that throws', async () => {
+  const { root, router, create } = await mountedConversations()
+  const errors = jest
+    .spyOn(console, 'error')
+    .mockImplementation(() => undefined)
+  await router.push('/chat/no-such-conversation-id')
+  await settle()
+  const missing = root.find('[data-testid="conversation-not-found"]')
+  expect(missing.exists()).toBe(true)
+  expect(missing.text()).toContain(translate('chatList.conversationNotFound'))
+  expect(errors).not.toHaveBeenCalled()
+
+  await missing
+    .get('[data-testid="conversation-not-found-back"]')
+    .trigger('click')
+  await settle()
+  expect(router.currentRoute.value.path).toBe('/chat')
+
+  // A peer's address opens its default thread, and a real conversation id opens that thread.
+  const id = await create(PEER, '', false)
+  expect(root.find('[data-testid="conversation-not-found"]').exists()).toBe(
+    false,
+  )
+  await router.push(`/chat/${id}`)
+  await settle()
+  expect(root.find('[data-testid="conversation-not-found"]').exists()).toBe(
+    false,
+  )
+})

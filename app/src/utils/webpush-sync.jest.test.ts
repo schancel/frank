@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import {
   acknowledgeServiceWorkerWakeupHandled,
+  coalesceRuns,
   ensureBrowserPushSubscription,
   extractBlindPushSubscription,
   setCachedBlindPushSubscription,
@@ -292,5 +293,68 @@ describe('webpush-sync end-to-end subscription, capability exchange & revocation
         value: origNav,
       })
     }
+  })
+})
+
+describe('coalesceRuns: one relay policy sync per burst of changes', () => {
+  it('runs once for calls in the same turn, and once more for calls made while it ran', async () => {
+    let state = 0
+    const seen: number[] = []
+    let release: (() => void) | undefined
+    const run = jest.fn(async () => {
+      seen.push(state)
+      await new Promise<void>(resolve => (release = resolve))
+    })
+    const request = coalesceRuns(run)
+
+    state = 1
+    const first = request()
+    for (let i = 0; i < 7; i++) void request()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(run).toHaveBeenCalledTimes(1)
+
+    // Changes while the first sync is in flight: one more sync, which sees the last state.
+    state = 2
+    void request()
+    state = 3
+    void request()
+    release!()
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(run).toHaveBeenCalledTimes(2)
+    release!()
+    await first
+    expect(seen).toEqual([1, 3])
+
+    // Idle again: the next change makes a new sync.
+    const later = request()
+    for (let i = 0; i < 3; i++) await Promise.resolve()
+    release!()
+    await later
+    expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('with a settle time, calls spread over that time share one run', async () => {
+    const run = jest.fn(async () => undefined)
+    const request = coalesceRuns(run, 60)
+    const done = request()
+    for (let i = 0; i < 4; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      void request()
+    }
+    expect(run).not.toHaveBeenCalled()
+    await done
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed run does not stop later ones', async () => {
+    const run = jest
+      .fn<Promise<unknown>, []>()
+      .mockRejectedValueOnce(new Error('relay down'))
+      .mockResolvedValue(undefined)
+    const request = coalesceRuns(run)
+    await request()
+    await request()
+    expect(run).toHaveBeenCalledTimes(2)
   })
 })

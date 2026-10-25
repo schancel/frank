@@ -33,7 +33,7 @@ import { readStoreJson } from 'src/boot/pinia'
 import { markRaw, toRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
 import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
-import { syncRelayNotificationPolicy } from '../utils/webpush-sync'
+import { requestRelayNotificationPolicySync } from '../utils/webpush-sync'
 import {
   CONTACT_KEY_ROTATION_DOMAIN,
   createContactKeyRotationStatement,
@@ -597,7 +597,7 @@ export const useContactStore = defineStore('contacts', {
       }
 
       this.contacts[apiAddress] = fixedContact
-      void syncRelayNotificationPolicy()
+      void requestRelayNotificationPolicySync()
     },
     /**
      * Adds a contact resolved by username/handle and pins it to `address` (and optionally
@@ -871,7 +871,7 @@ export const useContactStore = defineStore('contacts', {
 
       delete this.contacts[targetAddress]
       this.contacts[canonicalNew] = rotatedContact
-      void syncRelayNotificationPolicy()
+      void requestRelayNotificationPolicySync()
 
       return {
         ok: true,
@@ -973,7 +973,7 @@ export const useContactStore = defineStore('contacts', {
       }
       contact.notify = value
       // Muting or unmuting a contact immediately updates the relay's blinded wakeup token allowlist.
-      void syncRelayNotificationPolicy()
+      void requestRelayNotificationPolicySync()
     },
     setInboundWakeupToken({
       address,
@@ -987,7 +987,7 @@ export const useContactStore = defineStore('contacts', {
       const contact = this.contacts[apiAddress]
       if (!contact) return
       contact.inboundWakeupToken = token
-      void syncRelayNotificationPolicy()
+      void requestRelayNotificationPolicySync()
     },
     setOutboundWakeupToken({
       address,
@@ -1067,7 +1067,7 @@ export const useContactStore = defineStore('contacts', {
         this.dismissedDefaults.push(apiAddress)
       }
       // Deleting a contact immediately revokes its wakeup capability token hash on the relay.
-      void syncRelayNotificationPolicy()
+      void requestRelayNotificationPolicySync()
     },
     /** Resolve a signed Monad profile through the active-chain seam. */
     async fetchAndAddContact({

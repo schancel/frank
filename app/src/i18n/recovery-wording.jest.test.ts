@@ -38,3 +38,40 @@ describe('recovery phrase wording', () => {
     },
   )
 })
+
+/**
+ * Creating an account shows no backup shards (#1534): the backup is made later from the backup
+ * page. No string may tell the owner shards were shown or verified when the account was made.
+ */
+describe('backup wording matches account creation', () => {
+  it.each([
+    [
+      'en-us',
+      enUS,
+      /(shown|verified|made) (when|before) (the account was created|activation)/i,
+    ],
+    [
+      'fr-fr',
+      frFR,
+      /(affichées à la création du compte|vérifiées avant l’activation)/i,
+    ],
+  ])('%s never claims a backup was made at creation', (_l, messages, claim) => {
+    const offenders = strings(messages).filter(([, v]) => claim.test(v))
+    expect(offenders).toEqual([])
+  })
+
+  it.each([
+    ['en-us', enUS, /account and its backup/i],
+    ['fr-fr', frFR, /compte Frank et sa sauvegarde/i],
+  ])(
+    '%s: the setup screen does not promise a backup step',
+    (_l, messages, claim) => {
+      const m = messages as unknown as {
+        accountRecovery: Record<string, string>
+      }
+      expect(
+        m.accountRecovery.create_a_frank_account_backup_or_restore,
+      ).not.toMatch(claim)
+    },
+  )
+})

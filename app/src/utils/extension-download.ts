@@ -53,6 +53,30 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
   },
 }
 
+/**
+ * Whether this browser can install a desktop extension .zip at all. Phones and tablets cannot,
+ * so the download is not offered there.
+ */
+export function canInstallDesktopExtension(userAgent?: string): boolean {
+  const ua =
+    typeof userAgent === 'string'
+      ? userAgent
+      : typeof navigator !== 'undefined' &&
+        typeof navigator.userAgent === 'string'
+      ? navigator.userAgent
+      : ''
+  if (/iPhone|iPad|iPod|Android|Mobile/i.test(ua)) return false
+  // iPadOS reports a desktop Safari user agent; it still has touch points.
+  if (
+    userAgent === undefined &&
+    typeof navigator !== 'undefined' &&
+    /Macintosh/.test(ua) &&
+    (navigator.maxTouchPoints ?? 0) > 1
+  )
+    return false
+  return true
+}
+
 export function detectPreferredExtensionTarget(
   userAgent?: string,
 ): ExtensionTargetBrowser {

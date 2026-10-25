@@ -552,7 +552,7 @@
               </div>
 
               <div
-                v-if="!isExtensionRuntime"
+                v-if="offerExtensionDownload"
                 class="setup-extension-download q-mt-lg q-pa-md rounded-borders"
                 data-test="setup-download-extension-section"
               >
@@ -1023,6 +1023,7 @@ import {
   isBrowserExtensionRuntime,
 } from '../../src-bex/runtime-adapter'
 import {
+  canInstallDesktopExtension,
   detectPreferredExtensionTarget,
   EXTENSION_DOWNLOAD_TARGETS,
   type ExtensionTargetBrowser,
@@ -1042,7 +1043,9 @@ const ceremony = createAccountCeremony()
 const passkeysSupported = supportsMeraPasskeys()
 const tabCoordinator = useTabCoordinatorStore()
 const showManualTabHint = ref(false)
-const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
+const offerExtensionDownload = computed(
+  () => !isBrowserExtensionRuntime() && canInstallDesktopExtension(),
+)
 const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
   detectPreferredExtensionTarget(),
 )

@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { createRouter, createWebHashHistory, Router } from 'vue-router'
 
 const mockAccountStatus = {
@@ -53,18 +53,20 @@ jest.mock('pinia', () => ({
 const mockSetTheme = jest.fn((theme: string) => {
   mockAppearanceStore.theme = theme
 })
-const mockSetDarkMode = jest.fn((darkMode: boolean) => {
-  mockAppearanceStore.darkMode = darkMode
+const mockSetColorScheme = jest.fn((scheme: string) => {
+  mockAppearanceStore.colorScheme = scheme
+  mockAppearanceStore.darkMode = scheme === 'dark'
 })
 const mockSetUiScale = jest.fn((uiScale: unknown) => {
   mockAppearanceStore.uiScale = uiScale
 })
 const mockAppearanceStore = jest.requireActual('vue').reactive({
+  colorScheme: 'system',
   darkMode: false,
   locale: 'en-us',
   theme: 'carnelian',
   uiScale: 'auto' as unknown,
-  setDarkMode: mockSetDarkMode,
+  setColorScheme: mockSetColorScheme,
   setTheme: mockSetTheme,
   setUiScale: mockSetUiScale,
 })
@@ -90,6 +92,7 @@ const mockSyncRelayNotificationPolicy = jest.fn((_policy: unknown) =>
 jest.mock('src/utils/webpush-sync', () => ({
   syncRelayNotificationPolicy: (policy: unknown) =>
     mockSyncRelayNotificationPolicy(policy),
+  requestRelayNotificationPolicySync: async () => undefined,
 }))
 const mockSetEmailGatewayAddress = jest.fn((address: string) => {
   if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
@@ -185,6 +188,14 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   setColdVaultSweep: mockSetColdVaultSweep,
   resetColdVaultSweep: mockResetColdVaultSweep,
 })
+const mockRequireRelayWalletRoute = jest.fn(
+  async (_relay: string, _chain: string): Promise<void> => undefined,
+)
+jest.mock('src/accounts/relay-wallet-route', () => ({
+  ...jest.requireActual('src/accounts/relay-wallet-route'),
+  requireRelayWalletRoute: (relay: string, chain: string) =>
+    mockRequireRelayWalletRoute(relay, chain),
+}))
 jest.mock('src/stores/settings', () => ({
   externalVaultAddressChain: jest.requireActual('src/stores/settings')
     .externalVaultAddressChain,
@@ -290,7 +301,8 @@ async function settle(router: Router) {
 beforeEach(() => {
   mockApplyTheme.mockClear()
   mockSetTheme.mockClear()
-  mockSetDarkMode.mockClear()
+  mockSetColorScheme.mockClear()
+  mockAppearanceStore.colorScheme = 'system'
   mockSetUiScale.mockClear()
   mockApplyLocale.mockClear()
   mockAppearanceStore.darkMode = false
@@ -454,8 +466,12 @@ describe('Settings apply immediately, without Save', () => {
     expect(mockSetTheme).toHaveBeenCalledWith('lapis')
     expect(vm.theme).toBe('lapis')
 
-    await wrapper.find('[data-test="dark-mode-toggle"]').setValue(true)
-    expect(mockSetDarkMode).toHaveBeenCalledWith(true)
+    expect(vm.colorScheme).toBe('system')
+    expect(
+      vm.colorSchemeOptions.map((o: { value: string }) => o.value),
+    ).toEqual(['system', 'light', 'dark'])
+    vm.colorScheme = 'dark'
+    expect(mockSetColorScheme).toHaveBeenCalledWith('dark')
     expect(vm.darkMode).toBe(true)
 
     vm.selectUiScale(115)
@@ -765,6 +781,37 @@ describe('Network Environment & Chains Section', () => {
       'settings.chainUnsupported',
     )
     wrapper.unmount()
+  })
+})
+
+describe('Networking reflects what the account’s relay routes', () => {
+  it('a network the app supports but the relay does not route is shown as unavailable through this relay', async () => {
+    mockSettingsStore.networkMode = 'testnet'
+    const { RelayWalletRouteUnavailableError } = jest.requireActual(
+      'src/accounts/relay-wallet-route',
+    )
+    mockRequireRelayWalletRoute.mockImplementation(async (_relay, chain) => {
+      if (!chain.startsWith('monad'))
+        throw new RelayWalletRouteUnavailableError(chain)
+    })
+    try {
+      const router = await openAt('/settings/networking')
+      const wrapper = mountSettings(router)
+      await flushPromises()
+      const vm = wrapper.vm as any
+      expect(vm.chainStatusKey({ id: 'monad' })).toBe(
+        'settings.chainSendReceive',
+      )
+      expect(vm.chainStatusKey({ id: 'bitcoin' })).toBe(
+        'settings.chainRelayUnavailable',
+      )
+      expect(vm.chainStatusKey({ id: 'solana' })).toBe(
+        'settings.chainRelayUnavailable',
+      )
+      wrapper.unmount()
+    } finally {
+      mockRequireRelayWalletRoute.mockImplementation(async () => undefined)
+    }
   })
 })
 

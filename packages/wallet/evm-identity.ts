@@ -472,10 +472,83 @@ const timestamp = (seconds: bigint | number, nanoseconds: number): Encodable =>
     [TIMESTAMP.nanoseconds, nanoseconds],
   ])
 
+/**
+ * The relay an entry names as its home: the tuple that relay publishes about itself at
+ * `/relay/v1/info` (see {@link fetchRelayBinding}). Never a placeholder.
+ */
+export interface DirectoryRelayBinding {
+  /** The relay's id, 16 to 64 bytes. */
+  relayId: Uint8Array
+  /** The relay's own public origin. */
+  endpoint: string
+  /** The relay's compressed secp256k1 key. */
+  identityKey: Uint8Array
+  /** When the binding expires. */
+  expiry: { seconds: bigint; nanoseconds: number }
+}
+
+/**
+ * Asks the relay at `relayBaseUrl` for the tuple it publishes about itself at `/relay/v1/info`.
+ * Throws when the relay does not answer, answers for another network than `network` (when one
+ * is given), or describes itself malformedly. The answer's `network` is the relay's canonical
+ * chain identifier.
+ */
+export async function fetchRelayBinding(params: {
+  relayBaseUrl: string
+  network?: string
+  signal?: AbortSignal
+}): Promise<{ network: string; binding: DirectoryRelayBinding }> {
+  const response = await axios({
+    method: 'get',
+    ...(params.signal ? { signal: params.signal } : {}),
+    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/relay/v1/info`,
+    headers: { accept: 'application/json' },
+    responseType: 'json',
+  })
+  const info = (
+    typeof response.data === 'string' ? JSON.parse(response.data) : response.data
+  ) as Record<string, unknown> | null
+  const hex = /^(?:[0-9a-f]{2})+$/
+  if (
+    !info ||
+    typeof info.network !== 'string' ||
+    typeof info.relayId !== 'string' ||
+    !/^([0-9a-f]{2}){16,64}$/.test(info.relayId) ||
+    typeof info.endpoint !== 'string' ||
+    !/^https?:\/\//.test(info.endpoint) ||
+    typeof info.relayKey !== 'string' ||
+    !hex.test(info.relayKey) ||
+    info.relayKey.length !== 66 ||
+    typeof info.bindingExpiry !== 'string' ||
+    !/^[0-9]{1,20}$/.test(info.bindingExpiry)
+  )
+    throw new Error('relay-info: the relay did not describe itself')
+  if (params.network !== undefined && info.network !== params.network)
+    throw new Error(
+      `relay-info: the relay serves ${info.network}, not ${params.network}`,
+    )
+  const expiryNs = BigInt(info.bindingExpiry)
+  return {
+    network: info.network,
+    binding: {
+      relayId: getBytes(`0x${info.relayId}`),
+      endpoint: info.endpoint,
+      identityKey: getBytes(`0x${info.relayKey}`),
+      expiry: {
+        seconds: expiryNs / 1_000_000_000n,
+        nanoseconds: Number(expiryNs % 1_000_000_000n),
+      },
+    },
+  }
+}
+
 export function buildSignedDirectoryStatement(
   identity: MonadIdentity,
   options: {
-    network?: string
+    /** The canonical chain identifier the entry is for. */
+    network: string
+    /** The home relay, as it describes itself. */
+    relay: DirectoryRelayBinding
     profile?: MonadProfileFields
     timestampMs?: number
     ttlMs?: number
@@ -485,9 +558,9 @@ export function buildSignedDirectoryStatement(
       secp256k1?: Uint8Array
       ed25519?: Uint8Array
     }
-  } = {},
+  },
 ): Uint8Array {
-  const network = options.network ?? 'monad-testnet'
+  const network = options.network
   const ms = BigInt(options.timestampMs ?? Date.now())
   const ttlMs = BigInt(options.ttlMs ?? 1000 * 60 * 60 * 24 * 365) // 1 year
   const ts = splitMs(ms)
@@ -530,15 +603,20 @@ export function buildSignedDirectoryStatement(
   }
   rawSpendKeys.sort(compareAccounts)
 
-  // Default relay binding: required by Type 1 schema (min 1 relay).
-  // Kept internal to maintain clean separation between relay-local profiles
-  // and federation topology (#107, #108, #110).
+  // The schema requires exactly one relay binding: the relay this entry is published to, as
+  // that relay describes itself.
   const relayBindings: Encodable[] = [
     cborMap([
-      [RELAY_BINDING.relayId, new Uint8Array(16)],
-      [RELAY_BINDING.endpoint, 'https://relay1.frank.example/monad-testnet'],
-      [RELAY_BINDING.identity, secp256k1Account(identity.compressedPubKey)],
-      [RELAY_BINDING.expiry, timestamp(2_000_000_000n, 0)],
+      [RELAY_BINDING.relayId, Uint8Array.from(options.relay.relayId)],
+      [RELAY_BINDING.endpoint, options.relay.endpoint],
+      [RELAY_BINDING.identity, secp256k1Account(options.relay.identityKey)],
+      [
+        RELAY_BINDING.expiry,
+        timestamp(
+          options.relay.expiry.seconds,
+          options.relay.expiry.nanoseconds,
+        ),
+      ],
     ]),
   ]
 
@@ -765,8 +843,20 @@ export async function registerMonadIdentityCbor(params: {
     ed25519?: Uint8Array
   }
 }): Promise<void> {
-  const body = buildSignedDirectoryStatement(params.identity, {
+  // A display name that cannot be signed is refused before the relay is asked anything.
+  const name = params.profile?.name
+  if (name !== undefined && validateProfileDisplayName(name).normalized)
+    requireValidProfileDisplayName(name)
+  // The entry names the relay it is published to, as that relay describes itself, and is
+  // for the network that relay serves (which must be the caller's, when the caller names one).
+  const { network, binding } = await fetchRelayBinding({
+    relayBaseUrl: params.relayBaseUrl,
     network: params.network,
+    signal: params.signal,
+  })
+  const body = buildSignedDirectoryStatement(params.identity, {
+    network,
+    relay: binding,
     profile: params.profile,
     timestampMs: params.timestampMs,
     ttlMs: params.ttlMs,

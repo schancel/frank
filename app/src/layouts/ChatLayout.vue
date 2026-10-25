@@ -318,7 +318,32 @@
       v-model="groupInfoOpen"
       :conversation-id="activeConversation?.id"
     />
-    <router-view v-if="!infoOpen" />
+    <!-- A /chat/<id> link to a conversation this account does not have: say so, instead of
+    mounting a chat for nothing. -->
+    <q-page-container v-if="!infoOpen && conversationMissing">
+      <q-page
+        class="flex flex-center text-center q-pa-md"
+        data-testid="conversation-not-found"
+      >
+        <div class="column items-center q-gutter-md" role="alert">
+          <q-icon name="search_off" size="4rem" color="grey-6" />
+          <div class="text-h6 text-weight-medium">
+            {{ $t('chatList.conversationNotFound') }}
+          </div>
+          <div class="text-body2" style="max-width: 360px">
+            {{ $t('chatList.conversationNotFoundDetail') }}
+          </div>
+          <q-btn
+            color="primary"
+            no-caps
+            :label="$t('chatList.backToConversations')"
+            data-testid="conversation-not-found-back"
+            @click="backToChats"
+          />
+        </div>
+      </q-page>
+    </q-page-container>
+    <router-view v-else-if="!infoOpen" />
     <chat-info-view
       v-else
       :address="effectiveAddress || address"
@@ -352,7 +377,12 @@ import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { errorNotify } from '../utils/notifications'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
-import { useChatStore, type Conversation } from 'src/stores/chats'
+import {
+  resolveConversation,
+  useChatStore,
+  type Conversation,
+} from 'src/stores/chats'
+import { startupRestoration } from 'src/boot/startup-state'
 import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
@@ -563,6 +593,17 @@ export default defineComponent({
         this.$q?.screen?.width ??
         (typeof window !== 'undefined' ? window.innerWidth : 1024)
       return isNarrowWidth(getEffectiveScreenWidth(raw))
+    },
+    /** The route names a conversation id (not a peer's address, which always opens its
+     * default thread) that this account's restored state does not have. */
+    conversationMissing(): boolean {
+      if (!this.address || isChainAddress(this.address)) return false
+      if (startupRestoration.value.phase !== 'restored') return false
+      try {
+        return !resolveConversation(useChatStore().conversations, this.address)
+      } catch {
+        return false
+      }
     },
     activeConversation(): Conversation | null {
       if (!this.address) return null

@@ -22,7 +22,13 @@
               v-model="searchQuery"
               type="search"
               class="chat-search-native-input col"
-              :placeholder="$t('chatList.searchPlaceholder')"
+              :placeholder="
+                hasFinePointer
+                  ? $t('chatList.searchShortcut', {
+                      placeholder: $t('chatList.searchPlaceholder'),
+                    })
+                  : $t('chatList.searchPlaceholder')
+              "
               :aria-label="$t('chatList.searchPlaceholder')"
               data-test="chat-search-input"
               data-testid="chat-search-input"
@@ -426,7 +432,13 @@ export default defineComponent({
 
     const router = useRouter()
     const $q = useQuasar()
+    // The ⌘K hint only where there is a keyboard shortcut to use: not on a phone.
+    const hasFinePointer =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: fine)').matches
     return {
+      hasFinePointer,
       groupsAvailable: computed(
         () =>
           messagingState.status === 'ready' &&

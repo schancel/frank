@@ -108,4 +108,4 @@ async function main() {
   process.exit(failed ? 1 : 0)
 }
 
-void main()
+if (require.main === module) void main()

@@ -2094,6 +2094,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             pool,
             changePool,
             changeKeyring,
+            // Every full refresh walks the seed's branches for accounts in use on chain: a
+            // restored device finds what the seed controls without the old device's store.
+            seedDiscovery: config.seedDiscovery === false ? undefined : { keyring },
             journal: evmTransactionSetJournal(topicOwner),
             // The runtime's changePool allocator persisted every derivation claim before
             // signing; cancellation cleanup can retire its journal without reusing keys.
@@ -2214,6 +2217,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
             | undefined;
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
+          // Another device's new change accounts are found by walking the seed again.
+          const SEED_REWALK_MS = 60_000;
           const balanceObsStorageKey =
             storageLocation !== undefined
               ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
@@ -2298,6 +2303,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               let identityBalance: bigint;
               let changeBalance: bigint;
 
+              // A restored device's balance is not read before the seed has been walked for
+              // the accounts it controls.
+              const seedWalk =
+                transactionSetRuntime.coinListSync.seedDiscovered();
+              if (seedWalk) await seedWalk;
+              else
+                transactionSetRuntime.coinListSync.rediscoverIfOlderThan(
+                  SEED_REWALK_MS
+                );
               if (
                 primaryBalanceCache !== undefined &&
                 now - primaryBalanceCache.cachedAtMs <
@@ -2322,15 +2336,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 for (const rec of changePool.recoveredAccounts()) {
                   changeAddressSet.add(rec.address.toLowerCase());
                 }
-                if (storageLocation !== undefined) {
-                  for (const idx of [0, 1, 2, 3, 4]) {
-                    changeAddressSet.add(
-                      changeKeyring
-                        .deriveChangeAccount(idx)
-                        .address.toLowerCase()
-                    );
-                  }
-                }
+                // Accounts of the seed's deterministic branch that no pool record covers (found
+                // on chain by seed discovery) are counted here; recorded ones are the pool's.
+                const pooled = new Set(
+                  pool.records().map((record) => record.address.toLowerCase())
+                );
+                for (const coin of coinList.all())
+                  if (coin.origin === "deterministic" && !pooled.has(coin.account))
+                    changeAddressSet.add(coin.account);
                 changeAddressSet.delete(mainAccount.address.toLowerCase());
                 changeAddressSet.delete(identity.address.raw.toLowerCase());
                 const changeAddresses = [...changeAddressSet];

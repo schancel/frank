@@ -94,6 +94,9 @@ const config: EvmChainConfig = {
   // The stub node never mines on its own: a native send looks once and returns.
   nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
+  // These tests count the balance reads of a stub node; the seed walk has its own suites
+  // (evm-seed-discovery, chain/evm-seed-restore.anvil).
+  seedDiscovery: false,
 }
 
 function roots(index = 0): MonadRootBundle {

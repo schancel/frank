@@ -1185,7 +1185,7 @@ export const rawFrFR = {
       'Mis de côté par le portefeuille dans ses propres comptes pour payer vos prochains messages. Compris dans le solde ci-dessus.',
     total: 'Solde',
     yours:
-      'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',
+      'Votre compte principal, votre adresse de profil et vos comptes d’envoi se retrouvent tous avec votre phrase de récupération.',
     unavailable: 'Les comptes n’ont pas pu être lus pour le moment.',
   },
   heldContactPayments: {

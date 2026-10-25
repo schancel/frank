@@ -1159,7 +1159,7 @@ export const rawEnUS = {
       'Set aside by the wallet in its own accounts to pay for your next messages. Part of the balance above.',
     total: 'Balance',
     yours:
-      'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
+      'Your main account, profile address and sending accounts all come back from your recovery phrase.',
     unavailable: 'The accounts could not be read just now.',
   },
   heldContactPayments: {

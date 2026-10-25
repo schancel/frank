@@ -55,6 +55,10 @@ export interface EvmChainConfig {
   defaultTopicVoteValueWei: bigint;
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
   subAccountPoolSize: number;
+  /** Walk the seed's account branches on chain to find every account it controls (default on).
+   * A restored device learns its funds this way, from the seed and the chain alone. `false` is
+   * for tests whose stub node answers only the reads they count. */
+  seedDiscovery?: boolean;
   /** Parent LevelDB location for durable sender-account and change state. `false` is reserved for
    * isolated tests; production must persist these records so recreating a wallet cannot reuse a
    * sender account or rewind the change derivation path. */

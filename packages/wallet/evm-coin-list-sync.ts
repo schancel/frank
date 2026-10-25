@@ -35,6 +35,9 @@ import {
   isRateLimited,
 } from './evm-rpc-read-budget'
 
+/** Failure key of the seed walk among the per-account observation failures. */
+const SEED_DISCOVERY = 'seed-discovery'
+
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
   private readonly dirty = new Set<string>()
@@ -43,6 +46,9 @@ export class EvmCoinListSync {
   /** Accounts read and found empty: not read again until something marks them dirty. */
   private readonly empty = new Set<string>()
   private stopped = false
+  private discovering: Promise<void> | undefined
+  private discoveredOnce = false
+  private discoveredAt = 0
   private readonly writes = new Set<Promise<unknown>>()
   private running: Promise<void> | undefined
   private again = false
@@ -63,6 +69,13 @@ export class EvmCoinListSync {
       readonly spendSpacingBlocks?: number
       /** Every account of the wallet that may hold a coin, as of now. */
       readonly sources: () => readonly CoinListSource[]
+      /** Walks the seed's deterministic branches for accounts in use on chain and makes them
+       * sources (`discoverSeedBranch`). Run before each full pass, so a restored device learns
+       * what the seed controls from the chain, not from another device's local store. */
+      readonly discover?: (
+        stopped: () => boolean,
+        scope: 'all' | 'change',
+      ) => Promise<void>
     },
   ) {}
 
@@ -124,6 +137,49 @@ export class EvmCoinListSync {
   /** Whether the accounts that need a look have none pending: the list is all the wallet knows. */
   settled(): boolean {
     return this.dueSources().length === 0
+  }
+
+  /** One walk of the seed at a time; concurrent callers share it. */
+  private discover(scope: 'all' | 'change' = 'all'): Promise<void> {
+    const walk = this.config.discover
+    if (!walk) return Promise.resolve()
+    return (this.discovering ??= (async () => {
+      try {
+        await walk(() => this.stopped, scope)
+        this.failedObservations.delete(SEED_DISCOVERY)
+        this.discoveredOnce = true
+        this.discoveredAt = Date.now()
+      } catch (error) {
+        // Accounts the walk did not reach may hold funds: never report the list as complete.
+        if (!this.stopped) this.failedObservations.set(SEED_DISCOVERY, error)
+        throw error
+      } finally {
+        this.discovering = undefined
+      }
+    })())
+  }
+
+  /** Until the seed has been walked once, the walk to wait for (it rejects if it fails);
+   * afterwards, or with no walk configured, undefined: every account the seed controls is
+   * known (not necessarily read). */
+  seedDiscovered(): Promise<void> | undefined {
+    if (this.discoveredOnce || !this.config.discover) return undefined
+    return this.discover()
+  }
+
+  /** Another device of the account allocates change accounts this one hears of only from the
+   * chain: when the last walk is older than `maxAgeMs`, walk the change branch again in the
+   * background. A failure is kept as an observation failure, like any other read. */
+  rediscoverIfOlderThan(maxAgeMs: number): void {
+    if (
+      !this.config.discover ||
+      this.stopped ||
+      this.discovering ||
+      !this.discoveredOnce ||
+      Date.now() - this.discoveredAt < maxAgeMs
+    )
+      return
+    this.discover('change').catch(() => undefined)
   }
 
   /** Observe only these already-owned accounts, sharing the existing refresh queue. */
@@ -210,6 +266,14 @@ export class EvmCoinListSync {
     all: boolean,
     accounts?: ReadonlySet<string>,
   ): Promise<void> {
+    if (all && accounts === undefined && this.config.discover) {
+      try {
+        await this.discover()
+      } catch (error) {
+        if (isRateLimited(error)) throw error
+        console.warn('[evm-coin-list] seed discovery failed:', error)
+      }
+    }
     const due =
       accounts === undefined
         ? this.dueSources(all)

@@ -5,7 +5,11 @@ import { EvmCoinListSync, type CoinListSource } from './evm-coin-list-sync'
 import type { EvmBlockWatcher } from './evm-block-watcher'
 import type { EvmSubAccountPool } from './evm-account-pool'
 import type { EvmChangePool } from './evm-change-pool'
-import type { MonadChangeKeyring } from './secp256k1-hd-keyring'
+import type {
+  MonadChangeKeyring,
+  MonadHdKeyring,
+} from './secp256k1-hd-keyring'
+import { discoverSeedBranch } from './evm-seed-discovery'
 import type { MonadIdentity } from './evm-identity'
 import type { EvmCoin, RecordStore } from './storage/evm-coin-store'
 
@@ -20,6 +24,9 @@ export function installEvmWalletCoinList(params: {
   changePool: EvmChangePool
   changeKeyring: MonadChangeKeyring
   coinStore: RecordStore<EvmCoin>
+  /** The deterministic branch keyring (`m/44'/60'/0'/0/i`). Given, every full refresh walks both
+   * seed branches for accounts in use on chain, so a restored device finds them all. */
+  seedDiscovery?: { keyring: MonadHdKeyring; gap?: number }
 }): EvmCoinListSync {
   const {
     coinList,
@@ -30,7 +37,70 @@ export function installEvmWalletCoinList(params: {
     changeKeyring,
     coinStore,
   } = params
+  // Deterministic-branch accounts found on chain this session. Once observed they become coins
+  // of the list, which is what keeps them watched after a restart.
+  const discoveredDeterministic = new Map<number, string>()
+  const discover = params.seedDiscovery && (async (
+    stopped: () => boolean,
+    scope: 'all' | 'change',
+  ) => {
+    const { keyring, gap } = params.seedDiscovery!
+    // Change branch: the change pool owns its derivation high-water mark, so what the walk
+    // finds is persisted there (recovered accounts) before any later allocation could reuse it.
+    const knownChange = new Set<number>([
+      ...changePool.records().map(record => record.index),
+      ...changePool.recoveredAccounts().map(record => record.index),
+      ...coinList
+        .all()
+        .flatMap(coin =>
+          coin.changeIndex === undefined ? [] : [coin.changeIndex],
+        ),
+    ])
+    const change = await discoverSeedBranch({
+      provider: params.provider,
+      addressOf: index => changeKeyring.deriveChangeAccount(index).address,
+      isKnown: index => knownChange.has(index),
+      highWater: Math.max(
+        changePool.nextUnusedIndex(),
+        coinList.nextChangeIndex(),
+      ),
+      gap,
+      stopped,
+    })
+    if (change.length > 0) {
+      changePool.applyRecoveredAccounts(
+        change.map(found => ({
+          index: found.index,
+          address: changeKeyring.deriveChangeAccount(found.index).address,
+          nonce: found.nonce,
+          balanceWei: found.balanceWei.toString(),
+        })),
+      )
+      await changePool.flush()
+    }
+    // Deterministic branch: nothing allocates here any more, but accounts an older wallet used
+    // still belong to the seed. Only full walks look here; the periodic one is for change.
+    if (scope !== 'all') return
+    const knownDeterministic = new Set<number>(
+      pool.records().map(record => record.index),
+    )
+    const deterministic = await discoverSeedBranch({
+      provider: params.provider,
+      addressOf: index => keyring.deriveSubAccount(index).address,
+      isKnown: index =>
+        knownDeterministic.has(index) ||
+        coinList.latestOf(keyring.deriveSubAccount(index).address) !==
+          undefined,
+      highWater: pool.nextUnusedIndex(),
+      gap,
+      stopped,
+    })
+    for (const found of deterministic)
+      if (found.balanceWei > 0n)
+        discoveredDeterministic.set(found.index, found.account)
+  })
   const sync = new EvmCoinListSync({
+    discover,
     list: coinList,
     provider: params.provider,
     watcher: params.watcher,
@@ -82,6 +152,14 @@ export function installEvmWalletCoinList(params: {
           privateKey: () =>
             changeKeyring.deriveChangeAccount(record.index).privateKey,
         })
+      if (params.seedDiscovery)
+        for (const [index, account] of discoveredDeterministic)
+          add({
+            account,
+            origin: 'deterministic',
+            privateKey: () =>
+              params.seedDiscovery!.keyring.deriveSubAccount(index).privateKey,
+          })
       // New-format destinations are owned by the list/journal before legacy pool audit records
       // exist. Reopen must keep watching them, including successors at a later nonce.
       for (const coin of coinList.all())

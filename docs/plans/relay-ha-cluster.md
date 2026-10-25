@@ -56,9 +56,12 @@ variables.
 FoundationDB limits shape the large-value rule: 100 KB per value, 10 MB and 5 s per
 transaction. Values that can be larger are DM requests (up to 8 MiB), group messages (about
 2 MiB stored), profiles, forum and DM frames (up to 1 MiB), directory evidence (up to 256 KiB)
-and forward bodies. These are inlined up to 64 KiB and stored in S3 above that. S3 is
-content-addressed (`sha256/<hex>`). Each object is written before the commit that
-references it, and orphans are swept under a lease.
+and forward bodies. These are inlined up to 64 KiB and stored in S3 above that. Each
+upload is its own S3 object, `<namespace>/sha256/<hex>/<upload-id>`: content-verified on
+read and unique per upload, so equal content is not deduplicated and deleting one upload
+never touches another. Each object is written before the commit that references it.
+Orphans (expired, unreferenced upload intents) are swept; a lease only keeps replicas from
+repeating each other's work.
 
 ## PR sequence
 

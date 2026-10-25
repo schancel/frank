@@ -2274,7 +2274,7 @@ impl BlobStore for LocalFsBlobStore {
 // =============================================================================================
 
 /// Configuration for connecting [`S3BlobStore`] to AWS S3, MinIO, Cloudflare R2, or SeaweedFS.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct S3BlobStoreConfig {
     /// Base HTTP/HTTPS endpoint URL (e.g. `"http://127.0.0.1:9000"`).
     pub endpoint: String,
@@ -2290,6 +2290,79 @@ pub struct S3BlobStoreConfig {
     pub secret_access_key: String,
     /// Whether to use path-style addressing (`/{bucket}/{key}`).
     pub force_path_style: bool,
+}
+
+impl Debug for S3BlobStoreConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3BlobStoreConfig")
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"<redacted>")
+            .field("force_path_style", &self.force_path_style)
+            .finish()
+    }
+}
+
+impl S3BlobStoreConfig {
+    /// Check the endpoint, bucket and prefix before any request is signed.
+    ///
+    /// - The endpoint is an `http`/`https` origin: no path, query, fragment or credentials.
+    /// - The bucket follows S3 naming: 3 to 63 of `a-z`, `0-9`, `-` and `.`, starting and
+    ///   ending with a letter or digit.
+    /// - The prefix is empty or `/`-separated segments of `a-z`, `0-9`, `-` and `_`.
+    pub fn validate(&self) -> Result<(), String> {
+        let endpoint =
+            url::Url::parse(&self.endpoint).map_err(|e| format!("invalid S3 endpoint: {e}"))?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none()
+            || !matches!(endpoint.path(), "" | "/")
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+        {
+            return Err(
+                "S3 endpoint must be an http(s) origin with no path, query or credentials".into(),
+            );
+        }
+        let bucket = self.bucket.as_bytes();
+        let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+        if !(3..=63).contains(&bucket.len())
+            || !bucket.first().is_some_and(edge)
+            || !bucket.last().is_some_and(edge)
+            || !bucket.iter().all(|b| edge(b) || b"-.".contains(b))
+        {
+            return Err("S3 bucket must be 3-63 of a-z, 0-9, '-' and '.'".into());
+        }
+        let prefix = self.prefix.trim_matches('/');
+        if !prefix.is_empty()
+            && !prefix.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_".contains(&b))
+            })
+        {
+            return Err("S3 prefix must be '/'-separated segments of a-z, 0-9, '-' and '_'".into());
+        }
+        Ok(())
+    }
+}
+
+/// SigV4 URI encoding of one path segment: everything but unreserved characters.
+fn uri_encode_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Signed AWS Signature Version 4 headers for a single S3 REST request.
@@ -2311,6 +2384,31 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 fn sha256_hex(data: &[u8]) -> String {
     hex::encode(ChunkDigest::compute(data).0)
+}
+
+/// The SigV4 `x-amz-date` (`YYYYMMDD'T'HHMMSS'Z'`, UTC) for `time`.
+pub fn amz_date(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
 }
 
 /// Compute deterministic AWS Signature Version 4 headers for an S3 HTTP request.
@@ -2366,6 +2464,15 @@ pub trait S3ObjectTransport: Send + Sync + Debug {
         content_sha256_hex: &str,
     ) -> Result<(), BlobError>;
 
+    /// Upload `bytes` at `key` only if no object exists there (`If-None-Match: *`). Returns
+    /// `Ok(false)`, writing nothing, on `412 Precondition Failed`.
+    async fn put_object_if_absent(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+    ) -> Result<bool, BlobError>;
+
     /// Download the object at `key`, returning `Ok(None)` on `404 Not Found`.
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError>;
 
@@ -2377,19 +2484,32 @@ pub trait S3ObjectTransport: Send + Sync + Debug {
 }
 
 /// Production HTTP/HTTPS [`S3ObjectTransport`] backed by `reqwest` and AWS SigV4 request signing.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ReqwestS3Transport {
     client: Client,
     config: S3BlobStoreConfig,
 }
 
+impl Debug for ReqwestS3Transport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The config's Debug redacts the secret key.
+        f.debug_struct("ReqwestS3Transport")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ReqwestS3Transport {
     /// Construct a [`ReqwestS3Transport`] from `config`.
     pub fn new(config: S3BlobStoreConfig) -> Self {
-        Self {
-            client: Client::new(),
-            config,
-        }
+        // An unreachable object store must fail a request promptly, not hang an append. The
+        // whole request is bounded below the sweep lease (see `large_values`).
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(crate::store::large_values::MAX_OBJECT_REQUEST)
+            .build()
+            .expect("build S3 HTTP client");
+        Self { client, config }
     }
 
     fn full_key(&self, key: &str) -> String {
@@ -2411,9 +2531,51 @@ impl ReqwestS3Transport {
             Some(port) => format!("{}:{port}", parsed.host_str().unwrap_or("localhost")),
             None => parsed.host_str().unwrap_or("localhost").to_string(),
         };
-        let canonical_uri = format!("/{}/{}", self.config.bucket, full_key);
+        let canonical_uri = std::iter::once(self.config.bucket.as_str())
+            .chain(full_key.split('/'))
+            .map(|segment| format!("/{}", uri_encode_segment(segment)))
+            .collect::<String>();
         let url = format!("{base}{canonical_uri}");
         Ok((url, host, canonical_uri))
+    }
+
+    /// `PUT` an object; with `if_absent`, only when none exists (`If-None-Match: *`, an
+    /// unsigned header). Returns false on `412 Precondition Failed`.
+    async fn put(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+        if_absent: bool,
+    ) -> Result<bool, BlobError> {
+        let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
+        let mut headers =
+            self.build_signed_headers("PUT", &host, &canonical_uri, content_sha256_hex)?;
+        if if_absent {
+            headers.insert(
+                "if-none-match",
+                reqwest::header::HeaderValue::from_static("*"),
+            );
+        }
+        let resp = self
+            .client
+            .put(&url)
+            .headers(headers)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| BlobError::Backend(format!("S3 PUT {url} failed: {e}")))?;
+        if if_absent && resp.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(BlobError::Backend(format!(
+                "S3 PUT {url} returned HTTP {status}: {text}"
+            )));
+        }
+        Ok(true)
     }
 
     fn build_signed_headers(
@@ -2423,7 +2585,8 @@ impl ReqwestS3Transport {
         canonical_uri: &str,
         content_sha256_hex: &str,
     ) -> Result<HeaderMap, BlobError> {
-        let amz_date = "20261017T000000Z";
+        // S3 rejects a request whose date is more than 15 minutes from its clock.
+        let amz_date = amz_date(std::time::SystemTime::now());
         let sig = sign_s3_v4_request(
             method,
             host,
@@ -2431,7 +2594,7 @@ impl ReqwestS3Transport {
             &self.config.region,
             &self.config.access_key_id,
             &self.config.secret_access_key,
-            amz_date,
+            &amz_date,
             content_sha256_hex,
         );
         let mut headers = HeaderMap::new();
@@ -2465,25 +2628,18 @@ impl S3ObjectTransport for ReqwestS3Transport {
         bytes: Vec<u8>,
         content_sha256_hex: &str,
     ) -> Result<(), BlobError> {
-        let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
-        let headers =
-            self.build_signed_headers("PUT", &host, &canonical_uri, content_sha256_hex)?;
-        let resp = self
-            .client
-            .put(&url)
-            .headers(headers)
-            .body(bytes)
-            .send()
+        self.put(key, bytes, content_sha256_hex, false)
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 PUT {url} failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(BlobError::Backend(format!(
-                "S3 PUT {url} returned HTTP {status}: {text}"
-            )));
-        }
-        Ok(())
+            .map(|_| ())
+    }
+
+    async fn put_object_if_absent(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+    ) -> Result<bool, BlobError> {
+        self.put(key, bytes, content_sha256_hex, true).await
     }
 
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError> {
@@ -2803,6 +2959,67 @@ mod tests {
 
     use super::*;
     use crate::store::kv_store::{KvError, RocksDbKvStore};
+
+    fn s3_config(endpoint: &str, bucket: &str, prefix: &str) -> S3BlobStoreConfig {
+        S3BlobStoreConfig {
+            endpoint: endpoint.into(),
+            region: "us-east-1".into(),
+            bucket: bucket.into(),
+            prefix: prefix.into(),
+            access_key_id: "id".into(),
+            secret_access_key: "hunter2".into(),
+            force_path_style: true,
+        }
+    }
+
+    #[test]
+    fn s3_config_is_validated_and_never_prints_its_secret() {
+        assert!(s3_config("http://minio:9000", "frank-lab", "cluster-a/v1")
+            .validate()
+            .is_ok());
+        assert!(s3_config("https://s3.example.com/", "a.b-c", "")
+            .validate()
+            .is_ok());
+        for (endpoint, bucket, prefix) in [
+            ("http://minio:9000/base", "frank", ""),
+            ("http://minio:9000?x=1", "frank", ""),
+            ("http://user:pw@minio:9000", "frank", ""),
+            ("ftp://minio", "frank", ""),
+            ("http://minio:9000", "Frank", ""),
+            ("http://minio:9000", "ab", ""),
+            ("http://minio:9000", "-frank", ""),
+            ("http://minio:9000", "fr/ank", ""),
+            ("http://minio:9000", "frank", "a//b"),
+            ("http://minio:9000", "frank", "a b"),
+            ("http://minio:9000", "frank", "../x"),
+        ] {
+            assert!(
+                s3_config(endpoint, bucket, prefix).validate().is_err(),
+                "{endpoint} {bucket} {prefix}"
+            );
+        }
+        let config = s3_config("http://minio:9000", "frank", "");
+        assert!(!format!("{config:?}").contains("hunter2"));
+        assert!(!format!("{:?}", ReqwestS3Transport::new(config)).contains("hunter2"));
+    }
+
+    #[test]
+    fn canonical_uri_encodes_every_segment() {
+        let transport = ReqwestS3Transport::new(s3_config("http://minio:9000/", "frank", "p~1"));
+        let (url, host, uri) = transport.endpoint_url_and_uri("a b/c+d").unwrap();
+        assert_eq!(host, "minio:9000");
+        assert_eq!(uri, "/frank/p~1/a%20b/c%2Bd");
+        assert_eq!(url, "http://minio:9000/frank/p~1/a%20b/c%2Bd");
+    }
+
+    #[test]
+    fn amz_date_is_the_current_utc_time() {
+        let at = |secs| amz_date(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        assert_eq!(at(0), "19700101T000000Z");
+        assert_eq!(at(951_782_400), "20000229T000000Z");
+        assert_eq!(at(1_792_886_399), "20261024T235959Z");
+        assert_eq!(at(4_107_542_400), "21000301T000000Z");
+    }
 
     /// Single-operation transactions for test setup and inspection.
     trait Direct {

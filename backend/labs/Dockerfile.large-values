@@ -1,0 +1,25 @@
+# Builds the cashweb-registry large-value acceptance phases (FoundationDB + S3).
+# Keep the FDB client identical to the server release. FDB's image supplies native libfdb_c.
+FROM foundationdb/foundationdb:7.3.63 AS fdb-client
+FROM rust:1-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-12 g++-12 libclang-dev protobuf-compiler python3 && rm -rf /var/lib/apt/lists/*
+COPY --from=fdb-client /usr/lib/libfdb_c.so /usr/local/lib/libfdb_c.so
+RUN ldconfig
+ENV CC=gcc-12 CXX=g++-12 CARGO_BUILD_JOBS=2
+WORKDIR /build
+COPY backend/bitcoinsuite backend/bitcoinsuite
+COPY backend/cashweb backend/cashweb
+COPY docs docs
+COPY fixtures fixtures
+COPY backend/labs/copy-test-artifact.py /copy-test-artifact.py
+WORKDIR /build/backend/cashweb
+# Cargo checks source mtimes; force workspace freshness when reusing a target cache
+# across isolated checkouts. Native dependencies stay cached.
+RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,sharing=locked,id=frank-labs-git,target=/usr/local/cargo/git \
+    --mount=type=cache,sharing=locked,id=frank-labs-fdb-target,target=/build/backend/cashweb/target \
+    find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
+    cargo test --locked -p cashweb-registry --features foundationdb --test large_value_contract --no-run --message-format=json > /tmp/artifacts.json && \
+    python3 /copy-test-artifact.py /tmp/artifacts.json /large-value-contract relay_a_appends_a_1_mib_message
+# The phase to run is the container command (one exact test name).
+ENTRYPOINT ["/large-value-contract", "--ignored", "--nocapture", "--test-threads=1", "--exact"]

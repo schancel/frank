@@ -1,5 +1,7 @@
 # Relay storage backend adoption
 
+> Cluster adoption plan: [relay-ha-cluster.md](relay-ha-cluster.md).
+
 ## Runtime boundary
 
 `registry.cluster.driver` is parsed by `cashweb-config`. The daemon resolves it through

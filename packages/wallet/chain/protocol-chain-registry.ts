@@ -41,7 +41,7 @@ const clientKeys = new Set([
   "addressPrefix",
   "rpcUrl",
   "rpcUrls",
-  "explorerUrl",
+  "transactionExplorerUrl",
   "contracts",
   "dex",
   "gasChargedOn",

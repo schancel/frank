@@ -3,6 +3,7 @@ import {
   displayToRawAmount,
   formatRawAmount,
   compactAmountText,
+  displayAmountText,
   formatCompactAmount,
   formatDisplayAmount,
   formatDisplayNumber,
@@ -232,5 +233,19 @@ describe('the compact and the full form agree', () => {
     )
     expect(formatCompactAmount(monad, parseEther('1000'))).toBe('1 kMON')
     expect(formatCompactAmount(monad, parseEther('-0.0125'))).toBe('-12.5 mMON')
+  })
+})
+
+describe('displayAmountText (amount text from a balance observation)', () => {
+  it('shortens the number and keeps the unit the network names, with no SI prefix', () => {
+    expect(displayAmountText('0.92620000123 MONR')).toBe('0.9262 MONR')
+    expect(displayAmountText('1.500000 MON')).toBe('1.5 MON')
+    expect(displayAmountText('10000 tXEC')).toBe('10000 tXEC')
+    expect(displayAmountText('0.005 MONT')).toBe('0.005 MONT')
+  })
+
+  it('preserves loading and status text as-is', () => {
+    expect(displayAmountText('Loading balance…')).toBe('Loading balance…')
+    expect(displayAmountText('')).toBe('')
   })
 })

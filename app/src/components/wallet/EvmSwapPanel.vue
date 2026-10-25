@@ -491,7 +491,6 @@ import {
   type SwapResult,
 } from '@frank/wallet/swap/swap-execution'
 import { minimumOutput, MAX_SLIPPAGE_BPS } from '@frank/wallet/swap/uniswap-v4'
-import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import {
   EvmSwapUnavailableError,
   openEvmSwapSession,
@@ -508,7 +507,7 @@ import {
 } from 'src/swap/amounts'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
-import { getExplorerUrl } from 'src/utils/explorer'
+import { transactionExplorerUrl } from 'src/utils/explorer'
 
 interface Problem {
   key: string
@@ -1159,15 +1158,8 @@ export default defineComponent({
     }
 
     const explorerUrlOf = (txHash: string) => {
-      try {
-        // The canonical identifier, not the wallet's alias: the alias names the mainnet explorer.
-        return getExplorerUrl(txHash, props.chainIdentifier, {
-          isTestnet:
-            getChainRegistryEntry(props.chainIdentifier)?.isTestnet ?? true,
-        })
-      } catch {
-        return undefined
-      }
+      // The canonical identifier, not the wallet's alias: the alias names the mainnet explorer.
+      return transactionExplorerUrl(txHash, props.chainIdentifier)
     }
 
     /** What the chain said a swap did, remembered so it is not asked again on every display. */

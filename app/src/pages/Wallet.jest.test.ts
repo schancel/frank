@@ -12,7 +12,7 @@ afterEach(() => {
 import { nextTick, ref } from 'vue'
 import RenameWalletDialog from '../components/wallet/RenameWalletDialog.vue'
 import { useWalletNames } from '../composables/useWalletNames'
-import * as nativeTransfer from '../accounts/native-transfer'
+import * as walletHistory from '../components/wallet/wallet-history'
 import type { EvmNativeOperationStatus } from '@frank/wallet/chain'
 import type { TokenItem } from '../composables/useChainBalance'
 import type { EvmTokenRow } from '../composables/useEvmTokenBalances'
@@ -1306,6 +1306,84 @@ describe('Wallet detail page (#570)', () => {
     },
   )
 
+  it('lists finished sends from completed history after a reload, dated by their block, with received payments', async () => {
+    const fixture = await includedNativeTransfer()
+    try {
+      const rows = fixture.journal.list()
+      const blockHash = (
+        rows[0]!.members[0]!.observation as { blockHash: string }
+      ).blockHash
+      const blockTime = Date.UTC(2026, 9, 20, 12, 0)
+      const readBlockTimes = jest.fn(
+        async (hashes: readonly string[]) =>
+          new Map(hashes.map(hash => [hash, blockTime])),
+      )
+      const getNativeOperationHistory = jest.fn(async () => ({
+        operations: rows,
+      }))
+      const forbidden = jest.fn(() => {
+        throw new Error('financial effect from history')
+      })
+      mockUseActiveWallet.mockResolvedValue({
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        identity: { displayAddress: '0xabc' },
+        // After a reload the finished send is no longer an active operation.
+        getNativeOperations: () => [],
+        getNativeOperationHistory,
+        readBlockTimes,
+        getReceivedPayments: () => [
+          {
+            address: '0x' + '77'.repeat(20),
+            origin: 'stealth',
+            status: 'received',
+            amountWei: 20000000000000000n,
+            receivedAmountWei: 20000000000000000n,
+            claimedAmountWei: 20000000000000000n,
+            spendable: true,
+            discoveredAtMs: blockTime + 60_000,
+          },
+        ],
+        resumeNativeOperation: forbidden,
+        sendLegacy: forbidden,
+        sendNative: forbidden,
+      })
+      const wrapper = mountWallet()
+      try {
+        await flush()
+        const history = wrapper.get('[data-testid="wallet-native-operations"]')
+        expect(history.text()).toContain(fixture.hash)
+        expect(readBlockTimes).toHaveBeenCalledWith([blockHash])
+        const items = history.findAll('[data-testid="wallet-activity-item"]')
+        // Newest first: the payment received after the send.
+        expect(items.map(item => item.attributes('data-activity-id'))).toEqual([
+          `received:0x${'77'.repeat(20)}`,
+          `native:${fixture.operationId}`,
+        ])
+        expect(
+          items[1]!
+            .get('[data-testid="wallet-activity-date"]')
+            .attributes('datetime'),
+        ).toBe(new Date(blockTime).toISOString())
+        expect(
+          items[1]!.get('[data-testid="wallet-native-operation-date"]').text(),
+        ).not.toBe('walletHistory.notYetInBlock')
+        expect(items[0]!.text()).toContain('+0.02')
+        expect(forbidden).not.toHaveBeenCalled()
+
+        // Opening the History tab reads the owners again: a new send shows up.
+        getNativeOperationHistory.mockClear()
+        wrapper.vm.activeTab = 'history'
+        await flush()
+        expect(getNativeOperationHistory).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper.unmount()
+      }
+    } finally {
+      await fixture.close()
+    }
+  })
+
   it('lists dated swaps in order, pins pending activity, keeps undated transfers explicit and combines shared transactions', async () => {
     const sharedHash = '0x' + '34'.repeat(32)
     const native: EvmNativeOperationStatus = {
@@ -1326,11 +1404,22 @@ describe('Wallet detail page (#570)', () => {
       kind: 'contract',
       intendedValueWei: '0',
       finalTransactionHash: sharedHash,
-      members: [{ transactionHash: sharedHash, state: 'included-success' }],
+      members: [
+        {
+          role: 'payment',
+          transactionHash: sharedHash,
+          state: 'included-success',
+        },
+      ],
     }
     const inspect = jest
-      .spyOn(nativeTransfer, 'inspectNativeTransferOperations')
-      .mockReturnValue({ status: 'available', operations: [native, contract] })
+      .spyOn(walletHistory, 'loadWalletHistory')
+      .mockResolvedValue({
+        status: 'available',
+        operations: [native, contract],
+        received: [],
+        blockTimes: new Map(),
+      })
     const swap = (
       id: string,
       timestamp: number,
@@ -1365,7 +1454,7 @@ describe('Wallet detail page (#570)', () => {
           .map(row => row.attributes('data-activity-id')),
       ).toEqual(['swap:pending', 'swap:shared', 'swap:old', 'native:transfer'])
       expect(history.text()).toContain('walletPanel.historyPending')
-      expect(history.text()).toContain('walletHistory.transfers')
+      expect(history.text()).toContain('walletPanel.tabHistory')
       expect(
         history.findAll('[data-testid="wallet-native-operation"]'),
       ).toHaveLength(2)

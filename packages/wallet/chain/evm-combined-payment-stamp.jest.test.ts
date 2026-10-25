@@ -149,6 +149,10 @@ test('contact payment submits the original payment, stamp, and all owned change 
     const graph = f.alice.transactionSetPreparer!.getOperation(wrapper.operationId)!
     expect(graph.members.every(member => member.observation.state === 'included-success')).toBe(true)
     expect(summarizeEvmNativeOperation(graph)).toMatchObject({ intendedValueWei: '300000', payment: 'included' })
+    // History tells the change returned to the wallet apart from the payment.
+    expect(summarizeEvmNativeOperation(graph).members.map(member => member.role))
+      .toEqual(graph.members.map(member => member.transactionSet!.role))
+    expect(graph.members.some(member => member.transactionSet!.role === 'change')).toBe(true)
     for (const member of [...wrapper.bundle, ...wrapper.otherTransactions])
       expect(offlineChain.walletBroadcasts).toContain(member.rawTransaction)
   } finally { await f.close() }

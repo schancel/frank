@@ -154,6 +154,55 @@
         </div>
       </q-card-section>
 
+      <q-card-section
+        v-if="!fundingSupported"
+        class="q-pt-none text-caption text-grey-7"
+        data-testid="dapp-funding-unsupported"
+      >
+        {{ ui.fundingUnsupported }}
+      </q-card-section>
+
+      <q-card-section
+        v-if="sweepReview"
+        class="q-pt-none"
+        data-testid="dapp-sweep-review"
+      >
+        <div class="text-body2">
+          {{ sweepReviewText }}
+        </div>
+        <div class="row q-gutter-sm q-mt-sm">
+          <q-btn
+            unelevated
+            dense
+            no-caps
+            color="primary"
+            data-testid="dapp-sweep-confirm-btn"
+            :label="ui.sweepConfirmBtn"
+            :loading="sweeping"
+            @click="confirmSweep"
+          />
+          <q-btn
+            flat
+            dense
+            no-caps
+            data-testid="dapp-sweep-cancel-btn"
+            :label="ui.cancelBtn"
+            :disable="sweeping"
+            @click="sweepReview = null"
+          />
+        </div>
+      </q-card-section>
+
+      <q-card-section
+        v-if="fundingMessage"
+        class="q-pt-none text-caption"
+        :class="fundingMessage.kind === 'error' ? 'text-negative' : ''"
+        role="status"
+        data-testid="dapp-funding-message"
+      >
+        {{ fundingMessage.text }}
+      </q-card-section>
+
       <q-card-actions align="between" class="q-px-md q-pb-md">
         <q-btn
           flat
@@ -169,7 +218,8 @@
           color="primary"
           data-testid="dapp-topup-persona-btn"
           :label="ui.topUpFromPoolBtn"
-          @click="topUpFromPool"
+          :disable="!topUpRoute"
+          :to="topUpRoute"
         />
         <q-btn
           flat
@@ -177,7 +227,9 @@
           color="warning"
           data-testid="dapp-sweep-back-btn"
           :label="ui.sweepBackToPoolBtn"
-          @click="sweepBackToPool"
+          :disable="!fundingSupported || sweeping"
+          :loading="preparingSweep"
+          @click="reviewSweep"
         />
       </q-card-actions>
     </q-card>
@@ -441,8 +493,13 @@ import {
   shallowRef,
   watch,
 } from 'vue'
-import { formatUnits, parseUnits, Signature, Transaction } from 'ethers'
-import { activeChain } from '@frank/wallet/chain'
+import { Signature, Transaction } from 'ethers'
+import { getChainRegistryEntry } from '@frank/wallet/chain'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import {
+  formatDisplayAmount,
+  registryAmountAdapter,
+} from 'src/utils/chain-amount'
 import { DAPP_PERSONA_SHARED_BRANCH } from '@frank/wallet/dapp-bridge/persona-keys'
 import {
   accountSession,
@@ -494,7 +551,8 @@ export interface DappApprovalItem {
 export interface DiscoveredPersonaActivity {
   index: number
   address: string
-  balanceMon: number
+  /** The balance the chain reported, in the network's base unit. */
+  balanceWei: bigint
   txCount: number
   used: boolean
 }
@@ -504,13 +562,22 @@ function shortHexAddress(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`
 }
 
-function resolveDefaultPersonaRpcUrl(): string {
-  const relayBase = (activeChain.relayBaseUrl || '').replace(/\/+$/, '')
-  if (relayBase && !relayBase.includes('relay.signet.mx')) {
-    const chainId = activeChain.chainIdentifier || 'monad-testnet'
-    return `${relayBase}/chain-rpc/${chainId}/rpc`
-  }
-  return 'https://testnet-rpc.monad.xyz'
+/**
+ * The relay's JSON-RPC route for one network, by canonical identifier. Undefined without a
+ * relay: persona balances are then not read, never read from another network's public node.
+ */
+/** The host's relay, the same one the account's EVM wallets read the chain through. */
+function hostRelayBaseUrl(): string | undefined {
+  return loadMonadChainConfigFromEnv()?.relayBaseUrl
+}
+
+export function personaRpcUrl(
+  relayBaseUrl: string | undefined,
+  chainIdentifier: string,
+): string | undefined {
+  const relayBase = (relayBaseUrl || '').trim().replace(/\/+$/, '')
+  if (!relayBase || !chainIdentifier) return undefined
+  return `${relayBase}/chain-rpc/${encodeURIComponent(chainIdentifier)}/rpc`
 }
 
 /**
@@ -519,8 +586,8 @@ function resolveDefaultPersonaRpcUrl(): string {
  */
 export async function discoverUsedPersonasOnChain(
   slotAddresses: readonly string[],
-  options?: {
-    rpcUrl?: string
+  options: {
+    rpcUrl: string
     gapLimit?: number
     knownMaxIndex?: number
     fetchImpl?: typeof fetch
@@ -532,15 +599,15 @@ export async function discoverUsedPersonasOnChain(
   )
     return []
   const fetchFn =
-    options?.fetchImpl ??
+    options.fetchImpl ??
     (typeof globalThis.fetch === 'function'
       ? globalThis.fetch.bind(globalThis)
       : undefined)
   if (!fetchFn) return []
 
-  const rpcUrl = options?.rpcUrl || resolveDefaultPersonaRpcUrl()
+  const rpcUrl = options.rpcUrl
   const maxScan = slotAddresses.length - 1
-  const gapLimit = options?.gapLimit ?? 5
+  const gapLimit = options.gapLimit ?? 5
   const discovered: DiscoveredPersonaActivity[] = []
 
   try {
@@ -589,7 +656,9 @@ export async function discoverUsedPersonasOnChain(
 
     let consecutiveUnused = 0
     for (let i = 0; i <= maxScan; i += 1) {
-      const balHex = byId.get(i * 2 + 2) ?? '0x0'
+      const balHex = byId.get(i * 2 + 2)
+      // A slot whose balance the node did not return is unknown, never zero.
+      if (balHex === undefined) continue
       const txHex = byId.get(i * 2 + 3) ?? '0x0'
       let balWei = 0n
       let txCount = 0
@@ -604,12 +673,11 @@ export async function discoverUsedPersonasOnChain(
         txCount = 0
       }
       const used = balWei > 0n || txCount > 0
-      if (i === 0 || used || i <= (options?.knownMaxIndex ?? 0)) {
-        const balanceMon = Number.parseFloat(formatUnits(balWei, 18))
+      if (i === 0 || used || i <= (options.knownMaxIndex ?? 0)) {
         discovered.push({
           index: i,
           address: slotAddresses[i],
-          balanceMon: Number.isFinite(balanceMon) ? balanceMon : 0,
+          balanceWei: balWei,
           txCount,
           used,
         })
@@ -621,7 +689,7 @@ export async function discoverUsedPersonasOnChain(
           consecutiveUnused += 1
           if (
             consecutiveUnused >= gapLimit &&
-            i >= (options?.knownMaxIndex ?? 0)
+            i >= (options.knownMaxIndex ?? 0)
           ) {
             break
           }
@@ -638,13 +706,10 @@ export async function discoverUsedPersonasOnChain(
 export default defineComponent({
   name: 'DappBridgePanel',
   props: {
-    initialPersonaBalanceMon: {
-      type: Number,
-      default: 0,
-    },
-    initialPoolBalanceMon: {
-      type: Number as PropType<number | undefined>,
-      default: undefined,
+    /** The canonical network personas are funded and read on: the composition's choice. */
+    chainIdentifier: {
+      type: String,
+      required: true,
     },
     initialApprovals: {
       type: Array as PropType<DappApprovalItem[]>,
@@ -666,7 +731,6 @@ export default defineComponent({
   emits: [
     'create-burner',
     'select-persona',
-    'topup-persona',
     'sweep-to-pool',
     'reject-request',
     'disconnect-origin',
@@ -681,9 +745,8 @@ export default defineComponent({
 
     const personaIndex = ref(0)
     const maxPersonaIndex = ref(0)
-    const personaBalancesByIndex = ref<Record<number, number>>({
-      0: props.initialPersonaBalanceMon,
-    })
+    // What the chain last reported for each persona slot; absent until read.
+    const personaBalancesByIndex = ref<Record<number, bigint>>({})
     const usedPersonasByIndex = ref<Record<number, boolean>>({})
 
     const useBurnerForConnect = ref(true)
@@ -694,20 +757,27 @@ export default defineComponent({
       ...(props.initialOriginPersonas ?? {}),
     })
 
-    const personaBalanceMon = computed({
-      get: () => personaBalancesByIndex.value[personaIndex.value] ?? 0,
-      set: (val: number) => {
-        personaBalancesByIndex.value = {
-          ...personaBalancesByIndex.value,
-          [personaIndex.value]: Math.max(0, val),
-        }
-      },
-    })
-
-    const explicitPoolBalanceMon = ref<number | undefined>(
-      props.initialPoolBalanceMon,
+    const personaBalanceWei = computed<bigint | undefined>(
+      () => personaBalancesByIndex.value[personaIndex.value],
     )
-    const poolTransferDeltaMon = ref(0)
+
+    // The network's facts from the registry: personas are plain accounts on one EVM network.
+    const chainEntry = computed(() =>
+      getChainRegistryEntry(props.chainIdentifier),
+    )
+    const amounts = computed(() => registryAmountAdapter(props.chainIdentifier))
+    const fundingSupported = computed(
+      () =>
+        chainEntry.value?.id === props.chainIdentifier &&
+        chainEntry.value.family === 'evm' &&
+        chainEntry.value.nativeChainId !== undefined &&
+        amounts.value !== undefined &&
+        !!personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier),
+    )
+    const formatWei = (wei: bigint | undefined) =>
+      wei === undefined || !amounts.value
+        ? '—'
+        : formatDisplayAmount(amounts.value, wei)
     const approvals = ref<DappApprovalItem[]>([...props.initialApprovals])
     const dappRequestsWaiting = ref(0)
 
@@ -808,7 +878,10 @@ export default defineComponent({
       } catch {
         return // No unlocked account: no persona addresses to scan.
       }
+      const rpcUrl = personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier)
+      if (!rpcUrl || !fundingSupported.value) return
       const results = await discoverUsedPersonasOnChain(slotAddresses, {
+        rpcUrl,
         knownMaxIndex: maxPersonaIndex.value,
       })
       if (results.length === 0) return
@@ -821,8 +894,7 @@ export default defineComponent({
           item.used ||
           item.index <= maxPersonaIndex.value
         ) {
-          const prevBal = nextBalances[item.index] ?? 0
-          nextBalances[item.index] = Math.max(prevBal, item.balanceMon)
+          nextBalances[item.index] = item.balanceWei
           if (item.used && item.index > 0) {
             nextUsed[item.index] = true
           }
@@ -842,18 +914,10 @@ export default defineComponent({
       persistPersonaMetadata()
     }
 
-    const poolBalanceMon = computed(() => {
-      if (explicitPoolBalanceMon.value !== undefined) {
-        return Math.max(
-          0,
-          explicitPoolBalanceMon.value + poolTransferDeltaMon.value,
-        )
-      }
-      const wei = liveWalletBalanceWei.value ?? 0n
-      const liveMon = Number.parseFloat(formatUnits(wei, 18))
-      const base = Number.isFinite(liveMon) ? liveMon : 0
-      return Math.max(0, base + poolTransferDeltaMon.value)
-    })
+    // The wallet's own balance on this network, as the wallet reports it.
+    const poolBalanceWei = computed<bigint | undefined>(
+      () => liveWalletBalanceWei.value ?? undefined,
+    )
 
     const personaOptionItems = computed(() => {
       const items: Array<{
@@ -863,22 +927,18 @@ export default defineComponent({
         testId: string
       }> = []
       for (let i = 0; i <= maxPersonaIndex.value; i += 1) {
-        const bal = personaBalancesByIndex.value[i] ?? 0
-        const used = Boolean(usedPersonasByIndex.value[i]) || bal > 0
+        const bal = personaBalancesByIndex.value[i]
+        const used = Boolean(usedPersonasByIndex.value[i]) || (bal ?? 0n) > 0n
         const addr = slotAddress(i)
         const name = i === 0 ? 'Default #0' : `Burner #${i}`
         const label =
-          bal > 0
-            ? `${name} (${bal.toFixed(2)} MON)`
+          bal !== undefined && bal > 0n
+            ? `${name} (${formatWei(bal)})`
             : i > 0 && used
             ? `${name} (used)`
             : name
         const statusSuffix =
-          i === 0
-            ? `${bal.toFixed(2)} MON`
-            : used
-            ? `${bal.toFixed(2)} MON · used`
-            : `${bal.toFixed(2)} MON`
+          i > 0 && used ? `${formatWei(bal)} · used` : formatWei(bal)
         const dropdownLabel = `${name} — ${shortHexAddress(
           addr,
         )} (${statusSuffix})`
@@ -904,6 +964,10 @@ export default defineComponent({
       createBurnerBtn: 'Create Burner Persona',
       topUpFromPoolBtn: 'Top Up from Pool',
       sweepBackToPoolBtn: 'Sweep Back to Pool',
+      sweepConfirmBtn: 'Send to my wallet',
+      cancelBtn: 'Cancel',
+      fundingUnsupported:
+        'Personas cannot be funded or read on this network through this relay.',
       approvalTitle: 'Pending dApp Approval',
       connectPersonaChoiceLabel: 'Anti-Supercookie Persona Mode for this Site',
       connectBurnerOptionLabel:
@@ -958,7 +1022,10 @@ export default defineComponent({
         case 'safari-extension':
           return 'Browser Extension (Safari Popup)'
         default:
-          return 'Standalone PWA (signet.mx)'
+          // The host this page is actually served from, never an assumed one.
+          return typeof window !== 'undefined' && window.location?.host
+            ? `Standalone PWA (${window.location.host})`
+            : 'Standalone PWA'
       }
     })
 
@@ -986,12 +1053,10 @@ export default defineComponent({
         : `Burner Persona #${personaIndex.value}`,
     )
 
-    const formattedPersonaBalance = computed(
-      () => `${personaBalanceMon.value.toFixed(2)} MON`,
+    const formattedPersonaBalance = computed(() =>
+      formatWei(personaBalanceWei.value),
     )
-    const formattedPoolBalance = computed(
-      () => `${poolBalanceMon.value.toFixed(2)} MON`,
-    )
+    const formattedPoolBalance = computed(() => formatWei(poolBalanceWei.value))
 
     const currentApproval = computed<DappApprovalItem | null>(
       () => approvals.value[0] ?? null,
@@ -1136,18 +1201,17 @@ export default defineComponent({
 
     async function syncActivePersonaToBackground(address: string) {
       if (!isExtensionRuntime.value) return
+      const nativeChainId = chainEntry.value?.nativeChainId
+      if (!fundingSupported.value || nativeChainId === undefined) return
       try {
-        const totalSpendableMon = Math.max(
-          0,
-          personaBalanceMon.value + poolBalanceMon.value,
-        )
-        const totalWei = parseUnits(totalSpendableMon.toFixed(6), 18)
+        const totalWei =
+          (personaBalanceWei.value ?? 0n) + (poolBalanceWei.value ?? 0n)
         await sendRuntimeMessage({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'set-active-persona',
           address,
           poolBalanceWeiHex: '0x' + totalWei.toString(16),
-          chainIdHex: '0x279f',
+          chainIdHex: '0x' + BigInt(nativeChainId).toString(16),
         })
       } catch {
         // Ignore in non-extension contexts
@@ -1155,7 +1219,7 @@ export default defineComponent({
     }
 
     watch(
-      [activePersonaAddress, personaBalanceMon, poolBalanceMon],
+      [activePersonaAddress, personaBalanceWei, poolBalanceWei],
       ([newAddress]) => {
         if (newAddress) {
           void syncActivePersonaToBackground(newAddress)
@@ -1252,12 +1316,6 @@ export default defineComponent({
     function createBurnerPersona() {
       const nextIndex = maxPersonaIndex.value + 1
       maxPersonaIndex.value = nextIndex
-      if (personaBalancesByIndex.value[nextIndex] === undefined) {
-        personaBalancesByIndex.value = {
-          ...personaBalancesByIndex.value,
-          [nextIndex]: 0,
-        }
-      }
       personaIndex.value = nextIndex
       persistPersonaMetadata()
       const payload = {
@@ -1268,135 +1326,226 @@ export default defineComponent({
       emit('create-burner', payload)
     }
 
-    function topUpFromPool() {
-      const amount = Math.min(10, poolBalanceMon.value)
-      const targetIdx = personaIndex.value
-      const targetAddress = activePersonaAddress.value
-      // Never fund an address custody has not derived for this account.
-      if (amount <= 0 || !targetAddress) return
-      poolTransferDeltaMon.value -= amount
-      personaBalanceMon.value += amount
-      usedPersonasByIndex.value = {
-        ...usedPersonasByIndex.value,
-        [targetIdx]: true,
-      }
-      persistPersonaMetadata()
-      emit('topup-persona', {
-        amountMon: amount,
-        personaBalanceMon: personaBalanceMon.value,
-        poolBalanceMon: poolBalanceMon.value,
-      })
-      if (accountStatus.status === 'ready') {
-        void (async () => {
-          try {
-            const wallet = await accountSession.getWallet()
-            const valueWei = parseUnits(amount.toFixed(6), 18)
-            await activeChain.nativeTransfers?.send?.({
-              wallet,
-              recipient: { raw: targetAddress },
-              value: valueWei,
-            })
-          } catch {
-            // Best-effort on-chain transfer; virtual pool fallback remains active
+    /**
+     * Topping up a persona is an ordinary payment from the wallet to the persona's address: the
+     * Send page, with its review of the exact amount and fee, its confirmation, its errors and
+     * its place in History. Nothing moves until the user confirms there.
+     */
+    const topUpRoute = computed(() =>
+      fundingSupported.value && activePersonaAddress.value
+        ? {
+            path: '/send',
+            query: {
+              chainIdentifier: props.chainIdentifier,
+              to: activePersonaAddress.value,
+            },
           }
-        })()
+        : undefined,
+    )
+
+    interface SweepReview {
+      slot: number
+      from: string
+      to: string
+      valueWei: bigint
+      feeWei: bigint
+      transaction: Transaction
+      rpcUrl: string
+    }
+    const sweepReview = shallowRef<SweepReview | null>(null)
+    const preparingSweep = ref(false)
+    const sweeping = ref(false)
+    const fundingMessage = ref<{ kind: 'info' | 'error'; text: string } | null>(
+      null,
+    )
+    const sweepReviewText = computed(() => {
+      const review = sweepReview.value
+      if (!review) return ''
+      return `Send ${formatWei(
+        review.valueWei,
+      )} from this persona to your wallet (${shortHexAddress(
+        review.to,
+      )}). Network fee at most ${formatWei(review.feeWei)}.`
+    })
+
+    async function rpc<T>(
+      rpcUrl: string,
+      method: string,
+      params: unknown[],
+    ): Promise<T> {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      })
+      if (!response.ok)
+        throw new Error(`The network did not answer (${response.status}).`)
+      const body = (await response.json()) as {
+        result?: T
+        error?: { message?: string }
+      }
+      if (body.error)
+        throw new Error(
+          body.error.message || 'The network refused the request.',
+        )
+      if (body.result === undefined)
+        throw new Error('The network gave no answer.')
+      return body.result
+    }
+
+    async function refreshPersonaBalance(slot: number, address: string) {
+      const rpcUrl = personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier)
+      if (!rpcUrl) return
+      const balance = BigInt(
+        await rpc<string>(rpcUrl, 'eth_getBalance', [address, 'latest']),
+      )
+      personaBalancesByIndex.value = {
+        ...personaBalancesByIndex.value,
+        [slot]: balance,
       }
     }
 
-    function sweepBackToPool() {
-      const swept = personaBalanceMon.value
-      if (swept <= 0) return
-      const sourceIdx = personaIndex.value
-      const sourceAddress = activePersonaAddress.value
-      personaBalanceMon.value = 0
-      poolTransferDeltaMon.value += swept
-      persistPersonaMetadata()
-      emit('sweep-to-pool', {
-        sweptMon: swept,
-        personaBalanceMon: personaBalanceMon.value,
-        poolBalanceMon: poolBalanceMon.value,
-      })
-      if (accountStatus.status === 'ready' && sourceAddress) {
-        void (async () => {
-          try {
-            if (typeof fetch !== 'function') return
-            const personas = await requirePersonaSigner()
-            const wallet = await accountSession.getWallet()
-            const receiveAddr = (await wallet.getReceiveAddress?.())?.raw
-            if (!receiveAddr) return
-            const rpcUrl = resolveDefaultPersonaRpcUrl()
-            const batchRes = await fetch(rpcUrl, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify([
-                {
-                  jsonrpc: '2.0',
-                  id: 1,
-                  method: 'eth_getBalance',
-                  params: [sourceAddress, 'latest'],
-                },
-                {
-                  jsonrpc: '2.0',
-                  id: 2,
-                  method: 'eth_getTransactionCount',
-                  params: [sourceAddress, 'latest'],
-                },
-                {
-                  jsonrpc: '2.0',
-                  id: 3,
-                  method: 'eth_gasPrice',
-                  params: [],
-                },
-              ]),
-            })
-            if (!batchRes.ok) return
-            const rpcItems = (await batchRes.json()) as Array<{
-              id: number
-              result?: string
-            }>
-            const balHex = rpcItems.find(x => x.id === 1)?.result ?? '0x0'
-            const nonceHex = rpcItems.find(x => x.id === 2)?.result ?? '0x0'
-            const gasPriceHex =
-              rpcItems.find(x => x.id === 3)?.result ?? '0xba43b7400'
-            const balWei = BigInt(balHex)
-            const gasLimit = 21_000n
-            const gasPrice = BigInt(gasPriceHex)
-            const feeWei = gasLimit * gasPrice
-            if (balWei <= feeWei) return
-            const sweepTx = Transaction.from({
-              type: 2,
-              chainId: 10143n,
-              to: receiveAddr,
-              value: balWei - feeWei,
-              nonce: Number.parseInt(nonceHex, 16) || 0,
-              gasLimit,
-              maxFeePerGas: gasPrice,
-              maxPriorityFeePerGas:
-                gasPrice > 2_000_000_000n ? 2_000_000_000n : gasPrice,
-            })
-            sweepTx.signature = Signature.from(
-              await personas.signDigest(
-                { kind: 'shared', slot: sourceIdx },
-                sweepTx.unsignedHash,
-              ),
-            )
-            const signedTx = sweepTx.serialized
-            await fetch(rpcUrl, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                jsonrpc: '2.0',
-                id: 4,
-                method: 'eth_sendRawTransaction',
-                params: [signedTx],
-              }),
-            })
-          } catch {
-            // Ignore sweep errors when offline or in unit tests
+    /** Reads the persona's balance and the fee now, and shows the exact amount to confirm. */
+    async function reviewSweep() {
+      fundingMessage.value = null
+      sweepReview.value = null
+      const slot = personaIndex.value
+      const from = activePersonaAddress.value
+      const rpcUrl = personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier)
+      const nativeChainId = chainEntry.value?.nativeChainId
+      if (!fundingSupported.value || !from || !rpcUrl || !nativeChainId) return
+      preparingSweep.value = true
+      try {
+        const wallet = await accountSession.getWallet()
+        if (wallet.chainIdentifier !== props.chainIdentifier)
+          throw new Error('Your wallet is open on another network.')
+        const to = (await wallet.getReceiveAddress()).raw
+        const [balanceHex, nonceHex, gasPriceHex] = await Promise.all([
+          rpc<string>(rpcUrl, 'eth_getBalance', [from, 'latest']),
+          rpc<string>(rpcUrl, 'eth_getTransactionCount', [from, 'pending']),
+          rpc<string>(rpcUrl, 'eth_gasPrice', []),
+        ])
+        const balance = BigInt(balanceHex)
+        personaBalancesByIndex.value = {
+          ...personaBalancesByIndex.value,
+          [slot]: balance,
+        }
+        const gasLimit = 21_000n
+        const maxFeePerGas = BigInt(gasPriceHex)
+        // Monad charges the whole gas limit: this is the fee, not just its ceiling.
+        const feeWei = gasLimit * maxFeePerGas
+        if (balance <= feeWei) {
+          fundingMessage.value = {
+            kind: 'info',
+            text:
+              balance === 0n
+                ? 'This persona holds nothing to sweep.'
+                : `This persona holds ${formatWei(
+                    balance,
+                  )}, less than the network fee of ${formatWei(feeWei)}.`,
           }
-        })()
+          return
+        }
+        const valueWei = balance - feeWei
+        const transaction = Transaction.from({
+          type: 2,
+          chainId: BigInt(nativeChainId),
+          to,
+          value: valueWei,
+          nonce: Number(BigInt(nonceHex)),
+          gasLimit,
+          maxFeePerGas,
+          maxPriorityFeePerGas:
+            maxFeePerGas > 2_000_000_000n ? 2_000_000_000n : maxFeePerGas,
+        })
+        if (personaIndex.value !== slot) return
+        sweepReview.value = {
+          slot,
+          from,
+          to,
+          valueWei,
+          feeWei,
+          transaction,
+          rpcUrl,
+        }
+      } catch (error) {
+        fundingMessage.value = {
+          kind: 'error',
+          text: `Could not prepare the sweep: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        }
+      } finally {
+        preparingSweep.value = false
       }
     }
+
+    /** Signs exactly the reviewed transaction with the persona key and hands it to the network. */
+    async function confirmSweep() {
+      const review = sweepReview.value
+      if (!review || sweeping.value) return
+      sweeping.value = true
+      fundingMessage.value = null
+      let txHash: string | undefined
+      try {
+        const personas = await requirePersonaSigner()
+        const transaction = review.transaction.clone()
+        transaction.signature = Signature.from(
+          await personas.signDigest(
+            { kind: 'shared', slot: review.slot },
+            transaction.unsignedHash,
+          ),
+        )
+        if (transaction.from?.toLowerCase() !== review.from.toLowerCase())
+          throw new Error('The persona key does not match this address.')
+        txHash = transaction.hash ?? undefined
+        await rpc<string>(review.rpcUrl, 'eth_sendRawTransaction', [
+          transaction.serialized,
+        ])
+        sweepReview.value = null
+        fundingMessage.value = {
+          kind: 'info',
+          text: `Sent ${formatWei(
+            review.valueWei,
+          )} to your wallet. Transaction ${txHash}.`,
+        }
+        emit('sweep-to-pool', { txHash, valueWei: review.valueWei })
+        void refreshPersonaBalance(review.slot, review.from).catch(
+          () => undefined,
+        )
+      } catch (error) {
+        sweepReview.value = null
+        // Once handed to the network a refused answer does not prove nothing was sent.
+        fundingMessage.value = {
+          kind: 'error',
+          text: `The sweep was not confirmed: ${
+            error instanceof Error ? error.message : String(error)
+          }${
+            txHash
+              ? ` Check the persona balance before trying again (transaction ${txHash}).`
+              : ''
+          }`,
+        }
+      } finally {
+        sweeping.value = false
+      }
+    }
+
+    // The selected persona's balance is read from the chain once its address is known.
+    watch(
+      [activePersonaAddress, fundingSupported],
+      ([address, supported]) => {
+        const slot = personaIndex.value
+        if (
+          !address ||
+          !supported ||
+          personaBalancesByIndex.value[slot] !== undefined
+        )
+          return
+        void refreshPersonaBalance(slot, address).catch(() => undefined)
+      },
+      { immediate: true },
+    )
 
     /** Only connections can be approved here; Frank has no signer for websites yet. */
     async function approveCurrentRequest() {
@@ -1483,8 +1632,15 @@ export default defineComponent({
       selectPersona,
       onPersonaDropdownChange,
       createBurnerPersona,
-      topUpFromPool,
-      sweepBackToPool,
+      fundingSupported,
+      topUpRoute,
+      sweepReview,
+      sweepReviewText,
+      preparingSweep,
+      sweeping,
+      fundingMessage,
+      reviewSweep,
+      confirmSweep,
       approveCurrentRequest,
       rejectCurrentRequest,
     }

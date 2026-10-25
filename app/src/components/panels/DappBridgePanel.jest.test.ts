@@ -6,15 +6,77 @@ import {
   deriveDappPersona,
   type DappPersonaRef,
 } from '@frank/wallet/dapp-bridge/persona-keys'
+import { Transaction } from 'ethers'
 import DappBridgePanel from './DappBridgePanel.vue'
 import enUS from '../../i18n/en-us'
 
 // Narrow seam: the session's persona capability, backed by a fixed test account master.
 const testMaster = HDNodeWallet.fromSeed(new Uint8Array(32).fill(7))
+const WALLET_ADDRESS = '0x' + '5a'.repeat(20)
+const mockGetWallet = jest.fn(async () => ({
+  chainIdentifier: 'monad-regtest',
+  getReceiveAddress: async () => ({ raw: WALLET_ADDRESS }),
+}))
+// The wallet's own balance on the network: 1.5 MONR.
+// eslint-disable-next-line no-var -- hoisted with jest.mock, read lazily
+var mockHostRelay: string | undefined
+jest.mock('@frank/wallet/chain/evm-chain', () => ({
+  ...jest.requireActual('@frank/wallet/chain/evm-chain'),
+  loadMonadChainConfigFromEnv: () => ({
+    ...jest
+      .requireActual('@frank/wallet/chain/evm-chain')
+      .loadMonadChainConfigFromEnv(),
+    relayBaseUrl: mockHostRelay ?? '',
+  }),
+}))
+
+jest.mock('src/composables/useBalance', () => ({
+  useBalance: () => ({
+    total: { value: 1_500_000_000_000_000_000n },
+  }),
+}))
+const RELAY = 'http://relay.test'
+const RPC = `${RELAY}/chain-rpc/monad-regtest/rpc`
+const ONE = 10n ** 18n
+/** The relay's JSON-RPC route: balances by address, and every raw transaction sent. */
+const chainBalances = new Map<string, bigint>()
+const sentRaw: string[] = []
+let refuseSend: string | undefined
+const rpcCalls: Array<{ url: string; method: string }> = []
+function answer(item: { id: number; method: string; params: unknown[] }) {
+  rpcCalls.push({ url: '', method: item.method })
+  const address = String(item.params[0] ?? '').toLowerCase()
+  switch (item.method) {
+    case 'eth_getBalance':
+      return {
+        jsonrpc: '2.0',
+        id: item.id,
+        result: '0x' + (chainBalances.get(address) ?? 0n).toString(16),
+      }
+    case 'eth_getTransactionCount':
+      return { jsonrpc: '2.0', id: item.id, result: '0x0' }
+    case 'eth_gasPrice':
+      return { jsonrpc: '2.0', id: item.id, result: '0x3b9aca00' } // 1 gwei
+    case 'eth_sendRawTransaction':
+      if (refuseSend)
+        return { jsonrpc: '2.0', id: item.id, error: { message: refuseSend } }
+      sentRaw.push(String(item.params[0]))
+      return { jsonrpc: '2.0', id: item.id, result: '0x' + '9'.repeat(64) }
+  }
+  return { jsonrpc: '2.0', id: item.id, result: '0x0' }
+}
+const mockFetch = jest.fn(async (url: string, init?: RequestInit) => {
+  const body = JSON.parse(String(init?.body))
+  const result = Array.isArray(body) ? body.map(answer) : answer(body)
+  for (const call of rpcCalls) if (!call.url) call.url = url
+  return { ok: true, json: async () => result } as unknown as Response
+})
+const persona = (slot: number) =>
+  deriveDappPersona(testMaster, { kind: 'shared', slot }).address
 jest.mock('src/accounts/session', () => ({
   accountStatus: { status: 'ready' },
   accountSession: {
-    getWallet: () => Promise.reject(new Error('no wallet in unit tests')),
+    getWallet: () => mockGetWallet(),
     createDappPersonaSigner: () =>
       Promise.resolve({
         accountId: 'test-account',
@@ -32,9 +94,23 @@ jest.mock('src/accounts/session', () => ({
 }))
 
 describe('DappBridgePanel (#1708, #1709, #1710)', () => {
+  const previousFetch = globalThis.fetch
+  beforeEach(() => {
+    mockHostRelay = RELAY
+    globalThis.fetch = mockFetch as unknown as typeof fetch
+    chainBalances.clear()
+    sentRaw.length = 0
+    rpcCalls.length = 0
+    refuseSend = undefined
+    mockFetch.mockClear()
+    window.localStorage.clear()
+  })
+  afterAll(() => {
+    globalThis.fetch = previousFetch
+  })
   function mountPanel(props: Record<string, any> = {}) {
     return shallowMount(DappBridgePanel, {
-      props,
+      props: { chainIdentifier: 'monad-regtest', ...props },
       global: {
         mocks: {
           $t: (key: string, params: Record<string, unknown> = {}) => {
@@ -87,17 +163,17 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
   }
 
   it('renders Standalone PWA mode badge, extension download card, and default Persona EOA card', async () => {
-    const wrapper = mountPanel({
-      initialPersonaBalanceMon: 5,
-      initialPoolBalanceMon: 120,
-    })
+    chainBalances.set(persona(0).toLowerCase(), 5n * ONE)
+    const wrapper = mountPanel()
 
     expect(wrapper.find('[data-testid="dapp-bridge-panel"]').exists()).toBe(
       true,
     )
-    expect(wrapper.find('[data-testid="dapp-runtime-mode"]').text()).toContain(
-      'Standalone PWA',
+    // The host the page is served from, not an assumed production one.
+    expect(wrapper.find('[data-testid="dapp-runtime-mode"]').text()).toBe(
+      `Standalone PWA (${window.location.host})`,
     )
+    expect(wrapper.text()).not.toContain('signet.mx)')
     const downloadCard = wrapper.find(
       '[data-testid="dapp-extension-download-card"]',
     )
@@ -123,12 +199,14 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
       "m/1785'/60'/0'/0'",
     )
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('5.00 MON')
-    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '120.00 MON',
+    // Read from the chain through the relay's route for this network, in its own unit.
+    expect(wrapper.find('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '5 MONR',
     )
+    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toBe(
+      '1.5 MONR',
+    )
+    expect(rpcCalls.every(call => call.url === RPC)).toBe(true)
     wrapper.unmount()
   })
 
@@ -145,11 +223,9 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     expect(wrapper.find('[data-testid="extension-view-bar"]').exists()).toBe(
       false,
     )
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('0.00 MON')
-    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '0.00 MON',
+    // Nothing read yet: no balance is shown, never an invented zero.
+    expect(wrapper.find('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '—',
     )
     expect(wrapper.find('[data-testid="dapp-approval-card"]').exists()).toBe(
       false,
@@ -212,67 +288,118 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     }
   })
 
-  it('supports creating a burner persona, topping up from the pool, and sweeping back to the pool', async () => {
-    const wrapper = mountPanel({
-      initialPersonaBalanceMon: 5,
-      initialPoolBalanceMon: 50,
-    })
+  it('tops up through the Send page: the exact amount is chosen, reviewed and confirmed there', async () => {
+    const wrapper = mountPanel()
     await flushPromises()
-
-    await wrapper
-      .find('[data-testid="dapp-topup-persona-btn"]')
-      .trigger('click')
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('15.00 MON')
-    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '40.00 MON',
+    const topUp = wrapper.get('[data-testid="dapp-topup-persona-btn"]')
+    // Nothing moves on this click and no balance changes here.
+    expect(topUp.attributes('to')).toBeDefined()
+    const vm = wrapper.vm as unknown as {
+      topUpRoute: { path: string; query: Record<string, string> }
+    }
+    expect(vm.topUpRoute).toEqual({
+      path: '/send',
+      query: { chainIdentifier: 'monad-regtest', to: persona(0) },
+    })
+    await topUp.trigger('click')
+    expect(sentRaw).toEqual([])
+    expect(wrapper.get('[data-testid="dapp-pool-balance"]').text()).toBe(
+      '1.5 MONR',
     )
-    expect(wrapper.emitted('topup-persona')).toHaveLength(1)
 
-    await wrapper.find('[data-testid="dapp-sweep-back-btn"]').trigger('click')
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('0.00 MON')
-    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '55.00 MON',
-    )
-    expect(wrapper.emitted('sweep-to-pool')).toHaveLength(1)
-
-    await wrapper
-      .find('[data-testid="dapp-topup-persona-btn"]')
-      .trigger('click')
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('10.00 MON')
-
-    await wrapper
-      .find('[data-testid="dapp-create-burner-btn"]')
-      .trigger('click')
+    // A new burner is topped up at its own address.
+    await wrapper.get('[data-testid="dapp-create-burner-btn"]').trigger('click')
+    await flushPromises()
+    expect(vm.topUpRoute.query.to).toBe(persona(1))
     expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
       "m/1785'/60'/0'/1'",
     )
-    expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('0.00 MON')
     expect(wrapper.emitted('create-burner')).toHaveLength(1)
+    wrapper.unmount()
+  })
 
-    // Switch back to Default #0 and verify its 10.00 MON balance is preserved
-    await wrapper.find('[data-testid="dapp-select-persona-0"]').trigger('click')
-    expect(wrapper.find('[data-testid="dapp-persona-card"]').text()).toContain(
-      "m/1785'/60'/0'/0'",
+  it('sweeps back the exact reviewed amount, signed for this network, only after confirmation', async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    const fee = 21_000n * 1_000_000_000n
+    const review = wrapper.get('[data-testid="dapp-sweep-review"]')
+    expect(review.text()).toContain('Send 1.9999 MONR')
+    expect(review.text()).toContain('0.000021 MONR')
+    expect(sentRaw).toEqual([])
+
+    await wrapper.get('[data-testid="dapp-sweep-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(sentRaw).toHaveLength(1)
+    const sent = Transaction.from(sentRaw[0])
+    // Regtest's own native chain ID from the registry, never another network's.
+    expect(sent.chainId).toBe(20143n)
+    expect(sent.to?.toLowerCase()).toBe(WALLET_ADDRESS)
+    expect(sent.from).toBe(persona(0))
+    expect(sent.value).toBe(2n * ONE - fee)
+    expect(
+      wrapper.get('[data-testid="dapp-funding-message"]').text(),
+    ).toContain('Sent')
+    expect(wrapper.emitted('sweep-to-pool')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('says why a sweep failed instead of pretending it moved', async () => {
+    chainBalances.set(persona(0).toLowerCase(), ONE)
+    refuseSend = 'insufficient funds for gas'
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="dapp-sweep-confirm-btn"]').trigger('click')
+    await flushPromises()
+    const message = wrapper.get('[data-testid="dapp-funding-message"]')
+    expect(message.classes()).toContain('text-negative')
+    expect(message.text()).toContain('insufficient funds for gas')
+    expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '1 MONR',
+    )
+    expect(wrapper.emitted('sweep-to-pool')).toBeUndefined()
+
+    // Nothing to sweep is said, and nothing is signed.
+    chainBalances.set(persona(0).toLowerCase(), 0n)
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="dapp-sweep-review"]').exists()).toBe(
+      false,
     )
     expect(
-      wrapper.find('[data-testid="dapp-persona-balance"]').text(),
-    ).toContain('10.00 MON')
-    expect(wrapper.emitted('select-persona')).toHaveLength(1)
+      wrapper.get('[data-testid="dapp-funding-message"]').text(),
+    ).toContain('nothing to sweep')
     wrapper.unmount()
+  })
+
+  it('offers no funding on a network personas cannot use, and no balance from another network', async () => {
+    mockHostRelay = ''
+    const wrapper = mountPanel()
+    await flushPromises()
+    expect(
+      wrapper.find('[data-testid="dapp-funding-unsupported"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.get('[data-testid="dapp-topup-persona-btn"]').attributes('to'),
+    ).toBeUndefined()
+    expect(mockFetch).not.toHaveBeenCalled()
+    wrapper.unmount()
+    mockHostRelay = RELAY
+    const solana = mountPanel({ chainIdentifier: 'solana-devnet' })
+    await flushPromises()
+    expect(
+      solana.find('[data-testid="dapp-funding-unsupported"]').exists(),
+    ).toBe(true)
+    expect(mockFetch).not.toHaveBeenCalled()
+    solana.unmount()
   })
 
   it('offers only Reject for signing and transaction requests: Frank has no website signer', async () => {
     const wrapper = mountPanel({
-      initialPersonaBalanceMon: 5,
-      initialPoolBalanceMon: 100,
       initialApprovals: [
         {
           id: 'tx-1',
@@ -298,8 +425,8 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       false,
     )
     await wrapper.find('[data-testid="dapp-reject-btn"]').trigger('click')
-    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toContain(
-      '100.00 MON',
+    expect(wrapper.find('[data-testid="dapp-pool-balance"]').text()).toBe(
+      '1.5 MONR',
     )
 
     // Next approval in queue is now shown
@@ -353,7 +480,7 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     )
     const burner2Address = slotAddresses[2].toLowerCase()
 
-    const mockFetch = jest.fn(async (_url: string, init?: RequestInit) => {
+    const discoveryFetch = jest.fn(async (_url: string, init?: RequestInit) => {
       const batch = JSON.parse(String(init?.body ?? '[]')) as Array<{
         id: string
         method: string
@@ -380,20 +507,18 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     })
 
     const discovered = await discoverUsedPersonasOnChain(slotAddresses, {
-      fetchImpl: mockFetch as unknown as typeof fetch,
+      rpcUrl: RPC,
+      fetchImpl: discoveryFetch as unknown as typeof fetch,
       gapLimit: 3,
     })
 
     const burner2Entry = discovered.find(item => item.index === 2)
     expect(burner2Entry).toBeDefined()
     expect(burner2Entry?.used).toBe(true)
-    expect(burner2Entry?.balanceMon).toBeCloseTo(2.5, 2)
+    expect(burner2Entry?.balanceWei).toBe(2_500_000_000_000_000_000n)
     expect(burner2Entry?.txCount).toBe(3)
 
-    const wrapper = mountPanel({
-      initialPersonaBalanceMon: 5,
-      initialPoolBalanceMon: 50,
-    })
+    const wrapper = mountPanel()
     await wrapper
       .find('[data-testid="dapp-create-burner-btn"]')
       .trigger('click')

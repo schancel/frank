@@ -1222,6 +1222,8 @@ export interface ReceivedPayment {
   /** A stealth payment: the ephemeral key of the item it came from, bare lower-case hex. */
   readonly ephemeralPubKey?: string
   readonly childIndex?: number
+  /** When this wallet first learned of the payment (its message, or its note), epoch ms. */
+  readonly discoveredAtMs: number
 }
 
 export function receivedPaymentOf(
@@ -1292,6 +1294,7 @@ export function receivedPaymentOf(
       ? { failedTransactions: coin.failedTransactions }
       : {}),
     spendable: coin.state === 'unspent',
+    discoveredAtMs: coin.discoveredAtMs,
     ...(coin.payloadDigest === undefined
       ? {}
       : { payloadDigest: coin.payloadDigest }),

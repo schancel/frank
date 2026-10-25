@@ -62,7 +62,7 @@ jest.mock('src/composables/useSwapHistory', () => ({
   }),
 }))
 jest.mock('src/utils/explorer', () => ({
-  getExplorerUrl: (hash: string, chain: string) =>
+  transactionExplorerUrl: (hash: string, chain: string) =>
     `https://explorer.test/${chain}/tx/${hash}`,
 }))
 

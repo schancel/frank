@@ -467,7 +467,7 @@ import {
   type SwapAsset,
 } from 'src/composables/useSolanaSwap'
 import { useTranslate } from 'src/composables/useTranslate'
-import { getExplorerUrl } from 'src/utils/explorer'
+import { transactionExplorerUrl } from 'src/utils/explorer'
 
 /**
  * The swap view passes the network, the wallet and the exchange it selected. Mounted without
@@ -885,9 +885,10 @@ const swapInProgress = computed(
 )
 const explorerLink = computed(() =>
   swap.value?.signature && session.value
-    ? getExplorerUrl(swap.value.signature, session.value.chainIdentifier, {
-        isTestnet: session.value.isTestnet,
-      })
+    ? transactionExplorerUrl(
+        swap.value.signature,
+        session.value.chainIdentifier,
+      )
     : undefined,
 )
 

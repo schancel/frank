@@ -27,7 +27,7 @@
         data-test="dapp-bridge-page"
       >
         <div class="dapp-bridge-page-inner q-pa-md">
-          <dapp-bridge-panel />
+          <dapp-bridge-panel :chain-identifier="chainIdentifier" />
         </div>
       </q-page>
     </q-page-container>
@@ -35,7 +35,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, onBeforeUnmount, shallowRef } from 'vue'
+import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import { viewportPageStyle } from 'src/utils/layout'
@@ -54,7 +55,15 @@ export default defineComponent({
     'setupCompleted',
   ],
   setup() {
+    // The app's selected network; personas follow it when it changes.
+    const chainIdentifier = shallowRef(activeChain.chainIdentifier)
+    onBeforeUnmount(
+      onActiveChainChange(chain => {
+        chainIdentifier.value = chain.chainIdentifier
+      }),
+    )
     return {
+      chainIdentifier,
       pageStyle: viewportPageStyle,
       plugIcon: FA_PLUG_CIRCLE_PLUS_ICON,
     }

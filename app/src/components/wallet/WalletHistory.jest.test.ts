@@ -17,6 +17,7 @@ const operation = (
   intendedValueWei: '1000000000000000000',
   payment,
   members: hashes.map((transactionHash, index) => ({
+    role: 'payment' as const,
     transactionHash,
     state: index === 0 ? 'included-success' : 'pending',
     ...(index === 0 ? { blockNumber: 123, feeWei: '2100000000000000' } : {}),
@@ -95,7 +96,7 @@ it('shows one compact transfer, with technical evidence behind a native keyboard
   expect(wrapper.text().split('Sent on Monad Testnet.')).toHaveLength(2)
   expect(wrapper.text()).not.toContain('evm-native-v1:')
   expect(wrapper.text()).not.toContain('Intended recipient amount')
-  expect(details.text()).toContain('The date was not recorded')
+  expect(details.text()).toContain('Not in a block yet.')
   expect(wrapper.text()).not.toContain('Date unavailable')
 })
 
@@ -139,4 +140,122 @@ it('labels a successful contract call as confirmed rather than claiming a native
     'Confirmed',
   )
   expect(wrapper.get('.wallet-history-content').text()).toContain('Contract')
+})
+
+it('shows the payment apart from the change returned to the wallet, each with its own fees', () => {
+  const change = '0x' + 'c'.repeat(64)
+  const wrapper = shallowMount(History, {
+    props: {
+      groups: [
+        {
+          id: 'activity',
+          label: 'walletPanel.tabHistory',
+          rows: [
+            {
+              id: 'row',
+              kind: 'native',
+              timeMs: Date.UTC(2026, 9, 20),
+              operation: {
+                ...operation('included'),
+                kind: 'transaction-set',
+                members: [
+                  {
+                    role: 'payment',
+                    transactionHash: hashes[0],
+                    state: 'included-success',
+                    blockNumber: 7,
+                    blockHash: '0x' + '1'.repeat(64),
+                    feeWei: '2100000000000000',
+                  },
+                  { role: 'change', transactionHash: change, state: 'missing' },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      inspectionStatus: 'available',
+      nativeUnit: 'MONR',
+      nativeAmount: value => (value === '0' ? '0' : `amt(${value})`),
+      networkName: () => 'Monad Regtest',
+      transactionExplorerLink: () => undefined,
+      formatSwapTime: () => 'Oct 20',
+    },
+    global: {
+      mocks: { $t: translate },
+      stubs: {
+        AddressText: {
+          props: ['address'],
+          template: '<span class="address-text">{{ address }}</span>',
+        },
+      },
+    },
+  })
+  const details = wrapper.get('[data-testid="wallet-native-operation"]')
+  // The payment's fee is complete: the unsent change does not make it partial.
+  expect(details.text()).toContain(
+    'Observed network fees: amt(2100000000000000) MONR',
+  )
+  expect(details.text()).not.toContain('Observed fees so far (partial)')
+  const changeSection = details.get(
+    '[data-testid="wallet-native-operation-change"]',
+  )
+  expect(changeSection.text()).toContain('Change returned to your wallet (1)')
+  expect(changeSection.text()).toContain(change)
+  expect(details.text().split('Transaction 1')).toHaveLength(2)
+  expect(details.text()).not.toContain('Transaction 2')
+  expect(wrapper.get('[data-testid="wallet-activity-date"]').text()).toBe(
+    'Oct 20',
+  )
+  // Regtest has no explorer: no link at all.
+  expect(details.findAll('a')).toHaveLength(0)
+})
+
+it.each([
+  ['received', 'Received', undefined],
+  ['pending', 'Arriving', 'The amount the sender stated'],
+] as const)('lists a %s payment as incoming', (status, label, note) => {
+  const wrapper = shallowMount(History, {
+    props: {
+      groups: [
+        {
+          id: 'activity',
+          label: 'walletPanel.tabHistory',
+          rows: [
+            {
+              id: 'received:x',
+              kind: 'received',
+              timeMs: 1,
+              payment: {
+                address: '0x' + '7'.repeat(40),
+                origin: 'stealth',
+                status,
+                amountWei: 0n,
+                ...(status === 'received' ? { receivedAmountWei: 5n } : {}),
+                claimedAmountWei: 5n,
+                spendable: status === 'received',
+                discoveredAtMs: 1,
+              },
+            },
+          ],
+        },
+      ],
+      inspectionStatus: 'available',
+      nativeUnit: 'MONR',
+      nativeAmount: value => value,
+      networkName: () => '',
+      transactionExplorerLink: () => undefined,
+      formatSwapTime: () => 'then',
+    },
+    global: { mocks: { $t: translate } },
+  })
+  expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
+    label,
+  )
+  expect(wrapper.text()).toContain('+5 MONR')
+  expect(wrapper.text()).toContain('Payment received')
+  if (note) expect(wrapper.text()).toContain(note)
+  expect(wrapper.find('[data-testid="wallet-native-operation"]').exists()).toBe(
+    false,
+  )
 })

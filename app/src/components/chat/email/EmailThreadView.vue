@@ -768,7 +768,7 @@
                     {{
                       $t(
                         'emailThread.stampExplanation',
-                        'The email gateway requires a stamp (default 0.01 MONT) to bridge and dispatch email.',
+                        'The email gateway requires a stamp to bridge and dispatch email.',
                       )
                     }}
                   </div>

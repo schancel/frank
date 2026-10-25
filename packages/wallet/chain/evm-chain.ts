@@ -666,6 +666,8 @@ async function reconcileNativeAdmission(
 // One typed economic owner per EVM account/network in this runtime, across chain factories.
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
 const openTypedEvmAccounts = new Set<string>();
+/** Most distinct blocks one `readBlockTimes` call reads. */
+const MAX_BLOCK_TIME_READS = 256;
 
 function requireOpenWallet(wallet: EvmChainWalletHandle): void {
   if (evmWalletInternals(wallet).closed)
@@ -2037,6 +2039,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             relayAuth,
           });
           destroyProvider = () => provider.destroy();
+          const blockTimes = new Map<string, number>();
           const httpClient = new MonadHttpClient({
             rpcUrl,
             chainId: config.chainId,
@@ -2541,6 +2544,34 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             getNativeOperations() {
               return nativeOperationOwner(wallet).listOperations();
+            },
+            async readBlockTimes(blockHashes) {
+              requireOpenWallet(wallet);
+              const wanted = [...new Set(blockHashes)]
+                .filter((hash) => /^0x[0-9a-fA-F]{64}$/.test(hash))
+                .slice(0, MAX_BLOCK_TIME_READS);
+              const times = new Map<string, number>();
+              for (let start = 0; start < wanted.length; start += 8) {
+                await Promise.all(
+                  wanted.slice(start, start + 8).map(async (hash) => {
+                    const known = blockTimes.get(hash);
+                    if (known !== undefined) {
+                      times.set(hash, known);
+                      return;
+                    }
+                    try {
+                      const block = await provider.getBlock(hash);
+                      if (block?.hash?.toLowerCase() !== hash.toLowerCase()) return;
+                      // A block's time never changes: remember it for the wallet's lifetime.
+                      blockTimes.set(hash, block.timestamp * 1000);
+                      times.set(hash, block.timestamp * 1000);
+                    } catch {
+                      // Unread: the caller shows the transaction undated.
+                    }
+                  })
+                );
+              }
+              return times;
             },
             nativeOperationSyncFailed(operationId) {
               return nativeOperationOwner(wallet).syncTransportFailed(

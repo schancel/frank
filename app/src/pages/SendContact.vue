@@ -216,6 +216,29 @@
               }}</span>
               <span class="text-body2" data-test="review-memo">{{ memo }}</span>
             </div>
+
+            <div class="row justify-between items-center q-py-xs">
+              <span class="text-caption text-grey-7">{{
+                $t('sendAddressDialog.estimatedFee')
+              }}</span>
+              <span class="text-grey-7 text-right" data-test="review-fee">
+                {{ feeText }}
+              </span>
+            </div>
+
+            <q-separator />
+
+            <div class="row justify-between items-center q-py-xs">
+              <span class="text-subtitle2">{{
+                $t('sendAddressDialog.maxTotal')
+              }}</span>
+              <span
+                class="text-subtitle1 text-weight-bold"
+                data-test="review-total"
+              >
+                {{ totalText }}
+              </span>
+            </div>
           </div>
         </q-card-section>
 
@@ -289,6 +312,13 @@ export default defineComponent({
     const amount = ref('')
     const memo = ref('')
     const isReviewing = ref(false)
+    // The wallet's own quote for this payment, shown before the user confirms.
+    const fee = ref<
+      | { state: 'estimating' }
+      | { state: 'known'; wei: bigint }
+      | { state: 'unavailable'; reason: string }
+    >({ state: 'estimating' })
+    let feeRequest = 0
     const sending = ref(false)
 
     const balanceText = computed(() =>
@@ -360,7 +390,29 @@ export default defineComponent({
       )
     })
 
+    const feeText = computed(() =>
+      fee.value.state === 'known'
+        ? `${activeChain.toDisplayAmount(fee.value.wei)} ${activeChain.unit}`
+        : fee.value.state === 'estimating'
+        ? $t('sendAddressDialog.feeEstimating')
+        : $t('sendAddressDialog.feeUnavailableBecause', {
+            reason: fee.value.reason,
+          }),
+    )
+    const totalText = computed(() =>
+      fee.value.state === 'known' && parsedValue.value !== undefined
+        ? `${activeChain.toDisplayAmount(parsedValue.value + fee.value.wei)} ${
+            activeChain.unit
+          }`
+        : $t('sendAddressDialog.maxTotalWithFee', {
+            amount: amount.value,
+            unit: activeChain.unit,
+          }),
+    )
+
     return {
+      feeText,
+      totalText,
       search,
       selectedContactAddress,
       selectedContactName,
@@ -399,6 +451,31 @@ export default defineComponent({
           return
         }
         isReviewing.value = true
+        const request = ++feeRequest
+        fee.value = { state: 'estimating' }
+        const value = parsedValue.value!
+        void (async () => {
+          try {
+            const wallet = await useActiveWallet()
+            if (!wallet.estimateLegacyFee)
+              throw new Error($t('sendContactDialog.noFeeQuote'))
+            const estimate = await wallet.estimateLegacyFee({
+              recipient: { raw: selectedContactAddress.value },
+              value,
+            })
+            if (request === feeRequest)
+              fee.value = { state: 'known', wei: estimate.totalFee }
+          } catch (err) {
+            if (request === feeRequest)
+              fee.value = {
+                state: 'unavailable',
+                reason:
+                  err instanceof Error && err.message
+                    ? err.message
+                    : String(err),
+              }
+          }
+        })()
       },
       cancelReview() {
         isReviewing.value = false
@@ -447,7 +524,11 @@ export default defineComponent({
           })
 
           if (outcome.state === 'sent') {
-            sentTransactionNotify(prepared.txHash, $t('sendContactDialog.sent'))
+            sentTransactionNotify(
+              wallet.chainIdentifier,
+              prepared.txHash,
+              $t('sendContactDialog.sent'),
+            )
           } else if (outcome.state === 'failed') {
             // Saved in the conversation with its Retry: the same payment, never a second one.
             errorNotify(new Error(outcome.reason), {

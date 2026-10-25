@@ -604,6 +604,7 @@ export const rawEnUS = {
     balanceLoading: 'Loading balance…',
     balancePending: 'Pending',
     relayUnavailable: 'Not available through this relay.',
+    relayUnavailableGroup: 'Not available through this relay ({count})',
     balanceUnavailable: 'Balance unavailable.',
     balanceUnsupported: 'Balance not shown for this network yet.',
     walletUnsupported:
@@ -1446,8 +1447,25 @@ export const rawEnUS = {
     details: 'Details',
     intended:
       'This is the amount requested. The full payment is not yet confirmed.',
-    dateUnknown: 'The date was not recorded for this transfer.',
+    includedAt: 'In a block on {date}.',
+    notYetInBlock: 'Not in a block yet.',
     transaction: 'Transaction {number}',
+    change: 'Change returned to your wallet ({count})',
+    changeNote:
+      'What was left after the payment, moved to your own accounts. It is not part of the amount sent.',
+    changeTransaction: 'Change {number}',
+    receivedPayment: 'Payment received',
+    receivedStamp: 'Message stamp received',
+    receivedClaimed:
+      'The amount the sender stated. It is not confirmed on the network yet.',
+    receivedPartial:
+      '{amount} {unit} of the {claimed} {unit} stated has arrived so far.',
+    receivedStatus: {
+      'pending': 'Arriving',
+      'received': 'Received',
+      'not-received': 'Not received',
+      'failed': 'Failed',
+    },
     status: {
       confirmed: 'Confirmed',
       included: 'Sent',
@@ -1516,6 +1534,8 @@ export const rawEnUS = {
     amount: 'Amount',
     estimatedFee: 'Estimated Fee',
     feeUnavailable: 'Unavailable',
+    feeEstimating: 'Estimating…',
+    feeUnavailableBecause: 'Cannot be estimated: {reason}',
     refused: 'The network refused this transaction. Nothing was sent.',
     feeChanged:
       'The network fee went up. Nothing was sent. Check the new fee and confirm again.',
@@ -1533,6 +1553,7 @@ export const rawEnUS = {
     failedSendTransaction: 'Failed to send Monad transaction',
   },
   sendContactDialog: {
+    noFeeQuote: 'This wallet gives no fee quote.',
     available: 'Available for this payment: {amount}',
     title: 'Send to Contact',
     selectContact: 'Select Contact',
@@ -1597,7 +1618,9 @@ export const rawEnUS = {
     networkSettings: 'Network & Gateway Settings',
     emailGatewayAddress: 'Email Gateway Address',
     emailGatewayFee:
-      'Inbound email stamp fee: 0.01 MONT. The gateway pays dispatch and anti-spam verification.',
+      'Inbound email stamp fee: {amount} {unit}. The gateway pays dispatch and anti-spam verification.',
+    emailGatewayFeeNoAmount:
+      'Inbound email carries a stamp. The gateway pays dispatch and anti-spam verification.',
     emailGatewayRelayLabel: 'Relay gateway:',
     emailGatewayChanged:
       'The relay or its email gateway identity changed. Review the new address before using it.',

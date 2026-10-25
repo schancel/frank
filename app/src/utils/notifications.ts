@@ -79,20 +79,22 @@ export function seedCopiedNotify(customMessage?: string) {
   infoNotify(customMessage ?? $t('notifications.seedCopied'))
 }
 
-export function sentTransactionNotify(txId?: string, customMessage?: string) {
+/** `chainIdentifier` is the canonical network the transaction is on. The notice offers an
+ * explorer link only when that network has one configured. */
+export function sentTransactionNotify(
+  chainIdentifier: string,
+  txId?: string,
+  customMessage?: string,
+) {
+  const url = transactionExplorerUrl(txId, chainIdentifier)
   const action = {
     label: $t('notifications.viewAction'),
     color: 'secondary',
     handler: () => {
-      if (txId) {
-        const url = transactionExplorerUrl(txId)
-        if (url) {
-          openURL(url)
-        }
-      }
+      if (url) openURL(url)
     },
   }
-  const actions = txId ? [action] : []
+  const actions = url ? [action] : []
   const messageText = customMessage ?? $t('notifications.sentTransaction')
 
   Notify.create({

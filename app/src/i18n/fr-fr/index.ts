@@ -619,6 +619,7 @@ export const rawFrFR = {
     balanceLoading: 'Chargement du solde…',
     balancePending: 'En attente',
     relayUnavailable: 'Indisponible via ce relais.',
+    relayUnavailableGroup: 'Indisponibles via ce relais ({count})',
     balanceUnavailable: 'Solde indisponible.',
     balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
     walletUnsupported:
@@ -1481,8 +1482,25 @@ export const rawFrFR = {
     details: 'Détails',
     intended:
       'Il s’agit du montant demandé. Le paiement complet n’est pas encore confirmé.',
-    dateUnknown: 'La date de ce transfert n’a pas été enregistrée.',
+    includedAt: 'Dans un bloc le {date}.',
+    notYetInBlock: 'Pas encore dans un bloc.',
     transaction: 'Transaction {number}',
+    change: 'Monnaie rendue à votre portefeuille ({count})',
+    changeNote:
+      'Ce qui restait après le paiement, déplacé vers vos propres comptes. Cela ne fait pas partie du montant envoyé.',
+    changeTransaction: 'Monnaie {number}',
+    receivedPayment: 'Paiement reçu',
+    receivedStamp: 'Timbre de message reçu',
+    receivedClaimed:
+      'Le montant indiqué par l’expéditeur. Il n’est pas encore confirmé sur le réseau.',
+    receivedPartial:
+      '{amount} {unit} sur les {claimed} {unit} indiqués sont arrivés pour l’instant.',
+    receivedStatus: {
+      'pending': 'En cours d’arrivée',
+      'received': 'Reçu',
+      'not-received': 'Non reçu',
+      'failed': 'Échoué',
+    },
     status: {
       confirmed: 'Confirmé',
       included: 'Envoyé',
@@ -1552,6 +1570,8 @@ export const rawFrFR = {
     amount: 'Montant',
     estimatedFee: 'Frais estimés',
     feeUnavailable: 'Indisponible',
+    feeEstimating: 'Estimation…',
+    feeUnavailableBecause: 'Impossible à estimer : {reason}',
     refused: 'Le réseau a refusé cette transaction. Rien n’a été envoyé.',
     feeChanged:
       'Les frais de réseau ont augmenté. Rien n’a été envoyé. Vérifiez les nouveaux frais et confirmez à nouveau.',
@@ -1570,6 +1590,7 @@ export const rawFrFR = {
     failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
   },
   sendContactDialog: {
+    noFeeQuote: 'Ce portefeuille ne donne pas d’estimation des frais.',
     available: 'Disponible pour ce paiement : {amount}',
     title: 'Envoyer au contact',
     selectContact: 'Sélectionner un contact',
@@ -1637,7 +1658,9 @@ export const rawFrFR = {
     networkSettings: 'Paramètres réseau et passerelle',
     emailGatewayAddress: 'Adresse de la passerelle e-mail',
     emailGatewayFee:
-      'Frais de timbre pour les e-mails entrants : 0,01 MONT. La passerelle prend en charge l’envoi et la vérification anti-spam.',
+      'Frais de timbre pour les e-mails entrants : {amount} {unit}. La passerelle prend en charge l’envoi et la vérification anti-spam.',
+    emailGatewayFeeNoAmount:
+      'Les e-mails entrants portent un timbre. La passerelle prend en charge l’envoi et la vérification anti-spam.',
     emailGatewayRelayLabel: 'Passerelle du relais :',
     emailGatewayChanged:
       'Le relais ou l’identité de sa passerelle e-mail a changé. Vérifiez la nouvelle adresse avant de l’utiliser.',

@@ -676,7 +676,11 @@
                     size="14px"
                     class="q-mr-xs text-primary"
                   />
-                  {{ $t('settings.emailGatewayFee') }}
+                  {{
+                    emailGatewayFee
+                      ? $t('settings.emailGatewayFee', emailGatewayFee)
+                      : $t('settings.emailGatewayFeeNoAmount')
+                  }}
                 </div>
                 <q-btn
                   outline
@@ -733,7 +737,8 @@ import { storeToRefs } from 'pinia'
 import NotificationPermissionPanel from 'src/components/settings/NotificationPermissionPanel.vue'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, getChainRegistryEntry } from '@frank/wallet/chain'
+import { DEFAULT_CHAIN_STATIC_STAMP_COIN } from '@frank/wallet/oracle'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { walletSupport } from 'src/utils/wallet-support'
 import { profileAvatar } from 'src/utils/avatar'
@@ -1205,7 +1210,17 @@ export default defineComponent({
     const chainStatus = (chain: { id: string }) =>
       walletSupport(chain.id, isTestnetMode).status
 
+    // The stamp amount in the running network's own unit, from the registry; no amount when
+    // the network has no configured default stamp.
+    const emailGatewayFee = (() => {
+      const amount =
+        DEFAULT_CHAIN_STATIC_STAMP_COIN[activeChain.chainIdentifier]
+      const unit = getChainRegistryEntry(activeChain.chainIdentifier)?.unit
+      return amount && unit ? { amount, unit } : undefined
+    })()
+
     return {
+      emailGatewayFee,
       appearanceStore,
       settingsStore,
       isTestnetMode,

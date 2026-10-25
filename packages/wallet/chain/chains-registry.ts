@@ -100,7 +100,12 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   readonly addressPrefix?: string;
   readonly rpcUrl?: string;
   readonly rpcUrls?: readonly string[];
-  readonly explorerUrl?: string;
+  /**
+   * The explorer page of one transaction on this network, with `{transaction}` where the
+   * transaction id goes. Client presentation only. Absent: the app shows no explorer link for this
+   * network (a local regtest chain has no public explorer), never another network's.
+   */
+  readonly transactionExplorerUrl?: string;
   readonly contracts?: ChainContracts;
   /**
    * The exchanges this network's wallet can swap on, in order: facts only (addresses, pools,
@@ -171,6 +176,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Monad Testnet",
       unit: "MONT",
+      transactionExplorerUrl:
+        "https://testnet.monadscan.com/tx/{transaction}",
       nativeDecimals: 18,
       networkTag: "MONT",
       rpcUrls: Object.freeze(["https://testnet-rpc.monad.xyz"]),
@@ -204,6 +211,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Monad",
       unit: "MON",
+      transactionExplorerUrl:
+        "https://monadscan.com/tx/{transaction}",
       nativeDecimals: 18,
       networkTag: "MON1",
       rpcUrls: Object.freeze(["https://rpc.monad.xyz"]),
@@ -221,6 +230,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "eCash Testnet",
       unit: "tXEC",
+      transactionExplorerUrl:
+        "https://testnet.blockchair.com/ecash/transaction/{transaction}",
       nativeDecimals: 2,
       addressPrefix: "ectest",
       networkTag: "XECT",
@@ -244,6 +255,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "eCash",
       unit: "XEC",
+      transactionExplorerUrl:
+        "https://blockchair.com/ecash/transaction/{transaction}",
       nativeDecimals: 2,
       addressPrefix: "ecash",
       networkTag: "XEC1",
@@ -255,6 +268,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 2,
       name: "Solana Devnet",
       unit: "dSOL",
+      transactionExplorerUrl:
+        "https://explorer.solana.com/tx/{transaction}?cluster=devnet",
       nativeDecimals: 9,
       networkTag: "SOLD",
       contracts: CANONICAL_SOLANA_CONTRACTS,
@@ -266,6 +281,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 2,
       name: "Solana Testnet",
       unit: "tSOL",
+      transactionExplorerUrl:
+        "https://explorer.solana.com/tx/{transaction}?cluster=testnet",
       nativeDecimals: 9,
       networkTag: "SOLT",
       contracts: CANONICAL_SOLANA_CONTRACTS,
@@ -277,6 +294,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 2,
       name: "Solana",
       unit: "SOL",
+      transactionExplorerUrl:
+        "https://explorer.solana.com/tx/{transaction}",
       nativeDecimals: 9,
       networkTag: "SOL1",
       contracts: CANONICAL_SOLANA_CONTRACTS,
@@ -289,6 +308,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Sepolia",
       unit: "ETH",
+      transactionExplorerUrl:
+        "https://sepolia.etherscan.io/tx/{transaction}",
       nativeDecimals: 18,
       networkTag: "SEPO",
       rpcUrls: Object.freeze([
@@ -304,6 +325,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Ethereum",
       unit: "ETH",
+      transactionExplorerUrl:
+        "https://etherscan.io/tx/{transaction}",
       nativeDecimals: 18,
       networkTag: "ETH1",
       rpcUrls: Object.freeze(["https://eth.llamarpc.com"]),
@@ -362,6 +385,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Bitcoin",
       unit: "BTC",
+      transactionExplorerUrl:
+        "https://mempool.space/tx/{transaction}",
       nativeDecimals: 8,
       networkTag: "BTC1",
     }),
@@ -373,6 +398,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Bitcoin Testnet",
       unit: "tBTC",
+      transactionExplorerUrl:
+        "https://mempool.space/testnet/tx/{transaction}",
       nativeDecimals: 8,
       networkTag: "BTCT",
     }),
@@ -382,6 +409,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Bitcoin Testnet4",
       unit: "tBTC",
+      transactionExplorerUrl:
+        "https://mempool.space/testnet4/tx/{transaction}",
       nativeDecimals: 8,
       networkTag: "BTC4",
     }),
@@ -392,6 +421,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Bitcoin Cash",
       unit: "BCH",
+      transactionExplorerUrl:
+        "https://blockchair.com/bitcoin-cash/transaction/{transaction}",
       nativeDecimals: 8,
       addressPrefix: "bitcoincash",
       networkTag: "BCH1",
@@ -404,6 +435,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Bitcoin Cash Chipnet",
       unit: "tBCH",
+      transactionExplorerUrl:
+        "https://chipnet.imaginary.cash/tx/{transaction}",
       nativeDecimals: 8,
       addressPrefix: "bchtest",
       networkTag: "BCHT",
@@ -415,6 +448,8 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       keyType: 1,
       name: "Dogecoin",
       unit: "DOGE",
+      transactionExplorerUrl:
+        "https://blockchair.com/dogecoin/transaction/{transaction}",
       nativeDecimals: 8,
       networkTag: "DOGE",
     }),

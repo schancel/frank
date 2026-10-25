@@ -158,3 +158,13 @@ export function compactAmountText(text: string): string {
   const { number, prefix } = compactDisplayNumber(match[1])
   return `${number} ${prefix}${match[2] ?? ''}`.trim()
 }
+
+/** `formatDisplayAmount` for an amount that already arrives as "<exact number> <unit>" text
+ * (the balance observations): the shortened number with its unit as the network names it,
+ * the same form the wallet page shows, so a balance reads the same in the wallet list and on
+ * the page. Anything else (a status line) is returned unchanged. */
+export function displayAmountText(text: string): string {
+  const match = /^(-?\d+(?:\.\d+)?)\s*(\S.*)?$/.exec(text.trim())
+  if (!match) return text
+  return `${shortenDisplayAmount(match[1])} ${match[2] ?? ''}`.trim()
+}

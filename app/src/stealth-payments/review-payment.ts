@@ -11,6 +11,7 @@ import { accountSession } from '../accounts/session'
 import { createNativeTransferContext } from '../accounts/native-transfer'
 import type { StealthDialogRequest } from './options'
 import { sameStealthAsset } from './options'
+import { StealthPaymentNotSentError } from './failure'
 
 export interface CapturedStealthReview {
   readonly quote: StealthPaymentQuote
@@ -297,8 +298,9 @@ export async function sendReviewedStealthPayment<T>(
     return await send(prepared, item)
   } catch (error) {
     if (!adopted) {
+      let released: boolean
       try {
-        await review.releaseUnexposed()
+        released = await review.releaseUnexposed()
       } catch (cleanupError) {
         throw new Error(
           `Payment was not handed to messaging: ${String(
@@ -306,6 +308,8 @@ export async function sendReviewedStealthPayment<T>(
           )}. Unexposed operation cleanup failed: ${String(cleanupError)}`,
         )
       }
+      // The owner proved the signed bytes (if any) reached nobody: nothing was sent.
+      if (released) throw new StealthPaymentNotSentError(error)
     }
     throw error
   }

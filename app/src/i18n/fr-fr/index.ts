@@ -1042,6 +1042,8 @@ export const rawFrFR = {
     subtitle:
       'Payé depuis votre portefeuille vers une adresse à usage unique que seul ce contact peut dépenser',
     balanceLabel: 'Disponible pour ce paiement :',
+    balanceAtSend: 'Vérifié à l’envoi',
+    balanceUnavailable: 'Impossible à vérifier pour le moment',
     amountHint: 'Montant à payer',
     amountPlaceholder: '0.0',
     memoHint: 'Mémo, envoyé avec le paiement (optionnel)',
@@ -1052,8 +1054,10 @@ export const rawFrFR = {
     pending:
       'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
+    networkBusy:
+      'Le réseau est occupé pour le moment. Rien n’a été envoyé ; réessayez dans un instant.',
     messageEnded:
-      'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
+      'Le paiement est enregistré, mais son message n’a pas encore été livré. Réessayez le message dans cette discussion : le même paiement est réutilisé, et rien n’est payé deux fois.',
     tooLarge:
       'Ce paiement dépasse ce qu’un seul paiement à un contact peut transporter (environ {max} {unit}) ; envoyez-le en plusieurs fois.',
   },

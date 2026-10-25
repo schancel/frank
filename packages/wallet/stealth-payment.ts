@@ -85,6 +85,9 @@ export interface StealthPaymentQuote {
 export interface StealthPaymentCapability {
   /** Native payment and same-chain stamp can share one immutable signed operation. */
   readonly supportsCombinedStamp?: true
+  /** Read-only: how much of this asset a payment could draw on now, in atomic units. Records
+   * nothing and reserves nothing. A wallet without it shows the amount only once quoted. */
+  available?(asset: StealthPaymentAsset): Promise<bigint>
   /** Read-only chain observation; retains the operation's unsigned intent/derivation.
    * Does not sign, expose, submit, reserve funds, or authorize a fee ceiling. */
   quote?(

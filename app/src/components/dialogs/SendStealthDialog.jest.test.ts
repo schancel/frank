@@ -217,4 +217,79 @@ describe('multiasset stealth send dialog', () => {
       mockBalanceLoaded.value = false
     }
   })
+
+  describe('available for this payment', () => {
+    const unpopulated = options.map(o => ({ ...o, balanceAtomic: undefined }))
+    const usdc = unpopulated[2]
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+    const shown = (wrapper: ReturnType<typeof mountDialog>) =>
+      wrapper.find('[data-testid="wallet-balance-value"]').text()
+
+    it('reads the selected asset from its owner and shows the figure', async () => {
+      const loadAvailable = jest.fn(async () => 12_500000n)
+      const wrapper = mountDialog({ options: unpopulated, loadAvailable })
+      await wrapper.find('select').setValue(usdc.key)
+      expect(shown(wrapper)).toBe('…')
+      await settle()
+      expect(shown(wrapper)).toBe('12.5 USDC')
+      expect(loadAvailable).toHaveBeenLastCalledWith(usdc)
+      await wrapper
+        .find('[data-testid="stealth-amount-input"] input')
+        .setValue('13')
+      expect(
+        wrapper.find('[data-testid="stealth-amount-input"] .error-msg').text(),
+      ).toBe('Amount exceeds available balance')
+    })
+
+    it('says when it is only known at sending, or could not be read, instead of an endless "…"', async () => {
+      const unknown = mountDialog({
+        options: unpopulated,
+        loadAvailable: async () => undefined,
+      })
+      await unknown.find('select').setValue(usdc.key)
+      await settle()
+      expect(shown(unknown)).toBe('Checked when you send')
+
+      const error = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      const failed = mountDialog({
+        options: unpopulated,
+        loadAvailable: async () => {
+          throw new Error('server response 429 {"requestUrl":"https://relay"}')
+        },
+      })
+      await failed.find('select').setValue(usdc.key)
+      await settle()
+      expect(shown(failed)).toBe('Could not be checked now')
+      expect(failed.text()).not.toContain('429')
+      error.mockRestore()
+      // A failed read does not block sending: the quote checks the funds.
+      await failed
+        .find('[data-testid="stealth-amount-input"] input')
+        .setValue('1')
+      expect(
+        failed
+          .find('[data-testid="stealth-send-confirm-btn"]')
+          .attributes('disabled'),
+      ).toBeUndefined()
+    })
+
+    it('keeps the latest selection when an older read answers late', async () => {
+      let answerFirst!: (value: bigint) => void
+      const loadAvailable = jest
+        .fn()
+        .mockImplementationOnce(
+          () => new Promise<bigint>(resolve => (answerFirst = resolve)),
+        )
+        .mockImplementation(async () => 3n)
+      const wrapper = mountDialog({ options: unpopulated, loadAvailable })
+      await wrapper.find('select').setValue(usdc.key)
+      await wrapper.find('select').setValue(unpopulated[1].key)
+      await settle()
+      answerFirst(99_000000n)
+      await settle()
+      expect(shown(wrapper)).toBe('0.03 tXEC')
+    })
+  })
 })

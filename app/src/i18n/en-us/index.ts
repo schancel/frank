@@ -1017,6 +1017,8 @@ export const rawEnUS = {
     subtitle:
       'Paid from your wallet to a one-time address only this contact can spend from',
     balanceLabel: 'Available for this payment:',
+    balanceAtSend: 'Checked when you send',
+    balanceUnavailable: 'Could not be checked now',
     amountHint: 'Amount to pay',
     amountPlaceholder: '0.0',
     memoHint: 'Memo, sent with the payment (optional)',
@@ -1027,8 +1029,10 @@ export const rawEnUS = {
     pending:
       'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
     notSent: 'The payment could not be made. Nothing was sent.',
+    networkBusy:
+      'The network is busy right now. Nothing was sent; try again in a moment.',
     messageEnded:
-      'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
+      'The payment is saved, but its message has not been delivered yet. Retry the message in this chat: the same payment is used again, and nothing is paid twice.',
     tooLarge:
       'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },

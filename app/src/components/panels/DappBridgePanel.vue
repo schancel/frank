@@ -2,7 +2,7 @@
   <div
     role="region"
     :aria-label="ui.panelAriaLabel"
-    class="dapp-bridge-panel q-pa-md column q-gutter-y-md"
+    class="dapp-bridge-panel column no-wrap"
     data-testid="dapp-bridge-panel"
   >
     <div class="row items-center justify-between">
@@ -1493,6 +1493,29 @@ export default defineComponent({
 </script>
 
 <style scoped>
+/* The page that places this panel owns its outer gutter, as it does for its other cards, so the
+ * cards here line up with theirs. No card may be wider than the panel: a flex item is at least
+ * as wide as its longest unbreakable content by default, and a 42-character address or a row of
+ * download buttons would otherwise push it past a phone's right edge. */
+.dapp-bridge-panel {
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.dapp-bridge-panel > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.dapp-bridge-panel .text-mono {
+  overflow-wrap: anywhere;
+}
+.dapp-bridge-panel :deep(.q-btn) {
+  max-width: 100%;
+}
+.dapp-bridge-panel :deep(.q-btn .block) {
+  white-space: normal;
+}
 .dapp-persona-dropdown {
   padding: 8px 10px;
   border-radius: 8px;

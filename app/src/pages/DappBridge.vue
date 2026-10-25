@@ -26,7 +26,7 @@
         :style-fn="pageStyle"
         data-test="dapp-bridge-page"
       >
-        <div class="dapp-bridge-page-inner">
+        <div class="dapp-bridge-page-inner q-pa-md">
           <dapp-bridge-panel />
         </div>
       </q-page>

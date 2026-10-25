@@ -256,9 +256,14 @@ Phases, in order:
 3. With MinIO stopped, a large append fails closed and `G_seq` is unchanged; a read
    that needs an object fails instead of returning a gap.
 4. With MinIO restarted, the same append lands as the next sequence.
-5. An orphan (uploaded, never committed) is swept and the referenced 1 MiB object is
-   kept; then writers on two clients race a sweeper with every intent already
-   expired, and every committed message still reads back.
+5. An orphan (uploaded, never committed) and an unreferenced second upload of the 1 MiB
+   content are swept, and the referenced 1 MiB object is kept. Then, inside that one
+   container and process, two writer threads race two sweeper threads with no lease
+   exclusion (each with its own store handle and S3 client) and every intent already
+   expired, and every committed message still reads back. Phase 3 cannot cover an
+   upload that fails after its intent committed (with MinIO already stopped, the
+   namespace claim fails first); the unit test
+   `an_upload_that_fails_after_its_intent_committed_is_abandoned_and_swept` covers it.
 6. The run's FDB subspace is cleared.
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.

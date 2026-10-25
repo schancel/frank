@@ -6,8 +6,9 @@
 //! - `'G_epoch' || group_id || epoch_be`: historical [`GroupEpochFrame`]s by epoch number.
 //! - `'G_seq' || group_id`: monotonic `u64` per-group sequence counter.
 //! - `'G' || group_id || server_seq_be`: ordered message rows (binary CBOR). A ciphertext up to
-//!   [`INLINE_LIMIT`] (64 KiB) is inline; a larger one is a [`LargeValueRef`] to the
-//!   content-addressed object store (`groups/sha256/<hex>`), committed with the row.
+//!   [`INLINE_LIMIT`] (64 KiB) is inline; a larger one is a [`LargeValueRef`] to its own
+//!   upload in the object store (`groups/sha256/<hex>/<upload>`, content-verified on read),
+//!   committed with the row.
 //! - `'G_lv:'`: this owner's [`LargeValues`] index (upload intents, references, sweep lease).
 //! - `'G_mirror' || group_id`: home-relay subscriber tracking and mirror state for foreign groups.
 //! - `'G_accept' || group_id || signed_content_digest`: derived original-receipt locator, atomically
@@ -508,6 +509,10 @@ pub enum GroupError {
     /// Underlying KV store or upstream proxy failure.
     #[error("group storage error: {0}")]
     Storage(String),
+    /// The large-value (object) store failed or refused. The detail can name the endpoint,
+    /// bucket and object key, so the HTTP layer logs it and answers generically.
+    #[error("group large-value store: {0}")]
+    LargeValue(LargeValueError),
 }
 
 impl From<KvError> for GroupError {
@@ -518,7 +523,10 @@ impl From<KvError> for GroupError {
 
 impl From<LargeValueError> for GroupError {
     fn from(err: LargeValueError) -> Self {
-        GroupError::Storage(err.to_string())
+        match err {
+            LargeValueError::Kv(kv) => GroupError::Storage(kv.to_string()),
+            other => GroupError::LargeValue(other),
+        }
     }
 }
 
@@ -611,7 +619,7 @@ impl StoredCiphertext {
     fn matches(&self, ciphertext: &[u8]) -> bool {
         match self {
             Self::Inline(bytes) => bytes == ciphertext,
-            Self::Large(reference) => *reference == LargeValueRef::of(ciphertext),
+            Self::Large(reference) => reference.matches(ciphertext),
         }
     }
 }
@@ -635,6 +643,7 @@ const ROW_WRITE_SIG: u64 = 5;
 const ROW_CIPHERTEXT: u64 = 6;
 const ROW_CIPHERTEXT_SHA256: u64 = 7;
 const ROW_CIPHERTEXT_LEN: u64 = 8;
+const ROW_CIPHERTEXT_UPLOAD: u64 = 9;
 
 impl MessageRow {
     fn from_message(
@@ -672,6 +681,10 @@ impl MessageRow {
                     CborValue::Bytes(reference.digest.to_vec()),
                 ));
                 fields.push((ROW_CIPHERTEXT_LEN, CborValue::Int(reference.len.into())));
+                fields.push((
+                    ROW_CIPHERTEXT_UPLOAD,
+                    CborValue::Bytes(reference.upload.to_vec()),
+                ));
             }
         }
         encode_canonical(&cbor_map(fields)).map_err(|e| GroupError::Storage(e.to_string()))
@@ -686,7 +699,7 @@ impl MessageRow {
             return Err(corrupt("not a map"));
         };
         let (mut seq, mut time, mut epoch, mut nonce, mut sig) = (None, None, None, None, None);
-        let (mut inline, mut digest, mut len) = (None, None, None);
+        let (mut inline, mut digest, mut len, mut upload) = (None, None, None, None);
         let int = |value: CborValue| match value {
             CborValue::Int(n) => u64::try_from(n).map_err(|_| corrupt("integer out of range")),
             _ => Err(corrupt("expected an integer")),
@@ -703,13 +716,20 @@ impl MessageRow {
                     digest = Some(<[u8; 32]>::try_from(b).map_err(|_| corrupt("digest length"))?)
                 }
                 (ROW_CIPHERTEXT_LEN, v) => len = Some(int(v)?),
+                (ROW_CIPHERTEXT_UPLOAD, CborValue::Bytes(b)) => {
+                    upload = Some(<[u8; 16]>::try_from(b).map_err(|_| corrupt("upload id length"))?)
+                }
                 _ => return Err(corrupt("unexpected field")),
             }
         }
-        let ciphertext = match (inline, digest, len) {
-            (Some(bytes), None, None) => StoredCiphertext::Inline(bytes),
-            (None, Some(digest), Some(len)) => {
-                StoredCiphertext::Large(LargeValueRef { digest, len })
+        let ciphertext = match (inline, digest, len, upload) {
+            (Some(bytes), None, None, None) => StoredCiphertext::Inline(bytes),
+            (None, Some(digest), Some(len), Some(upload)) => {
+                StoredCiphertext::Large(LargeValueRef {
+                    digest,
+                    len,
+                    upload,
+                })
             }
             _ => return Err(corrupt("ciphertext")),
         };
@@ -901,6 +921,12 @@ impl GroupStore {
     /// Replace how long an unreferenced upload is protected from the sweep.
     pub fn with_large_value_intent_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.large_values = self.large_values.with_intent_ttl(ttl);
+        self
+    }
+
+    /// Replace the large-value sweep lease length. Zero lets every replica sweep at once.
+    pub fn with_large_value_lease_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.large_values = self.large_values.with_lease_ttl(ttl);
         self
     }
 
@@ -1611,6 +1637,12 @@ impl Owner {
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
             group_policy,
         }
+    }
+
+    /// The store if a request has already opened it. The sweep uses this so it never opens
+    /// (or creates) the group database itself.
+    pub fn opened(&self) -> Option<GroupStore> {
+        self.store.lock().ok()?.clone()
     }
 
     /// Access or initialize the [`GroupStore`].
@@ -3130,20 +3162,24 @@ mod tests {
         message
     }
 
+    /// Upload objects under `groups/sha256/<hex>/<upload>`.
     fn object_count(root: &std::path::Path) -> usize {
-        std::fs::read_dir(root.join("groups/sha256"))
-            .map(|dir| {
-                dir.filter(|entry| {
-                    !entry
-                        .as_ref()
-                        .unwrap()
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with('.')
-                })
-                .count()
+        let visible =
+            |entry: &std::fs::DirEntry| !entry.file_name().to_string_lossy().starts_with('.');
+        let Ok(digests) = std::fs::read_dir(root.join("groups/sha256")) else {
+            return 0;
+        };
+        digests
+            .map(|entry| entry.unwrap())
+            .filter(visible)
+            .map(|digest| {
+                std::fs::read_dir(digest.path())
+                    .unwrap()
+                    .map(|entry| entry.unwrap())
+                    .filter(visible)
+                    .count()
             })
-            .unwrap_or(0)
+            .sum()
     }
 
     #[test]
@@ -3187,16 +3223,19 @@ mod tests {
         assert_eq!(listed[1], receipt.message);
 
         // A retry is answered from the digest in the row, without reading the object.
-        let reference = LargeValueRef::of(&hex::decode(&large.ciphertext).unwrap());
-        let object_key = store.large_values().object_key(&reference);
-        objects.delete(&object_key).unwrap();
+        let references = store.large_values().references(10).unwrap();
+        assert_eq!(references.len(), 1);
+        assert!(references[0].matches(&hex::decode(&large.ciphertext).unwrap()));
+        objects
+            .delete(&store.large_values().object_key(&references[0]))
+            .unwrap();
         let retry = store.put_message(&id, large).unwrap();
         assert!(!retry.appended);
         assert_eq!(retry.message, receipt.message);
         // A missing referenced object fails the read closed rather than returning a gap.
         assert!(matches!(
             store.list_messages(&id, 0, 10),
-            Err(GroupError::Storage(_))
+            Err(GroupError::LargeValue(LargeValueError::Corrupt(_)))
         ));
     }
 
@@ -3227,6 +3266,15 @@ mod tests {
         ) -> Result<(), crate::store::large_values::ObjectStoreError> {
             self.check()?;
             self.inner.put(key, bytes, sha256)
+        }
+        fn put_if_absent(
+            &self,
+            key: &str,
+            bytes: &[u8],
+            sha256: &[u8; 32],
+        ) -> Result<bool, crate::store::large_values::ObjectStoreError> {
+            self.check()?;
+            self.inner.put_if_absent(key, bytes, sha256)
         }
         fn get(
             &self,
@@ -3270,7 +3318,7 @@ mod tests {
         let large = large_message(&id, 1, INLINE_LIMIT + 1, &write_sk);
         assert!(matches!(
             store.put_message(&id, large.clone()),
-            Err(GroupError::Storage(_))
+            Err(GroupError::LargeValue(LargeValueError::Unavailable(_)))
         ));
         let group_id = parse_group_id_hex(&id).unwrap();
         assert!(kv.get(&seq_key(&group_id)).unwrap().is_none());
@@ -3302,6 +3350,52 @@ mod tests {
     }
 
     #[test]
+    fn an_upload_that_fails_after_its_intent_committed_is_abandoned_and_swept() {
+        let kv = temporary();
+        let objects = Arc::new(OutageObjects {
+            inner: LocalFsObjectStore::temporary(),
+            down: std::sync::atomic::AtomicBool::new(false),
+        });
+        let store = GroupStore::new(
+            kv.clone(),
+            objects.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        )
+        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        // The namespace is claimed while the store is up; the outage starts after that, so
+        // the append commits its intent and then fails the upload.
+        store.large_values().claim_namespace().unwrap();
+        objects
+            .down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (write_sk, _) = keypair(42);
+        let large = large_message(&id, 1, INLINE_LIMIT + 1, &write_sk);
+        assert!(matches!(
+            store.put_message(&id, large.clone()),
+            Err(GroupError::LargeValue(LargeValueError::Unavailable(_)))
+        ));
+        let group_id = parse_group_id_hex(&id).unwrap();
+        assert!(kv.get(&seq_key(&group_id)).unwrap().is_none());
+        let intents = [GROUP_LARGE_VALUE_PREFIX, b"int:".as_slice()].concat();
+        assert_eq!(kv.scan_prefix_range(&intents, None, 10).unwrap().len(), 1);
+        assert!(store.large_values().references(10).unwrap().is_empty());
+
+        objects
+            .down
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // The abandoned intent is expired: the sweep removes it (and any object that landed).
+        assert_eq!(store.sweep_large_values([7; 16]).unwrap().deleted, 1);
+        assert!(kv.scan_prefix_range(&intents, None, 10).unwrap().is_empty());
+        assert_eq!(store.put_message(&id, large).unwrap().message.server_seq, 1);
+        assert_eq!(object_count(objects.inner.root()), 1);
+    }
+
+    #[test]
     fn sweep_collects_an_abandoned_upload_and_never_a_referenced_ciphertext() {
         let kv = temporary();
         let objects = Arc::new(LocalFsObjectStore::temporary());
@@ -3328,15 +3422,16 @@ mod tests {
         store.put_message(&id, kept.clone()).unwrap();
         // A writer that uploaded and then died before its commit.
         let orphan = store.large_values().stage(&vec![5u8; 100 * 1024]).unwrap();
-        // A second writer of the referenced content that died before its commit.
+        // A second writer of the referenced content that died before its commit: its own
+        // upload, deleted without touching the referenced one.
         store
             .large_values()
             .stage(&hex::decode(&kept.ciphertext).unwrap())
             .unwrap();
-        assert_eq!(object_count(objects.root()), 2);
+        assert_eq!(object_count(objects.root()), 3);
 
         let report = store.sweep_large_values([7; 16]).unwrap();
-        assert_eq!((report.deleted, report.kept_referenced), (1, 1));
+        assert_eq!((report.deleted, report.kept_referenced), (2, 0));
         assert!(!objects
             .contains(&store.large_values().object_key(&orphan.reference))
             .unwrap());
@@ -3345,6 +3440,9 @@ mod tests {
             store.list_messages(&id, 0, 10).unwrap()[0].ciphertext,
             kept.ciphertext
         );
+        // A retried append is answered from the row before anything is uploaded.
+        assert!(!store.put_message(&id, kept.clone()).unwrap().appended);
+        assert_eq!(object_count(objects.root()), 1);
         // Another replica's sweeper cannot take the lease while it is held.
         assert!(!store.sweep_large_values([8; 16]).unwrap().held_lease);
     }
@@ -3375,12 +3473,16 @@ mod tests {
                 .unwrap(),
             1
         );
-        // Re-ingesting the same batch keeps one reference and one object.
+        // Re-ingesting the same batch replaces the row with a new upload; the replaced
+        // upload's reference is dropped and the sweep collects it, leaving one object.
         assert_eq!(
             home.ingest_mirrored_upstream(&id, Some(initial), &synced)
                 .unwrap(),
             1
         );
+        assert_eq!(home.large_values().references(10).unwrap().len(), 1);
+        assert_eq!(object_count(objects.root()), 2);
+        assert_eq!(home.sweep_large_values([7; 16]).unwrap().deleted, 1);
         assert_eq!(object_count(objects.root()), 1);
         assert_eq!(home.list_messages(&id, 0, 10).unwrap(), synced);
     }

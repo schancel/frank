@@ -45,8 +45,7 @@ fn s3_error(error: BlobError) -> ObjectStoreError {
 impl S3ObjectStore {
     /// Connect lazily to the bucket in `config`. No request is made until the first call.
     pub fn new(config: S3BlobStoreConfig) -> Result<Self, ObjectStoreError> {
-        url::Url::parse(&config.endpoint)
-            .map_err(|e| ObjectStoreError(format!("invalid S3 endpoint: {e}")))?;
+        config.validate().map_err(ObjectStoreError)?;
         let (endpoint, bucket) = (config.endpoint.clone(), config.bucket.clone());
         let transport: Arc<dyn S3ObjectTransport> = Arc::new(ReqwestS3Transport::new(config));
         let (jobs, mut queue) = tokio::sync::mpsc::unbounded_channel::<Job>();
@@ -101,6 +100,22 @@ impl ObjectStore for S3ObjectStore {
             hex::encode(sha256),
         );
         self.run(async move { transport.put_object(&key, bytes, &sha).await })
+    }
+
+    fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError> {
+        check_object_key(key)?;
+        let (transport, key, bytes, sha) = (
+            self.transport.clone(),
+            key.to_string(),
+            bytes.to_vec(),
+            hex::encode(sha256),
+        );
+        self.run(async move { transport.put_object_if_absent(&key, bytes, &sha).await })
     }
 
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError> {

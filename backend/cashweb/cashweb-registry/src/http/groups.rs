@@ -14,6 +14,7 @@ mod live;
 #[cfg(test)]
 mod nats_tests;
 
+use crate::store::large_values::LargeValueError;
 use axum::{
     body::Bytes,
     extract::{Path, Query},
@@ -128,6 +129,20 @@ fn group_error_response(err: GroupError) -> Response {
             Json(ErrorBody { error: msg }),
         )
             .into_response(),
+        GroupError::LargeValue(error) => {
+            // The detail may name the object store endpoint, bucket and key: log, never echo.
+            tracing::warn!("group large-value store: {error}");
+            let (status, code) = match error {
+                LargeValueError::Corrupt(_) | LargeValueError::NamespaceClaimed(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "group_storage_error")
+                }
+                _ => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "group_large_value_store_unavailable",
+                ),
+            };
+            (status, Json(ErrorBody { error: code.into() })).into_response()
+        }
     }
 }
 
@@ -1154,6 +1169,31 @@ mod tests {
     pub(super) fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
         frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
         frame
+    }
+
+    #[tokio::test]
+    async fn object_store_errors_are_logged_and_answered_without_endpoint_or_key() {
+        use crate::store::large_values::ObjectStoreError;
+        let detail = "S3 PUT http://minio.internal:9000/frank-bucket/lab/groups/sha256/ab \
+                      returned HTTP 403: <Error><Code>AccessDenied</Code></Error>";
+        for (error, status) in [
+            (
+                LargeValueError::Unavailable(ObjectStoreError(detail.into())),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                LargeValueError::Corrupt(detail.into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let response = group_error_response(GroupError::LargeValue(error));
+            assert_eq!(response.status(), status);
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            for secret in ["minio.internal", "frank-bucket", "sha256", "AccessDenied"] {
+                assert!(!body.contains(secret), "{body}");
+            }
+        }
     }
 
     #[tokio::test]

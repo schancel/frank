@@ -1,13 +1,17 @@
-//! Shared Group Mailbox store (`'G'`, `'G_meta'`) over [`RelayKvStore`] (Issue #70 & #1575).
+//! Shared Group Mailbox store (`'G'`, `'G_meta'`) over the [`RelayKvStore`] transaction
+//! contract (Issue #70 & #1575).
 //!
 //! Stores:
-//! - `'G_meta' || group_id`: current [`GroupEpochFrame`], updated via atomic Compare-And-Swap (CAS).
+//! - `'G_meta' || group_id`: current [`GroupEpochFrame`], replaced in one transaction.
 //! - `'G_epoch' || group_id || epoch_be`: historical [`GroupEpochFrame`]s by epoch number.
 //! - `'G_seq' || group_id`: monotonic `u64` per-group sequence counter.
 //! - `'G' || group_id || server_seq_be`: ordered [`StoredGroupMessage`] rows.
 //! - `'G_mirror' || group_id`: home-relay subscriber tracking and mirror state for foreign groups.
 //! - `'G_accept' || group_id || signed_content_digest`: derived original-receipt locator, atomically
 //!   committed with message/sequence/epoch/ownership guards.
+//! - `'G_part:' || key || part_be32`: a frame or row longer than the store's value limit (or
+//!   starting with `0x00`) is stored at `key` as `0x00 || part_count_be32` and split across
+//!   these parts in the same transaction, until large values move to the object store.
 //! - `'G_format'`: explicit development baseline; old owned records fail without migration.
 
 use std::{
@@ -25,9 +29,11 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::store::kv_store::{
-    KvError, KvTransactionOp, MemoryKvStore, RelayKvStore, RocksDbKvStore, SUBSPACE_GROUP_MESSAGES,
-    SUBSPACE_GROUP_META,
+    KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact, MAX_VALUE_BYTES,
 };
+
+const SUBSPACE_GROUP_MESSAGES: &[u8] = b"G";
+const SUBSPACE_GROUP_META: &[u8] = b"G_meta";
 
 /// Sibling directory extension for durable RocksDB group mailbox storage.
 pub(crate) const GROUP_STORE_EXTENSION: &str = "groups-v1";
@@ -564,6 +570,7 @@ pub struct GroupAppendOutcome {
 
 const GROUP_FORMAT_KEY: &[u8] = b"G_format";
 const GROUP_FORMAT: &[u8] = b"group-append-idempotency-v1";
+const GROUP_PART_PREFIX: &[u8] = b"G_part:";
 const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G:",
     b"G_meta:",
@@ -572,10 +579,107 @@ const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G_mirror:",
     b"G_vs:",
     b"G_accept:",
+    GROUP_PART_PREFIX,
 ];
 
 fn acceptance_key(group_id: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
     [b"G_accept:".as_slice(), group_id, digest].concat()
+}
+
+fn part_prefix(key: &[u8]) -> Vec<u8> {
+    [GROUP_PART_PREFIX, key].concat()
+}
+
+/// The part count when `stored` is a split-value header.
+fn split_header(stored: &[u8]) -> Result<Option<u32>, GroupError> {
+    match stored.first() {
+        Some(0) => {
+            let count: [u8; 4] = stored[1..]
+                .try_into()
+                .map_err(|_| GroupError::Storage("corrupt split group value header".into()))?;
+            Ok(Some(u32::from_be_bytes(count)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Read a value written by [`put_value`], reassembling its parts.
+fn get_value(tx: &mut dyn KvTransaction, key: &[u8]) -> Result<Option<Vec<u8>>, GroupError> {
+    let Some(stored) = tx.get(key)? else {
+        return Ok(None);
+    };
+    let Some(count) = split_header(&stored)? else {
+        return Ok(Some(stored));
+    };
+    let prefix = part_prefix(key);
+    let parts = tx.scan_prefix(&prefix, None, count as usize + 1)?;
+    if parts.len() != count as usize
+        || parts
+            .iter()
+            .enumerate()
+            .any(|(index, (k, _))| k[prefix.len()..] != (index as u32).to_be_bytes())
+    {
+        return Err(GroupError::Storage("incomplete split group value".into()));
+    }
+    Ok(Some(parts.into_iter().flat_map(|(_, part)| part).collect()))
+}
+
+/// Write `value` at `key`, splitting it into parts when it exceeds the value limit, and
+/// remove the parts of any value it replaces.
+fn put_value(tx: &mut dyn KvTransaction, key: &[u8], value: &[u8]) -> Result<(), GroupError> {
+    let prefix = part_prefix(key);
+    if let Some(previous) = tx.get(key)? {
+        if let Some(count) = split_header(&previous)? {
+            for index in 0..count {
+                tx.clear(&[prefix.as_slice(), &index.to_be_bytes()].concat())?;
+            }
+        }
+    }
+    if value.len() <= MAX_VALUE_BYTES && value.first() != Some(&0) {
+        tx.set(key, value)?;
+        return Ok(());
+    }
+    let parts: Vec<&[u8]> = value.chunks(MAX_VALUE_BYTES).collect();
+    let count = u32::try_from(parts.len())
+        .map_err(|_| GroupError::InvalidInput("group value too large".into()))?;
+    tx.set(key, &[[0u8].as_slice(), &count.to_be_bytes()].concat())?;
+    for (index, part) in (0u32..).zip(parts) {
+        tx.set(&[prefix.as_slice(), &index.to_be_bytes()].concat(), part)?;
+    }
+    Ok(())
+}
+
+/// Inspect only this owner's namespace. Reading never initializes or resets it.
+fn check_baseline(tx: &mut dyn KvTransaction) -> Result<(), GroupError> {
+    match tx.get(GROUP_FORMAT_KEY)? {
+        Some(version) if version == GROUP_FORMAT => Ok(()),
+        Some(_) => Err(GroupError::Storage("unsupported group store format; preserve/export group receipts and explicitly reset only disposable dedicated group relay state".into())),
+        None => {
+            for prefix in GROUP_OWNED_PREFIXES {
+                if !tx.scan_prefix(prefix, None, 1)?.is_empty() {
+                    return Err(GroupError::Storage("group store lacks append-idempotency format marker; old nonempty group state is unsupported; no automatic migration or deletion".into()));
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn get_mirror_state(
+    tx: &mut dyn KvTransaction,
+    group_id: &[u8; 32],
+) -> Result<Option<GroupMirrorState>, GroupError> {
+    let Some(raw) = get_value(tx, &mirror_key(group_id))? else {
+        return Ok(None);
+    };
+    let state = serde_json::from_slice(&raw).map_err(|e| GroupError::Storage(e.to_string()))?;
+    Ok(Some(state))
+}
+
+fn parse_sequence(bytes: &[u8], what: &str) -> Result<u64, GroupError> {
+    Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
+        GroupError::Storage(format!("corrupt {what}"))
+    })?))
 }
 
 /// Shared Group Mailbox state machine backed by any [`RelayKvStore`].
@@ -609,14 +713,14 @@ impl GroupStore {
         }
     }
 
-    /// Construct an in-memory `GroupStore` for tests.
-    pub fn new_in_memory(group_policy: cashweb_config::GroupAppendPolicy) -> Self {
-        Self::new(Arc::new(MemoryKvStore::new()), group_policy)
-    }
-
-    /// Borrow the underlying [`RelayKvStore`].
-    pub fn kv(&self) -> &Arc<dyn RelayKvStore> {
-        &self.kv
+    /// A `GroupStore` over a RocksDB database in a temporary directory, removed when the last
+    /// clone is dropped. For tests and local fixtures.
+    ///
+    /// # Panics
+    /// If the temporary database cannot be created.
+    pub fn new_temporary(group_policy: cashweb_config::GroupAppendPolicy) -> Self {
+        let kv = RocksDbKvStore::open_temporary().expect("open temporary group store");
+        Self::new(Arc::new(kv), group_policy)
     }
 
     /// Configured subscriber count threshold `n` for promoting a foreign group from proxy to mirror.
@@ -624,37 +728,30 @@ impl GroupStore {
         self.mirror_threshold
     }
 
-    /// Inspect only this owner's namespace. Opening/reading never initializes or resets it.
+    /// Run one read-only transaction after checking the store's baseline.
+    fn read<T>(
+        &self,
+        mut body: impl FnMut(&mut dyn KvTransaction) -> Result<T, GroupError>,
+    ) -> Result<T, GroupError> {
+        self.kv.transact(|tx| {
+            check_baseline(tx)?;
+            body(tx)
+        })
+    }
+
     fn check_baseline(&self) -> Result<(), GroupError> {
-        match self.kv.get(GROUP_FORMAT_KEY)? {
-            Some(version) if version == GROUP_FORMAT => Ok(()),
-            Some(_) => Err(GroupError::Storage("unsupported group store format; preserve/export group receipts and explicitly reset only disposable dedicated group relay state".into())),
-            None => {
-                for prefix in GROUP_OWNED_PREFIXES {
-                    if !self.kv.scan_prefix_range(prefix, None, 1)?.is_empty() {
-                        // Another new-format writer may have initialized and committed since the first read.
-                        if self.kv.get(GROUP_FORMAT_KEY)?.as_deref() == Some(GROUP_FORMAT) { return Ok(()); }
-                        return Err(GroupError::Storage("group store lacks append-idempotency format marker; old nonempty group state is unsupported; no automatic migration or deletion".into()));
-                    }
-                }
-                Ok(())
-            }
-        }
+        self.read(|_| Ok(()))
     }
 
     /// Called only after an authorized mutation; marker-only interruption is a valid empty store.
     fn initialize_baseline(&self) -> Result<(), GroupError> {
-        self.check_baseline()?;
-        match self
-            .kv
-            .compare_and_swap(GROUP_FORMAT_KEY, None, GROUP_FORMAT)
-        {
-            Ok(()) => Ok(()),
-            Err(KvError::CasConflict {
-                current: Some(version),
-            }) if version == GROUP_FORMAT => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        self.kv.transact(|tx| {
+            check_baseline(tx)?;
+            if tx.get(GROUP_FORMAT_KEY)?.is_none() {
+                tx.set(GROUP_FORMAT_KEY, GROUP_FORMAT)?;
+            }
+            Ok(())
+        })
     }
 
     /// Fetch the current [`GroupEpochFrame`] for `group_id_hex`, if the group exists locally.
@@ -662,13 +759,10 @@ impl GroupStore {
         &self,
         group_id_hex: &str,
     ) -> Result<Option<GroupEpochFrame>, GroupError> {
-        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
-        let Some(raw) = self.kv.get(&meta_key(&group_id))? else {
-            return Ok(None);
-        };
-        let frame = GroupEpochFrame::from_cbor_bytes(&raw)?;
-        Ok(Some(frame))
+        self.read(|tx| get_value(tx, &meta_key(&group_id)))?
+            .map(|raw| GroupEpochFrame::from_cbor_bytes(&raw))
+            .transpose()
     }
 
     /// Fetch a specific historical [`GroupEpochFrame`] by epoch number.
@@ -677,16 +771,13 @@ impl GroupStore {
         group_id_hex: &str,
         epoch: u64,
     ) -> Result<Option<GroupEpochFrame>, GroupError> {
-        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
-        let Some(raw) = self.kv.get(&epoch_history_key(&group_id, epoch))? else {
-            return Ok(None);
-        };
-        let frame = GroupEpochFrame::from_cbor_bytes(&raw)?;
-        Ok(Some(frame))
+        self.read(|tx| get_value(tx, &epoch_history_key(&group_id, epoch)))?
+            .map(|raw| GroupEpochFrame::from_cbor_bytes(&raw))
+            .transpose()
     }
 
-    /// Atomically advance or initialize the group's epoch via Compare-And-Swap (`CAS`).
+    /// Atomically advance or initialize the group's epoch.
     ///
     /// - Epoch `0`: initializes the group if no epoch exists; otherwise returns `409 Conflict`
     ///   (`GroupError::EpochConflict`) carrying the current epoch frame.
@@ -707,73 +798,36 @@ impl GroupStore {
 
         frame.verify_authority(path_group_id)?;
         self.initialize_baseline()?;
-        if self.get_mirror_state(path_group_id)?.is_some() {
-            return Err(GroupError::Forbidden(
-                "foreign groups cannot accept local epoch writes".into(),
-            ));
-        }
-        let m_key = meta_key(&group_id);
-        let current_raw = self.kv.get(&m_key)?;
         let encoded_new = frame.to_cbor_bytes()?;
-
-        let expected = match (frame.epoch, current_raw.as_deref()) {
-            (0, None) => None,
-            (_, Some(existing)) => {
-                let current = GroupEpochFrame::from_cbor_bytes(existing)?;
-                if frame.epoch == 0
-                    || current.epoch.checked_add(1) != Some(frame.epoch)
-                    || frame.prev_epoch_hash != current.epoch_hash
-                {
-                    return Err(GroupError::EpochConflict {
-                        current: Box::new(current),
-                    });
+        let m_key = meta_key(&group_id);
+        self.kv.transact(|tx| {
+            if get_mirror_state(tx, &group_id)?.is_some() {
+                return Err(GroupError::Forbidden(
+                    "foreign groups cannot accept local epoch writes".into(),
+                ));
+            }
+            match (frame.epoch, get_value(tx, &m_key)?) {
+                (0, None) => {}
+                (_, Some(existing)) => {
+                    let current = GroupEpochFrame::from_cbor_bytes(&existing)?;
+                    if frame.epoch == 0
+                        || current.epoch.checked_add(1) != Some(frame.epoch)
+                        || frame.prev_epoch_hash != current.epoch_hash
+                    {
+                        return Err(GroupError::EpochConflict {
+                            current: Box::new(current),
+                        });
+                    }
                 }
-                Some(existing)
-            }
-            (_, None) => {
-                return Err(GroupError::InvalidInput(
-                    "initial group epoch must be 0".into(),
-                ))
-            }
-        };
-        let ownership_key = mirror_key(&group_id);
-        // CAS followed by delete expresses a read-only absence guard in the existing
-        // transaction vocabulary: no ownership row is visible before or after commit.
-        let operations = vec![
-            KvTransactionOp::CheckAndSet {
-                key: ownership_key.clone(),
-                expected: None,
-                new_value: Vec::new(),
-            },
-            KvTransactionOp::Delete { key: ownership_key },
-            KvTransactionOp::CheckAndSet {
-                key: m_key,
-                expected: expected.map(<[u8]>::to_vec),
-                new_value: encoded_new.clone(),
-            },
-            KvTransactionOp::Put {
-                key: epoch_history_key(&group_id, frame.epoch),
-                value: encoded_new,
-            },
-        ];
-        match self.kv.execute_transaction(operations) {
-            Ok(_) => {}
-            Err(KvError::CasConflict { .. }) => {
-                if self.get_mirror_state(path_group_id)?.is_some() {
-                    return Err(GroupError::Forbidden(
-                        "foreign groups cannot accept local epoch writes".into(),
-                    ));
+                (_, None) => {
+                    return Err(GroupError::InvalidInput(
+                        "initial group epoch must be 0".into(),
+                    ))
                 }
-                let current = self.get_current_epoch(path_group_id)?.ok_or_else(|| {
-                    GroupError::Storage("epoch transaction conflicted without current epoch".into())
-                })?;
-                return Err(GroupError::EpochConflict {
-                    current: Box::new(current),
-                });
             }
-            Err(error) => return Err(error.into()),
-        }
-
+            put_value(tx, &m_key, &encoded_new)?;
+            put_value(tx, &epoch_history_key(&group_id, frame.epoch), &encoded_new)
+        })?;
         Ok(frame)
     }
 
@@ -828,8 +882,7 @@ impl GroupStore {
         let ownership_key = mirror_key(&group_id);
         let authority_key = meta_key(&group_id);
         let authority_snapshot = self
-            .kv
-            .get(&authority_key)?
+            .read(|tx| get_value(tx, &authority_key))?
             .ok_or_else(|| GroupError::NotFound(path_group_id.to_string()))?;
         let current_epoch = GroupEpochFrame::from_cbor_bytes(&authority_snapshot)?;
 
@@ -873,105 +926,63 @@ impl GroupStore {
         }
 
         let sequence_key = seq_key(&group_id);
+        let strip = |value: &str| value.strip_prefix("0x").unwrap_or(value).to_lowercase();
         loop {
-            let sequence_snapshot = self.kv.get(&sequence_key)?;
-            let server_seq = match &sequence_snapshot {
-                Some(bytes) => u64::from_be_bytes(
-                    bytes
-                        .as_slice()
-                        .try_into()
-                        .map_err(|_| GroupError::Storage("corrupt G_seq value".into()))?,
-                )
-                .checked_add(1)
-                .ok_or_else(|| GroupError::Storage("group sequence exhausted".into()))?,
-                None => 1,
-            };
-            let stored = StoredGroupMessage {
-                group_id: path_group_id.to_string(),
-                server_seq,
-                server_time_ms: now_ms(),
-                epoch: envelope.epoch,
-                nonce: envelope
-                    .nonce
-                    .strip_prefix("0x")
-                    .unwrap_or(&envelope.nonce)
-                    .to_lowercase(),
-                ciphertext: envelope
-                    .ciphertext
-                    .strip_prefix("0x")
-                    .unwrap_or(&envelope.ciphertext)
-                    .to_lowercase(),
-                write_sig: envelope
-                    .write_sig
-                    .strip_prefix("0x")
-                    .unwrap_or(&envelope.write_sig)
-                    .to_lowercase(),
-            };
-            let serialized = serde_json::to_vec(&stored).map_err(|error| {
-                GroupError::Storage(format!("serialize group message: {error}"))
+            // This is the authorization linearization point: epoch rotation and append read
+            // and write in one storage transaction, including across relay instances.
+            let committed = self.kv.transact(|tx| {
+                if tx.get(&accept_key)?.is_some()
+                    || tx.get(&ownership_key)?.is_some()
+                    || get_value(tx, &authority_key)?.as_deref() != Some(&authority_snapshot)
+                {
+                    return Ok::<_, GroupError>(None);
+                }
+                let server_seq = match tx.get(&sequence_key)? {
+                    Some(bytes) => parse_sequence(&bytes, "G_seq value")?
+                        .checked_add(1)
+                        .ok_or_else(|| GroupError::Storage("group sequence exhausted".into()))?,
+                    None => 1,
+                };
+                let stored = StoredGroupMessage {
+                    group_id: path_group_id.to_string(),
+                    server_seq,
+                    server_time_ms: now_ms(),
+                    epoch: envelope.epoch,
+                    nonce: strip(&envelope.nonce),
+                    ciphertext: strip(&envelope.ciphertext),
+                    write_sig: strip(&envelope.write_sig),
+                };
+                let serialized = serde_json::to_vec(&stored).map_err(|error| {
+                    GroupError::Storage(format!("serialize group message: {error}"))
+                })?;
+                tx.set(&accept_key, &server_seq.to_be_bytes())?;
+                tx.set(&sequence_key, &server_seq.to_be_bytes())?;
+                put_value(tx, &msg_key(&group_id, server_seq), &serialized)?;
+                Ok(Some(stored))
             })?;
-            let row_key = msg_key(&group_id, server_seq);
-            let next_sequence = server_seq.to_be_bytes();
-            // This is the authorization linearization point: epoch rotation and append use
-            // the same storage transaction boundary, including across relay instances.
-            let operations = vec![
-                KvTransactionOp::CheckAndSet {
-                    key: accept_key.clone(),
-                    expected: None,
-                    new_value: server_seq.to_be_bytes().to_vec(),
-                },
-                KvTransactionOp::CheckAndSet {
-                    key: ownership_key.clone(),
-                    expected: None,
-                    new_value: Vec::new(),
-                },
-                KvTransactionOp::Delete {
-                    key: ownership_key.clone(),
-                },
-                KvTransactionOp::CheckAndSet {
-                    key: authority_key.clone(),
-                    expected: Some(authority_snapshot.clone()),
-                    new_value: authority_snapshot.clone(),
-                },
-                KvTransactionOp::CheckAndSet {
-                    key: sequence_key.clone(),
-                    expected: sequence_snapshot,
-                    new_value: next_sequence.to_vec(),
-                },
-                KvTransactionOp::Put {
-                    key: row_key,
-                    value: serialized,
-                },
-            ];
-            match self.kv.execute_transaction(operations) {
-                Ok(_) => {
-                    return Ok(GroupAppendOutcome {
-                        message: stored,
-                        appended: true,
-                    })
-                }
-                Err(KvError::CasConflict { .. }) => {
-                    if let Some(message) =
-                        self.accepted_message(path_group_id, &envelope, &accept_key)?
-                    {
-                        return Ok(GroupAppendOutcome {
-                            message,
-                            appended: false,
-                        });
-                    }
-                    if self.get_mirror_state(path_group_id)?.is_some() {
-                        return Err(GroupError::Forbidden(
-                            "group ownership changed before message commit".into(),
-                        ));
-                    }
-                    if self.kv.get(&authority_key)?.as_deref() != Some(&authority_snapshot) {
-                        return Err(GroupError::Forbidden(
-                            "group epoch changed before message commit".into(),
-                        ));
-                    }
-                    // Another authorized append won this sequence; retry without reusing it.
-                }
-                Err(error) => return Err(error.into()),
+            if let Some(message) = committed {
+                return Ok(GroupAppendOutcome {
+                    message,
+                    appended: true,
+                });
+            }
+            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(GroupAppendOutcome {
+                    message,
+                    appended: false,
+                });
+            }
+            if self.get_mirror_state(path_group_id)?.is_some() {
+                return Err(GroupError::Forbidden(
+                    "group ownership changed before message commit".into(),
+                ));
+            }
+            if self.read(|tx| get_value(tx, &authority_key))?.as_deref()
+                != Some(&authority_snapshot)
+            {
+                return Err(GroupError::Forbidden(
+                    "group epoch changed before message commit".into(),
+                ));
             }
         }
     }
@@ -987,19 +998,20 @@ impl GroupStore {
                 "foreign groups cannot acknowledge local authoritative writes".into(),
             ));
         }
-        let Some(locator) = self.kv.get(accept_key)? else {
+        let group_id = parse_group_id_hex(group_id_hex)?;
+        let Some((sequence, raw)) = self.read(|tx| {
+            let Some(locator) = tx.get(accept_key)? else {
+                return Ok(None);
+            };
+            let sequence = parse_sequence(&locator, "group acceptance locator")?;
+            let raw = get_value(tx, &msg_key(&group_id, sequence))?.ok_or_else(|| {
+                GroupError::Storage("group acceptance index references missing receipt".into())
+            })?;
+            Ok(Some((sequence, raw)))
+        })?
+        else {
             return Ok(None);
         };
-        let sequence = u64::from_be_bytes(
-            locator
-                .as_slice()
-                .try_into()
-                .map_err(|_| GroupError::Storage("corrupt group acceptance locator".into()))?,
-        );
-        let group_id = parse_group_id_hex(group_id_hex)?;
-        let raw = self.kv.get(&msg_key(&group_id, sequence))?.ok_or_else(|| {
-            GroupError::Storage("group acceptance index references missing receipt".into())
-        })?;
         let stored: StoredGroupMessage = serde_json::from_slice(&raw).map_err(|error| {
             GroupError::Storage(format!("corrupt group acceptance receipt: {error}"))
         })?;
@@ -1051,25 +1063,27 @@ impl GroupStore {
         after_seq: u64,
         limit: u16,
     ) -> Result<Vec<StoredGroupMessage>, GroupError> {
-        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let prefix = msg_prefix(&group_id);
-        let after_key = if after_seq > 0 {
-            Some(msg_key(&group_id, after_seq))
-        } else {
-            None
-        };
+        let after_key = (after_seq > 0).then(|| msg_key(&group_id, after_seq));
         let bounded_limit = (limit as usize).clamp(1, 500);
-        let rows = self
-            .kv
-            .scan_prefix_range(&prefix, after_key.as_deref(), bounded_limit)?;
-        let mut messages = Vec::with_capacity(rows.len());
-        for (_, val) in rows {
-            let msg: StoredGroupMessage = serde_json::from_slice(&val)
-                .map_err(|e| GroupError::Storage(format!("decode stored group message: {e}")))?;
-            messages.push(msg);
-        }
-        Ok(messages)
+        let rows = self.read(|tx| {
+            let rows = tx.scan_prefix(&prefix, after_key.as_deref(), bounded_limit)?;
+            let mut values = Vec::with_capacity(rows.len());
+            for (key, value) in rows {
+                values.push(match split_header(&value)? {
+                    Some(_) => get_value(tx, &key)?.unwrap_or_default(),
+                    None => value,
+                });
+            }
+            Ok(values)
+        })?;
+        rows.iter()
+            .map(|value| {
+                serde_json::from_slice(value)
+                    .map_err(|e| GroupError::Storage(format!("decode stored group message: {e}")))
+            })
+            .collect()
     }
 
     /// Admit a foreign subscriber using a root-signed epoch and its matching read capability.
@@ -1101,22 +1115,19 @@ impl GroupStore {
             )),
         };
         let group_id = parse_group_id_hex(group_id_hex)?;
-        let m_key = mirror_key(&group_id);
-        loop {
-            let current_raw = self.kv.get(&m_key)?;
-            let authority_key = meta_key(&group_id);
-            let authority_raw = self.kv.get(&authority_key)?;
-            if let Some(raw) = &authority_raw {
-                if current_raw.is_none() {
+        let authenticated_hash = hex::encode(authenticated_epoch.compute_epoch_hash()?);
+        self.kv.transact(|tx| {
+            let current = get_mirror_state(tx, &group_id)?;
+            if let Some(raw) = get_value(tx, &meta_key(&group_id))? {
+                if current.is_none() {
                     return Err(GroupError::Forbidden(
                         "local group cannot become a foreign mirror".into(),
                     ));
                 }
-                let current = GroupEpochFrame::from_cbor_bytes(raw)?;
-                if current.epoch > authenticated_epoch.epoch
-                    || (current.epoch == authenticated_epoch.epoch
-                        && current.epoch_hash
-                            != hex::encode(authenticated_epoch.compute_epoch_hash()?))
+                let local = GroupEpochFrame::from_cbor_bytes(&raw)?;
+                if local.epoch > authenticated_epoch.epoch
+                    || (local.epoch == authenticated_epoch.epoch
+                        && local.epoch_hash != authenticated_hash)
                 {
                     return Err(GroupError::Forbidden(
                         "read capability targets a stale or conflicting group epoch".into(),
@@ -1124,17 +1135,13 @@ impl GroupStore {
                 }
             }
 
-            let mut state = match &current_raw {
-                Some(bytes) => serde_json::from_slice::<GroupMirrorState>(bytes)
-                    .map_err(|e| GroupError::Storage(e.to_string()))?,
-                None => GroupMirrorState {
-                    group_id: group_id_hex.to_string(),
-                    upstream_relay: upstream_relay.trim_end_matches('/').to_string(),
-                    subscribers: BTreeSet::new(),
-                    mirrored: false,
-                    last_synced_seq: 0,
-                },
-            };
+            let mut state = current.unwrap_or_else(|| GroupMirrorState {
+                group_id: group_id_hex.to_string(),
+                upstream_relay: upstream_relay.trim_end_matches('/').to_string(),
+                subscribers: BTreeSet::new(),
+                mirrored: false,
+                last_synced_seq: 0,
+            });
             if state.upstream_relay != upstream_relay.trim_end_matches('/') {
                 return Err(GroupError::Forbidden(
                     "group upstream does not match established ownership".into(),
@@ -1146,34 +1153,9 @@ impl GroupStore {
             }
             let encoded =
                 serde_json::to_vec(&state).map_err(|e| GroupError::Storage(e.to_string()))?;
-            let mut operations = vec![KvTransactionOp::CheckAndSet {
-                key: m_key.clone(),
-                expected: current_raw.clone(),
-                new_value: encoded,
-            }];
-            operations.push(KvTransactionOp::CheckAndSet {
-                key: authority_key.clone(),
-                expected: authority_raw.clone(),
-                new_value: authority_raw.clone().unwrap_or_default(),
-            });
-            if authority_raw.is_none() {
-                operations.push(KvTransactionOp::Delete { key: authority_key });
-            }
-            match self.kv.execute_transaction(operations) {
-                Ok(_) => return Ok(state),
-                Err(KvError::CasConflict { .. }) => {
-                    if self.get_mirror_state(group_id_hex)?.is_none()
-                        && self.get_current_epoch(group_id_hex)?.is_some()
-                    {
-                        return Err(GroupError::Forbidden(
-                            "local group cannot become a foreign mirror".into(),
-                        ));
-                    }
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+            put_value(tx, &mirror_key(&group_id), &encoded)?;
+            Ok(state)
+        })
     }
 
     /// Ingest synced epoch and messages fetched from an upstream foreign relay into this
@@ -1228,41 +1210,32 @@ impl GroupStore {
         self.initialize_baseline()?;
         if let Some(frame) = epoch_frame {
             let encoded = frame.to_cbor_bytes()?;
-            // A delayed upstream response must never roll the active authority/read token backwards.
-            loop {
-                let current_raw = self.kv.get(&meta_key(&group_id))?;
-                if let Some(raw) = &current_raw {
-                    let current = GroupEpochFrame::from_cbor_bytes(raw)?;
-                    if current.epoch >= frame.epoch {
-                        if current.epoch == frame.epoch && current.epoch_hash != frame.epoch_hash {
-                            return Err(GroupError::EpochConflict {
-                                current: Box::new(current),
-                            });
-                        }
-                        break;
+            self.kv.transact(|tx| {
+                // A delayed upstream response must never roll the active authority/read token backwards.
+                let current = get_value(tx, &meta_key(&group_id))?
+                    .map(|raw| GroupEpochFrame::from_cbor_bytes(&raw))
+                    .transpose()?;
+                match current {
+                    Some(current)
+                        if current.epoch == frame.epoch
+                            && current.epoch_hash != frame.epoch_hash =>
+                    {
+                        return Err(GroupError::EpochConflict {
+                            current: Box::new(current),
+                        })
                     }
+                    Some(current) if current.epoch >= frame.epoch => {}
+                    _ => put_value(tx, &meta_key(&group_id), &encoded)?,
                 }
-                match self.kv.compare_and_swap(
-                    &meta_key(&group_id),
-                    current_raw.as_deref(),
-                    &encoded,
-                ) {
-                    Ok(()) => break,
-                    Err(KvError::CasConflict { .. }) => continue,
-                    Err(error) => return Err(error.into()),
+                let history_key = epoch_history_key(&group_id, frame.epoch);
+                match get_value(tx, &history_key)? {
+                    None => put_value(tx, &history_key, &encoded),
+                    Some(existing) if existing == encoded => Ok(()),
+                    Some(_) => Err(GroupError::Storage(
+                        "conflicting historical group epoch certificate".into(),
+                    )),
                 }
-            }
-            match self.kv.compare_and_swap(
-                &epoch_history_key(&group_id, frame.epoch),
-                None,
-                &encoded,
-            ) {
-                Ok(()) => {}
-                Err(KvError::CasConflict {
-                    current: Some(existing),
-                }) if existing == encoded => {}
-                Err(error) => return Err(error.into()),
-            }
+            })?;
         }
 
         let mut max_seq = 0u64;
@@ -1270,34 +1243,33 @@ impl GroupStore {
             let serialized =
                 serde_json::to_vec(msg).map_err(|e| GroupError::Storage(e.to_string()))?;
             self.kv
-                .put(&msg_key(&group_id, msg.server_seq), &serialized)?;
-            if msg.server_seq > max_seq {
-                max_seq = msg.server_seq;
-            }
+                .transact(|tx| put_value(tx, &msg_key(&group_id, msg.server_seq), &serialized))?;
+            max_seq = max_seq.max(msg.server_seq);
         }
 
         if max_seq > 0 {
-            let s_key = seq_key(&group_id);
-            let current_seq = self
-                .kv
-                .get(&s_key)?
-                .and_then(|b| b.as_slice().try_into().ok().map(u64::from_be_bytes))
-                .unwrap_or(0);
-            if max_seq > current_seq {
-                self.kv.put(&s_key, &max_seq.to_be_bytes())?;
-            }
-
-            let m_key = mirror_key(&group_id);
-            if let Some(raw) = self.kv.get(&m_key)? {
-                if let Ok(mut state) = serde_json::from_slice::<GroupMirrorState>(&raw) {
+            self.kv.transact(|tx| {
+                let s_key = seq_key(&group_id);
+                let current_seq = tx
+                    .get(&s_key)?
+                    .and_then(|b| b.as_slice().try_into().ok().map(u64::from_be_bytes))
+                    .unwrap_or(0);
+                if max_seq > current_seq {
+                    tx.set(&s_key, &max_seq.to_be_bytes())?;
+                }
+                let m_key = mirror_key(&group_id);
+                let state = get_value(tx, &m_key)?
+                    .and_then(|raw| serde_json::from_slice::<GroupMirrorState>(&raw).ok());
+                if let Some(mut state) = state {
                     if max_seq > state.last_synced_seq {
                         state.last_synced_seq = max_seq;
-                        if let Ok(encoded) = serde_json::to_vec(&state) {
-                            let _ = self.kv.put(&m_key, &encoded);
-                        }
+                        let encoded = serde_json::to_vec(&state)
+                            .map_err(|e| GroupError::Storage(e.to_string()))?;
+                        put_value(tx, &m_key, &encoded)?;
                     }
                 }
-            }
+                Ok::<_, GroupError>(())
+            })?;
         }
 
         Ok(max_seq)
@@ -1308,13 +1280,8 @@ impl GroupStore {
         &self,
         group_id_hex: &str,
     ) -> Result<Option<GroupMirrorState>, GroupError> {
-        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
-        let Some(raw) = self.kv.get(&mirror_key(&group_id))? else {
-            return Ok(None);
-        };
-        let state = serde_json::from_slice(&raw).map_err(|e| GroupError::Storage(e.to_string()))?;
-        Ok(Some(state))
+        self.read(|tx| get_mirror_state(tx, &group_id))
     }
 }
 
@@ -1366,6 +1333,7 @@ impl Owner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::kv_store::Outcome;
     use secp256k1_abc::SecretKey;
 
     fn keypair(seed_byte: u8) -> (SecretKey, [u8; 33]) {
@@ -1406,57 +1374,108 @@ mod tests {
         )
     }
 
-    #[derive(Debug)]
-    struct FailingCommitKv(Arc<dyn RelayKvStore>);
-
-    impl RelayKvStore for FailingCommitKv {
-        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
-            self.0.get(key)
-        }
-        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
-            if key.starts_with(b"G_epoch:") {
-                return Err(KvError::Backend("injected epoch history outage".into()));
-            }
-            self.0.put(key, value)
-        }
-        fn delete(&self, key: &[u8]) -> Result<(), KvError> {
-            self.0.delete(key)
-        }
-        fn compare_and_swap(
-            &self,
-            key: &[u8],
-            expected: Option<&[u8]>,
-            value: &[u8],
-        ) -> Result<(), KvError> {
-            self.0.compare_and_swap(key, expected, value)
-        }
-        fn execute_transaction(
-            &self,
-            _: Vec<KvTransactionOp>,
-        ) -> Result<Option<crate::store::kv_store::Versionstamp>, KvError> {
-            Err(KvError::Backend("injected transaction outage".into()))
-        }
-        fn put_versionstamped(
+    /// Single-operation transactions for test setup and inspection.
+    trait Direct {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError>;
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError>;
+        fn scan_prefix_range(
             &self,
             prefix: &[u8],
-            suffix: &[u8],
-            value: &[u8],
-        ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
-            self.0.put_versionstamped(prefix, suffix, value)
+            after: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError>;
+    }
+
+    impl<S: RelayKvStore + ?Sized> Direct for S {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+            self.transact(|tx| tx.get(key))
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            self.transact(|tx| tx.set(key, value))
         }
         fn scan_prefix_range(
             &self,
             prefix: &[u8],
-            cursor: Option<&[u8]>,
+            after: Option<&[u8]>,
             limit: usize,
         ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
-            self.0.scan_prefix_range(prefix, cursor, limit)
+            self.transact(|tx| tx.scan_prefix(prefix, after, limit))
+        }
+    }
+
+    fn temporary() -> Arc<RocksDbKvStore> {
+        Arc::new(RocksDbKvStore::open_temporary().unwrap())
+    }
+
+    /// Delegates to a real store; `on_get` and `on_write` observe each operation first.
+    struct ObservedTransaction<'a> {
+        inner: &'a mut dyn KvTransaction,
+        on_get: &'a dyn Fn(&[u8], &Option<Vec<u8>>),
+        on_write: &'a mut dyn FnMut(),
+    }
+
+    impl KvTransaction for ObservedTransaction<'_> {
+        fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+            let value = self.inner.get(key)?;
+            (self.on_get)(key, &value);
+            Ok(value)
+        }
+        fn get_range(
+            &mut self,
+            start: &[u8],
+            end: &[u8],
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+            self.inner.get_range(start, end, limit)
+        }
+        fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            (self.on_write)();
+            self.inner.set(key, value)
+        }
+        fn clear(&mut self, key: &[u8]) -> Result<(), KvError> {
+            (self.on_write)();
+            self.inner.clear(key)
+        }
+        fn atomic_add(&mut self, key: &[u8], delta: i64) -> Result<(), KvError> {
+            (self.on_write)();
+            self.inner.atomic_add(key, delta)
+        }
+    }
+
+    /// A real store whose every mutating commit fails; read-only transactions succeed.
+    #[derive(Debug)]
+    struct FailingCommitKv(Arc<dyn RelayKvStore>);
+
+    impl RelayKvStore for FailingCommitKv {
+        fn run_transaction(
+            &self,
+            body: &mut dyn FnMut(&mut dyn KvTransaction) -> Outcome,
+        ) -> Result<Outcome, KvError> {
+            let mut wrote = false;
+            let outcome = self.0.run_transaction(&mut |tx| {
+                wrote = false;
+                let outcome = body(&mut ObservedTransaction {
+                    inner: tx,
+                    on_get: &|_, _| {},
+                    on_write: &mut || wrote = true,
+                });
+                // Discard the writes in place of a failed commit.
+                if wrote {
+                    Outcome::Abort
+                } else {
+                    outcome
+                }
+            })?;
+            if wrote && outcome == Outcome::Abort {
+                return Err(KvError::Backend("injected transaction outage".into()));
+            }
+            Ok(outcome)
         }
     }
 
     #[test]
     fn epoch_cas_backend_failures_are_not_reported_as_successful_creation_or_rotation() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let healthy = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -1487,6 +1506,8 @@ mod tests {
         assert!(healthy.get_epoch(&id, 1).unwrap().is_none());
     }
 
+    /// A real store that pauses once: on the first empty `G_accept:` lookup when
+    /// `pause_at_lookup`, otherwise on the first write of a transaction (before its commit).
     #[derive(Debug)]
     struct PausingCommitKv {
         backend: Arc<dyn RelayKvStore>,
@@ -1496,59 +1517,36 @@ mod tests {
         pause_at_lookup: bool,
     }
 
+    impl PausingCommitKv {
+        fn pause_once(&self) {
+            if self.pause.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.ready.wait();
+                self.resume.wait();
+            }
+        }
+    }
+
     impl RelayKvStore for PausingCommitKv {
-        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
-            let result = self.backend.get(key);
-            if self.pause_at_lookup
-                && key.starts_with(b"G_accept:")
-                && matches!(&result, Ok(None))
-                && self.pause.swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                self.ready.wait();
-                self.resume.wait();
-            }
-            result
-        }
-        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
-            self.backend.put(key, value)
-        }
-        fn delete(&self, key: &[u8]) -> Result<(), KvError> {
-            self.backend.delete(key)
-        }
-        fn compare_and_swap(
+        fn run_transaction(
             &self,
-            key: &[u8],
-            expected: Option<&[u8]>,
-            value: &[u8],
-        ) -> Result<(), KvError> {
-            self.backend.compare_and_swap(key, expected, value)
-        }
-        fn execute_transaction(
-            &self,
-            ops: Vec<KvTransactionOp>,
-        ) -> Result<Option<crate::store::kv_store::Versionstamp>, KvError> {
-            if !self.pause_at_lookup && self.pause.swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                self.ready.wait();
-                self.resume.wait();
-            }
-            self.backend.execute_transaction(ops)
-        }
-        fn put_versionstamped(
-            &self,
-            prefix: &[u8],
-            suffix: &[u8],
-            value: &[u8],
-        ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
-            self.backend.put_versionstamped(prefix, suffix, value)
-        }
-        fn scan_prefix_range(
-            &self,
-            prefix: &[u8],
-            cursor: Option<&[u8]>,
-            limit: usize,
-        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
-            self.backend.scan_prefix_range(prefix, cursor, limit)
+            body: &mut dyn FnMut(&mut dyn KvTransaction) -> Outcome,
+        ) -> Result<Outcome, KvError> {
+            self.backend.run_transaction(&mut |tx| {
+                body(&mut ObservedTransaction {
+                    inner: tx,
+                    on_get: &|key, value| {
+                        if self.pause_at_lookup && key.starts_with(b"G_accept:") && value.is_none()
+                        {
+                            self.pause_once();
+                        }
+                    },
+                    on_write: &mut || {
+                        if !self.pause_at_lookup {
+                            self.pause_once();
+                        }
+                    },
+                })
+            })
         }
     }
 
@@ -1566,7 +1564,7 @@ mod tests {
 
     #[test]
     fn group_price_policy_rejects_unfunded_new_content_without_storage_effects() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -1589,6 +1587,38 @@ mod tests {
             store.put_message(&id, forged),
             Err(GroupError::Forbidden(_))
         ));
+    }
+
+    #[test]
+    fn values_over_the_store_limit_split_and_replacements_leave_no_stale_parts() {
+        let kv = temporary();
+        let store = GroupStore::new(
+            kv.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
+        let (root_sk, _) = keypair(3);
+        let mut initial = root_frame(3, 0, &"00".repeat(32));
+        initial.encrypted_epoch_descriptor = hex::encode(vec![7u8; 120 * 1024]);
+        let initial = signed_epoch(&root_sk, initial);
+        let id = initial.group_id.clone();
+        let committed = store.put_epoch(&id, initial).unwrap();
+        assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), committed);
+        assert_eq!(store.get_epoch(&id, 0).unwrap().unwrap(), committed);
+        let group_id = parse_group_id_hex(&id).unwrap();
+        let meta_parts = part_prefix(&meta_key(&group_id));
+        assert!(kv.scan_prefix_range(&meta_parts, None, 10).unwrap().len() > 1);
+
+        store
+            .put_epoch(&id, root_frame(3, 1, &committed.epoch_hash))
+            .unwrap();
+        assert!(kv
+            .scan_prefix_range(&meta_parts, None, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.get_epoch(&id, 0).unwrap().unwrap(), committed);
+        assert_eq!(store.get_current_epoch(&id).unwrap().unwrap().epoch, 1);
     }
 
     #[test]
@@ -1738,8 +1768,8 @@ mod tests {
     }
 
     #[test]
-    fn memory_rotation_prevents_stale_commit_and_allows_concurrent_authorized_appends() {
-        verify_rotation_serializes_with_in_flight_appends(Arc::new(MemoryKvStore::new()));
+    fn rotation_prevents_stale_commit_and_allows_concurrent_authorized_appends() {
+        verify_rotation_serializes_with_in_flight_appends(temporary());
     }
 
     #[test]
@@ -1762,7 +1792,7 @@ mod tests {
 
     #[test]
     fn append_writes_only_the_sequence_and_message_rows() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -1782,7 +1812,7 @@ mod tests {
 
     #[test]
     fn foreign_subscriber_without_a_tag_is_counted_by_a_hash_never_the_read_token() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let initial = root_frame(3, 0, &"00".repeat(32));
@@ -1838,7 +1868,7 @@ mod tests {
 
     #[test]
     fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let healthy = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -1929,7 +1959,7 @@ mod tests {
 
     #[test]
     fn mirrors_reject_authoritative_local_message_and_epoch_writes() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let initial = root_frame(3, 0, &"00".repeat(32));
@@ -1962,7 +1992,7 @@ mod tests {
 
     #[test]
     fn foreign_admission_requires_capability_and_preserves_authoritative_ownership() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let initial = root_frame(3, 0, &"00".repeat(32));
@@ -2034,7 +2064,7 @@ mod tests {
         ));
         assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), current);
-        let local = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let local = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         local.put_epoch(&id, initial.clone()).unwrap();
@@ -2052,7 +2082,7 @@ mod tests {
 
     #[test]
     fn epoch_authority_rejects_forgery_and_binds_all_mutable_fields() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let initial = root_frame(3, 0, &"00".repeat(32));
@@ -2124,7 +2154,7 @@ mod tests {
 
     #[test]
     fn mirror_rejects_poisoned_certificates_messages_and_epoch_rollback() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let epoch0 = root_frame(4, 0, &"00".repeat(32)).normalized().unwrap();
@@ -2143,7 +2173,7 @@ mod tests {
             .ingest_mirrored_upstream(&id, Some(epoch0), &[])
             .unwrap();
         assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), epoch1);
-        let source = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let source = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let source_epoch = root_frame(4, 0, &"00".repeat(32));
@@ -2176,7 +2206,7 @@ mod tests {
 
     #[test]
     fn epoch_cas_enforces_monotonicity_and_rejects_concurrent_collision_with_current_frame() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let (group_sk, group_pk) = keypair(1);
@@ -2241,7 +2271,7 @@ mod tests {
 
     #[test]
     fn group_messages_enforce_epoch_write_key_and_reject_kicked_or_outsider_keys() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let (group_sk, group_pk) = keypair(2);
@@ -2366,7 +2396,7 @@ mod tests {
     }
     #[test]
     fn baseline_is_read_only_namespace_scoped_and_initializes_concurrently() {
-        let empty = Arc::new(MemoryKvStore::new());
+        let empty = temporary();
         GroupStore::new(
             empty.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -2376,7 +2406,7 @@ mod tests {
         .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
         .unwrap();
         assert!(empty.scan_prefix_range(&[], None, 1).unwrap().is_empty());
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         kv.put(b"unrelated:registry", b"preserved").unwrap();
         let store = GroupStore::new(
             kv.clone(),
@@ -2432,7 +2462,7 @@ mod tests {
             kv.get(b"unrelated:registry").unwrap().unwrap(),
             b"preserved"
         );
-        let old = Arc::new(MemoryKvStore::new());
+        let old = temporary();
         old.put(
             &meta_key(&parse_group_id_hex(&initial.group_id).unwrap()),
             &initial.to_cbor_bytes().unwrap(),
@@ -2460,7 +2490,7 @@ mod tests {
 
     #[test]
     fn same_signed_content_race_appends_once_and_signature_encodings_share_receipt() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -2571,7 +2601,7 @@ mod tests {
 
     #[test]
     fn same_content_cas_loser_acknowledges_winner_even_when_epoch_rotates() {
-        let backend = Arc::new(MemoryKvStore::new());
+        let backend = temporary();
         let store = GroupStore::new(
             backend.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -2612,7 +2642,7 @@ mod tests {
     }
     #[test]
     fn corrupt_acceptance_locator_and_original_signature_fail_without_appending() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
             cashweb_config::GroupAppendPolicy {
@@ -2676,7 +2706,7 @@ mod tests {
     }
     #[test]
     fn stale_empty_acceptance_lookup_rechecks_receipt_before_rejecting_rotated_epoch() {
-        let backend = Arc::new(MemoryKvStore::new());
+        let backend = temporary();
         let store = GroupStore::new(
             backend.clone(),
             cashweb_config::GroupAppendPolicy {

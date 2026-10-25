@@ -1060,7 +1060,7 @@ async fn get_group_messages_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{groups::derive_group_id, kv_store::MemoryKvStore};
+    use crate::store::{groups::derive_group_id, kv_store::RocksDbKvStore};
     use axum::http::Request;
     use hyper::Body;
     use secp256k1_abc::{Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
@@ -1147,7 +1147,7 @@ mod tests {
                 .unwrap();
         });
         let (_, client) = upstream_transport(
-            &GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            &GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             }),
             &"00".repeat(32),
@@ -1205,7 +1205,7 @@ mod tests {
         }
         assert!(public_upstream_ip("8.8.8.8".parse().unwrap()));
         assert!(public_upstream_ip("2606:4700:4700::1111".parse().unwrap()));
-        let app = router_with_store(GroupStore::new_in_memory(
+        let app = router_with_store(GroupStore::new_temporary(
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1232,7 +1232,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_epochs_cas_and_sealed_sender_messages_enforce_w_g_e() {
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let app = router_with_store(store);
@@ -1388,7 +1388,7 @@ mod tests {
     #[tokio::test]
     async fn mirror_pages_maximum_size_messages_without_exhausting_body_budget_or_losing_cursor_progress(
     ) {
-        let upstream = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let (root_sk, root_pk) = keypair(7);
@@ -1436,7 +1436,7 @@ mod tests {
                 .unwrap();
         });
         let home = GroupStore::with_mirror_threshold(
-            Arc::new(MemoryKvStore::new()),
+            Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1491,7 +1491,7 @@ mod tests {
     #[tokio::test]
     async fn group_credit_admission_is_owned_by_host_not_home_policy() {
         for (host_price, home_price) in [(0, 7), (7, 0)] {
-            let host = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            let host = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: host_price,
             });
             let (root_sk, root_pk) = keypair(7);
@@ -1524,7 +1524,7 @@ mod tests {
             };
             message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
             let (origin, origin_task) = spawn_group_router(host.clone()).await;
-            let home = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            let home = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: home_price,
             });
             let (home_url, home_task) = spawn_group_router(home.clone()).await;
@@ -1573,7 +1573,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_latest_refresh_and_write_ack_preserve_contiguous_backlog() {
-        let upstream = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let (root_sk, root_pk) = keypair(7);
@@ -1613,7 +1613,7 @@ mod tests {
         upstream.put_message(&id, message(1)).unwrap();
         let (origin, origin_task) = spawn_group_router(upstream.clone()).await;
         let home = GroupStore::with_mirror_threshold(
-            Arc::new(MemoryKvStore::new()),
+            Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1712,13 +1712,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "Requires Node dependencies; runs the real TypeScript client against two Rust relay routers"]
     async fn typescript_foreign_client_against_real_rust_relays() {
-        let (origin, origin_task) = spawn_group_router(GroupStore::new_in_memory(
+        let (origin, origin_task) = spawn_group_router(GroupStore::new_temporary(
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
         ))
         .await;
-        let (home, home_task) = spawn_group_router(GroupStore::new_in_memory(
+        let (home, home_task) = spawn_group_router(GroupStore::new_temporary(
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1762,7 +1762,7 @@ mod tests {
     #[tokio::test]
     async fn home_relay_proxies_below_threshold_and_auto_promotes_to_local_mirror_at_threshold() {
         // Spawn an authoritative Upstream Foreign Relay (`Relay_G`)
-        let upstream_store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let upstream_store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let upstream_app = router_with_store(upstream_store.clone());
@@ -1851,7 +1851,7 @@ mod tests {
 
         // Create a Home Relay (`Relay_Home`) with `mirror_threshold = 2`
         let home_store = GroupStore::with_mirror_threshold(
-            Arc::new(MemoryKvStore::new()),
+            Arc::new(RocksDbKvStore::open_temporary().unwrap()),
             2,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -2031,7 +2031,7 @@ mod tests {
     async fn json_cbor_retries_return_original_receipt_without_second_wakeup() {
         use crate::events::{RelayEventBus, StandaloneEventBus};
         use frank_cbor::{cbor_map, encode_canonical, CborValue};
-        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
             per_message_price_credits: 0,
         });
         let (root, public) = keypair(7);

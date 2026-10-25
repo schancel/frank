@@ -50,7 +50,7 @@ async fn real_nats_group_replica_wakeup_and_durable_reconnect() {
     let publisher = Arc::new(CoreNatsEventBus::connect(&nats_url).await.unwrap());
     let subscriber = Arc::new(CoreNatsEventBus::connect(&nats_url).await.unwrap());
     // Synthetic shared KV authority models two replicas of the same relay, not two independent journals.
-    let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+    let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
         per_message_price_credits: 0,
     });
     let (producer, producer_task) = replica(store.clone(), publisher.clone()).await;

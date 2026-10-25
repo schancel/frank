@@ -237,6 +237,21 @@ Unassigned identifiers remain reserved and MUST NOT be emitted. The proof-only
 identifier MUST NOT appear in a production writer; it remains permanently
 reserved so the unknown-item vector never acquires a different meaning.
 
+**Development format break: renumbering by family.** The identifiers above replace an earlier
+numbering in which types were numbered in the order they were added. Frank is pre-user, so this
+is a deliberate format break with no migration and no dual reader. Frames, mailboxes, Forum rows
+and stamp records stored under the earlier numbers cannot be read after this change. The old and
+new numbers overlap with different meanings: old 10 and 11 (topic post and vote submissions) are
+now the direct-message delivery and the recipient-encrypted payload, and old 1 (direct-message
+delivery) is now the directory statement. Old-numbered bytes must never be interpreted under the
+new table. This reset is the one exception to E5's no-reuse rule; from this baseline on,
+identifiers are never reused.
+
+Development reset path: the relay and every client start from empty state. Run the relay on an
+empty store (the signet cutover moves it to FoundationDB, and the old disks are archived, not
+read), and start clients with empty message, mailbox, Forum and stamp state. This reset does not
+authorize deleting private keys, seeds or funded wallets.
+
 ## 3. Restricted deterministic-CBOR profile
 
 C1. Maps use the RFC 8949 section 4.2.1 bytewise lexicographic order of each
@@ -1946,32 +1961,12 @@ Rust, Python, and browser runners consume the same T2a bytes and the manifest
 also pins M7 precedence when an unsupported transition authorization appears
 beside a corrupt outer signature.
 
-### Offline Option A signed vector regeneration
+### Signed vector regeneration
 
-The signed registration and provisional directory corpora retain their synthetic
-case definitions from revision `ff76bc65`, stored as offline source in
-`packages/frank-codec/fixtures/option-a-signed-inputs.json`. The offline converter
-`packages/frank-codec/scripts/renumber-signed-vectors.cjs` derives only public
-fixture signing keys, renumbers frames, and recomputes transcripts and signatures.
-The Rust example `backend/cashweb/frank-cbor/examples/sign-fixture.rs` independently
-produces the Rust-originated signatures. This tooling never reads wallet custody.
-Run from the repository root:
-
-```sh
-node packages/frank-codec/scripts/renumber-signed-vectors.cjs
-node packages/frank-codec/scripts/renumber-signed-vectors.cjs --check
-yarn --cwd packages/frank-codec test --runInBand
-yarn --cwd packages/frank-codec crosscheck
-cargo test --manifest-path backend/cashweb/frank-cbor/Cargo.toml
-```
-
-Outputs are `docs/protocol/cbor/vectors/{account-registration,account-registration-values,directory-preview,directory-admission,dm-runtime}.json`
-and the corresponding reviewed proposal snapshot
-`docs/protocol/proposals/suite1-directory/vectors.json`. It also updates `backend/cashweb/frank-cbor/proposals/suite1-directory/rust-origin.json`
-and the multipart regression request constants in
-`backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs`.
-Historical field names
-`type4_hex` remain fixture labels; all contained statement frames now use type 1.
-Unknown historical registration signer keys are replaced deterministically with
-public synthetic keys so no unavailable signing material is needed. Pure address
-derivation vectors remain independent of those replacement signers.
+The signed registration and directory corpora, like every other corpus, are rewritten by
+`yarn vectors:generate` and checked by `yarn vectors:check`. The renumbering step re-signs
+directory and key-transition frames with the committed test keys, and the suite-1 Rust checker
+re-signs `rust-origin.json`; no wallet custody is read. See
+[`vectors/README.md`](vectors/README.md) for what runs and in what order. Historical field names
+such as `type4_hex` remain fixture labels; the statement frames they hold use type 1, the
+directory statement.

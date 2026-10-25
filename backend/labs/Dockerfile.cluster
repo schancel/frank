@@ -13,6 +13,8 @@ COPY backend/cashweb backend/cashweb
 COPY docs docs
 COPY fixtures fixtures
 COPY backend/labs/cluster_contract.rs backend/cashweb/cashweb-registry/tests/lab_cluster_contract.rs
+# Both lab tests sign their solonet payments with this module (`#[path]` from tests/).
+COPY backend/labs/solonet_payer.rs backend/labs/solonet_payer.rs
 COPY backend/labs/copy-test-artifact.py /copy-test-artifact.py
 WORKDIR /build/backend/cashweb
 # Cargo checks source mtimes; force workspace freshness when reusing a target cache

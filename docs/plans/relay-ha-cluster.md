@@ -104,6 +104,7 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      - the same transaction sent to A and B concurrently gives one append;
      - underpaid, wrong-payee, wrong-chain and wrong-commitment payments are rejected with no sequence consumed;
      - a proxied foreign write is verified only by the host.
+   - The cluster lab's relays run on solonet and every contract append pays (`backend/labs/solonet_payer.rs`). Its paid case covers the list above across A, B and C, with another relay's origin standing in for the replay, plus two payments at one payer nonce giving one append; the proxied foreign write runs in the ignored `typescript_foreign_client_against_real_rust_relays` test.
 6. **DM owner port.**
    - Per-mailbox delivery times, challenges with a conflicting capacity check, notification policy, VAPID from file, publish on every commit, and a fixed websocket fallback.
    - Delete the in-process broadcast.

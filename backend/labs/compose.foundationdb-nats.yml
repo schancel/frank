@@ -36,6 +36,10 @@ services:
     environment:
       FRANK_FDB_CLUSTER_FILE: /cluster/fdb.cluster
       FRANK_LAB_NATS_URL: nats://nats:4222
+      # The daemon test's group write pays on solonet: its JSON-RPC as this container reaches
+      # it, for example http://host.docker.internal:48080 (see README.md).
+      FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - fdb-cluster:/cluster:ro
     depends_on:

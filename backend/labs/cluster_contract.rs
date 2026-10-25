@@ -7,17 +7,16 @@
 //! one at a time (`--test-threads=1`). Every test uses a fresh group, so reruns against the
 //! same volumes do not interfere.
 //!
-//! Paid group writes (HA step 5, PR #1847) add their cases here once `[registry.group_writes]`
-//! lands: a paid append accepted and broadcast, a replay on another relay rejected, one
-//! payment sent to A and B giving one append, and wrong payee, chain, value or commitment
-//! rejected with no sequence consumed, all on solonet (`monad-regtest`). Until then the lab
-//! runs the free group policy (`per_message_price_credits = 0`) and nothing here pays.
+//! Every append pays the relay that takes it, with a real transaction on solonet
+//! (`monad-regtest`, see `solonet_payer.rs`): each test funds fresh payers from the faucet
+//! first, and a retried append resends the same envelope with the same payment bytes.
+//! `FRANK_LAB_SOLONET_RPC_URL` must name solonet's JSON-RPC as the containers reach it.
 use std::{
     collections::{BTreeMap, BTreeSet},
     process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -29,6 +28,10 @@ use futures::{SinkExt, StreamExt};
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::{connect_async, tungstenite};
+
+#[path = "../../../labs/solonet_payer.rs"]
+mod solonet_payer;
+use solonet_payer::{commitment_calldata, paid_body, write_policy, Payer, Solonet, WritePolicy};
 
 // ---------------------------------------------------------------------------------------------
 // Lab access
@@ -229,6 +232,71 @@ impl Group {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Payments
+// ---------------------------------------------------------------------------------------------
+
+/// One write as a client sends it, and resends unchanged: the envelope and its payment.
+#[derive(Clone)]
+struct Write {
+    envelope: GroupMessageEnvelope,
+    payment: serde_json::Value,
+    tx_hash: [u8; 32],
+}
+
+/// Funded payers for one test and the relays' write policy. All three replicas share one
+/// public origin (the proxy's), so one policy holds for every one of them.
+struct Payments {
+    solonet: Solonet,
+    policy: WritePolicy,
+    payers: Mutex<Vec<Payer>>,
+}
+
+impl Payments {
+    /// `count` payers funded on solonet, and the policy read from relay A.
+    async fn fund(count: usize) -> Arc<Self> {
+        let solonet = Solonet::from_env().await;
+        let origin = relays()[0].clone();
+        wait_ready(&origin).await;
+        let policy = write_policy(&http(), &origin, &"00".repeat(32)).await;
+        assert_eq!(policy.network, solonet_payer::SOLONET_NETWORK);
+        // lab-init renders the proxy's published origin into every replica's `url`.
+        assert!(
+            policy.host_origin.starts_with("http://127.0.0.1:"),
+            "{policy:?}"
+        );
+        let payers = Mutex::new(solonet.fund(count).await);
+        Arc::new(Payments {
+            solonet,
+            policy,
+            payers,
+        })
+    }
+
+    fn payer(&self) -> Payer {
+        self.payers
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("the test used more payers than it funded")
+    }
+
+    /// `envelope`, paid as the policy asks by a payer used for nothing else.
+    fn pay(&self, envelope: GroupMessageEnvelope) -> Write {
+        self.pay_by(&self.payer(), envelope)
+    }
+
+    /// `envelope`, paid as the policy asks by `payer` at its nonce 0.
+    fn pay_by(&self, payer: &Payer, envelope: GroupMessageEnvelope) -> Write {
+        let (payment, tx_hash) = self.solonet.payment(payer, &self.policy, &envelope);
+        Write {
+            envelope,
+            payment,
+            tx_hash,
+        }
+    }
+}
+
 async fn put_epoch(client: &reqwest::Client, origin: &str, frame: &GroupEpochFrame) -> u16 {
     let response = client
         .put(format!("{origin}/groups/{}/epochs", frame.group_id))
@@ -250,17 +318,22 @@ struct Appended {
     status: u16,
     disposition: Option<String>,
     message: Option<StoredGroupMessage>,
+    /// The JSON error body of a refusal.
+    error: Option<serde_json::Value>,
 }
 
 async fn append(
     client: &reqwest::Client,
     origin: &str,
-    envelope: &GroupMessageEnvelope,
+    write: &Write,
 ) -> Result<Appended, reqwest::Error> {
     let response = client
-        .put(format!("{origin}/groups/{}/messages", envelope.group_id))
+        .put(format!(
+            "{origin}/groups/{}/messages",
+            write.envelope.group_id
+        ))
         .header("content-type", "application/json")
-        .body(serde_json::to_vec(envelope).unwrap())
+        .body(paid_body(&write.envelope, &write.payment))
         .send()
         .await?;
     let status = response.status().as_u16();
@@ -271,10 +344,13 @@ async fn append(
         .map(str::to_owned);
     let bytes = response.bytes().await?;
     let message = (status == 200).then(|| serde_json::from_slice(&bytes).unwrap());
+    let error =
+        (status != 200).then(|| serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null));
     Ok(Appended {
         status,
         disposition,
         message,
+        error,
     })
 }
 
@@ -367,13 +443,13 @@ async fn wakes_for_append_elsewhere(
     client: &reqwest::Client,
     writer: &str,
     group: &Group,
+    payments: &Payments,
 ) -> bool {
     if next_wakeup(socket, Duration::from_secs(8)).await.is_none() {
         return false;
     }
-    let appended = append(client, writer, &group.envelope(group.current(), "wake"))
-        .await
-        .unwrap();
+    let write = payments.pay(group.envelope(group.current(), "wake"));
+    let appended = append(client, writer, &write).await.unwrap();
     assert_eq!(appended.status, 200);
     let sent = Instant::now();
     match next_wakeup(socket, Duration::from_secs(4)).await {
@@ -415,12 +491,13 @@ impl LoadOutcome {
 /// The whole load, fault included, must finish within this.
 const LOAD_DEADLINE: Duration = Duration::from_secs(300);
 
-/// Three writers, one per relay, each appending `per_writer` distinct envelopes. A failed or
-/// unanswered append is retried, with the same envelope, on the next relay until one
+/// Three writers, one per relay, each appending `per_writer` distinct paid envelopes. A failed
+/// or unanswered append is retried, with the same envelope and payment, on the next relay until one
 /// acknowledges it, as a client would. After `fault_after` acknowledgements `fault` runs once.
 /// Fails, rather than hangs, if the load does not finish within [`LOAD_DEADLINE`].
 async fn load_with_fault<F, Fut>(
     group: &Arc<Group>,
+    payments: &Arc<Payments>,
     per_writer: usize,
     fault_after: usize,
     fault: F,
@@ -435,8 +512,9 @@ where
     let retries = Arc::new(AtomicUsize::new(0));
     let mut writers = Vec::new();
     for writer in 0..3 {
-        let (group, relays, acked, retries) = (
+        let (group, payments, relays, acked, retries) = (
             Arc::clone(group),
+            Arc::clone(payments),
             Arc::clone(&relays),
             Arc::clone(&acked),
             Arc::clone(&retries),
@@ -448,12 +526,14 @@ where
             let mut attempts = Vec::new();
             let deadline = started + LOAD_DEADLINE;
             for index in 0..per_writer {
-                let envelope = group.envelope(group.current(), &format!("load {writer}/{index}"));
+                let write = payments
+                    .pay(group.envelope(group.current(), &format!("load {writer}/{index}")));
+                let envelope = &write.envelope;
                 let mut target = writer;
                 loop {
                     assert!(Instant::now() < deadline, "writer {writer} never finished");
                     let attempt = Instant::now();
-                    let answer = append(&client, &relays[target % 3], &envelope).await;
+                    let answer = append(&client, &relays[target % 3], &write).await;
                     let ok = matches!(&answer, Ok(answer) if answer.status == 200);
                     attempts.push((attempt, attempt.elapsed(), !ok));
                     match answer {
@@ -566,11 +646,13 @@ async fn create_on_a_append_on_b_read_on_c() {
         wait_ready(origin).await;
     }
     let client = http();
+    let payments = Payments::fund(1).await;
     let group = Group::new();
     create(&client, &a, &group).await;
-    let envelope = group.envelope(group.current(), "hello cluster");
-    let appended = append(&client, &b, &envelope).await.unwrap();
-    assert_eq!(appended.status, 200);
+    let write = payments.pay(group.envelope(group.current(), "hello cluster"));
+    let envelope = &write.envelope;
+    let appended = append(&client, &b, &write).await.unwrap();
+    assert_eq!(appended.status, 200, "{:?}", appended.error);
     assert_eq!(appended.disposition.as_deref(), Some("appended"));
     let messages = read_from(&client, &c, &group.id, &group.current().token, 0).await;
     assert_eq!(messages.len(), 1);
@@ -592,15 +674,17 @@ async fn a_1_mib_message_appended_on_a_reads_back_byte_exact_on_b_and_c() {
         wait_ready(origin).await;
     }
     let client = http();
+    let payments = Payments::fund(1).await;
     let group = Group::new();
     create(&client, &a, &group).await;
     // Over the 64 KiB inline limit, so the ciphertext lives in MinIO, not in FoundationDB.
     let body: String = (0..1024 * 1024)
         .map(|i| char::from(b'a' + (i % 26) as u8))
         .collect();
-    let envelope = group.envelope(group.current(), &body);
-    let appended = append(&client, &a, &envelope).await.unwrap();
-    assert_eq!(appended.status, 200);
+    let write = payments.pay(group.envelope(group.current(), &body));
+    let envelope = &write.envelope;
+    let appended = append(&client, &a, &write).await.unwrap();
+    assert_eq!(appended.status, 200, "{:?}", appended.error);
     assert_eq!(appended.disposition.as_deref(), Some("appended"));
     for origin in [&b, &c] {
         let messages = read_from(&client, origin, &group.id, &group.current().token, 0).await;
@@ -611,25 +695,34 @@ async fn a_1_mib_message_appended_on_a_reads_back_byte_exact_on_b_and_c() {
         );
     }
     // An exact retry on B is answered from the row.
-    let retry = append(&client, &b, &envelope).await.unwrap();
+    let retry = append(&client, &b, &write).await.unwrap();
     assert_eq!(retry.disposition.as_deref(), Some("existing"));
-    println!("PASS 1 MiB message appended on A, read byte-exact on B and C");
+    println!("PASS 1 MiB paid message appended on A, read byte-exact on B and C");
 }
+
+/// Appends in flight at once in the concurrent case: 20 per relay.
+const IN_FLIGHT: usize = 60;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_appends_on_three_relays_get_gap_free_unique_sequence_numbers() {
     let relays = relays();
     let client = http();
+    let payments = Payments::fund(600).await;
     let group = Arc::new(Group::new());
     create(&client, &relays[0], &group).await;
+    // Every append makes its relay ask solonet about the payment, and the lab reaches solonet
+    // through the Colima port forward, which a burst of 600 connections broke. So at most
+    // IN_FLIGHT appends run at once, spread over the three relays.
+    let in_flight = Arc::new(tokio::sync::Semaphore::new(IN_FLIGHT));
     let mut tasks = Vec::new();
-    for (writer, origin) in relays.iter().enumerate() {
-        for index in 0..200 {
-            let (group, origin, client) = (Arc::clone(&group), origin.clone(), client.clone());
+    for index in 0..200 {
+        for (writer, origin) in relays.iter().enumerate() {
+            let write = payments.pay(group.envelope(group.current(), &format!("{writer}/{index}")));
+            let (origin, client, in_flight) = (origin.clone(), client.clone(), in_flight.clone());
             tasks.push(tokio::spawn(async move {
-                let envelope = group.envelope(group.current(), &format!("{writer}/{index}"));
-                let answer = append(&client, &origin, &envelope).await.unwrap();
-                (envelope.nonce, answer)
+                let _slot = in_flight.acquire_owned().await.unwrap();
+                let answer = append(&client, &origin, &write).await.unwrap();
+                (write.envelope.nonce, answer)
             }));
         }
     }
@@ -641,6 +734,7 @@ async fn concurrent_appends_on_three_relays_get_gap_free_unique_sequence_numbers
             assert_eq!(answer.disposition.as_deref(), Some("appended"));
             acknowledged.insert(nonce, answer.message.unwrap().server_seq);
         } else {
+            println!("refused: {} {:?}", answer.status, answer.error);
             *failures.entry(answer.status).or_default() += 1;
         }
     }
@@ -652,21 +746,22 @@ async fn concurrent_appends_on_three_relays_get_gap_free_unique_sequence_numbers
     assert_eq!(sequences.len(), 600, "sequence numbers are not unique");
     assert_eq!(sequences, (1..=600).collect::<BTreeSet<u64>>());
     assert_every_acknowledged_append_readable(&group, &acknowledged).await;
-    println!("PASS 3 x 200 concurrent appends: sequence numbers 1..=600, unique, gap-free");
+    println!(
+        "PASS 3 x 200 paid appends, {IN_FLIGHT} in flight: sequence numbers 1..=600, unique, \
+         gap-free"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_signed_message_sent_to_a_and_b_gives_one_receipt() {
     let [a, b, c]: [String; 3] = relays().try_into().unwrap();
     let client = http();
+    let payments = Payments::fund(20).await;
     let group = Group::new();
     create(&client, &a, &group).await;
     for round in 0..20 {
-        let envelope = group.envelope(group.current(), &format!("twice {round}"));
-        let (to_a, to_b) = tokio::join!(
-            append(&client, &a, &envelope),
-            append(&client, &b, &envelope)
-        );
+        let write = payments.pay(group.envelope(group.current(), &format!("twice {round}")));
+        let (to_a, to_b) = tokio::join!(append(&client, &a, &write), append(&client, &b, &write));
         let (to_a, to_b) = (to_a.unwrap(), to_b.unwrap());
         assert_eq!((to_a.status, to_b.status), (200, 200));
         let mut dispositions = [to_a.disposition.unwrap(), to_b.disposition.unwrap()];
@@ -677,17 +772,152 @@ async fn one_signed_message_sent_to_a_and_b_gives_one_receipt() {
     let messages = read_from(&client, &c, &group.id, &group.current().token, 0).await;
     assert_eq!(messages.len(), 20);
     assert_gap_free(&messages, &c);
-    println!("PASS one signed message sent to A and B gives one receipt (20 rounds)");
+    println!("PASS one paid message sent to A and B gives one receipt (20 rounds)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    let client = http();
+    let payments = Payments::fund(3).await;
+    let policy = payments.policy.clone();
+    let group = Group::new();
+    create(&client, &a, &group).await;
+
+    // A paid append on B is accepted, and B hands the payment to solonet after the commit.
+    let first = payments.pay(group.envelope(group.current(), "paid"));
+    let accepted = append(&client, &b, &first).await.unwrap();
+    assert_eq!(accepted.status, 200, "{:?}", accepted.error);
+    assert_eq!(accepted.disposition.as_deref(), Some("appended"));
+    payments.solonet.wait_landed(&first.tx_hash).await;
+    // Its payment does not fund another write on C (it commits to the first one).
+    let replay = Write {
+        envelope: group.envelope(group.current(), "replayed payment"),
+        ..first.clone()
+    };
+    let refused = append(&client, &c, &replay).await.unwrap();
+    assert_eq!(refused.status, 402);
+    assert_eq!(
+        refused.error.as_ref().unwrap()["reason"],
+        "wrong_commitment"
+    );
+
+    // One payer's wrong payments, each refused by the replica that takes it. Refusals consume
+    // nothing: the same payer's correct payment is accepted afterwards.
+    let payer = payments.payer();
+    let envelope = group.envelope(group.current(), "checked");
+    let calldata = commitment_calldata(&policy.network, &policy.host_origin, &envelope);
+    let elsewhere = commitment_calldata(&policy.network, "https://other.example", &envelope);
+    let chain = solonet_payer::SOLONET_CHAIN_ID;
+    let price = policy.price_wei;
+    let cases = [
+        (
+            "wrong_payee",
+            policy.network.as_str(),
+            chain,
+            [0xaa; 20],
+            price,
+            &calldata,
+        ),
+        (
+            "wrong_chain",
+            policy.network.as_str(),
+            10143,
+            policy.payee,
+            price,
+            &calldata,
+        ),
+        (
+            "wrong_network",
+            "monad-testnet",
+            chain,
+            policy.payee,
+            price,
+            &calldata,
+        ),
+        (
+            "underpaid",
+            policy.network.as_str(),
+            chain,
+            policy.payee,
+            price - 1,
+            &calldata,
+        ),
+        (
+            "wrong_commitment",
+            policy.network.as_str(),
+            chain,
+            policy.payee,
+            price,
+            &elsewhere,
+        ),
+    ];
+    for (index, (reason, network, chain_id, to, value, data)) in cases.into_iter().enumerate() {
+        let (payment, tx_hash) = payments
+            .solonet
+            .payment_tx(&payer, network, chain_id, to, value, data);
+        let write = Write {
+            envelope: envelope.clone(),
+            payment,
+            tx_hash,
+        };
+        let origin = [&a, &b, &c][index % 3];
+        let refused = append(&client, origin, &write).await.unwrap();
+        assert_eq!(
+            refused.status, 402,
+            "{reason} on {origin}: {:?}",
+            refused.error
+        );
+        let error = refused.error.unwrap();
+        assert_eq!(error["error"], "group_payment_invalid", "{error}");
+        assert_eq!(error["reason"], reason, "{error}");
+    }
+    let checked = payments.pay_by(&payer, envelope);
+    let accepted = append(&client, &a, &checked).await.unwrap();
+    assert_eq!(accepted.status, 200, "{:?}", accepted.error);
+    assert_eq!(
+        accepted.message.unwrap().server_seq,
+        2,
+        "a refusal consumed a sequence"
+    );
+
+    // Two payments at one payer nonce for two writes, sent to A and C at once: one funds a
+    // write, the other is refused, whichever replica each reaches.
+    let payer = payments.payer();
+    let one = payments.pay_by(&payer, group.envelope(group.current(), "nonce 0, one"));
+    let two = payments.pay_by(&payer, group.envelope(group.current(), "nonce 0, two"));
+    let (to_a, to_c) = tokio::join!(append(&client, &a, &one), append(&client, &c, &two));
+    let mut statuses = [to_a.unwrap(), to_c.unwrap()];
+    statuses.sort_by_key(|answer| answer.status);
+    assert_eq!(
+        [statuses[0].status, statuses[1].status],
+        [200, 402],
+        "{:?} {:?}",
+        statuses[0].error,
+        statuses[1].error
+    );
+    assert_eq!(statuses[0].message.as_ref().unwrap().server_seq, 3);
+    assert_eq!(statuses[1].error.as_ref().unwrap()["reason"], "nonce_used");
+
+    let messages = read_from(&client, &b, &group.id, &group.current().token, 0).await;
+    assert_gap_free(&messages, &b);
+    assert_eq!(messages.len(), 3);
+    println!(
+        "PASS a paid append landed on solonet; replayed, wrong-payee, wrong-chain, \
+         wrong-network, underpaid and other-relay payments were refused on every replica \
+         without consuming a sequence; two payments at one nonce gave one append"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_epoch_on_b_is_rejected_after_rotation_on_a() {
     let [a, b, c]: [String; 3] = relays().try_into().unwrap();
     let client = http();
+    let payments = Payments::fund(3).await;
     let mut group = Group::new();
     create(&client, &a, &group).await;
     let old = group.current().clone();
-    let before = group.envelope(&old, "before rotation");
+    let before = payments.pay(group.envelope(&old, "before rotation"));
     assert_eq!(append(&client, &b, &before).await.unwrap().status, 200);
 
     let rotated = group.next_epoch().frame.clone();
@@ -695,7 +925,7 @@ async fn a_stale_epoch_on_b_is_rejected_after_rotation_on_a() {
     // The old epoch's frame cannot be installed again anywhere.
     assert_eq!(put_epoch(&client, &c, &old.frame).await, 409);
 
-    let stale = group.envelope(&old, "after rotation, old key");
+    let stale = payments.pay(group.envelope(&old, "after rotation, old key"));
     let refused = append(&client, &b, &stale).await.unwrap();
     assert_eq!(refused.status, 403, "a stale-epoch append must be refused");
     // The exact retry of a message accepted before the rotation keeps its receipt.
@@ -712,7 +942,7 @@ async fn a_stale_epoch_on_b_is_rejected_after_rotation_on_a() {
     assert_eq!(old_read.status(), 403);
     let messages = read_from(&client, &b, &group.id, &group.current().token, 0).await;
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].nonce, before.nonce);
+    assert_eq!(messages[0].nonce, before.envelope.nonce);
     let current: GroupEpochFrame = serde_json::from_slice(
         &client
             .get(format!("{c}/groups/{}/epochs", group.id))
@@ -725,7 +955,7 @@ async fn a_stale_epoch_on_b_is_rejected_after_rotation_on_a() {
     )
     .unwrap();
     assert_eq!(current.epoch, 1);
-    let fresh = group.envelope(group.current(), "new epoch");
+    let fresh = payments.pay(group.envelope(group.current(), "new epoch"));
     assert_eq!(append(&client, &b, &fresh).await.unwrap().status, 200);
     println!("PASS a stale epoch on B is rejected after rotation on A");
 }
@@ -734,11 +964,12 @@ async fn a_stale_epoch_on_b_is_rejected_after_rotation_on_a() {
 async fn a_subscriber_on_a_wakes_for_appends_on_b() {
     let [a, b, _]: [String; 3] = relays().try_into().unwrap();
     let client = http();
+    let payments = Payments::fund(1).await;
     let group = Group::new();
     create(&client, &a, &group).await;
     let mut socket = subscribe(&a, &group).await;
     assert!(
-        wakes_for_append_elsewhere(&mut socket, &client, &b, &group).await,
+        wakes_for_append_elsewhere(&mut socket, &client, &b, &group, &payments).await,
         "no wakeup on A within 3 s of a commit on B, before A's own 5 s tick"
     );
     println!("PASS a subscriber on A wakes for an append on B over NATS");
@@ -748,6 +979,8 @@ async fn a_subscriber_on_a_wakes_for_appends_on_b() {
 async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     let [a, b, c]: [String; 3] = relays().try_into().unwrap();
     let client = http();
+    // 20 appends while NATS is down, and the wake checks after it is back (one append each).
+    let payments = Payments::fund(40).await;
     let group = Group::new();
     create(&client, &a, &group).await;
     let mut socket = subscribe(&a, &group).await;
@@ -765,10 +998,11 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     {}
     let mut nonces = Vec::new();
     for index in 0..20 {
-        let envelope = group.envelope(group.current(), &format!("while NATS is down {index}"));
-        let answer = append(&client, &b, &envelope).await.unwrap();
+        let write =
+            payments.pay(group.envelope(group.current(), &format!("while NATS is down {index}")));
+        let answer = append(&client, &b, &write).await.unwrap();
         assert_eq!(answer.status, 200, "appends do not depend on the bus");
-        nonces.push(envelope.nonce);
+        nonces.push(write.envelope.nonce);
     }
 
     // While NATS is still down, the existing subscriber on A is still woken (by A's own
@@ -796,7 +1030,7 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     // that was open throughout and on a new one.
     container_action("nats", "start");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !wakes_for_append_elsewhere(&mut socket, &client, &b, &group).await {
+    while !wakes_for_append_elsewhere(&mut socket, &client, &b, &group, &payments).await {
         assert!(
             Instant::now() < deadline,
             "wakeups never crossed replicas again on the socket open throughout"
@@ -804,7 +1038,7 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     }
     let mut fresh = subscribe(&a, &group).await;
     assert!(
-        wakes_for_append_elsewhere(&mut fresh, &client, &b, &group).await,
+        wakes_for_append_elsewhere(&mut fresh, &client, &b, &group, &payments).await,
         "a new subscriber on A was not woken by B after NATS came back"
     );
     println!("PASS with NATS killed, 20 appends were acknowledged and every reader caught up");
@@ -813,10 +1047,11 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
     let client = http();
+    let payments = Payments::fund(450).await;
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
     let restarted_before = started_at("fdb");
-    let outcome = load_with_fault(&group, 150, 60, || async {
+    let outcome = load_with_fault(&group, &payments, 150, 60, || async {
         container_action("fdb", "restart?t=0");
     })
     .await;
@@ -839,10 +1074,11 @@ async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
     let client = http();
+    let payments = Payments::fund(450).await;
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
     let restarted_before = started_at("relay-b");
-    let outcome = load_with_fault(&group, 150, 60, || async {
+    let outcome = load_with_fault(&group, &payments, 150, 60, || async {
         container_action("relay-b", "kill");
         tokio::time::sleep(Duration::from_secs(3)).await;
         container_action("relay-b", "start");

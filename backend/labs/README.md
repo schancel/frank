@@ -82,7 +82,9 @@ docker compose -f backend/labs/compose.foundationdb-nats.yml exec fdb \
   fdbcli -C /cluster/fdb.cluster --timeout 10 --exec 'status minimal'
 curl --fail http://127.0.0.1:28222/healthz
 
-docker compose -f backend/labs/compose.foundationdb-nats.yml --profile test \
+# The daemon test's group write pays on solonet; start it first (see "Paid group writes").
+FRANK_LAB_SOLONET_RPC_URL=http://host.docker.internal:48080 \
+  docker compose -f backend/labs/compose.foundationdb-nats.yml --profile test \
   run --build --rm driver-contract
 ```
 
@@ -127,15 +129,17 @@ durability or CAS.
 The third test (`cashwebd-exe/tests/foundationdb_daemon.rs`) starts the real
 `cashwebd-exe`, built with `--features foundationdb`, in cluster mode with the preview
 flag and freshly provisioned session-secret and VAPID files: replica A creates a group,
-replica B reads it and appends, A is killed, and replica C on an empty local disk reads
-the message. A profile registered and then replaced on A is the only record B lists and
-finds, and C reads it after A is gone. It checks that the startup log reports the
-registry store readable, does not list the registry database or groups as replica-local,
-and that no session secret is generated beside the database. It uses a fresh cluster
-name and subspace per run and does not clear them.
+replica B reads it and appends with a payment on solonet, which B hands to solonet after
+the commit, A is killed, and replica C on an empty local disk reads the message. A profile
+registered and then replaced on A is the only record B lists and finds, and C reads it
+after A is gone. It checks that the startup log reports the registry store readable, does
+not list the registry database or groups as replica-local, and that no session secret is
+generated beside the database. It uses a fresh cluster name and subspace per run and does
+not clear them.
 
 ```sh
 FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster FRANK_LAB_NATS_URL=nats://nats:4222 \
+  FRANK_LAB_SOLONET_RPC_URL=http://host.docker.internal:48080 \
   cargo test -p cashwebd-exe --features foundationdb --test foundationdb_daemon -- --ignored
 ```
 
@@ -182,10 +186,9 @@ service).
 
 **What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
 app can use. Message routes are off, the directory is off and still replica-local, and
-there is no chain upstream unless you supply one. Profiles, usernames, metadata and topics
-are in the shared registry database (HA step 7). Direct messages and the directory move to
-the shared store in HA steps 6 and 8; until they land, an app cannot message through the
-proxy.
+group writes need solonet (below). Profiles, usernames, metadata and topics are in the
+shared registry database (HA step 7). Direct messages and the directory move to the shared
+store in HA steps 6 and 8; until they land, an app cannot message through the proxy.
 
 Overrides, all optional:
 
@@ -197,10 +200,10 @@ Overrides, all optional:
   `down` before changing it on an existing project: Compose does not move a running
   network, and FoundationDB's cluster file keeps the old coordinator address, so with
   kept volumes also run `down --volumes`.
-- `MONAD_TESTNET_HTTP_RPC_URL`: a Monad testnet RPC upstream, passed through from your
-  shell to the relays and never written to a file. Unset, the relays serve no chain.
-  Set, each relay checks the upstream's chain id and checkpoint before serving it, which
-  is what turning the mailbox on will need once step 6 lands. Never commit a URL or key.
+- `FRANK_LAB_SOLONET_RPC_URL`: solonet's JSON-RPC as the containers reach it. Every group
+  write pays its relay on solonet, so the contract needs it; see "Paid group writes"
+  below. Unset, the relays start but serve no chain and answer every group write 503
+  `group_payment_check_unavailable`.
 
 Services:
 
@@ -210,11 +213,12 @@ Services:
   marker present, or once `status` reports the database available, it only waits and
   never configures again. FoundationDB has a fixed address (`.10` on the lab subnet)
   because its cluster file names the coordinator by address and the contract restarts it.
-- `lab-init` writes the operator-provisioned files once into the `secrets` volume, mode
+- `lab-init` reads block 1 from solonet, the relays' chain checkpoint (each solonet run
+  has its own), and writes the operator-provisioned files once into the `secrets` volume, mode
   0400 and never on the host: a random 32-byte session secret, a random VAPID key below
   the P-256 order, and MinIO's root user and random password. On every start it renders
   `cluster/relay.toml.in` into the `config` volume with the proxy origin as the relays'
-  `url`. All three relays mount the same files. The relay refuses a provisioned file its
+  `url` and that block as their checkpoint. All three relays mount the same files. The relay refuses a provisioned file its
   group or other users can access, so this mode matters; see "Provisioned file
   permissions" below for real deployments.
 - `minio` reads its root credentials from those files, and `minio-init` creates the
@@ -224,13 +228,14 @@ Services:
   and the relays keep group ciphertexts over 64 KiB in that bucket under the prefix `lab`
   (`[registry.large_values]`, HA step 4).
 - The relays share one configuration: driver `foundationdb`, subspace
-  `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
-  policy, large values in the MinIO bucket above, the open directory with a synthetic
-  relay tuple, no mailbox or forum, and the optional chain row above. Each keeps its own
-  RocksDB volume. Groups, the registry database and the directory are shared through
-  FoundationDB, and large values through MinIO. The other owners, and the directory's
-  per-source hourly enrollment quota, are still replica-local, so the preview flag is set,
-  and each relay's startup log names them:
+  `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), network
+  `monad-regtest` with solonet as its upstream, group writes paid to the burn address at
+  10^12 wei each, large values in the MinIO bucket above, the open directory with a
+  synthetic relay tuple, and no mailbox or forum. Each keeps its own RocksDB volume.
+  Groups, the registry database and the directory are shared through FoundationDB, and
+  large values through MinIO. The other owners, and the directory's per-source hourly
+  enrollment quota, are still replica-local, so the preview flag is set, and each relay's
+  startup log names them:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'
@@ -239,8 +244,9 @@ docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-
 Commands, from the repository root of a clean checkout:
 
 ```sh
-# Choose a free port for the proxy.
+# solonet first (yarn --cwd packages/bot regtest:monad-start). Choose a free port for the proxy.
 export COMPOSE_PROJECT_NAME=frank-lab-cluster FRANK_LAB_CLUSTER_PORT=<free port>
+export FRANK_LAB_SOLONET_RPC_URL=http://host.docker.internal:48080
 docker compose -f backend/labs/compose.cluster.yml up -d --build
 curl --fail "http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT}/chains"
 
@@ -271,10 +277,19 @@ The `cluster-contract` profile (`cluster_contract.rs`) is an HTTP test binary th
 to all three relays and to the proxy:
 
 - create a group on A, append on B, read on C, and read the same rows through the proxy;
-- a 1 MiB message appended on A (stored in MinIO) reads back byte-exact on B and C, and an
+- a 1 MiB paid message appended on A (stored in MinIO) reads back byte-exact on B and C, and an
   exact retry on B is answered from the row;
-- 3 × 200 concurrent appends, 200 per relay, all acknowledged, with sequence numbers
-  1..=600, unique and gap-free on every relay;
+- a paid append on B is accepted and its payment lands on solonet; that payment sent with
+  another envelope to C is refused (`wrong_commitment`); one payer's payments to the wrong
+  payee, on the wrong chain, for the wrong network, short of the price, or committing to
+  another relay's origin are each refused (402 with that reason) by A, B or C, and then
+  the same payer's correct payment is accepted at sequence 2, so a refusal consumed
+  nothing; two payments from one payer at one nonce, for two writes sent to A and C at
+  once, give one append and one 402 `nonce_used`;
+- 3 × 200 concurrent paid appends, 200 per relay and 60 in flight at a time, all
+  acknowledged, with sequence numbers 1..=600, unique and gap-free on every relay (each
+  append makes its relay ask solonet about the payment, and a burst of 600 connections
+  through the Colima port forward to solonet broke that forward);
 - the same signed message sent to A and B at once gives one receipt (one `appended`, one
   `existing`, the same row), over 20 rounds;
 - after a rotation on A, an old-epoch append on B is refused (403), the old read token is
@@ -297,7 +312,7 @@ to all three relays and to the proxy:
   acknowledged head on every relay;
 - FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
   three writers append 150 messages each and retry a failed append, with the same
-  envelope, on the next relay. The test checks that the container really restarted
+  envelope and payment, on the next relay. The test checks that the container really restarted
   (`State.StartedAt` changed) and that the writers felt it: an attempt overlapping the
   fault window failed or took at least 1 s. Relay-b's kill must cause a failed attempt.
   The pre-fault baseline, measured after each writer's first 10 attempts, is only
@@ -308,9 +323,25 @@ to all three relays and to the proxy:
 The fault cases stop and start this project's own containers through the Docker socket,
 which the profile mounts; the test finds them by its own container's Compose project
 label. The tests therefore run one at a time. Each uses a fresh group, so reruns against
-the same volumes are fine. Paid group writes are not covered yet: HA step 5 (PR #1847)
-adds them, on solonet, once `[registry.group_writes]` lands, and the hook is marked at the
-top of `cluster_contract.rs` and in `cluster/relay.toml.in`.
+the same volumes are fine.
+
+### Paid group writes
+
+Every new group write carries a signed transaction on the relay's network that pays the
+hosting relay, and the relay checks it against its node before it accepts the write. The
+labs therefore run their relays on solonet (`monad-regtest`), the local Monad network of
+`packages/bot/demo/regtest/monad-regtest.ts`, and pay with real transactions: nothing is
+faked. `solonet_payer.rs`, shared by `cluster_contract.rs` and `foundationdb_daemon.rs`,
+funds fresh accounts from the solonet faucet (one faucet payment into a fresh funding
+account per test, which then funds the payers) and signs each write's EIP-1559 payment to
+the payee the relay's `write-policy` names, with the write's commitment as calldata. Each
+payer pays once, at nonce 0; a retry resends the same bytes.
+
+Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run takes 5 to 8
+minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`
+on Docker Desktop (the Compose files map that name to the host gateway on Linux). Stop it
+with `yarn --cwd packages/bot regtest:monad-stop`. A fresh solonet has a new block 1, so
+restart the cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet.
 
 ## Large-value store: FoundationDB + MinIO acceptance
 

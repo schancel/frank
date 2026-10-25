@@ -1,8 +1,10 @@
 # Disposable three-relay cluster lab: FoundationDB, Core NATS, MinIO, relay-a/b/c and a
 # round-robin proxy. Every published port binds to 127.0.0.1. See README.md for the commands.
 # Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18080), FRANK_LAB_CLUSTER_SUBNET
-# (first three octets of the lab's /24, default 10.89.42), MONAD_TESTNET_HTTP_RPC_URL
-# (optional chain upstream, passed through and never written to disk).
+# (first three octets of the lab's /24, default 10.89.42), FRANK_LAB_SOLONET_RPC_URL (solonet's
+# JSON-RPC as containers reach it, for example http://host.docker.internal:48080 while
+# `yarn --cwd packages/bot regtest:monad-start` runs it). Every group write pays on solonet, so
+# without it the relays start but refuse every group write with 503.
 name: frank-lab-cluster
 
 x-relay: &relay
@@ -11,9 +13,11 @@ x-relay: &relay
     dockerfile: backend/labs/Dockerfile.cluster
     target: relay
   networks: [cluster]
+  # Linux engines need the host name mapped; Docker Desktop provides it.
+  extra_hosts: ["host.docker.internal:host-gateway"]
   environment:
     # Empty unless the host sets it: the relay then omits the chain row.
-    MONAD_TESTNET_HTTP_RPC_URL: ${MONAD_TESTNET_HTTP_RPC_URL:-}
+    MONAD_REGTEST_HTTP_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
   depends_on:
     fdb-init:
       condition: service_completed_successfully
@@ -148,11 +152,14 @@ services:
   # One-shot: the lab's operator-provisioned files, written once into a shared volume and never
   # on the host (session secret, VAPID key and MinIO root credentials, all mode 0400), and the
   # relay configuration rendered from cluster/relay.toml.in with the proxy's origin on every
-  # start. Real deployments provision these files themselves.
+  # start, with solonet's block 1 as the chain checkpoint (a fresh solonet has a new one). Real
+  # deployments provision these files themselves.
   lab-init:
     image: nats:2.10-alpine
+    extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
       PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
+      SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -165,7 +172,19 @@ services:
         [ -s /secrets/minio-root-password ] || od -An -tx1 -N24 /dev/urandom | tr -d ' \n' > /secrets/minio-root-password
         [ -s /secrets/s3-credentials ] || printf 'access_key_id = "%s"\nsecret_access_key = "%s"\n' "$$(cat /secrets/minio-root-user)" "$$(cat /secrets/minio-root-password)" > /secrets/s3-credentials
         chmod 0400 /secrets/*
-        sed "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" /template/relay.toml.in > /config/cashwebd.toml
+        checkpoint=0x$$(printf '0%.0s' $$(seq 1 64))
+        if [ -n "$$SOLONET_RPC_URL" ]; then
+          block=$$(wget -q -O - --header 'content-type: application/json' \
+            --post-data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}' \
+            "$$SOLONET_RPC_URL")
+          checkpoint=$$(printf '%s' "$$block" | sed -n 's/.*"hash":"\(0x[0-9a-f]\{64\}\)".*/\1/p')
+          [ -n "$$checkpoint" ] || { echo "no block 1 from solonet at $$SOLONET_RPC_URL: $$block" >&2; exit 1; }
+          echo "solonet at $$SOLONET_RPC_URL, block 1 $$checkpoint"
+        else
+          echo "FRANK_LAB_SOLONET_RPC_URL unset: the relays serve no chain and refuse every group write"
+        fi
+        sed -e "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" -e "s|@SOLONET_CHECKPOINT_HASH@|$$checkpoint|" \
+          /template/relay.toml.in > /config/cashwebd.toml
         chmod 0444 /config/cashwebd.toml
         echo "provisioned files present; relay origin $$PUBLIC_ORIGIN"
     volumes:
@@ -221,6 +240,8 @@ services:
     environment:
       FRANK_CLUSTER_RELAYS: http://relay-a:8080,http://relay-b:8080,http://relay-c:8080
       FRANK_CLUSTER_PROXY: http://proxy:8080
+      FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [cluster]

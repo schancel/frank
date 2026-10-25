@@ -215,13 +215,25 @@ struct PaymentErrorBody {
 fn payment_refusal_response(refusal: GroupWriteRefusal) -> Response {
     match refusal {
         GroupWriteRefusal::Group(error) => group_error_response(error),
-        GroupWriteRefusal::Unfunded(reason) => (
+        GroupWriteRefusal::StaleNonce => (
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentErrorBody {
                 error: "group_payment_unfunded",
+                reason: "stale_nonce",
+                detail: "the payer has already used this payment's nonce, so it can never land"
+                    .into(),
+            }),
+        )
+            .into_response(),
+        GroupWriteRefusal::NotReady(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, HeaderValue::from_static("5"))],
+            Json(PaymentErrorBody {
+                error: "group_payment_not_ready",
                 reason,
-                detail: "the node shows the payment cannot land now: its nonce is not the payer's \
-                         next one, or the payer cannot cover its value and gas"
+                detail: "the node does not show yet that this payment can land: its nonce is too \
+                         far ahead of the payer's, or the payer's balance does not cover it; \
+                         retry the same write"
                     .into(),
             }),
         )
@@ -2501,14 +2513,14 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_lands_only_at_the_payers_next_nonce_with_its_value_and_gas_covered() {
-        use super::payment::{judge_funding, PayerAccount};
-        let payment = crate::group_write_payment::VerifiedGroupPayment {
+    fn a_payment_lands_in_the_payers_nonce_window_with_its_value_and_gas_covered() {
+        use super::payment::{judge_funding, FundingProblem, PayerAccount, PAYMENT_NONCE_WINDOW};
+        let payment = |nonce| crate::group_write_payment::VerifiedGroupPayment {
             tx_hash: crate::monad_http::Hash32([1; 32]),
             sender: crate::monad_http::Address([2; 20]),
             payee: [3; 20],
             value_wei: 1_000,
-            nonce: 5,
+            nonce,
             max_gas_cost_wei: 500,
             raw_transaction: vec![],
         };
@@ -2516,21 +2528,36 @@ mod tests {
             pending_nonce,
             balance_wei,
         };
-        assert_eq!(judge_funding(&payment, &account(5, 1_500), false), None);
+        assert_eq!(judge_funding(&payment(5), &account(5, 1_500), false), None);
+        // Behind the wallet's own self-sends, shuffled before it in its set, or a stacked
+        // successor: the predecessors are broadcast after the relay holds the write.
+        assert_eq!(judge_funding(&payment(6), &account(5, 1_500), false), None);
         assert_eq!(
-            judge_funding(&payment, &account(5, 1_499), false),
-            Some("insufficient_balance")
+            judge_funding(
+                &payment(5 + PAYMENT_NONCE_WINDOW),
+                &account(5, 1_500),
+                false
+            ),
+            None
         );
         assert_eq!(
-            judge_funding(&payment, &account(6, 10_000), false),
-            Some("stale_nonce")
+            judge_funding(
+                &payment(6 + PAYMENT_NONCE_WINDOW),
+                &account(5, 1_500),
+                false
+            ),
+            Some(FundingProblem::NonceGap)
         );
         assert_eq!(
-            judge_funding(&payment, &account(4, 10_000), false),
-            Some("nonce_gap")
+            judge_funding(&payment(5), &account(5, 1_499), false),
+            Some(FundingProblem::InsufficientBalance)
         );
-        // The node already holds this very payment: an earlier attempt's copy.
-        assert_eq!(judge_funding(&payment, &account(6, 0), true), None);
+        assert_eq!(
+            judge_funding(&payment(5), &account(6, 10_000), false),
+            Some(FundingProblem::StaleNonce)
+        );
+        // The node already holds this very payment: an earlier attempt's copy, or mined.
+        assert_eq!(judge_funding(&payment(5), &account(6, 0), true), None);
     }
 
     #[tokio::test]

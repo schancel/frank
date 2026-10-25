@@ -21,6 +21,7 @@ import {
   rotateGroupEpochOnRelay,
   openGroupEpochCertificate,
   groupEpochCertificate,
+  GroupWriteDeferredError,
   GroupWriteRefusedError,
   type StoredGroupMessageWire,
 } from './group-relay-client'
@@ -424,10 +425,10 @@ describe('group write refusals', () => {
       { network: 'monad-testnet', raw_transaction: '00' },
     )
 
-  test('only the host refusing before it stored anything is definitive', async () => {
+  test('only a refusal before anything was stored is definitive', async () => {
     for (const [status, body] of [
       [402, { error: 'group_payment_invalid', reason: 'underpaid' }],
-      [402, { error: 'group_payment_unfunded', reason: 'nonce_gap' }],
+      [402, { error: 'group_payment_unfunded', reason: 'stale_nonce' }],
       [402, { error: 'group_payment_required', reason: 'missing' }],
       [403, { error: 'invalid write_sig' }],
       [404, { error: 'group not found' }],
@@ -443,12 +444,34 @@ describe('group write refusals', () => {
       [408, {}],
       [429, {}],
       [502, { error: 'upstream relay unreachable' }],
-      [503, { error: 'group_payment_check_unavailable' }],
+      [503, { error: 'group_writes_unavailable' }],
       [504, { error: 'upstream relay timed out' }],
     ] as const) {
       const error = await write(answering(status, body)).catch(e => e)
       expect(error).not.toBeInstanceOf(GroupWriteRefusedError)
+      expect(error).not.toBeInstanceOf(GroupWriteDeferredError)
       expect(error.response?.status).toBe(status)
+    }
+  })
+
+  test('a payment the host cannot accept yet defers the write, never refuses it', async () => {
+    for (const [body, reason] of [
+      [{ error: 'group_payment_not_ready', reason: 'nonce_gap' }, 'nonce_gap'],
+      [
+        { error: 'group_payment_not_ready', reason: 'insufficient_balance' },
+        'insufficient_balance',
+      ],
+      [
+        {
+          error: 'group_payment_check_unavailable',
+          reason: 'node_unavailable',
+        },
+        'node_unavailable',
+      ],
+    ] as const) {
+      const error = await write(answering(503, body)).catch(e => e)
+      expect(error).toBeInstanceOf(GroupWriteDeferredError)
+      expect(error.reason).toBe(reason)
     }
   })
 })

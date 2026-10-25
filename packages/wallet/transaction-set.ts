@@ -13,10 +13,6 @@ export interface ConstructTransactionSetRequest {
    * accepts a fixed number of payments (a group write carries exactly one). Construction fails
    * with insufficient funds rather than exceed it. */
   readonly maxRecipientTransactions?: number
-  /** Every recipient transaction is the first one its source signs in this set, so its bytes
-   * can land on their own: a consumer that hands only the recipient bytes to a party that
-   * checks them against the chain now (a group write's host) needs this. */
-  readonly independentRecipientTransactions?: boolean
 }
 
 export interface TransactionSetRecipientOutput {

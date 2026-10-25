@@ -115,16 +115,31 @@ a `reason` of `wrong_network`, `malformed`, `wrong_chain`, `wrong_commitment`, `
 `underpaid`; no sequence is consumed. A relay without `group_writes` answers 503
 `group_writes_unavailable`.
 
-A payment that passes these checks must also be able to land now. Just before the accept
+A payment that passes these checks must also be able to land. Just before the accept
 transaction the host reads the payer's pending nonce and balance from its verified node
-upstream (3 s timeout) and refuses with 402 `group_payment_unfunded` and a `reason` of
-`stale_nonce` (the nonce is below the pending one), `nonce_gap` (above it) or
-`insufficient_balance` (the balance is below value plus gas limit times max fee); no sequence
-is consumed. A payment the node already holds passes. When the node cannot be read, or the relay
-has no verified upstream for its network, the answer is 503 `group_payment_check_unavailable`
-with `Retry-After`, so a relay never accepts writes it cannot check. The remaining exposure is
-that a writer can replace the transaction at the same nonce after the write is accepted, which
-buys that one write. A home relay forwards the payment untouched: only the host checks
+upstream (3 s timeout). The writer's wallet shuffles the payment among its own self-sends
+(change, splits, consolidation) on the same account in random order, and broadcasts them, in
+nonce order, only after the host holds the write; so the host accepts a nonce anywhere in
+`[pending, pending + 63]` (`PAYMENT_NONCE_WINDOW`: the most self-sends one EVM transaction set can
+place before its payment). It requires a balance of at least value plus gas limit times max fee.
+A payment the node already holds, pending or mined, passes.
+
+- Nonce below the pending one, and not held: 402 `group_payment_unfunded`, reason
+  `stale_nonce`. Definitive: the payment can never land.
+- Nonce above the window (`nonce_gap`, for example a stacked successor whose predecessor set has
+  not reached the node) or too little balance (`insufficient_balance`, for example a deposit not
+  yet seen): 503 `group_payment_not_ready` with `Retry-After`. Not a refusal: the writer keeps
+  the write pending and retries the same bytes.
+- The node cannot be read, or the relay has no verified upstream for its network: 503
+  `group_payment_check_unavailable` with `Retry-After`, so a relay never accepts writes it
+  cannot check.
+
+No sequence is consumed in any of these cases. The remaining exposure: a payment that never
+lands, because the writer replaces it or one of its predecessor nonces at the same nonce after
+the write is accepted, buys that write; at most one write per window slot, the same class as the
+replaced-nonce exposure DM stamps have. A Monad node checks a new transaction against state a
+few blocks behind the head and keeps turning down bytes it once turned down, so a payment the host
+accepts right after its deposit may be refused by that node for a while (seen on solonet). A home relay forwards the payment untouched: only the host checks
 it, and a payment committed to one host is `wrong_commitment` on every other. Before any of these checks the host looks up whether
 it already accepted the envelope: a retry of an accepted write gets its original receipt
 (`existing`) whatever its payment and whatever the price or payee are now, and hands nothing
@@ -143,35 +158,43 @@ The writer pays through the wallet's transaction-set capability
 (`packages/group-messaging/groups/write-payment.ts`). The order is persist, submit to the relay,
 then broadcast, each step durable before the next: the plan (payee, price, calldata) and its
 wallet operation `group-write-<write_signing_digest>` are stored on the message; the wallet signs
-one transaction for it (`maxRecipientTransactions: 1`, `independentRecipientTransactions`: the
-payment is its source account's next transaction, so it matches the pending nonce the host
-checks) and claims its coin, broadcasting nothing;
-the signed bytes are stored on the message; the write goes to the host with those bytes; and
+its transaction set (`maxRecipientTransactions: 1`: one payment, plus the set's own self-sends in
+random order) and claims its coin, broadcasting nothing; the payment's signed bytes are stored on
+the message, and only they go to the relay; the write goes to the host with those bytes; and
 only when the host answers that it holds the write (`appended` or `existing`) does the wallet
-authorize the same bytes, broadcast them and keep reconciling them. Until that authorization
+authorize the set, broadcast all of it sorted by (account, nonce) and keep reconciling it. Until that authorization
 succeeds the message stays pending, and the next retry repeats the (existing) write and this
 step.
 
-The message records `submitted` before the bytes first leave the device. Any outcome other than
-an answer (no answer, a timeout, a 5xx, any other error) may still have stored the write and
-broadcast its payment: the message records `uncertain` and the write is retried with the same
-bytes; nothing is signed again, after a restart too. Only a host-produced refusal is definitive:
-402 with a `group_payment_*` code, 403 or 404. Any other 4xx is treated as unknown.
+The message records `submitted` before the bytes first leave the device. A 503 with a
+`group_payment_*` code is the host saying it checked the payment and stored nothing yet: the
+write stays pending and is retried with the same bytes. Any other outcome without a refusal (no
+answer, a timeout, another 5xx, any other error) may still have stored the write and broadcast
+its payment: the message records `uncertain` and the write is retried with the same bytes;
+nothing is signed again, after a restart too. Only these are definitive refusals: a 402 with a
+`group_payment_*` code, which only the host produces after checking the payment, and a 403 or 404,
+which the relay the writer submits to produces itself (a home relay, for example, refusing a
+write to a group it only mirrors) or passes on from the host. Any other 4xx is treated as
+unknown.
 
 On a definitive refusal with no earlier unknown outcome, the message records `releasing`, then
 the wallet's `releaseTransactionSet` reads the chain and releases the coin only when no member
 was authorized or exposed and the node holds none of them; the message records `released` and
-is shown as `rejected`. If the chain does show the payment, the wallet authorizes and tracks it
-so reconciliation applies its mined state, the message records `spent` and is shown as
-`rejected-paid`. A restart with `releasing` stored finishes the same step (a release already
-done is recognised). After an unknown outcome a later refusal never releases: the writer asks
-the wallet to observe the chain; a seen payment is tracked as `spent`, an unseen one leaves the
-write pending as `unverified` and it is retried with the same bytes. `released` and `spent` are
-final and no write is resubmitted after either.
+is shown as `rejected`; this is final. If the chain does show the payment, the funds have moved:
+the wallet authorizes and tracks the set so reconciliation applies its mined state, the message
+records `spent`, and the write stays pending as `rejected-paid` and is retried with the same
+bytes, since the payment is owed its write (a host accepts a payment the node already holds). A
+restart with `releasing` stored finishes the same step (a release already done is recognised).
+After an unknown outcome a later refusal never releases: the writer asks the wallet to observe
+the chain; a seen payment is tracked as `spent` as above, an unseen one leaves the write pending
+as `unverified` and it is retried with the same bytes. Once the relay holds the write, from a
+retry or from a sync that shows it, the earlier failure reason is cleared.
 
 Another device of the account derives the same operation. A plan whose bytes were never
 submitted is replanned when the host's policy changed (for example a price rise): the old
-operation is released and a new one, `group-write-<digest>-<generation>`, is signed. Once bytes
+operation is released and a new one, `group-write-<digest>-<generation>`, is signed. If the
+wallet will not release a set whose bytes were stored, the plan is kept and the write fails to
+retry; a plan whose set was never constructed has nothing to release. Once bytes
 were submitted the policy is never read again. A wallet on another network than the host's signs
 nothing and the write stays pending as `unavailable`.
 

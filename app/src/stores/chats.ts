@@ -14,6 +14,7 @@ import type {
   GroupControlItem,
 } from '@frank/group-messaging/types'
 import {
+  GroupWritePaidRefusalError,
   GroupWritePaymentUnavailableError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
@@ -121,6 +122,7 @@ import {
   openGroupEpochCertificate,
   groupAdminSecretMatches,
   deriveAdminEpochSecret,
+  GroupWriteDeferredError,
   type CreateGroupOnRelayMemberInput,
 } from '@frank/cashweb/groups/group-relay-client'
 import { sha256 } from '@noble/hashes/sha256.js'
@@ -6423,10 +6425,8 @@ export const useChatStore = defineStore('chats', {
         })
         checkGroup()
         if (delivery.state === 'refused') {
-          // Final either way. Released: nothing of the write or its payment is out. Spent: the
-          // chain shows the payment, and the wallet tracks it to its mined state.
-          const reason: OutgoingFailureReason =
-            delivery.outcome === 'released' ? 'rejected' : 'rejected-paid'
+          // Final: the coin is back, and nothing of the write or its payment is out.
+          const reason: OutgoingFailureReason = 'rejected'
           message.status = 'error'
           message.delivery = {
             failureReason: reason,
@@ -6443,6 +6443,7 @@ export const useChatStore = defineStore('chats', {
         const res = delivery.receipt
         checkGroup()
         message.status = 'confirmed'
+        delete message.delivery
         // The relay time replaces this device's clock, as it does for every member; an
         // acknowledgement of a retried copy never moves an earlier accepted row's time.
         const relayTime = message.localTime
@@ -6476,6 +6477,13 @@ export const useChatStore = defineStore('chats', {
           ? 'unavailable'
           : error instanceof GroupWritePaymentUnresolvedError
           ? 'unverified'
+          : // Refused after its payment went out: retried, since the payment is owed its write.
+          error instanceof GroupWritePaidRefusalError
+          ? 'rejected-paid'
+          : // The host cannot see yet that the payment lands: retried with the same bytes.
+          error instanceof GroupWriteDeferredError &&
+            error.reason === 'insufficient_balance'
+          ? 'insufficient-funds'
           : 'unreachable'
         message.delivery = {
           failureReason: reason,
@@ -6860,6 +6868,8 @@ export const useChatStore = defineStore('chats', {
             ? serverTime
             : Math.min(existingMsg.serverTime, serverTime)
           existingMsg.status = 'confirmed'
+          // The relay holds it: an earlier failed attempt's reason no longer applies.
+          delete existingMsg.delivery
           existingMsg.serverTime = relayTime
           existingMsg.receivedTime = relayTime
           existingMsg.localTime = false

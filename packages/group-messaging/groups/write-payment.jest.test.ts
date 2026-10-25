@@ -1,5 +1,8 @@
 import { bytesToHex } from '@frank/cashweb/groups/group-crypto'
-import { GroupWriteRefusedError } from '@frank/cashweb/groups/group-relay-client'
+import {
+  GroupWriteDeferredError,
+  GroupWriteRefusedError,
+} from '@frank/cashweb/groups/group-relay-client'
 import {
   GROUP_WRITE_BURN_ADDRESS,
   groupWritePaymentPlan,
@@ -8,6 +11,7 @@ import {
   type StoredGroupWritePayment,
 } from '@frank/cashweb/groups/group-write-payment'
 import {
+  GroupWritePaidRefusalError,
   GroupWritePaymentUnavailableError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
@@ -45,7 +49,10 @@ function record(initial?: StoredGroupWritePayment) {
 }
 
 /** The hosting relay as the writer sees it: it records every submission in `events`. */
-function relay(events: string[], answers: Array<'ok' | 'timeout' | 'refuse'>) {
+function relay(
+  events: string[],
+  answers: Array<'ok' | 'timeout' | 'refuse' | 'gap' | 'unfunded'>,
+) {
   const submitted: GroupWritePaymentWire[] = []
   return {
     submitted,
@@ -54,6 +61,16 @@ function relay(events: string[], answers: Array<'ok' | 'timeout' | 'refuse'>) {
       events.push('relay')
       const answer = answers.shift() ?? 'ok'
       if (answer === 'timeout') throw new Error('timeout of 15000ms exceeded')
+      if (answer === 'gap')
+        throw new GroupWriteDeferredError(
+          'group_payment_not_ready',
+          'nonce_gap',
+        )
+      if (answer === 'unfunded')
+        throw new GroupWriteDeferredError(
+          'group_payment_not_ready',
+          'insufficient_balance',
+        )
       if (answer === 'refuse')
         throw new GroupWriteRefusedError(
           402,
@@ -164,7 +181,7 @@ describe('deliverPaidGroupWrite', () => {
     expect(later.submitted).toHaveLength(0)
   })
 
-  test('a refused write whose payment the chain shows is tracked as spent, and submitted no more', async () => {
+  test('a refused write whose payment the chain shows is tracked as spent and retried until held', async () => {
     const payer = groupWriteTestPayer()
     const message = record()
     const host = relay(payer.events, ['refuse', 'ok'])
@@ -173,15 +190,52 @@ describe('deliverPaidGroupWrite', () => {
       payer.seenOnChain.add(message.stored!.operationId)
       return host.submit(payment)
     }
-    expect(await deliver(message, payer.wallet, submit)).toMatchObject({
-      state: 'refused',
-      outcome: 'spent',
-    })
-    // Authorized so the wallet reconciles it to its mined state.
+    await expect(deliver(message, payer.wallet, submit)).rejects.toBeInstanceOf(
+      GroupWritePaidRefusalError,
+    )
+    // Authorized so the wallet reconciles it to its mined state; the coin is not released.
     expect(payer.events.at(-1)).toBe(`send:${message.stored!.operationId}`)
     expect(message.stored).toMatchObject({ spent: true })
-    await deliver(message, payer.wallet, submit)
-    expect(host.submitted).toHaveLength(1)
+    expect(message.stored?.released).toBeUndefined()
+    // The paid write is owed: the same bytes go again, and this time the relay holds it.
+    expect(await deliver(message, payer.wallet, submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    expect(host.submitted.map(payment => payment.raw_transaction)).toEqual(
+      Array(2).fill(message.stored!.rawTransaction),
+    )
+    // One release was asked for, at the refusal; the wallet kept the coin, as the chain shows
+    // the payment, and none was asked for again.
+    expect(
+      payer.events.filter(event => event.startsWith('release')),
+    ).toHaveLength(1)
+  })
+
+  test('a payment the host cannot accept yet keeps the write pending, retried with the same bytes', async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    const host = relay(payer.events, ['gap', 'unfunded', 'ok'])
+    for (const reason of ['nonce_gap', 'insufficient_balance']) {
+      const error = await deliver(message, payer.wallet, host.submit).catch(
+        e => e,
+      )
+      expect(error).toBeInstanceOf(GroupWriteDeferredError)
+      expect(error.reason).toBe(reason)
+      // Not a refusal and not an unknown outcome: nothing released, nothing sent, and a later
+      // definitive refusal could still release the coin.
+      expect(message.stored?.uncertain).toBeUndefined()
+      expect(payer.events.some(event => /^(release|send)/.test(event))).toBe(
+        false,
+      )
+    }
+    expect(await deliver(message, payer.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    expect(payer.sets.size).toBe(1)
+    expect(new Set(host.submitted.map(p => p.raw_transaction)).size).toBe(1)
+    expect(host.submitted).toHaveLength(3)
   })
 
   test('after an attempt without an answer, a refusal never releases the coin', async () => {
@@ -198,12 +252,12 @@ describe('deliverPaidGroupWrite', () => {
     expect(payer.events.some(event => event.startsWith('release'))).toBe(false)
     expect(payer.events.some(event => event.startsWith('send'))).toBe(false)
     expect(payer.sets.size).toBe(1)
-    // Once the chain shows it, the wallet tracks it as spent.
+    // Once the chain shows it, the wallet tracks it as spent and the write stays to retry.
     payer.seenOnChain.add(message.stored!.operationId)
-    expect(await deliver(message, payer.wallet, host.submit)).toMatchObject({
-      state: 'refused',
-      outcome: 'spent',
-    })
+    await expect(
+      deliver(message, payer.wallet, host.submit),
+    ).rejects.toBeInstanceOf(GroupWritePaidRefusalError)
+    expect(message.stored).toMatchObject({ spent: true })
     expect(payer.events.filter(event => event.startsWith('release'))).toEqual(
       [],
     )
@@ -284,6 +338,60 @@ describe('deliverPaidGroupWrite', () => {
       policy,
     )
     expect(policy).not.toHaveBeenCalled()
+  })
+
+  test('a stored plan whose set the wallet will not release is not replaced', async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    const persist = async (next: StoredGroupWritePayment) => {
+      if (next.submitted) throw new Error('process stopped')
+      await message.persist(next)
+    }
+    await expect(
+      deliverPaidGroupWrite({
+        groupIdHex: GROUP,
+        envelope: ENVELOPE,
+        stored: undefined,
+        policy: async () => POLICY,
+        persist,
+        wallet: payer.wallet,
+        submit: jest.fn(),
+      }),
+    ).rejects.toThrow('process stopped')
+    const first = message.stored!
+    // The node shows the signed set, so the wallet keeps its claim.
+    payer.seenOnChain.add(first.operationId)
+    const submit = jest.fn()
+    await expect(
+      deliver(message, payer.wallet, submit, async () => ({
+        ...POLICY,
+        priceWei: 5_000n,
+      })),
+    ).rejects.toThrow('could not be released')
+    expect(message.stored).toEqual(first)
+    expect(submit).not.toHaveBeenCalled()
+    // A plan whose set was never constructed has nothing to release and is replaced.
+    const unsigned = record({
+      network: first.network,
+      destination: first.destination,
+      amountWei: first.amountWei,
+      calldata: first.calldata,
+      operationId: `${first.operationId}-unsigned`,
+    })
+    expect(
+      (
+        await deliver(
+          unsigned,
+          payer.wallet,
+          relay(payer.events, ['ok']).submit,
+          async () => ({
+            ...POLICY,
+            priceWei: 5_000n,
+          }),
+        )
+      ).state,
+    ).toBe('delivered')
+    expect(unsigned.stored).toMatchObject({ amountWei: '5000', generation: 1 })
   })
 
   test('a restart between signing and relay submission resumes with the same bytes', async () => {

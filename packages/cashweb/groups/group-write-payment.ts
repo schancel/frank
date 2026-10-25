@@ -260,8 +260,9 @@ export interface StoredGroupWritePayment {
   /** The relay refused the write for good and the wallet released the payment's coin after
    * finding the transaction neither pending nor mined. */
   readonly released?: true
-  /** The relay refused the write for good but the chain shows its payment pending or mined:
-   * the wallet tracks it as spent. Nothing more is submitted. */
+  /** A relay refused the write but the chain shows its payment pending or mined: the wallet
+   * has authorized the set and tracks it as spent. The coin is never released, and the write
+   * is retried with the same bytes until a relay holds it. */
   readonly spent?: true
 }
 

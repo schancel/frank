@@ -22,8 +22,6 @@ export function groupWriteTestPayer(chainIdentifier = 'monad-testnet') {
     chainIdentifier,
     async constructTransactionSet(request) {
       events.push(`construct:${request.maxRecipientTransactions}`)
-      if (!request.independentRecipientTransactions)
-        throw new Error('A group write payment must land on its own')
       // The wallet never builds a second set under a released operation.
       if (released.has(request.operationId))
         throw new Error(

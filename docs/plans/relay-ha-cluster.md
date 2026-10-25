@@ -145,10 +145,16 @@ the owner ports, and the ports are written against the new formats.
   - A burn costs the writer and funds nobody, so it is opt-in.
   - The calldata commitment is required: without it, one burn could fund writes on several relays.
   - Confirmation is not awaited, as with DM stamps. Before accepting, the host reads the payer's
-    pending nonce and balance from its node and refuses (402 `group_payment_unfunded`) a payment
-    at another nonce or without value plus gas; it fails closed (503) when the node cannot be
-    read. The remaining exposure: replacing the transaction at the same nonce after acceptance
-    buys that one write, the same exposure DMs have.
+    pending nonce and balance from its node. It accepts a nonce in `[pending, pending + 63]`,
+    because the wallet shuffles the payment among up to 63 of its own self-sends on the account
+    (ruling of 2026-10-20: random order; self-sends never go to the relay; the wallet broadcasts
+    the whole set in (account, nonce) order after the relay holds the write). It needs value plus
+    gas in the balance. A nonce below pending is refused (402, definitive). A nonce past the
+    window or too little balance is deferred (503 `group_payment_not_ready`, retried with the same
+    bytes), and so is an unreadable node (503).
+  - Remaining exposure: a payment that never lands, because it or a predecessor nonce is replaced
+    after acceptance, buys that write; at most one write per window slot, the same class as the
+    replaced-nonce exposure DMs have.
   - The payer's address links a wallet to its group writes at the host, as DM stamps already do.
   - Still open: the price, and the exact xpub derivation path and index rule.
     - Proposed (implemented on the paid-group-writes branch, awaiting confirmation): child
@@ -159,8 +165,9 @@ the owner ports, and the ports are written against the new formats.
       1e12 wei and the docker image's payee is `burn` until an operator sets one.
     - The writer follows persist, submit to the relay, then broadcast: its wallet broadcasts
       only after the host holds the write; a definitive refusal (a host 402 `group_payment_*`,
-      403 or 404) releases the coin only after the chain shows no copy, and never after an
-      attempt whose outcome was unknown; a payment the chain shows is tracked as spent.
+      or a 403 or 404 from the relay written to) releases the coin only after the chain shows no
+      copy, and never after an attempt whose outcome was unknown; a payment the chain shows is
+      tracked as spent and the write is retried until a relay holds it.
     - Each accepted write's payment record (`G_pay:<tx_hash>`: payer, payee, value, group and
       sequence) is written in its accept transaction. Also open: an operator view that lists
       which xpub children were paid from those records.

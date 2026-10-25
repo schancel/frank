@@ -109,10 +109,13 @@ export function normalizeGroupRelayOrigin(relayUrl: string): string {
  * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Group-Read-Token`)
  */
 /**
- * The hosting relay refused a group write for good, before storing anything: a `402` naming a
- * `group_payment_*` refusal, or a `403`/`404`. Nothing was stored, so the host handed its
- * payment to no node. Every other answer (a timeout, a gateway or server error, a `400`, a
- * retryable `503`) is not a refusal: the write may have been stored and its payment broadcast.
+ * A group write refused for good, before anything was stored: a `402` naming a
+ * `group_payment_*` refusal, which only the hosting relay produces after checking the payment,
+ * or a `403`/`404`, which the relay the writer submits to produces itself (a home relay, for
+ * example, refusing a write to a group it only mirrors) or passes on from the host. Nothing was
+ * stored, so no relay handed the payment to a node. Every other answer (a timeout, a gateway or
+ * server error, a `400`, any other `503`) is not a refusal: the write may have been stored and
+ * its payment broadcast.
  */
 export class GroupWriteRefusedError extends Error {
   constructor(
@@ -129,7 +132,22 @@ export class GroupWriteRefusedError extends Error {
   }
 }
 
-function groupWriteRefusal(error: unknown): GroupWriteRefusedError | undefined {
+/**
+ * The hosting relay checked the write's payment and stored nothing, but cannot accept it yet: a
+ * `503` naming a `group_payment_*` code (`group_payment_not_ready` with `nonce_gap` or
+ * `insufficient_balance`, or `group_payment_check_unavailable`). Not a refusal: the same write
+ * is retried with the same bytes.
+ */
+export class GroupWriteDeferredError extends Error {
+  constructor(readonly code: string, readonly reason: string | undefined) {
+    super(`Group write deferred (${code}${reason ? `: ${reason}` : ''})`)
+    this.name = 'GroupWriteDeferredError'
+  }
+}
+
+function groupWriteRefusal(
+  error: unknown,
+): GroupWriteRefusedError | GroupWriteDeferredError | undefined {
   if (!axios.isAxiosError(error) || !error.response) return undefined
   const status = error.response.status
   const body = error.response.data as Record<string, unknown> | undefined
@@ -138,6 +156,11 @@ function groupWriteRefusal(error: unknown): GroupWriteRefusedError | undefined {
     status === 403 ||
     status === 404 ||
     (status === 402 && code !== undefined && code.startsWith('group_payment_'))
+  if (status === 503 && code !== undefined && code.startsWith('group_payment_'))
+    return new GroupWriteDeferredError(
+      code,
+      typeof body?.reason === 'string' ? body.reason : undefined,
+    )
   if (!definitive) return undefined
   return new GroupWriteRefusedError(
     status,

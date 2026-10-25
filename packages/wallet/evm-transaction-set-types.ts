@@ -32,8 +32,6 @@ export interface ConstructEvmTransactionSetRequest {
   readonly reserveForContinuationWei?: bigint
   /** Internal protocol constraint for consumers that require one on-chain payment. */
   readonly maxPaymentParts?: number
-  /** Each payment is its source's first member: no change of the same source precedes it. */
-  readonly independentPayments?: boolean
   /** Captured minimum for each recipient transaction; never recomputed during replay. */
   readonly minimumPaymentWei?: bigint
 }

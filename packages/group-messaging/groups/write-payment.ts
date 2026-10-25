@@ -6,26 +6,31 @@
  * Order (persist, submit to the relay, then broadcast), each step durable before the next:
  * 1. the plan (payee, price, commitment calldata) and the wallet operation that pays it are
  *    stored on the message;
- * 2. the wallet signs exactly one transaction for that plan, the first its coin signs so its
- *    bytes land on their own, and claims the coin, broadcasting nothing (construction is
- *    idempotent per operation, so a retry or another start returns the same bytes);
+ * 2. the wallet signs the transaction set for that plan, with exactly one payment, and claims
+ *    its coin, broadcasting nothing (construction is idempotent per operation, so a retry or
+ *    another start returns the same bytes). The set's own self-sends (change, splits) on the
+ *    payment's account are shuffled with it in random order, so the payment may sit a few nonces
+ *    above the account's pending one; only the payment goes to the relay;
  * 3. the signed bytes are stored on the message, and then that they are being submitted;
  * 4. the write goes to the hosting relay with those bytes; from here they may be out, because
  *    the relay broadcasts them once it has stored the write;
  * 5. only when the relay answers that it holds the write (appended or existing) does the wallet
- *    authorize the bytes and broadcast them itself, and keep reconciling them.
+ *    authorize the set and broadcast all of it in nonce order, and keep reconciling it.
  *
  * Until the bytes are first submitted, a change of the host's terms replaces the plan: the
  * claimed coin is given back and the write is planned again. After that the plan is final.
  *
- * Any other relay outcome (no answer, a timeout, a gateway or server error) may still have
- * stored the write and broadcast its payment, so the write is retried with the same bytes;
- * nothing is signed again, and the write is marked uncertain. A definitive refusal (`402`
- * `group_payment_*`, `403`, `404`: nothing stored, nothing broadcast) lets the claimed coin go,
- * but only when no earlier attempt was uncertain and the wallet reads the chain and finds the
- * transaction neither pending nor mined. When the chain shows it, the wallet authorizes and
- * tracks it as spent and nothing more is submitted. After an uncertain attempt the coin is
- * never released: the write is retried until the relay holds it or the chain shows its payment.
+ * A host answer that it checked the payment and stored nothing yet (`503 group_payment_*`: the
+ * node does not show the payment can land yet, or cannot be read) leaves the write pending; it
+ * is retried with the same bytes. Any other outcome without a refusal (no answer, a timeout, a
+ * gateway or server error) may still have stored the write and broadcast its payment, so the
+ * write is retried with the same bytes; nothing is signed again, and the write is marked
+ * uncertain. A definitive refusal (`402 group_payment_*`, `403`, `404`: nothing stored, nothing
+ * broadcast) lets the claimed coin go, but only when no earlier attempt was uncertain and the
+ * wallet reads the chain and finds no member pending or mined. When the chain shows the
+ * payment, the funds have moved: the wallet authorizes and tracks the set (`spent`) and the write
+ * stays pending, retried with the same bytes, since a paid write is still owed. After an
+ * uncertain attempt the coin is never released.
  */
 import type { SealedGroupMessageEnvelope } from '@frank/cashweb/groups/group-crypto'
 import { bytesToHex, hexToBytes } from '@frank/cashweb/groups/group-crypto'
@@ -40,7 +45,10 @@ import {
   type GroupWritePolicy,
   type StoredGroupWritePayment,
 } from '@frank/cashweb/groups/group-write-payment'
-import { GroupWriteRefusedError } from '@frank/cashweb/groups/group-relay-client'
+import {
+  GroupWriteDeferredError,
+  GroupWriteRefusedError,
+} from '@frank/cashweb/groups/group-relay-client'
 
 /** The wallet capability a group write pays through. A `WalletHandle` of `@frank/wallet`
  * satisfies it; nothing else of the wallet is needed. */
@@ -52,7 +60,6 @@ export interface GroupWritePayer {
     readonly kdf: (transactionIndex: number, outputIndex: number) => Uint8Array
     readonly calldata?: Uint8Array
     readonly maxRecipientTransactions?: number
-    readonly independentRecipientTransactions?: boolean
   }): Promise<GroupWritePreparedPayment>
   sendTransaction?(prepared: GroupWritePreparedPayment): Promise<unknown>
   releaseTransactionSet?(operationId: string): Promise<boolean>
@@ -86,6 +93,20 @@ export class GroupWritePaymentUnresolvedError extends Error {
   }
 }
 
+/** The relay refused a write, but the chain shows its payment: the funds have moved. The wallet
+ * tracks the payment to its mined state, and the write is retried with the same bytes, since
+ * the payment is owed its write. */
+export class GroupWritePaidRefusalError extends Error {
+  constructor(readonly refusal: GroupWriteRefusedError | undefined) {
+    super(
+      refusal
+        ? `The write was refused after its payment was sent: ${refusal.message}`
+        : 'The write was refused after its payment was sent',
+    )
+    this.name = 'GroupWritePaidRefusalError'
+  }
+}
+
 export interface DeliverPaidGroupWriteParams<Receipt> {
   readonly groupIdHex: string
   readonly envelope: SealedGroupMessageEnvelope
@@ -109,12 +130,11 @@ export type GroupWriteDelivery<Receipt> =
       readonly receipt: Receipt
       readonly settled: boolean
     }
-  /** The relay refused the write for good. `released`: the coin is back and nothing of the
-   * payment is out. `spent`: the chain shows the payment; the wallet tracks it as spent. Either
-   * way the write is final. `error` is absent when a restart finishes an earlier refusal. */
+  /** The relay refused the write for good, and the coin is back: nothing of the payment is
+   * out. Final. `error` is absent when a restart finishes an earlier refusal. */
   | {
       readonly state: 'refused'
-      readonly outcome: 'released' | 'spent'
+      readonly outcome: 'released'
       readonly error?: GroupWriteRefusedError
     }
 
@@ -132,15 +152,16 @@ function samePlan(
 
 /**
  * Deliver one paid group write. Throws, leaving the write to be retried with the same bytes,
- * when the wallet cannot pay, the relay's outcome is unknown, or a refusal came after an
- * unknown outcome and the chain does not show the payment.
+ * when the wallet cannot pay, the host defers the write, the relay's outcome is unknown, a
+ * refusal came after an unknown outcome and the chain does not show the payment
+ * (`GroupWritePaymentUnresolvedError`), or a refusal came while the chain shows the payment
+ * (`GroupWritePaidRefusalError`).
  */
 export async function deliverPaidGroupWrite<Receipt>(
   params: DeliverPaidGroupWriteParams<Receipt>,
 ): Promise<GroupWriteDelivery<Receipt>> {
   let stored = params.stored
   if (stored?.released) return { state: 'refused', outcome: 'released' }
-  if (stored?.spent) return { state: 'refused', outcome: 'spent' }
   const wallet = params.wallet
   const payer =
     wallet?.constructTransactionSet &&
@@ -176,7 +197,15 @@ export async function deliverPaidGroupWrite<Receipt>(
     if (!stored || !samePlan(stored, plan)) {
       // Never submitted, so nothing of an earlier plan is out: give its coin back, if it was
       // ever claimed, and plan the write again under the host's current terms.
-      if (stored && payer) await payer.releaseTransactionSet(stored.operationId)
+      if (
+        stored &&
+        payer &&
+        !(await payer.releaseTransactionSet(stored.operationId)) &&
+        stored.rawTransaction !== undefined
+      )
+        // The wallet keeps a set whose bytes were stored: it is not released, so it is not
+        // replaced. `false` with no stored bytes is a plan whose set was never constructed.
+        throw new Error('The earlier group write payment could not be released')
       const generation = stored ? (stored.generation ?? 0) + 1 : 0
       await persist({
         network: plan.network,
@@ -205,7 +234,6 @@ export async function deliverPaidGroupWrite<Receipt>(
     kdf: () => hexToBytes(plan.destination.slice(2)),
     calldata: plan.calldata,
     maxRecipientTransactions: 1,
-    independentRecipientTransactions: true,
   })
   if (
     prepared.operationId !== stored.operationId ||
@@ -226,10 +254,14 @@ export async function deliverPaidGroupWrite<Receipt>(
   try {
     receipt = await params.submit(wire)
   } catch (error) {
+    // The host checked the payment and stored nothing: retried as it is.
+    if (error instanceof GroupWriteDeferredError) throw error
     if (!(error instanceof GroupWriteRefusedError)) {
       if (!stored.uncertain) await persist({ ...stored, uncertain: true })
       throw error
     }
+    // Already out and tracked: the write is owed, so it is retried as it is.
+    if (stored.spent) throw new GroupWritePaidRefusalError(error)
     if (stored.uncertain) {
       // An attempt had no answer: the relay may have stored it then and broadcast the bytes,
       // or still may. Only the chain can tell; without it the write is retried as it is.
@@ -274,24 +306,21 @@ async function finishRefusal(
       kdf: () => hexToBytes(stored.destination.slice(2)),
       calldata: hexToBytes(stored.calldata),
       maxRecipientTransactions: 1,
-      independentRecipientTransactions: true,
     }))
   return trackSpent(payer, set, stored, persist, error)
 }
 
 /** The chain shows a refused write's payment: authorize the set so the wallet reconciles it
- * to its mined state, and record the write as final. */
+ * to its mined state, record that, and leave the write to be retried with the same bytes. */
 async function trackSpent(
   payer: Required<GroupWritePayer>,
   prepared: GroupWritePreparedPayment,
   stored: StoredGroupWritePayment,
   persist: (next: StoredGroupWritePayment) => Promise<void>,
   error: GroupWriteRefusedError | undefined,
-): Promise<GroupWriteDelivery<never>> {
+): Promise<never> {
   await payer.sendTransaction(prepared)
   const { releasing: _, ...rest } = stored
   await persist({ ...rest, spent: true })
-  return error
-    ? { state: 'refused', outcome: 'spent', error }
-    : { state: 'refused', outcome: 'spent' }
+  throw new GroupWritePaidRefusalError(error)
 }

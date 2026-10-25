@@ -28,6 +28,7 @@ import type { AxiosInstance } from 'axios'
 import {
   GROUP_WRITE_BURN_ADDRESS,
   GroupRelayClient,
+  GroupWriteDeferredError,
   GroupWriteRefusedError,
   type StoredGroupMessageWire,
 } from '@frank/cashweb/groups'
@@ -1251,7 +1252,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
 
   it('a refusal after an attempt without an answer keeps the write and its coin until the chain shows the payment', async () => {
     const { chats, group, client } = await makeGroup()
-    jest
+    const send = jest
       .spyOn(client, 'sendGroupMessage')
       .mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
       .mockRejectedValue(
@@ -1277,7 +1278,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(
       groupWritePayer.events.some(event => event.startsWith('release')),
     ).toBe(false)
-    // The chain shows the payment: the wallet tracks it, and the write is final.
+    // The chain shows the payment: the wallet tracks it, and the paid write stays to retry.
     const operationId = chats.messages[digest].groupWritePayment.operationId
     groupWritePayer.seenOnChain.add(operationId)
     expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
@@ -1285,8 +1286,74 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       reason: 'rejected-paid',
     })
     expect(chats.messages[digest].groupWritePayment.spent).toBe(true)
-    expect(group.groupState.pendingMessages?.[digest]).toBeUndefined()
+    expect(group.groupState.pendingMessages?.[digest]).toBe(true)
     expect(groupWritePayer.events.at(-1)).toBe(`send:${operationId}`)
+    // The relay now holds it: delivered with the same bytes, and the old reason is gone.
+    send.mockRestore()
+    expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
+      state: 'sent',
+      payloadDigest: digest,
+    })
+    expect(chats.messages[digest].status).toBe('confirmed')
+    expect(chats.messages[digest].delivery).toBeUndefined()
+    expect(group.groupState.pendingMessages?.[digest]).toBeUndefined()
+    expect(
+      groupWritePayer.events.some(event => event.startsWith('release')),
+    ).toBe(false)
+  })
+
+  it('a payment the host cannot accept yet keeps the write pending with the same bytes', async () => {
+    const { chats, group, client } = await makeGroup()
+    const payments: string[] = []
+    const real = client.sendGroupMessage.bind(client)
+    const send = jest
+      .spyOn(client, 'sendGroupMessage')
+      .mockImplementationOnce(async (_id, _envelope, payment) => {
+        payments.push(payment.raw_transaction)
+        throw new GroupWriteDeferredError(
+          'group_payment_not_ready',
+          'nonce_gap',
+        )
+      })
+      .mockImplementationOnce(async (_id, _envelope, payment) => {
+        payments.push(payment.raw_transaction)
+        throw new GroupWriteDeferredError(
+          'group_payment_not_ready',
+          'insufficient_balance',
+        )
+      })
+      .mockImplementation(async (id, envelope, payment) => {
+        payments.push(payment.raw_transaction)
+        return real(id, envelope, payment)
+      })
+    expect(
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Not yet' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      }),
+    ).toEqual({ state: 'failed', reason: 'unreachable' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWritePayment,
+    )!
+    expect(group.groupState.pendingMessages?.[digest]).toBe(true)
+    expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
+      state: 'failed',
+      reason: 'insufficient-funds',
+    })
+    expect(group.groupState.pendingMessages?.[digest]).toBe(true)
+    expect(chats.messages[digest].groupWritePayment.uncertain).toBeUndefined()
+    expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
+      state: 'sent',
+      payloadDigest: digest,
+    })
+    expect(send).toHaveBeenCalledTimes(3)
+    expect(new Set(payments).size).toBe(1)
+    expect(chats.messages[digest].delivery).toBeUndefined()
+    expect(
+      groupWritePayer.events.some(event => event.startsWith('release')),
+    ).toBe(false)
   })
 
   it('rejects payment intent at the headless group boundary before submission', async () => {

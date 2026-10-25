@@ -308,8 +308,11 @@ impl GroupWriteRuntime {
             Ok::<_, crate::monad_http::MonadRpcError>((account, held))
         };
         match tokio::time::timeout(NODE_TIMEOUT, read).await {
-            Ok(Ok((account, held))) => judge_funding(payment, &account, held)
-                .map_or(Ok(()), |reason| Err(GroupWriteRefusal::Unfunded(reason))),
+            Ok(Ok((account, held))) => match judge_funding(payment, &account, held) {
+                None => Ok(()),
+                Some(FundingProblem::StaleNonce) => Err(GroupWriteRefusal::StaleNonce),
+                Some(problem) => Err(GroupWriteRefusal::NotReady(problem.reason())),
+            },
             Ok(Err(error)) => Err(GroupWriteRefusal::CheckUnavailable(error.to_string())),
             Err(_) => Err(GroupWriteRefusal::CheckUnavailable(
                 "no answer from the node in time".into(),
@@ -382,9 +385,13 @@ pub enum GroupWriteRefusal {
     Group(GroupError),
     /// The payment does not pay for this write.
     Payment(GroupPaymentError),
-    /// The payment pays for this write but cannot land now (`402 group_payment_unfunded`):
-    /// `stale_nonce`, `nonce_gap` or `insufficient_balance`.
-    Unfunded(&'static str),
+    /// The payment pays for this write but its nonce is already used (`402
+    /// group_payment_unfunded`, reason `stale_nonce`): it can never land.
+    StaleNonce,
+    /// The payment pays for this write but the node does not show that it can land yet (`503
+    /// group_payment_not_ready`, retryable): `nonce_gap` or `insufficient_balance`. Both may be
+    /// the node lagging, a predecessor not yet broadcast, or a deposit not yet seen.
+    NotReady(&'static str),
     /// The node could not be asked (`503`, retryable): nothing was stored.
     CheckUnavailable(String),
 }
@@ -398,22 +405,55 @@ pub(crate) struct PayerAccount {
     pub(crate) balance_wei: u128,
 }
 
-/// Why `payment` cannot land now, given the payer's account and whether the node already
-/// holds the payment itself. `None` when it can.
+/// How far above the payer's pending nonce a payment may sit. A writer's wallet signs the
+/// payment inside a transaction set and shuffles it among the set's self-sends (change, split,
+/// consolidation) on the same account, in random order, so the payment can follow up to that
+/// many of them; they are broadcast by the wallet, in nonce order, only after the relay holds
+/// the write. The EVM wallet allows at most 63 self-sends in one set (`maxChangeOutputs <= 63`,
+/// checked in `packages/wallet/evm-transaction-set.ts`). A payment further ahead (for example on
+/// a stacked successor whose predecessor set has not landed) is `nonce_gap`, which is
+/// retryable: it is accepted once the predecessors reach the node.
+pub(crate) const PAYMENT_NONCE_WINDOW: u64 = 63;
+
+/// Why the node does not show that a payment can land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FundingProblem {
+    /// Its nonce is below the payer's pending one and the node does not hold it: it can never
+    /// land. Definitive.
+    StaleNonce,
+    /// Its nonce is more than `PAYMENT_NONCE_WINDOW` above the pending one. Retryable.
+    NonceGap,
+    /// The payer's balance is below its value plus its most gas cost. Retryable.
+    InsufficientBalance,
+}
+
+impl FundingProblem {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::StaleNonce => "stale_nonce",
+            Self::NonceGap => "nonce_gap",
+            Self::InsufficientBalance => "insufficient_balance",
+        }
+    }
+}
+
+/// Why `payment` cannot be shown to land, given the payer's account and whether the node already
+/// holds the payment itself. `None` when it can: its nonce is in `[pending, pending + window]`
+/// and the balance covers its value and gas.
 pub(crate) fn judge_funding(
     payment: &VerifiedGroupPayment,
     account: &PayerAccount,
     held: bool,
-) -> Option<&'static str> {
+) -> Option<FundingProblem> {
     if held {
         return None;
     }
     if payment.nonce < account.pending_nonce {
-        return Some("stale_nonce");
+        return Some(FundingProblem::StaleNonce);
     }
-    if payment.nonce > account.pending_nonce {
-        return Some("nonce_gap");
+    if payment.nonce - account.pending_nonce > PAYMENT_NONCE_WINDOW {
+        return Some(FundingProblem::NonceGap);
     }
     let owed = payment.value_wei.saturating_add(payment.max_gas_cost_wei);
-    (owed > account.balance_wei).then_some("insufficient_balance")
+    (owed > account.balance_wei).then_some(FundingProblem::InsufficientBalance)
 }

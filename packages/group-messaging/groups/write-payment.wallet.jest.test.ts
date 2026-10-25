@@ -23,7 +23,10 @@ import {
 import { evmWalletInternals } from '@frank/wallet/evm-wallet'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import type { EvmTransactionSetPolicy } from '@frank/wallet/evm-transaction-set-types'
-import { deliverPaidGroupWrite } from './write-payment'
+import {
+  GroupWritePaidRefusalError,
+  deliverPaidGroupWrite,
+} from './write-payment'
 
 jest.mock('@frank/wallet/evm-provider', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineProviderModule(),
@@ -147,10 +150,16 @@ test('the wallet broadcasts only after the relay holds the write', async () => {
     })
     expect(delivered).toMatchObject({ state: 'delivered', settled: true })
     expect(broadcastsAtRelay).toEqual([0])
-    // The payment is the first transaction of its coin, so its bytes alone can land: the host
-    // checks its nonce against the payer's next one.
-    expect(Transaction.from(`0x${record.stored!.rawTransaction}`).nonce).toBe(0)
     expect(minedPayments()).toEqual([`0x${record.stored!.rawTransaction}`])
+    // After the relay holds the write the wallet broadcasts its whole set, the payment among its
+    // own self-sends in whatever order construction drew, each account's nonces in order.
+    const byAccount = new Map<string, number[]>()
+    for (const raw of offlineChain.walletBroadcasts) {
+      const tx = Transaction.from(hexlify(raw))
+      byAccount.set(tx.from!, [...(byAccount.get(tx.from!) ?? []), tx.nonce])
+    }
+    for (const nonces of byAccount.values())
+      expect(nonces).toEqual([...nonces].sort((a, b) => a - b))
   } finally {
     await f.close()
   }
@@ -199,14 +208,15 @@ test('a refusal after an uncertain attempt keeps the coin and tracks the mined p
         throw new Error('timeout of 15000ms exceeded')
       }),
     ).rejects.toThrow('timeout')
-    const refused = await deliver(f.alice, record, async () => {
-      throw new GroupWriteRefusedError(
-        402,
-        'group_payment_invalid',
-        'underpaid',
-      )
-    })
-    expect(refused).toMatchObject({ state: 'refused', outcome: 'spent' })
+    await expect(
+      deliver(f.alice, record, async () => {
+        throw new GroupWriteRefusedError(
+          402,
+          'group_payment_invalid',
+          'underpaid',
+        )
+      }),
+    ).rejects.toBeInstanceOf(GroupWritePaidRefusalError)
     expect(record.stored).toMatchObject({ spent: true })
     expect(record.stored!.released).toBeUndefined()
     // Authorized and reconciled from the chain: the wallet holds the mined payment, and did

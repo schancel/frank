@@ -116,9 +116,6 @@ export function evmTransactionSetCapability(
         ...(request.maxRecipientTransactions === undefined
           ? {}
           : { maxPaymentParts: request.maxRecipientTransactions }),
-        ...(request.independentRecipientTransactions
-          ? { independentPayments: true }
-          : {}),
       })
       return project(result)
     },

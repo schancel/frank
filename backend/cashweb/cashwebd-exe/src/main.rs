@@ -218,7 +218,8 @@ fn main() -> Result<()> {
     }
     // The FDB client network is process-wide: boot it once, before any store opens, and stop it
     // only after the runtime and every blocking worker that may call a store have finished.
-    let fdb_network = boot_fdb_network(&driver)?;
+    // Locals drop in reverse order, so the network guard outlives the runtime below.
+    let _fdb_network = boot_fdb_network(&driver)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -233,9 +234,10 @@ fn main() -> Result<()> {
     ));
     // Dropping the runtime waits for every blocking worker to return (unlike
     // `shutdown_timeout`, which detaches them). FoundationDB calls return within
-    // `FDB_TRANSACTION_TIMEOUT`, so no store call is still running when the network stops.
+    // `FDB_TRANSACTION_TIMEOUT` while the network runs, and if the network thread dies the
+    // watcher started by `boot_fdb_network` ends the process, so this wait is bounded. The
+    // network guard is dropped after this, when `main` returns.
     drop(runtime);
-    drop(fdb_network);
     result
 }
 
@@ -298,6 +300,7 @@ fn boot_fdb_network(driver: &RelayStorageDriver) -> Result<Option<FdbNetwork>> {
                     "Starting the FoundationDB network: {error}"
                 ))
             })?;
+            watch_fdb_network();
             Ok(Some(network))
         }
         #[cfg(not(feature = "foundationdb"))]
@@ -395,18 +398,23 @@ async fn probe_shared_groups(
 
 /// A stopped FoundationDB network cannot be restarted in this process, and calls already
 /// waiting on it never return. Exit so the supervisor restarts the replica.
+#[cfg(feature = "foundationdb")]
 fn watch_fdb_network() {
-    #[cfg(feature = "foundationdb")]
-    tokio::spawn(async {
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            tick.tick().await;
+    // A plain thread, not a runtime task, so it still runs while `main` waits for the runtime
+    // to shut down.
+    std::thread::Builder::new()
+        .name("fdb-network-watch".into())
+        .spawn(|| loop {
+            std::thread::sleep(Duration::from_secs(1));
             if FdbNetwork::failed() {
                 tracing::error!("FoundationDB network thread stopped; exiting for a restart");
-                std::process::exit(70);
+                // `_exit`, not `exit`: no atexit handlers or C++ static destructors run while
+                // RocksDB and the FDB client are still in use on other threads.
+                // SAFETY: `_exit` only terminates the process.
+                unsafe { libc::_exit(70) };
             }
-        }
-    });
+        })
+        .expect("spawn the FoundationDB network watcher");
 }
 
 async fn run(
@@ -441,9 +449,6 @@ async fn run(
     probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
     if check_db {
         return Ok(());
-    }
-    if matches!(driver, RelayStorageDriver::FoundationDb { .. }) {
-        watch_fdb_network();
     }
     log_cluster_shape(&conf.registry, &driver);
     // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.

@@ -143,7 +143,21 @@ fn group_error_response(err: GroupError) -> Response {
             };
             (status, Json(ErrorBody { error: code.into() })).into_response()
         }
+        // Both are retryable with the same request. A commit-unknown write may already be
+        // stored, so the client must resend the same envelope or frame, never a new one.
+        GroupError::CommitUnknown(_) => retryable_unavailable("group_commit_unknown"),
+        GroupError::StorageTimedOut => retryable_unavailable("group_storage_timeout"),
     }
+}
+
+/// `503` with a stable error code and `Retry-After: 1`.
+fn retryable_unavailable(code: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "1")],
+        Json(ErrorBody { error: code.into() }),
+    )
+        .into_response()
 }
 
 fn is_cbor_content_type(headers: &HeaderMap) -> bool {
@@ -1702,6 +1716,167 @@ mod tests {
                 .unwrap();
         });
         (origin, task)
+    }
+
+    /// When armed, the next transaction that writes either commits and then reports
+    /// `CommitUnknownResult`, or (with `time_out`) is abandoned and reports
+    /// `TransactionTimedOut`. Read-only transactions pass through.
+    #[derive(Debug)]
+    struct AmbiguousOnce {
+        inner: RocksDbKvStore,
+        armed: std::sync::atomic::AtomicBool,
+        time_out: bool,
+    }
+
+    /// Forwards to the real transaction and records whether the attempt wrote anything.
+    struct Tracking<'a> {
+        tx: &'a mut dyn crate::store::kv_store::KvTransaction,
+        wrote: bool,
+    }
+
+    impl crate::store::kv_store::KvTransaction for Tracking<'_> {
+        fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, crate::store::kv_store::KvError> {
+            self.tx.get(key)
+        }
+        fn get_range(
+            &mut self,
+            start: &[u8],
+            end: &[u8],
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, crate::store::kv_store::KvError> {
+            self.tx.get_range(start, end, limit)
+        }
+        fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), crate::store::kv_store::KvError> {
+            self.wrote = true;
+            self.tx.set(key, value)
+        }
+        fn clear(&mut self, key: &[u8]) -> Result<(), crate::store::kv_store::KvError> {
+            self.wrote = true;
+            self.tx.clear(key)
+        }
+        fn atomic_add(
+            &mut self,
+            key: &[u8],
+            delta: i64,
+        ) -> Result<(), crate::store::kv_store::KvError> {
+            self.wrote = true;
+            self.tx.atomic_add(key, delta)
+        }
+    }
+
+    impl crate::store::kv_store::RelayKvStore for AmbiguousOnce {
+        fn run_transaction(
+            &self,
+            body: &mut dyn FnMut(
+                &mut dyn crate::store::kv_store::KvTransaction,
+            ) -> crate::store::kv_store::Outcome,
+        ) -> Result<crate::store::kv_store::Outcome, crate::store::kv_store::KvError> {
+            use crate::store::kv_store::{KvError, Outcome};
+            use std::sync::atomic::Ordering;
+            let mut wrote = false;
+            let outcome = self.inner.run_transaction(&mut |tx| {
+                let mut tracking = Tracking { tx, wrote: false };
+                let outcome = body(&mut tracking);
+                wrote = tracking.wrote;
+                if self.time_out
+                    && wrote
+                    && outcome == Outcome::Commit
+                    && self.armed.load(Ordering::SeqCst)
+                {
+                    // Time out before committing: nothing is written.
+                    return Outcome::Abort;
+                }
+                outcome
+            })?;
+            if wrote && self.armed.load(Ordering::SeqCst) {
+                self.armed.store(false, Ordering::SeqCst);
+                return Err(if self.time_out {
+                    KvError::TransactionTimedOut
+                } else {
+                    // The write committed; only the answer is lost.
+                    KvError::CommitUnknownResult("injected after commit".into())
+                });
+            }
+            Ok(outcome)
+        }
+    }
+
+    #[tokio::test]
+    async fn ambiguous_or_timed_out_appends_are_retryable_503s_and_a_resend_keeps_one_row() {
+        for (time_out, code) in [
+            (false, "group_commit_unknown"),
+            (true, "group_storage_timeout"),
+        ] {
+            let kv = Arc::new(AmbiguousOnce {
+                inner: RocksDbKvStore::open_temporary().unwrap(),
+                armed: std::sync::atomic::AtomicBool::new(false),
+                time_out,
+            });
+            let store = GroupStore::new(
+                Arc::clone(&kv) as Arc<dyn crate::store::kv_store::RelayKvStore>,
+                Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            );
+            let (root_sk, root_pk) = keypair(8);
+            let (write_sk, write_pk) = keypair(80);
+            let id = hex::encode(derive_group_id(&root_pk));
+            store
+                .put_epoch(
+                    &id,
+                    signed_epoch(
+                        &root_sk,
+                        GroupEpochFrame {
+                            group_id: id.clone(),
+                            group_pubkey: hex::encode(root_pk),
+                            epoch: 0,
+                            prev_epoch_hash: "00".repeat(32),
+                            write_pubkey: hex::encode(write_pk),
+                            read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                            encrypted_epoch_descriptor: hex::encode(b"roster"),
+                            admin_sig: String::new(),
+                            epoch_hash: String::new(),
+                        },
+                    ),
+                )
+                .unwrap();
+            let mut message = GroupMessageEnvelope {
+                group_id: id.clone(),
+                epoch: 0,
+                nonce: hex::encode([2u8; 24]),
+                ciphertext: hex::encode(b"maybe stored"),
+                write_sig: String::new(),
+            };
+            message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
+            let (origin, task) = spawn_group_router(store.clone()).await;
+            let client = reqwest::Client::new();
+            let send = || {
+                client
+                    .put(format!("{origin}/groups/{id}/messages"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(serde_json::to_vec(&message).unwrap())
+                    .send()
+            };
+            kv.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let first = send().await.unwrap();
+            assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE, "{code}");
+            assert_eq!(first.headers().get(header::RETRY_AFTER).unwrap(), "1");
+            let error: serde_json::Value =
+                serde_json::from_slice(&first.bytes().await.unwrap()).unwrap();
+            assert_eq!(error["error"], code);
+            // The client resends the same envelope: one row, whether or not the first committed.
+            let retry = send().await.unwrap();
+            assert_eq!(retry.status(), StatusCode::OK, "{code}");
+            assert_eq!(
+                retry.headers().get(HEADER_GROUP_APPEND).unwrap(),
+                if time_out { "appended" } else { "existing" }
+            );
+            let row: StoredGroupMessage =
+                serde_json::from_slice(&retry.bytes().await.unwrap()).unwrap();
+            assert_eq!(row.server_seq, 1, "{code}");
+            task.abort();
+        }
     }
 
     #[tokio::test]

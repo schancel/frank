@@ -513,11 +513,23 @@ pub enum GroupError {
     /// bucket and object key, so the HTTP layer logs it and answers generically.
     #[error("group large-value store: {0}")]
     LargeValue(LargeValueError),
+    /// The store could not say whether the write committed. It may have: the caller retries
+    /// the same request. A repeated append is answered `existing`; a repeated epoch frame that
+    /// did commit gets 409, and the client re-reads the latest epoch to confirm it.
+    #[error("group_commit_unknown: {0}")]
+    CommitUnknown(String),
+    /// The transaction ran out of time before committing; nothing was written. Retryable.
+    #[error("group_storage_timeout")]
+    StorageTimedOut,
 }
 
 impl From<KvError> for GroupError {
     fn from(err: KvError) -> Self {
-        GroupError::Storage(err.to_string())
+        match err {
+            KvError::CommitUnknownResult(detail) => GroupError::CommitUnknown(detail),
+            KvError::TransactionTimedOut => GroupError::StorageTimedOut,
+            other => GroupError::Storage(other.to_string()),
+        }
     }
 }
 

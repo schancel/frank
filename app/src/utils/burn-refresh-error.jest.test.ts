@@ -6,6 +6,8 @@ import {
   refreshAfterBurn,
 } from './burn-refresh-error'
 import { errorNotify, infoNotify } from './notifications'
+import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
+import { TopicVoteAbandonedError } from '@frank/wallet/topic-vote-client'
 
 jest.mock('./notifications', () => ({
   errorNotify: jest.fn(),
@@ -46,6 +48,32 @@ describe('notifyBurnFailure', () => {
     },
   )
 
+  it.each([
+    [
+      'vote',
+      new TopicVoteAbandonedError(
+        'Forum operation retained pending: Forum relay HTTP 404 (topic_target_not_found)',
+        '00'.repeat(32),
+      ),
+      'stampPreparation.voteOutcomeUnknown',
+    ],
+    [
+      'post',
+      new TopicPostOutcomeUnknownError(
+        'Forum operation retained pending: Forum relay HTTP 409 (topic_operation_conflict)',
+        new Error('relay'),
+      ),
+      'stampPreparation.postOutcomeUnknown',
+    ],
+  ] as const)(
+    'a %s the relay refused but the wallet retained pending gets a localized do-not-repeat notice, not the relay text',
+    (_kind, err, key) => {
+      notifyBurnFailure(err, t)
+      expect(errorNotify).toHaveBeenCalledWith(err, { fallbackKey: key })
+      expect(infoNotify).not.toHaveBeenCalled()
+    },
+  )
+
   it('reports any other failure as an error', () => {
     const err = new Error('nothing was sent')
     notifyBurnFailure(err, t)
@@ -66,7 +94,12 @@ describe('refresh-failed wording in the real catalogs (review F6)', () => {
     '%s tells the user NOT to repeat, and never invites a retry',
     (locale, doNotRepeat) => {
       const text = catalogs[locale].stampPreparation as Record<string, string>
-      for (const key of ['postedRefreshFailed', 'votedRefreshFailed']) {
+      for (const key of [
+        'postedRefreshFailed',
+        'votedRefreshFailed',
+        'postOutcomeUnknown',
+        'voteOutcomeUnknown',
+      ]) {
         const message: string = text[key]
         expect(message).toMatch(doNotRepeat)
         // Remove the prohibition itself, then no retry-style invitation may remain.

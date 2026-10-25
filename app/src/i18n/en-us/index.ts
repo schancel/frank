@@ -102,6 +102,8 @@ export const rawEnUS = {
       'Your post may have been published. Reload to check for it. Do not post it again.',
     votedRefreshFailed:
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
+    voteOutcomeUnknown:
+      'Your vote was not confirmed. Your wallet keeps it pending and it may still count. Reload later to check. Do not vote again.',
   },
   forum: {
     pullToRefresh: 'Pull down to refresh',

@@ -28,6 +28,10 @@ export interface ConfiguredStealthAssetsContext {
     chainIdentifier: string,
     asset: StealthPaymentAsset,
   ) => bigint | undefined
+  /** Whether the host relay serves a wallet route for this network (its `/chains`
+   * advertisement). A network it does not serve is not offered: a payment there could not be
+   * checked or sent through this relay. Absent: every configured network is offered. */
+  readonly relayServes?: (chainIdentifier: string) => Promise<boolean>
 }
 
 /** Pure configured metadata: listing choices never opens custody or contacts an RPC.
@@ -65,7 +69,24 @@ export async function configuredStealthAssets(
     chainEntries.push(entry)
   }
 
-  for (const entry of chainEntries) {
+  const served = context?.relayServes
+    ? await Promise.all(
+        chainEntries.map(entry =>
+          // The network this account messages on is the relay's own; a failed lookup offers it.
+          entry.id === configured
+            ? Promise.resolve(true)
+            : context.relayServes!(entry.id).catch(() => true),
+        ),
+      )
+    : undefined
+  for (const [index, entry] of chainEntries.entries()) {
+    if (served && !served[index]) {
+      unavailable.push({
+        chainIdentifier: entry.id,
+        error: 'relay-unavailable',
+      })
+      continue
+    }
     try {
       const adapter = resolveChainAdapter(entry.id, entry)
       const descriptors: readonly ChainSupportedAssetDescriptor[] = adapter

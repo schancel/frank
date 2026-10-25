@@ -131,8 +131,13 @@ export default defineComponent({
       return contact.profile?.name || 'Not Found'
     },
     // colorize the reply div to match source sender
+    // and give it that bubble's text color: inside our own (brand-colored, white-text) bubble, a
+    // quoted message from the peer sits on the peer's light surface and needs the peer's text
+    // color, not the white it would inherit.
     replyOverlay() {
-      return this.message.outbound ? 'message-color-sent' : 'message-color'
+      return this.message.outbound
+        ? 'message-color-sent text-message-sent-text'
+        : 'message-color text-message-received-text'
     },
   },
 })

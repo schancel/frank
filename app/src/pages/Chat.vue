@@ -1,189 +1,195 @@
 <template>
   <div class="chat-container column full-height overflow-hidden">
-    <q-banner
-      v-if="
-        conversation?.kind === 'group' &&
-        conversation.membershipStatus === 'invited'
-      "
-      class="q-pa-md"
-      data-testid="group-invite-banner"
-    >
-      {{ $t('groupChat.inviteBannerTitle', { name: conversation.name }) }}
-      <div class="text-caption">
-        {{
-          $t('groupChat.inviteBannerSubtitle', {
-            epoch: conversation.groupState?.epoch ?? 0,
-            relay:
-              conversation.groupState?.homeRelay ?? conversation.groupRelayUrl,
-          })
-        }}
-      </div>
-      <template #action>
-        <q-btn
-          color="primary"
-          :label="$t('groupChat.acceptInviteBtn')"
-          data-testid="accept-group-invite"
-          @click="decideGroupInvite(true)"
-        />
-        <q-btn
-          flat
-          :label="$t('groupChat.declineInviteBtn')"
-          data-testid="decline-group-invite"
-          @click="decideGroupInvite(false)"
-        />
-      </template>
-    </q-banner>
-    <q-banner
-      v-if="
-        conversation?.kind === 'group' &&
-        conversation.membershipStatus === 'joined' &&
-        (conversation.groupState?.syncFailed ||
-          conversation.groupState?.pendingEpoch)
-      "
-      class="q-pa-sm"
-      data-testid="group-sync-failure"
-      role="status"
-    >
-      {{
-        conversation.groupState?.pendingEpoch
-          ? $t('groupChat.epochPending')
-          : $t('groupChat.syncFailed')
-      }}
-      <template #action
-        ><q-btn
-          flat
-          :label="$t('groupChat.retryUpdates')"
-          data-testid="retry-group-updates"
-          @click="retryGroupUpdates"
-      /></template>
-    </q-banner>
-    <q-banner
-      v-if="
-        conversation?.kind === 'group' &&
-        conversation.membershipStatus === 'joined' &&
-        conversation.groupState?.supersededMemberChange
-      "
-      class="q-pa-sm"
-      data-testid="group-member-change-superseded"
-      role="alert"
-    >
-      {{
-        $t(
-          conversation.groupState.supersededMemberChange.action === 'add-member'
-            ? 'groupChat.memberAddSuperseded'
-            : 'groupChat.memberRemoveSuperseded',
-          {
-            member: shortAddress(
-              conversation.groupState.supersededMemberChange.address,
-            ),
-          },
-        )
-      }}
-      <template #action
-        ><q-btn
-          flat
-          :label="$t('groupChat.retryMemberChange')"
-          data-testid="retry-group-member-change"
-          @click="retrySupersededMemberChange" /><q-btn
-          flat
-          :label="$t('groupChat.dismissMemberChange')"
-          data-testid="dismiss-group-member-change"
-          @click="dismissSupersededMemberChange"
-      /></template>
-    </q-banner>
-    <q-banner
-      v-for="request in participantRequests"
-      :key="request.senderAddress"
-      data-testid="participant-request-banner"
-      class="q-pa-sm"
-    >
-      {{
-        $t('groupChat.participantRequest', {
-          address: shortAddress(request.senderAddress),
-        })
-      }}
-      <template #action>
-        <q-btn
-          flat
-          :label="$t('groupChat.viewDirect')"
-          data-testid="participant-request-view"
-          @click="viewParticipantRequest(request.senderConversationId)"
-        />
-        <q-btn
-          flat
-          :label="$t('groupChat.createGroupBtn')"
-          data-testid="participant-request-group"
-          @click="createGroupFromRequest(request.senderAddress)"
-        />
-        <q-btn
-          flat
-          :label="$t('groupChat.dismissRequest')"
-          data-testid="participant-request-dismiss"
-          @click="
-            chatStore.dismissPendingParticipantRequest(
-              conversation.id,
-              request.senderAddress,
-            )
+    <q-page-container class="col full-height overflow-hidden">
+      <!-- Banners sit inside the page container, which the layout pads below its fixed
+      header: outside it they were drawn under the header and hidden on a phone. -->
+      <div class="chat-banners">
+        <q-banner
+          v-if="
+            conversation?.kind === 'group' &&
+            conversation.membershipStatus === 'invited'
           "
-        />
-      </template>
-    </q-banner>
-    <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
-    <div
-      v-if="isScreenerThread"
-      class="screener-triage-banner q-px-md q-py-sm row items-center justify-between q-gutter-xs"
-      data-test="screener-triage-banner"
-      data-testid="screener-triage-banner"
-    >
-      <div class="row items-center no-wrap col">
-        <span
-          class="text-caption text-weight-medium"
-          data-test="screener-stamp-summary"
+          class="q-pa-md"
+          data-testid="group-invite-banner"
+        >
+          {{ $t('groupChat.inviteBannerTitle', { name: conversation.name }) }}
+          <div class="text-caption">
+            {{
+              $t('groupChat.inviteBannerSubtitle', {
+                epoch: conversation.groupState?.epoch ?? 0,
+                relay:
+                  conversation.groupState?.homeRelay ??
+                  conversation.groupRelayUrl,
+              })
+            }}
+          </div>
+          <template #action>
+            <q-btn
+              color="primary"
+              :label="$t('groupChat.acceptInviteBtn')"
+              data-testid="accept-group-invite"
+              @click="decideGroupInvite(true)"
+            />
+            <q-btn
+              flat
+              :label="$t('groupChat.declineInviteBtn')"
+              data-testid="decline-group-invite"
+              @click="decideGroupInvite(false)"
+            />
+          </template>
+        </q-banner>
+        <q-banner
+          v-if="
+            conversation?.kind === 'group' &&
+            conversation.membershipStatus === 'joined' &&
+            (conversation.groupState?.syncFailed ||
+              conversation.groupState?.pendingEpoch)
+          "
+          class="q-pa-sm"
+          data-testid="group-sync-failure"
+          role="status"
         >
           {{
-            $t('chatList.screenerBannerTitle', {
-              value: screenerStampSummary.combinedDisplay,
+            conversation.groupState?.pendingEpoch
+              ? $t('groupChat.epochPending')
+              : $t('groupChat.syncFailed')
+          }}
+          <template #action
+            ><q-btn
+              flat
+              :label="$t('groupChat.retryUpdates')"
+              data-testid="retry-group-updates"
+              @click="retryGroupUpdates"
+          /></template>
+        </q-banner>
+        <q-banner
+          v-if="
+            conversation?.kind === 'group' &&
+            conversation.membershipStatus === 'joined' &&
+            conversation.groupState?.supersededMemberChange
+          "
+          class="q-pa-sm"
+          data-testid="group-member-change-superseded"
+          role="alert"
+        >
+          {{
+            $t(
+              conversation.groupState.supersededMemberChange.action ===
+                'add-member'
+                ? 'groupChat.memberAddSuperseded'
+                : 'groupChat.memberRemoveSuperseded',
+              {
+                member: shortAddress(
+                  conversation.groupState.supersededMemberChange.address,
+                ),
+              },
+            )
+          }}
+          <template #action
+            ><q-btn
+              flat
+              :label="$t('groupChat.retryMemberChange')"
+              data-testid="retry-group-member-change"
+              @click="retrySupersededMemberChange" /><q-btn
+              flat
+              :label="$t('groupChat.dismissMemberChange')"
+              data-testid="dismiss-group-member-change"
+              @click="dismissSupersededMemberChange"
+          /></template>
+        </q-banner>
+        <q-banner
+          v-for="request in participantRequests"
+          :key="request.senderAddress"
+          data-testid="participant-request-banner"
+          class="q-pa-sm"
+        >
+          {{
+            $t('groupChat.participantRequest', {
+              address: shortAddress(request.senderAddress),
             })
           }}
-        </span>
+          <template #action>
+            <q-btn
+              flat
+              :label="$t('groupChat.viewDirect')"
+              data-testid="participant-request-view"
+              @click="viewParticipantRequest(request.senderConversationId)"
+            />
+            <q-btn
+              flat
+              :label="$t('groupChat.createGroupBtn')"
+              data-testid="participant-request-group"
+              @click="createGroupFromRequest(request.senderAddress)"
+            />
+            <q-btn
+              flat
+              :label="$t('groupChat.dismissRequest')"
+              data-testid="participant-request-dismiss"
+              @click="
+                chatStore.dismissPendingParticipantRequest(
+                  conversation.id,
+                  request.senderAddress,
+                )
+              "
+            />
+          </template>
+        </q-banner>
+        <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
+        <div
+          v-if="isScreenerThread"
+          class="screener-triage-banner q-px-md q-py-sm row items-center justify-between q-gutter-xs"
+          data-test="screener-triage-banner"
+          data-testid="screener-triage-banner"
+        >
+          <div class="row items-center no-wrap col">
+            <span
+              class="text-caption text-weight-medium"
+              data-test="screener-stamp-summary"
+            >
+              {{
+                $t('chatList.screenerBannerTitle', {
+                  value: screenerStampSummary.combinedDisplay,
+                })
+              }}
+            </span>
+          </div>
+          <div class="row items-center q-gutter-xs col-auto">
+            <q-btn
+              dense
+              unelevated
+              no-caps
+              size="sm"
+              color="positive"
+              :label="$t('chatList.screenerApprove')"
+              data-test="screener-approve"
+              data-testid="screener-approve"
+              @click="approveScreenerThread"
+            />
+            <q-btn
+              dense
+              outline
+              no-caps
+              size="sm"
+              color="primary"
+              :label="$t('chatList.screenerReplyOnce')"
+              data-test="screener-reply"
+              data-testid="screener-reply"
+              @click="replyOnceScreenerThread"
+            />
+            <q-btn
+              dense
+              flat
+              no-caps
+              size="sm"
+              color="negative"
+              :label="$t('chatList.screenerDismissKeepStamp')"
+              data-test="screener-dismiss"
+              data-testid="screener-dismiss"
+              @click="dismissScreenerThread"
+            />
+          </div>
+        </div>
       </div>
-      <div class="row items-center q-gutter-xs col-auto">
-        <q-btn
-          dense
-          unelevated
-          no-caps
-          size="sm"
-          color="positive"
-          :label="$t('chatList.screenerApprove')"
-          data-test="screener-approve"
-          data-testid="screener-approve"
-          @click="approveScreenerThread"
-        />
-        <q-btn
-          dense
-          outline
-          no-caps
-          size="sm"
-          color="primary"
-          :label="$t('chatList.screenerReplyOnce')"
-          data-test="screener-reply"
-          data-testid="screener-reply"
-          @click="replyOnceScreenerThread"
-        />
-        <q-btn
-          dense
-          flat
-          no-caps
-          size="sm"
-          color="negative"
-          :label="$t('chatList.screenerDismissKeepStamp')"
-          data-test="screener-dismiss"
-          data-testid="screener-dismiss"
-          @click="dismissScreenerThread"
-        />
-      </div>
-    </div>
-    <q-page-container class="col full-height overflow-hidden">
       <email-thread-view
         v-if="isEmailThread"
         ref="emailThreadView"
@@ -486,6 +492,8 @@ import {
   configuredStealthAssets,
   nativeDecimals,
 } from '../stealth-payments/configured-assets'
+import { relayServesWalletRoute } from '../accounts/relay-wallet-route'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import {
   reviewStealthPayment,
   sendReviewedStealthPayment,
@@ -1617,8 +1625,12 @@ export default defineComponent({
       this.stealthQuote = { status: 'pending' }
       this.stealthDialog = true
       try {
+        const relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl
         const { options, unavailable } = await configuredStealthAssets({
           activeBalance: this.activeWalletBalance ?? undefined,
+          // Only networks this relay serves: another could be neither checked nor sent.
+          relayServes: chainIdentifier =>
+            relayServesWalletRoute(relayBaseUrl, chainIdentifier),
         })
         if (!this.stealthDialog || sequence !== this.stealthReviewSequence)
           return
@@ -1831,10 +1843,12 @@ export default defineComponent({
     // button click isn't a resendable "draft" the way typed text is; a recovered-attempt error
     // here just surfaces as a plain notification instead.
     //
-    // `stampValueWei` is an optional override of the user's own configured default stamp amount --
-    // needed for a digital-goods purchase, where the price paid *is* the message's stamp value
-    // (see `DigitalGoodsItem`'s own header on `@frank/cashweb/types/messages`), which is very
-    // unlikely to equal whatever this user happens to have their own default stamp set to.
+    // `stampValueWei` is all the money the message carries, as the renderer or game names it: a
+    // bet, a purchase price (see `DigitalGoodsItem` on `@frank/cashweb/types/messages`), a
+    // payout, or 0n for a move or command that pays nothing. A game or bot button always names
+    // it; it is never the conversation's stamp, whose suggestion follows typed mail. Only content
+    // a person writes (an attachment, a call invite, an article) leaves it out and is stamped
+    // like typed text.
     async sendFollowUpItems({
       items,
       stampValueWei,
@@ -2011,7 +2025,8 @@ export default defineComponent({
         // already handed to the normal captured-context send/reconciliation pipeline.
         this.blackjackPreparing = false
         this.blackjackDialog = false
-        await this.sendFollowUpItems({ items: [built.item] })
+        // A challenge carries no money: the bet is the player's own later message.
+        await this.sendFollowUpItems({ items: [built.item], stampValueWei: 0n })
       } catch (err) {
         if (current())
           errorNotify(err instanceof Error ? err : new Error(String(err)))
@@ -2030,7 +2045,7 @@ export default defineComponent({
       )
         return
       const built = buildDiceChallenge(own, peer)
-      await this.sendFollowUpItems({ items: [built.item] })
+      await this.sendFollowUpItems({ items: [built.item], stampValueWei: 0n })
     },
     async sendMentalPokerChallenge() {
       if (this.sendingMessage) return
@@ -2042,7 +2057,7 @@ export default defineComponent({
       )
         return
       const built = buildMentalPokerChallenge({ own, peer, stakeWei: 0n })
-      await this.sendFollowUpItems({ items: [built.item] })
+      await this.sendFollowUpItems({ items: [built.item], stampValueWei: 0n })
     },
     async sendWebRtcCallInvite(options?: { withVideo?: boolean }) {
       if (this.sendingMessage) return
@@ -2124,7 +2139,8 @@ export default defineComponent({
         wagerWei ?? 0n,
       )
       this.rpsDialog = false
-      await this.sendFollowUpItems({ items: [built.item] })
+      // The challenge states the stake; the opponent's move pays it. The challenge pays nothing.
+      await this.sendFollowUpItems({ items: [built.item], stampValueWei: 0n })
     },
     async sendArticle(payload: ArticlePayload) {
       if (this.sendingMessage || !this.articleDialog) return
@@ -2222,7 +2238,8 @@ export default defineComponent({
       ].find(candidate => !this.blackjackAttempted.has(candidate.key))
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
-      await this.sendFollowUpItems({ items: [step.item] })
+      // Every automatic step pays nothing (see above), so it carries no stamp either.
+      await this.sendFollowUpItems({ items: [step.item], stampValueWei: 0n })
     },
     /** The name of whoever sent this message: this user, or the message's own sender. */
     messageSenderName(msg: ChatMessage, index: number): string {
@@ -2732,8 +2749,12 @@ export default defineComponent({
     peerStampSuggestion(): PeerStampSuggestionResult | undefined {
       if (this.isEmailThread || this.defaultStampWei === undefined)
         return undefined
+      // What a bot's messages carry is the money of its games and shop (payouts, refunds, a
+      // faucet's grant), and a bot never pays more for an answer than it was paid: there is no
+      // stamp level to converge with, so a bot is offered the default stamp.
+      const peerIsBot = this.contact?.profile?.isBot === true
       return computePeerStampSuggestion({
-        messages: this.peerMessages ?? [],
+        messages: peerIsBot ? [] : this.peerMessages ?? [],
         defaultStampWei: this.defaultStampWei,
         minimumStampWei: this.minimumStampWei ?? 0n,
       })
@@ -2775,16 +2796,7 @@ export default defineComponent({
       get(): string {
         const target = this.conversation?.id || this.recipientAddress
         const explicit = target ? this.chatStore.getStampWei(target) : undefined
-        const chosen =
-          explicit ??
-          this.suggestedStampWei ??
-          (!this.isEmailThread && this.defaultStampWei !== undefined
-            ? computePeerStampSuggestion({
-                messages: this.peerMessages ?? [],
-                defaultStampWei: this.defaultStampWei,
-                minimumStampWei: this.minimumStampWei ?? 0n,
-              }).suggestedStampWei
-            : this.defaultStampWei)
+        const chosen = explicit ?? this.suggestedStampWei
         return chosen === undefined ? '' : activeChain.toDisplayAmount(chosen)
       },
     },
@@ -2976,6 +2988,21 @@ export default defineComponent({
   height: auto !important;
   max-height: 100% !important;
   padding-bottom: 0 !important;
+}
+
+.chat-container > :deep(.q-page-container) {
+  display: flex;
+  flex-direction: column;
+}
+
+// The banners take what they need; the conversation (chat page, email thread, reader) the rest.
+.chat-banners {
+  flex: 0 0 auto;
+}
+
+.chat-container > :deep(.q-page-container > :not(.chat-banners)) {
+  flex: 1 1 0%;
+  min-height: 0;
 }
 
 .chat-container > :deep(.q-page-container > .q-page) {

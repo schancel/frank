@@ -341,10 +341,13 @@ export default defineComponent({
         this.leaving = false
         this.leaveGuardTimer = null
       }, LEAVE_GUARD_MS)
+      // Leaving pays nothing: the entry comes back from the bot, and the leave itself is a
+      // command, not a payment.
       this.$emit('sendFollowUp', {
         items: [
           { type: 'raffle', raffleId: this.item.raffleId, action: 'leave' },
         ],
+        stampValueWei: 0n,
       })
     },
   },

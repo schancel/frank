@@ -865,7 +865,7 @@ describe('Chat.vue blackjack challenge', () => {
     balance.mockReset()
   })
 
-  it('sends a dealer challenge with a commitment, keeps the seed, and pays only the ordinary stamp', async () => {
+  it('sends a dealer challenge with a commitment, keeps the seed, and pays nothing', async () => {
     balance.mockResolvedValue(HAND_FEE_RESERVE_WEI + 4_000n)
     const self = challengeThis()
     await methods.sendBlackjackChallenge.call(self, {
@@ -874,8 +874,8 @@ describe('Chat.vue blackjack challenge', () => {
     })
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
     const sent = self.sendFollowUpItems.mock.calls[0][0]
-    // No stamp override: a challenge carries no money.
-    expect(sent.stampValueWei).toBeUndefined()
+    // A challenge carries no money, and no chat stamp either.
+    expect(sent.stampValueWei).toBe(0n)
     const [item] = sent.items
     expect(item).toMatchObject({
       type: 'blackjack-hand',
@@ -1124,7 +1124,8 @@ describe('Chat.vue automatic dealer steps', () => {
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
     const sent = self.sendFollowUpItems.mock.calls[0][0]
     expect(sent.items[0].action).toBe('deal')
-    expect(sent.stampValueWei).toBeUndefined()
+    // An automatic step pays nothing.
+    expect(sent.stampValueWei).toBe(0n)
     // The same position is never attempted twice, even if the send left no message behind.
     await methods.runBlackjackDealer.call(self)
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)

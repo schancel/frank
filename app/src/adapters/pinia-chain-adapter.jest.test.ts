@@ -205,6 +205,22 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(wrapper?.message.status).toBe('confirmed')
       expect(wrapper?.message.destinationAddress).toBe(RECIPIENT_ADDRESS)
     })
+
+    it('places our own read-back message at when it was sent, keeping its receipt time', async () => {
+      const record = makeRecord({
+        outbound: true,
+        recipientPublicKey: PUB_KEY_BYTES,
+        receivedTime: 1_700_000_060_000,
+        sentTime: 1_700_000_000_000,
+      })
+      const wrapper = await toReceivedMessageWrapper(record)
+      expect(wrapper?.message.serverTime).toBe(1_700_000_000_000)
+      expect(wrapper?.message.receivedTime).toBe(1_700_000_060_000)
+
+      const { sentTime: _ignored, ...withoutSent } = record
+      const plain = await toReceivedMessageWrapper(withoutSent)
+      expect(plain?.message.serverTime).toBe(1_700_000_060_000)
+    })
   })
 
   describe('canonical receive from a sender never seen before, without a display profile', () => {

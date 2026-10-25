@@ -141,7 +141,8 @@ export async function toReceivedMessageWrapper(
       outbound: isOutbound,
       status: 'confirmed',
       items: record.items,
-      serverTime: record.receivedTime,
+      // Our own sent message read back from a note to self is placed at when it was sent.
+      serverTime: record.sentTime ?? record.receivedTime,
       receivedTime: record.receivedTime,
       outpoints: [],
       stampValueWei: record.stampValueWei,

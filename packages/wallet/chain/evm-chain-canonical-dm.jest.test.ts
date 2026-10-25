@@ -3638,6 +3638,16 @@ describe('two typed wallets on the open directory', () => {
     expect(projected.items).toEqual(text('original'))
     expect(projected).not.toHaveProperty('contentDigest')
     expect(note.contentDigest).toBe('22'.repeat(32))
+    // A sealed send's note arrives after its payment settles; the message
+    // keeps its receipt time and also carries when it was sent, so it sorts
+    // before replies that arrived while its payment was settling.
+    expect(projected.receivedTime).toBe(100)
+    expect(projected.sentTime).toBe(50)
+    const future = {
+      ...rest,
+      items: rest.items.map(item => (item.type === 'outbox-message' ? { ...item, sentAt: 500 } : item)),
+    }
+    expect(projectOutboxMessageRecord(future, registry)).not.toHaveProperty('sentTime')
   })
 
   it('bounces sent messages back to sender mailbox and decrypts own message via salt', async () => {

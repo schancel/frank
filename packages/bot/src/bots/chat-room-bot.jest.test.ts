@@ -303,4 +303,36 @@ describe("ChatRoomBot", () => {
       )
     ).toBe(true);
   });
+
+  test("room messages name a member by @username, not by address", async () => {
+    const alice = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const bob = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    for (const address of [alice, bob]) {
+      mockState.set(`user_room:${address}`, "general");
+      await mockContext.subscriptions.subscribe(address, "room:general");
+    }
+    (mockContext.lookupPeer as jest.Mock).mockImplementation(async (address) =>
+      address === alice
+        ? { address, displayName: "Alice Profile", username: "alice" }
+        : undefined
+    );
+    sentDirectMessages.length = 0;
+    const message = (payloadDigest: string) => ({
+      conversationId: "c1",
+      peerAddress: alice,
+      peerSubject: alice,
+      timestampMs: Date.now(),
+      payloadDigest,
+      items: [{ type: "text" as const, text: "hello" }],
+      reply: jest.fn(async () => undefined),
+    });
+    await bot.onMessage(message("0x31"), mockContext);
+    expect(sentDirectMessages[0].to).toBe(bob);
+    expect(sentDirectMessages[0].items[0].text).toBe("[**#general**] **@alice**: hello");
+    // Looked up once, not for every message.
+    await bot.onMessage(message("0x32"), mockContext);
+    expect(
+      (mockContext.lookupPeer as jest.Mock).mock.calls.filter(([a]) => a === alice)
+    ).toHaveLength(1);
+  });
 });

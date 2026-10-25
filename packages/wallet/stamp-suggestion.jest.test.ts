@@ -265,6 +265,49 @@ describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", (
       expect(result.netReceivedWei).toBe(8n * DEFAULT_STAMP);
       expect(result.isSuggestedIncrease).toBe(true);
     });
+
+    it("is not raised by bets, payouts or refunds: only conversation messages carry stamps", () => {
+      // The QA history: a 0.05 bet, then game moves and payouts at game amounts.
+      const BET = 5n * DEFAULT_STAMP;
+      const messages = [
+        { outbound: true, items: [{ type: "text" }], stampValueWei: DEFAULT_STAMP, status: "confirmed" },
+        { outbound: true, items: [{ type: "blackjack-hand" }], stampValueWei: BET, status: "confirmed" },
+        {
+          outbound: false,
+          items: [{ type: "rps" }, { type: "text" }],
+          stampValueWei: 2n * BET,
+          verifiedStampValueWei: 2n * BET,
+          status: "confirmed",
+        },
+        { outbound: true, items: [{ type: "digital-goods" }], stampValueWei: BET, status: "confirmed" },
+        { outbound: true, items: [{ type: "raffle" }], stampValueWei: BET, status: "confirmed" },
+      ];
+      const result = computePeerStampSuggestion({
+        messages,
+        defaultStampWei: DEFAULT_STAMP,
+      });
+      expect(result.suggestedStampWei).toBe(DEFAULT_STAMP);
+      expect(result.isSuggestedIncrease).toBe(false);
+      expect(result.sentCount).toBe(1);
+      expect(result.receivedCount).toBe(0);
+    });
+
+    it("still converges on stamps of text, replies and pictures", () => {
+      const messages = [
+        { outbound: true, items: [{ type: "reply" }, { type: "text" }], stampValueWei: DEFAULT_STAMP, status: "confirmed" },
+        {
+          outbound: false,
+          items: [{ type: "image" }, { type: "text" }],
+          stampValueWei: 9n * DEFAULT_STAMP,
+          verifiedStampValueWei: 9n * DEFAULT_STAMP,
+          status: "confirmed",
+        },
+      ];
+      expect(
+        computePeerStampSuggestion({ messages, defaultStampWei: DEFAULT_STAMP })
+          .suggestedStampWei
+      ).toBe(3n * DEFAULT_STAMP);
+    });
   });
 });
 

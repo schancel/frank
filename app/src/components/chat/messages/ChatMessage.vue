@@ -311,6 +311,8 @@ import type { PostAttachment } from '../../../utils/post-editor'
  * its message from memory and says whether it is done.
  */
 const stampWaiters = new Set<() => boolean>()
+/** How long a bubble keeps reading a stamp the wallet holds no coin for yet. */
+export const STAMP_NONE_PATIENCE_MS = 5 * 60_000
 let stampTick: ReturnType<typeof setTimeout> | undefined
 function scheduleStampTick(): void {
   if (stampTick !== undefined || stampWaiters.size === 0) return
@@ -384,6 +386,11 @@ export default defineComponent({
     // A received stamp is the payer's signed transfer; it is shown as claimed until the
     // messaging wallet saw it arrive on chain. Read from memory now, then on the shared tick.
     const stampSettled = ref(false)
+    // `none` (no coin for the message) is also what the wallet answers before it has recorded
+    // the message's coin, or right after a reload before it has read its coins again. Taken as
+    // final, a payout already on chain stayed "claimed" until the bubble was drawn again; so it
+    // is read again for a while before it is believed.
+    const noneUntilMs = Date.now() + STAMP_NONE_PATIENCE_MS
     const readStamp = (): boolean => {
       const message = props.message
       if (
@@ -401,8 +408,13 @@ export default defineComponent({
         // No wallet now: the stamp stays claimed and is read again.
       }
       stampSettled.value = status === 'received'
-      // Settled, never landing, or no coin for it in this wallet: nothing more to wait for.
-      return status === 'received' || status === 'failed' || status === 'none'
+      // Settled, never landing, or (after a while) no coin for it in this wallet: nothing more
+      // to wait for.
+      return (
+        status === 'received' ||
+        status === 'failed' ||
+        (status === 'none' && Date.now() >= noneUntilMs)
+      )
     }
     if (!readStamp()) waitForStamp(readStamp)
     onBeforeUnmount(() => stampWaiters.delete(readStamp))

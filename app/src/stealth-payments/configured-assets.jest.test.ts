@@ -95,3 +95,32 @@ test('invalid adapter denominations fail instead of being guessed from a ticker'
   expect(nativeDecimals(() => 100n)).toBe(2)
   expect(() => nativeDecimals(() => 12n)).toThrow('denomination')
 })
+test('only networks the relay serves are offered; the messaging network always is', async () => {
+  activeChain.chainIdentifier = 'monad-regtest'
+  const asked: string[] = []
+  const { options, unavailable } = await configuredStealthAssets({
+    relayServes: async chain => {
+      asked.push(chain)
+      return false
+    },
+  })
+  expect(new Set(options.map(option => option.chainIdentifier))).toEqual(
+    new Set(['monad-regtest']),
+  )
+  expect(asked).not.toContain('monad-regtest')
+  expect(unavailable.length).toBeGreaterThan(0)
+  expect(unavailable.every(entry => entry.error === 'relay-unavailable')).toBe(
+    true,
+  )
+})
+test('a relay that cannot be asked does not hide a network', async () => {
+  const unasked = await configuredStealthAssets()
+  const failing = await configuredStealthAssets({
+    relayServes: async () => {
+      throw new Error('relay down')
+    },
+  })
+  expect(failing.options.map(option => option.key)).toEqual(
+    unasked.options.map(option => option.key),
+  )
+})

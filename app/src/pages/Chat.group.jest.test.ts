@@ -459,6 +459,14 @@ describe('a shared group invitation', () => {
     expect(wrapper.get('[data-testid="group-invite-banner"]').text()).toContain(
       'Protocol Team',
     )
+    // Inside the page container (the chat column's child), which the layout pads below its
+    // fixed header; drawn straight in the column it sat under the header on a phone.
+    const banners = wrapper
+      .get('[data-testid="group-invite-banner"]')
+      .element.closest('.chat-banners')
+    expect(banners?.parentElement?.parentElement).toBe(
+      wrapper.element.closest('.chat-container') ?? wrapper.element,
+    )
     expect(wrapper.findComponent({ name: 'ChatInput' }).exists()).toBe(false)
     await wrapper.get('[data-testid="accept-group-invite"]').trigger('click')
     await flushPromises()

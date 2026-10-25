@@ -5157,8 +5157,11 @@ export const useChatStore = defineStore('chats', {
               outpoints: wrapper.message.outpoints,
               stampValueWei:
                 wrapper.message.stampValueWei ?? existing.stampValueWei,
-              stampPayments:
-                wrapper.message.stampPayments ?? existing.stampPayments,
+              // The transfers this wallet signed for the message stay its record: a read-back
+              // that names none (a note to self carries none) does not erase them.
+              stampPayments: existing.stampPayments?.length
+                ? existing.stampPayments
+                : wrapper.message.stampPayments,
               senderAddress: existing.senderAddress,
               destinationAddress: wrapper.message.destinationAddress,
               delivery: existing.delivery,

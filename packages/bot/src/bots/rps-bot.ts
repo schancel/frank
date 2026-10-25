@@ -86,7 +86,10 @@ export class RpsBot implements FrankBotDefinition {
   }
 
   /** A new match: the bot's move is chosen and saved before its hash is shown to anyone. */
-  private async start(ctx: BotContext, peerAddress: string): Promise<RpsItem> {
+  private async open(
+    ctx: BotContext,
+    peerAddress: string
+  ): Promise<{ matchId: string; match: Match }> {
     const peer = peerAddress.toLowerCase();
     const matchId = randomBytes(16).toString("hex");
     const match: Match = {
@@ -96,6 +99,12 @@ export class RpsBot implements FrankBotDefinition {
     };
     await ctx.state.put(`match:${matchId}`, JSON.stringify(match));
     await ctx.state.put(`open:${peer}`, matchId);
+    return { matchId, match };
+  }
+
+  /** A new match's card: its commitment. */
+  private async start(ctx: BotContext, peerAddress: string): Promise<RpsItem> {
+    const { matchId, match } = await this.open(ctx, peerAddress);
     return {
       type: "rps",
       action: "start",
@@ -133,32 +142,51 @@ export class RpsBot implements FrankBotDefinition {
       .join("\n")
       .trim()
       .toLowerCase();
-    // A typed move plays the open match for nothing: a message's text is never a stake.
+    // A typed move plays for nothing: a message's text is never a stake. It plays the open
+    // match, or, after a finished one, a new match whose move is chosen and saved first.
     const typed = text.match(/^\/?(rock|paper|scissors)$/)?.[1] as
       | RpsMove
       | undefined;
-    const open = typed ? await ctx.state.get(`open:${peer}`) : undefined;
-    const raw = open ? await ctx.state.get(`match:${open}`) : undefined;
-    if (typed && open && raw) {
-      const match = JSON.parse(raw) as Match;
-      // Free: nothing the message paid is a stake, so nothing is looked up or held.
-      return this.resolve(
-        {
-          type: "rps",
-          action: "move",
-          matchId: open,
-          commitHash: rpsCommitment(match.move, match.salt),
-          playerMove: typed,
-        },
+    // Whatever such a message paid is not a stake and is not kept: it goes back with the
+    // answer (the result, or the table for anything that is not a move).
+    return this.outbox.handle(msgCtx, ctx, async (received) => {
+      if (typed) {
+        const open = await ctx.state.get(`open:${peer}`);
+        const raw = open ? await ctx.state.get(`match:${open}`) : undefined;
+        const { matchId, match } =
+          open && raw
+            ? { matchId: open, match: JSON.parse(raw) as Match }
+            : await this.open(ctx, peer);
+        return this.resolve(
+          {
+            type: "rps",
+            action: "move",
+            matchId,
+            commitHash: rpsCommitment(match.move, match.salt),
+            playerMove: typed,
+          },
+          msgCtx,
+          ctx,
+          received
+        );
+      }
+      const start = await this.start(ctx, peer);
+      const help = rpsHelp(ctx.formatAmount(await this.limit(ctx)));
+      if (received.confirmedWei === 0n && received.unconfirmed.length === 0) {
+        await replyFree(msgCtx, [start, { type: "text", text: help }]);
+        // Nothing reached the bot: the message is settled with nothing kept.
+        await this.outbox.keep(ctx, msgCtx.payloadDigest);
+        return;
+      }
+      return refuse(
+        this.outbox,
         msgCtx,
         ctx,
-        { confirmedWei: 0n, confirmed: [], unconfirmed: [] }
+        received,
+        `${help}\n\nThat message was not a move, so nothing was played.`,
+        [start]
       );
-    }
-    await replyFree(msgCtx, [
-      await this.start(ctx, peer),
-      { type: "text", text: rpsHelp(ctx.formatAmount(await this.limit(ctx))) },
-    ]);
+    });
   }
 
   private async resolve(
@@ -225,8 +253,8 @@ export class RpsBot implements FrankBotDefinition {
         )} is confirmed as paid with it. Nothing was played.`
       );
 
-    // Anything paid above a stated stake goes back with the result.
-    const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;
+    // Anything paid above the stake goes back with the result; for a free match, all of it.
+    const excessWei = received.confirmedWei - wagerWei;
 
     const outcome = evaluateRps(playerMove, match.move);
     const payoutWei = rpsPayoutWei(wagerWei, outcome);
@@ -249,9 +277,11 @@ export class RpsBot implements FrankBotDefinition {
         : payoutWei > 0n
         ? ` This message pays you ${ctx.formatAmount(payoutWei)}.`
         : ` Your stake of ${ctx.formatAmount(wagerWei)} is lost.`) +
-      (excessWei > 0n
-        ? ` You paid ${ctx.formatAmount(excessWei)} more than your stake; it is returned with this message.`
-        : "");
+      (excessWei <= 0n
+        ? ""
+        : wagerWei === 0n
+        ? ` Your message paid ${ctx.formatAmount(excessWei)}, which is not a stake; it is returned with this message.`
+        : ` You paid ${ctx.formatAmount(excessWei)} more than your stake; it is returned with this message.`);
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the move is given up and before
     // anything is sent; it is then sent until it has gone, once.

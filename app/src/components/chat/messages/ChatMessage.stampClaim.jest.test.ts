@@ -6,7 +6,7 @@
  */
 import { shallowMount } from '@vue/test-utils'
 
-import ChatMessage from './ChatMessage.vue'
+import ChatMessage, { STAMP_NONE_PATIENCE_MS } from './ChatMessage.vue'
 import enUS from '../../../i18n/en-us'
 import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
 
@@ -121,14 +121,30 @@ it('shows a settled stamp without the label from the first render, from memory',
   wrapper.unmount()
 })
 
-it('stops reading when the wallet holds no coin for the stamp', async () => {
+it('keeps reading a stamp the wallet has no coin for yet, and settles once the coin is recorded', async () => {
+  // Drawn before the wallet recorded the payout's coin (or right after a reload).
   mockStampStatus = 'none'
   const wrapper = mountStamp(false)
   expect(shown(wrapper)).toBe('0.01 MON (claimed)')
   await tick()
+  expect(mockRefresh).toHaveBeenCalledTimes(1)
+  mockStampStatus = 'received'
   await tick()
-  expect(mockRefresh).not.toHaveBeenCalled()
-  expect(mockRead).toHaveBeenCalledTimes(1)
+  expect(shown(wrapper)).toBe('0.01 MON')
+  wrapper.unmount()
+})
+
+it('stops reading, after a while, when the wallet never holds a coin for the stamp', async () => {
+  mockStampStatus = 'none'
+  const wrapper = mountStamp(false)
+  const ticks =
+    Math.ceil(STAMP_NONE_PATIENCE_MS / RECEIVED_PAYMENT_RECHECK_MS) + 1
+  for (let i = 0; i < ticks; i += 1) await tick()
+  const reads = mockRefresh.mock.calls.length
+  await tick()
+  await tick()
+  expect(mockRefresh.mock.calls.length).toBe(reads)
+  expect(shown(wrapper)).toBe('0.01 MON (claimed)')
   wrapper.unmount()
 })
 

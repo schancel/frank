@@ -103,3 +103,24 @@ export async function requireRelayWalletRoute(
   if (!route.capabilities.includes(entry.wallet.indexer))
     throw new RelayWalletRouteUnavailableError(chainIdentifier)
 }
+
+/** Whether the relay advertises a usable wallet route for this network. `false` when it does
+ * not (or advertises one this client cannot use); rejects when the relay could not be asked, so
+ * a caller never takes an unreachable relay as an answer. */
+export async function relayServesWalletRoute(
+  relayBaseUrl: string,
+  chainIdentifier: string,
+): Promise<boolean> {
+  try {
+    await requireRelayWalletRoute(relayBaseUrl, chainIdentifier)
+    return true
+  } catch (error) {
+    if (error instanceof RelayWalletRouteUnavailableError) return false
+    if (
+      error instanceof Error &&
+      error.message.startsWith('Invalid relay wallet route')
+    )
+      return false
+    throw error
+  }
+}

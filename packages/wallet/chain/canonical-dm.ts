@@ -2640,8 +2640,14 @@ export function projectOutboxMessageRecord(
       outboxItem.stampValueWei !== undefined
         ? BigInt(outboxItem.stampValueWei)
         : record.stampValueWei,
-    // The note's sentAt describes the original message, not this mailbox receipt.
+    // The note's sentAt describes the original message, not this mailbox receipt: the receipt
+    // stays the read position, and the message is placed at when it was sent.
     receivedTime: record.receivedTime,
+    ...(Number.isSafeInteger(outboxItem.sentAt) &&
+    outboxItem.sentAt > 0 &&
+    outboxItem.sentAt <= record.receivedTime
+      ? { sentTime: outboxItem.sentAt }
+      : {}),
   }
 }
 

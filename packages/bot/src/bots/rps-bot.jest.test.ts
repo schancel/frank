@@ -1,6 +1,7 @@
 import type { RpsItem } from "@frank/cashweb/types/messages";
 import {
   evaluateRps,
+  rpsCommitment,
   verifyRpsResult,
   type RpsMove,
 } from "@frank/wallet/message-item-plugins/rps/fair";
@@ -92,7 +93,7 @@ describe("RpsBot", () => {
     expect(h.sent[0].valueWei).toBe(STAKE);
   });
 
-  test("a typed move plays the open match for nothing, whatever the message paid", async () => {
+  test("a typed move plays the open match for nothing, and what the message paid comes back", async () => {
     const h = harness();
     const bot = new RpsBot();
     const { botMove } = await match(h, bot, "win");
@@ -103,8 +104,53 @@ describe("RpsBot", () => {
       h.message([{ type: "text", text: `/${winning}` }], [h.pay(STAKE)]),
       h.ctx
     );
+    expect(h.sent).toHaveLength(1);
     expect(h.item("rps").outcome).toBe("win");
-    expect(h.paidOut()).toBe(0n);
+    expect(h.item("rps").wagerWei).toBe("0");
+    // Typed text is never a stake: nothing is won, and the stamp it paid is not kept.
+    expect(h.paidOut()).toBe(STAKE);
+  });
+
+  test("after a finished match, a typed move plays a new match for nothing instead of starting over", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { mine } = await match(h, bot, "win");
+    await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.item("rps").action).toBe("resolve");
+    h.sent.length = 0;
+
+    const paid = STAKE / 10n;
+    await bot.onMessage(
+      h.message([{ type: "text", text: "paper" }], [h.pay(paid)]),
+      h.ctx
+    );
+    expect(h.sent).toHaveLength(1);
+    const result = h.item("rps");
+    expect(result.action).toBe("resolve");
+    expect(result.playerMove).toBe("paper");
+    expect(result.wagerWei).toBe("0");
+    // No welcome and no new card: the move was played.
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "start")).toBe(false);
+    // The reveal matches a commitment the bot saved before it saw the move.
+    expect(rpsCommitment(result.botMove!, result.secretSalt!)).toBe(result.commitHash);
+    expect(h.paidOut()).toBe(paid);
+    // One match, one result: the free match is closed like any other.
+    expect(h.data.get(`match:${result.matchId}`)).toBeUndefined();
+  });
+
+  test("a message that is not a move gets the table; what it paid comes back with it", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    await bot.onMessage(h.message([{ type: "text", text: "hello" }], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.item("rps").action).toBe("start");
+    expect(h.sent[0].valueWei).toBe(STAKE);
+
+    h.sent.length = 0;
+    await bot.onMessage(h.message([{ type: "text", text: "hello" }]), h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.item("rps").action).toBe("start");
+    expect(h.sent[0].valueWei).toBe(0n);
   });
 
   test("a stake over the table limit is refused and refunded", async () => {

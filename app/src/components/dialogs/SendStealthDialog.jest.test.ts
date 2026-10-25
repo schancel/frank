@@ -292,4 +292,31 @@ describe('multiasset stealth send dialog', () => {
       expect(shown(wrapper)).toBe('0.03 tXEC')
     })
   })
+
+  it('shows the available amount shortened like other balances, the exact amount in its title', () => {
+    const precise = { ...options[0], balanceAtomic: 19946947777661965175n }
+    const wrapper = mountDialog({ options: [precise] })
+    const value = wrapper.find('[data-testid="wallet-balance-value"]')
+    expect(value.text()).toBe('19.9469 MONT')
+    expect(value.attributes('title')).toBe('19.946947777661965175 MONT')
+  })
+
+  it('drops a failure once another asset or amount is chosen, and shows the next one', async () => {
+    const wrapper = mountDialog({
+      quote: { status: 'error', message: 'Could not be sent' },
+    })
+    expect(wrapper.find('[data-testid="stealth-quote-error"]').exists()).toBe(
+      true,
+    )
+    await wrapper.find('select').setValue(options[1].key)
+    expect(wrapper.find('[data-testid="stealth-quote-error"]').exists()).toBe(
+      false,
+    )
+    await wrapper.setProps({
+      quote: { status: 'error', message: 'Still not sent' },
+    })
+    expect(wrapper.find('[data-testid="stealth-quote-error"]').text()).toBe(
+      'Still not sent',
+    )
+  })
 })

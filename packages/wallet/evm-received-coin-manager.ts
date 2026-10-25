@@ -71,10 +71,12 @@ import {
 } from "./evm-stealth";
 import type { MonadWalletMaterial } from "./evm-wallet-material";
 import { READS_AT_ONCE } from "./evm-rpc-read-budget";
+import { recordWalletFailure } from "./wallet-failure";
 import { DefaultStampUnavailableError } from "./oracle/stamp-policy";
-import type {
-  StealthPaymentReceiptCapability,
-  StealthPaymentReceiptClaim,
+import {
+  StealthPaymentMemberLimitError,
+  type StealthPaymentReceiptCapability,
+  type StealthPaymentReceiptClaim,
 } from "./stealth-payment";
 import {
   applyStoredNativeCoinObservation,
@@ -1742,7 +1744,11 @@ export function createEvmReceivedCoinAndContactManager(
         await allocate(candidates);
         if (remaining > 0n && sources.length === 16) await allocate([...candidates].sort((a, b) => a.balance === b.balance ? candidates.indexOf(a) - candidates.indexOf(b) : a.balance > b.balance ? -1 : 1));
         assertFinancialActive();
-        if (remaining > 0n) throw new RangeError(sources.length === 16 ? "Payment cannot fit the 16-member limit" : lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds");
+        if (remaining > 0n) {
+          if (sources.length === 16) throw new StealthPaymentMemberLimitError(16);
+          // Token or its gas is short: the same fact the native path reports.
+          throw recordWalletFailure(new RangeError(lacksGas ? "ERC20 payment needs native gas at owned sources" : "Insufficient unreserved payment funds"), { diagnosis: "insufficient-funds" });
+        }
         return { sources };
       },
       async tokenAvailable(contractAddress) {

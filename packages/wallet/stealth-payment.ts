@@ -82,6 +82,15 @@ export interface StealthPaymentQuote {
   readonly estimatedNativeFeeAtomic: bigint
 }
 
+/** The payment would need more owned accounts than one operation may sign (16). Funds may be
+ * sufficient; the amount is spread over too many coins. */
+export class StealthPaymentMemberLimitError extends RangeError {
+  constructor(readonly memberLimit: number) {
+    super(`Payment cannot fit the ${memberLimit}-member limit`)
+    this.name = 'StealthPaymentMemberLimitError'
+  }
+}
+
 export interface StealthPaymentCapability {
   /** Native payment and same-chain stamp can share one immutable signed operation. */
   readonly supportsCombinedStamp?: true

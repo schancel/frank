@@ -1029,6 +1029,8 @@ export const rawEnUS = {
     pending:
       'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
     notSent: 'The payment could not be made. Nothing was sent.',
+    tooManyCoins:
+      'This payment needs too many coins at once. Nothing was sent; send a smaller amount, or try again after the wallet has combined its coins.',
     networkBusy:
       'The network is busy right now. Nothing was sent; try again in a moment.',
     messageEnded:

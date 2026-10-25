@@ -1,6 +1,7 @@
 import { makeError } from 'ethers'
 import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
 import { recordWalletFailure } from '@frank/wallet/wallet-failure'
+import { StealthPaymentMemberLimitError } from '@frank/wallet/stealth-payment'
 import {
   notSentFailureKey,
   sendFailureKey,
@@ -27,19 +28,32 @@ describe('stealth payment failure messages', () => {
     expect(notSentFailureKey(throttled())).toBe('sendStealthDialog.networkBusy')
   })
 
-  it('names insufficient funds and falls back to the plain not-sent message', () => {
+  it('names insufficient funds only where the wallet diagnosed it', () => {
     expect(
       notSentFailureKey(
-        new RangeError('Insufficient unreserved payment funds'),
+        recordWalletFailure(
+          new RangeError('Insufficient unreserved payment funds'),
+          { diagnosis: 'insufficient-funds' },
+        ),
       ),
     ).toBe('sendStealthDialog.insufficientFunds')
+  })
+
+  it('tells the user what to do when the payment needs too many coins', () => {
+    expect(notSentFailureKey(new StealthPaymentMemberLimitError(16))).toBe(
+      'sendStealthDialog.tooManyCoins',
+    )
     expect(
-      notSentFailureKey(
-        recordWalletFailure(new Error('x'), {
-          diagnosis: 'insufficient-funds',
-        }),
+      sendFailureKey(
+        new StealthPaymentNotSentError(new StealthPaymentMemberLimitError(16)),
       ),
-    ).toBe('sendStealthDialog.insufficientFunds')
+    ).toBe('sendStealthDialog.tooManyCoins')
+  })
+
+  it('gives anything else the generic message, even a RangeError', () => {
+    expect(notSentFailureKey(new RangeError('Invalid BigInt'))).toBe(
+      'sendStealthDialog.notSent',
+    )
     expect(notSentFailureKey(new Error('quote mismatch'))).toBe(
       'sendStealthDialog.notSent',
     )

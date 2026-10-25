@@ -13,6 +13,7 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { deriveEvmStealthAddress } from '../evm-stealth'
 import { getEvmDexDeployment } from './dex-deployments'
 import type { StealthPaymentReceiptClaim } from '../stealth-payment'
+import { describeWalletFailure } from '../wallet-failure'
 
 import {
   EVM_COIN_NAMESPACE,
@@ -627,9 +628,12 @@ test('honestly rejects more than sixteen required members and gasless-only token
     kind: 'erc20',
     contractAddress: token,
   })
-  await expect(
-    wallet.stealthPayments!.prepare(tokenIntent),
-  ).rejects.toThrow(/native gas/)
+  const gaslessFailure = await wallet
+    .stealthPayments!.prepare(tokenIntent)
+    .catch(error => error)
+  expect(String(gaslessFailure)).toMatch(/native gas/)
+  // The app tells the user "insufficient funds" from this diagnosis, not from the error class.
+  expect(describeWalletFailure(gaslessFailure).kind).toBe('insufficient-funds')
   expect(state.balances.get(gasless.address)).toBe(0n)
   expect(state.broadcast).not.toHaveBeenCalled()
   expect(wallet.getNativeOperations!()).toHaveLength(0)

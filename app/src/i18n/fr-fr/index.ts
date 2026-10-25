@@ -1054,6 +1054,8 @@ export const rawFrFR = {
     pending:
       'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
+    tooManyCoins:
+      'Ce paiement demande trop de pièces à la fois. Rien n’a été envoyé ; envoyez un montant plus petit, ou réessayez une fois que le portefeuille aura regroupé ses pièces.',
     networkBusy:
       'Le réseau est occupé pour le moment. Rien n’a été envoyé ; réessayez dans un instant.',
     messageEnded:

@@ -1,4 +1,5 @@
 import { describeWalletFailure } from '@frank/wallet/wallet-failure'
+import { StealthPaymentMemberLimitError } from '@frank/wallet/stealth-payment'
 
 /** The financial owner proved the prepared payment was never handed to anyone who could
  * broadcast it, and released it. Only then may the user be told that nothing was sent. */
@@ -16,8 +17,11 @@ export function notSentFailureKey(error: unknown): string {
   const failure = describeWalletFailure(error)
   // A throttled or unreachable RPC: the chain's provider is busy, not the payment wrong.
   if (failure.retry === 'transient') return 'sendStealthDialog.networkBusy'
-  if (failure.kind === 'insufficient-funds' || error instanceof RangeError)
+  if (failure.kind === 'insufficient-funds')
     return 'sendStealthDialog.insufficientFunds'
+  if (error instanceof StealthPaymentMemberLimitError)
+    return 'sendStealthDialog.tooManyCoins'
+  // Anything else: the generic message; the caller logs the detail to the console.
   return 'sendStealthDialog.notSent'
 }
 

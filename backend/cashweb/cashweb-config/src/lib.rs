@@ -655,13 +655,11 @@ impl RegistryConf {
         if self.directory.is_some() {
             // On FoundationDB the directory's state is shared; only the per-source hourly
             // enrollment quota is still counted by each replica (step 10 makes it shared).
-            owners.push(
-                if local_driver {
-                    ReplicaLocalOwner::Directory
-                } else {
-                    ReplicaLocalOwner::DirectoryEnrollmentQuotas
-                },
-            );
+            owners.push(if local_driver {
+                ReplicaLocalOwner::Directory
+            } else {
+                ReplicaLocalOwner::DirectoryEnrollmentQuotas
+            });
         }
         if self.forum.is_some() {
             owners.push(ReplicaLocalOwner::Forum);

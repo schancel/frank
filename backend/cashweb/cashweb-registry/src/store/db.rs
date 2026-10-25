@@ -458,7 +458,6 @@ impl Db {
     pub(crate) fn owned_path(&self) -> &Path {
         &self.path
     }
-
 }
 
 /// A transaction body's own error, or the store's.

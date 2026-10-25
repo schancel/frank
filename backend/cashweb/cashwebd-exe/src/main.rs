@@ -360,9 +360,9 @@ fn directory_backend(
 ) -> Result<cashweb_registry::store::directory_store::DirectoryBackend> {
     use cashweb_registry::store::directory_store::DirectoryBackend;
     match driver {
-        RelayStorageDriver::RocksDb => Ok(DirectoryBackend::RocksDbInside(
-            registry_db.to_path_buf(),
-        )),
+        RelayStorageDriver::RocksDb => {
+            Ok(DirectoryBackend::RocksDbInside(registry_db.to_path_buf()))
+        }
         #[cfg(feature = "foundationdb")]
         RelayStorageDriver::FoundationDb {
             cluster_file,

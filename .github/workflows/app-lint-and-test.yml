@@ -24,6 +24,8 @@ on:
       - "package.json"
       - "yarn.lock"
       - ".github/workflows/app-lint-and-test.yml"
+  # Run by hand, for example on a main commit the path filters skipped.
+  workflow_dispatch:
 
 jobs:
   lint-and-test:

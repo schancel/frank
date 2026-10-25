@@ -1248,13 +1248,14 @@ export const GROUP_EPOCH_FRAME_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. */
+/** `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. 'payment' is the group-write-payment that pays the hosting relay for this write; the relay requires it for every new write and never stores it in the message row. It may be absent on a retry of a write the relay already accepted: the relay answers such a retry with the original receipt before it looks at any payment. */
 export const GROUP_MESSAGE_ENVELOPE = {
   groupId: 0,
   epoch: 1,
   nonce: 2,
   ciphertext: 3,
   writeSig: 4,
+  payment: 5,
 } as const
 /** `group-message-envelope` map shape. */
 export const GROUP_MESSAGE_ENVELOPE_SHAPE: MapShape = {
@@ -1265,6 +1266,19 @@ export const GROUP_MESSAGE_ENVELOPE_SHAPE: MapShape = {
     GROUP_MESSAGE_ENVELOPE.ciphertext,
     GROUP_MESSAGE_ENVELOPE.writeSig,
   ],
+  optional: [GROUP_MESSAGE_ENVELOPE.payment],
+  open: true,
+  openFrom: 0,
+}
+
+/** `group-write-payment` field keys: Payment carried by a group write (group-message-envelope 'payment'): one signed raw EVM transaction paying the hosting relay's configured payee at least its price, on 'network' (a canonical chain identifier from docs/protocol/chains/v1.json). Its calldata commits to the hosting relay, group, epoch and the envelope's signing digest. 'raw-transaction' is bytes (or hex text). */
+export const GROUP_WRITE_PAYMENT = {
+  network: 0,
+  rawTransaction: 1,
+} as const
+/** `group-write-payment` map shape. */
+export const GROUP_WRITE_PAYMENT_SHAPE: MapShape = {
+  required: [GROUP_WRITE_PAYMENT.network, GROUP_WRITE_PAYMENT.rawTransaction],
   optional: [],
   open: true,
   openFrom: 0,

@@ -9,6 +9,14 @@ export interface ConstructTransactionSetRequest {
   /** Exact execution data. Families without calldata reject even an explicitly empty value. */
   readonly calldata?: Uint8Array
   readonly maxNativeFeeAtomic?: bigint
+  /** At most this many recipient transactions in `bundle`, for a consumer whose protocol
+   * accepts a fixed number of payments (a group write carries exactly one). Construction fails
+   * with insufficient funds rather than exceed it. */
+  readonly maxRecipientTransactions?: number
+  /** Every recipient transaction is the first one its source signs in this set, so its bytes
+   * can land on their own: a consumer that hands only the recipient bytes to a party that
+   * checks them against the chain now (a group write's host) needs this. */
+  readonly independentRecipientTransactions?: boolean
 }
 
 export interface TransactionSetRecipientOutput {
@@ -58,4 +66,11 @@ export interface TransactionSetCapability {
   sendTransaction(
     prepared: PreparedTransactionSet,
   ): Promise<TransactionSetSubmission>
+  /** Give back the inputs of a constructed set that was never submitted: first read the chain
+   * for every member, then release only if none was authorized or exposed and the node shows
+   * none of them, pending or included. Returns false, keeping every claim, otherwise. */
+  releaseTransactionSet(operationId: string): Promise<boolean>
+  /** Read the chain for every member of a constructed set: true when the node shows any of
+   * them pending or included. Changes no claim. */
+  observeTransactionSet(operationId: string): Promise<boolean>
 }

@@ -201,6 +201,8 @@ export class EvmWallet implements EvmChainWalletHandle {
   readonly transactionSetSubmission!: EvmChainWalletHandle["transactionSetSubmission"];
   readonly constructTransactionSet!: EvmChainWalletHandle["constructTransactionSet"];
   readonly sendTransaction!: EvmChainWalletHandle["sendTransaction"];
+  readonly releaseTransactionSet!: EvmChainWalletHandle["releaseTransactionSet"];
+  readonly observeTransactionSet!: EvmChainWalletHandle["observeTransactionSet"];
   readonly transactionSetPreparer!: EvmChainWalletHandle["transactionSetPreparer"];
   readonly transactionSetLifecycle!: EvmChainWalletHandle["transactionSetLifecycle"];
   readonly refreshTransactionSetInventory!: EvmChainWalletHandle["refreshTransactionSetInventory"];

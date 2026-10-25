@@ -319,6 +319,7 @@ export default defineComponent({
         unverified: 'outgoing.reasonUnverified',
         recovered: 'outgoing.reasonRecovered',
       }
+      keys['rejected-paid'] = 'outgoing.reasonRejectedPaid'
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'
       keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'

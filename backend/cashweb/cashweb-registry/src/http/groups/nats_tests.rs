@@ -3,7 +3,7 @@
 //! `cargo test -p cashweb-registry real_nats_group_replica_wakeup_and_durable_reconnect --lib -- --ignored --nocapture`
 use super::*;
 use crate::events::{CoreNatsEventBus, RelayEventBus};
-use crate::store::groups::derive_group_id;
+use crate::store::groups::{derive_group_id, GroupMessageEnvelope};
 use futures::{SinkExt, StreamExt};
 use secp256k1_abc::{PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
@@ -29,6 +29,7 @@ async fn replica(
             routing::put(handle_put_group_message_store).get(handle_get_group_messages_store),
         )
         .layer(Extension(store))
+        .layer(Extension(Some(tests::test_writes(tests::TEST_HOST))))
         .layer(Extension(bus));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -58,9 +59,7 @@ async fn real_nats_group_replica_wakeup_and_durable_reconnect() {
             .unwrap(),
     );
     // Synthetic shared KV authority models two replicas of the same relay, not two independent journals.
-    let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
-        per_message_price_credits: 0,
-    });
+    let store = GroupStore::new_temporary();
     let (producer, producer_task) = replica(store.clone(), publisher.clone()).await;
     let (consumer, consumer_task) = replica(store, subscriber.clone()).await;
     let root = SecretKey::from_slice(&rand::random::<[u8; 32]>()).unwrap();
@@ -140,7 +139,7 @@ async fn real_nats_group_replica_wakeup_and_durable_reconnect() {
             let bytes = http
                 .put(url)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(serde_json::to_vec(&message).unwrap())
+                .body(serde_json::to_vec(&tests::paid(&message)).unwrap())
                 .send()
                 .await
                 .unwrap()

@@ -787,6 +787,7 @@ export default defineComponent({
         'unreachable': 'outgoing.reasonUnreachable',
         'unavailable': 'outgoing.reasonUnavailable',
         'rejected': 'outgoing.reasonRejected',
+        'rejected-paid': 'outgoing.reasonRejectedPaid',
         'interrupted': 'outgoing.reasonInterrupted',
         'unverified': 'outgoing.reasonUnverified',
         'recovered': 'outgoing.reasonRecovered',

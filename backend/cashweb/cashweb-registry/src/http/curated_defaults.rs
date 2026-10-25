@@ -190,14 +190,7 @@ mod tests {
 
         let tempdir = tempdir::TempDir::new("cashweb-registry--curated-defaults").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(
-            db,
-            Arc::new(UnusedChainAdapter),
-            Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         (tempdir, registry)
     }
 
@@ -220,6 +213,7 @@ mod tests {
                 crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
             ),
             forum: None,
+            group_writes: None,
             spa_dir: None,
             event_bus,
         }

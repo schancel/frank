@@ -1,11 +1,20 @@
 /** Private, deterministic identities for group boundary tests only. */
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { directoryAddress } from '../relay/open-directory'
+import { Transaction, Wallet, getBytes, hexlify } from 'ethers'
 import {
   bytesToHex,
   hexToBytes,
   deriveIdentityMemberEpochTweak,
+  type SealedGroupMessageEnvelope,
 } from './group-crypto'
+import type { GroupRelayClient } from './group-relay-client'
+import {
+  assertGroupWritePayment,
+  groupWritePaymentPlan,
+  type GroupWritePaymentWire,
+  type GroupWritePolicy,
+} from './group-write-payment'
 const order =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 export const GROUP_TEST_ACCOUNTS = [1, 2, 3, 4].map(value => {
@@ -61,4 +70,63 @@ export function groupTestSigner(
         .toCompactRawBytes()
     },
   }
+}
+
+/** Native chain ids of the networks these tests pay on (docs/protocol/chains/v1.json). */
+const TEST_NATIVE_CHAIN_IDS: Record<string, bigint> = {
+  'monad-testnet': 10143n,
+}
+
+/** A payment for `envelope` under `policy`, signed by a real key that holds no funds. The
+ * relays under test verify it from its bytes; nothing is broadcast to any chain. */
+export function groupTestPaymentFor(
+  policy: GroupWritePolicy,
+  groupIdHex: string,
+  envelope: SealedGroupMessageEnvelope,
+): GroupWritePaymentWire {
+  const chainId = TEST_NATIVE_CHAIN_IDS[policy.network]
+  if (chainId === undefined)
+    throw new Error(`No test chain id for ${policy.network}`)
+  const plan = groupWritePaymentPlan(policy, groupIdHex, envelope)
+  const tx = Transaction.from({
+    type: 2,
+    chainId,
+    nonce: 0,
+    to: plan.destination,
+    value: plan.amountWei,
+    data: hexlify(plan.calldata),
+    gasLimit: 60_000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  })
+  tx.signature = new Wallet(`0x${'42'.repeat(32)}`).signingKey.sign(
+    tx.unsignedHash,
+  )
+  return assertGroupWritePayment(plan, getBytes(tx.serialized))
+}
+
+/** The hosting relay's policy, read through `client` as the app reads it. */
+export async function groupTestPayment(
+  client: GroupRelayClient,
+  groupIdHex: string,
+  envelope: SealedGroupMessageEnvelope,
+): Promise<GroupWritePaymentWire> {
+  return groupTestPaymentFor(
+    await client.getWritePolicy(groupIdHex),
+    groupIdHex,
+    envelope,
+  )
+}
+
+/** Send `envelope` with its payment. The same envelope always carries the same signed bytes. */
+export async function paidSend(
+  client: GroupRelayClient,
+  groupIdHex: string,
+  envelope: SealedGroupMessageEnvelope,
+) {
+  return client.sendGroupMessage(
+    groupIdHex,
+    envelope,
+    await groupTestPayment(client, groupIdHex, envelope),
+  )
 }

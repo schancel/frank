@@ -144,9 +144,26 @@ the owner ports, and the ports are written against the new formats.
     commitment, so both sides compute the same address without a round trip.
   - A burn costs the writer and funds nobody, so it is opt-in.
   - The calldata commitment is required: without it, one burn could fund writes on several relays.
-  - Confirmation is not awaited, as with DM stamps. A replaced nonce can therefore buy one free write, which is the same exposure DMs have.
+  - Confirmation is not awaited, as with DM stamps. Before accepting, the host reads the payer's
+    pending nonce and balance from its node and refuses (402 `group_payment_unfunded`) a payment
+    at another nonce or without value plus gas; it fails closed (503) when the node cannot be
+    read. The remaining exposure: replacing the transaction at the same nonce after acceptance
+    buys that one write, the same exposure DMs have.
   - The payer's address links a wallet to its group writes at the host, as DM stamps already do.
   - Still open: the price, and the exact xpub derivation path and index rule.
+    - Proposed (implemented on the paid-group-writes branch, awaiting confirmation): child
+      `xpub/0/i`, non-hardened, with `i = u32_be(commitment[0..4]) & 0x7fffffff`. Both sides
+      compute it from the commitment alone; a collision between two writes only means two
+      payments reach one address. Accepted key versions: `xpub` and `tpub`.
+    - Price: a required decimal-wei `price_wei`; the shipped development and lab configs use
+      1e12 wei and the docker image's payee is `burn` until an operator sets one.
+    - The writer follows persist, submit to the relay, then broadcast: its wallet broadcasts
+      only after the host holds the write; a definitive refusal (a host 402 `group_payment_*`,
+      403 or 404) releases the coin only after the chain shows no copy, and never after an
+      attempt whose outcome was unknown; a payment the chain shows is tracked as spent.
+    - Each accepted write's payment record (`G_pay:<tx_hash>`: payer, payee, value, group and
+      sequence) is written in its accept transaction. Also open: an operator view that lists
+      which xpub children were paid from those records.
 - **B. Session secret and VAPID key.** Decided 2026-10-25: operator-provisioned files, the same on every replica, never auto-created in cluster mode. Changing the VAPID key orphans every push subscription.
 - **C. Signet data at cutover.**
   - Decided 2026-10-25: no migration (AGENTS §6). The old databases and disks are kept as

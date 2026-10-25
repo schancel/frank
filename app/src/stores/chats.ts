@@ -13,6 +13,12 @@ import type {
   GroupWelcomeItem,
   GroupControlItem,
 } from '@frank/group-messaging/types'
+import {
+  GroupWritePaymentUnavailableError,
+  GroupWritePaymentUnresolvedError,
+  deliverPaidGroupWrite,
+  type GroupWritePayer,
+} from '@frank/group-messaging/groups/write-payment'
 import { encodeItemFrames } from '@frank/wallet/message-item-plugins/wire'
 import {
   encodeGroupItems,
@@ -77,6 +83,7 @@ import type {
   MessageWrapper,
   MessageItem,
   OutgoingDelivery,
+  OutgoingFailureReason,
   OutgoingFinancialOperation,
   TextItem,
   StealthItem,
@@ -1126,6 +1133,16 @@ const conversationIdSalt = shallowRef<Uint8Array | null>(null)
 /** Whether the active account's conversation-ID salt is installed: a chat can be opened. */
 export function hasConversationIdSalt(): boolean {
   return conversationIdSalt.value !== null
+}
+
+/** The wallet a group write pays through when its caller names none: the messaging wallet. */
+let groupWritePayer: () => GroupWritePayer | undefined = messagingWallet
+
+/** Test seam: pay group writes through `payer`; with none, the messaging wallet again. */
+export function setGroupWritePayerForTest(
+  payer: () => GroupWritePayer | undefined = messagingWallet,
+): void {
+  groupWritePayer = payer
 }
 
 /** Installs (or, with nothing, removes) the active account's conversation-ID salt. */
@@ -6318,22 +6335,35 @@ export const useChatStore = defineStore('chats', {
       await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
       checkGroup()
       await this.flushPersistence?.()
-      return this.retryGroupMessage(conv.id, payloadDigest, relayClient)
+      return this.retryGroupMessage(
+        conv.id,
+        payloadDigest,
+        relayClient,
+        resolvedWallet,
+      )
     },
-    /** Retries the exact signed envelope; never constructs new content for an uncertain send. */
+    /** Retries the exact signed envelope and its payment; never constructs new content or a
+     * second payment for an uncertain send. */
     async retryGroupMessage(
       conversationId: string,
       payloadDigest: string,
       relayClient?: GroupRelayClient,
+      wallet?: GroupWritePayer,
     ): Promise<OutgoingOutcome> {
       return groupRun(this, `message:${payloadDigest}`, () =>
-        this.retryGroupMessageOnce(conversationId, payloadDigest, relayClient),
+        this.retryGroupMessageOnce(
+          conversationId,
+          payloadDigest,
+          relayClient,
+          wallet,
+        ),
       )
     },
     async retryGroupMessageOnce(
       conversationId: string,
       payloadDigest: string,
       relayClient?: GroupRelayClient,
+      wallet?: GroupWritePayer,
     ): Promise<OutgoingOutcome> {
       const conv = this.conversations[conversationId]
       const pending = conv?.groupState?.pendingMessages?.[payloadDigest]
@@ -6370,7 +6400,47 @@ export const useChatStore = defineStore('chats', {
       await this.flushPersistence?.()
       checkGroup()
       try {
-        const res = await client.sendGroupMessage(state.groupIdHex, envelope)
+        // Persist the plan and the signed bytes, submit them with the write, and only once
+        // the relay holds the write let the wallet authorize and broadcast them. A retry
+        // carries the same bytes; nothing is signed or paid twice.
+        const delivery = await deliverPaidGroupWrite({
+          groupIdHex: state.groupIdHex,
+          envelope,
+          stored: message.groupWritePayment,
+          policy: () => client.getWritePolicy(state.groupIdHex),
+          persist: async next => {
+            checkGroup()
+            message.groupWritePayment = next
+            await this.saveOutgoing(conv.address, payloadDigest, {
+              strict: true,
+            })
+            checkGroup()
+            await this.flushPersistence?.()
+          },
+          wallet: wallet ?? groupWritePayer(),
+          submit: payment =>
+            client.sendGroupMessage(state.groupIdHex, envelope, payment),
+        })
+        checkGroup()
+        if (delivery.state === 'refused') {
+          // Final either way. Released: nothing of the write or its payment is out. Spent: the
+          // chain shows the payment, and the wallet tracks it to its mined state.
+          const reason: OutgoingFailureReason =
+            delivery.outcome === 'released' ? 'rejected' : 'rejected-paid'
+          message.status = 'error'
+          message.delivery = {
+            failureReason: reason,
+            ...(delivery.error ? { detail: delivery.error.message } : {}),
+          }
+          delete state.pendingMessages![payloadDigest]
+          await this.saveOutgoing(conv.address, payloadDigest, {
+            strict: true,
+          })
+          checkGroup()
+          await this.flushPersistence?.()
+          return { state: 'failed', reason }
+        }
+        const res = delivery.receipt
         checkGroup()
         message.status = 'confirmed'
         // The relay time replaces this device's clock, as it does for every member; an
@@ -6384,7 +6454,9 @@ export const useChatStore = defineStore('chats', {
         conv.messages.sort(byRelayTime)
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
         checkGroup()
-        delete state.pendingMessages![payloadDigest]
+        // Until the wallet has authorized its payment, the next retry repeats the (existing)
+        // write and that step; the message itself is delivered.
+        if (delivery.settled) delete state.pendingMessages![payloadDigest]
         conv.lastReceived = Math.max(conv.lastReceived ?? 0, res.server_time_ms)
         recomputeChatAccounting(conv, this.activeConversationId)
         checkGroup()
@@ -6394,13 +6466,23 @@ export const useChatStore = defineStore('chats', {
         checkGroup()
         state.pendingMessages ??= {}
         state.pendingMessages[payloadDigest] = true
+        // A delivered write retried only to settle its payment stays delivered.
+        if (message.status === 'confirmed')
+          return { state: 'failed', reason: 'unreachable' }
         message.status = 'error'
+        const reason: OutgoingFailureReason = isInsufficientFundsError(error)
+          ? 'insufficient-funds'
+          : error instanceof GroupWritePaymentUnavailableError
+          ? 'unavailable'
+          : error instanceof GroupWritePaymentUnresolvedError
+          ? 'unverified'
+          : 'unreachable'
         message.delivery = {
-          failureReason: 'unreachable',
+          failureReason: reason,
           detail: error instanceof Error ? error.message : String(error),
         }
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
-        return { state: 'failed', reason: 'unreachable' }
+        return { state: 'failed', reason }
       }
     },
     /** Reconcile the original signed epoch after timeout/restart before delivering its secret.

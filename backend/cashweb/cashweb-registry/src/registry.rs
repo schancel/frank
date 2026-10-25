@@ -74,8 +74,6 @@ pub struct RegistryBackends {
     pub objects: Arc<dyn crate::store::large_values::ObjectStore>,
     /// Where the directory keeps its state (`registry.cluster.driver`).
     pub directory: crate::store::directory_store::DirectoryBackend,
-    /// Group append policy (`registry.groups`).
-    pub group_policy: cashweb_config::GroupAppendPolicy,
     /// Where direct messages keep their state (`registry.cluster.driver`): `None` is this
     /// replica's RocksDB beside the registry database (`<db>.messages-v3`), `Some` a
     /// transaction store every replica shares (FoundationDB, under `<prefix>messages-v3/`).
@@ -218,12 +216,7 @@ fn stored_protobuf_timestamp(raw: &[u8]) -> Option<i64> {
 impl Registry {
     /// Construct new [`Registry`] with the default in-process event bus, keeping large values
     /// in a local directory beside the database (single-node relays and tests).
-    pub fn new(
-        db: Db,
-        chain_adapter: Arc<dyn ChainAdapter>,
-        net: Net,
-        group_policy: cashweb_config::GroupAppendPolicy,
-    ) -> Self {
+    pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
         let groups = crate::store::groups::GroupBackend::rocksdb_beside(db.owned_path());
         let directory =
             crate::store::directory_store::DirectoryBackend::RocksDbInside(db.owned_path().into());
@@ -239,7 +232,6 @@ impl Registry {
                 directory,
                 groups,
                 objects,
-                group_policy,
                 messages: None,
             },
         )
@@ -269,11 +261,7 @@ impl Registry {
             Some(store) => crate::store::monad_dm_cbor::Owner::with_store(store),
             None => crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
         };
-        let groups = crate::store::groups::Owner::new(
-            backends.groups,
-            backends.objects,
-            backends.group_policy,
-        );
+        let groups = crate::store::groups::Owner::new(backends.groups, backends.objects);
         Registry {
             db,
             forum,
@@ -1001,9 +989,6 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1398,9 +1383,6 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
 
         // Generate a few anyone can spend coins
@@ -1552,9 +1534,6 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1874,14 +1853,7 @@ mod tests {
     fn test_monad_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(
-            db,
-            Arc::new(NeverCalledChainAdapter),
-            Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
         (tempdir, registry)
     }
 

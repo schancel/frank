@@ -144,7 +144,7 @@ function relayConfig(dbPath: string, monad: MonadRegtest): string {
     `url = "${ENDPOINT}"`,
     '',
     '[registry]',
-    'groups = { per_message_price_credits = 0 }',
+    'group_writes = { price_wei = "1000000000000", payee = "burn" }',
     `db_path = "${dbPath}"`,
     'session_secret_file = "/state/session-secret"',
     'vapid_private_key_file = "/state/vapid-key"',

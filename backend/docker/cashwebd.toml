@@ -28,9 +28,14 @@ net = "mainnet"
 peers = []
 public_relay_urls = []
 
-# Explicit abstract credit units per new group message; positive prices fail unfunded.
-[registry.groups]
-per_message_price_credits = 0
+# Every new write to a group this relay hosts carries one signed transaction on
+# `registry.network` paying `payee` at least `price_wei`. Each payment commits to the relay's
+# public origin, the top-level `url`, which the directory `endpoint` must equal.
+# `payee` is "burn", { address = "0x…" } or { xpub = "xpub…" }. OPERATOR: this image burns until
+# the owner provides the relay's payee address or xpub and the price.
+[registry.group_writes]
+price_wei = "1000000000000"
+payee = "burn"
 
 # The account directory. The message, directory and relay-info routes (`/message*`,
 # `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody

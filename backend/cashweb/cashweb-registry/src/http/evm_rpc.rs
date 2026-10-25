@@ -2618,14 +2618,7 @@ mod tests {
     fn registered_server(runtime: Arc<EvmRpcRuntime>) -> (TempDir, RegistryServer) {
         let tempdir = TempDir::new("cashweb-registry--evm-rpc").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(
-            db,
-            Arc::new(UnusedChainAdapter),
-            Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
-        );
+        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         register_legacy_profile(&registry);
         let pop_gate = PopGate::from_conf_if_enabled(&placeholder_pop_conf());
         let event_bus = registry.event_bus().clone();
@@ -2642,6 +2635,7 @@ mod tests {
                 solana_proxy: None,
                 chains: Arc::clone(&runtime.chains),
                 forum: None,
+                group_writes: None,
                 spa_dir: None,
                 event_bus,
             },
@@ -3594,9 +3588,6 @@ mod tests {
             Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
             Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
             Net::Regtest,
-            cashweb_config::GroupAppendPolicy {
-                per_message_price_credits: 0,
-            },
         );
         let event_bus = registry.event_bus().clone();
         let auth = Arc::clone(&runtime);
@@ -3613,6 +3604,7 @@ mod tests {
                 crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
             ),
             forum: None,
+            group_writes: None,
             spa_dir: None,
             event_bus,
         }
@@ -4583,6 +4575,7 @@ mod tests {
                     crate::chains::RelayChains::network_only("monad-testnet").unwrap(),
                 ),
                 forum: None,
+                group_writes: None,
                 spa_dir: None,
                 event_bus: fixture.registry.event_bus().clone(),
             }

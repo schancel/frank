@@ -64,29 +64,116 @@ CARGO_TARGET_DIR=/tmp/frank-group-live-cargo-target cargo test --manifest-path b
 The explicit two-router TypeScript gate below also checks repeated direct/proxied writes,
 unchanged receipt sequences and historical retries after rotation.
 
-## Explicit group append policy
+## Paid group writes
 
-Every relay configuration must include `[registry.groups]` with an explicit
-`per_message_price_credits` nonnegative integer. Missing or invalid configuration fails
-startup and `--check-config` before opening databases or creating a session secret. Units
-are abstract credits per newly accepted message; message-size limits remain independent.
-The shipped development configurations explicitly select zero.
+Every new write to a group carries one payment to the group's hosting relay: a signed EVM
+transaction, in the envelope's `payment` field (`group-write-payment` in
+`docs/protocol/message-types/fields/groups.json`: `network`, the canonical chain identifier, and
+`raw-transaction`; JSON carries the transaction as hex in `payment.raw_transaction`). Writes
+that do not pay are refused; there is no free write and no credit ledger.
 
-The policy travels from daemon composition through `Registry`, the lazy group owner and
-all `GroupStore` constructors. There is no implicit free policy. Zero permits authenticated
-new appends. Positive prices return HTTP 503 with
-`{"error":"group_credit_funding_unavailable"}` for authenticated new content before any
-append or sequence mutation. This baseline has no balance, mint, debit,
-conversion, funding endpoint or signed quote. Positive configuration does not enable a
-funded service. Policy is immutable for a process lifetime and changes on restart; operators
-must coordinate configuration across hosting instances.
+Every relay configuration must include `[registry.group_writes]`, checked by `--check-config`
+and at startup before any database is opened:
 
-Authenticated retries of previously accepted content return their original receipt even
-after a policy change or epoch rotation. Hosting relay policy governs foreign writes;
-home relays proxy the hosting decision without applying their own price. Reads, mirroring,
-imports and epoch transitions are outside this message-price gate. A future funded-credit
-implementation requires owner decisions on payer authorization and issuance, and must
-atomically debit with the existing append transaction while preserving receipt-first retries.
+```toml
+[registry.group_writes]
+price_wei = "1000000000000"  # decimal wei, more than zero
+payee = "burn"               # or { address = "0x…" } or { xpub = "xpub…" }
+```
+
+Payments commit to the relay's public origin, `host_origin` below. It is the configuration's
+top-level `url`, which must be a bare `http(s)` origin and equal the `[registry.directory]`
+endpoint; there is no second setting for it. The removed `[registry.groups]` section is
+refused at load with a message that says to delete it.
+
+The payment's network is the relay's `[registry] network`. The payee is exactly one of: the
+burn address `0x000000000000000000000000000000000000dEaD`; one operator address; or an extended
+public key (`xpub`/`tpub`), where each write pays its own child address. `GET
+/groups/:group_id/write-policy` reports `{network, price_wei, host_origin, payee}`; a home
+relay proxies it to the host like every other group route, and the client refuses a policy
+whose `host_origin` is not the relay it writes to.
+
+The transaction's calldata commits to exactly one write on exactly one relay:
+
+```text
+commitment = SHA256( lp("frank/group-write-payment/v1") || lp(network) || lp(host_origin)
+                     || group_id[32] || epoch_be[8] || write_signing_digest[32] )
+calldata   = "GRPW" || 0x01 || commitment          (37 bytes)
+lp(x)      = u16_be(len(x)) || x
+```
+
+`write_signing_digest` is the digest the group write key signs (`computeOuterWriteSigningHash`).
+For an `xpub` payee the child is `xpub/0/i` (non-hardened), `i = u32_be(commitment[0..4]) &
+0x7fffffff`, so writer and relay agree on the address with no round trip. This rule is
+proposed and awaits the owner's confirmation.
+
+The hosting relay checks the payment from its bytes before anything is stored: the network
+string, a decodable signed transaction (legacy or EIP-1559) of at most 128 KiB with the native
+chain ID of that network, the calldata, the payee address and a value of at least the price.
+Refusals are HTTP 402 with `group_payment_required` (no payment) or `group_payment_invalid` and
+a `reason` of `wrong_network`, `malformed`, `wrong_chain`, `wrong_commitment`, `wrong_payee` or
+`underpaid`; no sequence is consumed. A relay without `group_writes` answers 503
+`group_writes_unavailable`.
+
+A payment that passes these checks must also be able to land now. Just before the accept
+transaction the host reads the payer's pending nonce and balance from its verified node
+upstream (3 s timeout) and refuses with 402 `group_payment_unfunded` and a `reason` of
+`stale_nonce` (the nonce is below the pending one), `nonce_gap` (above it) or
+`insufficient_balance` (the balance is below value plus gas limit times max fee); no sequence
+is consumed. A payment the node already holds passes. When the node cannot be read, or the relay
+has no verified upstream for its network, the answer is 503 `group_payment_check_unavailable`
+with `Retry-After`, so a relay never accepts writes it cannot check. The remaining exposure is
+that a writer can replace the transaction at the same nonce after the write is accepted, which
+buys that one write. A home relay forwards the payment untouched: only the host checks
+it, and a payment committed to one host is `wrong_commitment` on every other. Before any of these checks the host looks up whether
+it already accepted the envelope: a retry of an accepted write gets its original receipt
+(`existing`) whatever its payment and whatever the price or payee are now, and hands nothing
+over. A new write's payment is recorded at `'G_pay:' || tx_hash` (network, payer, payee, value,
+and the group and sequence it funded) in the same transaction that accepts the write; a payment
+that already funded another write is refused 402 `group_payment_invalid` with reason
+`already_used`, and two writes racing on one payment conflict in the store, so one of them is
+appended. The relay's own failures to reach another relay or node are 502, or 504 for a
+timeout, never a 4xx. A retry of an accepted write may omit `payment` (it is optional in the
+field table): the host answers from its receipt before it looks at the payment. The host hands the payment of a newly appended write to its node after the write
+commits, once; the writer's wallet broadcasts the same bytes either way. The
+pure checks are `backend/cashweb/cashweb-registry/src/group_write_payment.rs`; the writer's
+half is `packages/cashweb/groups/group-write-payment.ts`, checked against the same vectors.
+
+The writer pays through the wallet's transaction-set capability
+(`packages/group-messaging/groups/write-payment.ts`). The order is persist, submit to the relay,
+then broadcast, each step durable before the next: the plan (payee, price, calldata) and its
+wallet operation `group-write-<write_signing_digest>` are stored on the message; the wallet signs
+one transaction for it (`maxRecipientTransactions: 1`, `independentRecipientTransactions`: the
+payment is its source account's next transaction, so it matches the pending nonce the host
+checks) and claims its coin, broadcasting nothing;
+the signed bytes are stored on the message; the write goes to the host with those bytes; and
+only when the host answers that it holds the write (`appended` or `existing`) does the wallet
+authorize the same bytes, broadcast them and keep reconciling them. Until that authorization
+succeeds the message stays pending, and the next retry repeats the (existing) write and this
+step.
+
+The message records `submitted` before the bytes first leave the device. Any outcome other than
+an answer (no answer, a timeout, a 5xx, any other error) may still have stored the write and
+broadcast its payment: the message records `uncertain` and the write is retried with the same
+bytes; nothing is signed again, after a restart too. Only a host-produced refusal is definitive:
+402 with a `group_payment_*` code, 403 or 404. Any other 4xx is treated as unknown.
+
+On a definitive refusal with no earlier unknown outcome, the message records `releasing`, then
+the wallet's `releaseTransactionSet` reads the chain and releases the coin only when no member
+was authorized or exposed and the node holds none of them; the message records `released` and
+is shown as `rejected`. If the chain does show the payment, the wallet authorizes and tracks it
+so reconciliation applies its mined state, the message records `spent` and is shown as
+`rejected-paid`. A restart with `releasing` stored finishes the same step (a release already
+done is recognised). After an unknown outcome a later refusal never releases: the writer asks
+the wallet to observe the chain; a seen payment is tracked as `spent`, an unseen one leaves the
+write pending as `unverified` and it is retried with the same bytes. `released` and `spent` are
+final and no write is resubmitted after either.
+
+Another device of the account derives the same operation. A plan whose bytes were never
+submitted is replanned when the host's policy changed (for example a price rise): the old
+operation is released and a new one, `group-write-<digest>-<generation>`, is signed. Once bytes
+were submitted the policy is never read again. A wallet on another network than the host's signs
+nothing and the write stays pending as `unavailable`.
 
 ## Home-relay boundary
 
@@ -108,7 +195,7 @@ Direct conversations have the closed set {self, peer}. A third party claiming a 
 
 Read-only hydration validates required signed group certificates/envelopes and persisted direct projection. Unsupported unsigned group records or old unprojected third-party claims fail visibly; hydration does not initialize custody or delete records. A developer may manually reset only disposable chat-view metadata after exporting anything needed. This is not an automatic reset and never authorizes deleting private keys, spend inventory/reservations, original signed envelopes, outbox/submission journals, or financial recovery records. No reset is performed by this change.
 
-Group payment/stamp delivery is explicitly unsupported and rejected at the headless send boundary. Prepaid group credits, relay migration, invite links/QR, external cryptographic review remain outside this implemented baseline; this does not close all of #70. Local stop-following is not cryptographic revocation.
+Payment items and stamps inside group messages are explicitly unsupported and rejected at the headless send boundary; the write itself pays the hosting relay (see Paid group writes). Prepaid group credits, relay migration, invite links/QR, external cryptographic review remain outside this implemented baseline; this does not close all of #70. Local stop-following is not cryptographic revocation.
 
 Group welcome/control payload types, pure CBOR codecs and the nested epoch certificate schema are owned by the headless `@frank/group-messaging` feature. App, bot, mail and CLI composition explicitly install its plugins through `groups/plugin`; importing the feature does not register it. Cashweb owns the neutral registry contract and relay epoch transport type; core codec retains framing and enclosing validation budgets. Wallet custody does not import the group feature. See [group feature ownership and checks](../../../packages/group-messaging/README.md). External cryptographic review remains required.
 

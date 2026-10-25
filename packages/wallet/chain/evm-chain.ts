@@ -2157,7 +2157,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 return results;
               }).finally(() => invalidateBalanceRead()),
           };
-          const publicTransactionSets = evmTransactionSetCapability(transactionSetPreparer, prepared => transactionSetSubmission.sendTransaction(prepared));
+          const publicTransactionSets = evmTransactionSetCapability(
+            transactionSetPreparer,
+            prepared => transactionSetSubmission.sendTransaction(prepared),
+            // The chain is read first: a member the node holds or mined is never released.
+            async operationId => {
+              await transactionSetLifecycle.observe(operationId, provider);
+              return transactionSetPreparer.releaseUnexposed(operationId);
+            },
+            async operationId => {
+              await transactionSetLifecycle.observe(operationId, provider);
+              const row = await transactionSetPreparer.readOperation(operationId);
+              return row?.members.some(member =>
+                !["unknown", "missing"].includes(member.observation.state)) ?? false;
+            },
+          );
           const legacyTransactions = createLegacyTransactionSetPayments({
             preparer: transactionSetPreparer,
             sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
@@ -2411,6 +2425,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             },
             sendTransaction: prepared => transactionOwner.runLifetime(() => publicTransactionSets.sendTransaction(prepared)),
+            releaseTransactionSet: operationId => transactionOwner.runLifetime(() => publicTransactionSets.releaseTransactionSet(operationId)),
+            observeTransactionSet: operationId => transactionOwner.runLifetime(() => publicTransactionSets.observeTransactionSet(operationId)),
             transactionSetPreparer,
             transactionSetLifecycle,
             refreshTransactionSetInventory: () => transactionSetRuntime.refresh(),

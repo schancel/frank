@@ -559,6 +559,7 @@ export class EvmTransactionSetPreparer {
         (stage?.reserveForContinuationWei ?? '0') !== (request.reserveForContinuationWei ?? 0n).toString() ||
         (stage !== undefined && Boolean(stage.legacy) !== legacy) ||
         (request.maxPaymentParts !== undefined && payments.length > request.maxPaymentParts) ||
+        (request.independentPayments && payments.some(member => member.dependencies.length > 0)) ||
         payments.some(member => {
           const tx = Transaction.from(member.unsignedTransaction)
           return tx.data !== (request.calldata ?? '0x').toLowerCase() ||
@@ -700,6 +701,9 @@ export class EvmTransactionSetPreparer {
         previous.set(member.plan.source.address, index)
         if (meta.role !== 'payment') incoming.set(tx.to!.toLowerCase(), [...(incoming.get(tx.to!.toLowerCase()) ?? []), index])
       })
+      if (request.independentPayments && members.some(member =>
+        member.plan.transactionSet!.role === 'payment' && member.plan.dependencies.length > 0))
+        throw new Error('Transaction-set payment would depend on another member')
       const totalFee = all.reduce((sum, member) => { const tx = Transaction.from(member.plan.unsignedTransaction); return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!) }, 0n)
       if ((request.maxFeeWei !== undefined && totalFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && totalFee > BigInt(stage.maxFeeWei))) throw new Error('Transaction-set fee exceeds authorized bound')
       if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
@@ -932,6 +936,11 @@ export class EvmTransactionSetPreparer {
         const paymentIndex = moves.findIndex(move => move.role === 'payment')
         moves.unshift(moves.splice(paymentIndex, 1)[0]!)
       }
+    }
+    // A consumer that hands only the recipient bytes onward needs them to land by themselves.
+    if (request.independentPayments && hasPayment && moves[0]!.role !== 'payment') {
+      const paymentIndex = moves.findIndex(move => move.role === 'payment')
+      moves.unshift(moves.splice(paymentIndex, 1)[0]!)
     }
     let changeLogicalIndex = 0
     for (const move of moves)

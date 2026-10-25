@@ -18,7 +18,7 @@ host = "127.0.0.1:{port}"
 url = "http://127.0.0.1:{port}"
 
 [registry]
-groups = {{ per_message_price_credits = 0 }}
+group_writes = {{ price_wei = "1", payee = "burn" }}
 db_path = "{db}"
 network = "monad-testnet"
 net = "mainnet"

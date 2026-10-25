@@ -909,6 +909,8 @@ export const rawFrFR = {
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',
+    reasonRejectedPaid:
+      'Le relais a refusé le message après le départ de son paiement.',
     reasonInterrupted: "L'envoi a été interrompu avant son terme.",
     reasonUnverified: "La remise n'a pas pu être confirmée.",
     reasonRecovered: 'Un message précédent a été remis entre-temps.',

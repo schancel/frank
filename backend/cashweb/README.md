@@ -13,7 +13,7 @@ host = "127.0.0.1:6543"
 url = "http://127.0.0.1:6543"
 
 [registry]
-groups = { per_message_price_credits = 0 }
+group_writes = { price_wei = "1000000000000", payee = "burn" }
 db_path = "./test_db"
 net = "mainnet"
 peers = []

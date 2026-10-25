@@ -7,6 +7,7 @@ import {
   GROUP_TEST_ACCOUNTS,
   groupTestSigner,
   groupTestSigningKey,
+  paidSend,
 } from '@frank/cashweb/groups/group-test.testutil'
 import {
   GROUP_MSG_AEAD_DOMAIN,
@@ -25,9 +26,12 @@ import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
 import {
+  GROUP_WRITE_BURN_ADDRESS,
   GroupRelayClient,
+  GroupWriteRefusedError,
   type StoredGroupMessageWire,
 } from '@frank/cashweb/groups'
+import { groupWriteTestPayer } from '@frank/group-messaging/groups/write-payment.testutil'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -38,6 +42,8 @@ jest.mock('../adapters/level-message-store', () => ({
   }),
 }))
 jest.mock('../utils/directory-peer', () => ({ fetchContactProfile: jest.fn() }))
+// Group writes pay through the messaging wallet's transaction-set capability.
+let groupWritePayer: ReturnType<typeof groupWriteTestPayer>
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -64,6 +70,7 @@ const {
   useChatStore,
   rehydrateChat,
   setConversationIdSalt,
+  setGroupWritePayerForTest,
 } = require('./chats')
 const messageStorePromise = require('../adapters/level-message-store').store
 const { useContactStore } = require('./contacts')
@@ -107,6 +114,13 @@ function createSharedMockGroupRelay() {
         const msgMatch = url.match(/\/groups\/([0-9a-f]{64})\/messages$/)
         if (msgMatch) {
           const groupId = msgMatch[1]
+          // The relay's checks are tested against the real relay; here only that one is sent.
+          const payment = body.payment as Record<string, unknown> | undefined
+          if (
+            payment?.network !== 'monad-testnet' ||
+            typeof payment.raw_transaction !== 'string'
+          )
+            throw new Error('Group write without payment')
           const list = messages.get(groupId) ?? []
           const serverSeq = list.length + 1
           const row: StoredGroupMessageWire = {
@@ -147,6 +161,15 @@ function createSharedMockGroupRelay() {
           if (!stored) throw new Error('Group not found')
           return { data: stored }
         }
+        if (/\/groups\/[0-9a-f]{64}\/write-policy$/.test(url))
+          return {
+            data: {
+              network: 'monad-testnet',
+              price_wei: '1000',
+              host_origin: 'https://relay.frank.test',
+              payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+            },
+          }
         const msgMatch = url.match(/\/groups\/([0-9a-f]{64})\/messages$/)
         if (msgMatch) {
           const groupId = msgMatch[1]
@@ -173,7 +196,10 @@ function createSharedMockGroupRelay() {
 }
 
 describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70, #1365)', () => {
+  afterEach(() => setGroupWritePayerForTest())
   beforeEach(() => {
+    groupWritePayer = groupWriteTestPayer()
+    setGroupWritePayerForTest(() => groupWritePayer.wallet)
     setConversationIdSalt(new Uint8Array(16).fill(0x71))
     currentOwnAddress = ALICE
     setActivePinia(createPinia())
@@ -1002,6 +1028,20 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       expect(direct).not.toHaveBeenCalled()
       expect(sending.mock.calls[1][0]).toBe(group.groupId)
       expect(JSON.stringify(sending.mock.calls[1][1])).toBe(originalEnvelope)
+      // The retry carries the first attempt's payment: one signed transaction, never a second.
+      const stored = chats.messages[digest].groupWritePayment
+      expect(sending.mock.calls[0][2]).toEqual({
+        network: 'monad-testnet',
+        raw_transaction: stored.rawTransaction,
+      })
+      expect(sending.mock.calls[1][2]).toEqual(sending.mock.calls[0][2])
+      expect(groupWritePayer.sets.size).toBe(1)
+      // The first answer was lost, so the wallet did not broadcast; the retry's delivery did.
+      expect(groupWritePayer.events).toEqual([
+        'construct:1',
+        'construct:1',
+        `send:${stored.operationId}`,
+      ])
       expect(group.messages).toHaveLength(1)
       expect(group.groupState.pendingMessages[digest]).toBeUndefined()
       direct.mockRestore()
@@ -1145,6 +1185,108 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(
       restored.conversations[group.id].groupState.epochHistory[0],
     ).toBeUndefined()
+  })
+
+  it('signs a group write payment before the relay sees it, and only on the host network', async () => {
+    const { chats, group, client } = await makeGroup()
+    const sending = jest.spyOn(client, 'sendGroupMessage')
+    groupWritePayer = groupWriteTestPayer('ethereum-sepolia')
+    const refused = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Paid for' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(refused).toEqual({ state: 'failed', reason: 'unavailable' })
+    expect(sending).not.toHaveBeenCalled()
+    expect(groupWritePayer.sets.size).toBe(0)
+    const digest = Object.keys(group.groupState.pendingMessages)[0]
+    // The host's terms are kept with the message, so a later retry pays exactly them.
+    expect(chats.messages[digest].groupWritePayment).toMatchObject({
+      network: 'monad-testnet',
+      amountWei: '1000',
+      destination: GROUP_WRITE_BURN_ADDRESS,
+    })
+    expect(chats.messages[digest].groupWritePayment.rawTransaction).toBe(
+      undefined,
+    )
+    groupWritePayer = groupWriteTestPayer()
+    expect(
+      (await chats.retryGroupMessage(group.id, digest, client)).state,
+    ).toBe('sent')
+    expect(groupWritePayer.events).toEqual([
+      'construct:1',
+      `send:${chats.messages[digest].groupWritePayment.operationId}`,
+    ])
+    expect(sending).toHaveBeenCalledTimes(1)
+    expect(sending.mock.calls[0][2].raw_transaction).toBe(
+      chats.messages[digest].groupWritePayment.rawTransaction,
+    )
+  })
+
+  it('a write the relay refuses is never broadcast and its payment is released', async () => {
+    const { chats, group, client } = await makeGroup()
+    jest
+      .spyOn(client, 'sendGroupMessage')
+      .mockRejectedValueOnce(
+        new GroupWriteRefusedError(402, 'group_payment_invalid', 'underpaid'),
+      )
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Refused' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome).toEqual({ state: 'failed', reason: 'rejected' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWritePayment,
+    )!
+    expect(chats.messages[digest].groupWritePayment.released).toBe(true)
+    expect(group.groupState.pendingMessages?.[digest]).toBeUndefined()
+    expect(groupWritePayer.events).toEqual([
+      'construct:1',
+      `release:${chats.messages[digest].groupWritePayment.operationId}`,
+    ])
+  })
+
+  it('a refusal after an attempt without an answer keeps the write and its coin until the chain shows the payment', async () => {
+    const { chats, group, client } = await makeGroup()
+    jest
+      .spyOn(client, 'sendGroupMessage')
+      .mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
+      .mockRejectedValue(
+        new GroupWriteRefusedError(402, 'group_payment_invalid', 'underpaid'),
+      )
+    expect(
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Unclear' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      }),
+    ).toEqual({ state: 'failed', reason: 'unreachable' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWritePayment,
+    )!
+    // The bytes may be out: the refusal neither releases nor ends the write.
+    expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
+      state: 'failed',
+      reason: 'unverified',
+    })
+    expect(group.groupState.pendingMessages?.[digest]).toBe(true)
+    expect(
+      groupWritePayer.events.some(event => event.startsWith('release')),
+    ).toBe(false)
+    // The chain shows the payment: the wallet tracks it, and the write is final.
+    const operationId = chats.messages[digest].groupWritePayment.operationId
+    groupWritePayer.seenOnChain.add(operationId)
+    expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
+      state: 'failed',
+      reason: 'rejected-paid',
+    })
+    expect(chats.messages[digest].groupWritePayment.spent).toBe(true)
+    expect(group.groupState.pendingMessages?.[digest]).toBeUndefined()
+    expect(groupWritePayer.events.at(-1)).toBe(`send:${operationId}`)
   })
 
   it('rejects payment intent at the headless group boundary before submission', async () => {
@@ -1393,7 +1535,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         { lowS: true },
       )
       .toCompactRawBytes()
-    await client.sendGroupMessage(group.groupId!, {
+    await paidSend(client, group.groupId!, {
       epoch: 0,
       nonce: bytesToHex(nonce),
       ciphertext: bytesToHex(ciphertext),
@@ -1454,7 +1596,8 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       0,
     )
     const post = (sender: string, text: string, timestampMs: number) =>
-      client.sendGroupMessage(
+      paidSend(
+        client,
         group.groupId!,
         sealGroupMessage({
           epochKeys: keys,
@@ -1655,7 +1798,8 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     const bobIndex = epoch0.roster.find(
       (member: any) => member.address === BOB,
     ).index
-    await client.sendGroupMessage(
+    await paidSend(
+      client,
       group.groupId!,
       sealGroupMessage({
         epochKeys: deriveEpochKeys(

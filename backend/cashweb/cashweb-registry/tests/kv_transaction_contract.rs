@@ -39,7 +39,7 @@ trait Peer {
 }
 
 /// One contender: for each round, read the counter, wait until the coordinator has seen both
-/// contenders read, then increment only if the counter still equals the round number. Without
+/// contenders' first successful read, then increment only if the counter still equals the round number. Without
 /// conflict detection both would increment; with it, the loser's re-run sees the winner's write.
 fn contend(
     store: &dyn RelayKvStore,
@@ -54,13 +54,21 @@ fn contend(
         };
         let round: u64 = round.parse().unwrap();
         let mut attempts = 0u32;
+        // The attempt whose read was announced; only re-runs after it count as conflicts.
+        let mut announced: Option<u32> = None;
         let won = store
             .transact(|tx| {
                 attempts += 1;
                 let current = tx
                     .get(COUNTER)?
                     .map_or(0, |b| u64::from_be_bytes(b.try_into().unwrap()));
-                if attempts == 1 {
+                // Announce the first attempt whose read succeeded. A driver may re-run the
+                // closure before that (FDB retries a read that failed with a retryable error).
+                if announced.is_none() {
+                    announced = Some(attempts);
+                    if attempts > 1 {
+                        eprintln!("round {round}: read succeeded on attempt {attempts}");
+                    }
                     send("read".into());
                     assert_eq!(recv(), "go");
                 }
@@ -71,7 +79,8 @@ fn contend(
                 Ok(true)
             })
             .unwrap();
-        send(format!("done {} {attempts}", u8::from(won)));
+        let attempts_since_read = attempts - announced.unwrap() + 1;
+        send(format!("done {} {attempts_since_read}", u8::from(won)));
     }
 }
 
@@ -304,9 +313,11 @@ mod live_fdb {
             self.stdin.flush().unwrap();
         }
         fn recv(&mut self) -> String {
-            // The test harness prints its own lines on stdout; protocol lines are tagged.
+            // The test harness prints on stdout too, and its unterminated `test name ... `
+            // can precede the first protocol line, so the tag is matched anywhere in a line.
             for line in &mut self.stdout {
-                if let Some(message) = line.unwrap().strip_prefix(PROTOCOL) {
+                let line = line.unwrap();
+                if let Some((_, message)) = line.split_once(PROTOCOL) {
                     return message.to_string();
                 }
             }

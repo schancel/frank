@@ -1160,8 +1160,8 @@ impl Account {
     fn subject(&self) -> String {
         hex::encode(self.point)
     }
-    /// The reviewed bootstrap statement, made this account's: its key as subject, the lab
-    /// relay tuple, a current validity window, then signed by this key. `nanos` varies the
+    /// The reviewed bootstrap statement, made this account's: the lab network, its key as
+    /// subject, the lab relay tuple, a current validity window, then signed by this key. `nanos` varies the
     /// timestamp so two entries of one revision differ.
     fn sign(&self, revision: u64, predecessor: Option<[u8; 32]>, nanos: u32) -> Signed {
         use frank_cbor::{cbor_map, decode_canonical, encode_frame, CborValue};
@@ -1208,6 +1208,8 @@ impl Account {
         let issued = unix_now() - 120 + revision as i64;
         for (key, value) in &mut fields {
             match *key {
+                // The vector's network is monad-testnet; the lab relays serve monad-regtest.
+                0 => *value = CborValue::Text(DIRECTORY_NETWORK.into()),
                 1 => *value = subject.clone(),
                 2 => *value = CborValue::Int(revision.into()),
                 3 => *value = cbor_timestamp(issued, nanos),

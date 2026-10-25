@@ -330,7 +330,6 @@ impl Registry {
         self.db.directory_subjects()
     }
 
-
     /// Delete unreferenced directory objects (large evidence frames and forward bodies) as sweep
     /// lease holder `holder`. Nothing is done before the directory store exists. Blocks.
     pub fn sweep_directory_large_values(

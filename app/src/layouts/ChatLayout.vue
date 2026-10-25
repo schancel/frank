@@ -62,7 +62,9 @@
           <extension-popout-btn />
         </template>
         <template v-else>
-          <!-- Phones: the chat list is its own page, so give the open conversation a way back. -->
+          <!-- Phones: the chat list is its own page, so the open conversation gets back, and
+          only back: the navigation menu belongs to top-level pages. Wide: the chat list is
+          beside it, so there is nothing to go back to and the menu stays. -->
           <q-btn
             v-if="narrow"
             class="q-px-sm"
@@ -74,9 +76,11 @@
             @click="backToChats"
           />
           <q-btn
+            v-else
             class="q-px-sm"
             flat
             dense
+            data-testid="chat-open-navigation"
             @click="() => $emit('toggleMyDrawerOpen')"
             icon="menu"
             :aria-label="$t('a11y.openNavigation')"
@@ -128,8 +132,12 @@
               }}</span>
             </div>
           </q-toolbar-title>
-          <q-space />
+          <!-- No <q-space /> here: the title already takes the free width (flex 1 1 0%), and a
+          space beside it would split that width in half, cutting a group's name and member
+          count short on a phone. -->
+          <!-- Only the call media this conversation supports (see utils/webrtc-call-support). -->
           <q-btn
+            v-if="callMedia.includes('audio')"
             class="q-px-xs"
             flat
             round
@@ -140,6 +148,7 @@
             @click="startWebRtcCall(false)"
           />
           <q-btn
+            v-if="callMedia.includes('video')"
             class="q-px-xs"
             flat
             round
@@ -348,6 +357,10 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
+import {
+  supportedCallMedia,
+  type WebRtcCallMedia,
+} from 'src/utils/webrtc-call-support'
 import {
   conversationSenders,
   isGroupConversation,
@@ -662,6 +675,12 @@ export default defineComponent({
         this.ownAddress,
         this.activeConversation?.address,
       )
+    },
+    callMedia(): readonly WebRtcCallMedia[] {
+      return supportedCallMedia({
+        group: this.activeConversation?.kind === 'group' || this.isGroup,
+        otherParticipantCount: this.participantCount - 1,
+      })
     },
     subject(): string {
       const conv = this.activeConversation

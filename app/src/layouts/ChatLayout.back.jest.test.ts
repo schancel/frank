@@ -36,9 +36,10 @@ jest.mock('src/utils/own-address', () => ({
     Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
 
+const mockConversations: Record<string, unknown> = {}
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
-    conversations: {},
+    conversations: mockConversations,
     chats: {},
     getSortedChatOrder: [],
   }),
@@ -55,12 +56,13 @@ const passthrough = defineComponent({
 function mountAt(
   width: number,
   router: Record<string, jest.Mock> = { push: jest.fn() },
+  address = OWN_ADDRESS.toLowerCase(),
 ) {
   mockOwnAddress.value = null
   return mount(ChatLayout, {
     global: {
       mocks: {
-        $route: { params: { address: OWN_ADDRESS.toLowerCase() } },
+        $route: { params: { address } },
         $router: router,
         $t: (key: string) => key,
         $q: { screen: { width } },
@@ -136,4 +138,70 @@ describe('ChatLayout back arrow on phones', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="chat-back"]').exists()).toBe(false)
   })
+})
+
+describe('ChatLayout conversation header', () => {
+  const PEER = '0x2b2B2B2B2b2B2B2b2B2b2b2b2b2b2b2B2B2b2b2b'
+  const OTHER = '0x3c3C3C3C3c3C3C3c3C3c3c3c3c3c3c3C3C3c3c3c'
+  const GROUP_ID = 'g'.repeat(32)
+
+  afterEach(() => {
+    for (const key of Object.keys(mockConversations))
+      delete mockConversations[key]
+  })
+
+  it('on a phone, a conversation has back and no navigation menu', async () => {
+    const wrapper = mountAt(390)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="chat-back"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="chat-open-navigation"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[icon="menu"]').exists()).toBe(false)
+  })
+
+  it('on a wide layout, a conversation keeps the navigation menu and has no back', async () => {
+    const wrapper = mountAt(1280)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="chat-open-navigation"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="chat-back"]').exists()).toBe(false)
+  })
+
+  it('a direct conversation offers voice and video calls', async () => {
+    const wrapper = mountAt(390, { push: jest.fn() }, PEER.toLowerCase())
+    await flushPromises()
+    expect(wrapper.find('[data-testid="webrtc-audio-call-btn"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="webrtc-video-call-btn"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it.each([390, 1280])(
+    'a group conversation offers no call at %ipx: group calls are unsupported',
+    async width => {
+      mockConversations[GROUP_ID] = {
+        id: GROUP_ID,
+        kind: 'group',
+        name: 'First Group',
+        address: `group:${'a'.repeat(64)}`,
+        participants: [OWN_ADDRESS, PEER, OTHER],
+      }
+      const wrapper = mountAt(width, { push: jest.fn() }, GROUP_ID)
+      mockOwnAddress.value = OWN_ADDRESS
+      await flushPromises()
+      expect(wrapper.get('[data-testid="chat-header-name"]').text()).toBe(
+        'First Group',
+      )
+      expect(
+        wrapper.find('[data-testid="webrtc-audio-call-btn"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.find('[data-testid="webrtc-video-call-btn"]').exists(),
+      ).toBe(false)
+    },
+  )
 })

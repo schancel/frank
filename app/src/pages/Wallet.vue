@@ -606,7 +606,7 @@
                   </div>
 
                   <!-- dApp Persona EOA & Extension Bridge Card -->
-                  <div v-if="isPrimaryStampChain" class="q-px-md q-pt-md">
+                  <div v-if="isPrimaryStampChain" class="q-px-md q-py-md">
                     <dapp-bridge-panel />
                   </div>
                 </q-tab-panel>

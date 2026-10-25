@@ -286,6 +286,7 @@ import { activeChain } from '@frank/wallet/chain'
 import {
   formatDisplayAmount,
   formatRawAmount,
+  registryAmountAdapter,
 } from '../../../utils/chain-amount'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
@@ -748,17 +749,37 @@ export default defineComponent({
           ? `${amount} (${this.$t('chatMessageStealth.claimedAmount')})`
           : amount
       }
-      if (!this.message || !this.message.outpoints) {
-        return `0 ${activeChain.unit}`
-      }
+      const groupPayment = this.groupWritePaymentAmount
+      if (groupPayment) return formatDisplayAmount(...groupPayment)
+      // Lotus-origin stamps are the only ones carried as outpoints. A message with neither
+      // (a group message, a received one whose payment this device does not hold, a note to
+      // self) shows no amount rather than a zero in some default network's unit.
+      if (!this.message.outpoints?.length) return ''
       const amount = stampPrice(this.message.outpoints)
       return Number(amount / 1000000).toFixed(2) + ' XPI'
     },
     /** Every digit of the stamp, shown on hover; the bubble shows the shortened amount. */
     stampAmountExact(): string {
-      return this.message.stampValueWei !== undefined
-        ? formatRawAmount(activeChain, this.message.stampValueWei)
-        : ''
+      if (this.message.stampValueWei !== undefined)
+        return formatRawAmount(activeChain, this.message.stampValueWei)
+      const groupPayment = this.groupWritePaymentAmount
+      return groupPayment ? formatRawAmount(...groupPayment) : ''
+    },
+    /** What this device's own group write pays its hosting relay, in the unit of the network
+     * the payment names; undefined when there is no such payment, it was released (nothing was
+     * paid), or its network is unknown here. */
+    groupWritePaymentAmount():
+      | [NonNullable<ReturnType<typeof registryAmountAdapter>>, bigint]
+      | undefined {
+      const payment = this.message.groupWritePayment
+      if (!payment || payment.released || payment.releasing) return undefined
+      const chain = registryAmountAdapter(payment.network)
+      if (!chain) return undefined
+      try {
+        return [chain, BigInt(payment.amountWei)]
+      } catch {
+        return undefined
+      }
     },
     // Named hooks into `--q-message-color-sent`/`--q-message-color` (app.scss's own header on
     // these classes explains the currentColor mechanism) -- was hardcoded to fixed Quasar palette

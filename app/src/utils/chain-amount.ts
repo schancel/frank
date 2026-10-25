@@ -1,4 +1,6 @@
 import type { ActiveChain } from '@frank/wallet/chain'
+import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 
 type ChainAmountAdapter = Pick<
   ActiveChain,
@@ -15,10 +17,25 @@ export function displayToRawAmount(
 }
 
 export function formatRawAmount(
-  chain: ChainAmountAdapter,
+  chain: Pick<ChainAmountAdapter, 'unit' | 'toDisplayAmount'>,
   raw: string | bigint,
 ): string {
   return `${chain.toDisplayAmount(BigInt(raw))} ${chain.unit}`
+}
+
+/** The display unit and precision of a network's native coin, from the canonical registry, for
+ * an amount that names its own network. Undefined for an unknown network or one with no native
+ * coin: the caller shows no amount rather than guess a unit. */
+export function registryAmountAdapter(
+  chainIdentifier: string,
+): Pick<ChainAmountAdapter, 'unit' | 'toDisplayAmount'> | undefined {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  const decimals = entry?.nativeDecimals
+  if (!entry || decimals === null || decimals === undefined) return undefined
+  return {
+    unit: entry.unit,
+    toDisplayAmount: raw => formatBaseUnit(raw, decimals),
+  }
 }
 
 /** Decimals kept for an amount of one unit or more. */

@@ -221,13 +221,21 @@ async fn upstream_transport(
     raw: &str,
 ) -> Result<(String, reqwest::Client), GroupError> {
     let upstream = validate_upstream_url(raw)?;
-    match store.get_mirror_state(group_id)? {
+    let owned_group_id = group_id.to_owned();
+    let (mirror, local_epoch) = on_store(store, move |store| {
+        Ok((
+            store.get_mirror_state(&owned_group_id)?,
+            store.get_current_epoch(&owned_group_id)?,
+        ))
+    })
+    .await?;
+    match mirror {
         Some(state) if state.upstream_relay != upstream => {
             return Err(GroupError::Forbidden(
                 "upstream conflicts with established group ownership".into(),
             ))
         }
-        None if store.get_current_epoch(group_id)?.is_some() => {
+        None if local_epoch.is_some() => {
             return Err(GroupError::Forbidden(
                 "local group does not accept foreign routing".into(),
             ))
@@ -364,6 +372,19 @@ pub fn router_with_store(store: GroupStore) -> Router {
         ))
 }
 
+/// Run one store call on a blocking worker. Every call waits on RocksDB or on FoundationDB
+/// futures, so none runs on an async worker.
+async fn on_store<T, F>(store: &GroupStore, call: F) -> Result<T, GroupError>
+where
+    T: Send + 'static,
+    F: FnOnce(&GroupStore) -> Result<T, GroupError> + Send + 'static,
+{
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || call(&store))
+        .await
+        .map_err(|error| GroupError::Storage(error.to_string()))?
+}
+
 /// The first group request opens the store on disk; that blocking open stays off the runtime.
 async fn registry_group_store(server: &RegistryServer) -> Result<GroupStore, GroupError> {
     let registry = server.registry.clone();
@@ -456,11 +477,16 @@ async fn put_group_epoch_impl(
         };
         if status.is_success() {
             if let Ok(committed) = serde_json::from_slice::<GroupEpochFrame>(&resp_bytes) {
-                if let Ok(Some(mirror)) = store.get_mirror_state(&group_id) {
-                    if mirror.mirrored {
-                        let _ = store.ingest_mirrored_upstream(&group_id, Some(committed), &[]);
+                let group_id = group_id.clone();
+                let _ = on_store(&store, move |store| {
+                    if let Some(mirror) = store.get_mirror_state(&group_id)? {
+                        if mirror.mirrored {
+                            store.ingest_mirrored_upstream(&group_id, Some(committed), &[])?;
+                        }
                     }
-                }
+                    Ok(())
+                })
+                .await;
             }
         }
         return (
@@ -474,7 +500,7 @@ async fn put_group_epoch_impl(
             .into_response();
     }
 
-    match store.put_epoch(&group_id, frame) {
+    match on_store(&store, move |store| store.put_epoch(&group_id, frame)).await {
         Ok(committed) => (StatusCode::OK, Json(committed)).into_response(),
         Err(e) => group_error_response(e),
     }
@@ -544,7 +570,8 @@ async fn get_group_epoch_impl(
 
     let requested_upstream = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY).map(str::to_owned);
     let upstream = if query.epoch.is_none() && requested_upstream.is_none() {
-        match store.get_mirror_state(&group_id) {
+        let group_id = group_id.clone();
+        match on_store(&store, move |store| store.get_mirror_state(&group_id)).await {
             Ok(state) => state.map(|state| state.upstream_relay),
             Err(error) => return group_error_response(error),
         }
@@ -555,10 +582,12 @@ async fn get_group_epoch_impl(
     // its trusted authority. Serving the mirror's stale head can prevent clients from
     // accepting a valid successor epoch and ever reaching message synchronization.
     if query.epoch.is_some() || upstream.is_none() {
-        let local_epoch = match query.epoch {
-            Some(epoch) => store.get_epoch(&group_id, epoch),
-            None => store.get_current_epoch(&group_id),
-        };
+        let (owned_group_id, requested) = (group_id.clone(), query.epoch);
+        let local_epoch = on_store(&store, move |store| match requested {
+            Some(epoch) => store.get_epoch(&owned_group_id, epoch),
+            None => store.get_current_epoch(&owned_group_id),
+        })
+        .await;
         match local_epoch {
             Ok(Some(frame)) => return (StatusCode::OK, Json(frame)).into_response(),
             Err(error) => return group_error_response(error),
@@ -758,7 +787,7 @@ async fn put_group_message_impl(
             .into_response();
     }
 
-    match store.put_message(&group_id, envelope) {
+    match on_store(&store, move |store| store.put_message(&group_id, envelope)).await {
         Ok(outcome) => (
             StatusCode::OK,
             [
@@ -804,6 +833,23 @@ async fn handle_get_group_messages_store(
     get_group_messages_impl(store, group_id, query, headers).await
 }
 
+/// Check the read token against the current epoch, then read one page, on a blocking worker.
+async fn read_local_page(
+    store: &GroupStore,
+    group_id: &str,
+    read_token: &str,
+    after_seq: u64,
+    limit: u16,
+) -> Result<(GroupEpochFrame, Vec<StoredGroupMessage>), GroupError> {
+    let (group_id, read_token) = (group_id.to_owned(), read_token.to_owned());
+    on_store(store, move |store| {
+        let current_epoch = store.verify_read_token(&group_id, &read_token)?;
+        let messages = store.list_messages(&group_id, after_seq, limit)?;
+        Ok((current_epoch, messages))
+    })
+    .await
+}
+
 async fn get_group_messages_impl(
     store: GroupStore,
     group_id: String,
@@ -839,7 +885,12 @@ async fn get_group_messages_impl(
         if let Err(error) = upstream_epoch.verify_read_token(read_token) {
             return group_error_response(error);
         }
-        match store.get_current_epoch(&group_id) {
+        let owned_group_id = group_id.clone();
+        match on_store(&store, move |store| {
+            store.get_current_epoch(&owned_group_id)
+        })
+        .await
+        {
             Ok(Some(current))
                 if current.epoch > upstream_epoch.epoch
                     || (current.epoch == upstream_epoch.epoch
@@ -891,13 +942,24 @@ async fn get_group_messages_impl(
                 "upstream response does not match authenticated group epoch".into(),
             ));
         }
-        let mirror_state = match store.record_foreign_subscriber(
-            &group_id,
-            &upstream,
-            header_str(&headers, HEADER_GROUP_SUBSCRIBER_TAG),
-            &upstream_epoch,
-            read_token,
-        ) {
+        let (owned_group_id, owned_upstream, subscriber_tag, owned_epoch, owned_token) = (
+            group_id.clone(),
+            upstream.clone(),
+            header_str(&headers, HEADER_GROUP_SUBSCRIBER_TAG).map(str::to_owned),
+            upstream_epoch.clone(),
+            read_token.to_owned(),
+        );
+        let mirror_state = match on_store(&store, move |store| {
+            store.record_foreign_subscriber(
+                &owned_group_id,
+                &owned_upstream,
+                subscriber_tag.as_deref(),
+                &owned_epoch,
+                &owned_token,
+            )
+        })
+        .await
+        {
             Ok(state) => state,
             Err(error) => return group_error_response(error),
         };
@@ -975,7 +1037,8 @@ async fn get_group_messages_impl(
             .filter(|epoch| *epoch != upstream_epoch.epoch)
             .collect();
         for epoch in historical_epochs {
-            match store.get_epoch(&group_id, epoch) {
+            let owned_group_id = group_id.clone();
+            match on_store(&store, move |store| store.get_epoch(&owned_group_id, epoch)).await {
                 Ok(Some(_)) => continue,
                 Err(error) => return group_error_response(error),
                 Ok(None) => {}
@@ -991,25 +1054,34 @@ async fn get_group_messages_impl(
                 Ok(frame) => frame,
                 Err(error) => return group_error_response(error),
             };
-            if let Err(error) = store.ingest_mirrored_upstream(&group_id, Some(frame), &[]) {
+            let owned_group_id = group_id.clone();
+            if let Err(error) = on_store(&store, move |store| {
+                store.ingest_mirrored_upstream(&owned_group_id, Some(frame), &[])
+            })
+            .await
+            {
                 return group_error_response(error);
             }
         }
-        if let Err(e) =
-            store.ingest_mirrored_upstream(&group_id, Some(upstream_epoch), &synced_batch.messages)
+        let owned_group_id = group_id.clone();
+        if let Err(e) = on_store(&store, move |store| {
+            store.ingest_mirrored_upstream(
+                &owned_group_id,
+                Some(upstream_epoch),
+                &synced_batch.messages,
+            )
+        })
+        .await
         {
             return group_error_response(e);
         }
 
         // Serve directly from the local mirrored GroupStore!
-        let current_epoch = match store.verify_read_token(&group_id, read_token) {
-            Ok(ep) => ep,
-            Err(e) => return group_error_response(e),
-        };
-        let messages = match store.list_messages(&group_id, after_seq, limit) {
-            Ok(m) => m,
-            Err(e) => return group_error_response(e),
-        };
+        let (current_epoch, messages) =
+            match read_local_page(&store, &group_id, read_token, after_seq, limit).await {
+                Ok(page) => page,
+                Err(e) => return group_error_response(e),
+            };
         let next_after_seq = messages.last().map(|m| m.server_seq).unwrap_or(after_seq);
         return (
             StatusCode::OK,
@@ -1030,14 +1102,11 @@ async fn get_group_messages_impl(
     }
 
     // Authoritative local group read path
-    let current_epoch = match store.verify_read_token(&group_id, read_token) {
-        Ok(ep) => ep,
-        Err(e) => return group_error_response(e),
-    };
-    let messages = match store.list_messages(&group_id, after_seq, limit) {
-        Ok(m) => m,
-        Err(e) => return group_error_response(e),
-    };
+    let (current_epoch, messages) =
+        match read_local_page(&store, &group_id, read_token, after_seq, limit).await {
+            Ok(page) => page,
+            Err(e) => return group_error_response(e),
+        };
     let next_after_seq = messages.last().map(|m| m.server_seq).unwrap_or(after_seq);
     (
         StatusCode::OK,

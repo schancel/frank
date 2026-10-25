@@ -638,6 +638,29 @@ impl VapidKeyPair {
         decode_vapid_private_key(encoded).map(|bytes| Self::from_private_key_bytes(&bytes))
     }
 
+    /// Read an operator-provisioned key file (`registry.vapid_private_key_file`): the 32-byte
+    /// private scalar as 64 hex characters or base64url text, surrounding whitespace ignored.
+    /// The file is never created and must be readable by its owner only. The scalar must be a
+    /// valid P-256 private key (`0 < d < n`); it is refused, not reduced, so every replica
+    /// signs with exactly the key the operator provisioned. The error names the path, never
+    /// the key.
+    pub fn load_provisioned(path: &std::path::Path) -> Result<Self, String> {
+        let bytes = crate::provisioned::read_secret_file(path)
+            .map_err(|error| format!("reading VAPID key file {}: {error}", path.display()))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| format!("{}: VAPID key file is not text", path.display()))?;
+        let scalar = decode_vapid_private_key(text)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let d = u256_from_be_bytes(&scalar);
+        if u256_is_zero(&d) || u256_cmp(&d, &P256_N) != std::cmp::Ordering::Less {
+            return Err(format!(
+                "{}: not a P-256 private key (the scalar must be between 1 and n - 1)",
+                path.display()
+            ));
+        }
+        Ok(Self::from_private_key_bytes(&scalar))
+    }
+
     /// Generate a fresh random P-256 VAPID keypair.
     pub fn generate() -> Self {
         use rand::RngCore;
@@ -901,5 +924,48 @@ mod key_validation_tests {
             }
         }
         assert!(VapidKeyPair::from_private_key_str("invalid encoding").is_err());
+    }
+
+    #[test]
+    fn a_provisioned_vapid_key_file_is_read_and_never_created() {
+        let expected = VapidKeyPair::from_private_key_bytes(&[9u8; 32]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vapid-private-key");
+        assert!(VapidKeyPair::load_provisioned(&path).is_err());
+        assert!(!path.exists(), "a provisioned key must never be created");
+        std::fs::write(
+            &path,
+            format!("{}\n", hex::encode(expected.private_key_bytes())),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            let error = VapidKeyPair::load_provisioned(&path).unwrap_err();
+            assert!(error.contains("owner only"), "{error}");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(VapidKeyPair::load_provisioned(&path).unwrap() == expected);
+        std::fs::write(&path, "not a key").unwrap();
+        let error = VapidKeyPair::load_provisioned(&path).unwrap_err();
+        assert!(error.contains("vapid-private-key"), "{error}");
+        // Zero, n and above n are refused rather than reduced to some other key.
+        let n = u256_to_be_bytes(&P256_N);
+        let n_plus_one = u256_to_be_bytes(&u256_add_raw(&P256_N, &[1, 0, 0, 0]).0);
+        for scalar in [[0u8; 32], n, n_plus_one, [0xff; 32]] {
+            std::fs::write(&path, hex::encode(scalar)).unwrap();
+            let error = VapidKeyPair::load_provisioned(&path).unwrap_err();
+            assert!(error.contains("not a P-256 private key"), "{error}");
+            assert!(!error.contains(&hex::encode(scalar)), "{error}");
+        }
+        let n_minus_one = u256_to_be_bytes(&u256_sub_raw(&P256_N, &[1, 0, 0, 0]).0);
+        std::fs::write(&path, hex::encode(n_minus_one)).unwrap();
+        assert_eq!(
+            VapidKeyPair::load_provisioned(&path)
+                .unwrap()
+                .private_key_bytes(),
+            &n_minus_one
+        );
     }
 }

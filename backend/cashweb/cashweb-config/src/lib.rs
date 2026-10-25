@@ -403,6 +403,17 @@ pub struct RegistryConf {
     /// Price and energy oracle (`GET /oracle/v1/feed`). Omitted means no collector and no route.
     #[serde(default)]
     pub oracle: Option<OracleConf>,
+    /// Operator-provisioned 32-byte session signing secret (challenges, cursors, RPC
+    /// capabilities). It is read, never created. Required in cluster mode, where every replica
+    /// must hold the same file. Omitted on a single node: the relay keeps a secret beside its
+    /// database and creates it on first start.
+    #[serde(default)]
+    pub session_secret_file: Option<PathBuf>,
+    /// Operator-provisioned WebPush VAPID P-256 private key: 32 bytes as 64 hex characters or
+    /// base64url text. It is read, never created. Required in cluster mode, where every replica
+    /// must hold the same file. Changing it orphans every push subscription.
+    #[serde(default)]
+    pub vapid_private_key_file: Option<PathBuf>,
 }
 
 /// Forum configuration: where a post or vote must burn its payment, on [`RegistryConf::network`].
@@ -429,7 +440,10 @@ pub struct ClusterConf {
     /// Optional FoundationDB `fdb.cluster` configuration file path (`#1575`).
     #[serde(default)]
     pub fdb_cluster_file: Option<PathBuf>,
-    /// Optional FoundationDB tuple subspace prefix (`#1575`).
+    /// FoundationDB key prefix for this relay's state, e.g. `frank-prod/`: one or more
+    /// segments of letters, digits, `-` or `_`, each followed by `/`. The trailing separator
+    /// keeps `frank/` and `frank2/` apart; two relays must not use prefixes where one is a
+    /// leading run of the other's segments (`frank/` and `frank/lab/`).
     #[serde(default)]
     pub fdb_subspace_prefix: Option<String>,
     /// Core NATS pub/sub URL (e.g. `nats://nats-cluster:4222`).
@@ -447,6 +461,12 @@ pub struct ClusterConf {
     /// Cluster Domain Authority Public Key.
     #[serde(default)]
     pub authority_pubkey: Option<String>,
+    /// Start cluster mode although some enabled owners still keep their state on this replica
+    /// (see [`RegistryConf::replica_local_owners`]). Each such owner is logged by name. Without
+    /// this, cluster mode refuses to start while any remain. A preview only: replicas do not
+    /// share those owners' state.
+    #[serde(default)]
+    pub preview_replica_local_owners: bool,
 }
 
 fn default_cluster_driver() -> String {
@@ -466,6 +486,7 @@ impl Default for ClusterConf {
             cluster_name: None,
             cluster_id: None,
             authority_pubkey: None,
+            preview_replica_local_owners: false,
         }
     }
 }
@@ -509,27 +530,91 @@ impl ClusterConf {
 }
 
 impl RegistryConf {
-    /// Resolve the authoritative daemon storage selection before opening any state.
-    /// A live KV adapter alone does not replace the registry and message storage owners.
+    /// Resolve the transaction backend before opening any state. Unknown drivers fail; settings
+    /// another driver would ignore fail too, so nothing silently falls back to RocksDB.
     pub fn storage_driver(&self) -> Result<RelayStorageDriver, ClusterConfigError> {
         let Some(cluster) = &self.cluster else {
             return Ok(RelayStorageDriver::RocksDb);
         };
-        if cluster.driver != "rocksdb" {
-            return Err(ClusterConfigError::UnsupportedStorageDriver);
-        }
         if cluster.kvrocks_url.is_some() {
             return Err(ClusterConfigError::UnusedKvrocksUrl);
         }
-        Ok(RelayStorageDriver::RocksDb)
+        match cluster.driver.as_str() {
+            "rocksdb" => {
+                if cluster.fdb_cluster_file.is_some() || cluster.fdb_subspace_prefix.is_some() {
+                    return Err(ClusterConfigError::UnusedFdbSettings);
+                }
+                Ok(RelayStorageDriver::RocksDb)
+            }
+            "foundationdb" => {
+                let cluster_file = cluster
+                    .fdb_cluster_file
+                    .clone()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .ok_or(ClusterConfigError::MissingFdbSettings)?;
+                let subspace_prefix = cluster
+                    .fdb_subspace_prefix
+                    .clone()
+                    .filter(|prefix| !prefix.is_empty())
+                    .ok_or(ClusterConfigError::MissingFdbSettings)?;
+                if !is_valid_subspace_prefix(&subspace_prefix) {
+                    return Err(ClusterConfigError::InvalidFdbSubspacePrefix);
+                }
+                Ok(RelayStorageDriver::FoundationDb {
+                    cluster_file,
+                    subspace_prefix,
+                })
+            }
+            _ => Err(ClusterConfigError::UnsupportedStorageDriver),
+        }
     }
 
-    /// Reject an enabled notification bus without a valid, explicit endpoint.
+    /// Whether `[registry.cluster] enabled = true`: several replicas serve one relay.
+    pub fn is_cluster_mode(&self) -> bool {
+        self.cluster.as_ref().is_some_and(|cluster| cluster.enabled)
+    }
+
+    /// The validated cluster name used in NATS subjects (`frank.<cluster>.…`), when NATS is on.
+    pub fn nats_cluster_name(&self) -> Option<&str> {
+        self.cluster
+            .as_ref()
+            .filter(|cluster| cluster.is_nats_enabled())
+            .and_then(|cluster| cluster.cluster_name.as_deref())
+    }
+
+    /// Enabled owners whose durable state still lives on this replica (its disk or its
+    /// process), in the order they are reported. In cluster mode each replica would hold its own
+    /// copy. The oracle is not listed: it is derived data and stays per replica by design.
+    pub fn replica_local_owners(&self) -> Vec<ReplicaLocalOwner> {
+        let mut owners = vec![ReplicaLocalOwner::RegistryDb];
+        if self.monad_mailbox.enabled {
+            owners.push(ReplicaLocalOwner::DirectMessages);
+        }
+        if self.directory.is_some() {
+            owners.push(ReplicaLocalOwner::Directory);
+        }
+        if self.forum.is_some() {
+            owners.push(ReplicaLocalOwner::Forum);
+        }
+        if self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled {
+            owners.push(ReplicaLocalOwner::HourlyQuotas);
+        }
+        if matches!(self.storage_driver(), Ok(RelayStorageDriver::RocksDb)) {
+            owners.push(ReplicaLocalOwner::Groups);
+        }
+        owners
+    }
+
+    /// Validate `[registry.cluster]` before any state is opened: the driver, the bus endpoint,
+    /// and in cluster mode the shared secrets and the replica-local owner rule.
     pub fn validate_cluster(&self) -> Result<(), ClusterConfigError> {
         self.storage_driver()?;
         let Some(cluster) = &self.cluster else {
             return Ok(());
         };
+        if cluster.preview_replica_local_owners && !cluster.enabled {
+            return Err(ClusterConfigError::PreviewWithoutCluster);
+        }
         let enabled_url = match &cluster.nats {
             Some(nats) if nats.enabled => Some(nats.url.as_str()),
             Some(_) => None,
@@ -543,6 +628,30 @@ impl RegistryConf {
             if !valid {
                 return Err(ClusterConfigError::InvalidNatsUrl);
             }
+        }
+        if cluster.is_nats_enabled()
+            && !cluster
+                .cluster_name
+                .as_deref()
+                .is_some_and(is_valid_cluster_name)
+        {
+            return Err(ClusterConfigError::InvalidClusterName);
+        }
+        if !cluster.enabled {
+            return Ok(());
+        }
+        if !cluster.is_nats_enabled() {
+            return Err(ClusterConfigError::ClusterRequiresNats);
+        }
+        if self.session_secret_file.is_none() {
+            return Err(ClusterConfigError::MissingSessionSecretFile);
+        }
+        if self.vapid_private_key_file.is_none() {
+            return Err(ClusterConfigError::MissingVapidPrivateKeyFile);
+        }
+        let owners = self.replica_local_owners();
+        if !owners.is_empty() && !cluster.preview_replica_local_owners {
+            return Err(ClusterConfigError::ReplicaLocalOwners(owners));
         }
         Ok(())
     }
@@ -558,31 +667,128 @@ impl RegistryConf {
     }
 }
 
-/// Storage choices implemented by the running relay, independent of the notification bus.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// `segment/segment/…/`: each segment letters, digits, `-` or `_`, every one ending in `/`.
+fn is_valid_subspace_prefix(prefix: &str) -> bool {
+    prefix.strip_suffix('/').is_some_and(|body| {
+        body.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+    })
+}
+
+/// The cluster-name rule: 1 to 64 ASCII letters, digits, `-` or `_`, so the name is a single
+/// NATS subject token (`frank.<cluster>.…`). This is the one owner of the rule; the event bus
+/// checks subjects with it.
+pub const CLUSTER_NAME_RULE: &str = "cluster name must be 1 to 64 letters, digits, '-' or '_'";
+
+/// Whether `name` satisfies [`CLUSTER_NAME_RULE`].
+pub fn is_valid_cluster_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The transaction backend selected by `registry.cluster.driver`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelayStorageDriver {
-    /// Single-process registry and direct-message databases on local RocksDB.
+    /// This replica's embedded RocksDB, opened by one process.
     RocksDb,
+    /// A FoundationDB cluster shared by every replica.
+    FoundationDb {
+        /// The `fdb.cluster` file naming the cluster's coordinators.
+        cluster_file: PathBuf,
+        /// Prefix of every key this relay writes; each owner adds its own sub-prefix.
+        subspace_prefix: String,
+    },
+}
+
+/// An enabled owner whose durable state is still kept by this replica alone.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ReplicaLocalOwner {
+    /// Registry `Db`: profiles, usernames, metadata and their indexes.
+    RegistryDb,
+    /// Direct-message owner (`registry.monad_mailbox`).
+    DirectMessages,
+    /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`).
+    Directory,
+    /// Forum (`registry.forum`).
+    Forum,
+    /// Hourly RPC proxy quotas, counted in process memory.
+    HourlyQuotas,
+    /// Groups on the RocksDB driver.
+    Groups,
+}
+
+impl ReplicaLocalOwner {
+    /// The name used in startup logs and refusals.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::RegistryDb => "registry database (profiles, usernames, metadata)",
+            Self::DirectMessages => "direct messages (registry.monad_mailbox)",
+            Self::Directory => "directory (registry.directory)",
+            Self::Forum => "forum (registry.forum)",
+            Self::HourlyQuotas => {
+                "hourly RPC proxy quotas (registry.evm_rpc, bitcoin_proxy, solana_proxy)"
+            }
+            Self::Groups => "groups (registry.cluster.driver = \"rocksdb\")",
+        }
+    }
 }
 
 /// Invalid or unsupported runtime cluster configuration. Errors omit endpoint credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClusterConfigError {
-    /// No alternative driver is wired through every durable relay storage owner yet.
+    /// The driver is neither `rocksdb` nor `foundationdb`.
     UnsupportedStorageDriver,
-    /// A Kvrocks endpoint would otherwise be silently ignored by the RocksDB daemon.
+    /// A Kvrocks endpoint would otherwise be silently ignored.
     UnusedKvrocksUrl,
+    /// FoundationDB settings would be ignored by the RocksDB driver.
+    UnusedFdbSettings,
+    /// The FoundationDB driver needs `fdb_cluster_file` and a non-empty `fdb_subspace_prefix`.
+    MissingFdbSettings,
+    /// `fdb_subspace_prefix` is not `segment/…/` (see [`ClusterConf::fdb_subspace_prefix`]).
+    InvalidFdbSubspacePrefix,
+    /// `preview_replica_local_owners` is set but cluster mode is off, so it would do nothing.
+    PreviewWithoutCluster,
     /// Enabled Core NATS requires an explicit NATS/TLS endpoint with a host.
     InvalidNatsUrl,
+    /// Enabled Core NATS requires a `cluster_name` that is one NATS subject token.
+    InvalidClusterName,
+    /// Cluster mode requires the NATS bus: replicas wake each other's subscribers through it.
+    ClusterRequiresNats,
+    /// Cluster mode requires `registry.session_secret_file`.
+    MissingSessionSecretFile,
+    /// Cluster mode requires `registry.vapid_private_key_file`.
+    MissingVapidPrivateKeyFile,
+    /// Cluster mode with owners still on this replica and no preview flag.
+    ReplicaLocalOwners(Vec<ReplicaLocalOwner>),
 }
 
 impl fmt::Display for ClusterConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::UnsupportedStorageDriver => "registry.cluster.driver is unsupported by this relay: only rocksdb is implemented; FoundationDB and Kvrocks do not replace relay storage yet",
-            Self::UnusedKvrocksUrl => "registry.cluster.kvrocks_url is unsupported: the relay uses RocksDB and would ignore this endpoint",
-            Self::InvalidNatsUrl => "enabled registry.cluster.nats requires a valid nats:// or tls:// URL with a host",
-        })
+        match self {
+            Self::UnsupportedStorageDriver => formatter.write_str("registry.cluster.driver is unsupported: use \"rocksdb\" or \"foundationdb\""),
+            Self::UnusedKvrocksUrl => formatter.write_str("registry.cluster.kvrocks_url is unsupported: no relay driver uses Kvrocks, so this endpoint would be ignored"),
+            Self::UnusedFdbSettings => formatter.write_str("registry.cluster.fdb_cluster_file and fdb_subspace_prefix are only used with driver = \"foundationdb\""),
+            Self::MissingFdbSettings => formatter.write_str("registry.cluster.driver = \"foundationdb\" requires fdb_cluster_file and a non-empty fdb_subspace_prefix"),
+            Self::InvalidFdbSubspacePrefix => formatter.write_str("registry.cluster.fdb_subspace_prefix must be one or more segments of letters, digits, '-' or '_', each ending in '/' (for example \"frank-prod/\"), so no two prefixes overlap by accident"),
+            Self::PreviewWithoutCluster => formatter.write_str("registry.cluster.preview_replica_local_owners only applies with registry.cluster.enabled = true; remove it or enable cluster mode"),
+            Self::InvalidNatsUrl => formatter.write_str("enabled registry.cluster.nats requires a valid nats:// or tls:// URL with a host"),
+            Self::InvalidClusterName => formatter.write_str("enabled registry.cluster.nats requires registry.cluster.cluster_name: 1 to 64 letters, digits, '-' or '_' (it names the NATS subjects frank.<cluster>.…)"),
+            Self::ClusterRequiresNats => formatter.write_str("registry.cluster.enabled requires an enabled [registry.cluster.nats] bus"),
+            Self::MissingSessionSecretFile => formatter.write_str("registry.cluster.enabled requires registry.session_secret_file: an operator-provisioned 32-byte file, identical on every replica"),
+            Self::MissingVapidPrivateKeyFile => formatter.write_str("registry.cluster.enabled requires registry.vapid_private_key_file: an operator-provisioned key file, identical on every replica"),
+            Self::ReplicaLocalOwners(owners) => {
+                formatter.write_str("registry.cluster.enabled refuses to start while these enabled owners keep their state on this replica: ")?;
+                let names: Vec<_> = owners.iter().map(|owner| owner.name()).collect();
+                formatter.write_str(&names.join("; "))?;
+                formatter.write_str(". Set registry.cluster.preview_replica_local_owners = true to start anyway as a preview")
+            }
+        }
     }
 }
 
@@ -813,9 +1019,8 @@ impl fmt::Display for RegistryConfigError {
                  [registry.evm_rpc] enabled): the mailbox and the forum verify payments through \
                  that row's upstreams"
             ),
-            Self::InvalidForumBurnAddress => formatter.write_str(
-                "registry.forum.burn_address must be 0x followed by 40 hex characters",
-            ),
+            Self::InvalidForumBurnAddress => formatter
+                .write_str("registry.forum.burn_address must be 0x followed by 40 hex characters"),
         }
     }
 }
@@ -837,8 +1042,8 @@ impl RegistryConf {
             return Err(RegistryConfigError::NetworkNotEvm(self.network.clone()));
         }
         if self.monad_mailbox.enabled || self.forum.is_some() {
-            let proxied = self.evm_rpc.enabled
-                && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
+            let proxied =
+                self.evm_rpc.enabled && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
             if !proxied {
                 return Err(RegistryConfigError::NetworkNotProxied(self.network.clone()));
             }
@@ -1797,9 +2002,9 @@ mod tests {
         parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
         ClusterConf, ClusterNatsConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
         EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf, MonadMailboxConf,
-        MonadMailboxConfigError,
-        MonadMailboxMode, PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
-        RegistryConfigError, SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
+        MonadMailboxConfigError, MonadMailboxMode, PopConf, ProtocolChainFamily,
+        ProtocolProxyCapability, RegistryConf, RegistryConfigError, SolanaProxyChainConf,
+        SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -2279,6 +2484,8 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
+                    session_secret_file: None,
+                    vapid_private_key_file: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2365,6 +2572,8 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
+                    session_secret_file: None,
+                    vapid_private_key_file: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2380,7 +2589,10 @@ continuity_file = "/var/lib/frank/continuity"
     fn network_is_required_canonical_evm_and_proxied_when_payments_run_on_it() {
         let shipped = include_str!("../../cashwebd.local.toml");
         let conf = parse_conf(shipped).unwrap();
-        assert_eq!(conf.registry.validate_network().unwrap().id, "monad-testnet");
+        assert_eq!(
+            conf.registry.validate_network().unwrap().id,
+            "monad-testnet"
+        );
 
         // No network at all is a parse error, never a default.
         let missing = shipped.replace("network = \"monad-testnet\"\nnet =", "net =");
@@ -2557,7 +2769,9 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             assert_eq!(
-                conf.registry.validate_network().map(|chain| chain.id.as_str()),
+                conf.registry
+                    .validate_network()
+                    .map(|chain| chain.id.as_str()),
                 Ok("monad-testnet"),
                 "{name}"
             );
@@ -2706,7 +2920,10 @@ continuity_file = "/var/lib/frank/continuity"
             "enabled = true\nmin_value_wei = '1'\nrpc_url = 'https://rpc.example'",
             "enabled = true\nmin_value_wei = '1'\nexpected_chain_id = 10143",
         ] {
-            assert!(toml::from_str::<MonadMailboxConf>(removed).is_err(), "{removed}");
+            assert!(
+                toml::from_str::<MonadMailboxConf>(removed).is_err(),
+                "{removed}"
+            );
         }
     }
 
@@ -2718,7 +2935,7 @@ continuity_file = "/var/lib/frank/continuity"
             enabled = true
             driver = "foundationdb"
             fdb_cluster_file = "/etc/foundationdb/fdb.cluster"
-            fdb_subspace_prefix = "frank_prod:"
+            fdb_subspace_prefix = "frank_prod/"
             kvrocks_url = "redis://kvrocks-cluster:6666"
             nats_url = "nats://nats-cluster:4222"
             cluster_name = "frank-prod-us"
@@ -2730,7 +2947,7 @@ continuity_file = "/var/lib/frank/continuity"
             parsed.fdb_cluster_file(),
             Some(std::path::Path::new("/etc/foundationdb/fdb.cluster"))
         );
-        assert_eq!(parsed.fdb_subspace_prefix(), Some("frank_prod:"));
+        assert_eq!(parsed.fdb_subspace_prefix(), Some("frank_prod/"));
         assert_eq!(
             parsed.kvrocks_url.as_deref(),
             Some("redis://kvrocks-cluster:6666")
@@ -2745,7 +2962,15 @@ continuity_file = "/var/lib/frank/continuity"
             .registry;
         assert_eq!(conf.storage_driver(), Ok(RelayStorageDriver::RocksDb));
         for enabled in [false, true] {
-            for driver in ["foundationdb", "kvrocks", "resp", "ROCKSDB", "", "typo"] {
+            for driver in [
+                "kvrocks",
+                "resp",
+                "ROCKSDB",
+                "FoundationDB",
+                "fdb",
+                "",
+                "typo",
+            ] {
                 conf.cluster = Some(ClusterConf {
                     enabled,
                     driver: driver.into(),
@@ -2770,6 +2995,249 @@ continuity_file = "/var/lib/frank/continuity"
             .unwrap_err()
             .to_string()
             .contains("password"));
+        // RocksDB would ignore FoundationDB settings, so they are refused rather than dropped.
+        for (file, prefix) in [(Some("/etc/fdb.cluster"), None), (None, Some("frank:"))] {
+            conf.cluster = Some(ClusterConf {
+                fdb_cluster_file: file.map(Into::into),
+                fdb_subspace_prefix: prefix.map(Into::into),
+                ..ClusterConf::default()
+            });
+            assert_eq!(
+                conf.validate_cluster(),
+                Err(ClusterConfigError::UnusedFdbSettings)
+            );
+        }
+    }
+
+    #[test]
+    fn foundationdb_driver_uses_its_cluster_file_and_subspace_prefix() {
+        use super::{ClusterConfigError, RelayStorageDriver};
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        for (file, prefix) in [
+            (None, None),
+            (Some("/etc/fdb.cluster"), None),
+            (None, Some("frank:")),
+            (Some(""), Some("frank:")),
+            (Some("/etc/fdb.cluster"), Some("")),
+        ] {
+            conf.cluster = Some(ClusterConf {
+                driver: "foundationdb".into(),
+                fdb_cluster_file: file.map(Into::into),
+                fdb_subspace_prefix: prefix.map(Into::into),
+                ..ClusterConf::default()
+            });
+            assert_eq!(
+                conf.storage_driver(),
+                Err(ClusterConfigError::MissingFdbSettings),
+                "{file:?} {prefix:?}"
+            );
+        }
+        conf.cluster = Some(ClusterConf {
+            driver: "foundationdb".into(),
+            fdb_cluster_file: Some("/cluster/fdb.cluster".into()),
+            fdb_subspace_prefix: Some("frank-lab/".into()),
+            ..ClusterConf::default()
+        });
+        assert_eq!(
+            conf.storage_driver(),
+            Ok(RelayStorageDriver::FoundationDb {
+                cluster_file: "/cluster/fdb.cluster".into(),
+                subspace_prefix: "frank-lab/".into(),
+            })
+        );
+        assert!(!conf
+            .replica_local_owners()
+            .contains(&super::ReplicaLocalOwner::Groups));
+    }
+
+    #[test]
+    fn foundationdb_subspace_prefix_ends_every_segment_with_a_separator() {
+        use super::{ClusterConfigError, RelayStorageDriver};
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        let with_prefix = |prefix: &str| ClusterConf {
+            driver: "foundationdb".into(),
+            fdb_cluster_file: Some("/cluster/fdb.cluster".into()),
+            fdb_subspace_prefix: Some(prefix.into()),
+            ..ClusterConf::default()
+        };
+        // Without a trailing separator `frank` would be a key prefix of `frank2`'s keys.
+        for prefix in [
+            "frank",
+            "frank:",
+            "/frank/",
+            "frank//",
+            "frank/lab",
+            "fr ank/",
+            "frank.prod/",
+            "\u{ff}/",
+        ] {
+            conf.cluster = Some(with_prefix(prefix));
+            assert_eq!(
+                conf.storage_driver(),
+                Err(ClusterConfigError::InvalidFdbSubspacePrefix),
+                "{prefix:?}"
+            );
+        }
+        for prefix in ["frank/", "frank-prod/", "frank_lab/eu-1/"] {
+            conf.cluster = Some(with_prefix(prefix));
+            assert!(
+                matches!(
+                    conf.storage_driver(),
+                    Ok(RelayStorageDriver::FoundationDb { .. })
+                ),
+                "{prefix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_flag_is_refused_outside_cluster_mode() {
+        use super::ClusterConfigError;
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        conf.cluster = Some(ClusterConf {
+            enabled: false,
+            preview_replica_local_owners: true,
+            ..ClusterConf::default()
+        });
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::PreviewWithoutCluster)
+        );
+    }
+
+    /// A cluster table that passes every rule except the one a case removes.
+    fn cluster_mode_conf() -> RegistryConf {
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        conf.session_secret_file = Some("/run/secrets/session-secret".into());
+        conf.vapid_private_key_file = Some("/run/secrets/vapid-private-key".into());
+        conf.cluster = Some(ClusterConf {
+            enabled: true,
+            driver: "foundationdb".into(),
+            fdb_cluster_file: Some("/cluster/fdb.cluster".into()),
+            fdb_subspace_prefix: Some("frank/".into()),
+            cluster_name: Some("lab".into()),
+            nats: Some(ClusterNatsConf {
+                enabled: true,
+                url: "nats://nats:4222".into(),
+            }),
+            preview_replica_local_owners: true,
+            ..ClusterConf::default()
+        });
+        conf
+    }
+
+    #[test]
+    fn cluster_mode_requires_provisioned_secrets_bus_and_name() {
+        use super::ClusterConfigError;
+        assert_eq!(cluster_mode_conf().validate_cluster(), Ok(()));
+
+        let mut conf = cluster_mode_conf();
+        conf.session_secret_file = None;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::MissingSessionSecretFile)
+        );
+        let mut conf = cluster_mode_conf();
+        conf.vapid_private_key_file = None;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::MissingVapidPrivateKeyFile)
+        );
+        let mut conf = cluster_mode_conf();
+        conf.cluster.as_mut().unwrap().nats = None;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::ClusterRequiresNats)
+        );
+        for name in [
+            None,
+            Some(""),
+            Some("a.b"),
+            Some("a b"),
+            Some("*"),
+            Some(">"),
+        ] {
+            let mut conf = cluster_mode_conf();
+            conf.cluster.as_mut().unwrap().cluster_name = name.map(Into::into);
+            assert_eq!(
+                conf.validate_cluster(),
+                Err(ClusterConfigError::InvalidClusterName),
+                "{name:?}"
+            );
+        }
+        let long = "x".repeat(65);
+        let mut conf = cluster_mode_conf();
+        conf.cluster.as_mut().unwrap().cluster_name = Some(long);
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::InvalidClusterName)
+        );
+        // A single node keeps creating its own secret beside the database.
+        let mut conf = cluster_mode_conf();
+        let cluster = conf.cluster.as_mut().unwrap();
+        cluster.enabled = false;
+        cluster.preview_replica_local_owners = false;
+        conf.session_secret_file = None;
+        conf.vapid_private_key_file = None;
+        assert_eq!(conf.validate_cluster(), Ok(()));
+        assert!(!conf.is_cluster_mode());
+    }
+
+    #[test]
+    fn cluster_mode_refuses_replica_local_owners_without_the_preview_flag() {
+        use super::{ClusterConfigError, ReplicaLocalOwner};
+        let mut conf = cluster_mode_conf();
+        // The shipped local config enables the mailbox, directory, forum and the RPC proxies.
+        let every_enabled = vec![
+            ReplicaLocalOwner::RegistryDb,
+            ReplicaLocalOwner::DirectMessages,
+            ReplicaLocalOwner::Directory,
+            ReplicaLocalOwner::Forum,
+            ReplicaLocalOwner::HourlyQuotas,
+        ];
+        assert_eq!(conf.replica_local_owners(), every_enabled);
+        conf.cluster.as_mut().unwrap().preview_replica_local_owners = false;
+        let error = conf.validate_cluster().unwrap_err();
+        assert_eq!(
+            error,
+            ClusterConfigError::ReplicaLocalOwners(every_enabled.clone())
+        );
+        let text = error.to_string();
+        for owner in &every_enabled {
+            assert!(text.contains(owner.name()), "{text}");
+        }
+        assert!(text.contains("preview_replica_local_owners"));
+
+        // Disabled owners are not listed; the registry database always is, so far.
+        conf.monad_mailbox.enabled = false;
+        conf.directory = None;
+        conf.forum = None;
+        conf.evm_rpc.enabled = false;
+        conf.bitcoin_proxy.enabled = false;
+        conf.solana_proxy.enabled = false;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::ReplicaLocalOwners(vec![
+                ReplicaLocalOwner::RegistryDb
+            ]))
+        );
+        // Groups on RocksDB are replica-local; on FoundationDB they are not.
+        let cluster = conf.cluster.as_mut().unwrap();
+        cluster.driver = "rocksdb".into();
+        cluster.fdb_cluster_file = None;
+        cluster.fdb_subspace_prefix = None;
+        assert_eq!(
+            conf.replica_local_owners(),
+            vec![ReplicaLocalOwner::RegistryDb, ReplicaLocalOwner::Groups]
+        );
     }
 
     #[test]
@@ -2784,6 +3252,7 @@ continuity_file = "/var/lib/frank/continuity"
                     enabled: true,
                     url: raw.into(),
                 }),
+                cluster_name: Some("lab".into()),
                 ..ClusterConf::default()
             });
             assert_eq!(
@@ -2795,15 +3264,28 @@ continuity_file = "/var/lib/frank/continuity"
             conf.cluster.as_mut().unwrap().nats.as_mut().unwrap().url = raw.into();
             assert_eq!(conf.validate_cluster(), Ok(()));
             assert_eq!(conf.nats_url(), Some(raw));
+            assert_eq!(conf.nats_cluster_name(), Some("lab"));
         }
+        // The subjects are namespaced by cluster, so an enabled bus needs a name.
+        conf.cluster.as_mut().unwrap().cluster_name = None;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::InvalidClusterName)
+        );
         // An explicit disabled table must not resurrect the legacy URL.
         let cluster = conf.cluster.as_mut().unwrap();
-        cluster.enabled = true;
         cluster.nats_url = Some("nats://legacy:4222".into());
         cluster.nats.as_mut().unwrap().enabled = false;
         assert!(!conf.is_nats_enabled());
         assert_eq!(conf.nats_url(), None);
         assert_eq!(conf.validate_cluster(), Ok(()));
+        // Cluster mode then has no bus, which it refuses.
+        conf.cluster.as_mut().unwrap().enabled = true;
+        assert!(!conf.is_nats_enabled());
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::ClusterRequiresNats)
+        );
     }
 
     #[test]

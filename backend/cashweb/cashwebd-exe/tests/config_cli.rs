@@ -87,16 +87,19 @@ fn shipped_configurations_name_their_network_and_need_its_rpc_url() {
             "{name}: no hard-coded endpoint"
         );
 
-        let missing_url =
-            check_stdin_with_env(config, &env_without("MONAD_TESTNET_HTTP_RPC_URL"));
+        let missing_url = check_stdin_with_env(config, &env_without("MONAD_TESTNET_HTTP_RPC_URL"));
         assert!(!missing_url.status.success(), "{name}");
         assert!(
             String::from_utf8_lossy(&missing_url.stderr).contains("MONAD_TESTNET_HTTP_RPC_URL"),
             "{name}: {}",
             String::from_utf8_lossy(&missing_url.stderr)
         );
-        let missing_network = check_stdin(text.replace("network = \"monad-testnet\"\n", "").as_bytes());
-        assert!(!missing_network.status.success(), "{name}: no network accepted");
+        let missing_network =
+            check_stdin(text.replace("network = \"monad-testnet\"\n", "").as_bytes());
+        assert!(
+            !missing_network.status.success(),
+            "{name}: no network accepted"
+        );
         assert!(
             String::from_utf8_lossy(&missing_network.stderr).contains("network"),
             "{name}"
@@ -106,7 +109,10 @@ fn shipped_configurations_name_their_network_and_need_its_rpc_url() {
 
 #[test]
 fn check_config_cli_rejects_an_enabled_mailbox_without_a_decimal_minimum() {
-    for (case, extra) in [("no minimum", ""), ("non-decimal minimum", "min_value_wei = \"1e12\"\n")] {
+    for (case, extra) in [
+        ("no minimum", ""),
+        ("non-decimal minimum", "min_value_wei = \"1e12\"\n"),
+    ] {
         let invalid = include_str!("../../cashwebd.local.toml").replace(
             "[registry.monad_mailbox]\nenabled = true\nmin_value_wei = \"1000000000000\"\n",
             &format!("[registry.monad_mailbox]\nenabled = true\n{extra}"),
@@ -150,50 +156,266 @@ fn check_config_cli_rejects_a_network_the_relay_does_not_proxy() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("monad-mainnet"));
 }
 
+/// The shipped local config with its database under `db` and the chain-backed routes off, plus
+/// `extra` appended.
+fn local_config_without_chain_routes(db: &std::path::Path, extra: &str) -> String {
+    local_config(db, extra)
+}
+
+/// [`local_config_without_chain_routes`] without the forum and the other proxies, which need
+/// upstream variables: a start then gets past chain configuration without any.
+fn local_config_without_network_upstream(db: &std::path::Path, extra: &str) -> String {
+    local_config(db, extra)
+        .replace(
+            "[registry.forum]\nburn_address = \"0x000000000000000000000000000000000000dEaD\"\n",
+            "",
+        )
+        .replace(
+            "[registry.bitcoin_proxy]\nenabled = true",
+            "[registry.bitcoin_proxy]\nenabled = false",
+        )
+        .replace(
+            "[registry.solana_proxy]\nenabled = true",
+            "[registry.solana_proxy]\nenabled = false",
+        )
+}
+
+fn local_config(db: &std::path::Path, extra: &str) -> String {
+    format!(
+        "{}\n{extra}\n",
+        include_str!("../../cashwebd.local.toml")
+            .replace("data/registry.rocksdb", db.to_str().unwrap())
+            .replace(
+                "[registry.monad_mailbox]\nenabled = true",
+                "[registry.monad_mailbox]\nenabled = false",
+            )
+            .replace(
+                "[registry.evm_rpc]\nenabled = true",
+                "[registry.evm_rpc]\nenabled = false",
+            )
+    )
+}
+
+/// Run the real binary (`--check-config`, `--check-db` and a full start) and assert all three
+/// refuse with `expected` before creating anything under `state`.
+fn assert_refused_before_state(temp: &std::path::Path, config: &str, expected: &str) {
+    let state = temp.join("must-not-exist");
+    let path = temp.join("relay.toml");
+    std::fs::write(&path, config).unwrap();
+    // Test real startup and the DB-opening preflight, not just --check-config.
+    for args in [
+        vec!["--check-config".as_ref(), path.as_os_str()],
+        vec!["--check-db".as_ref(), path.as_os_str()],
+        vec![path.as_os_str()],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
+            .args(args)
+            .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "accepted; created_state={}: {error}",
+            state.exists()
+        );
+        assert!(error.contains(expected), "expected {expected:?}: {error}");
+        assert!(!state.exists(), "created state before rejection: {error}");
+    }
+}
+
 #[test]
 fn unsupported_storage_fails_before_creating_database_or_session_state() {
-    for driver in ["foundationdb", "kvrocks", "resp", "rockdsb"] {
+    for (table, expected) in [
+        (
+            "driver = 'kvrocks'",
+            "registry.cluster.driver is unsupported",
+        ),
+        ("driver = 'resp'", "registry.cluster.driver is unsupported"),
+        (
+            "driver = 'rockdsb'",
+            "registry.cluster.driver is unsupported",
+        ),
+        ("driver = 'foundationdb'", "requires fdb_cluster_file"),
+        (
+            "driver = 'foundationdb'\nfdb_cluster_file = '/nonexistent/fdb.cluster'",
+            "requires fdb_cluster_file",
+        ),
+        (
+            "driver = 'rocksdb'\nfdb_subspace_prefix = 'frank/'",
+            "only used with driver = \"foundationdb\"",
+        ),
+    ] {
         let temp = tempdir::TempDir::new("unsupported-relay-storage").unwrap();
-        let state = temp.path().join("must-not-exist");
-        let db = state.join("registry.rocksdb");
-        let config = format!(
-            "{}\n[registry.cluster]\ndriver = {driver:?}\n",
-            include_str!("../../cashwebd.local.toml")
-                .replace("data/registry.rocksdb", db.to_str().unwrap())
-                .replace(
-                    "[registry.monad_mailbox]\nenabled = true",
-                    "[registry.monad_mailbox]\nenabled = false",
+        let db = temp.path().join("must-not-exist").join("registry.rocksdb");
+        let config =
+            local_config_without_chain_routes(&db, &format!("[registry.cluster]\n{table}"));
+        assert_refused_before_state(temp.path(), &config, expected);
+    }
+}
+
+/// A cluster table with every requirement met, the bus pointed at a closed port.
+fn cluster_table(temp: &std::path::Path, extra: &str) -> String {
+    format!(
+        "[registry.cluster]\nenabled = true\ndriver = 'rocksdb'\ncluster_name = 'cli-test'\n\
+         {extra}\n[registry.cluster.nats]\nenabled = true\nurl = 'nats://127.0.0.1:9'\n",
+    )
+    .replace("TEMP", temp.to_str().unwrap())
+}
+
+#[test]
+fn cluster_mode_refusals_happen_before_any_state_is_created() {
+    let secrets = |temp: &std::path::Path| {
+        format!(
+            "session_secret_file = '{0}/session-secret'\nvapid_private_key_file = '{0}/vapid-key'\n",
+            temp.display()
+        )
+    };
+    // The `[registry]` keys go before the cluster table, in the registry table itself.
+    let with_registry_keys = |config: String, keys: &str| {
+        config.replacen("[registry]\n", &format!("[registry]\n{keys}"), 1)
+    };
+    type Case = Box<dyn Fn(&std::path::Path) -> String>;
+    let cases: Vec<(Case, &str)> = vec![
+        (
+            Box::new(|temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                local_config_without_chain_routes(&db, &cluster_table(temp, ""))
+            }),
+            "requires registry.session_secret_file",
+        ),
+        (
+            Box::new(move |temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_chain_routes(&db, &cluster_table(temp, "")),
+                    &format!("session_secret_file = '{}/s'\n", temp.display()),
                 )
-                .replace(
-                    "[registry.evm_rpc]\nenabled = true",
-                    "[registry.evm_rpc]\nenabled = false",
+            }),
+            "requires registry.vapid_private_key_file",
+        ),
+        (
+            Box::new(move |temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_chain_routes(&db, &cluster_table(temp, "")).replace(
+                        "[registry.cluster.nats]\nenabled = true",
+                        "[registry.cluster.nats]\nenabled = false",
+                    ),
+                    &secrets(temp),
                 )
-        );
-        let path = temp.path().join("relay.toml");
-        std::fs::write(&path, config).unwrap();
-        // Test real startup and the DB-opening preflight, not just --check-config.
-        for args in [
-            vec!["--check-db".as_ref(), path.as_os_str()],
-            vec![path.as_os_str()],
-        ] {
-            let output = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
-                .args(args)
-                .env_remove("MONAD_TESTNET_HTTP_RPC_URL")
-                .output()
-                .unwrap();
-            assert!(
-                !output.status.success(),
-                "{driver} accepted unsupported driver; created_state={}",
-                state.exists()
-            );
-            let error = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                error.contains("only rocksdb is implemented"),
-                "{driver}: {error}"
-            );
-            assert!(!state.exists(), "{driver} created state before rejection");
+            }),
+            "requires an enabled [registry.cluster.nats] bus",
+        ),
+        (
+            // Every enabled replica-local owner is named; the forum and directory are on here.
+            Box::new(move |temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_chain_routes(&db, &cluster_table(temp, "")),
+                    &secrets(temp),
+                )
+            }),
+            "refuses to start while these enabled owners keep their state on this replica: \
+             registry database (profiles, usernames, metadata); directory (registry.directory); \
+             forum (registry.forum); hourly RPC proxy quotas",
+        ),
+        (
+            // With the preview flag, the provisioned files are read, never created.
+            Box::new(move |temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_network_upstream(
+                        &db,
+                        &cluster_table(temp, "preview_replica_local_owners = true"),
+                    ),
+                    &secrets(temp),
+                )
+            }),
+            "Reading registry.session_secret_file",
+        ),
+        (
+            // A provisioned secret its group or other users can read is refused.
+            Box::new(move |temp| {
+                write_secret(&temp.join("session-secret"), &[7; 32], 0o644);
+                write_secret(
+                    &temp.join("vapid-key"),
+                    hex::encode([9u8; 32]).as_bytes(),
+                    0o600,
+                );
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_network_upstream(
+                        &db,
+                        &cluster_table(temp, "preview_replica_local_owners = true"),
+                    ),
+                    &secrets(temp),
+                )
+            }),
+            "readable by its owner only",
+        ),
+        (
+            // A VAPID scalar of zero is refused rather than replaced by another key.
+            Box::new(move |temp| {
+                write_secret(&temp.join("session-secret"), &[7; 32], 0o600);
+                write_secret(
+                    &temp.join("vapid-key"),
+                    hex::encode([0u8; 32]).as_bytes(),
+                    0o600,
+                );
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                with_registry_keys(
+                    local_config_without_network_upstream(
+                        &db,
+                        &cluster_table(temp, "preview_replica_local_owners = true"),
+                    ),
+                    &secrets(temp),
+                )
+            }),
+            "not a P-256 private key",
+        ),
+        (
+            // The preview flag outside cluster mode would do nothing, so it is refused.
+            Box::new(|temp| {
+                let db = temp.join("must-not-exist").join("registry.rocksdb");
+                local_config_without_chain_routes(
+                    &db,
+                    "[registry.cluster]\npreview_replica_local_owners = true\n",
+                )
+            }),
+            "only applies with registry.cluster.enabled = true",
+        ),
+    ];
+    for (config, expected) in cases {
+        let temp = tempdir::TempDir::new("cluster-refusal").unwrap();
+        let config = config(temp.path());
+        let provided = temp.path().join("session-secret").exists();
+        assert_refused_before_state(temp.path(), &config, expected);
+        // Files are only ever read: a case that did not write them finds none afterwards.
+        if !provided {
+            assert!(!temp.path().join("session-secret").exists());
+            assert!(!temp.path().join("vapid-key").exists());
         }
     }
+}
+
+fn write_secret(path: &std::path::Path, contents: &[u8], mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, contents).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(not(feature = "foundationdb"))]
+#[test]
+fn a_build_without_foundationdb_refuses_the_driver_before_any_state() {
+    let temp = tempdir::TempDir::new("fdb-not-built").unwrap();
+    let db = temp.path().join("must-not-exist").join("registry.rocksdb");
+    let config = local_config_without_network_upstream(
+        &db,
+        "[registry.cluster]\ndriver = 'foundationdb'\nfdb_cluster_file = '/nonexistent/fdb.cluster'\n\
+         fdb_subspace_prefix = 'frank/'",
+    );
+    assert_refused_before_state(temp.path(), &config, "--features foundationdb");
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::{io::Read, net::SocketAddr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode};
+use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode, RelayStorageDriver};
 use cashweb_registry::{
     chains::RelayChains,
     disabled_chain_adapter::DisabledChainAdapter,
@@ -18,8 +18,8 @@ use cashweb_registry::{
         peers::{InitialMetadataDownloadParams, Peers},
         public_store::PublicFederationStore,
     },
-    registry::Registry,
-    store::db::Db,
+    registry::{Registry, RegistryBackends},
+    store::{db::Db, groups::GroupBackend, notification_policy::VapidKeyPair},
 };
 use thiserror::Error;
 use tracing::info;
@@ -104,8 +104,7 @@ fn read_and_validate_conf_with_env(
     Ok((conf, mailbox_mode, chains))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let format = fmt::format()
         .with_level(true) // don't include levels in formatted output
         .with_target(false) // don't include targets
@@ -128,9 +127,217 @@ async fn main() -> Result<()> {
     };
     let (conf, mailbox_mode, chains) =
         read_and_validate_conf(&conf_path, &mut std::io::stdin().lock())?;
+    let driver = conf.registry.storage_driver()?;
+    // `--check-config` refuses what a start would refuse before touching state: a driver this
+    // build lacks, and missing, unreadable or invalid provisioned identity files.
+    require_driver_built(&driver)?;
+    let provisioned = load_provisioned(&conf.registry)?;
     if check_only {
         return Ok(());
     }
+    // The FDB client network is process-wide: boot it once, before any store opens, and stop it
+    // only after the runtime and every blocking worker that may call a store have finished.
+    let fdb_network = boot_fdb_network(&driver)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .wrap_err("Starting the async runtime")?;
+    let result = runtime.block_on(run(
+        conf,
+        mailbox_mode,
+        chains,
+        driver,
+        provisioned,
+        check_db,
+    ));
+    // Dropping the runtime waits for every blocking worker to return (unlike
+    // `shutdown_timeout`, which detaches them). FoundationDB calls return within
+    // `FDB_TRANSACTION_TIMEOUT`, so no store call is still running when the network stops.
+    drop(runtime);
+    drop(fdb_network);
+    result
+}
+
+/// Operator-provisioned identity files, read before any state opens.
+struct Provisioned {
+    session: Option<SessionSecret>,
+    vapid: Option<VapidKeyPair>,
+}
+
+/// Read `registry.session_secret_file` and `registry.vapid_private_key_file`. They are read,
+/// never created: a replica with a missing, loosely permissioned or wrong file fails without
+/// touching its disk.
+fn load_provisioned(registry: &cashweb_config::RegistryConf) -> Result<Provisioned> {
+    let session = registry
+        .session_secret_file
+        .as_deref()
+        .map(|path| {
+            SessionSecret::load_provisioned(path).wrap_err_with(|| {
+                format!("Reading registry.session_secret_file {}", path.display())
+            })
+        })
+        .transpose()?;
+    let vapid = registry
+        .vapid_private_key_file
+        .as_deref()
+        .map(VapidKeyPair::load_provisioned)
+        .transpose()
+        .map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!("registry.vapid_private_key_file: {error}"))
+        })?;
+    Ok(Provisioned { session, vapid })
+}
+
+/// Refuse a storage driver this binary was built without.
+fn require_driver_built(driver: &RelayStorageDriver) -> Result<()> {
+    match driver {
+        RelayStorageDriver::FoundationDb { .. } if !cfg!(feature = "foundationdb") => {
+            Err(bitcoinsuite_error::Report::msg(
+                "registry.cluster.driver = \"foundationdb\" needs a cashwebd-exe built with \
+                 `--features foundationdb` (which links the FoundationDB 7.3 client library)",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(feature = "foundationdb")]
+type FdbNetwork = cashweb_registry::store::foundationdb_driver::FdbNetwork;
+#[cfg(not(feature = "foundationdb"))]
+type FdbNetwork = ();
+
+fn boot_fdb_network(driver: &RelayStorageDriver) -> Result<Option<FdbNetwork>> {
+    match driver {
+        RelayStorageDriver::RocksDb => Ok(None),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb { .. } => {
+            // SAFETY: called once, from `main`, which drops the guard after the runtime.
+            let network = unsafe { FdbNetwork::boot() }.map_err(|error| {
+                bitcoinsuite_error::Report::msg(format!(
+                    "Starting the FoundationDB network: {error}"
+                ))
+            })?;
+            Ok(Some(network))
+        }
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => {
+            require_driver_built(driver)?;
+            unreachable!("refused by require_driver_built")
+        }
+    }
+}
+
+/// The group backend selected by `registry.cluster.driver`. FoundationDB keys live under
+/// `<fdb_subspace_prefix>groups-v1/`, so later owners can take their own sub-prefixes.
+fn group_backend(
+    driver: &RelayStorageDriver,
+    registry_db: &std::path::Path,
+) -> Result<GroupBackend> {
+    match driver {
+        RelayStorageDriver::RocksDb => Ok(GroupBackend::rocksdb_beside(registry_db)),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => {
+            let cluster_file = cluster_file.to_str().ok_or_else(|| {
+                bitcoinsuite_error::Report::msg("registry.cluster.fdb_cluster_file is not UTF-8")
+            })?;
+            let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
+                cluster_file,
+                format!("{subspace_prefix}groups-v1/"),
+            )
+            .map_err(|error| {
+                bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}"))
+            })?;
+            Ok(GroupBackend::Shared(Arc::new(store)))
+        }
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by require_driver_built"),
+    }
+}
+
+/// Log the cluster shape once at startup: the shared backend and every owner whose state still
+/// lives on this replica. Validation already refused cluster mode without the preview flag.
+fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStorageDriver) {
+    if let RelayStorageDriver::FoundationDb {
+        subspace_prefix, ..
+    } = driver
+    {
+        info!(
+            subspace_prefix = %subspace_prefix,
+            "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/"
+        );
+    }
+    if !registry.is_cluster_mode() {
+        return;
+    }
+    let owners = registry.replica_local_owners();
+    tracing::warn!(
+        count = owners.len(),
+        "Cluster preview (registry.cluster.preview_replica_local_owners): {} enabled owner(s) \
+         still keep their state on this replica; replicas do not share it",
+        owners.len()
+    );
+    for owner in owners {
+        tracing::warn!(
+            owner = owner.name(),
+            "Replica-local owner: {}",
+            owner.name()
+        );
+    }
+}
+
+/// Open a shared group backend and read its format marker. The FoundationDB transaction
+/// timeout bounds the wait, so an unreachable cluster fails here with a typed error.
+async fn probe_shared_groups(
+    groups: &GroupBackend,
+    policy: cashweb_config::GroupAppendPolicy,
+) -> Result<()> {
+    let GroupBackend::Shared(_) = groups else {
+        return Ok(());
+    };
+    let owner = cashweb_registry::store::groups::Owner::new(groups.clone(), policy);
+    tokio::task::spawn_blocking(move || owner.get().map(drop))
+        .await
+        .wrap_err("FoundationDB probe task failed")?
+        .map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Reading the FoundationDB group store: {error}"
+            ))
+        })?;
+    info!("FoundationDB group store is readable");
+    Ok(())
+}
+
+/// A stopped FoundationDB network cannot be restarted in this process, and calls already
+/// waiting on it never return. Exit so the supervisor restarts the replica.
+fn watch_fdb_network() {
+    #[cfg(feature = "foundationdb")]
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            if FdbNetwork::failed() {
+                tracing::error!("FoundationDB network thread stopped; exiting for a restart");
+                std::process::exit(70);
+            }
+        }
+    });
+}
+
+async fn run(
+    conf: CashwebdConf,
+    mailbox_mode: MonadMailboxMode,
+    chains: RelayChains,
+    driver: RelayStorageDriver,
+    provisioned: Provisioned,
+    check_db: bool,
+) -> Result<()> {
+    let Provisioned {
+        session: provisioned_session,
+        vapid: provisioned_vapid,
+    } = provisioned;
     if let Some(parent) = conf
         .registry
         .db_path
@@ -144,17 +351,27 @@ async fn main() -> Result<()> {
             )
         })?;
     }
-    let db = match conf.registry.storage_driver()? {
-        cashweb_config::RelayStorageDriver::RocksDb => Db::open(&conf.registry.db_path)?,
-    };
+    let db = Db::open(&conf.registry.db_path)?;
+    let groups = group_backend(&driver, &conf.registry.db_path)?;
+    // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
+    probe_shared_groups(&groups, conf.registry.groups).await?;
     if check_db {
         return Ok(());
     }
+    if matches!(driver, RelayStorageDriver::FoundationDb { .. }) {
+        watch_fdb_network();
+    }
+    log_cluster_shape(&conf.registry, &driver);
     // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.
-    // It lives beside the database, not in it, and is not a wallet key.
-    let session_path = conf.registry.db_path.with_extension("session-secret");
-    let session = SessionSecret::load_or_create(&session_path)
-        .wrap_err_with(|| format!("Reading session secret {}", session_path.display()))?;
+    // A single node keeps it beside the database (not in it); it is not a wallet key.
+    let session = match provisioned_session {
+        Some(session) => session,
+        None => {
+            let session_path = conf.registry.db_path.with_extension("session-secret");
+            SessionSecret::load_or_create(&session_path)
+                .wrap_err_with(|| format!("Reading session secret {}", session_path.display()))?
+        }
+    };
     let chain_adapter = match conf.bitcoin_rpc.clone() {
         Some(bitcoin_rpc) => {
             let bitcoind = BitcoindRpcClient::new(bitcoin_rpc);
@@ -171,12 +388,16 @@ async fn main() -> Result<()> {
     };
 
     let event_bus: Arc<dyn cashweb_registry::events::RelayEventBus> =
-        if conf.registry.is_nats_enabled() {
-            let nats_url = conf.registry.nats_url().unwrap_or("nats://127.0.0.1:4222");
+        if let (Some(nats_url), Some(cluster)) =
+            (conf.registry.nats_url(), conf.registry.nats_cluster_name())
+        {
             // The connection URL may contain a password or token; keep it out of diagnostics.
-            tracing::info!("Connecting to Clustered Core NATS notification bus");
+            tracing::info!(
+                cluster,
+                "Connecting to Clustered Core NATS notification bus (subjects frank.{cluster}.…)"
+            );
             Arc::new(
-                cashweb_registry::events::CoreNatsEventBus::connect(nats_url)
+                cashweb_registry::events::CoreNatsEventBus::connect(nats_url, cluster)
                     .await
                     .wrap_err("Failed to connect to Ephemeral Core NATS")?,
             )
@@ -190,7 +411,11 @@ async fn main() -> Result<()> {
         chain_adapter,
         conf.registry.net,
         Arc::clone(&event_bus),
-        conf.registry.groups,
+        RegistryBackends {
+            groups,
+            group_policy: conf.registry.groups,
+            provisioned_vapid,
+        },
     ));
     // Every upstream proves it is its chain before it carries traffic; startup waits briefly for
     // the first round and the rest are checked again in the background.
@@ -541,19 +766,43 @@ max_get_logs_range = 10\n\n\
 
     #[test]
     fn unsupported_storage_cannot_pass_the_real_startup_configuration_path() {
-        for driver in ["foundationdb", "kvrocks", "resp", "rockdsb", ""] {
+        for driver in ["kvrocks", "resp", "rockdsb", "", "FoundationDB"] {
             let config = format!("{LOCAL}\n[registry.cluster]\ndriver = {driver:?}\n");
             let error = read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&[]))
                 .unwrap_err();
             // Validation runs before RPC environment resolution and before opening any DB.
-            assert!(format!("{error:#}").contains("only rocksdb is implemented"));
+            assert!(
+                format!("{error:#}").contains("registry.cluster.driver is unsupported"),
+                "{driver}: {error:#}"
+            );
         }
+    }
+
+    #[test]
+    fn the_foundationdb_driver_carries_its_cluster_file_and_prefix_to_composition() {
+        let config = format!(
+            "{LOCAL}\n[registry.cluster]\ndriver = 'foundationdb'\n\
+             fdb_cluster_file = '/cluster/fdb.cluster'\nfdb_subspace_prefix = 'frank-lab/'\n"
+        );
+        let (conf, _, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+        assert_eq!(
+            conf.registry.storage_driver().unwrap(),
+            cashweb_config::RelayStorageDriver::FoundationDb {
+                cluster_file: "/cluster/fdb.cluster".into(),
+                subspace_prefix: "frank-lab/".into(),
+            }
+        );
+        let missing = format!("{LOCAL}\n[registry.cluster]\ndriver = 'foundationdb'\n");
+        let error =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(missing), env(&[])).unwrap_err();
+        assert!(format!("{error:#}").contains("requires fdb_cluster_file"));
     }
 
     #[test]
     fn explicit_rocks_and_core_nats_are_independent_runtime_choices() {
         let config = format!(
-            "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\n\
+            "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\ncluster_name = 'local'\n\
              [registry.cluster.nats]\nenabled = true\nurl = 'nats://localhost:4222'\n"
         );
         let (conf, _, _) =
@@ -564,19 +813,80 @@ max_get_logs_range = 10\n\n\
         );
         assert!(conf.registry.is_nats_enabled());
         assert_eq!(conf.registry.nats_url(), Some("nats://localhost:4222"));
+        assert_eq!(conf.registry.nats_cluster_name(), Some("local"));
+        // NATS subjects are namespaced by cluster, so an unnamed bus is refused.
+        let unnamed = format!(
+            "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\n\
+             [registry.cluster.nats]\nenabled = true\nurl = 'nats://localhost:4222'\n"
+        );
+        let error = read_and_validate_conf_with_env("-", &mut Cursor::new(unnamed), env(FULL_ENV))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("cluster_name"), "{error:#}");
     }
 
     #[test]
     fn disabled_nested_nats_table_wins_over_enabled_legacy_url_at_startup() {
-        let config = format!(
-            "{LOCAL}\n[registry.cluster]\nenabled = true\ndriver = 'rocksdb'\n\
+        let single = format!(
+            "{LOCAL}\n[registry.cluster]\ndriver = 'rocksdb'\n\
              nats_url = 'nats://legacy.invalid:4222'\n\
              [registry.cluster.nats]\nenabled = false\nurl = 'invalid-but-disabled'\n"
         );
         let (conf, _, _) =
-            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+            read_and_validate_conf_with_env("-", &mut Cursor::new(single), env(FULL_ENV)).unwrap();
         assert!(!conf.registry.is_nats_enabled());
         assert_eq!(conf.registry.nats_url(), None);
+        // In cluster mode the legacy URL still does not revive the bus, and no bus is refused.
+        let clustered = format!(
+            "{LOCAL}\n[registry.cluster]\nenabled = true\ndriver = 'rocksdb'\n\
+             nats_url = 'nats://legacy.invalid:4222'\n\
+             [registry.cluster.nats]\nenabled = false\nurl = 'invalid-but-disabled'\n"
+        );
+        let error =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(clustered), env(FULL_ENV))
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("requires an enabled [registry.cluster.nats] bus"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn cluster_mode_names_every_replica_local_owner_unless_previewed() {
+        let cluster = "[registry.cluster]\nenabled = true\ndriver = 'foundationdb'\n\
+             fdb_cluster_file = '/cluster/fdb.cluster'\nfdb_subspace_prefix = 'frank/'\n\
+             cluster_name = 'lab'\n";
+        let nats = "[registry.cluster.nats]\nenabled = true\nurl = 'nats://nats:4222'\n";
+        let secrets =
+            "[registry]\nsession_secret_file = '/run/s'\nvapid_private_key_file = '/run/v'\n";
+        let base = LOCAL.replacen("[registry]\n", secrets, 1);
+        let refused = format!("{base}\n{cluster}{nats}");
+        let error = read_and_validate_conf_with_env("-", &mut Cursor::new(&refused), env(FULL_ENV))
+            .unwrap_err();
+        let text = format!("{error:#}");
+        for owner in [
+            "registry database",
+            "direct messages",
+            "directory",
+            "forum",
+            "hourly RPC proxy quotas",
+        ] {
+            assert!(text.contains(owner), "{owner}: {text}");
+        }
+        // Groups are on FoundationDB here, so they are not replica-local.
+        assert!(!text.contains("groups"), "{text}");
+        let previewed = format!("{base}\n{cluster}preview_replica_local_owners = true\n{nats}");
+        let (conf, _, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
+                .unwrap();
+        assert!(conf.registry.is_cluster_mode());
+        assert_eq!(conf.registry.replica_local_owners().len(), 5);
+        // Without the provisioned files, cluster mode never falls back to generated ones.
+        let unprovisioned =
+            format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");
+        let error =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(unprovisioned), env(FULL_ENV))
+                .unwrap_err();
+        assert!(format!("{error:#}").contains("session_secret_file"));
     }
 
     #[test]
@@ -612,7 +922,14 @@ max_get_logs_range = 10\n\n\
                 read_and_validate_conf_with_env("-", &mut Cursor::new(missing), env(FULL_ENV))
                     .expect_err("a relay without [registry] network must not start");
             assert!(format!("{error:?}").contains("network"), "{error:?}");
-            for network in ["monad", "evm", "MONT", "10143", "solana-devnet", "base-sepolia"] {
+            for network in [
+                "monad",
+                "evm",
+                "MONT",
+                "10143",
+                "solana-devnet",
+                "base-sepolia",
+            ] {
                 let other = config.replace(
                     "network = \"monad-testnet\"\n",
                     &format!("network = {network:?}\n"),
@@ -620,7 +937,10 @@ max_get_logs_range = 10\n\n\
                 let error =
                     read_and_validate_conf_with_env("-", &mut Cursor::new(other), env(FULL_ENV))
                         .expect_err("an unknown, non-EVM or unproxied network must not start");
-                assert!(format!("{error:?}").contains(network), "{network}: {error:?}");
+                assert!(
+                    format!("{error:?}").contains(network),
+                    "{network}: {error:?}"
+                );
             }
         }
     }
@@ -628,12 +948,18 @@ max_get_logs_range = 10\n\n\
     #[test]
     fn dms_and_the_forum_run_on_any_configured_registry_evm_chain() {
         let sepolia = LOCAL
-            .replace("network = \"monad-testnet\"\n", "network = \"ethereum-sepolia\"\n")
+            .replace(
+                "network = \"monad-testnet\"\n",
+                "network = \"ethereum-sepolia\"\n",
+            )
             .replacen("[registry.pop]", SEPOLIA_ROW, 1);
         let mut vars = full_env_with("ETHEREUM_SEPOLIA_HTTP_RPC_URL", Some("http://127.0.0.1:6"));
-        let (_, mode, chains) =
-            read_and_validate_conf_with_env("-", &mut Cursor::new(&sepolia), owned_env(vars.clone()))
-                .expect("a relay on ethereum-sepolia starts");
+        let (_, mode, chains) = read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(&sepolia),
+            owned_env(vars.clone()),
+        )
+        .expect("a relay on ethereum-sepolia starts");
         assert!(matches!(mode, MonadMailboxMode::Enabled { .. }));
         assert_eq!(chains.network().id, "ethereum-sepolia");
         assert_eq!(chains.network_tag(), b"SEPO");
@@ -651,7 +977,13 @@ max_get_logs_range = 10\n\n\
 
     #[test]
     fn enabled_mailbox_fails_fast_without_a_usable_network_upstream() {
-        for value in [None, Some(""), Some("  "), Some("file:///x"), Some("not-a-url")] {
+        for value in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("file:///x"),
+            Some("not-a-url"),
+        ] {
             for (name, config) in [("local", LOCAL), ("docker", DOCKER)] {
                 let error = read_and_validate_conf_with_env(
                     "-",

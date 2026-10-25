@@ -204,7 +204,7 @@ pub struct NodeClusterAttestation {
 - **Clustered Mode Behavior**:
   - Node A durably stores the message payload in Blob Storage (S3/MinIO) or inline if `<= 64KB`, and indexes the envelope in Kvrocks.
   - Node A publishes a tiny, ephemeral notification to Core NATS:
-    `frank.relay.notify.<recipient_account_address_hex>`
+    `frank.<cluster>.dm.<recipient_account_address_hex>` (groups: `frank.<cluster>.grp.<group_id>`; `<cluster>` is `registry.cluster.cluster_name`)
   - **No JetStream**: Ephemeral Core NATS runs purely in memory with zero WAL or persistence overhead.
   - Every cluster node subscribes to notification subjects matching its currently active WebSocket sessions.
   - If a client is offline, the NATS ping is safely discarded; on next connection, the client catches up via standard inbox HTTP queries.
@@ -250,7 +250,8 @@ pub struct NodeClusterAttestation {
   values, 10,000,000-byte transactions and 5 seconds per attempt.
 - Drivers: `RocksDbKvStore` (one embedded database per process, with an in-process conflict
   resolver over RocksDB snapshots) and `FoundationDbKvStore` (`foundationdb` feature; every key
-  under one subspace prefix, `fdb_subspace_prefix` in `[registry.cluster]`).
+  under one subspace prefix, `fdb_subspace_prefix` in `[registry.cluster]`, which ends in `/`;
+  each transaction carries a 15 s timeout across its retries).
 - Today only `GroupStore` and the unused blob store use the contract. Which owners move onto it,
   and in what order, is the PR sequence in
   [relay-ha-cluster.md](../../../docs/plans/relay-ha-cluster.md); there is no snapshot

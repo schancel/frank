@@ -628,6 +628,7 @@ export default defineComponent({
     },
   },
   beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.cancelHistoryAnchor()
     const nextAddress = (to?.params?.address as string) || ''
     this.messagesToShow = 30
     if (this.address !== nextAddress) {
@@ -635,6 +636,7 @@ export default defineComponent({
     }
   },
   beforeUnmount() {
+    this.cancelHistoryAnchor()
     if (
       typeof (
         this as unknown as {
@@ -681,6 +683,8 @@ export default defineComponent({
       followBottom: true,
       lastScrollPosition: 0,
       messagesToShow: 30,
+      historyAnchorGeneration: 0,
+      historyAnchorPending: false,
       replyDigest: (initialDraft?.replyDigest ?? null) as string | null,
       scrollDigest: null as string | null,
       chatWidth: 0,
@@ -1062,11 +1066,65 @@ export default defineComponent({
         })
       }
     },
+    cancelHistoryAnchor() {
+      this.historyAnchorGeneration++
+      this.historyAnchorPending = false
+    },
+    expandHistoryWindow() {
+      if (this.historyAnchorPending) return
+      const scrollArea = this.chatScroll
+      const target = scrollArea?.getScrollTarget()
+      if (!scrollArea || !target) return
+      const viewport = scrollArea.$el as HTMLElement
+      const viewportTop = viewport.getBoundingClientRect().top
+      const anchor = this.chunkedMessages
+        .map(message => {
+          const ref = this.$refs[message.payloadDigest] as
+            | { $el: HTMLElement }[]
+            | undefined
+          return ref?.[0]?.$el
+        })
+        .find(
+          element =>
+            element && element.getBoundingClientRect().bottom >= viewportTop,
+        )
+      const offset = anchor
+        ? anchor.getBoundingClientRect().top - viewportTop
+        : 0
+      const generation = ++this.historyAnchorGeneration
+      const address = this.address
+      this.historyAnchorPending = true
+      this.messagesToShow += 30
+      this.$nextTick(() => {
+        if (generation !== this.historyAnchorGeneration) return
+        if (
+          this.address === address &&
+          this.chatScroll === scrollArea &&
+          scrollArea.getScrollTarget() === target &&
+          anchor?.isConnected &&
+          viewport.contains(anchor)
+        ) {
+          const delta =
+            anchor.getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top -
+            offset
+          scrollArea.setScrollPosition('vertical', target.scrollTop + delta, 0)
+          this.lastScrollPosition = target.scrollTop
+        }
+        // Quasar reports resize-triggered scrolls on the next frame. Keep the
+        // expansion guard until those and the restored position have settled.
+        requestAnimationFrame(() => {
+          if (generation === this.historyAnchorGeneration)
+            this.historyAnchorPending = false
+        })
+      })
+    },
     scrollHandler(details: {
       verticalSize: number
       verticalContainerSize: number
       verticalPosition: number
     }) {
+      if (this.historyAnchorPending) return
       this.followBottom = nextFollowBottom(
         this.followBottom,
         this.lastScrollPosition,
@@ -1086,7 +1144,7 @@ export default defineComponent({
         details.verticalPosition <= 10 &&
         this.messagesToShow < this.messages.length
       ) {
-        this.messagesToShow += 30
+        this.expandHistoryWindow()
         return
       }
       // Banner clearance grows the content above the viewport. Re-pin once so
@@ -1128,6 +1186,7 @@ export default defineComponent({
       if (this.followBottom) this.pinScrollToBottom()
     },
     pinScrollToBottom() {
+      this.cancelHistoryAnchor()
       const scrollArea = this.chatScroll
       const target = scrollArea?.getScrollTarget?.()
       if (!scrollArea || !target) return
@@ -1136,6 +1195,7 @@ export default defineComponent({
     },
     // Used by sticky QButton to scroll to bottom
     buttonScrollBottom() {
+      this.cancelHistoryAnchor()
       const scrollArea = this.chatScroll
       if (!scrollArea) {
         // Not mounted yet
@@ -1169,6 +1229,7 @@ export default defineComponent({
       })
     },
     scrollToMessage(digest: string) {
+      this.cancelHistoryAnchor()
       return debounce(() => {
         console.log('scrollToMessage', digest)
         // if no digest, it means message was deleted or otherwise can't be found

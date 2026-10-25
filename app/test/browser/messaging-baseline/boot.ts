@@ -1,3 +1,4 @@
+import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { defineBoot } from '@quasar/app-vite'
 import { useChatStore } from '../../../src/stores/chats'
 import { useContactStore } from '../../../src/stores/contacts'
@@ -18,6 +19,7 @@ declare global {
       state: typeof observations
       conversation: string
       release: typeof release
+      receiveHistory(text: string, index: number): Promise<void>
       messageState(text: string):
         | {
             status: string | undefined
@@ -75,6 +77,31 @@ export default defineBoot(async () => {
     state: observations,
     conversation: CONVERSATION,
     release,
+    async receiveHistory(text, index) {
+      const time = 1792801000000 + index
+      const wrapper: ReceivedMessageWrapper = {
+        conversationId: CONVERSATION,
+        outbound: false,
+        senderAddress: PEER,
+        copartyAddress: PEER,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        index: index.toString(16).padStart(64, '0'),
+        stampValue: 0,
+        message: {
+          conversationId: CONVERSATION,
+          outbound: false,
+          status: 'confirmed',
+          senderAddress: PEER,
+          destinationAddress: wallet.identity.displayAddress,
+          items: [{ type: 'text', text }],
+          serverTime: time,
+          receivedTime: time,
+          outpoints: [],
+        },
+      }
+      await chats.receiveMessages([wrapper], wallet.identity.displayAddress)
+      await chats.flushPersistence()
+    },
     messageState(text) {
       const row = Object.values(chats.messages).find(message =>
         message?.items?.some(

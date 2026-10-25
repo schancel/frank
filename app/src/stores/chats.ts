@@ -1,4 +1,9 @@
 import {
+  createOutgoingExecution,
+  type OutgoingExecutionPorts,
+  type OutgoingOutcome,
+} from '../messaging/outgoing-execution'
+import {
   createOutgoingRecovery,
   type OutgoingRecoveryPorts,
 } from '../messaging/outgoing-recovery'
@@ -43,17 +48,12 @@ import {
   sendsWaitingForPreviousPayment,
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
-import { isDirectMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
 
-import { decideOutgoingRetry } from '../messaging/outgoing-retry-policy'
-
 import {
   CanonicalRecipientNotPublishedError,
-  ContactPaymentReleasedError,
-  DirectMessageAlreadyAttemptedError,
   DirectMessageStampBelowFeeError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
@@ -63,7 +63,6 @@ import {
 import { Utxo } from '@frank/cashweb/types/utxo'
 import {
   MonadStampAbandonedError,
-  MonadStampPendingAttemptError,
   MonadStampRecoveredAttemptError,
   MonadStampRejectedError,
   MonadStampTerminalError,
@@ -79,7 +78,6 @@ import type {
   MessageItem,
   OutgoingDelivery,
   OutgoingFinancialOperation,
-  OutgoingFailureReason,
   TextItem,
   StealthItem,
   SwapRecordItem,
@@ -127,7 +125,6 @@ import {
 import {
   isSafeRelayTimestamp,
   type RelayDeliverySuppression,
-  type FinancialEnvelopeBinding,
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
@@ -777,18 +774,7 @@ export type ReceivedDeliveryResult = {
   cancelled: boolean
 }
 
-export type OutgoingOutcome =
-  /** Delivered; the local copy is now keyed by its real payload hash. */
-  | { state: 'sent'; payloadDigest: string }
-  /** Payment not yet confirmed. The same payment is re-sent automatically; nothing new is paid. */
-  | { state: 'payment-pending' }
-  /** Failed; kept in the conversation with a manual Retry and Discard. */
-  | { state: 'failed'; reason: OutgoingFailureReason }
-  /** A retry could pay a second time; the caller must ask the user, then retry with
-   * `confirmed: true`. */
-  | { state: 'needs-confirmation'; reason: OutgoingFailureReason }
-  /** This message is already being worked on, or no longer exists. */
-  | { state: 'busy' }
+export type { OutgoingOutcome } from '../messaging/outgoing-execution'
 
 export type RestorableState = {
   activeConversationId?: string | null
@@ -2459,6 +2445,170 @@ function createChatOutgoingRecovery(owner: RecoveryOwner) {
   })
 }
 
+type ExecutionOwner = {
+  messages: Record<string, ChatMessage | undefined>
+  conversations: Record<string, Conversation>
+  refreshOutgoingFromStore: OutgoingExecutionPorts<ChatMessage>['refresh']
+  setOutgoingState: OutgoingExecutionPorts<ChatMessage>['setState']
+  confirmOutgoing: OutgoingExecutionPorts<ChatMessage>['confirm']
+  applyAttemptStatus: OutgoingExecutionPorts<ChatMessage>['applyAttemptStatus']
+  reconcileOutgoing: OutgoingExecutionPorts<ChatMessage>['reconcileOutgoing']
+}
+
+function outgoingWakeupItems(
+  wallet: WalletHandle,
+  address: string,
+  items: MessageItem[],
+): MessageItem[] {
+  let wireItems = items
+  try {
+    const contactsStore = useContactStore()
+    const hasContactCard = items.some(it => it && it.type === 'contact-card')
+    const needsSidecar =
+      contactsStore.isContact(address) &&
+      contactsStore.getNotify(address) &&
+      !contactsStore.getInboundWakeupToken(address)
+    if (hasContactCard || needsSidecar) {
+      const capability = deriveLocalPeerWakeupCapabilitySync(
+        address,
+        (wallet as unknown as { identity?: any })?.identity ?? null,
+      )
+      if (capability) {
+        contactsStore.setInboundWakeupToken({
+          address,
+          token: capability.preimageHex,
+        })
+        if (hasContactCard) {
+          wireItems = items.map(it =>
+            it && it.type === 'contact-card' && !it.wakeupTokenHex
+              ? { ...it, wakeupTokenHex: capability.preimageHex }
+              : it,
+          )
+        } else {
+          wireItems = [
+            ...items,
+            {
+              type: 'contact-card',
+              uid: 'frank-wakeup-capability',
+              fullName: 'Wakeup Capability',
+              frankAddress: wallet.identity.displayAddress,
+              wakeupTokenHex: capability.preimageHex,
+            },
+          ]
+        }
+      }
+    }
+  } catch {
+    // Best-effort wakeup token exchange
+  }
+  return wireItems
+}
+
+function createChatOutgoingExecution(owner: ExecutionOwner) {
+  return createOutgoingExecution<ChatMessage>({
+    message: id => owner.messages[id],
+    messageEntries: () => Object.entries(owner.messages),
+    conversations: () => Object.values(owner.conversations ?? {}),
+    inflight: inflightOutgoing,
+    withLock: withOutgoingLock,
+    owns: walletOwnsMessage,
+    resultAssertion: (wallet, id, message, digest, current) =>
+      outgoingResultAssertion(owner, wallet, id, message, digest, current),
+    isStale: error => error instanceof StaleOutgoingResult,
+    messageId: outgoingMessageId,
+    refresh: (address, id) => owner.refreshOutgoingFromStore(address, id),
+    setState: (address, id, status, delivery, options) =>
+      owner.setOutgoingState(address, id, status, delivery, options),
+    confirm: params => owner.confirmOutgoing(params),
+    applyAttemptStatus: params => owner.applyAttemptStatus(params),
+    reconcileOutgoing: params => owner.reconcileOutgoing(params),
+    captureMessagingContext() {
+      const messagingChain = { ...activeChain }
+      const current = captureOutgoingContext()
+      return {
+        chainIdentifier: messagingChain.chainIdentifier,
+        current: () => current(),
+        parseAddress: address => messagingChain.parseAddress(address),
+        directMessages: messagingChain.directMessages,
+      }
+    },
+    captureFinancialScope(
+      wallet,
+      message,
+      chainIdentifier,
+      contextCurrent,
+      stillCurrent,
+    ) {
+      const financialAccount = accountSession.state.account
+      const sealedMessageId = message.sealedMessageId
+      const assertFinancialCurrent = () => {
+        if (
+          !contextCurrent() ||
+          !stillCurrent() ||
+          message.sealedMessageId !== sealedMessageId ||
+          !financialAccount ||
+          accountSession.state.account !== financialAccount ||
+          accountSession.state.status !== 'ready' ||
+          accountSession.peekWallet() !== wallet ||
+          wallet.chainIdentifier !== chainIdentifier
+        )
+          throw new StaleOutgoingResult('Financial envelope context changed')
+      }
+      return {
+        accountId: () => financialAccount!.receipt.context.accountId,
+        assertCurrent: assertFinancialCurrent,
+      }
+    },
+    captureFinancial: captureOutgoingFinancialOperations,
+    readFinancialBootstrapAuthority,
+    financialRepository: () => store,
+    captureApplication: captureOutgoingApplicationAuthorization,
+    presentation: {
+      subject: conversationId =>
+        subjectToCarry(
+          conversationId === undefined
+            ? undefined
+            : owner.conversations[conversationId],
+        ),
+      subjectCarried: (conversationId, subject) => {
+        const carriedIn = owner.conversations[conversationId]
+        if (carriedIn) carriedIn.nameOnWire = subject
+      },
+      wakeupItems: outgoingWakeupItems,
+      cancellable: cancellableSend,
+      progress(id, progress) {
+        if (progress.stage === 'waiting-for-payment') {
+          sendsWaitingForPreviousPayment.add(id)
+          if (progress.blocksRemaining === undefined)
+            sendsWaitingBlocks.delete(id)
+          else sendsWaitingBlocks.set(id, progress.blocksRemaining)
+        }
+        if (progress.stage === 'waiting-for-chain') sendsWaitingForChain.add(id)
+      },
+      clearProgress(id) {
+        sendsWaitingBlocks.delete(id)
+        sendsWaitingForPreviousPayment.delete(id)
+        sendsWaitingForChain.delete(id)
+      },
+      endWaiting: endWaitingSend,
+    },
+    get waitForMessagingReady() {
+      return typeof waitForMessagingReady === 'function'
+        ? (timeoutMs: number) => waitForMessagingReady(timeoutMs)
+        : undefined
+    },
+    delay: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    classifySendFailure,
+    errorDetail,
+    stripReleasedPayments,
+    log: {
+      warn: (...args) => console.warn(...args),
+      info: (...args) => console.info(...args),
+      error: (...args) => console.error(...args),
+    },
+  })
+}
+
 function captureGroupContext(
   owner: { conversations: Record<string, Conversation> },
   conversation?: Conversation,
@@ -3956,60 +4106,16 @@ export const useChatStore = defineStore('chats', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
-      const message = this.messages[id]
-      if (
-        inflightOutgoing.has(id) ||
-        !message ||
-        !walletOwnsMessage(wallet, message)
-      ) {
-        return { state: 'busy' }
-      }
-      inflightOutgoing.add(id)
-      let recoveredOthers = false
-      try {
-        // Another tab of this profile may be sending this very message (its row is saved before
-        // the send starts, and this tab's copy may call it interrupted). Its lock is held for the
-        // whole send: then this tab leaves the message as it is and pays nothing.
-        const run = () =>
-          this.runOutgoingExclusive({
-            wallet,
-            address,
-            id,
-            manual,
-            automatic: automatic && manual,
-            confirmed: confirmed && !automatic,
-            onPreparationProgress,
-          })
-        const locked = lockHeld
-          ? { result: await run() }
-          : await withOutgoingLock(id, run)
-        if (!locked) return { state: 'busy' }
-        const outcome = locked.result
-        recoveredOthers =
-          outcome.state === 'failed' && outcome.reason === 'recovered'
-        if (outcome.state === 'sent') {
-          const allChats = [...Object.values(this.conversations ?? {})]
-          const hasQueued = allChats.some(chat =>
-            chat?.messages?.some(
-              m =>
-                m.outbound &&
-                m.payloadDigest !== id &&
-                m.status === 'payment-pending' &&
-                m.delivery?.attemptDigest === undefined &&
-                walletOwnsMessage(wallet, m),
-            ),
-          )
-          if (hasQueued) void this.reconcileOutgoing({ wallet })
-        }
-        return outcome
-      } catch (error) {
-        if (error instanceof StaleOutgoingResult) return { state: 'busy' }
-        throw error
-      } finally {
-        inflightOutgoing.delete(id)
-        // Another attempt was just recovered: settle its message now instead of at the next tick.
-        if (recoveredOthers) void this.reconcileOutgoing({ wallet })
-      }
+      return createChatOutgoingExecution(this).runOutgoing({
+        wallet,
+        address,
+        id,
+        manual,
+        automatic,
+        confirmed,
+        onPreparationProgress,
+        lockHeld,
+      })
     },
     async runOutgoingExclusive({
       wallet,
@@ -4030,614 +4136,15 @@ export const useChatStore = defineStore('chats', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
-      const messagingChain = { ...activeChain }
-      const contextCurrent = captureOutgoingContext()
-      // A Retry (clicked or automatic) acts on this tab's copy of the message, which can be stale:
-      // another tab may have sent it (and removed its row) or recorded a payment for it since
-      // this tab loaded. Read the durable row first, under the lock, and never act on an old copy.
-      if (manual) {
-        const fresh = await this.refreshOutgoingFromStore(address, id)
-        if (!contextCurrent() || fresh === 'gone' || fresh === 'unreadable')
-          return { state: 'busy' }
-        if (
-          fresh === 'changed' &&
-          this.messages[id]?.delivery?.attemptDigest === undefined
-        )
-          return { state: 'busy' }
-        // 'changed' with a recorded payment now: go on, and settle that payment below.
-      }
-      const message = this.messages[id]
-      // Read again under the lock: the message may have changed while it was awaited.
-      if (!message || !walletOwnsMessage(wallet, message))
-        return { state: 'busy' }
-      if (automatic && (!message.outbound || message.status !== 'error'))
-        return { state: 'busy' }
-      const recipient = messagingChain.parseAddress(address)
-      assert(recipient, `Invalid recipient address: ${address}`)
-      const previous = message.delivery
-      const digest = previous?.attemptDigest
-      const stillCurrent = () =>
-        this.messages[id] === message && walletOwnsMessage(wallet, message)
-
-      const financialAccount = accountSession.state.account
-      const sealedMessageId = message.sealedMessageId
-      const financialReferences = message.financialOperations?.map(
-        reference => ({ ...reference }),
-      )
-      const financial = financialReferences?.length
-        ? await captureOutgoingFinancialOperations(wallet, financialReferences)
-        : undefined
-      if (financial && !sealedMessageId)
-        throw new Error('Financial message has no durable sealed identity')
-      const assertFinancialCurrent = () => {
-        if (
-          !contextCurrent() ||
-          !stillCurrent() ||
-          message.sealedMessageId !== sealedMessageId ||
-          !financialAccount ||
-          accountSession.state.account !== financialAccount ||
-          accountSession.state.status !== 'ready' ||
-          accountSession.peekWallet() !== wallet ||
-          wallet.chainIdentifier !== messagingChain.chainIdentifier
-        )
-          throw new StaleOutgoingResult('Financial envelope context changed')
-      }
-      let financialEnvelope: FinancialEnvelopeBinding | undefined
-      if (financial) {
-        assertFinancialCurrent()
-        financialEnvelope = {
-          version: 1,
-          phase: 'pending',
-          accountId: financialAccount!.receipt.context.accountId,
-          messagingChainIdentifier: messagingChain.chainIdentifier,
-          messageId: sealedMessageId!,
-          financialOperations: financialReferences!,
-        }
-        if (digest !== undefined) {
-          const authority = await readFinancialBootstrapAuthority(
-            id,
-            digest,
-            sealedMessageId!,
-            message,
-            address,
-            financialReferences!,
-          )
-          assertFinancialCurrent()
-          const original = await messagingChain.directMessages.attemptOf?.({
-            wallet,
-            messageId: sealedMessageId!,
-          })
-          assertFinancialCurrent()
-          if (
-            original?.payloadDigest !== digest ||
-            original.paid !== authority.paid
-          )
-            throw new Error(
-              'Financial envelope original association unavailable',
-            )
-          financialEnvelope = {
-            ...financialEnvelope,
-            phase: 'bound',
-            payloadDigest: digest,
-            financialOperations: authority.financialOperations,
-          }
-        }
-        const repository = await store
-        assertFinancialCurrent()
-        await repository.bindFinancialEnvelope({
-          version: financialEnvelope.version,
-          phase: 'pending',
-          accountId: financialEnvelope.accountId,
-          messagingChainIdentifier: financialEnvelope.messagingChainIdentifier,
-          messageId: financialEnvelope.messageId,
-          financialOperations: financialEnvelope.financialOperations,
-        })
-        assertFinancialCurrent()
-        if (financialEnvelope.phase === 'bound') {
-          await repository.bindFinancialEnvelope(financialEnvelope)
-          assertFinancialCurrent()
-        }
-      }
-      const envelopeDurabilityCallback = (assertCurrent?: () => void) =>
-        financial &&
-        (async (attemptDigest: string) => {
-          const assertEnvelopeCurrent = () => {
-            assertCurrent?.()
-            assertFinancialCurrent()
-          }
-          await this.setOutgoingState(
-            address,
-            id,
-            'pending',
-            { attemptDigest },
-            { strict: true, assertCurrent: assertEnvelopeCurrent },
-          )
-          assertEnvelopeCurrent()
-          const repository = await store
-          assertEnvelopeCurrent()
-          await repository.bindFinancialEnvelope({
-            ...financialEnvelope!,
-            phase: 'bound',
-            payloadDigest: attemptDigest,
-          })
-          assertEnvelopeCurrent()
-          await financial.expose(attemptDigest)
-        })
-      const onEnvelopeDurable = envelopeDurabilityCallback()
-      // Free envelopes have their own durable replay owner; paid reconciliation cannot find them.
-      const replayFreeFinancial = !!financial && message.stampValueWei === 0n
-
-      // 1. An earlier payment attempt exists: ask what became of it BEFORE anything else.
-      if (digest !== undefined && !replayFreeFinancial) {
-        const assertCurrent = outgoingResultAssertion(
-          this,
-          wallet,
-          id,
-          message,
-          digest,
-          contextCurrent,
-        )
-        try {
-          assertCurrent()
-          let statuses: Record<string, DirectMessageAttemptStatus>
-          try {
-            statuses = await messagingChain.directMessages.reconcileAttempts({
-              wallet,
-              payloadDigests: [digest],
-              ...(financial ? { messageIds: [sealedMessageId!] } : {}),
-              maxPutAttempts: manual ? 3 : 1,
-              ...(financial
-                ? {
-                    onEnvelopeDurable:
-                      envelopeDurabilityCallback(assertCurrent),
-                  }
-                : {}),
-            })
-          } catch (error) {
-            assertCurrent()
-            // Cannot tell. Keep the attempt on the message; never guess in favour of a new payment.
-            console.warn(
-              'could not reconcile the earlier payment attempt',
-              error,
-            )
-            if (manual) {
-              await this.setOutgoingState(
-                address,
-                id,
-                'error',
-                {
-                  attemptDigest: digest,
-                  failureReason: 'error',
-                  detail: errorDetail(error),
-                },
-                { assertCurrent },
-              )
-              return { state: 'failed', reason: 'error' }
-            }
-            return { state: 'payment-pending' }
-          }
-          assertCurrent()
-          const status = statuses[digest] ?? 'unknown'
-          if (status === 'delivered' && financial) {
-            try {
-              await financial.submit()
-            } catch (error) {
-              // Delivered, but its payment is not on chain yet: never shown as sent. The next
-              // reconciliation submits the same stored signed bytes again.
-              console.warn('Financial submission remains pending', error)
-              await this.setOutgoingState(
-                address,
-                id,
-                'payment-pending',
-                {
-                  attemptDigest: digest,
-                },
-                { assertCurrent },
-              )
-              return { state: 'payment-pending' }
-            }
-          }
-          const applied = await this.applyAttemptStatus({
-            address,
-            id,
-            status,
-            digest,
-            assertCurrent,
-          })
-          if (applied === 'stale') return { state: 'busy' }
-          if (applied === 'sent') {
-            const confirmed = this.messages[digest]
-            return confirmed && walletOwnsMessage(wallet, confirmed)
-              ? { state: 'sent', payloadDigest: digest }
-              : { state: 'busy' }
-          }
-          if (!stillCurrent()) return { state: 'busy' }
-          if (applied === 'live') return { state: 'payment-pending' }
-          // A relay terminal status or an exhausted local attempt is not financial nonexecution
-          // proof. Even a confirmed Retry must settle the original authorized payment.
-          const failureReason = applied === 'dead' ? 'rejected' : 'unverified'
-          await this.setOutgoingState(
-            address,
-            id,
-            'error',
-            {
-              attemptDigest: digest,
-              failureReason,
-              detail: previous?.detail,
-            },
-            { assertCurrent },
-          )
-          return { state: 'failed', reason: failureReason }
-        } catch (error) {
-          if (error instanceof StaleOutgoingResult) return { state: 'busy' }
-          throw error
-        }
-      } else if (
-        digest === undefined &&
-        automatic &&
-        previous?.failureReason !== 'interrupted'
-      ) {
-        // No attempt recorded and not cut off mid-send: an earlier payment for it was given up
-        // (dead) or the send failed for a reason the user must see. Only a click sends it again.
-        return { state: 'failed', reason: previous?.failureReason ?? 'error' }
-      } else if (
-        digest === undefined &&
-        manual &&
-        !confirmed &&
-        previous?.failureReason === 'recovered'
-      ) {
-        return { state: 'needs-confirmation', reason: 'recovered' }
-      } else if (
-        digest === undefined &&
-        manual &&
-        previous?.failureReason === 'interrupted'
-      ) {
-        // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
-        // hold (or already have resumed) a payment nobody points at. Do not pay again unless
-        // there is provably none, or the user says so.
-        const known = new Set<string>()
-        for (const [key, other] of Object.entries(this.messages)) {
-          if (other && !key.startsWith('pending:')) known.add(key)
-          const attempt = other?.delivery?.attemptDigest
-          if (attempt !== undefined) known.add(attempt)
-        }
-        let orphans: string[] | undefined
-        try {
-          orphans = await messagingChain.directMessages.unattributedAttempts({
-            wallet,
-            knownDigests: [...known],
-          })
-        } catch (error) {
-          console.warn('could not check for an unattributed payment', error)
-        }
-        if (!confirmed && (orphans === undefined || orphans.length > 0)) {
-          // Leave the message 'interrupted': every unconfirmed Retry must hit this check again,
-          // in this session and after a reload. Only the user's answer below ends that.
-          return { state: 'needs-confirmation', reason: 'unverified' }
-        }
-        if (orphans !== undefined && orphans.length > 0) {
-          // The user chose to pay again. Save that answer for the payments it was about, so they
-          // stop blocking later retries. If it cannot be saved, the wallet keeps reporting them
-          // and the next interrupted message asks again; that never pays without a prompt.
-          try {
-            await messagingChain.directMessages.resolveUnattributedAttempts({
-              wallet,
-              payloadDigests: orphans,
-            })
-          } catch (error) {
-            console.warn(
-              'could not save the answer for an unattributed payment',
-              error,
-            )
-          }
-          if (!stillCurrent()) return { state: 'busy' }
-        }
-      }
-
-      // All financial first-send projections share the same serialized ownership guard.
-      // Nonfinancial callers retain their existing projection behavior.
-      const setFirstSendState = (
-        status: 'pending' | 'payment-pending' | 'error',
-        delivery: OutgoingDelivery,
-        options: { strict?: boolean } = {},
-      ) =>
-        this.setOutgoingState(address, id, status, delivery, {
-          ...options,
-          ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
-        })
-
-      // 2. Build and send a new payment set.
-      if (!stillCurrent()) return { state: 'busy' }
-      if (
-        id.startsWith('pending:application:') &&
-        !message.applicationAuthorization
-      )
-        throw new Error('Application delivery authorization reference missing')
-      const application = await captureOutgoingApplicationAuthorization(
+      return createChatOutgoingExecution(this).runOutgoingExclusive({
         wallet,
         address,
-        message,
-      )
-      if (!stillCurrent()) return { state: 'busy' }
-      application?.assertCurrent()
-      // Ordinary chat's manual Retry can use the current minimum. A retained application
-      // authorization fixes its stamp for every retry, including interrupted automatic sends.
-      if (
-        !application &&
-        manual &&
-        !automatic &&
-        message.delivery?.failureReason === 'stamp-below-fee' &&
-        message.stampValueWei !== undefined
-      ) {
-        const minimum = await messagingChain.directMessages
-          .minimumStamp?.({ wallet })
-          .catch(() => undefined)
-        if (minimum !== undefined && minimum > message.stampValueWei)
-          message.stampValueWei = minimum
-      }
-      // Keep an already queued message queued while it retries: toggling through pending
-      // would reset the background backoff and make restart mistake it for a cut-off send.
-      await setFirstSendState(
-        message.status === 'payment-pending' ? 'payment-pending' : 'pending',
-        {},
-      )
-      if (!stillCurrent()) return { state: 'busy' }
-      let ownDigest: string | undefined
-      let result: DirectMessageSendResult | undefined
-      let lastSendError: unknown
-      let allCallsUnattempted = true
-      const maxSendAttempts = 3
-
-      for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
-        if (!stillCurrent()) return { state: 'busy' }
-        const cancellable = cancellableSend(id)
-        try {
-          // The subject rides only on the first message of a conversation that has one and on
-          // the first message after a rename; ordinary messages omit it.
-          const subject = subjectToCarry(
-            message.conversationId === undefined
-              ? undefined
-              : this.conversations[message.conversationId],
-          )
-          let wireItems = message.items
-          try {
-            const contactsStore = useContactStore()
-            const hasContactCard = message.items.some(
-              it => it && it.type === 'contact-card',
-            )
-            const needsSidecar =
-              contactsStore.isContact(address) &&
-              contactsStore.getNotify(address) &&
-              !contactsStore.getInboundWakeupToken(address)
-            if (hasContactCard || needsSidecar) {
-              const capability = deriveLocalPeerWakeupCapabilitySync(
-                address,
-                (wallet as unknown as { identity?: any })?.identity ?? null,
-              )
-              if (capability) {
-                contactsStore.setInboundWakeupToken({
-                  address,
-                  token: capability.preimageHex,
-                })
-                if (hasContactCard) {
-                  wireItems = message.items.map(it =>
-                    it && it.type === 'contact-card' && !it.wakeupTokenHex
-                      ? { ...it, wakeupTokenHex: capability.preimageHex }
-                      : it,
-                  )
-                } else {
-                  wireItems = [
-                    ...message.items,
-                    {
-                      type: 'contact-card',
-                      uid: 'frank-wakeup-capability',
-                      fullName: 'Wakeup Capability',
-                      frankAddress: wallet.identity.displayAddress,
-                      wakeupTokenHex: capability.preimageHex,
-                    },
-                  ]
-                }
-              }
-            }
-          } catch {
-            // Best-effort wakeup token exchange
-          }
-          application?.assertCurrent()
-          if (financial) assertFinancialCurrent()
-          result = await messagingChain.directMessages.send({
-            wallet,
-            recipient,
-            // One ID for this message, whatever attempt this is: the wallet makes one payment
-            // per ID, ever, and answers a repeat with the attempt it already holds.
-            messageId: message.sealedMessageId ?? outgoingMessageId(id),
-            ...(financial?.paymentOperationId === undefined
-              ? {}
-              : { paymentOperationId: financial.paymentOperationId }),
-            ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
-            conversationId: message.conversationId,
-            ...(subject === undefined ? {} : { conversationName: subject }),
-            items: wireItems,
-            ...(message.stampValueWei === undefined
-              ? {}
-              : {
-                  stampValue: application?.stampValue ?? message.stampValueWei,
-                }),
-            // Deleting the bubble while its send still waits cancels the send: nothing was
-            // signed for it.
-            signal: cancellable.signal,
-            onPreparationProgress: progress => {
-              // Its payment waits for the previous one to be mined, or the chain cannot be
-              // reached and the send is queued: the bubble says which.
-              if (progress.stage === 'waiting-for-payment') {
-                sendsWaitingForPreviousPayment.add(id)
-                if (progress.blocksRemaining === undefined)
-                  sendsWaitingBlocks.delete(id)
-                else sendsWaitingBlocks.set(id, progress.blocksRemaining)
-              }
-              if (progress.stage === 'waiting-for-chain')
-                sendsWaitingForChain.add(id)
-              onPreparationProgress?.(progress)
-            },
-            onAttemptCreated: async attemptDigest => {
-              sendsWaitingBlocks.delete(id)
-              sendsWaitingForPreviousPayment.delete(id)
-              sendsWaitingForChain.delete(id)
-              ownDigest = attemptDigest
-              // Strict: this write must be durable before the relay sees any byte of the set.
-              // If it fails, the send stops before any relay request. The wallet does NOT roll the
-              // attempt back: its payment intent stays journaled, later sends wait behind it, and
-              // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
-              // kept on the message by the failure path below whenever that later write succeeds.
-              await setFirstSendState(
-                'pending',
-                { attemptDigest },
-                { strict: true },
-              )
-            },
-          })
-          if (subject !== undefined && message.conversationId !== undefined) {
-            const carriedIn = this.conversations[message.conversationId]
-            if (carriedIn) carriedIn.nameOnWire = subject
-          }
-          break
-        } catch (error) {
-          lastSendError = error
-          allCallsUnattempted &&=
-            ownDigest === undefined && isDirectMessageNotAttempted(error)
-          cancellable.done()
-          if (financial) {
-            try {
-              assertFinancialCurrent()
-            } catch {
-              // A rejected stale callback must not label the replacement row as failed.
-              return { state: 'busy' }
-            }
-          }
-          if (
-            error instanceof DirectMessageAlreadyAttemptedError ||
-            (error instanceof Error &&
-              error.name === 'DirectMessageAlreadyAttemptedError')
-          ) {
-            // The wallet already holds this message's one attempt (this row had not learned
-            // its digest: the app stopped between the wallet's record and this row's). Nothing
-            // new was paid or sent. The row now points at that attempt and the reconciliation
-            // finishes it with the same bytes.
-            const attemptDigest = (error as DirectMessageAlreadyAttemptedError)
-              .payloadDigest
-            endWaitingSend(id)
-            await setFirstSendState('payment-pending', {
-              attemptDigest,
-            })
-            return { state: 'payment-pending' }
-          }
-          if (error instanceof MonadStampPendingAttemptError) {
-            // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
-            // bytes. Without an own set, an earlier attempt is still pending and this message has
-            // not been paid for yet; it is sent once that clears.
-            console.info('[sendDirectMessage pending]:', error)
-            await setFirstSendState(
-              'payment-pending',
-              ownDigest === undefined
-                ? {}
-                : { attemptDigest: ownDigest, live: true },
-            )
-            return { state: 'payment-pending' }
-          }
-
-          const retry = decideOutgoingRetry(error, {
-            ownDigest,
-            sendAttempt,
-            maxSendAttempts,
-            allCallsUnattempted,
-            isCurrent: stillCurrent,
-          })
-          if (retry.kind === 'retry-messaging') {
-            const ready =
-              typeof waitForMessagingReady === 'function'
-                ? await waitForMessagingReady(retry.readyTimeoutMs)
-                : false
-            if (!ready) {
-              await new Promise(r => setTimeout(r, retry.delayMs))
-            }
-            continue
-          }
-
-          if (retry.kind === 'retry-transport') {
-            console.warn(
-              `[sendDirectMessage transient rpc error (attempt ${sendAttempt}/${maxSendAttempts})]:`,
-              error,
-            )
-            await new Promise(r => setTimeout(r, retry.delayMs))
-            continue
-          }
-
-          if (retry.kind === 'queue-unattempted') {
-            // Every rejected call explicitly did nothing. Retain this same message ID and
-            // request for the existing background reconciliation queue, including after restart.
-            // An absent digest alone never grants this authority.
-            await setFirstSendState('payment-pending', {})
-            return { state: 'payment-pending' }
-          }
-
-          console.error('[sendDirectMessage error]:', error)
-          // The wallet released the payment this message carried (nothing of it was ever
-          // sent): the saved message must not keep a sendable copy of its signed transfer. The
-          // row is saved by the state change just below.
-          if (
-            error instanceof ContactPaymentReleasedError &&
-            this.messages[id] &&
-            !financial
-          )
-            stripReleasedPayments(this.messages[id])
-          const failure = classifySendFailure(error, ownDigest)
-          await setFirstSendState('error', {
-            ...(failure.keepDigest === undefined
-              ? {}
-              : { attemptDigest: failure.keepDigest }),
-            failureReason: failure.reason,
-            detail: errorDetail(error),
-          })
-          return { state: 'failed', reason: failure.reason }
-        }
-      }
-
-      endWaitingSend(id)
-      if (!result) {
-        const failure = classifySendFailure(lastSendError, ownDigest)
-        await setFirstSendState('error', {
-          ...(failure.keepDigest === undefined
-            ? {}
-            : { attemptDigest: failure.keepDigest }),
-          failureReason: failure.reason,
-          detail: errorDetail(lastSendError),
-        })
-        return { state: 'failed', reason: failure.reason }
-      }
-
-      if (financial) {
-        assertFinancialCurrent()
-        try {
-          await financial.submit()
-        } catch (error) {
-          // The message was delivered (the recipient is told of the payment), but the payment
-          // is not on chain yet. It stays payment-pending, and reconciliation submits the same
-          // stored signed bytes again; never a new payment.
-          console.warn('Financial submission remains pending', error)
-          await setFirstSendState('payment-pending', {
-            attemptDigest: result.payloadDigest,
-          })
-          return { state: 'payment-pending' }
-        }
-      }
-      await this.confirmOutgoing({
-        address,
         id,
-        payloadDigest: result.payloadDigest,
-        stampValueWei: result.stampValueWei,
-        stampPayments: result.stampPayments,
-        ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
+        manual,
+        automatic,
+        confirmed,
+        onPreparationProgress,
       })
-      return { state: 'sent', payloadDigest: result.payloadDigest }
     },
     /**
      * A message found "sending" with no recorded attempt and nobody sending it: its send was cut

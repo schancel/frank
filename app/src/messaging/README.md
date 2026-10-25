@@ -78,3 +78,37 @@ public actions as delegates; it is not a transitive dependency/security audit.
 
 This slice does not move foreground execution or bot/mail host policy. Canonical
 wallet messaging remains the shared original-envelope execution/replay engine.
+
+## Outgoing execution
+
+`createOutgoingExecution(ports)` owns the full `runOutgoing` and
+`runOutgoingExclusive` orchestration. Public chat actions delegate through
+`createChatOutgoingExecution`; the store reexports the unchanged `OutgoingOutcome`
+type. The actual application handoff action is `deliverPersistedApplicationMessage`:
+it retains its existing lock before calling exclusive execution.
+
+Execution owns original-attempt-first branching, strict pending/bound financial
+retention, envelope callback construction, interrupted-send authorization checks,
+request assembly, exact-error retry evidence and post-delivery original submission.
+It delegates result interpretation to the existing recovery owner. There is no
+second state cache, journal, recovery loop or global wallet/session capture.
+
+The composition adapter retains the exact captured directMessages object behind a
+narrow public type, preserving method receivers and optional lookup timing. It
+captures financial account/session invariants through the existing shared sentinel;
+the engine decides when to assert them. Existing durable mutation owners receive
+those assertions and preserve queue-entry/post-read checks. Repository acquisition
+and binding remain separate awaits with their original context checks.
+
+Subject metadata, best-effort contact wakeup sidecars, cancellable-send registration
+and progress sets remain synchronous presentation capabilities. The engine invokes
+them at their original per-attempt points; attempt-created digest assignment still
+precedes strict persistence. Optional readiness retains its absent-function branch
+without introducing an extra await. Retry delays and exact no-effect evidence remain
+owned by the existing policy/caller contract.
+
+Group send/retry dispatch and rowless retained-envelope scheduling are unchanged.
+This app-specific execution module is not a universal bot/mail facade. Canonical
+messaging remains the shared original-byte execution and replay implementation.
+Plain-object execution tests cover ordering and failure boundaries; composed
+outgoing, retained-envelope and group tests remain required for real owner wiring.

@@ -469,7 +469,8 @@ describe("FrankBotHost Reliability Features", () => {
       expect(mockDirectMessagesFetchSince.mock.calls.at(-1)?.[0].sinceMs).toBe(initial);
       await instance.peerQueue.enqueue(mockPeer.address.toLowerCase(), async () => {});
       expect(handled).toEqual(["22".repeat(32)]);
-      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(receivedTime + 1));
+      // Inclusive: the read covered everything up to and including the newest record.
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(receivedTime));
       await host.stop();
     });
 
@@ -520,7 +521,7 @@ describe("FrankBotHost Reliability Features", () => {
       const persistedCursor = await instance1.state.get(
         "cursor:lastPollTimestamp"
       );
-      expect(persistedCursor).toBe(String(messageTime + 1));
+      expect(persistedCursor).toBe(String(messageTime));
 
       await host1.stop();
 
@@ -534,7 +535,7 @@ describe("FrankBotHost Reliability Features", () => {
       const instance2 = (host2 as any).instances.get("cursor-bot");
 
       // Verify restored cursor is used as lastPollTimestamp
-      expect(instance2.lastPollTimestamp).toBe(messageTime + 1);
+      expect(instance2.lastPollTimestamp).toBe(messageTime);
 
       await host2.stop();
     });
@@ -685,7 +686,7 @@ describe("FrankBotHost Reliability Features", () => {
         true
       );
       expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
-        String(base + 301)
+        String(base + 300)
       );
 
       await host.stop();

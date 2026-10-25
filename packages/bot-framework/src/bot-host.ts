@@ -196,8 +196,8 @@ interface ActiveBotInstance {
   polling?: Promise<void>;
   /** This bot's mailbox read until a poll uses its result: it may outlive the poll that started it. */
   mailboxRead?: Promise<MailboxRead>;
-  /** The earliest record the last read could not translate yet: no cursor move passes it. */
-  incompleteFloor?: number;
+  /** The record last reported as not translatable yet, so the warning is not repeated. */
+  incompleteWarned?: number;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
@@ -1314,11 +1314,11 @@ export class FrankBotHost {
           this.options.callTimeoutMs
         );
         instance.mailboxRead = undefined;
-        if (incomplete !== undefined && incomplete !== instance.incompleteFloor)
+        if (incomplete !== undefined && incomplete !== instance.incompleteWarned)
           console.warn(
             `[bot-host] [${id}] Mailbox record at ${incomplete} cannot be read yet; it is read again on every poll and holds the cursor`
           );
-        instance.incompleteFloor = incomplete;
+        instance.incompleteWarned = incomplete;
         // Set when a message of this read is not durable here: the cursor must not pass it.
         let unsettled = false;
         const accepted: {
@@ -1825,7 +1825,7 @@ export class FrankBotHost {
     return { messages, passed, ...(incomplete === undefined ? {} : { incomplete }) };
   }
 
-  /** Finishes a started message: its row goes and the scan cursor moves past it. */
+  /** Finishes a started message: its row goes, with the scan cursor the reads reached. */
   private async finish(
     instance: ActiveBotInstance,
     digest: string,
@@ -1833,13 +1833,11 @@ export class FrankBotHost {
   ): Promise<void> {
     const row = instance.operations.get(digest);
     if (row?.phase !== "started") return;
-    // Past the message, but never past a record the last read could not translate yet.
+    // Only a read moves the cursor, to what it covered completely; finishing a message does
+    // not, so it can never pass a record that is not read yet.
     const committedCursor = await instance.operations.complete(
       digest,
-      Math.max(
-        instance.lastPollTimestamp,
-        Math.min(row.receivedTime + 1, instance.incompleteFloor ?? Infinity)
-      )
+      instance.lastPollTimestamp
     );
     instance.lastPollTimestamp = Math.max(
       instance.lastPollTimestamp,

@@ -579,7 +579,7 @@ export class InboundOperationStore {
     });
   }
   /** Finishes a started message: its row and staged text are deleted, its marker is written and
-   * the scan cursor moves, in one batch. Returns the cursor now stored. */
+   * the scan cursor is stored (never moving back), in one batch. Returns the cursor now stored. */
   complete(digest: string, cursor: number): Promise<number> {
     return this.mutate(async () => {
       cursor = await this.forward(cursor);

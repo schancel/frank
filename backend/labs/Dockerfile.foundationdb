@@ -1,4 +1,4 @@
-# Requires the optional cashweb-registry foundationdb live driver to be present in the checkout.
+# Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests.
 # Keep server/client release versions identical. FDB's image supplies native libfdb_c.
 FROM foundationdb/foundationdb:7.3.63 AS fdb-client
 FROM rust:1-bookworm
@@ -20,9 +20,10 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     --mount=type=cache,sharing=locked,id=frank-labs-git,target=/usr/local/cargo/git \
     --mount=type=cache,sharing=locked,id=frank-labs-fdb-target,target=/build/backend/cashweb/target \
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
-    cargo test --locked -p cashweb-registry --features foundationdb live_foundationdb_contract --lib --no-run --message-format=json > /tmp/fdb-artifacts.json && \
-    python3 /copy-test-artifact.py /tmp/fdb-artifacts.json /live-fdb-contract live_foundationdb_contract && \
+    cargo test --locked -p cashweb-registry --features foundationdb --test kv_transaction_contract --no-run --message-format=json > /tmp/kv-artifacts.json && \
+    python3 /copy-test-artifact.py /tmp/kv-artifacts.json /kv-transaction-contract foundationdb_transaction_contract && \
     find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
     cargo test --locked -p cashweb-registry --features foundationdb --test lab_backend_contract --no-run --message-format=json > /tmp/lab-artifacts.json && \
     python3 /copy-test-artifact.py /tmp/lab-artifacts.json /backend-contract real_nats_notification_and_durable_offline_catch_up
-ENTRYPOINT ["/bin/sh", "-c", "/live-fdb-contract live_foundationdb_contract --ignored --nocapture && /backend-contract --nocapture"]
+# The transaction contract starts its two FDB worker processes from its own executable.
+ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture"]

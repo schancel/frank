@@ -239,28 +239,22 @@ pub struct NodeClusterAttestation {
     - Exactly one worker in the source cluster claims each delivery job, preventing $N$-fold redundant forwarding storms to external relays.
     - Automatic exponential backoff and retry handling on HTTP 503 or transient network failure.
 
-### 6.5 Issue #1575: FoundationDB (`FoundationDbKvStore`) & `RelayKvStore` Transactional Keyspace
+### 6.5 Issue #1575: `RelayKvStore` transaction contract (FoundationDB and RocksDB)
 
-- **Objective**: Provide a unified transactional key-value trait (`RelayKvStore`) with 80-bit monotonic `Versionstamp` ordering across embedded `RocksDbKvStore`, deterministic `MemoryKvStore`, and distributed `FoundationDbKvStore` (`LiveFoundationDbDriver` / `SimulatedFdbCluster`).
-- **Canonical Tuple Subspace Schema**:
-  - `'D'` (`SUBSPACE_DIRECTORY`): `D:<address_20>` $\rightarrow$ `KvDirectoryRecord` (signed `DirectoryStatement` CBOR + monotonic `revision`), updated via `put_directory_entry_cas` iff `new_rev > cur_rev`.
-  - `'U'` & `'U_addr'` (`SUBSPACE_USERNAMES` / `SUBSPACE_USERNAME_BY_ADDR`): `U:<normalized_handle>` and `U_addr:<address_20>` $\rightarrow$ `KvUsernameRecord`. `claim_username_kv` enforces first-claim-wins, same-holder idempotency, atomic handle rotation with cooling tombstone TTL (`released_until_ms`), and stale-claim rejection in one serializable transaction.
-  - `'P'` (`SUBSPACE_PAYMENT_DEDUP`): `P:<chain_id_be8>:<tx_hash_32>` $\rightarrow$ `KvPaymentClaimRecord` preventing cross-message stamp/burn replay across all replicas (`409 Conflict` via `KvError::CasConflict`).
-  - `'I'` (`SUBSPACE_INBOX`): `I:<recipient_20>:<versionstamp_10><payload_digest_32>` $\rightarrow$ `KvInboxMessageEntry` appended via `SetVersionstampedKey` (`admit_inbox_message_tx`) and paginated via `scan_inbox_since_cursor`.
-  - `'M'` (`SUBSPACE_MSG_DIGEST`): `M:<recipient_20>:<payload_digest_32>` $\rightarrow$ `KvDigestIndexRecord` ($O(1)$ idempotent retry lookup and tombstone pointer into `'I'`).
-  - `'G'` & `'G_meta'` (`SUBSPACE_GROUP_MESSAGES` / `SUBSPACE_GROUP_META`): `G:<group_id_32>:<versionstamp_10><msg_hash_32>` and `G_meta:<group_id_32>` $\rightarrow$ `KvGroupMeta` (`rotate_group_epoch_tx` enforcing `new_epoch == cur_epoch + 1`, and `post_group_message_tx` atomically verifying epoch/write-key, decrementing `credit_balance`, and appending the versionstamped group message).
-  - `'J'` (`SUBSPACE_SYNC_JOURNAL`): `J:<recipient_20>:<versionstamp_10>` $\rightarrow$ `KvJournalEntry` (`Delivered | Tombstoned | StateCheckpoint`) for multi-device delta sync (`tombstone_inbox_message_tx`, `scan_sync_journal_since_cursor`).
-- **FoundationDB Cluster Configuration (`frank.toml`)**:
-  ```toml
-  [registry.cluster]
-  enabled = true
-  driver = "foundationdb"
-  fdb_cluster_file = "/etc/foundationdb/fdb.cluster"
-  fdb_subspace_prefix = "frank_prod:"
-  ```
-- **Migration & Backup/Restore**:
-  - `export_kv_snapshot` and `import_kv_snapshot` stream all canonical subspaces in lexicographical order and import them in transactional chunks, preserving 80-bit `Versionstamp` cursors across standalone RocksDB and clustered FoundationDB deployments.
-  - Production FoundationDB clusters additionally support continuous point-in-time backup to S3/MinIO via `fdbbackup` / `fdbrestore`.
+- `RelayKvStore` (`backend/cashweb/cashweb-registry/src/store/kv_store.rs`) is an interactive
+  transaction contract: an owner runs `store.transact(|tx| ...)`, and `tx` offers `get`, a
+  conflicting range read, `set`, `clear` and `atomic_add`. Conflicts re-run the closure up to a
+  bounded number of attempts; an ambiguous commit is returned as `KvError::CommitUnknownResult`
+  for the owner to reconcile, never retried blindly.
+- Both drivers enforce FoundationDB's limits with typed errors: 10,000-byte keys, 100,000-byte
+  values, 10,000,000-byte transactions and 5 seconds per attempt.
+- Drivers: `RocksDbKvStore` (one embedded database per process, with an in-process conflict
+  resolver over RocksDB snapshots) and `FoundationDbKvStore` (`foundationdb` feature; every key
+  under one subspace prefix, `fdb_subspace_prefix` in `[registry.cluster]`).
+- Today only `GroupStore` and the unused blob store use the contract. Which owners move onto it,
+  and in what order, is the PR sequence in
+  [relay-ha-cluster.md](../../../docs/plans/relay-ha-cluster.md); there is no snapshot
+  export/import or migration path (signet starts from empty state at cutover).
 
 ---
 

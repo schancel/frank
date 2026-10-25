@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use cashweb_registry::{
     events::{CoreNatsEventBus, RelayEventBus},
-    store::kv_store::{KvTransactionOp, RelayKvStore},
+    store::kv_store::{KvError, RelayKvStore, Transact},
 };
 
 #[cfg(not(feature = "foundationdb"))]
@@ -14,15 +14,9 @@ fn open_store(path: &std::path::Path, _recipient: &str) -> Box<dyn RelayKvStore>
 
 #[cfg(feature = "foundationdb")]
 fn open_store(_path: &std::path::Path, recipient: &str) -> Box<dyn RelayKvStore> {
-    use cashweb_registry::store::{
-        foundationdb_driver::LiveFoundationDbDriver, kv_store::FoundationDbKvStore,
-    };
+    use cashweb_registry::store::foundationdb_driver::FoundationDbKvStore;
     let file = std::env::var("FRANK_FDB_CLUSTER_FILE").expect("explicit FDB cluster required");
-    Box::new(FoundationDbKvStore::new(
-        file.clone(),
-        format!("frank-nats-lab:{recipient}:").into_bytes(),
-        std::sync::Arc::new(LiveFoundationDbDriver::open(&file).unwrap()),
-    ))
+    Box::new(FoundationDbKvStore::open(&file, format!("frank-nats-lab:{recipient}:")).unwrap())
 }
 
 // async-nats flush only flushes the socket writer; a server reply is needed
@@ -54,14 +48,18 @@ async fn real_nats_notification_and_durable_offline_catch_up() {
     server_barrier(&reader_bus, &recipient).await;
     let directory = tempfile::tempdir().unwrap();
     let prefix = format!("I/lab/{recipient}/").into_bytes();
+    let counter = format!("N/lab/{recipient}").into_bytes();
     let db = open_store(directory.path(), &recipient);
+    // Each append takes the next per-recipient sequence number in the same transaction.
     let append = |payload: &[u8]| {
-        db.execute_transaction(vec![KvTransactionOp::SetVersionstampedKey {
-            key_prefix: prefix.clone(),
-            key_suffix: vec![],
-            value: payload.to_vec(),
-        }])
-        .unwrap()
+        db.transact(|tx| {
+            let next = match tx.get(&counter)? {
+                Some(bytes) => u64::from_be_bytes(bytes.try_into().unwrap()) + 1,
+                None => 1,
+            };
+            tx.set(&counter, &next.to_be_bytes())?;
+            tx.set(&[prefix.as_slice(), &next.to_be_bytes()].concat(), payload)
+        })
         .unwrap()
     };
     append(b"first synthetic encrypted envelope");
@@ -76,7 +74,7 @@ async fn real_nats_notification_and_durable_offline_catch_up() {
         .unwrap();
     assert_eq!(event.recipient_hex, recipient);
     assert_eq!(event.payload_hash, [1; 32]);
-    let first_page = db.scan_prefix_range(&prefix, None, 1).unwrap();
+    let first_page = db.transact(|tx| tx.scan_prefix(&prefix, None, 1)).unwrap();
     assert_eq!(first_page.len(), 1);
     let cursor = first_page[0].0.clone();
 
@@ -100,16 +98,19 @@ async fn real_nats_notification_and_durable_offline_catch_up() {
     drop(db);
     let reopened = open_store(directory.path(), &recipient);
     let catch_up = reopened
-        .scan_prefix_range(&prefix, Some(&cursor), 10)
+        .transact(|tx| tx.scan_prefix(&prefix, Some(&cursor), 10))
         .unwrap();
     assert_eq!(catch_up.len(), 1);
     assert_eq!(catch_up[0].1, b"second synthetic encrypted envelope");
     // Only keys inside this test's random recipient/subspace are removed.
-    for (key, _) in reopened
-        .scan_prefix_range(&prefix, None, usize::MAX)
-        .unwrap()
-    {
-        reopened.delete(&key).unwrap();
-    }
+    reopened
+        .transact(|tx| {
+            for (key, _) in tx.scan_prefix(&prefix, None, usize::MAX)? {
+                tx.clear(&key)?;
+            }
+            tx.clear(&counter)?;
+            Ok::<_, KvError>(())
+        })
+        .unwrap();
     println!("PASS: real Core NATS delivery; durable cursor catch-up after disconnect/reopen");
 }

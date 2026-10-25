@@ -21,6 +21,11 @@ const RELAY_ROUTES = [
   { path: '/message', ws: true },
   { path: '/chain-rpc', ws: true },
   { path: '/directory' },
+  // Group chat: epochs, messages and the /groups/:id/live wake socket.
+  { path: '/groups', ws: true },
+  // Usernames and forum topics.
+  { path: '/usernames' },
+  { path: '/topics' },
   { path: '/relay' },
   { path: '/address' },
   { path: '/profiles' },

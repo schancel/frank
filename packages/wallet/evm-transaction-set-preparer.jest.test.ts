@@ -1646,6 +1646,78 @@ describe('money the chain lets be spent only from a later block', () => {
     }
   })
 
+  it('names no block when the waiting money would not be enough, and the send does not wait', async () => {
+    const f = await setup([100000n])
+    const deposit = signer(9)
+    await f.coins.put({
+      account: deposit.address,
+      privateKey: deposit.privateKey,
+      nonce: 0,
+      valueWei: 200000n,
+      origin: 'root',
+      spendableFromBlock: 104,
+    })
+    try {
+      // 100000 now plus 200000 from block 104, less a fee each: short of 300000.
+      const request = { operationId: 'not-enough', amountWei: 300000n, kdf }
+      const untilBlock = jest.fn(async () => undefined)
+      const refused = await constructWhenSpendable(
+        () => f.preparer.constructTransactionSet(request),
+        { untilBlock, refresh: async () => undefined },
+      ).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused.spendableFromBlock).toBeUndefined()
+      expect(untilBlock).not.toHaveBeenCalled()
+    } finally {
+      await f.journal.Close()
+    }
+  })
+
+  it('refuses cleanly when another send takes the waiting money meanwhile', async () => {
+    const f = await setup([])
+    let current: EvmTransactionSetPolicy = policy
+    const preparer = new EvmTransactionSetPreparer({
+      ...f.options,
+      policy: () => current,
+    })
+    const deposit = signer(9)
+    await f.coins.put({
+      account: deposit.address,
+      privateKey: deposit.privateKey,
+      nonce: 0,
+      valueWei: 500000n,
+      origin: 'root',
+      spendableFromBlock: 104,
+    })
+    try {
+      const refused = await constructWhenSpendable(
+        () =>
+          preparer.constructTransactionSet({
+            operationId: 'first',
+            amountWei: 300000n,
+            kdf,
+          }),
+        {
+          untilBlock: async () => {
+            current = { ...policy, head: 104 }
+            // Another send reaches the coin first.
+            await preparer.constructTransactionSet({
+              operationId: 'other',
+              amountWei: 400000n,
+              kdf,
+            })
+          },
+          refresh: async () => undefined,
+        },
+      ).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused.spendableFromBlock).toBeUndefined()
+      expect(f.coins.all().filter(coin => coin.holder === 'first')).toEqual([])
+    } finally {
+      await f.journal.Close()
+    }
+  })
+
   it('names no block when nothing is waiting, and the send does not wait', async () => {
     const f = await setup([100000n])
     try {

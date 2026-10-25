@@ -996,6 +996,9 @@ async function finishSharedConstruction(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
   mode: 'construct' | 'restore' = 'construct',
+  /** The user's own send is waiting on this: it may wait the few blocks a fresh deposit needs.
+   * The resend pass never waits; it retries on its next turn. */
+  waitForSpendable = false,
 ): Promise<StoredMessage> {
   if (!sharedConstructionPending(row)) return row
   let intent = row.construction!
@@ -1082,16 +1085,16 @@ async function finishSharedConstruction(
   }
   // Money that reached the wallet a few blocks ago may be spendable only from a later block
   // (Monad's spacing rule): the send waits for that block rather than report no funds.
-  const prepared = await constructWhenSpendable(
-    () =>
-      row.transactionSetStageId
-        ? shared.preparer.appendTransactionSet({
-            ...request,
-            stageId: row.transactionSetStageId,
-          })
-        : shared.preparer.constructTransactionSet(request),
-    shared,
-  )
+  const construct = () =>
+    row.transactionSetStageId
+      ? shared.preparer.appendTransactionSet({
+          ...request,
+          stageId: row.transactionSetStageId,
+        })
+      : shared.preparer.constructTransactionSet(request)
+  const prepared = waitForSpendable
+    ? await constructWhenSpendable(construct, shared)
+    : await construct()
   const frozenRequest = freezePaidMessage(
     intent.network, sealed, fromHex(row.digest),
     prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,
@@ -2260,7 +2263,9 @@ async function send(
     try {
       await owner.lifetime(() => owner.messages.put(row))
       recorded = true
-      row = await owner.lifetime(() => finishSharedConstruction(owner, row))
+      row = await owner.lifetime(() =>
+        finishSharedConstruction(owner, row, 'construct', true),
+      )
     } catch (error) {
       // The journal or message write may have reached durable storage. Keep the stable ID
       // and every reservation; reopen will finish this same operation.

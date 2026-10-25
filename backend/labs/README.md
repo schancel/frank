@@ -211,6 +211,34 @@ the same volumes are fine. Paid group writes are not covered yet: HA step 5 (PR 
 adds them, on solonet, once `[registry.group_writes]` lands, and the hook is marked at the
 top of `cluster_contract.rs` and in `cluster/relay.toml`.
 
+## Large-value store: FoundationDB + MinIO acceptance
+
+`compose.large-values.yml` runs FDB 7.3.63 and MinIO (pinned by digest) with a
+`relay-a` and a `relay-b` test container. It is not a Frank relay: each phase in
+`cashweb-registry/tests/large_value_contract.rs` opens its own FDB client and S3
+client in its own container, and phases share state only through the cluster.
+The script initializes FDB, creates the bucket, runs the phases, stops and restarts
+MinIO between them, and removes the project with `--volumes` on exit
+(`FRANK_LAB_KEEP=1` keeps it).
+
+```sh
+COMPOSE_PROJECT_NAME=frank-lab-large-values-$USER backend/labs/large-values-acceptance.sh
+```
+
+Phases, in order:
+
+1. Relay A creates a group and appends a 1 MiB message (and a small one).
+2. Relay B reads the 1 MiB message back byte-exact.
+3. With MinIO stopped, a large append fails closed and `G_seq` is unchanged; a read
+   that needs an object fails instead of returning a gap.
+4. With MinIO restarted, the same append lands as the next sequence.
+5. An orphan (uploaded, never committed) is swept and the referenced 1 MiB object is
+   kept; then writers on two clients race a sweeper with every intent already
+   expired, and every committed message still reads back.
+6. The run's FDB subspace is cleared.
+
+The MinIO credentials in the Compose file are synthetic and local to the lab.
+
 ## References
 
 - [FDB container entrypoint](https://github.com/apple/foundationdb/blob/main/packaging/docker/fdb.bash)

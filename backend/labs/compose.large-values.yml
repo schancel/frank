@@ -1,0 +1,71 @@
+# FoundationDB + MinIO acceptance for the large-value store; NOT a relay.
+# Run it with backend/labs/large-values-acceptance.sh, which sets COMPOSE_PROJECT_NAME and
+# FRANK_LAB_RUN_ID and tears the project down with --volumes.
+# Synthetic credentials for a disposable local bucket; nothing here is a real secret.
+x-s3: &s3
+  FRANK_LAB_S3_ENDPOINT: http://minio:9000
+  FRANK_LAB_S3_BUCKET: frank-large-values
+  FRANK_S3_ACCESS_KEY_ID: frank-lab
+  FRANK_S3_SECRET_ACCESS_KEY: frank-lab-not-a-secret
+services:
+  fdb:
+    image: foundationdb/foundationdb:7.3.63
+    environment:
+      FDB_NETWORKING_MODE: container
+      FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FDB_PORT: "4500"
+    volumes:
+      - fdb-data:/var/fdb/data
+      - fdb-cluster:/cluster
+    # Clients run on the Compose network: FDB advertises its container address.
+    healthcheck:
+      test: ["CMD-SHELL", "fdbcli -C /cluster/fdb.cluster --timeout 5 --exec 'status minimal' | grep -F 'The database is available.'"]
+      interval: 3s
+      timeout: 6s
+      retries: 20
+  minio:
+    # RELEASE.2025-09-07T16-13-09Z (arm64 and amd64), pinned by digest.
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: frank-lab
+      MINIO_ROOT_PASSWORD: frank-lab-not-a-secret
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc alias set self http://127.0.0.1:9000 frank-lab frank-lab-not-a-secret >/dev/null && mc ready self"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  minio-init:
+    profiles: ["init"]
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    entrypoint: ["/bin/sh", "-c", "mc alias set lab http://minio:9000 frank-lab frank-lab-not-a-secret && mc mb --ignore-existing lab/frank-large-values"]
+  # Relay A and relay B: separate containers, each with its own FDB and S3 client.
+  # No depends_on: a phase runs with --no-deps so a stopped MinIO stays stopped.
+  relay-a:
+    profiles: ["test"]
+    image: frank-lab-large-values-contract:local
+    build:
+      context: ../..
+      dockerfile: backend/labs/Dockerfile.large-values
+    environment:
+      <<: *s3
+      FRANK_FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FRANK_LAB_RUN_ID: ${FRANK_LAB_RUN_ID:?set by large-values-acceptance.sh}
+    volumes:
+      - fdb-cluster:/cluster:ro
+  relay-b:
+    profiles: ["test"]
+    image: frank-lab-large-values-contract:local
+    pull_policy: never
+    environment:
+      <<: *s3
+      FRANK_FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FRANK_LAB_RUN_ID: ${FRANK_LAB_RUN_ID:?set by large-values-acceptance.sh}
+    volumes:
+      - fdb-cluster:/cluster:ro
+volumes:
+  fdb-data:
+  fdb-cluster:
+  minio-data:

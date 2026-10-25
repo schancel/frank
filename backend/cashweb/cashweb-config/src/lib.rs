@@ -414,6 +414,64 @@ pub struct RegistryConf {
     /// must hold the same file. Changing it orphans every push subscription.
     #[serde(default)]
     pub vapid_private_key_file: Option<PathBuf>,
+    /// Where values over the 64 KiB inline limit (group ciphertexts) are stored. Omitted: a
+    /// local directory beside `db_path`, which only a single-replica relay may use.
+    #[serde(default)]
+    pub large_values: Option<LargeValuesConf>,
+}
+
+/// Object store for large values (`[registry.large_values]`).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "driver", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LargeValuesConf {
+    /// Files under `path`. Single-replica relays only.
+    Local {
+        /// Directory holding the objects.
+        path: PathBuf,
+    },
+    /// An S3-compatible bucket (AWS S3, MinIO, R2), shared by every replica of a cluster.
+    S3 {
+        /// Endpoint origin, e.g. `http://minio:9000`. Requests use path-style addressing.
+        endpoint: url::Url,
+        /// SigV4 region, e.g. `us-east-1`.
+        region: String,
+        /// Bucket name. It must already exist.
+        bucket: String,
+        /// Key prefix inside the bucket, e.g. the cluster name. Empty for none.
+        #[serde(default)]
+        prefix: String,
+        /// File holding `access_key_id = "..."` and `secret_access_key = "..."` (TOML). When
+        /// omitted, composition reads `FRANK_S3_ACCESS_KEY_ID` and `FRANK_S3_SECRET_ACCESS_KEY`.
+        #[serde(default)]
+        credentials_file: Option<PathBuf>,
+    },
+}
+
+/// Credentials for [`LargeValuesConf::S3`], as read by composition.
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct S3Credentials {
+    /// Access key ID.
+    pub access_key_id: String,
+    /// Secret access key.
+    pub secret_access_key: String,
+}
+
+impl S3Credentials {
+    /// Parse a credentials file. The error never repeats the file's contents.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|_| {
+            "expected access_key_id and secret_access_key strings and nothing else".to_string()
+        })
+    }
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key_id", &self.access_key_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Forum configuration: where a post or vote must burn its payment, on [`RegistryConf::network`].
@@ -2454,6 +2512,7 @@ continuity_file = "/var/lib/frank/continuity"
                     oracle: None,
                     session_secret_file: None,
                     vapid_private_key_file: None,
+                    large_values: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2542,6 +2601,7 @@ continuity_file = "/var/lib/frank/continuity"
                     oracle: None,
                     session_secret_file: None,
                     vapid_private_key_file: None,
+                    large_values: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2893,6 +2953,49 @@ continuity_file = "/var/lib/frank/continuity"
                 "{removed}"
             );
         }
+    }
+
+    #[test]
+    fn large_values_section_selects_a_driver_explicitly() {
+        use super::*;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            large_values: LargeValuesConf,
+        }
+        let parse = |text: &str| toml::from_str::<Wrapper>(text).map(|w| w.large_values);
+        assert_eq!(
+            parse("[large_values]\ndriver = \"local\"\npath = \"/var/lib/frank/large\"\n").unwrap(),
+            LargeValuesConf::Local {
+                path: "/var/lib/frank/large".into()
+            }
+        );
+        let s3 = parse(
+            "[large_values]\ndriver = \"s3\"\nendpoint = \"http://minio:9000\"\n\
+             region = \"us-east-1\"\nbucket = \"frank\"\nprefix = \"signet\"\n\
+             credentials_file = \"/run/secrets/s3.toml\"\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            s3,
+            LargeValuesConf::S3 { ref bucket, ref prefix, credentials_file: Some(_), .. }
+                if bucket == "frank" && prefix == "signet"
+        ));
+        // No driver, an unknown driver, or credentials inline in the relay config are refused.
+        assert!(parse("[large_values]\npath = \"/x\"\n").is_err());
+        assert!(parse("[large_values]\ndriver = \"gcs\"\n").is_err());
+        assert!(parse(
+            "[large_values]\ndriver = \"s3\"\nendpoint = \"http://minio:9000\"\n\
+             region = \"r\"\nbucket = \"b\"\nsecret_access_key = \"x\"\n"
+        )
+        .is_err());
+        let credentials =
+            S3Credentials::parse("access_key_id = \"id\"\nsecret_access_key = \"hunter2\"\n")
+                .unwrap();
+        assert!(!format!("{credentials:?}").contains("hunter2"));
+        assert!(S3Credentials::parse("access_key_id = \"hunter2\"\n")
+            .unwrap_err()
+            .find("hunter2")
+            .is_none());
     }
 
     #[test]

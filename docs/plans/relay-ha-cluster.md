@@ -1,6 +1,6 @@
 # Relay HA cluster: FoundationDB, S3 and NATS
 
-Status: proposed, 2026-10-25. Extends [relay-storage-backends.md](relay-storage-backends.md),
+Status: accepted in part, 2026-10-25 (decisions A–C below are the owner's). Extends [relay-storage-backends.md](relay-storage-backends.md),
 whose rules still hold. Ships to signet.mx in one joint release with the pre-user wire break
 (CBOR type renumbering, sealed sender, per-item payment network). Each PR lands on `main` once it is
 rebased, reviewed and green. Nothing is deployed until the whole stack has landed. Until
@@ -126,17 +126,22 @@ the owner ports, and the ports are written against the new formats.
 
 ## Owner decisions
 
-- **A. Group-write funding (owner, 2026-10-25: "a burn or a payment to the relay server as
-  the host").**
-  - Recommendation: one verifier, and each relay operator configures the payee (`burn` or a relay address). The default pays the hosting relay, which funds the infrastructure; a burn costs the writer and funds nobody.
+- **A. Group-write funding.** Decided 2026-10-25: "a burn or a payment to the relay server as
+  the host"; the operator must provide "a relay address, or xpub".
+  - One verifier. Each relay operator configures the payee: a single relay address, an xpub, or `burn`.
+  - With an xpub, the relay and the writer derive the per-write payment address from it, so
+    payments are not all sent to one address. The derivation index must follow from the write's
+    commitment, so both sides compute the same address without a round trip.
+  - A burn costs the writer and funds nobody, so it is opt-in.
   - The calldata commitment is required: without it, one burn could fund writes on several relays.
   - Confirmation is not awaited, as with DM stamps. A replaced nonce can therefore buy one free write, which is the same exposure DMs have.
   - The payer's address links a wallet to its group writes at the host, as DM stamps already do.
-  - To decide: the payee default and the price.
-- **B. Session secret and VAPID key.** Recommendation: operator-provisioned files, the same on every replica, never auto-created in cluster mode. Changing the VAPID key orphans every push subscription.
+  - Still open: the price, and the exact xpub derivation path and index rule.
+- **B. Session secret and VAPID key.** Decided 2026-10-25: operator-provisioned files, the same on every replica, never auto-created in cluster mode. Changing the VAPID key orphans every push subscription.
 - **C. Signet data at cutover.**
-  - Recommendation: reset, no migration (AGENTS §6). The renumbering changes signed type numbers, so stored directory evidence, forum commitments and DM frames cannot be revalidated.
-  - Scope: the relay's RocksDB databases and its session secret. Keep config, the relay identity and payee keys, and archive the databases offline before deleting them.
+  - Decided 2026-10-25: no migration (AGENTS §6). The old databases and disks are kept as
+    archives; moving to FoundationDB starts from empty state. The renumbering changes signed type numbers, so stored directory evidence, forum commitments and DM frames cannot be revalidated.
+  - Scope: the relay's RocksDB databases and its session secret. Keep config, the relay identity and payee keys. Archive the databases and disk snapshots; they are not deleted.
   - Users keep their wallets and republish directory entries. Reserved usernames protect the bots.
   - Bot and mail-gateway disks are a separate decision, and their custody is never reset.
 - **D. RocksDB driver.** Recommendation: keep one behind the same contract for single-node, self-hosted relays and fast tests. Two real drivers, no in-memory fakes.

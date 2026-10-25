@@ -159,7 +159,6 @@ export interface DirectMessageSendResult {
   payloadDigest: string;
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
-  paymentTransfers?: PaymentMember[];
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
   preparationTxHashes: string[];
 }

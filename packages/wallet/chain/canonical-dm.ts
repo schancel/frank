@@ -350,47 +350,6 @@ function payments(transactions: readonly Uint8Array[]): StampPaymentInfo[] {
   })
 }
 
-export function constructStampPaymentTransfers(params: {
-  networkTag: string
-  transactions: readonly Uint8Array[]
-  vout?: number
-}): PaymentMember[] {
-  return params.transactions.flatMap((raw, childIndex) => {
-    const tx = Transaction.from(hexlify(raw))
-    if (tx.hash === null || tx.to === null) return []
-    const hashHex = tx.hash.startsWith('0x')
-      ? tx.hash.slice(2).toLowerCase()
-      : tx.hash.toLowerCase()
-    const toHexStr = tx.to.startsWith('0x')
-      ? tx.to.slice(2).toLowerCase()
-      : tx.to.toLowerCase()
-    return [
-      {
-        network: params.networkTag,
-        transactionId: fromHex(hashHex),
-        ...(params.vout !== undefined ? { vout: params.vout } : {}),
-        address: fromHex(toHexStr),
-        value: tx.value,
-        rawTx: raw,
-        childIndex,
-      },
-    ]
-  })
-}
-
-export function consumePaymentTransferToStamp(
-  member: PaymentMember,
-): StampPaymentInfo {
-  return {
-    txHash: '0x' + toHex(member.transactionId),
-    destinationAddress: getAddress('0x' + toHex(member.address)),
-    valueWei:
-      typeof member.value === 'bigint'
-        ? member.value
-        : BigInt('0x' + toHex(member.value)),
-  }
-}
-
 const consumerOf = (messageId: Uint8Array) => `frank-dm:${toHex(messageId)}`
 /** The claim holder of one message: unique across every wallet that shares the same coins. */
 const holderOf = (owner: CanonicalMessagingOwner, consumerId: string) =>
@@ -1607,7 +1566,6 @@ function unpaidResult(payloadDigest: string): DirectMessageSendResult {
     payloadDigest,
     stampValueWei: 0n,
     stampPayments: [],
-    paymentTransfers: [],
     preparationTxHashes: [],
   }
 }
@@ -1999,10 +1957,6 @@ async function send(
       payloadDigest: digest,
       stampValueWei,
       stampPayments: payments(transactions),
-      paymentTransfers: constructStampPaymentTransfers({
-        networkTag: directory.network,
-        transactions,
-      }),
       preparationTxHashes: [],
     }
 

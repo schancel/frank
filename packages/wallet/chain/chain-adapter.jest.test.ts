@@ -520,17 +520,6 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(parsedSync.recipient).toBe(recipient);
       expect(parsedSync.amount).toBe(500000000000000000n);
       expect(parsedSync.displayAmount).toBe('0.5');
-
-      const poly = adapter.createPaymentTransfer({
-        recipient,
-        value: 1000000000000000000n,
-        txId: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-      });
-      expect(poly.destination instanceof Uint8Array).toBe(true);
-      expect(poly.destination.length).toBe(20);
-      const parsedPoly = adapter.parsePaymentTransfer(poly);
-      expect(parsedPoly.recipient).toBe(recipient);
-      expect(parsedPoly.value).toBe(1000000000000000000n);
     });
 
     it('defaults token to PATHUSD and formats 6 decimals on Tempo', () => {
@@ -562,17 +551,6 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(parsed.recipient).toBe(recipient);
       expect(parsed.amount).toBe(2000000000n);
       expect(parsed.displayAmount).toBe('2');
-
-      const poly = adapter.createPaymentTransfer({
-        recipient,
-        value: 2000000000n,
-        txId: '5H6QzLqUq9b1o9L3ZgM4N8mS4qL7k9X2Z1y7w6v5u4t3',
-      });
-      expect(poly.destination instanceof Uint8Array).toBe(true);
-      expect(poly.destination.length).toBe(32);
-      const parsedPoly = adapter.parsePaymentTransfer(poly);
-      expect(parsedPoly.recipient).toBe(recipient);
-      expect(parsedPoly.value).toBe(2000000000n);
     });
 
     it('creates and parses transfers on eCash with 20-byte hash160 and vout', () => {
@@ -593,20 +571,6 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(parsed.amount).toBe(50000n);
       expect(parsed.displayAmount).toBe('500');
       expect(parsed.vout).toBe(1);
-
-      const poly = adapter.createPaymentTransfer({
-        recipient,
-        value: 50000n,
-        txId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        vout: 1,
-      });
-      expect(poly.destination instanceof Uint8Array).toBe(true);
-      expect(poly.destination.length).toBe(20);
-      expect(poly.vout).toBe(1);
-      const parsedPoly = adapter.parsePaymentTransfer(poly);
-      expect(parsedPoly.recipient).toBe(recipient);
-      expect(parsedPoly.value).toBe(50000n);
-      expect(parsedPoly.vout).toBe(1);
     });
   });
 

@@ -25,19 +25,7 @@ import { PublicKey } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519';
 import * as bip39 from 'bip39';
 import { Address } from 'ecash-lib/dist/address/address';
-import { fromHex, toHex, type StealthMetadata } from '@frank/codec';
-
-export interface PaymentTransfer {
-  networkTag: string;
-  txId: Uint8Array;
-  vout?: number;
-  destination: Uint8Array;
-  value: Uint8Array | bigint;
-  token?: Uint8Array;
-  stealthMetadata?: StealthMetadata;
-  commitment?: Uint8Array;
-  rawTx?: Uint8Array;
-}
+import { fromHex, toHex } from '@frank/codec';
 import {
   decodeAddress,
   encodeAddress,
@@ -288,39 +276,6 @@ function normalizeSyncDirection(dir?: string): WalletSyncDirection {
   return 'out';
 }
 
-export interface CreatePaymentTransferParams {
-  readonly recipient: string;
-  readonly value: bigint | number | string;
-  readonly txId: Uint8Array | string;
-  readonly token?: Uint8Array | string;
-  readonly vout?: number;
-  readonly stealthMetadata?: StealthMetadata | {
-    keyType: 1 | 2;
-    ephemeralPubKey: string | Uint8Array;
-    viewTag?: number | string | Uint8Array;
-  };
-  readonly commitment?: Uint8Array | string;
-  readonly rawTx?: Uint8Array | string;
-}
-
-export interface ParsedPaymentTransfer {
-  readonly chainId: ChainId;
-  readonly networkTag: string;
-  readonly recipient: string;
-  readonly value: bigint;
-  readonly displayAmount: string;
-  readonly txId: string;
-  readonly token?: string;
-  readonly vout?: number;
-  readonly stealthMetadata?: StealthMetadata | {
-    keyType: 1 | 2;
-    ephemeralPubKey: string | Uint8Array;
-    viewTag?: number | string | Uint8Array;
-  };
-  readonly commitment?: Uint8Array;
-  readonly rawTx?: Uint8Array;
-}
-
 export interface EstimateFeeParams {
   readonly recipient: string;
   readonly value: bigint;
@@ -402,8 +357,6 @@ export interface ChainAdapter {
   parseRecipientPaymentTransfer(transfer: RecipientPaymentTransfer): ParsedRecipientPaymentTransfer;
   createSyncPaymentTransfer(params: CreateSyncPaymentTransferParams): PaymentTransferItem;
   parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer;
-  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer;
-  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer;
   estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult>;
   simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult>;
 }
@@ -1297,53 +1250,6 @@ class EvmChainAdapter implements ChainAdapter {
     };
   }
 
-  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
-    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
-    const destination = this.parseAddress(params.recipient);
-    const txIdBytes = typeof params.txId === 'string'
-      ? fromHex(params.txId.replace(/^0x/, ''))
-      : params.txId;
-    const tokenBytes = params.token
-      ? (typeof params.token === 'string' ? this.parseAddress(params.token) : params.token)
-      : undefined;
-    const commitment = params.commitment
-      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
-      : undefined;
-    const rawTx = params.rawTx
-      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
-      : undefined;
-
-    return {
-      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
-      txId: txIdBytes,
-      destination,
-      value: valueBig,
-      ...(tokenBytes ? { token: tokenBytes } : {}),
-      ...(params.vout !== undefined ? { vout: params.vout } : {}),
-      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
-      ...(commitment ? { commitment } : {}),
-      ...(rawTx ? { rawTx } : {}),
-    };
-  }
-
-  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
-    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
-    const token = transfer.token ? this.formatAddress(transfer.token) : undefined;
-    return {
-      chainId: this.chainId,
-      networkTag: transfer.networkTag,
-      recipient: this.formatAddress(transfer.destination),
-      value: val,
-      displayAmount: this.toDisplayAmount(val),
-      txId: '0x' + toHex(transfer.txId),
-      ...(token ? { token } : {}),
-      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
-      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
-      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
-      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
-    };
-  }
-
   async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
     try {
       const response = await fetch(this.rpcUrl, {
@@ -1517,18 +1423,6 @@ class TempoChainAdapter extends EvmChainAdapter {
     };
   }
 
-  override createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
-    const token = params.token ?? PATHUSD;
-    return super.createPaymentTransfer({ ...params, token });
-  }
-
-  override parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
-    const parsed = super.parsePaymentTransfer(transfer);
-    return {
-      ...parsed,
-      token: parsed.token ?? this.formatAddress(PATHUSD),
-    };
-  }
 }
 
 /**
@@ -1792,67 +1686,6 @@ class SolanaChainAdapter implements ChainAdapter {
       ...(item.rawTx ? { rawTx: item.rawTx } : {}),
       ...(item.memo ? { memo: item.memo } : {}),
       ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
-    };
-  }
-
-  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
-    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
-    const destination = this.parseAddress(params.recipient);
-    let txIdBytes: Uint8Array;
-    if (typeof params.txId === 'string') {
-      if (/^[0-9a-fA-F]+$/.test(params.txId.replace(/^0x/, ''))) {
-        txIdBytes = fromHex(params.txId.replace(/^0x/, ''));
-      } else {
-        txIdBytes = Uint8Array.from(getBase58Encoder().encode(params.txId));
-      }
-    } else {
-      txIdBytes = params.txId;
-    }
-    const tokenBytes = params.token
-      ? (typeof params.token === 'string' ? Uint8Array.from(new PublicKey(params.token).toBytes()) : params.token)
-      : undefined;
-    const commitment = params.commitment
-      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
-      : undefined;
-    const rawTx = params.rawTx
-      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
-      : undefined;
-
-    return {
-      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
-      txId: txIdBytes,
-      destination,
-      value: valueBig,
-      ...(tokenBytes ? { token: tokenBytes } : {}),
-      ...(params.vout !== undefined ? { vout: params.vout } : {}),
-      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
-      ...(commitment ? { commitment } : {}),
-      ...(rawTx ? { rawTx } : {}),
-    };
-  }
-
-  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
-    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
-    const token = transfer.token ? new PublicKey(transfer.token).toBase58() : undefined;
-    let txIdStr: string;
-    try {
-      txIdStr = getBase58Decoder().decode(transfer.txId);
-    } catch {
-      txIdStr = toHex(transfer.txId);
-    }
-
-    return {
-      chainId: this.chainId,
-      networkTag: transfer.networkTag,
-      recipient: this.formatAddress(transfer.destination),
-      value: val,
-      displayAmount: this.toDisplayAmount(val),
-      txId: txIdStr,
-      ...(token ? { token } : {}),
-      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
-      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
-      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
-      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
     };
   }
 
@@ -2130,47 +1963,6 @@ class EcashChainAdapter implements ChainAdapter {
       ...(item.rawTx ? { rawTx: item.rawTx } : {}),
       ...(item.memo ? { memo: item.memo } : {}),
       ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
-    };
-  }
-
-  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
-    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
-    const destination = this.parseAddress(params.recipient);
-    const txIdBytes = typeof params.txId === 'string'
-      ? fromHex(params.txId.replace(/^0x/, ''))
-      : params.txId;
-    const commitment = params.commitment
-      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
-      : undefined;
-    const rawTx = params.rawTx
-      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
-      : undefined;
-
-    return {
-      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
-      txId: txIdBytes,
-      destination,
-      value: valueBig,
-      vout: params.vout ?? 0,
-      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
-      ...(commitment ? { commitment } : {}),
-      ...(rawTx ? { rawTx } : {}),
-    };
-  }
-
-  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
-    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
-    return {
-      chainId: this.chainId,
-      networkTag: transfer.networkTag,
-      recipient: this.formatAddress(transfer.destination),
-      value: val,
-      displayAmount: this.toDisplayAmount(val),
-      txId: toHex(transfer.txId),
-      vout: transfer.vout ?? 0,
-      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
-      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
-      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
     };
   }
 
@@ -2668,47 +2460,6 @@ class BtcFamilyChainAdapter implements ChainAdapter {
       ...(item.rawTx ? { rawTx: item.rawTx } : {}),
       ...(item.memo ? { memo: item.memo } : {}),
       ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
-    };
-  }
-
-  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
-    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
-    const destination = this.parseAddress(params.recipient);
-    const txIdBytes = typeof params.txId === 'string'
-      ? fromHex(params.txId.replace(/^0x/, ''))
-      : params.txId;
-    const commitment = params.commitment
-      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
-      : undefined;
-    const rawTx = params.rawTx
-      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
-      : undefined;
-
-    return {
-      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
-      txId: txIdBytes,
-      destination,
-      value: valueBig,
-      vout: params.vout ?? 0,
-      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
-      ...(commitment ? { commitment } : {}),
-      ...(rawTx ? { rawTx } : {}),
-    };
-  }
-
-  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
-    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
-    return {
-      chainId: this.chainId,
-      networkTag: transfer.networkTag,
-      recipient: this.formatAddress(transfer.destination),
-      value: val,
-      displayAmount: this.toDisplayAmount(val),
-      txId: toHex(transfer.txId),
-      vout: transfer.vout ?? 0,
-      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
-      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
-      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
     };
   }
 

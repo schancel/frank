@@ -11,7 +11,11 @@ import { EvmNativeOperationJournal, evmNativeOperationDigest } from './storage/e
 import * as durability from './storage/level-durability'
 import { InMemoryTopicOperationJournal } from './storage/topic-operation-journal'
 import { validateNativeTopicReferences } from './evm-input-admission'
-import { EvmTransactionSetPreparer } from './evm-transaction-set'
+import {
+  constructWhenSpendable,
+  EvmTransactionSetPreparer,
+} from './evm-transaction-set'
+import { EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
 import type { EvmTransactionSetPolicy } from './evm-transaction-set-types'
 const signer = (index: number) =>
   new Wallet('0x' + index.toString(16).padStart(64, '0'))
@@ -1594,4 +1598,68 @@ it('constructs around a legacy lease through the production admission adapter an
     expect(await preparer.constructTransactionSet(request)).toEqual(result)
     expect(capture).toHaveBeenCalledTimes(1)
   } finally { await owner.close(); await rm(location, { recursive: true, force: true }) }
+})
+
+describe('money the chain lets be spent only from a later block', () => {
+  it('names that block, and a send that waits for it is paid from that money', async () => {
+    const f = await setup([])
+    let current: EvmTransactionSetPolicy = policy
+    const preparer = new EvmTransactionSetPreparer({
+      ...f.options,
+      policy: () => current,
+    })
+    // A deposit that arrived just now: Monad lets it be spent from block 104 (head is 100).
+    const deposit = signer(9)
+    await f.coins.put({
+      account: deposit.address,
+      privateKey: deposit.privateKey,
+      nonce: 0,
+      valueWei: 50_000_000n,
+      origin: 'root',
+      spendableFromBlock: 104,
+    })
+    try {
+      const request = { operationId: 'paid-ping', amountWei: 300000n, kdf }
+      const refused = await preparer
+        .constructTransactionSet(request)
+        .catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused.spendableFromBlock).toBe(104)
+      const waited: number[] = []
+      const result = await constructWhenSpendable(
+        () => preparer.constructTransactionSet(request),
+        {
+          untilBlock: async block => {
+            waited.push(block)
+          },
+          refresh: async () => {
+            current = { ...policy, head: waited.at(-1)! }
+          },
+        },
+      )
+      expect(waited).toEqual([104])
+      expect(result.bundle.map(tx => tx.sourceAccount)).toEqual([
+        deposit.address.toLowerCase(),
+      ])
+    } finally {
+      await f.journal.Close()
+    }
+  })
+
+  it('names no block when nothing is waiting, and the send does not wait', async () => {
+    const f = await setup([100000n])
+    try {
+      const request = { operationId: 'too-much', amountWei: 5_000_000n, kdf }
+      const untilBlock = jest.fn(async () => undefined)
+      const refused = await constructWhenSpendable(
+        () => f.preparer.constructTransactionSet(request),
+        { untilBlock, refresh: async () => undefined },
+      ).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused.spendableFromBlock).toBeUndefined()
+      expect(untilBlock).not.toHaveBeenCalled()
+    } finally {
+      await f.journal.Close()
+    }
+  })
 })

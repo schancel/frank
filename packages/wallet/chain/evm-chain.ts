@@ -3219,6 +3219,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 lifecycle: transactionSetLifecycle,
                 provider,
                 refresh: () => transactionSetRuntime.refresh(),
+                untilBlock: block =>
+                  transactionSetRuntime.blockWatcher.until(block),
                 sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
                 resolvePaymentOperation: async (id, amount) => {
                   const resolve = walletInternals.resolveMessagePayment;

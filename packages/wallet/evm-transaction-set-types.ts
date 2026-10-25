@@ -142,8 +142,16 @@ export interface EvmTransactionSetPreparerOptions {
 
 /** Construction found no eligible inputs; no signed operation is created by this refusal. */
 export class EvmTransactionSetInsufficientFundsError extends Error {
-  constructor() {
+  /**
+   * Selection passed over coins that the chain lets be spent only from a later block (on Monad,
+   * money that arrived or an account that sent a few blocks ago). From this block every one of
+   * them may be spent. Undefined when no coin was waiting: the funds are simply not there.
+   */
+  readonly spendableFromBlock?: number
+  constructor(spendableFromBlock?: number) {
     super('Insufficient available EVM coins')
+    if (spendableFromBlock !== undefined)
+      this.spendableFromBlock = spendableFromBlock
     this.name = 'EvmTransactionSetInsufficientFundsError'
     recordWalletFailure(this, { diagnosis: 'insufficient-funds' })
   }

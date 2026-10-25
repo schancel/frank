@@ -7,6 +7,7 @@ import type {
   UnpaidEnvelope,
 } from '../storage/outgoing-message-store'
 import { EvmTransactionSetInsufficientFundsError } from '../evm-transaction-set-types'
+import { constructWhenSpendable } from '../evm-transaction-set'
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
  * Canonical (#778) direct messages for a typed Monad wallet: type20 -> type12 -> type11/schema2/suite1
@@ -270,6 +271,8 @@ export interface CanonicalMessagingOwner {
     lifecycle: import('../evm-transaction-set-lifecycle').EvmTransactionSetLifecycle
     provider: import('ethers').Provider
     refresh: () => Promise<void>
+    /** Resolves once the chain is at `block` or past it. */
+    untilBlock: (block: number) => Promise<unknown>
     resolvePaymentOperation?: (id: string, amount: bigint) => Promise<string>
     sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
@@ -1077,9 +1080,18 @@ async function finishSharedConstruction(
       childIndex,
     }).address),
   }
-  const prepared = row.transactionSetStageId
-    ? await shared.preparer.appendTransactionSet({ ...request, stageId: row.transactionSetStageId })
-    : await shared.preparer.constructTransactionSet(request)
+  // Money that reached the wallet a few blocks ago may be spendable only from a later block
+  // (Monad's spacing rule): the send waits for that block rather than report no funds.
+  const prepared = await constructWhenSpendable(
+    () =>
+      row.transactionSetStageId
+        ? shared.preparer.appendTransactionSet({
+            ...request,
+            stageId: row.transactionSetStageId,
+          })
+        : shared.preparer.constructTransactionSet(request),
+    shared,
+  )
   const frozenRequest = freezePaidMessage(
     intent.network, sealed, fromHex(row.digest),
     prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,

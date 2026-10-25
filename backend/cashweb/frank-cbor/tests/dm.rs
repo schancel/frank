@@ -112,7 +112,7 @@ fn dm_context_matches_typescript_vector() {
         },
         FramePayload::Value(&payload),
     )
-    .expect("type-5 frame");
+    .expect("type-11 frame");
     assert_eq!(
         hex::encode(frame),
         corpus["type5FrameHex"].as_str().expect("type5FrameHex")

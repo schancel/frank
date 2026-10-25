@@ -25,7 +25,7 @@ installs or approves an account, and the relay reads the system clock.
 | --- | --- | --- |
 | Open `NewEnrollment` | Installed network, full P, exact revision-zero T1 | Refuses any existing subject state; no fresh authority |
 | Open `Reopen(checkpoint)` | Same installed anchor and external minimum continuity checkpoint | Authenticates all retained evidence and prefix continuity; missing state is unavailable |
-| `advance` | Ordered exact bare type4/type2 pairs, trusted ns time, authenticated relay tuple | Durable fresh terminal `Current`, or rejection; verified forks alone persist quarantine |
+| `advance` | Ordered exact bare type1/type2 pairs, trusted ns time, authenticated relay tuple | Durable fresh terminal `Current`, or rejection; verified forks alone persist quarantine |
 | `advance_declared` / `current_declared` | As above without a relay tuple | Same, for a relay's replicated routing table: the head may name any relay and its own binding must be unexpired |
 | `current` | Fresh trusted time/relay context | Rechecks durable state; persists successful checked-time advancement before returning |
 | `historical_evidence(T1)` | Exact accepted record identity | Original bare/wrapper bytes only; never fresh routing/stamp authority |
@@ -51,13 +51,13 @@ invented successful acceptance timestamp.
 The admission boundary meters retained counters plus the **entire presented
 batch**, including duplicate inputs, before costly work. Limits are 4096
 retained records, 16,777,216 charged bytes, and 262144 bytes per complete frame.
-Each record charges exact bare type4 bytes plus its stable validating type2
+Each record charges exact bare type1 bytes plus its stable validating type2
 wrapper. Replays and alternate wrappers count during candidate preflight but
 cannot replace the retained wrapper/accounting baseline.
 
 Callers supply both exact frames to make length charging possible before
 decoding. After that initial preflight, a bounded `Operation::Generic` pass in
-the existing codec checks that each type2 actually embeds the supplied type4.
+the existing codec checks that each type2 actually embeds the supplied type1.
 It opens neither the child nor any curve point/signature. Only after every
 pair matches does typed decoding and cryptographic authentication begin. A
 dishonest short bare frame therefore cannot undercharge signature work. This

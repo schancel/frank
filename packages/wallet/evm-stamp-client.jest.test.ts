@@ -319,6 +319,9 @@ import {
   recipientPayloadDigest,
   toHex,
   validateFrame,
+  TYPE_DIRECTORY_STATEMENT,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_DIRECTORY_ATTESTATION,
 } from '@frank/codec'
 import type { PublicRevisionZeroInput } from './evm-wallet-handle'
 
@@ -481,7 +484,7 @@ async function makeCanonicalConsumerFixture(
         ])
       const tuple = senderExport.configuration.relay
       const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        { typeId: TYPE_DIRECTORY_STATEMENT, schemaVersion: 4, minReaderVersion: 4 },
         cborMap([
           [0, 'monad-testnet'],
           [1, account(leaves.auth.public.compressedPoint)],
@@ -507,7 +510,7 @@ async function makeCanonicalConsumerFixture(
         ]),
       )
       const attestation = encodeFrame(
-        { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
         cborMap([
           [0, statement],
           [
@@ -1138,7 +1141,7 @@ describe('canonical durable consumer barriers', () => {
       expect(f.client.wasAcknowledged(link.attemptRef)).toBe(true)
     })
   }, 20000)
-  it('generates Type 1 delivery frames carrying co-located recipient P (field 5) and DLEQ proof (field 6) (#964)', async () => {
+  it('generates Type 10 delivery frames carrying co-located recipient P (field 5) and DLEQ proof (field 6) (#964)', async () => {
     await withCanonicalConsumer(async f => {
       let link!: CanonicalWorkflowLink
       await f.prepare(1, async durable => {
@@ -1150,8 +1153,8 @@ describe('canonical durable consumer barriers', () => {
       const delivery = attempt.request.parts.delivery
       const parsed = validateFrame(delivery, defaultContext())
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) {
-        throw new Error('Expected parsed type 1 delivery frame')
+      if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) {
+        throw new Error('Expected parsed delivery frame')
       }
       // Inspect the prepared envelope to get the expected recipient and DLEQ proof
       const envelope = inspectCanonicalPreparedEnvelope(

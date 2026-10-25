@@ -1,5 +1,5 @@
 /**
- * Canonical direct message pipeline tests for Type 24 channel-update items (#965).
+ * Canonical direct message pipeline tests for channel-update items (#965).
  * Proves round-trip integrity:
  *   ChannelUpdateItem -> encodeChannelUpdateItem -> prepareDirectMessage -> openDirectMessage -> projectChannelUpdateItem
  * across single-chain, multi-chain, modular game payloads (dice, poker), multi-signatures,
@@ -32,6 +32,7 @@ import {
   validateChannelTransition,
   verifyChannelSignatures,
   verifyPreviewDirectoryEvidence,
+  TYPE_TEXT_MESSAGE_ITEM,
 } from '@frank/codec'
 import type { CanonicalChannelUpdateItem } from '@frank/codec'
 import {
@@ -57,7 +58,7 @@ import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/
 import { decodeItemFrames } from '../message-item-plugins/wire'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 
-describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
+describe('canonical DM pipeline: channel-update items (#965)', () => {
   let location: string
   let store: DirectoryStore
   let current: Current
@@ -426,7 +427,7 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
       // Item 0: Text item
       const item0 = opened.items[0]
       expect(item0.kind).toBe('parsed')
-      expect(item0.typed?.type).toBe(17)
+      expect(item0.typed?.type).toBe(TYPE_TEXT_MESSAGE_ITEM)
       expect((item0.typed as any).text).toBe('State channel update proposal')
 
       // Item 1: Channel-update item

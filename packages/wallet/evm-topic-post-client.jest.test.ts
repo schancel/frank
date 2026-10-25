@@ -17,6 +17,10 @@ import {
   topicBurnCommitment,
   toHex,
   verifyTopicPostAuthor,
+  TYPE_FORUM_OPERATION_STATUS,
+  TYPE_TOPIC_POST,
+  TYPE_TOPIC_POST_SUBMISSION,
+  TYPE_TOPIC_VOTE_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
@@ -180,7 +184,8 @@ async function fixture(valueWei = 1700000n) {
     )
     if (
       parsed.kind !== 'parsed' ||
-      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+      (parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION &&
+        parsed.typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION)
     )
       throw new Error('Bad fixture request')
     const typed = parsed.typed
@@ -202,7 +207,7 @@ async function fixture(valueWei = 1700000n) {
       })
     const transactions = rawTransactions.map(raw => Transaction.from(raw))
     const target =
-      typed.type === 10
+      typed.type === TYPE_TOPIC_POST_SUBMISSION
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
     const lastIndex = Math.max(
@@ -224,7 +229,7 @@ async function fixture(valueWei = 1700000n) {
     ])
     return {
       data: encodeFrame(
-        { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
         payload as never,
       ),
       headers: { 'content-type': 'application/cbor' },
@@ -258,7 +263,7 @@ const params = {
   amountAtomic: 1000000n,
   timestampMs: -1,
 }
-test('public post writes schema2 type10 with all burns, parent and exact authored timestamp', async () => {
+test('public post writes a schema2 post submission with all burns, parent and exact authored timestamp', async () => {
   const f = await fixture()
   try {
     const parent = new Uint8Array(32).fill(2)
@@ -271,7 +276,7 @@ test('public post writes schema2 type10 with all burns, parent and exact authore
     const parsed = validateFrame(result.postFrame, defaultContext())
     if (
       parsed.kind !== 'parsed' ||
-      parsed.typed?.type !== 9 ||
+      parsed.typed?.type !== TYPE_TOPIC_POST ||
       parsed.typed.schemaVersion !== 2
     )
       throw new Error('Expected canonical post')
@@ -426,7 +431,7 @@ test('signs the authored post with wallet.identity independently of transaction 
       }),
     ).submitTopicPost(params)
     const parsed = validateFrame(result.postFrame, defaultContext())
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 9)
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_TOPIC_POST)
       throw new Error('Expected signed post')
     expect(parsed.typed.from).toEqual({
       keyType: 1,

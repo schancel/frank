@@ -1,5 +1,5 @@
 // A client ignores a relay forwarding envelope inside an open message-item field (S8): the item
-// is kept as an uninterpreted frame, never opened as type 25, and the message's other items
+// is kept as an uninterpreted frame, never opened as type 13, and the message's other items
 // survive. The Rust relay refuses the same bytes (frank-cbor tests/open_item_ignored.rs).
 import { defaultContext, validateFrame } from '../src'
 import {
@@ -94,7 +94,7 @@ describe('client handling of a forwarding envelope in an open item field (S8)', 
     expect(result).toMatchObject({ category: 'semantic', stage: '8.4' })
   })
 
-  it('a forwarding envelope as the root is still validated as type 25', () => {
+  it('a forwarding envelope as the root is still validated as type 13', () => {
     expect(() => validateFrame(envelope(), defaultContext())).toThrow()
   })
 })

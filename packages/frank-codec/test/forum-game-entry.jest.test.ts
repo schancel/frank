@@ -38,7 +38,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
     if (parsed.kind !== 'parsed') return
 
     const post = parsed.typed as any
-    expect(post.type).toBe(9)
+    expect(post.type).toBe(TYPE_TOPIC_POST)
     expect(post.schemaVersion).toBe(2)
     expect(post.content.entries).toHaveLength(1)
 

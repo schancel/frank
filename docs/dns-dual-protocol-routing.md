@@ -158,7 +158,7 @@ flowchart TD
 3. **Strict TLS Enforcement**:
    - Frank clients MUST reject plaintext HTTP connections. All relay communication MUST use TLS 1.3 on port 443 with valid X.509 server certificates matching the SRV target FQDN.
 4. **Content-Oblivious Relay Boundary**:
-   - Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner Type 6 encrypted payloads remain end-to-end encrypted to $K_{\text{msg}}$.
+   - Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner encrypted message content (type 12) remains end-to-end encrypted to $K_{\text{msg}}$.
 
 ## Browser implementation status
 

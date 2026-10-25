@@ -12,7 +12,7 @@ It is not imported here. Shared vectors under `docs/protocol/cbor/vectors/` are
 the compatibility contract.
 
 Provisional directory schema4/min-reader4 is available only through explicit
-`previewDirectoryContext()` opt-in. `defaultContext()` stays reader2/type4
+`previewDirectoryContext()` opt-in. `defaultContext()` stays reader2/type1
 schema3, so existing routes reject required v4 children. The bounded
 `verifyPreviewDirectoryEvidence(bytes, expectedNetwork)` facade returns
 `kind: 'preview-directory-signed-evidence'`, exact statement/wrapper frames,
@@ -34,7 +34,7 @@ runner and does not demonstrate persistence, routing or DM activation.
 
 ## Encryption suites
 
-This package owns Frank-CBOR field layout. Type-5 schema 2 allocates production
+This package owns Frank-CBOR field layout. Type-11 schema 2 allocates production
 suite 1 to crypto-box authenticated XChaCha20-Poly1305. Suite 65535 remains
 reserved for schema-1 opaque proof-vector ciphertext (spec S2c).
 Private crypto-box registry ids `0xFE01`, `0xFE02`, and `0xFE03` are not
@@ -60,20 +60,20 @@ Implemented (against the spec as merged on main):
   and the stage 9 semantic checks that need no cryptography (S3-S10 ordering, uniqueness,
   linkage, contiguity).
 - T1 content hash, T1a digest, and the pure hashes T3, T4, and T7 (`topicVoteCommitment`).
-- Account-registration statements at type-4 schema 3, with the M2/M3/M6 timestamp, expiry, and
+- Account-registration statements at type-1 schema 3, with the M2/M3/M6 timestamp, expiry, and
   Keccak-256 address utilities. The `full` operation verifies every type-2 signature entry and
   key-transition authorization for algorithm 1 as strict-DER low-S secp256k1 ECDSA over the
   frozen T2/T2a digests. Allocated algorithms 2/3/16 fail as `unsupported` before verification.
-- Topic events: type 9 (post), type 10 (post plus its burn transaction), and type 11 (vote),
+- Topic events: type 40 (post), type 41 (post plus its burn transaction), and type 42 (vote),
   with the R6 limits and the S11 network equality. The burn transaction is opaque bytes here;
   verifying it against the chain (T8) belongs to the relay, not to this codec.
-- The stamp fields of #198 through stage 9: type-5 schema-1 fields 6-8 and schema-2 fields 5-7
+- The stamp fields of #198 through stage 9: type-11 schema-1 fields 6-8 and schema-2 fields 5-7
   (`E`, `X`, the DLEQ proof) with the
   T3b encoding rules (33-byte compressed point on the curve, `x < p`, prefix 02/03; proof
-  scalars `c` and `s` each in `1..n-1`), the type-4 schema-2 stamp key (field 8, required from
+  scalars `c` and `s` each in `1..n-1`), the type-1 schema-2 stamp key (field 8, required from
   schema 2, undefined in schema 1, key type 1, S10a.1), the same-subject schema order (S10a.2),
   and the S8/S9 rule that the delivery destination is the stamp key `P'` and is not compared with
-  the type-5 recipient. `defaultContext()` is reader version 2 with type 4 at schema 3.
+  the type-11 recipient. `defaultContext()` is reader version 2 with type 1 at schema 3.
 - Retention: exact original frame bytes at every level, unknown types/frame versions/fields.
 - Reciprocal check of Rust-originated proof fixtures in
   `docs/protocol/cbor/vectors/rust-origin.json` (`test/rust-origin.jest.test.ts`).
@@ -81,12 +81,12 @@ Implemented (against the spec as merged on main):
 
 Not implemented:
 
-- Stage 10.1-10.5 for type-1 roots: no payment verification or decrypted-frame opening. Calling
-  `full` for type 1 fails with a context error; stage 10.6 is implemented only for type 2.
+- Stage 10.1-10.5 for type-10 roots: no payment verification or decrypted-frame opening. Calling
+  `full` for type 10 fails with a context error; stage 10.6 is implemented only for type 2.
 - T3a stamp destination derivation and the T3b DLEQ proof (verify or prove), the S10a.4 binding
-  of `P'` to a directory state, and the remaining type-1 `cryptographic` checks. The type-5 stamp
+  of `P'` to a directory state, and the remaining type-10 `cryptographic` checks. The type-11 stamp
   fields are checked for encoding only; a well-formed but wrong proof is accepted at `typed`.
-- The stage-10 vectors of the #198 type-1 list (README section 10). The typed ones are in the
+- The stage-10 vectors of the #198 type-10 list (README section 10). The typed ones are in the
   manifest. The separate account-registration corpus covers type-2 stage 10.6.
 
 ## API
@@ -147,7 +147,8 @@ TypeScript-aware bundler or transformer. `yarn build:browser` produces an IIFE b
 
 `docs/protocol/cbor/vectors/manifest.json` conforms to `vectors.schema.json`. It is generated
 from `fixtures/` (`builders.ts`, `cases.ts`, `manifest.ts`) and a Jest test fails when it is
-stale. Regenerate with `FRANK_UPDATE_VECTORS=1 yarn test`, which also rewrites
+stale. Regenerate every corpus with `yarn vectors:generate` (see
+`docs/protocol/cbor/vectors/README.md`); `FRANK_UPDATE_VECTORS=1 yarn test` also rewrites
 `docs/protocol/cbor/vectors/topic-commitments.json` (the T1 and T7 hashes of the topic events,
 recomputed by the Rust codec and by `scripts/crosscheck.py`). Cases without their own
 `supported` list run against the reader that predates the topic types, so the corpus written
@@ -187,7 +188,7 @@ fixtures) the v1 reader accepted the v2 bytes.
 
 - Firefox and Safari were not run; only headless Chrome and a bare `vm` context.
 - CI does not cover `packages/**`; run the commands above locally.
-- The largest limit cases (MAX_ITEMS at-limit, 256 KiB text, ciphertext, 1 MiB type-1 and
+- The largest limit cases (MAX_ITEMS at-limit, 256 KiB text, ciphertext, 1 MiB type-10 and
   256 KiB type-2 frames, 4,096 facts, MAX_FRAME_BYTES) run in Jest only, not in the manifest.
 - The direct-message fixture is a `typed` case with placeholder payment addresses; directory
   signature bytes are structurally valid filler.
@@ -203,9 +204,9 @@ contradictory. Sixteen are now stated in the normative README
 chunks under R1 and section 9 pass A; the R2 256-item total under R2 and stage 8.4; open-field
 retention under stage 8.4 and V6.1; the unreachable u64 bound under C7; the `framed-object`
 size bound under stage 8.2; the S2b pairing for key-transition entries; nested wildcard maps
-under C12; noncanonical-before-class under section 9 passes A and B; S10 for a type-4 root;
+under C12; noncanonical-before-class under section 9 passes A and B; S10 for a type-1 root;
 the retention flag, `error_stage`, and the prior-statement rule under section 10; the
-zero-length body under F3; the R1 depth rationale and the type-5 boundary under section 6.
+zero-length body under F3; the R1 depth rationale and the type-11 boundary under section 6.
 Where a clarification changes observable behaviour it is pinned by a manifest vector, and the
 aggregate-size ones (more than 131,072 tags, an indefinite string of many chunks or over the
 text limit) by `test/limits.jest.test.ts`, which the manifest omits for size.
@@ -218,9 +219,9 @@ One was waiting on the stamp-key PR (#200) and is now stated in the spec (S3):
 
 ## Structured Forum codec
 
-`encodeForumPost` explicitly emits type9 schema2/min2. Existing `encodeTopicPost({body})`
+`encodeForumPost` explicitly emits type40 schema2/min2. Existing `encodeTopicPost({body})`
 still emits opaque schema1. `validateFrame` returns schema-discriminated content with the
-whole original body/frame retained, including compatible future placeholders. Types12–15
+whole original body/frame retained, including compatible future placeholders. Types43–46
 project relay observations and exact cursor bindings; they do not allocate a read-frame T1.
 `encodeForumReadFrame`, the cursor helpers and `matchForumOperation`/`matchForumView`/
 `matchForumPage` are pure boundary tools. A matching response is not independently verified
@@ -229,7 +230,7 @@ publication remain #769's server work under #675; #770 owns the whole normal-pat
 switch and predecessor removal. Active shared vectors are in
 `docs/protocol/cbor/vectors/forum-content-read.json`.
 
-## Universal State Channels (Type 24)
+## Universal State Channels (Type 25)
 
-Universal state channels (`channel-update-item`, Type 24) provide off-chain state execution for multi-network balance allocations and peer-to-peer interactive turns (gaming, swaps, raffles) with signed state digests and deterministic client folding.
+Universal state channels (`channel-update-item`, Type 25) provide off-chain state execution for multi-network balance allocations and peer-to-peer interactive turns (gaming, swaps, raffles) with signed state digests and deterministic client folding.
 

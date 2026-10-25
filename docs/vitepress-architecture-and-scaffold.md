@@ -11,7 +11,7 @@
 
 The Frank monorepo contains critical protocol specifications, cryptographic algorithms, deterministic CBOR schemas, and clustering architectures. As the protocol matures through Track C (#981, #982, #983, #986) and Track D (#973, #976), maintaining documentation exclusively in disparate raw markdown and CDDL files creates several operational bottlenecks:
 
-1. **Lack of Visual Flow**: Complex protocol state machines (such as DKSAP stamp derivation, dual-protocol DNS routing, and hop-by-hop Type 25 store-and-forward envelopes) are difficult to audit without interactive sequence diagrams and architectural flowcharts.
+1. **Lack of Visual Flow**: Complex protocol state machines (such as DKSAP stamp derivation, dual-protocol DNS routing, and hop-by-hop Type 13 store-and-forward envelopes) are difficult to audit without interactive sequence diagrams and architectural flowcharts.
 2. **Formula Readability**: Cryptographic proofs (Chaum-Pedersen DLEQ $c \parallel s$, Galois Field $\text{GF}(2^5)$ operations in Codex32, and discrete log relations) require LaTeX mathematical rendering ($\KaTeX$).
 3. **Discoverability**: External integrators, client SDK developers, and relay operators need instant full-text search, version-tagged schemas, and navigable navigation sidebars.
 
@@ -44,10 +44,10 @@ The Frank repository currently contains 80+ documentation, CDDL, and specificati
 - `docs/protocol/INVARIANTS.md`: Immutable security invariants, fail-closed validation rules, and zero-trust assumptions.
 - `docs/protocol/message-stamp-derivation.md`: Mathematical derivation of DKSAP message stamps ($P'$, $E$, $X$, Chaum-Pedersen DLEQ proofs $c \parallel s$, child key derivation $t_i \cdot d'$).
 - `docs/protocol/cbor/common.cddl`: Envelope structure (`type_id`, `schema_version`, `min_reader_version`, `payload`), `frank-envelope`, `account-ref`, `timestamp`, `digest-32`, `uuid-16`.
-- `docs/protocol/cbor/direct-message.cddl`: Type 1 (`direct-message-delivery`), Type 5 (`recipient-encrypted-payload-v1` and `v2`), Type 6 (`encrypted-message-content`), Type 8 (`message-content-revision`), Type 16 (`container-message-item`), Type 17 (`text-message-item`), Type 19 (`stealth-message-item`), Type 24 (`channel-update-item` with game/swap/raffle payloads), and Type 25 (`forwarding-delivery-envelope`).
-- `docs/protocol/cbor/directory.cddl`: Type 2 (`directory-attestation`), Type 4 (`directory-statement`), Type 7 (`key-transition-statement`).
-- `docs/protocol/cbor/checkpoint.cddl`: Type 3 (`mailbox-checkpoint`), journal facts, opaque checkpoint sections.
-- `docs/protocol/cbor/topic.cddl`: Type 9 (`topic-post`), Type 10 (`topic-post-submission`), Type 11 (`topic-vote-submission`), Type 12–15 forum items.
+- `docs/protocol/cbor/direct-message.cddl`: Type 10 (`direct-message-delivery`), Type 11 (`recipient-encrypted-payload-v1` and `v2`), Type 12 (`encrypted-message-content`), Type 20 (`message-content-revision`), Type 21 (`container-message-item`), Type 22 (`text-message-item`), Type 24 (`stealth-message-item`), Type 25 (`channel-update-item` with game/swap/raffle payloads), and Type 13 (`forwarding-delivery-envelope`).
+- `docs/protocol/cbor/directory.cddl`: Type 2 (`directory-attestation`), Type 1 (`directory-statement`), Type 3 (`key-transition-statement`).
+- `docs/protocol/cbor/checkpoint.cddl`: Type 14 (`mailbox-checkpoint`), journal facts, opaque checkpoint sections.
+- `docs/protocol/cbor/topic.cddl`: Type 40 (`topic-post`), Type 41 (`topic-post-submission`), Type 42 (`topic-vote-submission`), Type 43–46 forum items.
 - `docs/protocol/cbor/topic-http-coexistence.md`: HTTP wire mapping for Monad topic write transport.
 - `docs/protocol/chains/README.md` & `chains/v1.json`: Multi-chain network tag registry.
 - `docs/protocol/forum-runtime-storage.md`: Forum storage, indices, and runtime queries.
@@ -56,7 +56,7 @@ The Frank repository currently contains 80+ documentation, CDDL, and specificati
 
 ### 2.3 Client Libraries & Packages (`packages/`)
 
-- `packages/frank-codec`: TypeScript reference codec for FRNK-CBOR framing, canonical CBOR encoding, stage 1–9 validation, and Type 25 forwarding envelope.
+- `packages/frank-codec`: TypeScript reference codec for FRNK-CBOR framing, canonical CBOR encoding, stage 1–9 validation, and Type 13 forwarding envelope.
 - `packages/cashweb`: Client SDK for Cashweb messaging, conversation state machines, and mailbox synchronization.
 - `packages/wallet`: Multi-chain wallet engine (Monad EVM + Nakamoto UTXO), DKSAP stealth address generation, fee calculation, and sweep transactions.
 - `packages/crypto-box`: Pure AEAD and KEM cryptographic suite (XChaCha20-Poly1305, DHKEM secp256k1, HKDF-SHA256).
@@ -76,7 +76,7 @@ The Frank repository currently contains 80+ documentation, CDDL, and specificati
 ### 2.4 Backend Rust Daemons (`backend/`)
 
 - `backend/cashweb`: Core `cashwebd` relay daemon, RocksDB storage engine, HTTP API endpoints, WebSocket sync server, and directory services.
-- `backend/cashweb/frank-cbor`: High-performance zero-copy Rust implementation of FRNK-CBOR v1, Type 1–25 validation stages, and hash commitments.
+- `backend/cashweb/frank-cbor`: High-performance zero-copy Rust implementation of FRNK-CBOR v1, validation stages for every message type, and hash commitments.
 - `backend/cashweb/cashweb-registry`: Federated directory registry server.
 - `backend/cashweb/cashweb-http-utils`: Shared Actix/Axum/Hyper HTTP utilities.
 - `backend/cashweb/cashweb-pop-token`: Proof-of-Payment token generation and authentication.
@@ -106,7 +106,7 @@ flowchart TD
     DirectoryQuery -->|200 OK: Active User| VerifyStmt["5. Verify Cryptographic Statement<br/>• Subject Signature by Identity P<br/>• Distinct Keys: P, P', M<br/>• Statement Validity &lt;= 366 Days"]
     DirectoryQuery -->|404 / Tombstoned / Timeout| CheckMX
 
-    VerifyStmt -->|Signature Valid| NativeSend["🚀 Native Frank Direct Message<br/>• Sender derives DKSAP stealth address<br/>• Encrypts payload to recipient DH key M<br/>• Submits Type 1/Type 25 envelope to Relay"]
+    VerifyStmt -->|Signature Valid| NativeSend["🚀 Native Frank Direct Message<br/>• Sender derives DKSAP stealth address<br/>• Encrypts payload to recipient DH key M<br/>• Submits Type 10/Type 13 envelope to Relay"]
     VerifyStmt -->|Signature Invalid| ErrTamper["❌ Abort: Tampered Statement Evidence"]
 
     CheckMX -->|MX Records Present| GatewaySend["📧 Bridge via Frank &harr; Email Gateway<br/>• Converts chat to RFC 5322 MIME email<br/>• Signs with Frank DKIM/SPF credentials<br/>• Submits via SMTP (Port 25) with spend quota"]
@@ -122,7 +122,7 @@ flowchart TD
 
 ---
 
-### 3.2 Store-and-Forward Forwarding Delivery Envelope (Type 25)
+### 3.2 Store-and-Forward Forwarding Delivery Envelope (Type 13)
 
 ```mermaid
 sequenceDiagram
@@ -132,23 +132,23 @@ sequenceDiagram
     participant RelayB as Destination Relay (Relay B)
     actor Bob as Bob (Recipient)
 
-    Note over Alice: 1. Encapsulates inner Type 1 DM Frame<br/>2. Sets destination relay identity P_relay<br/>3. Attaches storage payment stamps for Relay B
-    Alice->>RelayA: HTTP PUT /forward (Type 25 Frame)
+    Note over Alice: 1. Encapsulates inner Type 10 DM Frame<br/>2. Sets destination relay identity P_relay<br/>3. Attaches storage payment stamps for Relay B
+    Alice->>RelayA: HTTP PUT /forward (Type 13 Frame)
 
     Note over RelayA: Relay A inspects Outer Envelope ONLY:<br/>• Reads Field 1: Destination Relay Identity P_relay<br/>• Reads Field 5: Destination URI (relay-b.internal)<br/>• Inner payload (Field 2) remains OPAQUE bytes<br/>• Content-oblivious store-and-forward
 
-    RelayA->>RelayB: HTTP PUT /mailbox/delivery (Type 25 Frame)
+    RelayA->>RelayB: HTTP PUT /mailbox/delivery (Type 13 Frame)
 
-    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(network, Field 2) == Field 3<br/>3. Verifies contiguous storage payment stamps (Field 4)<br/>4. Extracts Field 2 as inner Type 1 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
+    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(network, Field 2) == Field 3<br/>3. Verifies contiguous storage payment stamps (Field 4)<br/>4. Extracts Field 2 as inner Type 10 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
 
     RelayB-->>RelayA: 200 OK (Accepted & Committed)
     RelayA-->>Alice: 200 OK (Delivery Queued)
 
     Note over RelayB,Bob: Bob connects and synchronizes mailbox
     Bob->>RelayB: HTTP GET /mailbox/updates?since=seq_100
-    RelayB-->>Bob: Streams Type 1 DM Delivery Frame
+    RelayB-->>Bob: Streams Type 10 DM Delivery Frame
 
-    Note over Bob: Bob decrypts Type 5 payload using message private key m<br/>Verifies Chaum-Pedersen DLEQ proof<br/>Inspects Type 6 / Type 8 message items
+    Note over Bob: Bob decrypts Type 11 payload using message private key m<br/>Verifies Chaum-Pedersen DLEQ proof<br/>Inspects Type 12 / Type 20 message items
 ```
 
 ---
@@ -177,8 +177,8 @@ flowchart TD
     end
 
     subgraph MessagingPlane ["Encrypted Control & Messaging Plane"]
-        ComposeDM["Compose Type 8 Message Item<br/>Attachment Reference:<br/>• blob_digest: BlobDigest<br/>• key: K_blob (Encrypted)<br/>• size: ByteCount, mime: 'application/pdf'"]
-        WrapDM["Wrap in Type 5 / Type 1 / Type 25 Envelope<br/>(Signed by Alice, Stamped for Bob)"]
+        ComposeDM["Compose Type 20 Message Item<br/>Attachment Reference:<br/>• blob_digest: BlobDigest<br/>• key: K_blob (Encrypted)<br/>• size: ByteCount, mime: 'application/pdf'"]
+        WrapDM["Wrap in Type 11 / Type 10 / Type 13 Envelope<br/>(Signed by Alice, Stamped for Bob)"]
         PushDM["PUT /mailbox/delivery<br/>(Lightweight Envelope &lt; 16 KB)"]
 
         GenKey -.->|Key encrypted to Bob's M| ComposeDM

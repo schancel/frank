@@ -1,5 +1,5 @@
 // Writers for the topic events of docs/protocol/cbor (README section 6 "Topic events", T7, T8):
-// a type-9 post, the type-10 submission that wraps it with its burn transaction, and the type-11
+// a type-40 post, the type-41 submission that wraps it with its burn transaction, and the type-42
 // vote. Every writer validates what it produced with the same typed validation a reader runs, so
 // an invalid input throws a `FrankCodecError` instead of yielding a frame a relay would reject.
 //
@@ -43,7 +43,7 @@ export interface TopicPostFields {
   network: string
   /** Exact UTF-8, 1 through 512 bytes; never normalized (S12). */
   topic: string
-  /** The T1 hash of the parent post's type-9 frame. Omit for a top-level post. */
+  /** The T1 hash of the parent post's type-40 frame. Omit for a top-level post. */
   parentHash?: Uint8Array
   /** Opaque in version 1, 1 through 524,288 bytes. */
   body: Uint8Array
@@ -113,7 +113,7 @@ function validated(frame: Uint8Array, typeId: number): ParsedFrame {
   return r
 }
 
-/** Encodes a type-9 topic post. Throws `FrankCodecError` if a field violates its bound. */
+/** Encodes a type-40 topic post. Throws `FrankCodecError` if a field violates its bound. */
 export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
   if (fields === null || typeof fields !== 'object')
     throw refuse('fields must be an object', 'fields')
@@ -156,7 +156,7 @@ export function encodeTopicPost(fields: TopicPostFields): Uint8Array {
   return frame
 }
 
-/** The identity of a post: the T1 content hash of its complete type-9 frame (S12). */
+/** The identity of a post: the T1 content hash of its complete type-40 frame (S12). */
 export function topicPostHash(postFrame: Uint8Array): Uint8Array {
   return contentHash(
     validated(requireBytes(postFrame, 'postFrame'), TYPE_TOPIC_POST),
@@ -189,7 +189,7 @@ export function topicBurnCommitment(postFrame: Uint8Array): {
  * The calldata a burn transaction must carry for a Frank-CBOR topic event (T8):
  * `"TPIC" || 02 || direction || commitment`. The direction and the burned value are the vote's,
  * read from the signed transaction by the relay; the frames never repeat them.
- * A vote may use either direction; a type-10 post's own burn MUST use `'up'` (T8), which
+ * A vote may use either direction; a type-41 post's own burn MUST use `'up'` (T8), which
  * `topicPostBurnCalldata` fixes.
  */
 export function topicBurnCalldata(
@@ -213,7 +213,7 @@ export function topicBurnCalldata(
 }
 
 /**
- * The calldata for a type-10 post's own burn: `topicBurnCalldata('up', commitment)`. A post's
+ * The calldata for a type-41 post's own burn: `topicBurnCalldata('up', commitment)`. A post's
  * burn MUST be an up-vote (README T8) and a relay rejects a down-vote one; a vote on an existing
  * post may use either direction through `topicBurnCalldata`.
  */
@@ -222,7 +222,7 @@ export function topicPostBurnCalldata(commitment: Uint8Array): Uint8Array {
 }
 
 /**
- * Encodes a type-10 submission: the exact `postFrame` plus the signed burn transaction. The
+ * Encodes a type-41 submission: the exact `postFrame` plus the signed burn transaction. The
  * network is the post's, so S11 holds by construction.
  *
  * `burnTx` is opaque here: this writer does not decode it or check that its calldata carries the
@@ -254,7 +254,7 @@ export function encodeTopicPostSubmission(
 }
 
 /**
- * Encodes a type-11 vote on the post whose T1 hash is `targetHash`. As with the submission,
+ * Encodes a type-42 vote on the post whose T1 hash is `targetHash`. As with the submission,
  * `burnTx` is opaque: the writer does not check that its calldata carries
  * `topicVoteCommitment(network, targetHash)`.
  */

@@ -21,7 +21,7 @@ import {
 } from '../src/constants'
 
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
-  it('parses conversation_id and optional conversation_name on type 6', () => {
+  it('parses conversation_id and optional conversation_name on type 12', () => {
     const convId = bytesOf(16, 42)
     const frame = type6Frame(
       rev8Frame([textItem('hello')]),
@@ -31,26 +31,26 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
-    expect(parsed.typed?.type).toBe(6)
+    expect(parsed.typed?.type).toBe(TYPE_ENCRYPTED_MESSAGE_CONTENT)
     if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
-      throw new Error('expected type 6')
+      throw new Error('expected type 12')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBe('Project Discussion')
   })
 
-  it('parses type 6 with conversation_id and omitted conversation_name', () => {
+  it('parses type 12 with conversation_id and omitted conversation_name', () => {
     const convId = bytesOf(16, 43)
     const frame = type6Frame(rev8Frame([textItem('hello')]), convId)
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
     if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
-      throw new Error('expected type 6')
+      throw new Error('expected type 12')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBeUndefined()
   })
 
-  it('parses type 6 without conversation_id (field 4), which a reader must accept', () => {
+  it('parses type 12 without conversation_id (field 4), which a reader must accept', () => {
     const rawMap = new Map<number, unknown>([
       [ENCRYPTED_MESSAGE_CONTENT.network, 'frank'],
       [ENCRYPTED_MESSAGE_CONTENT.messageId, bytesOf(16, 1)],
@@ -73,7 +73,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       parsed.kind !== 'parsed' ||
       parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
     )
-      throw new Error('expected parsed type 6')
+      throw new Error('expected parsed type 12')
     expect(parsed.typed.conversationId).toBeUndefined()
 
     // With the field, the same content parses with its ID: both shapes round-trip.
@@ -88,7 +88,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       reopened.kind !== 'parsed' ||
       reopened.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
     )
-      throw new Error('expected parsed type 6')
+      throw new Error('expected parsed type 12')
     expect(reopened.typed.conversationId).toEqual(bytesOf(16, 9))
     // The two differ by exactly field 4.
     expect(toHex(named)).not.toBe(toHex(frame))

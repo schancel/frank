@@ -1,0 +1,29 @@
+{
+  "$comment": "The type identifiers the committed vectors are encoded with. Written by `yarn vectors:generate`; `yarn vectors:check` fails when it differs from docs/protocol/message-types/v1.json.",
+  "ids": {
+    "directory-statement": 1,
+    "directory-attestation": 2,
+    "key-transition-statement": 3,
+    "direct-message-delivery": 10,
+    "recipient-encrypted-payload": 11,
+    "encrypted-message-content": 12,
+    "forwarding-delivery-envelope": 13,
+    "mailbox-checkpoint": 14,
+    "message-content-revision": 20,
+    "container-message-item": 21,
+    "text-message-item": 22,
+    "email-message-item": 23,
+    "stealth-message-item": 24,
+    "channel-update": 25,
+    "blackjack-message-item": 26,
+    "plugin-message-item": 27,
+    "topic-post": 40,
+    "topic-post-submission": 41,
+    "topic-vote-submission": 42,
+    "forum-view": 43,
+    "forum-topic-page": 44,
+    "forum-discovery-page": 45,
+    "forum-operation-status": 46,
+    "proof-unknown-item": 4294901761
+  }
+}

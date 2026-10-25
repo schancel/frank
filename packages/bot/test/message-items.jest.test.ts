@@ -6,6 +6,7 @@ import {
   MAX_CONTAINERS,
   standaloneItemBudget,
   TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_PLUGIN_MESSAGE_ITEM,
   validateFrame,
   type Encodable,
 } from '@frank/codec'
@@ -121,7 +122,7 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
     const unknownFrames = [
       encodePluginMessageItem({ itemType: 'uninstalled-swap-v9', data: offer }),
       encodeFrame(
-        { typeId: 27, schemaVersion: 3, minReaderVersion: 3 },
+        { typeId: TYPE_PLUGIN_MESSAGE_ITEM, schemaVersion: 3, minReaderVersion: 3 },
         new Map<number, Encodable>([
           [0, 'swap-negotiation-v1'],
           [1, offer],

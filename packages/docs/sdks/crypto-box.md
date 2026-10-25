@@ -24,7 +24,7 @@ It provides authenticated and unauthenticated encryption modes using XChaCha20-P
 | `0xFE03` | auth-aes-256-gcm            | Auth     | DHKEM(secp256k1, HKDF-SHA256)     | AES-256-GCM            |
 
 > [!NOTE]
-> Suite `1` (`auth-xchacha20-poly1305`) is the designated production encryption suite for Type 5 Direct Message payloads in Frank CBOR v1.
+> Suite `1` (`auth-xchacha20-poly1305`) is the designated production encryption suite for Type 11 Direct Message payloads in Frank CBOR v1.
 
 ---
 

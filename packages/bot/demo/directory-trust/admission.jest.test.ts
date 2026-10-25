@@ -20,6 +20,8 @@ import {
   fromHex,
   previewDirectoryContext,
   toHex,
+  TYPE_DIRECTORY_ATTESTATION,
+  TYPE_DIRECTORY_STATEMENT,
   validateFrame,
 } from '@frank/codec'
 import type { FrankValue, ParsedFrame } from '@frank/codec'
@@ -118,7 +120,11 @@ function signed(
   payload.set(12n, BigInt(generation))
   payload.set(13n, predecessor)
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+    {
+      typeId: TYPE_DIRECTORY_STATEMENT,
+      schemaVersion: 4,
+      minReaderVersion: 4,
+    },
     payload,
   )
   const signer = new SigningKey('0x' + '1'.padStart(64, '0'))
@@ -131,7 +137,11 @@ function signed(
   ])
   const der = Buffer.concat([Buffer.from([48, integers.length]), integers])
   const attestation = encodeFrame(
-    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    {
+      typeId: TYPE_DIRECTORY_ATTESTATION,
+      schemaVersion: 1,
+      minReaderVersion: 1,
+    },
     new Map<bigint, FrankValue>([
       [0n, statement],
       [

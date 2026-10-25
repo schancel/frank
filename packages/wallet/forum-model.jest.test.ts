@@ -9,6 +9,7 @@ import {
   defaultContext,
   topicVoteCommitment,
   topicBurnCalldata,
+  TYPE_FORUM_VIEW,
 } from '@frank/codec'
 import type { Encodable } from '@frank/codec'
 import { projectForumView, ForumReadPolicy } from './forum-model'
@@ -51,7 +52,7 @@ export async function viewFixture(
   })
   const tx = (await import('ethers')).Transaction.from(raw)
   const bytes = encodeForumReadFrame(
-    12,
+    TYPE_FORUM_VIEW,
     new Map<number, Encodable>([
       [0, policy.network],
       [1, post],
@@ -128,7 +129,7 @@ describe('canonical observation model', () => {
     })
     const tx = (await import('ethers')).Transaction.from(raw)
     const bytes = encodeForumReadFrame(
-      12,
+      TYPE_FORUM_VIEW,
       new Map<number, Encodable>([
         [0, policy.network],
         [1, post],
@@ -193,7 +194,7 @@ describe('canonical observation model', () => {
     })
     const tx = (await import('ethers')).Transaction.from(raw)
     const bytes = encodeForumReadFrame(
-      12,
+      TYPE_FORUM_VIEW,
       new Map<number, Encodable>([
         [0, policy.network],
         [1, post],

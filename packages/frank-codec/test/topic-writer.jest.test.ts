@@ -169,7 +169,7 @@ describe('topic writers', () => {
     ).toBe('no error')
   })
 
-  it('refuse to wrap or hash a frame that is not a valid type-9 post', () => {
+  it('refuse to wrap or hash a frame that is not a valid type-40 post', () => {
     const vote = topicVoteFrame()
     expect(() => encodeTopicPostSubmission(vote, burnTx())).toThrow()
     expect(() => topicPostHash(vote)).toThrow()

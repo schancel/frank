@@ -1,4 +1,5 @@
 //! Independent offline derivation and policy fixtures. Not a production API.
+use frank_cbor::message_types::TYPE_DIRECTORY_STATEMENT;
 use frank_cbor::{common_transcript, decode_canonical, encode_canonical, CborValue as V};
 use hmac::{Hmac, Mac};
 use secp256k1_abc::{PublicKey, Secp256k1, SecretKey};
@@ -171,7 +172,7 @@ fn directory(snapshot: &Value, prior: Option<&Value>) {
             num(field(&envelope, 1)),
             num(field(&envelope, 2))
         ),
-        (4, 4, 4)
+        (TYPE_DIRECTORY_STATEMENT as i128, 4, 4)
     );
     let payload = decode_canonical(raw(field(&envelope, 3))).unwrap();
     assert_eq!(field(&payload, 0), &V::Text("monad-testnet".into()));

@@ -14,7 +14,7 @@ successors; public atomic storage does not implement atomic secret custody.
 The root entry exports public types. Browser and Node entries export
 `openBrowserDirectoryStore` / `openNodeDirectoryStore`, `AdmissionError`, and
 those same types. Each handle owns one dedicated database for one explicitly
-installed network, full subject P, and exact revision-zero type4 T1. Browser
+installed network, full subject P, and exact revision-zero type1 T1. Browser
 names and Node locations are caller choices, never network authority.
 There is no global database registry: callers must remember enrollment and
 continuity per `(network, P)` across namespace names and locations. Changing a
@@ -35,7 +35,7 @@ one subject; multi-subject physical database grouping is outside this facade.
 | `status`                  | Returns null for unenrolled state or an explicitly historical description and checkpoint; never freshness                                        |
 | `close`                   | Drains queued operations and closes the owned handle                                                                                             |
 
-Candidates include exact type4 and type2 bytes so both lengths can be charged
+Candidates include exact type1 and type2 bytes so both lengths can be charged
 before decoding. A bounded generic codec pass checks that each wrapper embeds
 the exact supplied statement. Only then does
 `verifyPreviewDirectoryEvidence(bytes, expectedNetwork)` authenticate owned
@@ -96,7 +96,7 @@ ambiguity. A new namespace may contain only `format` before enrollment.
 | `e:<8-digit slot>:<20-digit revision>:<64-hex T1>` | One original stable wrapper encoded as lowercase hex                                                                     |
 
 Integers use canonical exact decimal strings, except bounded counts and
-nanoseconds. Exact type4 is extracted without re-encoding from the wrapper.
+nanoseconds. Exact type1 is extracted without re-encoding from the wrapper.
 History is stored once per retained statement; no row embeds prior history.
 Opening and every operation read a bounded consistent snapshot, validate raw
 lengths before signatures, reconstruct all links and stamps, and compare every

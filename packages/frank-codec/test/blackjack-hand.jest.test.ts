@@ -38,7 +38,7 @@ const outcome = (run: () => unknown) => {
   }
 }
 
-describe('peer-to-peer blackjack hand items (type 18, schema 2)', () => {
+describe('peer-to-peer blackjack hand items (type 26, schema 2)', () => {
   it('keeps the shared corpus equal to what the public writer and reader produce', () => {
     expect(corpus).toEqual(JSON.parse(JSON.stringify(blackjackHandCorpus())))
     expect(corpus.frames.filter(f => f.expected.result === 'accept')).toHaveLength(11)

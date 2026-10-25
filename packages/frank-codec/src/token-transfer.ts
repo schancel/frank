@@ -1,4 +1,4 @@
-// Encoding, decoding, and validation for Type 6 CBOR token transfers (docs/protocol/cbor).
+// Encoding, decoding, and validation for Type 12 CBOR token transfers (docs/protocol/cbor).
 
 import { cborMap, decodeCanonical, encodeCanonical } from './cbor'
 import {
@@ -100,7 +100,7 @@ export function decodeEncryptedMessageContent(
   }
   if (parsed.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT) {
     throw new Error(
-      `expected Type 6 EncryptedMessageContent, got type ${parsed.typed?.type}`,
+      `expected Type 12 EncryptedMessageContent, got type ${parsed.typed?.type}`,
     )
   }
   return parsed.typed as EncryptedMessageContent<ParsedFrame>

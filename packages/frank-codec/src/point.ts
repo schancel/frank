@@ -1,4 +1,4 @@
-// secp256k1 encoding checks for the type-5 stamp fields (README T3b, stage 8.2). This is only
+// secp256k1 encoding checks for the type-11 stamp fields (README T3b, stage 8.2). This is only
 // the wire-level well-formedness of a point and of the proof scalars; no group arithmetic
 // beyond the curve equation lives here, and the DLEQ proof itself is a stage 10 check.
 

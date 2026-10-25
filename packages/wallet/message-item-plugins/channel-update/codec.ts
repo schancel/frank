@@ -1,5 +1,5 @@
 /**
- * A channel update is the canonical type-24 frame, written and projected by the same functions the
+ * A channel update is the canonical type-25 frame, written and projected by the same functions the
  * canonical direct message path uses today, so the bytes are identical.
  */
 import {

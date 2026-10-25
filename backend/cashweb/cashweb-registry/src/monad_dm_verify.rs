@@ -189,7 +189,7 @@ fn current_tuple(current: &Current, network: &str) -> Result<DirectoryTuple> {
 /// Exact caller-admitted inputs. No decoded HTTP object or signed statement alone is Current.
 #[derive(Debug)]
 pub struct CanonicalStampCheckInput<'a> {
-    /// Exact type1 frame; no ciphertext reconstruction.
+    /// Exact type10 frame; no ciphertext reconstruction.
     pub delivery: &'a [u8],
     /// Exact allocated deterministic-CBOR context, bounded to 4KiB before work.
     pub context: &'a [u8],
@@ -202,7 +202,7 @@ pub struct CanonicalStampCheckInput<'a> {
 /// Partial public proof result. Deliberately cannot stand for a verified economic submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalStampChecks {
-    /// T3 commits to the exact accepted type5 bytes.
+    /// T3 commits to the exact accepted recipient-encrypted payload (type 11) bytes.
     pub payload_digest: [u8; 32],
     /// Structurally unique members whose destination and T4 match. Still require chain checks.
     pub payments: Vec<PaymentMember>,

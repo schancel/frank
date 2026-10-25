@@ -22,7 +22,7 @@ pub fn preview_directory_context() -> ValidationContext {
 pub struct PreviewDirectoryEvidence {
     /// Exact wrapper and its typed child, including unknown optional bytes.
     pub attestation_frame: ParsedFrame,
-    /// T1 of the exact complete type-4 frame, never the wrapper.
+    /// T1 of the exact complete type-1 frame, never the wrapper.
     pub statement_hash: [u8; 32],
     /// Exact T2 digest whose subject signature was checked.
     pub signature_digest: [u8; 32],
@@ -89,7 +89,7 @@ pub(crate) fn check_statement(typed: &TypedPayload) -> Result<(), CodecError> {
     let keys = [subject, stamp, &roles.message_dh_key];
     if keys.iter().any(|key| !valid_point(key)) {
         return Err(semantic(
-            "directory preview requires valid compressed type-1 role points",
+            "directory preview requires valid compressed type-10 role points",
         ));
     }
     for i in 0..keys.len() {
@@ -109,7 +109,7 @@ pub(crate) fn check_statement(typed: &TypedPayload) -> Result<(), CodecError> {
         || relay.endpoint.starts_with("http://localhost");
     if (!relay.endpoint.starts_with("https:") && !is_loopback) || !valid_point(&relay.identity) {
         return Err(semantic(
-            "directory preview requires HTTPS and a valid type-1 relay point",
+            "directory preview requires HTTPS and a valid type-10 relay point",
         ));
     }
     let duration = nanos(expiry) - nanos(timestamp);

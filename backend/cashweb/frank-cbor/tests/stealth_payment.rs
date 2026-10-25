@@ -1,4 +1,4 @@
-//! Type-19 exact quantities, scheme boundaries and old-reader rejection.
+//! Type-24 exact quantities, scheme boundaries and old-reader rejection.
 mod common;
 use common::{acct1, acct2, fr, int};
 use frank_cbor::message_fields::{
@@ -84,7 +84,7 @@ fn exact_token_quantity_and_native_uint64_round_trip() {
     let parsed = projected(&payload(vec![entry(), native]));
     assert_eq!(parsed.projection, Projection::Exact);
     let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
-        panic!("type19")
+        panic!("type24")
     };
     assert_eq!(
         p.entries[0].transfer.value,
@@ -167,7 +167,7 @@ fn unknown_schemes_preserve_data_without_allocating_solana() {
         );
         let parsed = projected(&payload(vec![e]));
         let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
-            panic!("type19")
+            panic!("type24")
         };
         assert_eq!(p.entries[0].scheme, scheme);
         assert_eq!(p.entries[0].scheme_context, Some(vec![14; 1024]));
@@ -300,7 +300,7 @@ fn compatible_future_outer_fields_remain_data() {
     };
     assert_eq!(p.projection, Projection::NewerSchema);
     let TypedPayload::StealthPaymentItem(p) = p.typed.as_deref().unwrap() else {
-        panic!("type19")
+        panic!("type24")
     };
     // raw-cbor-key: compatible future outer field
     assert_eq!(p.unknown, vec![(9, CborValue::Bytes(vec![42; 3]))]);

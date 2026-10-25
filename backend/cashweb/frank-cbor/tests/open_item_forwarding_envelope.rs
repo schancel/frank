@@ -1,4 +1,4 @@
-//! S8: a relay refuses a type-25 forwarding envelope placed inside a message's open item field.
+//! S8: a relay refuses a type-13 forwarding envelope placed inside a message's open item field.
 //! (A client instead keeps it as an uninterpreted unknown item; that is tested in the TypeScript
 //! codec and wallet.)
 

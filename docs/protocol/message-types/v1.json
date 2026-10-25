@@ -3,7 +3,7 @@
   "version": 1,
   "types": [
     {
-      "id": 1,
+      "id": 10,
       "key": "direct-message-delivery",
       "family": "delivery",
       "open_item_field": false,
@@ -26,10 +26,10 @@
       "title": "Directory Attestation",
       "schema": "directory.cddl",
       "rule": "directory-attestation",
-      "description": "Wraps and signs a Type 4 directory statement with ECDSA"
+      "description": "Wraps and signs a Type 1 directory statement with ECDSA"
     },
     {
-      "id": 3,
+      "id": 14,
       "key": "mailbox-checkpoint",
       "family": "delivery",
       "open_item_field": false,
@@ -42,7 +42,7 @@
       "description": "Durable journal facts and mailbox state checkpoint"
     },
     {
-      "id": 4,
+      "id": 1,
       "key": "directory-statement",
       "family": "directory",
       "open_item_field": false,
@@ -55,7 +55,7 @@
       "description": "Account-to-relay binding, public keys ($P, M, P'$), and revision"
     },
     {
-      "id": 5,
+      "id": 11,
       "key": "recipient-encrypted-payload",
       "family": "delivery",
       "open_item_field": false,
@@ -68,7 +68,7 @@
       "description": "XChaCha20-Poly1305 ciphertext with DLEQ zero-knowledge proof"
     },
     {
-      "id": 6,
+      "id": 12,
       "key": "encrypted-message-content",
       "family": "delivery",
       "open_item_field": false,
@@ -81,7 +81,7 @@
       "description": "Inner decrypted container with logical message ID & payload"
     },
     {
-      "id": 7,
+      "id": 3,
       "key": "key-transition-statement",
       "family": "directory",
       "open_item_field": false,
@@ -94,7 +94,7 @@
       "description": "Cryptographic authorization linking a retiring key to a new subject key"
     },
     {
-      "id": 8,
+      "id": 20,
       "key": "message-content-revision",
       "family": "content",
       "open_item_field": false,
@@ -107,7 +107,7 @@
       "description": "Ordered array of semantic message items"
     },
     {
-      "id": 9,
+      "id": 40,
       "key": "topic-post",
       "family": "topic",
       "open_item_field": false,
@@ -120,7 +120,7 @@
       "description": "Public forum post content with structured authored entries"
     },
     {
-      "id": 10,
+      "id": 41,
       "key": "topic-post-submission",
       "family": "topic",
       "open_item_field": false,
@@ -133,7 +133,7 @@
       "description": "Initial post creation paired with raw signed on-chain burn transaction ($T_7$)"
     },
     {
-      "id": 11,
+      "id": 42,
       "key": "topic-vote-submission",
       "family": "topic",
       "open_item_field": false,
@@ -146,7 +146,7 @@
       "description": "Upvote on existing post paired with raw signed on-chain burn transaction ($T_7$)"
     },
     {
-      "id": 12,
+      "id": 43,
       "key": "forum-view",
       "family": "topic",
       "open_item_field": false,
@@ -159,7 +159,7 @@
       "description": "Single post observation paired with author address, raw signed burn tx, and vote weight"
     },
     {
-      "id": 13,
+      "id": 44,
       "key": "forum-topic-page",
       "family": "topic",
       "open_item_field": false,
@@ -172,7 +172,7 @@
       "description": "Paginated batch of up to 128 post observation frames within a topic, with continuation cursor and relay epoch"
     },
     {
-      "id": 14,
+      "id": 45,
       "key": "forum-discovery-page",
       "family": "topic",
       "open_item_field": false,
@@ -185,7 +185,7 @@
       "description": "Paginated directory of active topics, post counts, and last activity timestamps"
     },
     {
-      "id": 15,
+      "id": 46,
       "key": "forum-operation-status",
       "family": "topic",
       "open_item_field": false,
@@ -198,7 +198,7 @@
       "description": "Relay submission/confirmation status report for an on-chain burn transaction"
     },
     {
-      "id": 16,
+      "id": 21,
       "key": "container-message-item",
       "family": "content",
       "open_item_field": true,
@@ -211,7 +211,7 @@
       "description": "Opaque nested child frame container for multi-item deliveries"
     },
     {
-      "id": 17,
+      "id": 22,
       "key": "text-message-item",
       "family": "content",
       "open_item_field": true,
@@ -225,7 +225,7 @@
       "description": "Plaintext chat message text up to 256 KiB"
     },
     {
-      "id": 18,
+      "id": 26,
       "key": "blackjack-message-item",
       "family": "content",
       "open_item_field": true,
@@ -242,7 +242,7 @@
       "description": "Peer-to-peer blackjack hand and move items (closed payload shapes, up to 4 KiB)"
     },
     {
-      "id": 19,
+      "id": 24,
       "key": "stealth-message-item",
       "family": "content",
       "open_item_field": true,
@@ -256,7 +256,7 @@
       "description": "Single-use ephemeral DKSAP on-chain transfer notification"
     },
     {
-      "id": 24,
+      "id": 25,
       "key": "channel-update",
       "family": "content",
       "open_item_field": true,
@@ -270,7 +270,7 @@
       "description": "Instant off-chain multi-network state execution and interactive turns"
     },
     {
-      "id": 25,
+      "id": 13,
       "key": "forwarding-delivery-envelope",
       "family": "delivery",
       "open_item_field": false,
@@ -283,7 +283,7 @@
       "description": "Store-and-forward relay hop delivery envelope with storage stamps (up to 32 MiB)"
     },
     {
-      "id": 26,
+      "id": 23,
       "key": "email-message-item",
       "family": "content",
       "open_item_field": true,

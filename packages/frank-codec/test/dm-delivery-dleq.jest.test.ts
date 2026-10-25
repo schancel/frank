@@ -29,11 +29,11 @@ const be = (v: bigint): Uint8Array => {
   return out
 }
 
-describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946)', () => {
+describe('Type 10 delivery: recipient identity P and DLEQ proof co-location (#946)', () => {
   const recipientAcct = acct1(7)
   const dleqProof = T3C.proof
 
-  it('validates a Type 1 delivery with co-located recipient P and DLEQ proof', () => {
+  it('validates a Type 10 delivery with co-located recipient P and DLEQ proof', () => {
     const frame = deliveryFrame({
       recipient: recipientAcct,
       dleqProof,
@@ -41,7 +41,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
     if (res.kind !== 'parsed' || res.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) {
-      throw new Error('expected parsed Type 1 delivery')
+      throw new Error('expected parsed Type 10 delivery')
     }
 
     expect(res.typed.recipient).toBeDefined()
@@ -57,7 +57,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
     if (res.kind !== 'parsed' || res.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY) {
-      throw new Error('expected parsed Type 1 delivery')
+      throw new Error('expected parsed Type 10 delivery')
     }
 
     expect(res.typed.recipient).toBeUndefined()

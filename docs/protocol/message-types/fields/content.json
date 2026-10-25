@@ -100,7 +100,7 @@
     },
     {
       "key": "stealth-message-item",
-      "description": "Type 19 schema 1.",
+      "description": "Type 24 schema 1.",
       "fields": {
         "network-tag": 0,
         "ephemeral-pub-key": 1,
@@ -124,7 +124,7 @@
     },
     {
       "key": "stealth-asset-message-item",
-      "description": "Type 19 schema 2 and later.",
+      "description": "Type 24 schema 2 and later.",
       "fields": {
         "transfers": 0,
         "memo": 1

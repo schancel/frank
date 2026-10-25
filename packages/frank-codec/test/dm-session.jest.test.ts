@@ -57,7 +57,7 @@ function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
 function root(extra?: Encodable): Uint8Array {
   const payload = deliveryPayload({ payloadFrame: encrypted() })
   if (extra !== undefined) payload.set(99, extra) // raw-cbor-key: deliberately invalid or undeclared
-  // Newer than the reader's type-1 schema (2), so the extra field is retained (V6.3).
+  // Newer than the reader's type-10 schema (2), so the extra field is retained (V6.3).
   return fr(
     TYPE_DIRECT_MESSAGE_DELIVERY,
     payload,
@@ -114,7 +114,7 @@ const finish = (r: Uint8Array, c: Uint8Array) =>
   ).completeAuthenticatedContent(c)
 
 describe('opaque DM structural continuation', () => {
-  it('owns the unchanged production suite1 vector; arbitrary authenticated bytes are not type6', () => {
+  it('owns the unchanged production suite1 vector; arbitrary authenticated bytes are not type12', () => {
     const vector = JSON.parse(
       readFileSync(
         join(__dirname, '../../../docs/protocol/cbor/vectors/dm-suite-1.json'),
@@ -137,7 +137,7 @@ describe('opaque DM structural continuation', () => {
     ).toBe('frame@2')
   })
 
-  it('matches ordinary typed results for actual type1 and standalone type5; retains opaque items', () => {
+  it('matches ordinary typed results for actual type10 and standalone type11; retains opaque items', () => {
     for (const r of [root(), encrypted()]) {
       const c = content()
       const finished = finish(r, c)
@@ -199,7 +199,7 @@ describe('opaque DM structural continuation', () => {
     }
   })
 
-  it('requires type6, never retains an unsupported required child, and preserves first errors', () => {
+  it('requires type12, never retains an unsupported required child, and preserves first errors', () => {
     for (const [bad, expected] of [
       [unknownItem(), 'semantic@8.4'],
       [frRaw(TYPE_TEXT_MESSAGE_ITEM, Uint8Array.of(0xff)), 'semantic@8.4'],
@@ -269,7 +269,9 @@ describe('opaque DM structural continuation', () => {
       defaultContext({ routeByteLimit: r.length }),
     )
     expect(c.length).toBeGreaterThan(r.length)
-    expect(session.completeAuthenticatedContent(c).content.typeId).toBe(6)
+    expect(session.completeAuthenticatedContent(c).content.typeId).toBe(
+      TYPE_ENCRYPTED_MESSAGE_CONTENT,
+    )
     expect(outcome(() => finish(r, new Uint8Array(MAX_FRAME_BYTES + 1)))).toBe(
       'resource@1',
     )
@@ -303,7 +305,7 @@ describe('opaque DM structural continuation', () => {
     },
   )
 
-  it('retains actual graph depth: standalone5 and type1 have different exact boundaries', () => {
+  it('retains actual graph depth: standalone5 and type10 have different exact boundaries', () => {
     for (const [r, at] of [
       [root(), 26],
       [encrypted(), 28],

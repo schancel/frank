@@ -38,7 +38,7 @@ beforeEach(async () => {
   const trustInputs: TrustInputs = {
     network: 'monad-testnet',
     subject: p,
-    rev0T1: '21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e',
+    rev0T1: '49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410',
     relayId: '00'.repeat(16),
     relayIdentity: { keyType: 1, point: p },
     endpoint: `https://127.0.0.1:${await freePort()}`,

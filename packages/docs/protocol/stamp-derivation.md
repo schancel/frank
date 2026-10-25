@@ -41,7 +41,7 @@ This guarantees to the recipient and intermediate relays that the stealth addres
 
 ### 2.2 Proof Format
 
-The DLEQ proof is serialized as a 64-byte binary string in Type 1 and Type 5 frames:
+The DLEQ proof is serialized as a 64-byte binary string in Type 10 and Type 11 frames:
 $$\text{proof} = c \parallel s$$
 
 - **$c$ (32 bytes)**: Fiat-Shamir challenge scalar $H(G \parallel P' \parallel E \parallel S \parallel R_1 \parallel R_2)$
@@ -54,5 +54,5 @@ $$\text{proof} = c \parallel s$$
 For relay storage payment stamps:
 
 - Relays advertise a static `payout_address` (child index $i = 0$).
-- Senders pay the relay directly in the Type 25 forwarding envelope.
+- Senders pay the relay directly in the Type 13 forwarding envelope.
 - The relay operator receives funds straight into their personal mobile wallet in real time without the relay daemon holding hot private keys or needing to perform on-chain dust sweeping.

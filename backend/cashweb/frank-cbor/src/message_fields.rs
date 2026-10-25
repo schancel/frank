@@ -30,7 +30,7 @@ pub mod account_ref {
     };
 }
 
-/// `blackjack-hand-item` field keys: Type 18 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).
+/// `blackjack-hand-item` field keys: Type 26 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action).
 pub mod blackjack_hand_item {
     use super::MapShape;
 
@@ -106,7 +106,7 @@ pub mod blackjack_hand_item {
     };
 }
 
-/// `blackjack-hand-v3-item` field keys: Type 18 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).
+/// `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).
 pub mod blackjack_hand_v3_item {
     use super::MapShape;
 
@@ -166,7 +166,7 @@ pub mod blackjack_hand_v3_item {
     };
 }
 
-/// `blackjack-item` field keys: Type 18 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.
+/// `blackjack-item` field keys: Type 26 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape.
 pub mod blackjack_item {
     use super::MapShape;
 
@@ -1556,7 +1556,7 @@ pub mod stamp_economic_binding {
     };
 }
 
-/// `stealth-asset-message-item` field keys: Type 19 schema 2 and later.
+/// `stealth-asset-message-item` field keys: Type 24 schema 2 and later.
 pub mod stealth_asset_message_item {
     use super::MapShape;
 
@@ -1594,7 +1594,7 @@ pub mod stealth_asset_transfer {
     };
 }
 
-/// `stealth-message-item` field keys: Type 19 schema 1.
+/// `stealth-message-item` field keys: Type 24 schema 1.
 pub mod stealth_message_item {
     use super::MapShape;
 
@@ -1914,7 +1914,7 @@ pub mod canonical_dm_message_row_version {
     pub const V2: u32 = 2;
 }
 
-/// `encryption-suite` values: Type 5 field 3 (README S2c).
+/// `encryption-suite` values: Type 11 field 3 (README S2c).
 pub mod encryption_suite {
     /// `dm-auth-xchacha`.
     pub const DM_AUTH_XCHACHA: u32 = 1;

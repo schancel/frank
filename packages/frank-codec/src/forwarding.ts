@@ -1,4 +1,4 @@
-// Pure encoder and validator for Type 25 relay forwarding delivery envelope (docs/protocol/cbor).
+// Pure encoder and validator for Type 13 relay forwarding delivery envelope (docs/protocol/cbor).
 
 import { cborMap } from './cbor'
 import {
@@ -32,7 +32,7 @@ const bad = (msg: string, location = 'forwarding-envelope') =>
 export interface CanonicalForwardingEnvelope {
   network: string
   destination: AccountRef
-  /** Complete serialized inner frame (Type 1 direct message delivery). */
+  /** Complete serialized inner frame (Type 10 direct message delivery). */
   payloadFrame: Uint8Array
   /** Digest of the inner frame. Defaults to `forwardingPayloadDigest(network, payloadFrame)`. */
   payloadDigest?: Uint8Array
@@ -76,7 +76,7 @@ function encodePaymentMember(p: PaymentMember): Map<number | bigint, any> {
 }
 
 /**
- * Encodes a canonical Type 25 forwarding delivery envelope frame.
+ * Encodes a canonical Type 13 forwarding delivery envelope frame.
  */
 export function encodeForwardingEnvelope(
   envelope: CanonicalForwardingEnvelope,
@@ -163,7 +163,7 @@ export function encodeForwardingEnvelope(
 }
 
 /**
- * Checks if a parsed frame is a valid Type 25 forwarding envelope.
+ * Checks if a parsed frame is a valid Type 13 forwarding envelope.
  */
 export function isForwardingEnvelopeFrame(
   frame: ParsedFrame,
@@ -175,7 +175,7 @@ export function isForwardingEnvelopeFrame(
 }
 
 /**
- * Projects a validated parsed Type 25 frame into a canonical representation.
+ * Projects a validated parsed Type 13 frame into a canonical representation.
  */
 export function projectForwardingEnvelope(
   frame: ParsedFrame,
@@ -197,7 +197,7 @@ export function projectForwardingEnvelope(
 }
 
 /**
- * Validates raw frame bytes as a Type 25 forwarding envelope through stages 1-9.
+ * Validates raw frame bytes as a Type 13 forwarding envelope through stages 1-9.
  */
 export function validateForwardingEnvelope(
   frameBytes: Uint8Array,
@@ -209,7 +209,7 @@ export function validateForwardingEnvelope(
     throw bad(`expected parsed frame, got ${result.kind}`)
   }
   if (!isForwardingEnvelopeFrame(result)) {
-    throw bad(`expected Type 25 frame, got type ${result.typeId}`)
+    throw bad(`expected Type 13 frame, got type ${result.typeId}`)
   }
   return result
 }

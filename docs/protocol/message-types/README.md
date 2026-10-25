@@ -64,8 +64,10 @@ Edit `id` in `v1.json` and run `yarn message-types:generate`. Code that compares
 frames from the generated constants follows automatically. A TypeScript number literal still
 compared with a typed projection's `type` discriminant stops compiling, because those discriminants
 are `typeof TYPE_…`; a literal compared with a plain `typeId: number` does not, so search for any
-that remain. Test vectors, fixtures, test code and the prose of the CBOR README still name numbers
-and must be regenerated or edited in the same change.
+that remain. Then run `yarn vectors:generate`, which re-encodes and re-signs every test vector
+corpus for the new numbers (`docs/protocol/cbor/vectors/README.md`). `--check` also rejects a
+`type-N` / `type N` phrase in the CBOR docs that names a number no registry entry has, and a CDDL
+`; … (type-id: key)` annotation whose number is not that key's id.
 
 ## Map field keys and enumerated values
 

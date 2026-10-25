@@ -9,6 +9,7 @@ import {
   encodeFrame,
   fromHex,
   toHex,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
   validateFrame,
   type AccountRef,
 } from '@frank/codec'
@@ -60,7 +61,11 @@ export function canonicalTransportFixture(): CanonicalExactParts {
   ])
   return {
     delivery: encodeFrame(
-      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECT_MESSAGE_DELIVERY,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       payload,
     ),
     context: fromHex(wire.context),
@@ -501,7 +506,7 @@ describe('bounded streamed responses', () => {
   })
 })
 
-describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
+describe('Type 10 co-located recipient P and DLEQ proof (#964)', () => {
   function fixtureWithColocated(
     options: {
       corruptDeliveryRecipient?: boolean
@@ -543,7 +548,11 @@ describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
     payloadMap.set(6n, dleqBytes)
 
     const delivery = encodeFrame(
-      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_DIRECT_MESSAGE_DELIVERY,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       payloadMap,
     )
 
@@ -579,14 +588,14 @@ describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
     }
   }
 
-  test('handles legacy Type 1 frames without fields 5 and 6', () => {
+  test('handles legacy Type 10 frames without fields 5 and 6', () => {
     const parts = canonicalTransportFixture()
     const pair = inspectCanonicalPair(parts)
     expect(pair.network).toBe('monad-testnet')
     expect(pair.recipient).toMatch(/^0x[a-f0-9]{40}$/)
   })
 
-  test('handles Type 1 frames with co-located fields 5 and 6', () => {
+  test('handles Type 10 frames with co-located fields 5 and 6', () => {
     const { parts, recipient } = fixtureWithColocated()
     const pair = inspectCanonicalPair(parts)
     expect(pair.network).toBe('monad-testnet')
@@ -646,7 +655,9 @@ describe('canonicalNetworkDescriptor', () => {
     expect(canonicalNetworkDescriptor('4d4f4e54')).toEqual(expected)
     expect(canonicalNetworkDescriptor('0x4d4f4e54')).toEqual(expected)
     expect(canonicalNetworkDescriptor({ networkTag: 'MONT' })).toEqual(expected)
-    expect(canonicalNetworkDescriptor({ chainIdentifier: 'monad-testnet' })).toEqual(expected)
+    expect(
+      canonicalNetworkDescriptor({ chainIdentifier: 'monad-testnet' }),
+    ).toEqual(expected)
   })
 
   it('resolves monad-mainnet by tag, name, chain ID, CAIP-2, and hex', () => {
@@ -704,7 +715,9 @@ describe('canonicalNetworkDescriptor', () => {
   })
 
   it('throws on unknown descriptors', () => {
-    expect(() => canonicalNetworkDescriptor('unknown')).toThrow(/Unknown installed Monad network descriptor/)
+    expect(() => canonicalNetworkDescriptor('unknown')).toThrow(
+      /Unknown installed Monad network descriptor/,
+    )
   })
 
   it('keeps @frank/cashweb non-test source files free of @frank/wallet imports (#1247)', () => {
@@ -740,6 +753,3 @@ describe('canonicalNetworkDescriptor', () => {
     expect(violations).toEqual([])
   })
 })
-
-
-

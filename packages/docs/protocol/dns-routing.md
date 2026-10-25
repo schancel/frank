@@ -96,4 +96,4 @@ sequenceDiagram
 1. **DNS is Discovery Only, Never Authority**: DNS SRV and MX records provide network routing locations only. All cryptographic authority derives strictly from the user's self-custodial root statement attestation.
 2. **DNSSEC Strongly Recommended**: Relay discovery queries SHOULD be executed with DNSSEC validation enabled to prevent man-in-the-middle redirection to rogue relay endpoints.
 3. **Strict TLS Enforcement**: Frank clients MUST reject plaintext HTTP connections. All relay communication MUST use TLS 1.3 on port 443 with valid X.509 server certificates matching the SRV target FQDN.
-4. **Content-Oblivious Relay Boundary**: Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner Type 6 encrypted payloads remain end-to-end encrypted to $K_{\text{msg}}$.
+4. **Content-Oblivious Relay Boundary**: Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner encrypted message content (type 12) remains end-to-end encrypted to $K_{\text{msg}}$.

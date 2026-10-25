@@ -2,6 +2,7 @@
 // identifiers) for the version-1 payload schemas.
 import { DEFAULT_FEATURE_CODEC_MAP } from './blackjack-schema'
 import type { FrankValue } from './cbor'
+import { isProtocolChainIdentifier } from './chain-registry'
 import {
   ACCOUNT_REF,
   ACCOUNT_REF_SHAPE,
@@ -601,8 +602,18 @@ export function paymentMember(
   const meta = stealth
     ? stealthMetadata(m.get(K.stealthMetadata), at(path, K.stealthMetadata))
     : undefined
+  const network = networkTag(m.get(K.network), at(path, K.network))
+  // S3: a stealth payment's network selects the chain that verifies it, and nothing else binds
+  // it, so it must be a registered chain. A stamp payment's network is bound to the delivery
+  // network instead (checked with the payment list).
+  if (stealth && !isProtocolChainIdentifier(network)) {
+    throw bad(
+      at(path, K.network),
+      'stealth payment network is not a chain identifier in docs/protocol/chains/v1.json',
+    )
+  }
   return {
-    network: networkTag(m.get(K.network), at(path, K.network)),
+    network,
     transactionId: bstr(
       m.get(K.transactionId),
       at(path, K.transactionId),

@@ -25,6 +25,7 @@
 
 mod blackjack;
 mod cbor;
+mod chain_registry;
 mod crypto;
 mod directory_preview;
 mod dm;
@@ -52,6 +53,7 @@ pub use blackjack::{
     BlackjackProjection,
 };
 pub use cbor::{cbor_map, decode_canonical, encode_canonical, is_valid_canonical, CborValue};
+pub use chain_registry::is_protocol_chain_identifier;
 pub use crypto::{has_low_s, parse_strict_der, verify_algorithm_1};
 pub use directory_preview::{
     preview_directory_context, verify_preview_directory_evidence, PreviewDirectoryEvidence,

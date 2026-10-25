@@ -14,7 +14,7 @@
     },
     {
       "path": "docs/protocol/cbor/README.md",
-      "sha256": "64bb95e518fa29181d58350db3aefc357c0450ab23d3960c50b77f23ca57bdd0"
+      "sha256": "a3d90e35222c9d296b9b668807bc4126c2bb1b36b3cb99619fe319ad0d8d8aa5"
     },
     {
       "path": "docs/protocol/cbor/vectors/manifest.json",

@@ -222,11 +222,13 @@ fn canonical_signed_set(
     for (position, (member, raw)) in payments.iter().zip(request.raw_transactions()).enumerate() {
         let signed = decode_signed_transaction(raw).map_err(|_| Error::Invalid)?;
         let child_index = member.child_index.ok_or(Error::Invalid)?;
-        if member.stealth.is_some() {
+        // The relay verifies a stamp only on its policy chain: the member must settle on the
+        // delivery network, which admission bound to `policy.network` and `policy.chain_id`.
+        if member.stealth.is_some() || member.network != policy.network {
             return Err(Error::Invalid);
         }
         let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
-            &member.network,
+            &policy.network,
             destination,
             shared_point,
             child_index,

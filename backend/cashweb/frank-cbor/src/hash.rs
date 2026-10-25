@@ -241,7 +241,7 @@ fn map_get(value: &CborValue, key: u64) -> Option<&CborValue> {
 }
 
 /// Network tag from a type-10 frame's own network field. The frame bytes are not re-encoded.
-fn delivery_network_tag(frame: &[u8]) -> Result<String, UsageError> {
+pub(crate) fn delivery_network_tag(frame: &[u8]) -> Result<String, UsageError> {
     if frame.len() < FRAME_HEADER_BYTES {
         return Err(usage("inner frame is shorter than a FRNK header"));
     }

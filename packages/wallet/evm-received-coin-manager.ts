@@ -2166,6 +2166,9 @@ export function createEvmReceivedCoinAndContactManager(
         ) {
           return;
         }
+        // `message.stampPayments` are the members `paymentsToSelf` kept: each settles on the
+        // installed network (`forumNetwork`, the canonical directory's network), the one network
+        // both that check and this derivation use.
         for (const payment of message.stampPayments) {
           if (payment.childIndex === undefined) continue;
           const address = payment.destinationAddress.toLowerCase();

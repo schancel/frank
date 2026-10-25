@@ -208,8 +208,9 @@ function mapGet(value: unknown, key: bigint): unknown {
   return value instanceof Map ? value.get(key) : undefined
 }
 
-/** Network tag from a type-10 frame's own network field. The frame bytes are not re-encoded. */
-function type1NetworkTag(frame: Uint8Array): string {
+/** Network tag from a type-10 frame's own network field. The frame bytes are not re-encoded.
+ * Throws `RangeError` when `frame` is not a type-10 frame with a network tag. */
+export function directMessageDeliveryNetwork(frame: Uint8Array): string {
   if (frame.length < FRAME_HEADER_BYTES)
     throw new RangeError('inner frame is shorter than a FRNK header')
   const envelope = decodeCanonical(frame.subarray(FRAME_HEADER_BYTES))
@@ -235,7 +236,7 @@ export function forwardingPayloadDigest(innerFrame: Uint8Array): Uint8Array {
   return sha256(
     commonTranscript(
       'frank/forwarding-payload/v1',
-      type1NetworkTag(innerFrame),
+      directMessageDeliveryNetwork(innerFrame),
       innerFrame,
     ),
   )

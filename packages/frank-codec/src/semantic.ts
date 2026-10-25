@@ -293,9 +293,23 @@ function paymentOrder(a: PaymentMember, b: PaymentMember): number {
   return compareBytes(a.transactionId, b.transactionId)
 }
 
-/** Stamp members first (child index, then txid), then stealth members by txid. */
-function checkPaymentList(pays: readonly PaymentMember[], path: string): void {
+/** Stamp members first (child index, then txid), then stealth members by txid. A stamp member
+ * settles on the delivery network: its stamp address is derived for that network and the relay
+ * verifies it on that chain (S3). */
+function checkPaymentList(
+  pays: readonly PaymentMember[],
+  deliveryNetwork: string,
+  path: string,
+): void {
   requireOrdered(pays, paymentOrder, 'payment members', path, false)
+  pays.forEach((p, i) => {
+    if (p.childIndex !== undefined && p.network !== deliveryNetwork) {
+      throw semantic(
+        'stamp payment network differs from the delivery network (S3)',
+        `${path}[${i}]`,
+      )
+    }
+  })
   const seenIdx = new Set<number>()
   let stampAt = 0
   for (const p of pays) {
@@ -347,8 +361,8 @@ export function checkSemantics(
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
       const K = FORWARDING_DELIVERY_ENVELOPE
-      typedOf(typed.payloadFrame, TYPE_DIRECT_MESSAGE_DELIVERY)
-      checkPaymentList(typed.payments, at(P, K.payments))
+      const inner = typedOf(typed.payloadFrame, TYPE_DIRECT_MESSAGE_DELIVERY)
+      checkPaymentList(typed.payments, inner.network, at(P, K.payments))
       if (typed.destination.keyType !== KEY_TYPE.secp256k1) {
         throw semantic(
           'destination account must be key type 1',
@@ -364,7 +378,7 @@ export function checkSemantics(
         TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
       )
       const pays = typed.payments
-      checkPaymentList(pays, at(P, K.payments))
+      checkPaymentList(pays, typed.network, at(P, K.payments))
       if (typed.network !== child.network) {
         throw semantic(
           'delivery network differs from the type-11 network (S8)',

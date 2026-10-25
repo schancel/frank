@@ -350,11 +350,13 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     )?;
     for member in payments {
         let child_index = member.child_index.ok_or(CanonicalStampError::Encoding)?;
-        if member.stealth.is_some() || member.commitment.is_none() {
+        // A stamp settles on the delivery network (S3): its address is derived for that network
+        // and only that chain's verifier may accept it.
+        if member.stealth.is_some() || member.commitment.is_none() || member.network != *network {
             return Err(CanonicalStampError::Encoding);
         }
         let (_, address) =
-            canonical_stamp_destination(&member.network, destination, shared_point, child_index)?;
+            canonical_stamp_destination(network, destination, shared_point, child_index)?;
         if member.address.as_slice() != address
             || member.commitment.as_deref()
                 != Some(payment_commitment(&digest, child_index).as_slice())

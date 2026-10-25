@@ -224,8 +224,22 @@ fn payment_ord(a: &PaymentMember, b: &PaymentMember) -> Ordering {
         .then_with(|| a.transaction_id.cmp(&b.transaction_id))
 }
 
-fn check_payment_list(payments: &[PaymentMember], path: &str) -> Result<(), CodecError> {
+/// A stamp member settles on the delivery network: its stamp address is derived for that network
+/// and the relay verifies it on that chain (S3).
+fn check_payment_list(
+    payments: &[PaymentMember],
+    delivery_network: &str,
+    path: &str,
+) -> Result<(), CodecError> {
     require_ordered(payments, payment_ord, "payment members", path, false)?;
+    for (i, payment) in payments.iter().enumerate() {
+        if payment.child_index.is_some() && payment.network != delivery_network {
+            return Err(semantic(
+                "stamp payment network differs from the delivery network (S3)",
+                &format!("{path}[{i}]"),
+            ));
+        }
+    }
     let mut seen_idx = HashSet::new();
     for payment in payments {
         if let Some(index) = payment.child_index {
@@ -403,12 +417,13 @@ pub(crate) fn check_semantics(
             payments,
             ..
         } => {
-            match opened(payload_frame) {
-                TypedPayload::DirectMessage { .. } => {}
+            let inner_network = match opened(payload_frame) {
+                TypedPayload::DirectMessage { network, .. } => network,
                 _ => panic!("internal: expected an opened type-10 frame"),
-            }
+            };
             check_payment_list(
                 payments,
+                inner_network,
                 &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
             )?;
             if destination.key_type != key_type::SECP256K1 {
@@ -428,7 +443,11 @@ pub(crate) fn check_semantics(
             dleq_proof,
             ..
         } => {
-            check_payment_list(payments, &at(path, mf::direct_message_delivery::PAYMENTS))?;
+            check_payment_list(
+                payments,
+                network,
+                &at(path, mf::direct_message_delivery::PAYMENTS),
+            )?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::RecipientPayload { network, .. } => network,
                 _ => panic!("internal: expected an opened type-11 frame"),

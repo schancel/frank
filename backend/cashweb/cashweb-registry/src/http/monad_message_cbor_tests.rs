@@ -1095,6 +1095,119 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
     fixture.stop().await;
 }
 
+/// A stamp verifies only on the relay's policy chain. The reviewer's case: the genuine Monad
+/// stamp relabelled to another network, with its address re-derived for that network and a
+/// Monad transaction paying that address. The relay must not accept it as a Monad stamp.
+#[tokio::test]
+async fn canonical_admission_rejects_a_stamp_relabelled_to_another_chain() {
+    use bitcoinsuite_core::ecc::Ecc;
+    use frank_cbor::message_fields::{direct_message_delivery as dmd, payment_member as pay};
+    let fixture = NativeDirectoryFixture::new().await;
+    let genuine = genuine_fixture();
+    let raw = genuine.raw_transactions().next().unwrap().to_vec();
+    let plain = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    let frank_cbor::ValidationResult::Parsed(frame) =
+        frank_cbor::validate_frame(genuine.delivery(), &frank_cbor::default_context()).unwrap()
+    else {
+        panic!("genuine delivery frame");
+    };
+    let Some(frank_cbor::TypedPayload::DirectMessage {
+        destination,
+        payload_frame,
+        ..
+    }) = frame.typed.as_deref()
+    else {
+        panic!("genuine direct message");
+    };
+    let Some(frank_cbor::TypedPayload::RecipientPayload { shared_point, .. }) =
+        payload_frame.typed.as_deref()
+    else {
+        panic!("genuine recipient payload");
+    };
+    let secret = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default()
+        .seckey_from_array({
+            let mut one = [0; 32];
+            one[31] = 1;
+            one
+        })
+        .unwrap();
+    fn field(value: &mut CborValue, key: u64) -> &mut CborValue {
+        let CborValue::Map(entries) = value else {
+            panic!("map")
+        };
+        &mut entries.iter_mut().find(|(k, _)| *k == key).unwrap().1
+    }
+    // The policy network is the control: the rebuilt request is otherwise admissible.
+    for network in ["monad-testnet", "lotus", "xpi-mainnet", "zz-not-a-chain"] {
+        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+            network,
+            destination,
+            shared_point,
+            0,
+        )
+        .unwrap();
+        if network == "monad-testnet" {
+            assert_eq!(plain.destination, Some(crate::monad_http::Address(address)));
+        }
+        let (tx, sender) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+            &secret,
+            10143,
+            plain.nonce,
+            crate::monad_http::Address(address),
+            plain.value_wei,
+            &[],
+        );
+        assert_eq!(sender, plain.sender);
+        let signed = crate::monad_evm_tx::decode_signed_transaction(&tx).unwrap();
+        let mut payload = frame.payload.clone();
+        let CborValue::Array(members) = field(&mut payload, dmd::PAYMENTS) else {
+            panic!("members")
+        };
+        *field(&mut members[0], pay::NETWORK) = CborValue::Text(network.into());
+        *field(&mut members[0], pay::ADDRESS) = CborValue::Bytes(address.to_vec());
+        *field(&mut members[0], pay::TRANSACTION_ID) = CborValue::Bytes(signed.tx_hash.0.to_vec());
+        let delivery = frank_cbor::encode_frame(
+            frank_cbor::EnvelopeFields {
+                type_id: frame.type_id,
+                schema_version: frame.schema_version,
+                min_reader_version: frame.min_reader_version,
+            },
+            frank_cbor::FramePayload::Value(&payload),
+        )
+        .unwrap();
+        let boundary = "frank-relabelled-1539";
+        let transactions = encode_canonical(&CborValue::Array(vec![CborValue::Bytes(tx)])).unwrap();
+        let mut body = Vec::new();
+        for (name, media, bytes) in [
+            (
+                "delivery",
+                "application/vnd.frank.cbor",
+                delivery.as_slice(),
+            ),
+            ("context", "application/cbor", genuine.context()),
+            ("transactions", "application/cbor", transactions.as_slice()),
+        ] {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: {media}\r\n\r\n").as_bytes());
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let request =
+            ExactRequest::parse(body, format!("multipart/form-data; boundary={boundary}")).unwrap();
+        // Admission reads the principals first; a relabelled stamp is refused there.
+        let outcome = match request_principals(&request, "monad-testnet") {
+            Ok(_) => admitted_input(&fixture, &request).await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        assert_eq!(
+            outcome.err(),
+            (network != "monad-testnet").then_some(CanonicalError::Invalid),
+            "{network}"
+        );
+    }
+    fixture.stop().await;
+}
+
 /// One signed payment pays for one message. With empty calldata nothing on chain names the
 /// message, so a sender who reuses the ephemeral key (or anyone who has seen the shared point
 /// and proof) can present the same confirmed transaction under a second sealed body. The

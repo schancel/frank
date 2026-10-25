@@ -18,7 +18,7 @@ direct-message-delivery = {
 
 ; Exactly one of field 7 or field 8. Field 7 requires field 4. Field 9 only with field 8.
 payment-member = {
-  0: network-tag,                 ; chain this payment settles on
+  0: network-tag,                 ; chain this payment settles on; a stamp's is the delivery network, a stealth payment's a v1.json chain id (README S3)
   1: bstr .size (1..128),          ; transaction id
   2: evm-quantity-256 / uint,     ; value
   3: bstr .size (1..128),          ; destination address or key bytes

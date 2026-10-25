@@ -43,6 +43,7 @@ const {
   DIRECTORY_ATTESTATION,
   DIRECTORY_STATEMENT,
   DIRECT_MESSAGE_DELIVERY,
+  FRAME_HEADER_BYTES,
   DM_CRYPTO_CONTEXT_V1,
   ENCRYPTED_MESSAGE_CONTENT,
   FORWARDING_DELIVERY_ENVELOPE,
@@ -288,17 +289,21 @@ export class Renumber {
 
   /** A whole frame, or undefined when `bytes` is not one. */
   frame(bytes: Uint8Array): Uint8Array | undefined {
-    if (bytes.length < 9 || toHex(bytes.subarray(0, 5)) !== MAGIC)
+    if (
+      bytes.length < FRAME_HEADER_BYTES ||
+      toHex(bytes.subarray(0, 5)) !== MAGIC
+    )
       return undefined
     const length = new DataView(
       bytes.buffer,
       bytes.byteOffset + 5,
       4,
     ).getUint32(0)
-    if (bytes.length !== 9 + length) return this.patchHeader(bytes)
+    if (bytes.length !== FRAME_HEADER_BYTES + length)
+      return this.patchHeader(bytes)
     let env: unknown
     try {
-      env = decodeCanonical(bytes.subarray(9))
+      env = decodeCanonical(bytes.subarray(FRAME_HEADER_BYTES))
     } catch {
       return this.patchHeader(bytes)
     }
@@ -323,10 +328,10 @@ export class Renumber {
       }
     }
     const body = encodeCanonical(newEnv)
-    const out = new Uint8Array(9 + body.length)
+    const out = new Uint8Array(FRAME_HEADER_BYTES + body.length)
     out.set(bytes.subarray(0, 5))
     new DataView(out.buffer).setUint32(5, body.length)
-    out.set(body, 9)
+    out.set(body, FRAME_HEADER_BYTES)
     this.note(bytes, out)
     noteContentHash(this, bytes, out, this.keyOf(Number(typeId)))
     return out
@@ -434,7 +439,7 @@ export class Renumber {
         this.rederive(value, next, F.payloadDigest, m => {
           const p = m.get(k(F.payloadFrame))
           if (!isBytes(p)) return undefined
-          const env = decodeCanonical(p.subarray(9))
+          const env = decodeCanonical(p.subarray(FRAME_HEADER_BYTES))
           const inner =
             env instanceof Map ? env.get(k(FRANK_ENVELOPE.payload)) : undefined
           if (!isBytes(inner)) return undefined
@@ -687,7 +692,7 @@ export class Renumber {
 
 function statementNetwork(frame: Uint8Array): string | undefined {
   try {
-    const env = decodeCanonical(frame.subarray(9)) as CborMap
+    const env = decodeCanonical(frame.subarray(FRAME_HEADER_BYTES)) as CborMap
     const p = decodeCanonical(
       env.get(k(FRANK_ENVELOPE.payload)) as Uint8Array,
     ) as CborMap
@@ -713,7 +718,9 @@ function noteContentHash(
   if (eq(oldFrame, newFrame)) return
   let network: string | undefined
   try {
-    const env = decodeCanonical(newFrame.subarray(9)) as CborMap
+    const env = decodeCanonical(
+      newFrame.subarray(FRAME_HEADER_BYTES),
+    ) as CborMap
     const p = decodeCanonical(
       env.get(k(FRANK_ENVELOPE.payload)) as Uint8Array,
     ) as CborMap
@@ -730,7 +737,7 @@ function noteContentHash(
       // T1 of type 13 uses the inner type-10 frame's network.
       const f = p.get(k(FORWARDING_DELIVERY_ENVELOPE.payloadFrame))
       const inner = isBytes(f)
-        ? (decodeCanonical(f.subarray(9)) as CborMap).get(
+        ? (decodeCanonical(f.subarray(FRAME_HEADER_BYTES)) as CborMap).get(
             k(FRANK_ENVELOPE.payload),
           )
         : undefined

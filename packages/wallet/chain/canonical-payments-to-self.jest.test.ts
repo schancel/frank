@@ -65,4 +65,30 @@ describe('paymentsToSelf', () => {
       ),
     ).toEqual(paid)
   })
+
+  it('drops a stamp relabelled to another network, even with its address re-derived there', () => {
+    // The reviewer's case: the sender names another chain and pays the address derived for it.
+    // That account is not the one the wallet records as its stamp coin, so it is never reported.
+    for (const network of ['xpi-mainnet', 'lotus', 'zz-not-a-chain']) {
+      const relabelled = {
+        network,
+        childIndex: 0,
+        address: canonicalStampDestination({
+          network,
+          stampKey: mine,
+          sharedPoint,
+          childIndex: 0,
+        }).address,
+      }
+      expect(paymentsToSelf(NETWORK, self, sharedPoint, [relabelled])).toEqual(
+        [],
+      )
+      // The label alone does not move a payment to the wallet's network either.
+      expect(
+        paymentsToSelf(NETWORK, self, sharedPoint, [
+          { ...child(mine, 0), network },
+        ]),
+      ).toEqual([])
+    }
+  })
 })

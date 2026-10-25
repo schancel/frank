@@ -2326,13 +2326,18 @@ export function projectOutboxMessageRecord(
 
 /** The payment members of a received delivery that pay THIS wallet: a member's address must be
  * the stamp child of one of the wallet's own stamp keys (current or previous) for the message's
- * shared point. The delivery frame is written by the sender, so a member paying any other address
- * is somebody else's money and is never reported as received. Not a chain check: whether a
- * reported transfer was mined is for the caller to look up. */
+ * shared point, derived for `network`. The delivery frame is written by the sender, so a member
+ * paying any other address is somebody else's money and is never reported as received. Not a
+ * chain check: whether a reported transfer was mined is for the caller to look up.
+ *
+ * `network` is the wallet's own installed network, which the delivery was opened against. A stamp
+ * settles on the delivery network (README S3); a member naming another network is dropped, so the
+ * stamp coin the wallet records (`recordStampPayments`, derived for the same network) and the
+ * payment it reports are always the same account. */
 export function paymentsToSelf<
   T extends { address: Uint8Array; childIndex?: number; network: string },
 >(
-  _deliveryNetwork: string,
+  network: string,
   self: Current,
   sharedPoint: Uint8Array,
   payments: readonly T[],
@@ -2341,13 +2346,14 @@ export function paymentsToSelf<
     (key): key is NonNullable<typeof key> => !!key,
   )
   return payments.filter(member => {
-    if (member.childIndex === undefined) return false
+    if (member.childIndex === undefined || member.network !== network)
+      return false
     return keys.some(stampKey => {
       try {
         return (
           toHex(
             canonicalStampDestination({
-              network: member.network,
+              network,
               stampKey,
               sharedPoint,
               childIndex: member.childIndex!,

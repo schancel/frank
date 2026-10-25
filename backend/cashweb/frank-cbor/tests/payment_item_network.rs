@@ -11,7 +11,7 @@ use frank_cbor::{
 
 use frank_cbor::message_fields::{
     direct_message_delivery as delivery_k, forwarding_delivery_envelope as envelope_k,
-    frank_envelope, key_type,
+    frank_envelope, key_type, payment_member as pay,
 };
 use frank_cbor::message_types::{TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_FORWARDING_DELIVERY_ENVELOPE};
 
@@ -144,10 +144,7 @@ fn type13_key_0_is_a_schema_error() {
 #[test]
 fn mixed_stamp_and_stealth_on_two_networks_validates() {
     let inner = direct_message_frame();
-    let frame = encode_forwarding(
-        &inner,
-        vec![stamp("frank-test", 1, 1), stealth("lotus", 2, 2)],
-    );
+    let frame = encode_forwarding(&inner, vec![stamp(NET, 1, 1), stealth("xpi-testnet", 2, 2)]);
     let ValidationResult::Parsed(parsed) =
         validate_frame(&frame, &default_context()).expect("mixed list")
     else {
@@ -156,10 +153,10 @@ fn mixed_stamp_and_stealth_on_two_networks_validates() {
     let Some(TypedPayload::ForwardingDelivery { payments, .. }) = parsed.typed.as_deref() else {
         panic!("type 13");
     };
-    assert_eq!(payments[0].network, "frank-test");
+    assert_eq!(payments[0].network, NET);
     assert_eq!(payments[0].child_index, Some(0));
     assert!(payments[0].stealth.is_none());
-    assert_eq!(payments[1].network, "lotus");
+    assert_eq!(payments[1].network, "xpi-testnet");
     assert!(payments[1].child_index.is_none());
     assert!(payments[1].stealth.is_some());
 }
@@ -171,7 +168,7 @@ fn forwarding_digest_reads_the_inner_type10_network() {
     let frank_digest = forwarding_payload_digest(&frank).expect("frank");
     let lotus_digest = forwarding_payload_digest(&lotus).expect("lotus");
     assert_ne!(frank_digest, lotus_digest);
-    let frame = encode_forwarding(&frank, vec![stamp("lotus", 3, 3)]);
+    let frame = encode_forwarding(&frank, vec![stamp("frank-test", 3, 3)]);
     let CborValue::Map(envelope) = decode_canonical(&frame[9..]).unwrap() else {
         panic!("map");
     };
@@ -195,4 +192,133 @@ fn forwarding_digest_reads_the_inner_type10_network() {
     };
     assert_eq!(digest.as_slice(), frank_digest.as_slice());
     assert_ne!(digest.as_slice(), lotus_digest.as_slice());
+}
+
+fn map_field(map: &[(u64, CborValue)], key: u64) -> &CborValue {
+    &map.iter().find(|(k, _)| *k == key).expect("field").1
+}
+
+/// Re-encodes `frame` with payment member `index` (in the list at `payments_key`) relabelled to
+/// `network`; nothing else changes.
+fn relabel_payment(frame: &[u8], payments_key: u64, index: usize, network: &str) -> Vec<u8> {
+    let CborValue::Map(envelope) = decode_canonical(&frame[9..]).expect("envelope") else {
+        panic!("envelope map");
+    };
+    let int = |key| match map_field(&envelope, key) {
+        CborValue::Int(n) => *n as u32,
+        other => panic!("{other:?}"),
+    };
+    let CborValue::Bytes(payload) = map_field(&envelope, frank_envelope::PAYLOAD) else {
+        panic!("payload");
+    };
+    let CborValue::Map(mut fields) = decode_canonical(payload).expect("payload map") else {
+        panic!("payload map");
+    };
+    let (_, CborValue::Array(members)) = fields
+        .iter_mut()
+        .find(|(k, _)| *k == payments_key)
+        .expect("payments")
+    else {
+        panic!("payments array");
+    };
+    let CborValue::Map(member) = &mut members[index] else {
+        panic!("member map");
+    };
+    member
+        .iter_mut()
+        .find(|(k, _)| *k == pay::NETWORK)
+        .expect("network")
+        .1 = CborValue::Text(network.into());
+    encode_frame(
+        EnvelopeFields {
+            type_id: int(frank_envelope::TYPE_ID),
+            schema_version: int(frank_envelope::SCHEMA_VERSION),
+            min_reader_version: int(frank_envelope::MIN_READER_VERSION),
+        },
+        FramePayload::Value(&CborValue::Map(fields)),
+    )
+    .expect("re-encode")
+}
+
+fn expect_semantic(frame: &[u8], detail: &str) {
+    match validate_frame(frame, &default_context()) {
+        Err(Error::Codec(err)) => {
+            assert_eq!(err.category, ErrorCategory::Semantic, "{}", err.detail);
+            assert!(err.detail.contains(detail), "{}", err.detail);
+        }
+        other => panic!("expected a semantic error, got {other:?}"),
+    }
+}
+
+#[test]
+fn type10_stamp_on_another_network_is_rejected() {
+    let frame = direct_message_frame();
+    validate_frame(&frame, &default_context()).expect("stamps on the delivery network");
+    // The reviewer's case: the same stamp relabelled to a chain other than the delivery network.
+    for network in ["lotus", "xpi-mainnet", "zz-not-a-chain"] {
+        expect_semantic(
+            &relabel_payment(&frame, delivery_k::PAYMENTS, 0, network),
+            "stamp payment network differs from the delivery network (S3)",
+        );
+    }
+}
+
+#[test]
+fn type13_stamp_on_another_network_is_rejected() {
+    let inner = direct_message_frame();
+    let err = encode_forwarding_delivery(&ForwardingDeliveryEnvelope {
+        destination: relay(),
+        payload_frame: inner.clone(),
+        payload_digest: None,
+        payments: vec![stamp("xpi-mainnet", 1, 1)],
+        endpoint: None,
+        expires_at: None,
+        unknown: vec![],
+    })
+    .expect_err("encoder refuses a stamp off the delivery network");
+    assert!(
+        format!("{err:?}").contains("differs from the delivery network"),
+        "{err:?}"
+    );
+    let frame = encode_forwarding(&inner, vec![stamp(NET, 1, 1)]);
+    expect_semantic(
+        &relabel_payment(&frame, envelope_k::PAYMENTS, 0, "xpi-mainnet"),
+        "stamp payment network differs from the delivery network (S3)",
+    );
+}
+
+#[test]
+fn stealth_payment_on_an_unregistered_network_is_rejected() {
+    let inner = direct_message_frame();
+    let frame = encode_forwarding(&inner, vec![stamp(NET, 1, 1), stealth("xpi-testnet", 2, 2)]);
+    for network in ["lotus", "monad", "zz-not-a-chain"] {
+        let err = encode_forwarding_delivery(&ForwardingDeliveryEnvelope {
+            destination: relay(),
+            payload_frame: inner.clone(),
+            payload_digest: None,
+            payments: vec![stamp(NET, 1, 1), stealth(network, 2, 2)],
+            endpoint: None,
+            expires_at: None,
+            unknown: vec![],
+        })
+        .expect_err("encoder refuses an unregistered network");
+        assert!(
+            format!("{err:?}").contains("not a chain identifier"),
+            "{err:?}"
+        );
+        match validate_frame(
+            &relabel_payment(&frame, envelope_k::PAYMENTS, 1, network),
+            &default_context(),
+        ) {
+            Err(Error::Codec(err)) => {
+                assert_eq!(err.category, ErrorCategory::Schema);
+                assert!(
+                    err.detail.contains("not a chain identifier"),
+                    "{}",
+                    err.detail
+                );
+            }
+            other => panic!("expected a schema error, got {other:?}"),
+        }
+    }
 }

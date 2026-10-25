@@ -268,7 +268,7 @@ fn fields<'a>(
         if declared(*key, required, optional) {
             continue;
         }
-        if open && allow_unknown {
+        if allow_unknown && open.is_some_and(|from| *key >= from) {
             unknown.push((*key, value.clone()));
         } else {
             return Err(bad(path, format!("undeclared key {key} (C12)")));
@@ -797,8 +797,18 @@ fn payment_member(v: &CborValue, path: &str) -> Result<PaymentMember, CodecError
             "token identifier is allowed only on a stealth payment",
         ));
     }
+    let network = network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?;
+    // S3: a stealth payment's network selects the chain that verifies it, and nothing else binds
+    // it, so it must be a registered chain. A stamp payment's network is bound to the delivery
+    // network instead (checked with the payment list).
+    if stealth && !crate::chain_registry::is_protocol_chain_identifier(&network) {
+        return Err(bad(
+            &at(path, k::NETWORK),
+            "stealth payment network is not a chain identifier in docs/protocol/chains/v1.json",
+        ));
+    }
     Ok(PaymentMember {
-        network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
+        network,
         transaction_id: bstr(
             map.get(k::TRANSACTION_ID),
             &at(path, k::TRANSACTION_ID),

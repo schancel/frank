@@ -122,9 +122,16 @@ it('rejects unknown networks, missing metadata and incompatible keys on input', 
     value: 1n,
     stealthMetadata: sample.stealthMetadata,
   }
+  // A network outside the protocol registry is refused by the codec at the boundary.
   expect(() =>
     decodeRecipientPaymentTransfer(
       encodePaymentMember({ ...record, network: 'not-a-chain' }),
+    ),
+  ).toThrow('not a chain identifier in docs/protocol/chains/v1.json')
+  // A protocol network outside the client-supported subset is refused by the projection.
+  expect(() =>
+    decodeRecipientPaymentTransfer(
+      encodePaymentMember({ ...record, network: 'xpi-mainnet' }),
     ),
   ).toThrow('Unsupported payment network')
   expect(() =>

@@ -3,7 +3,7 @@
 use crate::cbor::CborValue;
 use crate::error::UsageError;
 use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
-use crate::hash::forwarding_payload_digest;
+use crate::hash::{delivery_network_tag, forwarding_payload_digest};
 use crate::limits::{MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_PAYMENT_MEMBERS};
 use crate::message_fields as mf;
 use crate::message_types::TYPE_FORWARDING_DELIVERY_ENVELOPE;
@@ -121,6 +121,11 @@ fn encode_payment_member(p: &PaymentMember) -> Result<CborValue, UsageError> {
     if !is_network_tag(&p.network) {
         return Err(bad("network tag does not match S1"));
     }
+    if p.stealth.is_some() && !crate::chain_registry::is_protocol_chain_identifier(&p.network) {
+        return Err(bad(
+            "stealth payment network is not a chain identifier in docs/protocol/chains/v1.json",
+        ));
+    }
     if p.transaction_id.is_empty() || p.transaction_id.len() > 128 {
         return Err(bad("transaction id must be 1..128 bytes"));
     }
@@ -191,6 +196,17 @@ pub fn encode_forwarding_delivery(
         return Err(bad("payments must contain 1..64 members"));
     }
 
+    // S3: a stamp payment settles on the delivery network, the inner type-10 frame's network.
+    let network = delivery_network_tag(&envelope.payload_frame)?;
+    if envelope
+        .payments
+        .iter()
+        .any(|p| p.child_index.is_some() && p.network != network)
+    {
+        return Err(bad(
+            "stamp payment network differs from the delivery network (S3)",
+        ));
+    }
     let digest = match &envelope.payload_digest {
         Some(d) => {
             if d.len() != 32 {

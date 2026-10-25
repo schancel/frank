@@ -11,7 +11,7 @@ import {
 } from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
-import { forwardingPayloadDigest } from './hash'
+import { directMessageDeliveryNetwork, forwardingPayloadDigest } from './hash'
 import { paymentMemberToCborMap } from './stealth'
 import type {
   AccountRef,
@@ -74,6 +74,24 @@ export function encodeForwardingEnvelope(
     throw bad(`payments must contain 1..${MAX_PAYMENT_MEMBERS} members`)
   }
 
+  let network: string
+  try {
+    network = directMessageDeliveryNetwork(envelope.payloadFrame)
+  } catch (error) {
+    throw bad(
+      error instanceof RangeError
+        ? error.message
+        : 'payloadFrame must be a type-10 frame',
+    )
+  }
+  // S3: a stamp payment settles on the delivery network, the inner type-10 frame's network.
+  if (
+    envelope.payments.some(
+      p => p.childIndex !== undefined && p.network !== network,
+    )
+  ) {
+    throw bad('stamp payment network differs from the delivery network (S3)')
+  }
   const digest =
     envelope.payloadDigest ?? forwardingPayloadDigest(envelope.payloadFrame)
   if (digest.length !== 32) {

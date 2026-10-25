@@ -116,6 +116,6 @@ sequenceDiagram
 
 ## 5. Implementation Invariants
 
-1. **Payment list**: Field 4 may mix stamp payments and stealth payments, including distinct networks. Stamp child indices are contiguous $i \in [0, N-1]$ over the stamp members. A type 13 map that contains key 0 is a schema error.
+1. **Payment list**: Field 4 may mix stamp payments and stealth payments. A stamp payment settles on the inner type-10 frame's network (README S3); a stealth payment may name another network, which must be a `docs/protocol/chains/v1.json` chain identifier. Stamp child indices are contiguous $i \in [0, N-1]$ over the stamp members. A type 13 map that contains key 0 is a schema error.
 2. **Deterministic Payload Digest**: Field 3 MUST equal `forwardingPayloadDigest(payloadFrame)`, using the inner type-10 frame's own network tag.
 3. **Fail-Closed Relay Policy**: If destination relay connectivity or KV coordination is lost, the relay fails closed (returning `HTTP 503 Service Unavailable`), preventing dropped messages or lost storage stamps.

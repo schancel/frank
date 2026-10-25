@@ -105,6 +105,14 @@ fn container(service: &str) -> String {
     list[0]["Id"].as_str().unwrap().to_owned()
 }
 
+/// When this project's `service` container last started (`State.StartedAt`).
+fn started_at(service: &str) -> String {
+    let (status, body) = docker("GET", &format!("/containers/{}/json", container(service)));
+    assert_eq!(status, 200, "inspect {service}: {body}");
+    let state: serde_json::Value = serde_json::from_str(&body).unwrap();
+    state["State"]["StartedAt"].as_str().unwrap().to_owned()
+}
+
 fn container_action(service: &str, action: &str) {
     let id = container(service);
     let (status, body) = docker("POST", &format!("/containers/{id}/{action}"));
@@ -378,23 +386,49 @@ async fn wakes_for_append_elsewhere(
 // Load with faults
 // ---------------------------------------------------------------------------------------------
 
+/// What a load run saw: each envelope's acknowledged sequence number by nonce, and how the
+/// relays behaved while the fault was in effect.
+struct LoadOutcome {
+    acknowledged: BTreeMap<String, u64>,
+    /// Failed or unanswered attempts that started after the fault began.
+    failed_after_fault: usize,
+    /// The slowest attempt before the fault began, and the slowest after.
+    slowest_before_fault: Duration,
+    slowest_after_fault: Duration,
+}
+
+impl LoadOutcome {
+    /// The fault was felt by the writers: an attempt failed, or one took far longer than any
+    /// attempt before the fault (at least 1 s and 5 x the slowest earlier one).
+    fn fault_was_observed(&self) -> bool {
+        self.failed_after_fault > 0
+            || self.slowest_after_fault
+                >= (self.slowest_before_fault * 5).max(Duration::from_secs(1))
+    }
+}
+
+/// The whole load, fault included, must finish within this.
+const LOAD_DEADLINE: Duration = Duration::from_secs(300);
+
 /// Three writers, one per relay, each appending `per_writer` distinct envelopes. A failed or
 /// unanswered append is retried, with the same envelope, on the next relay until one
 /// acknowledges it, as a client would. After `fault_after` acknowledgements `fault` runs once.
-/// Returns each envelope's acknowledged sequence number by nonce.
+/// Fails, rather than hangs, if the load does not finish within [`LOAD_DEADLINE`].
 async fn load_with_fault<F, Fut>(
     group: &Arc<Group>,
     per_writer: usize,
     fault_after: usize,
     fault: F,
-) -> BTreeMap<String, u64>
+) -> LoadOutcome
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send,
 {
+    let started = Instant::now();
     let relays = Arc::new(relays());
     let acked = Arc::new(AtomicUsize::new(0));
     let retries = Arc::new(AtomicUsize::new(0));
+    let fault_started = Arc::new(std::sync::OnceLock::<Instant>::new());
     let mut writers = Vec::new();
     for writer in 0..3 {
         let (group, relays, acked, retries) = (
@@ -406,13 +440,19 @@ where
         writers.push(tokio::spawn(async move {
             let client = http();
             let mut receipts = Vec::new();
-            let deadline = Instant::now() + Duration::from_secs(300);
+            // (attempt started, its duration, whether it failed)
+            let mut attempts = Vec::new();
+            let deadline = started + LOAD_DEADLINE;
             for index in 0..per_writer {
                 let envelope = group.envelope(group.current(), &format!("load {writer}/{index}"));
                 let mut target = writer;
                 loop {
                     assert!(Instant::now() < deadline, "writer {writer} never finished");
-                    match append(&client, &relays[target % 3], &envelope).await {
+                    let attempt = Instant::now();
+                    let answer = append(&client, &relays[target % 3], &envelope).await;
+                    let ok = matches!(&answer, Ok(answer) if answer.status == 200);
+                    attempts.push((attempt, attempt.elapsed(), !ok));
+                    match answer {
                         Ok(answer) if answer.status == 200 => {
                             let message = answer.message.unwrap();
                             assert_eq!(message.nonce, envelope.nonce);
@@ -428,30 +468,62 @@ where
                     }
                 }
             }
-            receipts
+            (receipts, attempts)
         }));
     }
     while acked.load(Ordering::SeqCst) < fault_after {
+        assert!(
+            started.elapsed() < LOAD_DEADLINE,
+            "only {} of {fault_after} appends acknowledged before the deadline",
+            acked.load(Ordering::SeqCst)
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let before = acked.load(Ordering::SeqCst);
-    fault().await;
+    fault_started.set(Instant::now()).unwrap();
+    tokio::time::timeout(LOAD_DEADLINE.saturating_sub(started.elapsed()), fault())
+        .await
+        .expect("the fault did not finish before the deadline");
     println!(
         "load: fault injected after {before} acknowledgements; {} when it finished",
         acked.load(Ordering::SeqCst)
     );
-    let mut acknowledged = BTreeMap::new();
+    let fault_at = *fault_started.get().unwrap();
+    let mut outcome = LoadOutcome {
+        acknowledged: BTreeMap::new(),
+        failed_after_fault: 0,
+        slowest_before_fault: Duration::ZERO,
+        slowest_after_fault: Duration::ZERO,
+    };
     for writer in writers {
-        for (nonce, seq) in writer.await.unwrap() {
-            assert!(acknowledged.insert(nonce, seq).is_none());
+        let remaining = LOAD_DEADLINE.saturating_sub(started.elapsed());
+        let (receipts, attempts) = tokio::time::timeout(remaining, writer)
+            .await
+            .expect("a writer did not finish before the deadline")
+            .unwrap();
+        for (nonce, seq) in receipts {
+            assert!(outcome.acknowledged.insert(nonce, seq).is_none());
+        }
+        for (at, took, failed) in attempts {
+            // An attempt still running when the fault began felt it too.
+            if at + took >= fault_at {
+                outcome.slowest_after_fault = outcome.slowest_after_fault.max(took);
+                outcome.failed_after_fault += usize::from(failed);
+            } else {
+                outcome.slowest_before_fault = outcome.slowest_before_fault.max(took);
+            }
         }
     }
     println!(
-        "load: {} acknowledged appends, {} failed attempts retried",
-        acknowledged.len(),
-        retries.load(Ordering::SeqCst)
+        "load: {} acknowledged appends, {} failed attempts retried ({} after the fault); \
+         slowest attempt {:?} before the fault, {:?} after",
+        outcome.acknowledged.len(),
+        retries.load(Ordering::SeqCst),
+        outcome.failed_after_fault,
+        outcome.slowest_before_fault,
+        outcome.slowest_after_fault,
     );
-    acknowledged
+    outcome
 }
 
 /// Every acknowledged append is readable on every relay at its acknowledged sequence number,
@@ -657,9 +729,15 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
         assert_eq!(answer.status, 200, "appends do not depend on the bus");
         nonces.push(envelope.nonce);
     }
-    container_action("nats", "start");
 
-    // Readers recover from their cursor, not from the bus.
+    // While NATS is still down, the existing subscriber on A is still woken (by A's own
+    // recovery tick), and readers recover from their cursors, not from the bus.
+    assert!(
+        next_wakeup(&mut socket, Duration::from_secs(8))
+            .await
+            .is_some(),
+        "the subscriber on A was not woken while NATS was down"
+    );
     let caught_up = read_from(&client, &c, &group.id, &group.current().token, 0).await;
     assert_gap_free(&caught_up, &c);
     assert_eq!(
@@ -673,18 +751,21 @@ async fn readers_catch_up_with_nothing_lost_after_nats_is_killed() {
     assert_eq!(tail.len(), 10);
     assert_eq!(tail[0].server_seq, 11);
 
-    // Once NATS is back the relays reconnect and wakeups cross replicas again.
+    // Once NATS is back the relays reconnect and wakeups cross replicas again, on the socket
+    // that was open throughout and on a new one.
+    container_action("nats", "start");
     let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let mut socket = subscribe(&a, &group).await;
-        if wakes_for_append_elsewhere(&mut socket, &client, &b, &group).await {
-            break;
-        }
+    while !wakes_for_append_elsewhere(&mut socket, &client, &b, &group).await {
         assert!(
             Instant::now() < deadline,
-            "wakeups never crossed replicas again"
+            "wakeups never crossed replicas again on the socket open throughout"
         );
     }
+    let mut fresh = subscribe(&a, &group).await;
+    assert!(
+        wakes_for_append_elsewhere(&mut fresh, &client, &b, &group).await,
+        "a new subscriber on A was not woken by B after NATS came back"
+    );
     println!("PASS with NATS killed, 20 appends were acknowledged and every reader caught up");
 }
 
@@ -693,11 +774,24 @@ async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
     let client = http();
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
-    let acknowledged = load_with_fault(&group, 150, 60, || async {
+    let restarted_before = started_at("fdb");
+    let outcome = load_with_fault(&group, 150, 60, || async {
         container_action("fdb", "restart?t=0");
     })
     .await;
-    assert_every_acknowledged_append_readable(&group, &acknowledged).await;
+    assert_ne!(
+        started_at("fdb"),
+        restarted_before,
+        "FoundationDB was not restarted"
+    );
+    assert!(
+        outcome.fault_was_observed(),
+        "the writers never felt the FoundationDB restart: no failed attempt, slowest {:?} \
+         after it against {:?} before",
+        outcome.slowest_after_fault,
+        outcome.slowest_before_fault
+    );
+    assert_every_acknowledged_append_readable(&group, &outcome.acknowledged).await;
     println!("PASS FoundationDB restarted mid-load: every acknowledged append is readable");
 }
 
@@ -706,12 +800,22 @@ async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
     let client = http();
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
-    let acknowledged = load_with_fault(&group, 150, 60, || async {
+    let restarted_before = started_at("relay-b");
+    let outcome = load_with_fault(&group, 150, 60, || async {
         container_action("relay-b", "kill");
         tokio::time::sleep(Duration::from_secs(3)).await;
         container_action("relay-b", "start");
     })
     .await;
-    assert_every_acknowledged_append_readable(&group, &acknowledged).await;
+    assert_ne!(
+        started_at("relay-b"),
+        restarted_before,
+        "relay-b was not restarted"
+    );
+    assert!(
+        outcome.failed_after_fault > 0,
+        "no append failed while relay-b was down"
+    );
+    assert_every_acknowledged_append_readable(&group, &outcome.acknowledged).await;
     println!("PASS relay-b killed mid-load: every acknowledged append is readable");
 }

@@ -145,26 +145,49 @@ docker compose -f backend/labs/compose.foundationdb-nats.yml down --volumes
 `compose.cluster.yml` runs three real relays (`relay-a`, `relay-b`, `relay-c`) built
 with `--features foundationdb`, in cluster mode against one FoundationDB 7.3.63, one
 Core NATS server, and MinIO, with an nginx round-robin proxy on
-`127.0.0.1:18080` so the app can use one origin. Set `FRANK_LAB_CLUSTER_PORT` if that
-port is taken. Nothing else is published.
+`127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}`. Nothing else is published.
 
-- `fdb-init` creates the single-node database on first start (`configure new single ssd`)
-  and does nothing once it exists. FoundationDB has a fixed address (10.89.42.10 on the
-  lab's own 10.89.42.0/24 network) because its cluster file names the coordinator by
-  address and the contract restarts it. Change the subnet if it collides with a local one.
-- `secrets-init` writes the operator-provisioned files once into the `secrets` volume:
-  a random 32-byte session secret and a random hex VAPID key. All three relays mount the
-  same files. They are lab-only and never written to the host.
-- `minio-init` creates the `frank-lab-blobs` bucket with one SigV4 request. MinIO stopped
-  publishing container images, so `Dockerfile.minio` builds the server from its upstream
-  source at a pinned release tag. No relay uses S3 yet; step 4 of the HA plan adds the
-  first consumer.
-- The relays share `cluster/relay.toml`: driver `foundationdb`, subspace
+**What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
+app can use. Message routes are off, profiles, usernames and the directory are still
+replica-local (each relay has its own), and there is no chain upstream unless you supply
+one. Those owners move to the shared store in HA steps 6 (direct messages), 7 (registry
+database) and 8 (directory); until they land, an app pointed at the proxy sees a
+different profile store on each request.
+
+Overrides, all optional:
+
+- `FRANK_LAB_CLUSTER_PORT`: the proxy's host port (default 18080). It also sets the
+  relays' public `url`, which `lab-init` renders into their configuration.
+- `FRANK_LAB_CLUSTER_SUBNET`: the first three octets of the lab's own /24 network
+  (default `10.89.42`), so two labs, or a colliding local network, can coexist.
+- `MONAD_TESTNET_HTTP_RPC_URL`: a Monad testnet RPC upstream, passed through from your
+  shell to the relays and never written to a file. Unset, the relays serve no chain.
+  Set, each relay checks the upstream's chain id and checkpoint before serving it, which
+  is what turning the mailbox on will need once step 6 lands. Never commit a URL or key.
+
+Services:
+
+- `fdb-init` creates the single-node database only on a fresh volume. `status` cannot
+  tell "no database yet" from "not reachable yet" (both time out), so the first
+  successful `configure new single ssd` leaves a marker in the cluster volume; with the
+  marker present, or once `status` reports the database available, it only waits and
+  never configures again. FoundationDB has a fixed address (`.10` on the lab subnet)
+  because its cluster file names the coordinator by address and the contract restarts it.
+- `lab-init` writes the operator-provisioned files once into the `secrets` volume, mode
+  0400 and never on the host: a random 32-byte session secret, a random VAPID key below
+  the P-256 order, and MinIO's root user and random password. On every start it renders
+  `cluster/relay.toml.in` into the `config` volume with the proxy origin as the relays'
+  `url`. All three relays mount the same files.
+- `minio` reads its root credentials from those files, and `minio-init` creates the
+  `frank-lab-blobs` bucket with one SigV4 request. MinIO stopped publishing container
+  images, so `Dockerfile.minio` builds the server from its upstream source at a pinned
+  release tag. No relay uses S3 yet; step 4 of the HA plan adds the first consumer.
+- The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
-  policy, and no mailbox, forum, directory or chain upstream. Each keeps its own RocksDB
-  registry database in its own volume. Groups are the only owner they share. The other
-  owners are still replica-local, so the preview flag is set, and each relay's startup
-  log names them:
+  policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
+  its own RocksDB registry database in its own volume. Groups are the only owner they
+  share. The other owners are still replica-local, so the preview flag is set, and each
+  relay's startup log names them:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'
@@ -173,8 +196,9 @@ docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-
 Commands, from the repository root of a clean checkout:
 
 ```sh
+export COMPOSE_PROJECT_NAME=frank-lab-cluster FRANK_LAB_CLUSTER_PORT=18080
 docker compose -f backend/labs/compose.cluster.yml up -d --build
-curl --fail http://127.0.0.1:18080/chains
+curl --fail "http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT}/chains"
 
 docker compose -f backend/labs/compose.cluster.yml --profile cluster-contract \
   run --build --rm cluster-contract
@@ -182,8 +206,8 @@ docker compose -f backend/labs/compose.cluster.yml --profile cluster-contract \
 docker compose -f backend/labs/compose.cluster.yml --profile cluster-contract down --volumes
 ```
 
-The first build compiles the relay in release mode and builds MinIO. Both take several
-minutes and are cached afterwards.
+A cold first build is slow: building MinIO from source took about 14 minutes here, and
+the release build of the relay and the contract several more. Both are cached afterwards.
 
 The `cluster-contract` profile (`cluster_contract.rs`) is an HTTP test binary that talks
 to all three relays and to the proxy:
@@ -197,19 +221,24 @@ to all three relays and to the proxy:
   refused, and an exact retry of a pre-rotation message keeps its receipt;
 - a websocket subscriber on A wakes within 3 s of an append on B, before A's own 5 s
   recovery tick, so the wakeup came over NATS;
-- with NATS killed, 20 appends on B are still acknowledged, readers on C and A catch up
-  from their cursors with nothing lost, and once NATS is back wakeups cross replicas again;
+- with NATS killed, 20 appends on B are still acknowledged; while it is still down, the
+  open subscriber on A is still woken (by A's own tick) and readers on C and A catch up
+  from their cursors with nothing lost; after NATS starts again, wakeups cross replicas
+  again on that same socket and on a new one;
 - FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
   three writers append 150 messages each and retry a failed append, with the same
-  envelope, on the next relay. Afterwards every acknowledged append is readable on every
-  relay at its acknowledged sequence number, and no retried append was stored twice.
+  envelope, on the next relay. The test checks the container really restarted and that
+  the writers felt it (a failed attempt, or for FoundationDB an attempt at least 1 s and
+  5 times slower than any before). Afterwards every acknowledged append is readable on
+  every relay at its acknowledged sequence number, and no retried append was stored
+  twice. The load fails instead of hanging if it does not finish within 300 s.
 
 The fault cases stop and start this project's own containers through the Docker socket,
 which the profile mounts; the test finds them by its own container's Compose project
 label. The tests therefore run one at a time. Each uses a fresh group, so reruns against
 the same volumes are fine. Paid group writes are not covered yet: HA step 5 (PR #1847)
 adds them, on solonet, once `[registry.group_writes]` lands, and the hook is marked at the
-top of `cluster_contract.rs` and in `cluster/relay.toml`.
+top of `cluster_contract.rs` and in `cluster/relay.toml.in`.
 
 ## References
 

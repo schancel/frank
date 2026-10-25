@@ -1051,16 +1051,12 @@ async fn directory_an_entry_published_on_a_resolves_on_b_and_c() {
     let account = Account::new();
     let first = account.sign(0, None, 0);
     assert_eq!(publish(&client, &a, &account.subject(), &first).await, 200);
-    let address = format!(
-        "0x{}",
-        hex::encode(
-            cashweb_registry::monad_stamp_stealth::recipient_address_from_public_key(
-                &account.point
-            )
-            .unwrap()
-            .0
-        )
-    );
+    // The account's EVM address: Keccak-256 of the uncompressed point, last 20 bytes.
+    let uncompressed = PublicKey::from_slice(&account.point)
+        .unwrap()
+        .serialize_uncompressed();
+    let digest = <sha3::Keccak256 as sha3::Digest>::digest(&uncompressed[1..]);
+    let address = format!("0x{}", hex::encode(&digest[12..]));
     for origin in [&b, &c, &proxy()] {
         let by_key = resolve(&client, &head_url(origin, &account.subject())).await;
         assert_eq!(by_key, (200, first.attestation.clone()), "{origin} by key");
@@ -1143,9 +1139,10 @@ async fn directory_conflicting_revisions_to_a_and_b_accept_exactly_one_and_never
         // The same first entry raced to two replicas enrolls once and both succeed.
         let twin = Account::new();
         let entry = twin.sign(0, None, 0);
+        let twin_subject = twin.subject();
         let (on_a, on_b) = tokio::join!(
-            publish(&client, &a, &twin.subject(), &entry),
-            publish(&client, &b, &twin.subject(), &entry)
+            publish(&client, &a, &twin_subject, &entry),
+            publish(&client, &b, &twin_subject, &entry)
         );
         assert_eq!((on_a, on_b), (200, 200), "round {round}: same first entry");
     }

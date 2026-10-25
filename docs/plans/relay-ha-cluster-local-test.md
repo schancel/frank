@@ -50,7 +50,7 @@ Other commands:
 | Command | What it does |
 | --- | --- |
 | `scripts/lab-cluster-app.sh fund 0x… 20` | The solonet faucet pays 20 MON to an app account (Wallet → Receive). Fund more than 10 MON: Monad keeps a 10 MON reserve per account. |
-| `scripts/lab-cluster-app.sh bots` | Runs the qwen (stub), lobby and faucet bots against the cluster, with their own funding key and state in `~/.frank-lab-cluster/frank-lab-app`. |
+| `scripts/lab-cluster-app.sh bots` | Runs every bot (Qwen in stub mode) against the cluster; the faucet grants 1 MONR per account (use `fund` for more), with their own funding key and state in `~/.frank-lab-cluster/frank-lab-app`. |
 | `scripts/lab-cluster-app.sh refresh-checkpoint` | Takes a fresh checkpoint and restarts the relays. Run it if paid sends or chain reads start failing. |
 | `scripts/lab-cluster-app.sh sweep` | Returns the bot funding wallet's balance to the faucet. Stop the bots first. |
 | `scripts/lab-cluster-app.sh down` | Stops the cluster and keeps its volumes. |

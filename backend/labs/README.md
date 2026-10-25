@@ -358,7 +358,7 @@ the bot state and a solonet-only bot funding key under `~/.frank-lab-cluster/fra
 scripts/lab-cluster-app.sh up                 # solonet if absent, the cluster, a fresh checkpoint;
                                               # prints the app, funding and bot commands
 scripts/lab-cluster-app.sh fund <0x address> 20   # the solonet faucet pays an app account
-scripts/lab-cluster-app.sh bots               # qwen (stub), lobby and faucet through the cluster
+scripts/lab-cluster-app.sh bots               # every bot (Qwen stubbed) through the cluster; faucet grants 1 MONR
 scripts/lab-cluster-app.sh refresh-checkpoint # a fresh checkpoint, relays restarted
 scripts/lab-cluster-app.sh sweep              # the bot funding wallet pays back to the faucet
 scripts/lab-cluster-app.sh down

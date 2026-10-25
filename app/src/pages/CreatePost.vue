@@ -252,8 +252,23 @@
           role="status"
           data-test="post-status"
         >
-          <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
+          <q-spinner-dots
+            v-if="!postSlow"
+            size="1.2em"
+            color="primary"
+            class="q-mr-xs"
+          />
+          <q-icon v-else name="hourglass_empty" class="q-mr-xs" />
           <span>{{ preparationStatus }}</span>
+        </div>
+        <div
+          v-else-if="postFailure"
+          class="text-caption text-negative q-mr-sm row items-center"
+          role="alert"
+          data-test="post-failed"
+        >
+          <q-icon name="error_outline" class="q-mr-xs" />
+          <span>{{ postFailure }}</span>
         </div>
         <div
           v-if="outcomeUnknown"
@@ -339,7 +354,7 @@ import { topicOptions } from 'src/utils/topic-options'
 import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
-import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
+import { FORUM_SLOW_MS, forumFailureText } from 'src/utils/forum-failure'
 import {
   clearForumPostDraft,
   loadForumPostDraft,
@@ -422,6 +437,8 @@ export default defineComponent({
       outcomeUnknown: false,
       refreshingStatus: false,
       preparationStatus: null as string | null,
+      postSlow: false,
+      postFailure: null as string | null,
       activeSubmissionId: null as number | null,
       componentMounted: false,
       routeEpoch: 0,
@@ -677,6 +694,7 @@ export default defineComponent({
     syncParentDigest(parentDigest: string | undefined) {
       this.persistDraft()
       this.refreshingStatus = false
+      this.postFailure = null
       this.routeEpoch += 1
       this.parentRouteEpoch += 1
       this.parentFocusHandoffId = null
@@ -911,43 +929,46 @@ export default defineComponent({
       if (ownsCurrentUi()) {
         this.activeSubmissionId = submissionId
         this.posting = true
+        this.postSlow = false
+        this.postFailure = null
         this.preparationStatus = postingStatus
       }
+      const ownsSubmission = () =>
+        this.componentMounted &&
+        this.activeSubmissionId === submissionId &&
+        this.routeEpoch === submissionEpoch
+      // No indefinite spinner: after a while without an answer, say so.
+      const slowTimer = setTimeout(() => {
+        if (!ownsSubmission()) return
+        this.postSlow = true
+        this.preparationStatus = this.$t('stampPreparation.postSlow')
+      }, FORUM_SLOW_MS)
       console.log('posting message', entry)
       let retainReservation = false
+      let failure: unknown
       try {
         const outcome = await submitPost({
           submit: async () => {
-            await this.postMessage({
-              wallet,
-              entry,
-              satoshis: submittedOffering,
-              topic: submittedTopic,
-              parentDigest: submittedParentDigest,
-              onPreparationProgress: progress => {
-                if (
-                  !this.componentMounted ||
-                  this.activeSubmissionId !== submissionId ||
-                  this.routeEpoch !== submissionEpoch
-                ) {
-                  return
-                }
-                const status = stampPreparationStatus(
-                  progress,
-                  (key, params) => this.$t(key, params ?? {}),
-                  {
-                    format: raw => activeChain.toDisplayAmount(raw),
-                    unit: activeChain.unit,
-                  },
-                )
-                this.preparationStatus = status
-              },
-            })
+            try {
+              await this.postMessage({
+                wallet,
+                entry,
+                satoshis: submittedOffering,
+                topic: submittedTopic,
+                parentDigest: submittedParentDigest,
+              })
+            } catch (err) {
+              failure = err
+              throw err
+            }
           },
           errorNotify,
           infoNotify,
           onOutcome: outcome => {
             retainReservation = outcome === 'unknown-outcome'
+            if (outcome === 'retryable-failure' && ownsSubmission()) {
+              this.postFailure = forumFailureText(failure, key => this.$t(key))
+            }
             if (outcome === 'submitted') {
               clearForumPostDraft(submittedDestination)
             } else if (outcome === 'unknown-outcome') {
@@ -982,6 +1003,8 @@ export default defineComponent({
         })
         retainReservation = outcome === 'unknown-outcome'
       } finally {
+        clearTimeout(slowTimer)
+        if (ownsSubmission()) this.postSlow = false
         if (!retainReservation) {
           this.releasePostSubmission({
             wallet,

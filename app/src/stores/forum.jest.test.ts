@@ -407,27 +407,6 @@ describe('useForumStore: putMessage', () => {
   })
 })
 
-describe('useForumStore: putMessage preparation progress (ticket #273)', () => {
-  it("hands the caller's progress callback to activeChain.topics.post", async () => {
-    const store = useForumStore()
-    mockedPost.mockResolvedValueOnce({ payloadDigest: 'deadbeef' })
-    mockedFetchOne.mockResolvedValueOnce(makeMessage())
-    const onPreparationProgress = jest.fn()
-
-    await store.putMessage({
-      wallet: testWallet,
-      entry: { kind: 'post', message: 'hello' },
-      satoshis: 10_000_000n,
-      topic: 'stamp',
-      onPreparationProgress,
-    })
-
-    expect(mockedPost.mock.calls[0][0].onPreparationProgress).toBe(
-      onPreparationProgress,
-    )
-  })
-})
-
 describe('useForumStore: read-back failure after a landed burn (review F3)', () => {
   it('a vote whose burn was sent but whose read-back throws rejects with BurnRefreshError, after exactly one burn', async () => {
     const store = useForumStore()
@@ -556,24 +535,6 @@ describe('useForumStore: addOffering', () => {
       direction: 'down',
       voteWeightWei: BigInt(250),
     })
-  })
-
-  it("hands the caller's progress callback to activeChain.topics.vote", async () => {
-    const store = useForumStore()
-    mockedVote.mockResolvedValueOnce(undefined)
-    mockedFetchOne.mockResolvedValueOnce(makeMessage())
-    const onPreparationProgress = jest.fn()
-
-    await store.addOffering({
-      wallet: testWallet,
-      payloadDigest: 'deadbeef',
-      satoshis: 250n,
-      onPreparationProgress,
-    })
-
-    expect(mockedVote.mock.calls[0][0].onPreparationProgress).toBe(
-      onPreparationProgress,
-    )
   })
 })
 

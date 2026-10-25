@@ -84,6 +84,8 @@ interface FakeChain {
   /** Fail RPC submission after the complete graph has been signed. */
   setSigningDown(down: boolean): void
   mainAddress: string
+  /** Chain state a reopened wallet sees again (one chain across a restart). */
+  state: { balances: Map<string, bigint>; nonces: Map<string, number>; applied: Set<string> }
 }
 
 const helperWallets: EvmChainWalletHandle[] = []
@@ -92,25 +94,26 @@ afterEach(async () => { await Promise.all(helperWallets.splice(0).map(wallet => 
 async function makeFakeChain(
   mainBalance = 10n ** 18n,
   nativeWallet?: EvmChainWalletHandle,
+  sameChainAs?: FakeChain,
 ): Promise<FakeChain> {
   if (!nativeWallet) {
     nativeWallet = await createEvmChain(CONFIG).createWallet({ mnemonic: TEST_MNEMONIC })
     helperWallets.push(nativeWallet)
   }
-  const balances = new Map<string, bigint>()
-  const nonces = new Map<string, number>()
+  const balances = sameChainAs?.state.balances ?? new Map<string, bigint>()
+  const nonces = sameChainAs?.state.nonces ?? new Map<string, number>()
   const rpcSubmissions: Transaction[] = []
   let rpcDown = false
   let signingDown = false
   const mainAddress = (await nativeWallet.getReceiveAddress()).raw
-  balances.set(mainAddress.toLowerCase(), mainBalance)
+  if (!sameChainAs) balances.set(mainAddress.toLowerCase(), mainBalance)
 
   const provider = nativeWallet.provider
   const guard = <T>(value: () => T) => {
     if (rpcDown) throw new Error('RPC unreachable (test)')
     return value()
   }
-  const applied = new Set<string>()
+  const applied = sameChainAs?.state.applied ?? new Set<string>()
   const apply = (tx: Transaction) => {
     if (applied.has(tx.hash!)) return
     const from = tx.from!.toLowerCase(), to = tx.to!.toLowerCase()
@@ -213,6 +216,7 @@ async function makeFakeChain(
       signingDown = down
     },
     mainAddress,
+    state: { balances, nonces, applied },
   }
 }
 
@@ -533,6 +537,145 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 })
 
+describe('a Forum vote pays through the direct-message stamp path', () => {
+  /** What `canonical-dm.ts` does for a stamp: the wallet's one preparer, ordinary selection. */
+  const reserveLikeAStamp = (wallet: EvmChainWalletHandle, operationId: string) =>
+    evmWalletInternals(wallet).transactionSetPreparer!.constructTransactionSet({
+      operationId,
+      amountWei: 10n * WEIGHT,
+      kdf: () => new Wallet('0x' + '77'.repeat(32)).address,
+    })
+  const vote = (chain: ReturnType<typeof createEvmChain>, wallet: EvmChainWalletHandle) =>
+    chain.topics.vote({
+      wallet,
+      payloadDigest: 'ab'.repeat(32),
+      direction: 'down',
+      voteWeightWei: WEIGHT,
+    })
+  const sourcesOf = (raws: readonly string[]) =>
+    raws.map(raw => { const tx = Transaction.from(raw); return `${tx.from!.toLowerCase()}:${tx.nonce}` })
+
+  it('selects only coins no stamp has reserved and never spends a coin twice', async () => {
+    const chain = createEvmChain(CONFIG)
+    const fake = await makeFakeChain()
+    const puts = fakeRelay()
+    await fundIndependentInputs(fake, 2)
+    const stamp = await reserveLikeAStamp(fake.wallet, 'dm-stamp-1')
+    const stampSources = new Set(stamp.bundle.map(tx => tx.sourceAccount.toLowerCase()))
+    await vote(chain, fake.wallet)
+    expect(puts).toHaveLength(1)
+    const [burn] = burns(fake)
+    expect(burn).toBeDefined()
+    expect(stampSources.has(burn!.from!.toLowerCase())).toBe(false)
+    // The vote's set is the shared preparer's ordinary (non-legacy) construction.
+    const operations = fake.wallet.getNativeOperations!()
+    const voteSet = operations.find(row => row.members.some(member => member.signed?.rawTransaction === burn!.serialized))!
+    expect(voteSet.kind).toBe('transaction-set')
+    expect(voteSet.transactionSetStages?.every(stage => !stage.legacy)).toBe(true)
+    const stampSet = operations.find(row => row.preparationId?.endsWith('dm-stamp-1'))!
+    const all = [...voteSet.members, ...stampSet.members].map(member => member.signed!.rawTransaction)
+    const pairs = sourcesOf(all)
+    expect(new Set(pairs).size).toBe(pairs.length)
+  })
+
+  it('a stamp and a vote built at the same time take different coins', async () => {
+    const chain = createEvmChain(CONFIG)
+    const fake = await makeFakeChain()
+    fakeRelay()
+    await fundIndependentInputs(fake, 2)
+    const [stamp] = await Promise.all([
+      reserveLikeAStamp(fake.wallet, 'dm-stamp-2'),
+      vote(chain, fake.wallet),
+    ])
+    const [burn] = burns(fake)
+    const stampPairs = sourcesOf([...stamp.bundle, ...stamp.otherTransactions].map(tx => tx.rawTransaction))
+    const votePairs = sourcesOf(fake.wallet.getNativeOperations!()
+      .find(row => row.members.some(member => member.signed?.rawTransaction === burn!.serialized))!
+      .members.map(member => member.signed!.rawTransaction))
+    expect(stampPairs.filter(pair => votePairs.includes(pair))).toEqual([])
+    expect(new Set(stamp.bundle.map(tx => tx.sourceAccount.toLowerCase())).has(burn!.from!.toLowerCase())).toBe(false)
+  })
+
+  it('when a stamp holds the only coin, the vote fails before signing and the stamp keeps it', async () => {
+    const chain = createEvmChain(CONFIG)
+    const fake = await makeFakeChain()
+    const puts = fakeRelay()
+    await fundIndependentInputs(fake, 1)
+    const stamp = await reserveLikeAStamp(fake.wallet, 'dm-stamp-3')
+    await expect(vote(chain, fake.wallet)).rejects.toThrow(/insufficient/i)
+    expect(puts).toHaveLength(0)
+    expect(burns(fake)).toHaveLength(0)
+    expect(fake.wallet.getNativeOperations!().map(row => row.preparationId)).toEqual([
+      expect.stringContaining('dm-stamp-3'),
+    ])
+    const coins = evmWalletInternals(fake.wallet).coinList!
+    for (const tx of stamp.bundle)
+      expect(coins.isAccountReserved(tx.sourceAccount.toLowerCase())).toBe(true)
+  })
+
+  it('a vote whose burn was submitted is finished after a restart from its original bytes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'frank-forum-vote-restart-'))
+    const location = join(directory, 'wallet')
+    mkdirSync(`${location}-${MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC }).address.raw.toLowerCase()}`)
+    const persistent = { ...CONFIG, walletStorageLocation: location }
+    try {
+      const first = await createEvmChain(persistent).createWallet({ mnemonic: TEST_MNEMONIC }) as EvmChainWalletHandle
+      const fake = await makeFakeChain(10n ** 18n, first)
+      // The wallet broadcasts the set, then the relay's answer is lost (HTTP 500).
+      const refused = fakeRelay('reject-500')
+      await expect(vote(createEvmChain(persistent), first)).rejects.toThrow(/retained|pending/i)
+      expect(refused).toHaveLength(1)
+      expect(burns(fake)).toHaveLength(1)
+      const original = signedGraph(first)
+      await first.close()
+
+      const restored = await createEvmChain(persistent).createWallet({ mnemonic: TEST_MNEMONIC }) as EvmChainWalletHandle
+      helperWallets.push(restored)
+      await makeFakeChain(10n ** 18n, restored, fake)
+      expect(signedGraph(restored)).toEqual(original)
+      const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+      const puts = fakeRelay()
+      await createEvmChain(persistent).topics.reconcileOperations!({ wallet: restored })
+      // The same request reached the relay again; nothing new was signed or burned.
+      expect(puts).toHaveLength(1)
+      expect(Buffer.from(puts[0]!.body)).toEqual(Buffer.from(refused[0]!.body))
+      expect(sign).not.toHaveBeenCalled()
+      expect(burns(fake)).toHaveLength(1)
+      expect(signedGraph(restored)).toEqual(original)
+      // Finished: the next pass has nothing left to hand over.
+      await createEvmChain(persistent).topics.reconcileOperations!({ wallet: restored })
+      expect(puts).toHaveLength(1)
+      sign.mockRestore()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('does not wait behind a native send holding the wallet-wide queue', async () => {
+    // A native send or contract call waits in this queue for the main account, with no deadline.
+    // The vote used to write its record through the same queue and showed "Checking private
+    // stamp accounts…" for as long as that wait lasted.
+    const chain = createEvmChain(CONFIG)
+    const fake = await makeFakeChain()
+    const puts = fakeRelay()
+    await fundIndependentInputs(fake, 1)
+    const internals = evmWalletInternals(fake.wallet)
+    let release!: () => void
+    internals.sendQueue = new Promise<void>(resolve => { release = resolve })
+    try {
+      const outcome = await Promise.race([
+        vote(chain, fake.wallet).then(() => 'voted'),
+        new Promise(resolve => setTimeout(() => resolve('still waiting'), 5_000)),
+      ])
+      expect(outcome).toBe('voted')
+      expect(puts).toHaveLength(1)
+      expect(burns(fake)).toHaveLength(1)
+    } finally {
+      release()
+    }
+  })
+})
+
 describe('RPC failure after signing the complete Forum graph', () => {
   const post = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.post({
@@ -558,17 +701,23 @@ describe('RPC failure after signing the complete Forum graph', () => {
     async (_name, act) => {
       const chain = createEvmChain(CONFIG)
       const fake = await makeFakeChain()
-      const puts = fakeRelay()
-      // Require owned funding predecessors: a direct nonce-zero burn could otherwise be
-      // broadcast successfully by the relay even while this wallet's RPC submit fails.
+      // The node refuses the wallet's broadcast and the relay answers 500: nothing reaches the
+      // chain on the first attempt.
+      const refused = fakeRelay('reject-500')
+      // One coin covers the burn: the stamp construction pays from it and splits its residual
+      // into owned change, all signed in one graph.
       fake.balances.set(fake.mainAddress.toLowerCase(), 0n)
       for (const record of fake.pool.records())
-        fake.balances.set(record.address.toLowerCase(), 100_000_000_000_000n)
+        fake.balances.set(record.address.toLowerCase(), 1_000_000_000_000_000n)
       await fake.wallet.refreshTransactionSetInventory!()
       const broadcast = jest.spyOn(fake.wallet.provider, 'broadcastTransaction')
       fake.setSigningDown(true)
       await expect(act(chain, fake)).rejects.toThrow(/retained|pending/i)
-      expect(puts).toHaveLength(0)
+      // As for a direct message, the wallet's own failed broadcast does not withhold the
+      // request: the relay gets the original bytes.
+      expect(refused).toHaveLength(1)
+      const firstRequest = Buffer.from(refused[0]!.body).toString('hex')
+      expect(burns(fake)).toHaveLength(0)
       expect(broadcast).toHaveBeenCalled()
       expect(fake.rpcSubmissions).toHaveLength(0)
       const original = signedGraph(fake.wallet)
@@ -580,14 +729,16 @@ describe('RPC failure after signing the complete Forum graph', () => {
       expect(held.map(coin => `${coin.account}:${coin.nonce}`).sort()).toEqual(
         [...new Set(original.map(raw => { const tx = Transaction.from(raw); return `${tx.from!.toLowerCase()}:${tx.nonce}` }))].sort(),
       )
-      expect(held.every(coin => coin.nonce === 0 && coin.state === 'pending_receipt')).toBe(true)
+      // One source stacks the payment and its change on consecutive nonces; every one is held.
+      expect(held.every(coin => coin.state === 'pending_receipt')).toBe(true)
       expect(all.filter(coin => coin.state === 'unspent').every(coin =>
         coin.after?.account === coin.account && coin.after.nonce === coin.nonce - 1)).toBe(true)
       fake.setSigningDown(false)
+      const puts = fakeRelay()
       await chain.topics.reconcileOperations!({ wallet: fake.wallet })
-      expect(puts.length).toBeGreaterThan(0)
-      expect(new Set(puts.map(put => Buffer.from(put.body).toString('hex'))).size).toBe(1)
+      // Recovery hands the relay the same request again; it never builds another payment.
       expect(puts).toHaveLength(1)
+      expect(Buffer.from(puts[0]!.body).toString('hex')).toBe(firstRequest)
       expect(burns(fake)).toHaveLength(1)
       expect(signedGraph(fake.wallet)).toEqual(original)
       expect([...observedBurns.values()].map(tx => tx.serialized).sort()).toEqual([...original].sort())
@@ -1294,7 +1445,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     expect(wallet.pool.accountClaimedBy(busy)).toBeUndefined()
   })
 
-  it('aggregates multiple funding transactions when no single account covers the total required amount', async () => {
+  it('refuses a burn no single coin covers before signing or moving anything (no consolidation run)', async () => {
     const { deriveEvmStealthPrivateKey } = await import('../evm-stealth')
     const chain = createEvmChain({
       ...CONFIG,
@@ -1342,8 +1493,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
       amount: 10_000_000_000_000_000,
     })
 
-    // Each source is smaller than the intended burn before fees. Three sources together cover
-    // their consolidation fees and the one burn; any uneconomic residual remains accounted for.
+    // Each source is smaller than the intended burn before fees; together they would cover it.
     const partBalance = 100_000_000_000_000n
     fake.balances.set(main, partBalance)
     fake.balances.set(coin1, partBalance)
@@ -1351,28 +1501,22 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
 
     await wallet.refreshReceivedPayments!()
 
-    const postResult = await chain.topics.post({
-      wallet,
-      topic: 'memes',
-      entries: [ENTRY],
-      direction: 'up',
-      voteWeightWei: 120_000_000_000_000n,
-    })
-
-    expect(postResult.payloadDigest).toBeDefined()
-    // Multiple funding transactions were sent to aggregate into the burn sub-account!
-    expect(fake.rpcSubmissions.length).toBeGreaterThanOrEqual(2)
-    const funders = fake.rpcSubmissions.map(tx => tx.from!.toLowerCase())
-    // More than one unique funder address contributed
-    const uniqueFunders = new Set(funders)
-    expect(uniqueFunders.size).toBeGreaterThanOrEqual(2)
-    expect(burns(fake)).toHaveLength(1)
-    const burn = burns(fake)[0]
-    expect(burn.value).toBeGreaterThanOrEqual(120_000_000_000_000n)
-    const fees = [...observedBurns.values()].reduce((sum, tx) => sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!), 0n)
-    const remainingOwned = [...fake.balances].filter(([address]) => address !== BURN_ADDRESS.toLowerCase()).reduce((sum, [, value]) => sum + value, 0n)
-    expect(burn.value + fees + remainingOwned).toBe(3n * partBalance)
-    expect(signedGraph(wallet)).toContain(burn.serialized)
-    expect(puts.length).toBeGreaterThanOrEqual(1)
+    // Forum burns pay exactly like a direct-message stamp: one payment transaction from the
+    // coin list, never a funding run that consolidates coins into a burn account first.
+    await expect(
+      chain.topics.post({
+        wallet,
+        topic: 'memes',
+        entries: [ENTRY],
+        direction: 'up',
+        voteWeightWei: 120_000_000_000_000n,
+      }),
+    ).rejects.toThrow(/insufficient/i)
+    expect(fake.rpcSubmissions).toHaveLength(0)
+    expect(burns(fake)).toHaveLength(0)
+    expect(puts).toHaveLength(0)
+    expect(signedGraph(wallet)).toEqual([])
+    for (const address of [main, coin1, coin2])
+      expect(fake.balances.get(address)).toBe(partBalance)
   })
 })

@@ -209,9 +209,9 @@ const messages: Record<string, string> = {
   'stampPreparation.replyParentLoading': 'LOADING_PARENT',
   'stampPreparation.replyParentUnavailable': 'PARENT_UNAVAILABLE',
   'stampPreparation.retryReplyParent': 'RETRY_PARENT',
-  'chat.stampPreparationChecking': 'CHECKING',
-  'chat.stampPreparationFunding': 'FUNDING {completed}/{total} {feeReserve}',
-  'chat.stampPreparationReady': 'READY',
+  'stampPreparation.postSlow': 'POST_SLOW',
+  'stampPreparation.failedNoFunds': 'FAILED_NO_FUNDS',
+  'stampPreparation.failedUnknown': 'FAILED_UNKNOWN',
   'stampPreparation.postedRefreshFailed': 'POSTED_REFRESH_FAILED',
   'forum.editor.toolbar': 'Formatting tools',
   'forum.editor.bold': 'Bold',
@@ -1291,38 +1291,72 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
 })
 
 describe('CreatePost preparation status', () => {
-  it('shows each stage in a live region and clears it when the post is done', async () => {
+  it('says "Posting…" in a live region and clears it when the post is done', async () => {
     const { wrapper } = mountPage()
     let finish!: () => void
-    let report!: (p: unknown) => void
     mockPutMessage.mockImplementationOnce(
-      (args: { onPreparationProgress: (p: unknown) => void }) => {
-        report = args.onPreparationProgress
-        return new Promise<void>(resolve => (finish = resolve))
-      },
+      () => new Promise<void>(resolve => (finish = resolve)),
     )
 
     const posting = (wrapper.vm as unknown as { post(): Promise<void> }).post()
     await flushPromises()
     expect(status(wrapper).text()).toBe('POSTING')
     expect(status(wrapper).attributes('role')).toBe('status')
-
-    report({ stage: 'checking' })
-    await flushPromises()
-    expect(status(wrapper).text()).toBe('CHECKING')
-
-    report({ stage: 'funding', completed: 0, total: 1, feeReserveWei: 7n })
-    await flushPromises()
-    expect(status(wrapper).text()).toBe('FUNDING 0/1 7wei')
-
-    report({ stage: 'ready', fundingTxHashes: [] })
-    await flushPromises()
-    expect(status(wrapper).text()).toBe('READY')
+    expect(mockPutMessage.mock.calls[0][0]).not.toHaveProperty(
+      'onPreparationProgress',
+    )
 
     finish()
     await posting
     await flushPromises()
     expect(status(wrapper).exists()).toBe(false)
+  })
+
+  it('says so when a post takes too long instead of spinning without end', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    try {
+      const { wrapper } = mountPage()
+      let finish!: () => void
+      mockPutMessage.mockImplementationOnce(
+        () => new Promise<void>(resolve => (finish = resolve)),
+      )
+      const posting = (
+        wrapper.vm as unknown as { post(): Promise<void> }
+      ).post()
+      await flushPromises()
+      expect(status(wrapper).text()).toBe('POSTING')
+
+      jest.advanceTimersByTime(30_000)
+      await flushPromises()
+      expect(status(wrapper).text()).toBe('POST_SLOW')
+
+      finish()
+      await posting
+      await flushPromises()
+      expect(status(wrapper).exists()).toBe(false)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('shows why a post failed in place of the status', async () => {
+    const { EvmTransactionSetInsufficientFundsError } = jest.requireActual(
+      '@frank/wallet/evm-transaction-set-types',
+    )
+    const { wrapper } = mountPage()
+    mockPutMessage.mockRejectedValueOnce(
+      new Error('Post abandoned', {
+        cause: new EvmTransactionSetInsufficientFundsError(),
+      }),
+    )
+
+    await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    await flushPromises()
+
+    expect(status(wrapper).exists()).toBe(false)
+    const failed = wrapper.find('[data-test="post-failed"]')
+    expect(failed.text()).toBe('FAILED_NO_FUNDS')
+    expect(failed.attributes('role')).toBe('alert')
   })
 
   it('ignores a second submit while the first is still in flight', async () => {
@@ -1342,7 +1376,7 @@ describe('CreatePost preparation status', () => {
     expect(mockPutMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps pending B progress and ownership isolated from stale A', async () => {
+  it('keeps pending B status and ownership isolated from stale A', async () => {
     const forum = useForumStore() as unknown as {
       index: Record<string, { topic: string }>
       getPostReservationId(args: {
@@ -1357,20 +1391,12 @@ describe('CreatePost preparation status', () => {
     const { page, router } = await mountRoutedPage('/new-post/parentA')
     let finishA!: () => void
     let finishB!: () => void
-    let reportA!: (progress: unknown) => void
-    let reportB!: (progress: unknown) => void
     mockPutMessage
       .mockImplementationOnce(
-        (args: { onPreparationProgress: (progress: unknown) => void }) => {
-          reportA = args.onPreparationProgress
-          return new Promise<void>(resolve => (finishA = resolve))
-        },
+        () => new Promise<void>(resolve => (finishA = resolve)),
       )
       .mockImplementationOnce(
-        (args: { onPreparationProgress: (progress: unknown) => void }) => {
-          reportB = args.onPreparationProgress
-          return new Promise<void>(resolve => (finishB = resolve))
-        },
+        () => new Promise<void>(resolve => (finishB = resolve)),
       )
 
     const postingA = (page().vm as unknown as { post(): Promise<void> }).post()
@@ -1380,32 +1406,21 @@ describe('CreatePost preparation status', () => {
     const postingB = (page().vm as unknown as { post(): Promise<void> }).post()
     await flushPromises()
 
-    reportB({ stage: 'checking' })
-    await flushPromises()
     expect(page().vm).toMatchObject({
       posting: true,
-      preparationStatus: 'CHECKING',
+      preparationStatus: 'POSTING',
       parentDigest: 'parentB',
     })
 
-    reportA({ stage: 'funding', completed: 0, total: 1, feeReserveWei: 7n })
     finishA()
     await postingA
     await flushPromises()
     expect(page().vm).toMatchObject({
       posting: true,
-      preparationStatus: 'CHECKING',
+      preparationStatus: 'POSTING',
       parentDigest: 'parentB',
     })
     expect(router.currentRoute.value.fullPath).toBe('/new-post/parentB')
-
-    reportA({ stage: 'ready', fundingTxHashes: [] })
-    await flushPromises()
-    expect(page().vm).toMatchObject({
-      posting: true,
-      preparationStatus: 'CHECKING',
-      parentDigest: 'parentB',
-    })
 
     finishB()
     await postingB

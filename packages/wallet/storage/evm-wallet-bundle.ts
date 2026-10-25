@@ -599,9 +599,11 @@ export async function openExistingPoolMonadTopicOwner(params: {
   let canonicalRetained: CanonicalRetainedObligations | undefined
   try {
     let topicJournal: TopicOperationJournal
+    // A Forum operation's record is written the way a direct message's is: by itself, under
+    // the journal's own short write order. It never waits in the wallet-wide queue that native
+    // sends and contract calls hold while they wait for the main account.
     const assertJournalMutation = () => {
       if (!journalOpen) throw new Error('Monad topic journal is closed')
-      params.assertEnclosingAdmission()
     }
     if (params.location === undefined) {
       await params.loadExistingState?.()

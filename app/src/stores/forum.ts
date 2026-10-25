@@ -5,7 +5,6 @@ import { uniq } from 'ramda'
 
 import {
   activeChain,
-  DirectMessagePreparationProgress,
   WalletHandle,
 } from '@frank/wallet/chain'
 
@@ -488,16 +487,12 @@ export const useForumStore = defineStore('forum', {
       satoshis,
       topic,
       parentDigest,
-      onPreparationProgress,
     }: {
       wallet: WalletHandle
       entry: ForumMessageEntry
       satoshis: bigint
       topic: string
       parentDigest?: string
-      onPreparationProgress?: (
-        progress: DirectMessagePreparationProgress,
-      ) => void
     }) {
       if (satoshis <= 0n || satoshis > 9223372036854775807n)
         throw new Error('Invalid Forum post amount')
@@ -508,7 +503,6 @@ export const useForumStore = defineStore('forum', {
         direction: satoshis >= 0n ? 'up' : 'down',
         voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
         parentDigest,
-        onPreparationProgress,
       })
       this.recordOwnPost(payloadDigest)
       notifyOwnAddressesChanged()
@@ -599,14 +593,10 @@ export const useForumStore = defineStore('forum', {
       wallet,
       payloadDigest,
       satoshis,
-      onPreparationProgress,
     }: {
       wallet: WalletHandle
       payloadDigest: string
       satoshis: bigint
-      onPreparationProgress?: (
-        progress: DirectMessagePreparationProgress,
-      ) => void
     }) {
       console.log('voting towards message', payloadDigest, satoshis)
       await activeChain.topics.vote({
@@ -614,7 +604,6 @@ export const useForumStore = defineStore('forum', {
         payloadDigest,
         direction: satoshis >= 0n ? 'up' : 'down',
         voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
-        onPreparationProgress,
       })
       await refreshAfterBurn('vote', () => this.fetchMessage({ payloadDigest }))
     },

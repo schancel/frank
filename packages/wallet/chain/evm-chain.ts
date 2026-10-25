@@ -2449,6 +2449,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             transactionSetPreparer,
             transactionSetLifecycle,
             refreshTransactionSetInventory: () => transactionSetRuntime.refresh(),
+            untilBlock: (block) => transactionSetRuntime.blockWatcher.until(block),
             forumOperationMutation: (task) => runWalletExclusive(wallet, async () => task()),
             observeRetainedForumSpend: (rawTx) =>
               observeRetainedForumSpend(wallet, coinList, rawTx, config.spendSpacingBlocks),

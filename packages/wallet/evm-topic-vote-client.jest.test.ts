@@ -85,7 +85,7 @@ async function fixture(valueWei = 1700000n) {
       changeIndex: index,
     }),
   })
-  const construct = jest.spyOn(preparer, 'constructLegacyTransactionSet')
+  const construct = jest.spyOn(preparer, 'constructTransactionSet')
   const legacySigner = jest.spyOn(bundle.pool, 'getSigner')
   const included = new Map<string, { tx: Transaction; index: number }>()
   const provider = {

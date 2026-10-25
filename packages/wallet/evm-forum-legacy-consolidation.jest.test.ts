@@ -1,5 +1,5 @@
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
-/** Fragmented Forum funding keeps one burn and one durable operation across network waits/reopen. */
+/** Forum burns never fan fragmented coins into a consolidation account; legacy sends still do. */
 import axios from 'axios'
 import level from 'level'
 import { mkdtemp, rm } from 'fs/promises'
@@ -233,85 +233,24 @@ const request = {
 }
 afterEach(() => jest.clearAllMocks())
 
-test('all funding must confirm and mature before one Forum burn leaves the wallet; reopen preserves original bytes', async () => {
+test('a Forum burn no single coin covers is refused before anything is signed, sent or consolidated', async () => {
+  // Forum burns take the direct-message stamp construction, which never fans coins into a
+  // consolidation account first. The relay verifies one burn per operation, so a burn larger
+  // than every single coin is refused at selection: nothing is signed, broadcast or handed to
+  // the relay, and every coin stays selectable.
   const location = await mkdtemp(join(tmpdir(), 'forum-fragmented-'))
   const chain = network()
-  let f = await fixture(location, chain)
+  const f = await fixture(location, chain)
   try {
     await expect(submitForumOperation(f.wallet, request)).rejects.toThrow(
-      /funding.*pending/i,
+      /insufficient/i,
     )
     expect(http).not.toHaveBeenCalled()
-    const original = f.preparer.getOperation(request.operationId)!
-    const bytes = original.members.map(member => member.signed!.rawTransaction)
-    const funding = original.members.filter(
-      member => member.transactionSet?.role === 'funding',
-    )
-    expect(funding.length).toBeGreaterThan(1)
-    const payment = original.members.filter(
-      member => member.transactionSet?.role === 'payment',
-    )
-    expect(payment).toHaveLength(1)
-    const retained = f.topicJournal.getAll()[0]!
-    const parsed = validateFrame(Uint8Array.from(retained.requestBytes))
-    expect(parsed.kind).toBe('parsed')
-    if (
-      parsed.kind !== 'parsed' ||
-      parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION
-    )
-      throw new Error('Expected unchanged Forum post submission')
-    expect(getBytes(payment[0]!.signed!.rawTransaction)).toEqual(
-      parsed.typed.burnTx,
-    )
-    const withheldSource = funding.at(-1)!.source.address
-    const ordered = [...original.members].sort(
-      (a, b) =>
-        a.source.address.localeCompare(b.source.address) ||
-        Transaction.from(a.signed!.rawTransaction).nonce -
-          Transaction.from(b.signed!.rawTransaction).nonce,
-    )
-    for (const member of ordered.filter(
-      member =>
-        member.source.address !== withheldSource &&
-        member.source.address !== payment[0]!.source.address,
-    ))
-      chain.mine(member.signed!.rawTransaction)
-    chain.advance(20)
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      /funding.*pending/i,
-    )
-    expect(http).not.toHaveBeenCalled()
-    for (const member of ordered.filter(
-      member => member.source.address === withheldSource,
-    ))
-      chain.mine(member.signed!.rawTransaction)
-    await f.close()
-    f = await fixture(location, chain)
-    chain.advance(22)
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      /funding.*pending/i,
-    )
-    expect(http).not.toHaveBeenCalled()
-    expect(chain.broadcasts).not.toContain(payment[0]!.signed!.rawTransaction)
-    chain.advance(23)
-    http.mockRejectedValue(new Error('ambiguous relay response'))
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      'ambiguous relay response',
-    )
-    expect(http).toHaveBeenCalled()
-    const submitted = http.mock.calls.map(
-      call => new Uint8Array(call[0]!.data as Uint8Array),
-    )
-    for (const body of submitted)
-      expect(body).toEqual(Uint8Array.from(retained.requestBytes))
-    expect(
-      f.preparer
-        .getOperation(request.operationId)!
-        .members.map(member => member.signed!.rawTransaction),
-    ).toEqual(bytes)
-    expect(f.journal.list()).toHaveLength(1)
-    expect(chain.broadcasts).toContain(payment[0]!.signed!.rawTransaction)
-    expect(f.coins.isAccountReserved(payment[0]!.source.address)).toBe(true)
+    expect(chain.broadcasts).toEqual([])
+    expect(f.preparer.getOperation(request.operationId)).toBeUndefined()
+    expect(f.journal.list()).toEqual([])
+    for (const n of [1, 2])
+      expect(f.coins.isAccountReserved(key(n).address.toLowerCase())).toBe(false)
   } finally {
     await f.close()
     await rm(location, { recursive: true, force: true })

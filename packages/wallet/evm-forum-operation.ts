@@ -23,6 +23,7 @@ import type {
 } from './storage/topic-operation-journal'
 import type { EvmCoinList } from './evm-coin-list'
 import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { constructWhenSpendable } from './evm-transaction-set'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -381,11 +382,12 @@ function reconcileRetainedForumOperation(
 export class ForumOperationPendingError extends Error {
   constructor(message: string, readonly cause?: unknown) {
     super(message)
+    this.name = 'ForumOperationPendingError'
   }
 }
 
 /** A relay response is diagnostic only; it never authorizes another payment. */
-class ForumRelayResponseError extends Error {
+export class ForumRelayResponseError extends Error {
   constructor(
     readonly status: number,
     readonly cause: unknown,
@@ -397,6 +399,7 @@ class ForumRelayResponseError extends Error {
         detail ? `: ${detail}` : ''
       }. Original operation retained; receipt verification may still be pending.`,
     )
+    this.name = 'ForumRelayResponseError'
   }
 }
 
@@ -603,9 +606,7 @@ async function settle(
         nativeMemberSuperseded(member),
     )
   )
-    await wallet.forumOperationMutation!(() =>
-      wallet.topicOperationJournal!.delete(operation),
-    )
+    await wallet.topicOperationJournal!.delete(operation)
 }
 
 export async function reconcileForumOperations(
@@ -670,13 +671,25 @@ async function finishForumConstruction(
   )
   const commitment = topicVoteCommitment(wallet.cborNetwork!, target)
   const calldata = hexlify(topicBurnCalldata(retained.direction, commitment))
-  const prepared =
-    await wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+  // The same construction a direct-message stamp uses: ordinary coin selection over the
+  // wallet's one coin list, its change and successor rules, its journal and submission. The
+  // relay verifies one signed burn per operation, so the payment is one transaction.
+  const construct = () =>
+    wallet.transactionSetPreparer!.constructTransactionSet({
       operationId: retained.transactionSetOperationId,
       amountWei: BigInt(retained.intendedValueWei),
       kdf: () => intent.burnAddress,
       calldata,
+      maxPaymentParts: 1,
     })
+  // Money that reached the wallet a few blocks ago may be spendable only from a later block
+  // (Monad's spacing rule): wait for that block, as a direct message does.
+  const prepared = wallet.untilBlock
+    ? await constructWhenSpendable(construct, {
+        untilBlock: wallet.untilBlock,
+        refresh: () => wallet.refreshTransactionSetInventory?.() ?? Promise.resolve(),
+      })
+    : await construct()
   if (prepared.bundle.length !== 1)
     throw new Error('Forum requires exactly one burn transaction')
   const raw = getBytes(prepared.bundle[0]!.rawTransaction)
@@ -696,9 +709,7 @@ async function finishForumConstruction(
       .toString(),
   }
   await bindForumAuthority(wallet, operation)
-  await wallet.forumOperationMutation!(() =>
-    wallet.topicOperationJournal!.put(operation),
-  )
+  await wallet.topicOperationJournal!.put(operation)
   return operation
 }
 
@@ -757,10 +768,7 @@ async function submitForumOperationAdmitted(
   // intent. Construction failures must retain the caller's duplicate barrier: recovery
   // can still fund and submit this original operation when funds become available.
   try {
-    if (!prior)
-      await wallet.forumOperationMutation!(() =>
-        wallet.topicOperationJournal!.put(intent),
-      )
+    if (!prior) await wallet.topicOperationJournal!.put(intent)
     const operation = await finishForumConstruction(wallet, prior ?? intent)
     // Every signed byte and its original public payload are durable before external handoff.
     await prepareForumHandoff(wallet, operation)

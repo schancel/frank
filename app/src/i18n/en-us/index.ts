@@ -104,6 +104,17 @@ export const rawEnUS = {
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
     voteOutcomeUnknown:
       'Your vote was not confirmed. Your wallet keeps it pending and it may still count. Reload later to check. Do not vote again.',
+    voteSlow: 'Still voting. The network is slow; your vote is kept and will be sent.',
+    postSlow: 'Still posting. The network is slow; your post is kept and will be sent.',
+    failedNoFunds:
+      'Not enough funds to pay for this. It is kept and will be sent when funds arrive.',
+    failedPostNotOnRelay:
+      'The relay does not have this post yet. Your vote is kept and will be sent again.',
+    failedRelayRefused: 'The relay refused it. It is kept and will be sent again.',
+    failedNetwork:
+      'The network could not be reached. It is kept and will be sent again.',
+    failedUnknown:
+      'It did not go through yet. It is kept and will be sent again; do not send it twice.',
   },
   forum: {
     pullToRefresh: 'Pull down to refresh',

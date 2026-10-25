@@ -21,7 +21,12 @@ import type {
 } from './topic-operations'
 
 export class TopicPostAbandonedError extends Error {
-  constructor(message: string, readonly payloadHashHex: string) {
+  constructor(
+    message: string,
+    readonly payloadHashHex: string,
+    /** Why the operation is retained (the wallet or relay error), for a plain-words reason. */
+    readonly cause?: unknown,
+  ) {
     super(message)
     this.name = 'TopicPostAbandonedError'
   }
@@ -111,7 +116,7 @@ export class TopicPostClient {
       return { ...result, payloadHashHex, postFrame }
     } catch (error) {
       if (error instanceof TopicOperationPendingError)
-        throw new TopicPostAbandonedError(error.message, payloadHashHex)
+        throw new TopicPostAbandonedError(error.message, payloadHashHex, error.cause)
       throw error
     }
   }

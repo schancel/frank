@@ -2,6 +2,7 @@ import {
   compareBytes,
   encodeCanonical,
   previewDirectoryContext,
+  toHex,
   uncompressedPubkey,
   validateFrame,
   verifyPreviewDirectoryEvidence,
@@ -154,11 +155,8 @@ const authenticatedPreviewCache = new Map<
 export function authenticate(anchor: Anchor, wrapper: Uint8Array): Record {
   let signed
   try {
-    const cacheKey = `${anchor.network}:${Buffer.from(
-      wrapper.buffer,
-      wrapper.byteOffset,
-      wrapper.byteLength,
-    ).toString('hex')}`
+    // toHex, not Buffer: this module runs in the browser as well as in Node.
+    const cacheKey = `${anchor.network}:${toHex(wrapper)}`
     signed = authenticatedPreviewCache.get(cacheKey)
     if (!signed) {
       signed = verifyPreviewDirectoryEvidence(

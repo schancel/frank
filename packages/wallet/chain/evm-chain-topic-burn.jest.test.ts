@@ -574,11 +574,15 @@ describe('RPC failure after signing the complete Forum graph', () => {
       const original = signedGraph(fake.wallet)
       expect(original.length).toBeGreaterThan(1)
       expect(broadcast.mock.calls.every(([raw]) => original.includes(raw))).toBe(true)
-      const held = evmWalletInternals(fake.wallet).coinList!.all().filter(coin => coin.holder)
+      const all = evmWalletInternals(fake.wallet).coinList!.all().filter(coin => coin.holder)
+      // A residual left on a source is its successor coin, not a reserved input.
+      const held = all.filter(coin => coin.state !== 'unspent')
       expect(held.map(coin => `${coin.account}:${coin.nonce}`).sort()).toEqual(
         [...new Set(original.map(raw => { const tx = Transaction.from(raw); return `${tx.from!.toLowerCase()}:${tx.nonce}` }))].sort(),
       )
       expect(held.every(coin => coin.nonce === 0 && coin.state === 'pending_receipt')).toBe(true)
+      expect(all.filter(coin => coin.state === 'unspent').every(coin =>
+        coin.after?.account === coin.account && coin.after.nonce === coin.nonce - 1)).toBe(true)
       fake.setSigningDown(false)
       await chain.topics.reconcileOperations!({ wallet: fake.wallet })
       expect(puts.length).toBeGreaterThan(0)
@@ -1165,14 +1169,12 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
       const f = await reserved(window)
       expect(await f.admission()).toMatchObject({ status: 'ready' })
 
-      const priorXBalance = f.fake.balances.get(f.xAddress)!
       await f.act[kind]()
 
       expect(f.puts).toHaveLength(1)
       const burn = burnOf(f.puts[0])
-      expect(burn.value).toBe(burn.from!.toLowerCase() === f.xAddress
-        ? priorXBalance - burn.gasLimit * (burn.gasPrice ?? burn.maxFeePerGas!)
-        : WEIGHT)
+      // The burn carries exactly the weight; never the rest of the source's balance.
+      expect(burn.value).toBe(WEIGHT)
       expect(burn.from!.toLowerCase() === f.xAddress && burn.nonce === 0).toBe(false)
       if (window === 'pending') expect(burn.from!.toLowerCase()).not.toBe(f.xAddress)
       expect(f.fake.rpcSubmissions.every(tx => tx.from!.toLowerCase() !== f.xAddress || tx.nonce > 0)).toBe(true)

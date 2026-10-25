@@ -882,7 +882,11 @@ export class EvmTransactionSetPreparer {
     const paymentGas = context.gas
     const paymentFee = paymentGas * policy.gasPriceWei,
       changeFee = policy.changeGasLimit * policy.gasPriceWei
-    let payment = part.paymentValueWei
+    // The recipient receives exactly what selection assigned to this source. Residual
+    // value is never added to the payment: it is split into fresh change accounts when
+    // the radix split can carry it, and otherwise stays with the sender on this account's
+    // next nonce (settlement projects `balanceAfterWei` as the successor coin).
+    const payment = part.paymentValueWei
     const hasPayment = payment > 0n || (request.calldata ?? '0x') !== '0x'
     // Initial selection can also reserve a whole input solely for continuation. Its
     // above-reserve partial capacity never authorizes a first change that drains below
@@ -891,30 +895,28 @@ export class EvmTransactionSetPreparer {
     if (!hasPayment && rule?.waitBlocks && part.coin.nonce > 0 &&
         (part.coin.lastSpentInBlock === undefined || policy.head < part.coin.lastSpentInBlock + rule.waitBlocks))
       throw new EvmTransactionSetInsufficientFundsError()
-    let remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
+    const remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
     const destination = context.destination
     let outputs: bigint[] = []
-    // Absorb uneconomic dust only when no change output can carry it. The splitter
-    // conserves the entire larger remainder, including residuals, across change outputs.
-    if (remainder > 0n && remainder < policy.dustWei + changeFee &&
-        (request.reserveForContinuationWei ?? 0n) === 0n) {
-      payment += remainder
-      remainder = 0n
-    }
-    // A continuation request must not donate its earmarked residual. If it cannot
-    // fund change here, keep it on the source successor and fund the private reserve
-    // from another input. Settlement already projects that residual at the next nonce.
     if (remainder >= policy.dustWei + changeFee) {
-      outputs = computeGeometricRadixChangeSplits({
-        totalAvailableWei: remainder,
-        recipientAmountWei: hasPayment ? payment : request.amountWei,
-        dustThresholdWei: policy.dustWei,
-        minFeePerTxWei: changeFee,
-        maxOutputs: policy.maxChangeOutputs,
-        radix: policy.radix,
-        jitterBps: policy.jitterBps,
-        random: () => this.entropy(),
-      })
+      try {
+        outputs = computeGeometricRadixChangeSplits({
+          totalAvailableWei: remainder,
+          recipientAmountWei: hasPayment ? payment : request.amountWei,
+          dustThresholdWei: policy.dustWei,
+          minFeePerTxWei: changeFee,
+          maxOutputs: policy.maxChangeOutputs,
+          radix: policy.radix,
+          jitterBps: policy.jitterBps,
+          random: () => this.entropy(),
+        })
+      } catch (error) {
+        // No partition satisfies the dust and magnitude limits (for example a residual
+        // just above dust whose only legal size would sit at the payment's magnitude).
+        // That is no reason to refuse the payment: keep the residual on the successor.
+        if (!(error instanceof RangeError)) throw error
+        outputs = []
+      }
     }
     if (!hasPayment && !outputs.length) throw new Error('Insufficient private change for continuation')
     type Move = {

@@ -356,7 +356,7 @@ it('deduplicates one operation across independently composed preparers sharing i
   expect(journal.list()).toHaveLength(1)
 })
 
-it('applies the final ten-times sweep threshold once and budgets the construction fee separately', async () => {
+it('keeps a residual too small for change on the successor and budgets the construction fee separately', async () => {
   const effectiveMinimum = 10n * 21000n
   const economicPolicy = { ...policy, dustWei: effectiveMinimum }
   const below = await setup(
@@ -368,10 +368,16 @@ it('applies the final ten-times sweep threshold once and budgets the constructio
     amountWei: 100000n,
     kdf,
   })
+  // Too little is left to fund a change account: the recipient still gets exactly the
+  // intended amount and the residual stays with the sender at the next nonce.
   expect(belowSet.otherTransactions).toHaveLength(0)
-  expect(belowSet.bundle[0]!.valueWei + belowSet.bundle[0]!.gasLimit).toBe(
-    100000n + 21000n + effectiveMinimum + 21000n - 1n,
-  )
+  expect(belowSet.bundle[0]!.valueWei).toBe(100000n)
+  const source = belowSet.bundle[0]!
+  expect(below.coins.get(source.sourceAccount, source.nonce + 1)).toMatchObject({
+    state: 'unspent',
+    valueWei: effectiveMinimum + 21000n - 1n,
+    after: { account: source.sourceAccount, nonce: source.nonce },
+  })
   const at = await setup(
     [100000n + 21000n + effectiveMinimum + 21000n],
     economicPolicy,

@@ -7,9 +7,11 @@ edition = "2021"
 default = []
 # The FoundationDB transaction driver (`registry.cluster.driver = "foundationdb"`). It links the
 # FoundationDB 7.3 client library (libfdb_c), so a build with it needs that library installed.
-foundationdb = ["cashweb-registry/foundationdb"]
+foundationdb = ["cashweb-registry/foundationdb", "dep:libc"]
 
 [dependencies]
+# `_exit` when the FoundationDB network thread dies (see `watch_fdb_network`).
+libc = { version = "0.2", optional = true }
 bitcoinsuite-bitcoind = { path = "../../bitcoinsuite/bitcoinsuite-bitcoind" }
 bitcoinsuite-core = { path = "../../bitcoinsuite/bitcoinsuite-core" }
 bitcoinsuite-error = { path = "../../bitcoinsuite/bitcoinsuite-error" }

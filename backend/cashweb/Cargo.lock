@@ -595,6 +595,7 @@ dependencies = [
  "cashweb-registry",
  "futures",
  "hex",
+ "libc",
  "rand 0.8.5",
  "reqwest",
  "secp256k1-abc",

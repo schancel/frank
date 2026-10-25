@@ -147,6 +147,11 @@ fn write_provisioned(path: &Path, contents: impl AsRef<[u8]>) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// The relay's own wakeup interval for every live subscriber (its recovery tick).
+const RECOVERY_TICK: Duration = Duration::from_secs(5);
+/// Scheduling slack allowed for that tick.
+const TICK_MARGIN: Duration = Duration::from_millis(500);
+
 /// The next `group-wakeup` on `socket` within `timeout`.
 async fn next_wakeup<S>(socket: &mut S, timeout: Duration) -> Option<Instant>
 where
@@ -254,13 +259,12 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         ))
         .await
         .unwrap();
-    assert!(
-        next_wakeup(&mut socket, Duration::from_secs(8))
-            .await
-            .is_some(),
-        "no recovery-tick wakeup on A: {}",
-        a.log()
-    );
+    let tick = next_wakeup(&mut socket, Duration::from_secs(8))
+        .await
+        .unwrap_or_else(|| panic!("no recovery-tick wakeup on A: {}", a.log()));
+    // A's next tick is about RECOVERY_TICK after the one just seen. Only a wakeup that lands
+    // clearly before it can have come from B's commit.
+    let next_tick = tick + RECOVERY_TICK;
 
     // Replica B reads the group A created and appends to it.
     let read = http
@@ -286,13 +290,25 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
         .unwrap();
     assert_eq!(appended.status(), 200, "{}", appended.text().await.unwrap());
     let sent = Instant::now();
-    let woken = next_wakeup(&mut socket, Duration::from_secs(4))
-        .await
-        .expect("A's subscriber was not woken after B's append");
+    let window_end = next_tick - TICK_MARGIN;
     assert!(
-        woken.duration_since(sent) < Duration::from_secs(3),
-        "A's wakeup came {:?} after B's append: the recovery tick, not NATS",
-        woken.duration_since(sent)
+        sent + Duration::from_millis(500) < window_end,
+        "the append was sent {:?} after A's tick, too late to tell NATS from the next tick",
+        sent - tick
+    );
+    let woken = next_wakeup(&mut socket, window_end - Instant::now())
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "A's subscriber was not woken by B's append before A's next tick \
+                 (append sent {:?} after the tick)",
+                sent - tick
+            )
+        });
+    println!(
+        "A woken {:?} after B's append, {:?} after A's own tick",
+        woken - sent,
+        woken - tick
     );
     drop(socket);
 

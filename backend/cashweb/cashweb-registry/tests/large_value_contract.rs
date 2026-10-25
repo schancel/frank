@@ -15,12 +15,9 @@ use std::{sync::Arc, time::Duration};
 use cashweb_registry::store::{
     blob_store::S3BlobStoreConfig,
     foundationdb_driver::FoundationDbKvStore,
-    groups::{
-        derive_group_id, GroupEpochFrame, GroupError, GroupMessageEnvelope, GroupStore,
-        GROUP_OBJECT_NAMESPACE,
-    },
+    groups::{derive_group_id, GroupEpochFrame, GroupError, GroupMessageEnvelope, GroupStore},
     kv_store::{KvError, RelayKvStore, Transact},
-    large_values::{LargeValueError, LargeValueRef, ObjectStore, INLINE_LIMIT},
+    large_values::{LargeValueError, ObjectStore, INLINE_LIMIT},
     s3_objects::S3ObjectStore,
 };
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
@@ -134,11 +131,16 @@ fn sequence(kv: &FoundationDbKvStore) -> Option<u64> {
         .map(|bytes| u64::from_be_bytes(bytes.try_into().unwrap()))
 }
 
-fn object_key(bytes: &[u8]) -> String {
-    format!(
-        "{GROUP_OBJECT_NAMESPACE}/sha256/{}",
-        hex::encode(LargeValueRef::of(bytes).digest)
-    )
+/// The object key of the committed reference to `bytes`.
+fn referenced_key(store: &GroupStore, bytes: &[u8]) -> String {
+    let values = store.large_values();
+    let reference = values
+        .references(10_000)
+        .unwrap()
+        .into_iter()
+        .find(|reference| reference.matches(bytes))
+        .expect("a committed reference to the content");
+    values.object_key(&reference)
 }
 
 /// Run `body` with this process's FDB network booted.
@@ -167,7 +169,7 @@ fn relay_a_appends_a_1_mib_message() {
             .unwrap();
         assert_eq!(small.message.server_seq, 2);
         assert!(objects
-            .contains(&object_key(&content("large", MIB)))
+            .contains(&referenced_key(&store, &content("large", MIB)))
             .unwrap());
         eprintln!(
             "relay A appended a {MIB}-byte message as seq 1 in group {}",
@@ -252,7 +254,8 @@ fn after_minio_restarts_the_append_lands_as_the_next_sequence() {
 }
 
 /// Phase 5: an orphan is swept and a referenced object never is, including while two writer
-/// threads race a sweeper thread in this one process, with every intent already expired.
+/// threads race two sweeper threads (no lease exclusion) in this one process, with every
+/// intent already expired.
 #[test]
 #[ignore = "phase of backend/labs/large-values-acceptance.sh"]
 fn an_orphan_is_swept_and_a_referenced_object_never_is() {
@@ -260,48 +263,55 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
         let (kv, objects) = (open_kv(), s3());
         // Zero intent lifetime: the sweeper treats every unreferenced upload as dead at once.
         let store = relay(&kv, &objects).with_large_value_intent_ttl(Duration::ZERO);
-        let orphan = content("orphan", 3 * INLINE_LIMIT);
-        store.large_values().stage(&orphan).unwrap();
-        assert!(objects.contains(&object_key(&orphan)).unwrap());
-        // A writer of already-referenced content that died before committing.
-        store.large_values().stage(&content("large", MIB)).unwrap();
+        let orphan = store
+            .large_values()
+            .stage(&content("orphan", 3 * INLINE_LIMIT))
+            .unwrap();
+        let orphan_key = store.large_values().object_key(&orphan.reference);
+        assert!(objects.contains(&orphan_key).unwrap());
+        // A writer of already-referenced content that died before committing: its own upload.
+        let twin = store.large_values().stage(&content("large", MIB)).unwrap();
+        let twin_key = store.large_values().object_key(&twin.reference);
+        let large_key = referenced_key(&store, &content("large", MIB));
+        assert_ne!(twin_key, large_key);
 
         let report = store.sweep_large_values([1; 16]).unwrap();
         assert!(report.held_lease);
-        // Kept: the 1 MiB message. Deleted: only the orphan. (Phase 3's append left no intent:
-        // with MinIO stopped its process could not check the namespace claim, so it stopped
-        // before committing one.)
+        // Deleted: the orphan and the unreferenced twin upload. Kept: the referenced 1 MiB
+        // object. (Phase 3's append left no intent: with MinIO stopped its process could not
+        // check the namespace claim, so it stopped before committing one.)
         assert_eq!(
             (report.deleted, report.kept_referenced),
-            (1, 1),
+            (2, 0),
             "{report:?}"
         );
-        assert!(!objects.contains(&object_key(&orphan)).unwrap());
-        assert!(objects
-            .contains(&object_key(&content("large", MIB)))
-            .unwrap());
+        assert!(!objects.contains(&orphan_key).unwrap());
+        assert!(!objects.contains(&twin_key).unwrap());
+        assert!(objects.contains(&large_key).unwrap());
 
-        // Two writer threads race a sweeper thread, all in this one process, each with its own
-        // FDB-backed store handle and its own S3 client. One sweeper holder, so no tombstone
-        // grace is needed and re-uploads are not held off.
+        // Two writer threads race two sweeper threads (two holders, no lease exclusion), all in
+        // this one process, each with its own FDB-backed store handle and its own S3 client.
         let stop = std::sync::atomic::AtomicBool::new(false);
         let (appended, failed, deleted) = std::thread::scope(|scope| {
             // On any panic below, stop the sweeper so the scope can join every thread before
             // this phase drops the FDB network guard.
             let _stop_on_drop = StopOnDrop(&stop);
-            let sweeper = {
-                let store = relay(&kv, &s3())
-                    .with_large_value_intent_ttl(Duration::ZERO)
-                    .with_large_value_tombstone_grace(Duration::ZERO);
-                let stop = &stop;
-                scope.spawn(move || {
-                    let mut deleted = 0;
-                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                        deleted += store.sweep_large_values([1; 16]).unwrap().deleted;
-                    }
-                    deleted
+            let sweepers: Vec<_> = [[1; 16], [2; 16]]
+                .into_iter()
+                .map(|holder| {
+                    let store = relay(&kv, &s3())
+                        .with_large_value_intent_ttl(Duration::ZERO)
+                        .with_large_value_lease_ttl(Duration::ZERO);
+                    let stop = &stop;
+                    scope.spawn(move || {
+                        let mut deleted = 0;
+                        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            deleted += store.sweep_large_values(holder).unwrap().deleted;
+                        }
+                        deleted
+                    })
                 })
-            };
+                .collect();
             let writers: Vec<_> = ["a", "b"]
                 .into_iter()
                 .map(|writer_name| {
@@ -310,7 +320,7 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
                         let mut appended = Vec::new();
                         let mut failed = 0;
                         for index in 0..15 {
-                            // Shared contents across writers, so uploads deduplicate and race.
+                            // Equal contents across writers and rounds, each its own upload.
                             let mut shared =
                                 message(&format!("race-{writer_name}-{index}"), INLINE_LIMIT + 1);
                             shared.ciphertext = hex::encode(content(
@@ -339,7 +349,8 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
                 failed += lost;
             }
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
-            (appended, failed, sweeper.join().unwrap())
+            let deleted: usize = sweepers.into_iter().map(|s| s.join().unwrap()).sum();
+            (appended, failed, deleted)
         });
         store.sweep_large_values([1; 16]).unwrap();
         assert!(!appended.is_empty());

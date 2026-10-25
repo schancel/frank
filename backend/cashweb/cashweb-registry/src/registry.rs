@@ -325,6 +325,10 @@ impl Registry {
 
     /// Delete unreferenced large group ciphertexts as sweep lease holder `holder`. Blocks; run
     /// it on a blocking worker.
+    ///
+    /// This sweeps only once a request has opened the group store; until then it does nothing.
+    /// A replica that serves no group traffic therefore never sweeps, and orphans wait for a
+    /// replica that does (in a cluster any replica's sweep covers the shared index).
     pub fn sweep_large_values(
         &self,
         holder: [u8; 16],

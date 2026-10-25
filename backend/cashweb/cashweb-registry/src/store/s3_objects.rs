@@ -102,6 +102,22 @@ impl ObjectStore for S3ObjectStore {
         self.run(async move { transport.put_object(&key, bytes, &sha).await })
     }
 
+    fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError> {
+        check_object_key(key)?;
+        let (transport, key, bytes, sha) = (
+            self.transport.clone(),
+            key.to_string(),
+            bytes.to_vec(),
+            hex::encode(sha256),
+        );
+        self.run(async move { transport.put_object_if_absent(&key, bytes, &sha).await })
+    }
+
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError> {
         check_object_key(key)?;
         let (transport, key) = (self.transport.clone(), key.to_string());

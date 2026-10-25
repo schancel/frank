@@ -2464,6 +2464,15 @@ pub trait S3ObjectTransport: Send + Sync + Debug {
         content_sha256_hex: &str,
     ) -> Result<(), BlobError>;
 
+    /// Upload `bytes` at `key` only if no object exists there (`If-None-Match: *`). Returns
+    /// `Ok(false)`, writing nothing, on `412 Precondition Failed`.
+    async fn put_object_if_absent(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+    ) -> Result<bool, BlobError>;
+
     /// Download the object at `key`, returning `Ok(None)` on `404 Not Found`.
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError>;
 
@@ -2530,6 +2539,45 @@ impl ReqwestS3Transport {
         Ok((url, host, canonical_uri))
     }
 
+    /// `PUT` an object; with `if_absent`, only when none exists (`If-None-Match: *`, an
+    /// unsigned header). Returns false on `412 Precondition Failed`.
+    async fn put(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+        if_absent: bool,
+    ) -> Result<bool, BlobError> {
+        let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
+        let mut headers =
+            self.build_signed_headers("PUT", &host, &canonical_uri, content_sha256_hex)?;
+        if if_absent {
+            headers.insert(
+                "if-none-match",
+                reqwest::header::HeaderValue::from_static("*"),
+            );
+        }
+        let resp = self
+            .client
+            .put(&url)
+            .headers(headers)
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| BlobError::Backend(format!("S3 PUT {url} failed: {e}")))?;
+        if if_absent && resp.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(BlobError::Backend(format!(
+                "S3 PUT {url} returned HTTP {status}: {text}"
+            )));
+        }
+        Ok(true)
+    }
+
     fn build_signed_headers(
         &self,
         method: &str,
@@ -2580,25 +2628,18 @@ impl S3ObjectTransport for ReqwestS3Transport {
         bytes: Vec<u8>,
         content_sha256_hex: &str,
     ) -> Result<(), BlobError> {
-        let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
-        let headers =
-            self.build_signed_headers("PUT", &host, &canonical_uri, content_sha256_hex)?;
-        let resp = self
-            .client
-            .put(&url)
-            .headers(headers)
-            .body(bytes)
-            .send()
+        self.put(key, bytes, content_sha256_hex, false)
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 PUT {url} failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(BlobError::Backend(format!(
-                "S3 PUT {url} returned HTTP {status}: {text}"
-            )));
-        }
-        Ok(())
+            .map(|_| ())
+    }
+
+    async fn put_object_if_absent(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_sha256_hex: &str,
+    ) -> Result<bool, BlobError> {
+        self.put(key, bytes, content_sha256_hex, true).await
     }
 
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError> {

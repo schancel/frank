@@ -1,64 +1,55 @@
-//! Content-addressed large-value store: values over [`INLINE_LIMIT`] live in an object store
-//! (S3 in a cluster), and the owner's row keeps only a [`LargeValueRef`].
+//! Large-value store: values over [`INLINE_LIMIT`] live in an object store (S3 in a cluster),
+//! and the owner's row keeps only a [`LargeValueRef`].
 //!
 //! FoundationDB caps a value at 100 KB, so an owner inlines a value up to 64 KiB and stores a
-//! larger one here. Objects are immutable and named by their content, `<namespace>/sha256/<hex>`.
-//! The owner never talks to the object store's client: composition passes an
-//! [`ObjectStore`] capability, and [`LargeValues`] keeps its index in the owner's own
-//! [`RelayKvStore`], so a reference commits in the same transaction as the row that holds it.
+//! larger one here. Every upload gets its own immutable object,
+//! `<namespace>/sha256/<hex>/<upload>`, where `upload` is the upload intent's random id. The
+//! address is content-verified (a read checks the SHA-256 and length) and upload-unique: two
+//! uploads never share a key, even for equal content, so deleting one upload's object can never
+//! remove another's. Equal content is not deduplicated.
+//!
+//! The owner never talks to the object store's client: composition passes an [`ObjectStore`]
+//! capability, and [`LargeValues`] keeps its index in the owner's own [`RelayKvStore`], so a
+//! reference commits in the same transaction as the row that holds it.
 //!
 //! Index keys, under the owner's `prefix`:
-//! - `int:` || digest || token: a writer's upload intent, value = expiry (ms, big-endian).
-//! - `ref:` || digest || owner key: one committed reference, value = byte length.
-//! - `del:` || digest: deletion tombstone, value = the holder (16 bytes) that owns it.
-//! - `lease`: holder (16 bytes) || expiry (ms): the one sweeper allowed to decide deletions.
-//! - `claim`: this index's id, also written to the object `<namespace>/claim`. An index refuses a
-//!   namespace whose claim object names another index, so two indexes never sweep each other's
-//!   objects.
+//! - `int:` || upload: an upload intent, value = digest (32) || expiry (ms, big-endian, 8) ||
+//!   state (1: `0` live, `1` doomed: the sweeper decided to delete it).
+//! - `ref:` || upload: the one committed reference to that upload, value = digest || length.
+//! - `lease`: holder (16 bytes) || expiry (ms). It only keeps two replicas from doing the same
+//!   sweep work; safety never depends on it.
+//! - `claim`: this index's id, also written to the object `<namespace>/claim` with a
+//!   conditional PUT. An index refuses a namespace whose claim names another index, so two
+//!   indexes never sweep each other's objects.
 //!
 //! Order of a write ([`LargeValues::stage`], then [`LargeValues::commit_reference`]):
-//! 1. Commit an intent, unless a tombstone exists for the digest ([`LargeValueError::BeingSwept`],
-//!    retryable).
-//! 2. Upload the object. A failure leaves no reference; the owner's commit never happens.
-//! 3. In the owner's transaction, consume the intent and write the reference with the row.
-//!    If the intent is gone (the sweeper judged the writer dead), the commit fails closed.
+//! 1. Commit a live intent with a fresh upload id.
+//! 2. Upload the object at its upload-unique key. A failure leaves no reference.
+//! 3. In the owner's transaction, consume the intent and write the reference with the row. If
+//!    the intent is gone or doomed (the sweeper judged the writer dead), the commit fails
+//!    closed with [`LargeValueError::IntentLost`] and the writer retries with a new upload.
 //!
-//! The sweeper ([`LargeValues::sweep`]) acts only on expired intents. In one transaction it
-//! reads every intent and the references for a digest; only with no live intent and no
-//! reference does it remove the intents and write a tombstone naming itself. Because a writer's
-//! reference commit reads its own intent and a writer's intent commit reads the tombstone, the
-//! transaction contract serializes deciding against writing: no reference is committed to an
-//! object that has been decided for deletion.
-//!
-//! The remaining hazard is a DELETE that lands late, after a writer has uploaded the same
-//! content again. It is closed as follows:
-//! - Before each DELETE the holder re-checks, in a transaction, that it still holds the lease
-//!   and owns the tombstone; otherwise it sends nothing. A new holder never clears another
-//!   holder's tombstone: it adopts it (rewrites it with its own id) and deletes again.
-//! - A tombstone is cleared only by its owner, and only after [`TOMBSTONE_GRACE`] has passed
-//!   on that owner's monotonic clock since it took the tombstone. The grace is longer than the
-//!   longest object request ([`MAX_OBJECT_REQUEST`]) plus the lease ([`SWEEP_LEASE_TTL`]), so a
-//!   DELETE that passed its re-check under an older lease has landed or timed out before any
-//!   writer may upload that digest again. Lease expiry is wall-clock; a clock skew up to the
-//!   lease length is absorbed by the same margin.
-//!
-//! Residual risk: a process that passes its re-check and is then paused (stopped, swapped out)
-//! for longer than the grace before its DELETE reaches the object store can still delete an
-//! object that was re-uploaded and referenced meanwhile. The read then fails closed as corrupt;
-//! nothing silently returns wrong bytes. Bounding that needs a conditional delete in the object
-//! store, which the SigV4 transport does not use yet.
+//! The sweeper ([`LargeValues::sweep`]) acts only on expired intents. For each, one transaction
+//! re-reads the intent and its reference: with a reference it drops the intent and keeps the
+//! object; otherwise it marks the intent doomed. Then it deletes that one key and, if the
+//! intent is still the doomed one, removes it. Deciding and committing serialize on the intent
+//! key, so a committed reference's object is never deleted, whatever the clocks say and however
+//! many replicas sweep at once. A clock skew or a writer pause longer than the intent TTL only
+//! makes that writer's commit fail (retryable). A writer whose upload lands after its object
+//! was deleted re-creates an expired intent when it abandons, so the object is still
+//! collected; a writer that crashes at exactly that point leaks one object, which only a sweep
+//! that lists the bucket would find.
 
 use std::{
-    collections::HashMap,
     fmt::Debug,
     fs,
     io::Write,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use sha2::{Digest, Sha256};
@@ -75,15 +66,14 @@ pub const DEFAULT_INTENT_TTL: Duration = Duration::from_secs(10 * 60);
 /// How long a sweeper's lease lasts without renewal.
 pub const SWEEP_LEASE_TTL: Duration = Duration::from_secs(60);
 
-/// Upper bound on one object store request, connect included. Shorter than the lease.
+/// Upper bound on one object store request, connect included.
 pub const MAX_OBJECT_REQUEST: Duration = Duration::from_secs(20);
 
-/// How long a tombstone outlives its owner's DELETE before writers may upload that digest again.
-pub const TOMBSTONE_GRACE: Duration =
-    Duration::from_secs(MAX_OBJECT_REQUEST.as_secs() + SWEEP_LEASE_TTL.as_secs() + 60);
-
-/// Expired-intent digests considered by one sweep.
+/// Expired intents considered by one sweep.
 const SWEEP_BATCH: usize = 1_024;
+
+const LIVE: u8 = 0;
+const DOOMED: u8 = 1;
 
 /// Failure of an [`ObjectStore`] call. The message never contains credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -95,6 +85,14 @@ pub struct ObjectStoreError(pub String);
 pub trait ObjectStore: Send + Sync + Debug {
     /// Store `bytes` at `key`. `sha256` is the content's digest, for transport integrity.
     fn put(&self, key: &str, bytes: &[u8], sha256: &[u8; 32]) -> Result<(), ObjectStoreError>;
+    /// Store `bytes` at `key` only if no object exists there (S3 `If-None-Match: *`). Returns
+    /// false, writing nothing, when one does.
+    fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError>;
     /// The object at `key`, or `None` when absent.
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError>;
     /// Remove `key`. Removing an absent object succeeds.
@@ -109,17 +107,14 @@ pub enum LargeValueError {
     /// The object store failed; nothing was referenced.
     #[error("large value store unavailable: {0}")]
     Unavailable(#[from] ObjectStoreError),
-    /// The digest has a deletion tombstone; retry the write later.
-    #[error("large value is being swept; retry")]
-    BeingSwept,
     /// The upload intent was swept before the owner committed; retry the write.
     #[error("large value intent expired before commit; retry")]
     IntentLost,
-    /// This sweeper no longer holds the lease (or the tombstone); it sent no DELETE.
-    #[error("sweep lease lost")]
-    LeaseLost,
     /// The object namespace is claimed by another index.
-    #[error("object namespace {0} is claimed by another large-value index")]
+    #[error(
+        "object namespace {0} is claimed by another large-value index; if this relay's store \
+         was reset for development, delete the object <bucket prefix>/{0}/claim"
+    )]
     NamespaceClaimed(String),
     /// A referenced object is missing or does not match its digest.
     #[error("corrupt large value: {0}")]
@@ -129,22 +124,21 @@ pub enum LargeValueError {
     Kv(#[from] KvError),
 }
 
-/// A committed reference: the object's SHA-256 and byte length.
+/// A committed reference: the upload holding the value, and the value's SHA-256 and length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LargeValueRef {
     /// SHA-256 of the value.
     pub digest: [u8; 32],
     /// Byte length of the value.
     pub len: u64,
+    /// The upload's id; part of the object key.
+    pub upload: [u8; 16],
 }
 
 impl LargeValueRef {
-    /// The reference for `bytes`.
-    pub fn of(bytes: &[u8]) -> Self {
-        Self {
-            digest: Sha256::digest(bytes).into(),
-            len: bytes.len() as u64,
-        }
+    /// Whether `bytes` is the referenced value.
+    pub fn matches(&self, bytes: &[u8]) -> bool {
+        bytes.len() as u64 == self.len && Sha256::digest(bytes).as_slice() == self.digest
     }
 }
 
@@ -153,7 +147,6 @@ impl LargeValueRef {
 pub struct Staged {
     /// The reference to store in the owner's row.
     pub reference: LargeValueRef,
-    intent_key: Vec<u8>,
 }
 
 /// What one sweep did.
@@ -163,20 +156,8 @@ pub struct SweepReport {
     pub held_lease: bool,
     /// Objects deleted.
     pub deleted: usize,
-    /// Digests with expired intents kept because a reference exists.
+    /// Expired intents dropped because their upload is referenced.
     pub kept_referenced: usize,
-    /// Digests skipped because a live intent still protects them.
-    pub kept_in_flight: usize,
-    /// Tombstones cleared after their grace period.
-    pub tombstones_cleared: usize,
-}
-
-/// A tombstone this process owns: when it took it, and whether its DELETE completed.
-#[derive(Debug, Clone, Copy)]
-struct OwnedTombstone {
-    holder: [u8; 16],
-    since: Instant,
-    deleted: bool,
 }
 
 /// The large-value index of one owner, over that owner's [`RelayKvStore`].
@@ -188,8 +169,6 @@ pub struct LargeValues {
     namespace: String,
     intent_ttl: Duration,
     lease_ttl: Duration,
-    grace: Duration,
-    tombstones: Arc<Mutex<HashMap<[u8; 32], OwnedTombstone>>>,
     claimed: Arc<AtomicBool>,
 }
 
@@ -208,14 +187,32 @@ fn read_u64(bytes: &[u8], what: &str) -> Result<u64, LargeValueError> {
     Ok(u64::from_be_bytes(bytes))
 }
 
-fn holder_of(value: &[u8]) -> Result<[u8; 16], LargeValueError> {
-    value
-        .try_into()
-        .map_err(|_| LargeValueError::Corrupt("bad deletion tombstone".into()))
+/// A decoded intent value.
+struct Intent {
+    digest: [u8; 32],
+    expiry: u64,
+    state: u8,
+}
+
+impl Intent {
+    fn encode(digest: &[u8; 32], expiry: u64, state: u8) -> Vec<u8> {
+        [digest.as_slice(), &expiry.to_be_bytes(), &[state]].concat()
+    }
+
+    fn decode(value: &[u8]) -> Result<Self, LargeValueError> {
+        if value.len() != 41 || value[40] > DOOMED {
+            return Err(LargeValueError::Corrupt("bad upload intent".into()));
+        }
+        Ok(Self {
+            digest: value[..32].try_into().expect("32 bytes"),
+            expiry: read_u64(&value[32..40], "intent expiry")?,
+            state: value[40],
+        })
+    }
 }
 
 impl LargeValues {
-    /// An index under `prefix` in `kv`, with objects named `<namespace>/sha256/<hex>`.
+    /// An index under `prefix` in `kv`, with objects named `<namespace>/sha256/<hex>/<upload>`.
     ///
     /// Each index owns its object namespace: a sweeper consults only its own index. The first
     /// write or sweep claims the namespace and refuses one another index has claimed.
@@ -232,8 +229,6 @@ impl LargeValues {
             namespace: namespace.trim_matches('/').to_string(),
             intent_ttl: DEFAULT_INTENT_TTL,
             lease_ttl: SWEEP_LEASE_TTL,
-            grace: TOMBSTONE_GRACE,
-            tombstones: Arc::default(),
             claimed: Arc::default(),
         }
     }
@@ -244,13 +239,7 @@ impl LargeValues {
         self
     }
 
-    /// Replace the tombstone grace. Zero is safe only with a single sweeper process.
-    pub fn with_tombstone_grace(mut self, grace: Duration) -> Self {
-        self.grace = grace;
-        self
-    }
-
-    /// Replace the lease length (tests).
+    /// Replace the lease length (tests use zero to let every sweeper work).
     pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
         self.lease_ttl = ttl;
         self
@@ -261,13 +250,18 @@ impl LargeValues {
         &self.prefix
     }
 
-    /// The object key for `reference`: `<namespace>/sha256/<hex>`.
+    /// The object key for `reference`: `<namespace>/sha256/<hex>/<upload>`.
     pub fn object_key(&self, reference: &LargeValueRef) -> String {
-        self.digest_key(&reference.digest)
+        self.upload_key(&reference.digest, &reference.upload)
     }
 
-    fn digest_key(&self, digest: &[u8; 32]) -> String {
-        format!("{}/sha256/{}", self.namespace, hex::encode(digest))
+    fn upload_key(&self, digest: &[u8; 32], upload: &[u8; 16]) -> String {
+        format!(
+            "{}/sha256/{}/{}",
+            self.namespace,
+            hex::encode(digest),
+            hex::encode(upload)
+        )
     }
 
     /// The object store, for inspection.
@@ -275,36 +269,48 @@ impl LargeValues {
         &self.objects
     }
 
-    fn key(&self, kind: &[u8], parts: &[&[u8]]) -> Vec<u8> {
-        let mut key = [self.prefix.as_slice(), kind].concat();
-        for part in parts {
-            key.extend_from_slice(part);
-        }
-        key
+    fn key(&self, kind: &[u8], upload: &[u8]) -> Vec<u8> {
+        [self.prefix.as_slice(), kind, upload].concat()
     }
 
-    fn intent_prefix(&self, digest: &[u8; 32]) -> Vec<u8> {
-        self.key(b"int:", &[digest])
+    fn intent_key(&self, upload: &[u8; 16]) -> Vec<u8> {
+        self.key(b"int:", upload)
     }
 
-    fn ref_prefix(&self, digest: &[u8; 32]) -> Vec<u8> {
-        self.key(b"ref:", &[digest])
-    }
-
-    fn ref_key(&self, digest: &[u8; 32], owner_key: &[u8]) -> Vec<u8> {
-        self.key(b"ref:", &[digest, owner_key])
-    }
-
-    fn deleting_key(&self, digest: &[u8; 32]) -> Vec<u8> {
-        self.key(b"del:", &[digest])
+    fn ref_key(&self, upload: &[u8; 16]) -> Vec<u8> {
+        self.key(b"ref:", upload)
     }
 
     fn lease_key(&self) -> Vec<u8> {
         self.key(b"lease", &[])
     }
 
+    /// Committed references, up to `limit` (inspection and tests).
+    pub fn references(&self, limit: usize) -> Result<Vec<LargeValueRef>, LargeValueError> {
+        let prefix = self.key(b"ref:", &[]);
+        let rows = self
+            .kv
+            .transact(|tx| tx.scan_prefix(&prefix, None, limit))?;
+        rows.into_iter()
+            .map(|(key, value)| {
+                let upload: [u8; 16] = key[prefix.len()..]
+                    .try_into()
+                    .map_err(|_| LargeValueError::Corrupt("bad reference key".into()))?;
+                if value.len() != 40 {
+                    return Err(LargeValueError::Corrupt("bad reference".into()));
+                }
+                Ok(LargeValueRef {
+                    digest: value[..32].try_into().expect("32 bytes"),
+                    len: read_u64(&value[32..], "reference length")?,
+                    upload,
+                })
+            })
+            .collect()
+    }
+
     /// Claim the object namespace for this index, or refuse one another index claimed. The
-    /// result is cached once it succeeds.
+    /// claim object is written with a conditional PUT, so of two indexes racing on an empty
+    /// namespace exactly one wins. The result is cached once it succeeds.
     pub fn claim_namespace(&self) -> Result<(), LargeValueError> {
         if self.claimed.load(Ordering::SeqCst) {
             return Ok(());
@@ -319,18 +325,11 @@ impl LargeValues {
             Ok(id.to_vec())
         })?;
         let object = format!("{}/claim", self.namespace);
-        match self.objects.get(&object)? {
-            Some(existing) if existing == id => {}
-            Some(_) => return Err(LargeValueError::NamespaceClaimed(self.namespace.clone())),
-            None => {
-                let digest: [u8; 32] = Sha256::digest(&id).into();
-                self.objects.put(&object, &id, &digest)?;
-                // Two indexes racing on an empty namespace: the later write wins, and the
-                // loser sees it here and refuses.
-                if self.objects.get(&object)?.as_deref() != Some(id.as_slice()) {
-                    return Err(LargeValueError::NamespaceClaimed(self.namespace.clone()));
-                }
-            }
+        let digest: [u8; 32] = Sha256::digest(&id).into();
+        if !self.objects.put_if_absent(&object, &id, &digest)?
+            && self.objects.get(&object)?.as_deref() != Some(id.as_slice())
+        {
+            return Err(LargeValueError::NamespaceClaimed(self.namespace.clone()));
         }
         self.claimed.store(true, Ordering::SeqCst);
         Ok(())
@@ -339,25 +338,20 @@ impl LargeValues {
     /// Commit an intent, then upload `bytes`. The object exists when this returns `Ok`.
     pub fn stage(&self, bytes: &[u8]) -> Result<Staged, LargeValueError> {
         self.claim_namespace()?;
-        let reference = LargeValueRef::of(bytes);
-        let token: [u8; 16] = rand::random();
-        let intent_key = [self.intent_prefix(&reference.digest), token.to_vec()].concat();
-        let deleting = self.deleting_key(&reference.digest);
-        let expiry = now_ms().saturating_add(self.intent_ttl.as_millis() as u64);
-        self.kv.transact(|tx| {
-            if tx.get(&deleting)?.is_some() {
-                return Err(LargeValueError::BeingSwept);
-            }
-            tx.set(&intent_key, &expiry.to_be_bytes())?;
-            Ok(())
-        })?;
-        let staged = Staged {
-            reference,
-            intent_key,
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        let reference = LargeValueRef {
+            digest,
+            len: bytes.len() as u64,
+            upload: rand::random(),
         };
+        let intent_key = self.intent_key(&reference.upload);
+        let expiry = now_ms().saturating_add(self.intent_ttl.as_millis() as u64);
+        let intent = Intent::encode(&digest, expiry, LIVE);
+        self.kv.transact(|tx| tx.set(&intent_key, &intent))?;
+        let staged = Staged { reference };
         if let Err(error) = self
             .objects
-            .put(&self.object_key(&reference), bytes, &reference.digest)
+            .put(&self.object_key(&reference), bytes, &digest)
         {
             self.abandon(&staged);
             return Err(error.into());
@@ -365,41 +359,42 @@ impl LargeValues {
         Ok(staged)
     }
 
-    /// Inside the owner's transaction (on the same store): consume the intent and record that
-    /// `owner_key` references the staged object.
+    /// Inside the owner's transaction (on the same store): consume the intent and record the
+    /// reference. `owner_key` is the row that holds it.
     pub fn commit_reference(
         &self,
         tx: &mut dyn KvTransaction,
         staged: &Staged,
-        owner_key: &[u8],
+        _owner_key: &[u8],
     ) -> Result<(), LargeValueError> {
-        if tx.get(&staged.intent_key)?.is_none() {
-            return Err(LargeValueError::IntentLost);
+        let reference = &staged.reference;
+        let intent_key = self.intent_key(&reference.upload);
+        match tx.get(&intent_key)? {
+            Some(value) if Intent::decode(&value)?.state == LIVE => {}
+            _ => return Err(LargeValueError::IntentLost),
         }
-        tx.clear(&staged.intent_key)?;
+        tx.clear(&intent_key)?;
         tx.set(
-            &self.ref_key(&staged.reference.digest, owner_key),
-            &staged.reference.len.to_be_bytes(),
+            &self.ref_key(&reference.upload),
+            &[reference.digest.as_slice(), &reference.len.to_be_bytes()].concat(),
         )?;
         Ok(())
     }
 
-    /// Inside the owner's transaction: drop `owner_key`'s reference (its row is replaced or
-    /// removed). The object becomes collectable only once no reference remains.
+    /// Inside the owner's transaction: drop the reference of a row that is replaced or
+    /// removed, and leave an expired intent so the sweep deletes its object.
     pub fn clear_reference(
         &self,
         tx: &mut dyn KvTransaction,
         reference: &LargeValueRef,
-        owner_key: &[u8],
+        _owner_key: &[u8],
     ) -> Result<(), LargeValueError> {
-        let key = self.ref_key(&reference.digest, owner_key);
+        let key = self.ref_key(&reference.upload);
         if tx.get(&key)?.is_some() {
             tx.clear(&key)?;
-            // Make the object visible to the sweeper, which works from expired intents.
-            let token = [0u8; 16];
             tx.set(
-                &[self.intent_prefix(&reference.digest), token.to_vec()].concat(),
-                &0u64.to_be_bytes(),
+                &self.intent_key(&reference.upload),
+                &Intent::encode(&reference.digest, 0, LIVE),
             )?;
         }
         Ok(())
@@ -407,13 +402,15 @@ impl LargeValues {
 
     /// The owner will not commit `staged` (or its commit failed): leave an expired intent so a
     /// sweep collects the object unless something references it. This re-creates an intent the
-    /// sweeper already removed, so an upload that landed after a deletion is still collected.
+    /// sweeper already removed, so an upload that landed after its deletion is still collected.
     /// Best effort; an intent that cannot be expired still expires on its own.
     pub fn abandon(&self, staged: &Staged) {
-        let result = self
-            .kv
-            .transact(|tx| tx.set(&staged.intent_key, &0u64.to_be_bytes()));
-        if let Err(error) = result {
+        let reference = &staged.reference;
+        let (key, value) = (
+            self.intent_key(&reference.upload),
+            Intent::encode(&reference.digest, 0, LIVE),
+        );
+        if let Err(error) = self.kv.transact(|tx| tx.set(&key, &value)) {
             tracing::warn!("could not expire a large-value intent: {error}");
         }
     }
@@ -424,7 +421,7 @@ impl LargeValues {
         let bytes = self.objects.get(&key)?.ok_or_else(|| {
             LargeValueError::Corrupt(format!("referenced object {key} is missing"))
         })?;
-        if LargeValueRef::of(&bytes) != *reference {
+        if !reference.matches(&bytes) {
             return Err(LargeValueError::Corrupt(format!(
                 "object {key} does not match its reference"
             )));
@@ -432,7 +429,8 @@ impl LargeValues {
         Ok(bytes)
     }
 
-    /// Delete unreferenced objects whose intents expired, as the lease holder `holder`.
+    /// Delete unreferenced uploads whose intents expired. `holder` takes the lease, which only
+    /// keeps replicas from repeating each other's work.
     pub fn sweep(&self, holder: [u8; 16]) -> Result<SweepReport, LargeValueError> {
         let mut report = SweepReport::default();
         if !self.renew_lease(&holder)? {
@@ -440,43 +438,10 @@ impl LargeValues {
         }
         self.claim_namespace()?;
         report.held_lease = true;
-        match self.sweep_holding(&holder, &mut report) {
-            Ok(()) | Err(LargeValueError::LeaseLost) => Ok(report),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn sweep_holding(
-        &self,
-        holder: &[u8; 16],
-        report: &mut SweepReport,
-    ) -> Result<(), LargeValueError> {
-        // Tombstones: finish or adopt deletions, and clear our own once their grace passed.
-        let deleting_prefix = self.key(b"del:", &[]);
-        let tombstones = self
-            .kv
-            .transact(|tx| tx.scan_prefix(&deleting_prefix, None, SWEEP_BATCH))?;
-        for (key, value) in tombstones {
-            let digest: [u8; 32] = key[deleting_prefix.len()..]
-                .try_into()
-                .map_err(|_| LargeValueError::Corrupt("bad deletion tombstone".into()))?;
-            let owned = self.owned(&digest).filter(|t| t.holder == *holder);
-            if holder_of(&value)? != *holder || owned.is_none() {
-                self.adopt(holder, &digest)?;
-            }
-            let owned = self.owned(&digest).expect("tombstone owned after adoption");
-            if !owned.deleted {
-                self.finish_delete(holder, &digest)?;
-                report.deleted += 1;
-            }
-            if self.try_clear(holder, &digest)? {
-                report.tombstones_cleared += 1;
-            }
-        }
 
         let now = now_ms();
         let intents = self.key(b"int:", &[]);
-        let mut expired: Vec<[u8; 32]> = Vec::new();
+        let mut expired: Vec<[u8; 16]> = Vec::new();
         let mut after: Option<Vec<u8>> = None;
         while expired.len() < SWEEP_BATCH {
             let page = self
@@ -487,211 +452,91 @@ impl LargeValues {
             };
             after = Some(last.clone());
             for (key, value) in &page {
-                let digest: [u8; 32] = key
-                    .get(intents.len()..intents.len() + 32)
-                    .and_then(|d| d.try_into().ok())
-                    .ok_or_else(|| LargeValueError::Corrupt("bad intent key".into()))?;
-                if read_u64(value, "intent expiry")? <= now && expired.last() != Some(&digest) {
-                    expired.push(digest);
+                let upload: [u8; 16] = key[intents.len()..]
+                    .try_into()
+                    .map_err(|_| LargeValueError::Corrupt("bad intent key".into()))?;
+                let intent = Intent::decode(value)?;
+                if intent.state == DOOMED || intent.expiry <= now {
+                    expired.push(upload);
                 }
             }
         }
 
-        for digest in expired {
-            match self.decide(holder, &digest, now)? {
-                Decision::Delete => {
-                    self.finish_delete(holder, &digest)?;
+        for upload in expired {
+            match self.decide(&upload, now)? {
+                Decision::Delete(digest) => {
+                    self.delete_upload(&digest, &upload)?;
                     report.deleted += 1;
-                    if self.try_clear(holder, &digest)? {
-                        report.tombstones_cleared += 1;
-                    }
                 }
                 Decision::Referenced => report.kept_referenced += 1,
-                Decision::InFlight => report.kept_in_flight += 1,
-                Decision::Tombstoned => {}
+                Decision::Skip => {}
             }
         }
-        Ok(())
-    }
-
-    fn owned(&self, digest: &[u8; 32]) -> Option<OwnedTombstone> {
-        self.tombstones
-            .lock()
-            .expect("tombstones")
-            .get(digest)
-            .copied()
-    }
-
-    fn own(&self, holder: &[u8; 16], digest: &[u8; 32]) {
-        self.tombstones.lock().expect("tombstones").insert(
-            *digest,
-            OwnedTombstone {
-                holder: *holder,
-                since: Instant::now(),
-                deleted: false,
-            },
-        );
+        Ok(report)
     }
 
     /// Take or renew the lease. Returns false when another live holder has it.
     fn renew_lease(&self, holder: &[u8; 16]) -> Result<bool, LargeValueError> {
         let key = self.lease_key();
-        self.kv.transact(|tx| self.hold_lease(tx, &key, holder))
-    }
-
-    fn hold_lease(
-        &self,
-        tx: &mut dyn KvTransaction,
-        key: &[u8],
-        holder: &[u8; 16],
-    ) -> Result<bool, LargeValueError> {
-        let now = now_ms();
-        if let Some(current) = tx.get(key)? {
-            if current.len() != 24 {
-                return Err(LargeValueError::Corrupt("bad sweep lease".into()));
-            }
-            if current[..16] != holder[..] && read_u64(&current[16..], "lease expiry")? > now {
-                return Ok(false);
-            }
-        }
-        let expiry = now.saturating_add(self.lease_ttl.as_millis() as u64);
-        tx.set(key, &[holder.as_slice(), &expiry.to_be_bytes()].concat())?;
-        Ok(true)
-    }
-
-    /// Hold the lease or fail with [`LargeValueError::LeaseLost`].
-    fn require_lease(
-        &self,
-        tx: &mut dyn KvTransaction,
-        holder: &[u8; 16],
-    ) -> Result<(), LargeValueError> {
-        if self.hold_lease(tx, &self.lease_key(), holder)? {
-            Ok(())
-        } else {
-            Err(LargeValueError::LeaseLost)
-        }
-    }
-
-    /// Rewrite another holder's tombstone with our id. Its grace restarts on our clock.
-    fn adopt(&self, holder: &[u8; 16], digest: &[u8; 32]) -> Result<(), LargeValueError> {
-        let deleting = self.deleting_key(digest);
-        let adopted = self.kv.transact(|tx| {
-            self.require_lease(tx, holder)?;
-            if tx.get(&deleting)?.is_none() {
-                return Ok(false);
-            }
-            tx.set(&deleting, holder)?;
-            Ok::<_, LargeValueError>(true)
-        })?;
-        if adopted {
-            self.own(holder, digest);
-            Ok(())
-        } else {
-            Err(LargeValueError::LeaseLost)
-        }
-    }
-
-    /// One transaction: may this digest's object be deleted?
-    fn decide(
-        &self,
-        holder: &[u8; 16],
-        digest: &[u8; 32],
-        now: u64,
-    ) -> Result<Decision, LargeValueError> {
-        let intents = self.intent_prefix(digest);
-        let refs = self.ref_prefix(digest);
-        let deleting = self.deleting_key(digest);
-        let decision = self.kv.transact(|tx| {
-            self.require_lease(tx, holder)?;
-            if tx.get(&deleting)?.is_some() {
-                return Ok(Decision::Tombstoned);
-            }
-            let mut live = false;
-            let mut stale = Vec::new();
-            let mut after: Option<Vec<u8>> = None;
-            loop {
-                let page = tx.scan_prefix(&intents, after.as_deref(), 256)?;
-                let Some((last, _)) = page.last() else {
-                    break;
-                };
-                after = Some(last.clone());
-                for (key, value) in page {
-                    if read_u64(&value, "intent expiry")? > now {
-                        live = true;
-                    } else {
-                        stale.push(key);
-                    }
+        self.kv.transact(|tx| {
+            let now = now_ms();
+            if let Some(current) = tx.get(&key)? {
+                if current.len() != 24 {
+                    return Err(LargeValueError::Corrupt("bad sweep lease".into()));
+                }
+                if current[..16] != holder[..] && read_u64(&current[16..], "lease expiry")? > now {
+                    return Ok(false);
                 }
             }
-            for key in &stale {
-                tx.clear(key)?;
+            let expiry = now.saturating_add(self.lease_ttl.as_millis() as u64);
+            tx.set(&key, &[holder.as_slice(), &expiry.to_be_bytes()].concat())?;
+            Ok(true)
+        })
+    }
+
+    /// One transaction: doom an expired, unreferenced intent, or drop one whose upload is
+    /// referenced.
+    fn decide(&self, upload: &[u8; 16], now: u64) -> Result<Decision, LargeValueError> {
+        let (intent_key, ref_key) = (self.intent_key(upload), self.ref_key(upload));
+        self.kv.transact(|tx| {
+            let Some(value) = tx.get(&intent_key)? else {
+                return Ok(Decision::Skip);
+            };
+            let intent = Intent::decode(&value)?;
+            if intent.state == LIVE && intent.expiry > now {
+                return Ok(Decision::Skip);
             }
-            if live {
-                return Ok(Decision::InFlight);
-            }
-            if !tx.scan_prefix(&refs, None, 1)?.is_empty() {
+            if tx.get(&ref_key)?.is_some() {
+                tx.clear(&intent_key)?;
                 return Ok(Decision::Referenced);
             }
-            tx.set(&deleting, holder)?;
-            Ok::<_, LargeValueError>(Decision::Delete)
-        })?;
-        if matches!(decision, Decision::Delete) {
-            self.own(holder, digest);
-        }
-        Ok(decision)
+            if intent.state == LIVE {
+                tx.set(&intent_key, &Intent::encode(&intent.digest, 0, DOOMED))?;
+            }
+            Ok::<_, LargeValueError>(Decision::Delete(intent.digest))
+        })
     }
 
-    /// Delete a tombstoned object we own. Re-checks the lease and the tombstone first and sends
-    /// no DELETE when either is lost.
-    fn finish_delete(&self, holder: &[u8; 16], digest: &[u8; 32]) -> Result<(), LargeValueError> {
-        let deleting = self.deleting_key(digest);
+    /// Delete a doomed upload's object, then its intent if no abandon re-created it meanwhile.
+    fn delete_upload(&self, digest: &[u8; 32], upload: &[u8; 16]) -> Result<(), LargeValueError> {
+        self.objects.delete(&self.upload_key(digest, upload))?;
+        let (key, doomed) = (self.intent_key(upload), Intent::encode(digest, 0, DOOMED));
         self.kv.transact(|tx| {
-            self.require_lease(tx, holder)?;
-            match tx.get(&deleting)? {
-                Some(owner) if holder_of(&owner)? == *holder => Ok(()),
-                _ => Err(LargeValueError::LeaseLost),
+            if tx.get(&key)?.as_deref() == Some(doomed.as_slice()) {
+                tx.clear(&key)?;
             }
-        })?;
-        self.objects.delete(&self.digest_key(digest))?;
-        if let Some(owned) = self.tombstones.lock().expect("tombstones").get_mut(digest) {
-            owned.deleted = true;
-        }
-        Ok(())
-    }
-
-    /// Clear our tombstone once its DELETE completed and its grace passed. Returns whether it
-    /// was cleared.
-    fn try_clear(&self, holder: &[u8; 16], digest: &[u8; 32]) -> Result<bool, LargeValueError> {
-        let Some(owned) = self.owned(digest) else {
-            return Ok(false);
-        };
-        if owned.holder != *holder || !owned.deleted || owned.since.elapsed() < self.grace {
-            return Ok(false);
-        }
-        let deleting = self.deleting_key(digest);
-        let cleared = self.kv.transact(|tx| {
-            self.require_lease(tx, holder)?;
-            match tx.get(&deleting)? {
-                Some(owner) if holder_of(&owner)? == *holder => {
-                    tx.clear(&deleting)?;
-                    Ok::<_, LargeValueError>(true)
-                }
-                _ => Ok(false),
-            }
-        })?;
-        self.tombstones.lock().expect("tombstones").remove(digest);
-        Ok(cleared)
+            Ok::<_, LargeValueError>(())
+        })
     }
 }
 
 enum Decision {
-    Delete,
+    Delete([u8; 32]),
     Referenced,
-    InFlight,
-    Tombstoned,
+    Skip,
 }
 
-/// Object keys are `<namespace>/sha256/<hex>`: lowercase ASCII, digits, `-`, `_` and `/`.
+/// Object keys are `<namespace>/sha256/<hex>/<upload>` or `<namespace>/claim`: lowercase ASCII, digits, `-`, `_` and `/`.
 pub(crate) fn check_object_key(key: &str) -> Result<(), ObjectStoreError> {
     let valid = !key.is_empty()
         && !key.starts_with('/')
@@ -770,6 +615,27 @@ impl ObjectStore for LocalFsObjectStore {
         Ok(())
     }
 
+    fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        _sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError> {
+        let path = self.path(key)?;
+        let parent = path.parent().expect("object path has a parent");
+        fs::create_dir_all(parent).map_err(|e| io_error("create object directory", e))?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| io_error("create object file", e))?;
+        file.write_all(bytes)
+            .and_then(|()| file.as_file().sync_all())
+            .map_err(|e| io_error("write object", e))?;
+        match file.persist_noclobber(&path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(io_error("publish object", error.error)),
+        }
+    }
+
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError> {
         match fs::read(self.path(key)?) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -801,11 +667,7 @@ mod tests {
         let objects = Arc::new(LocalFsObjectStore::temporary());
         let root = objects.root().to_path_buf();
         (
-            // One sweeper process per test, so no tombstone grace is needed except where a
-            // test says otherwise.
-            LargeValues::new(kv.clone(), objects, b"T_lv:", "test")
-                .with_intent_ttl(ttl)
-                .with_tombstone_grace(Duration::ZERO),
+            LargeValues::new(kv.clone(), objects, b"T_lv:", "test").with_intent_ttl(ttl),
             kv,
             root,
         )
@@ -821,6 +683,36 @@ mod tests {
             .unwrap();
     }
 
+    /// Every upload object under `root/test/sha256`, as `<hex>/<upload>`.
+    fn uploads(root: &Path) -> Vec<String> {
+        let mut found = Vec::new();
+        let Ok(digests) = std::fs::read_dir(root.join("test/sha256")) else {
+            return found;
+        };
+        for digest in digests {
+            let digest = digest.unwrap();
+            for upload in std::fs::read_dir(digest.path()).unwrap() {
+                let name = upload.unwrap().file_name().into_string().unwrap();
+                if !name.starts_with('.') {
+                    found.push(format!(
+                        "{}/{name}",
+                        digest.file_name().into_string().unwrap()
+                    ));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    fn key_of(reference: &LargeValueRef) -> String {
+        format!(
+            "{}/{}",
+            hex::encode(reference.digest),
+            hex::encode(reference.upload)
+        )
+    }
+
     const HOLDER: [u8; 16] = [1; 16];
 
     #[test]
@@ -831,7 +723,10 @@ mod tests {
         reference(&values, &kv, &staged, b"row");
         assert_eq!(values.read(&staged.reference).unwrap(), bytes);
         let key = values.object_key(&staged.reference);
-        assert!(key.starts_with("test/sha256/"));
+        assert!(key.starts_with(&format!(
+            "test/sha256/{}/",
+            hex::encode(staged.reference.digest)
+        )));
         values.objects().put(&key, b"tampered", &[0; 32]).unwrap();
         assert!(matches!(
             values.read(&staged.reference),
@@ -840,32 +735,73 @@ mod tests {
     }
 
     #[test]
+    fn equal_content_gets_a_separate_object_per_upload() {
+        let (values, kv, root) = index_with_root(Duration::ZERO);
+        let first = values.stage(b"same").unwrap();
+        let second = values.stage(b"same").unwrap();
+        assert_ne!(
+            values.object_key(&first.reference),
+            values.object_key(&second.reference)
+        );
+        reference(&values, &kv, &second, b"row");
+        // The unreferenced twin is deleted; the referenced one is untouched.
+        assert_eq!(values.sweep(HOLDER).unwrap().deleted, 1);
+        assert_eq!(uploads(&root), vec![key_of(&second.reference)]);
+        assert_eq!(values.read(&second.reference).unwrap(), b"same");
+    }
+
+    #[test]
     fn sweep_deletes_an_orphan_and_never_a_referenced_object() {
-        let (values, kv) = index(Duration::ZERO);
+        let (values, kv, root) = index_with_root(Duration::ZERO);
         let orphan = values.stage(b"orphan: uploaded, never committed").unwrap();
         let kept = values.stage(b"referenced").unwrap();
         reference(&values, &kv, &kept, b"row");
-        // A second reference to the same content, and an expired intent for it.
-        let again = values.stage(b"referenced").unwrap();
-        reference(&values, &kv, &again, b"row-2");
-        values.stage(b"referenced").unwrap();
+        // A writer whose commit landed but who saw an error and abandoned anyway.
+        let uncertain = values.stage(b"committed, then abandoned").unwrap();
+        reference(&values, &kv, &uncertain, b"row-2");
+        values.abandon(&uncertain);
 
         let report = values.sweep(HOLDER).unwrap();
         assert!(report.held_lease);
-        assert_eq!(report.deleted, 1);
-        assert_eq!(report.kept_referenced, 1);
-        let objects = values.objects();
-        assert!(!objects
+        assert_eq!((report.deleted, report.kept_referenced), (1, 1));
+        assert!(!values
+            .objects()
             .contains(&values.object_key(&orphan.reference))
             .unwrap());
         assert_eq!(values.read(&kept.reference).unwrap(), b"referenced");
-        // Nothing is left to do, and the referenced object survives repeated sweeps.
-        assert_eq!(values.sweep(HOLDER).unwrap().deleted, 0);
-        assert_eq!(values.read(&kept.reference).unwrap(), b"referenced");
-        let leftovers = kv
+        assert_eq!(
+            values.read(&uncertain.reference).unwrap(),
+            b"committed, then abandoned"
+        );
+        // Nothing is left to do, and the referenced objects survive repeated sweeps.
+        assert_eq!(
+            values.sweep(HOLDER).unwrap(),
+            SweepReport {
+                held_lease: true,
+                ..SweepReport::default()
+            }
+        );
+        assert_eq!(uploads(&root).len(), 2);
+        assert!(kv
             .transact(|tx| tx.scan_prefix(b"T_lv:int:", None, 10))
+            .unwrap()
+            .is_empty());
+        let mut referenced = values.references(10).unwrap();
+        referenced.sort_by_key(|r| r.upload);
+        let mut expected = vec![kept.reference, uncertain.reference];
+        expected.sort_by_key(|r| r.upload);
+        assert_eq!(referenced, expected);
+    }
+
+    #[test]
+    fn a_cleared_reference_is_collected() {
+        let (values, kv, root) = index_with_root(DEFAULT_INTENT_TTL);
+        let staged = values.stage(b"replaced row").unwrap();
+        reference(&values, &kv, &staged, b"row");
+        kv.transact(|tx| values.clear_reference(tx, &staged.reference, b"row"))
             .unwrap();
-        assert!(leftovers.is_empty());
+        assert_eq!(values.sweep(HOLDER).unwrap().deleted, 1);
+        assert!(uploads(&root).is_empty());
     }
 
     #[test]
@@ -877,10 +813,47 @@ mod tests {
             kv.transact(|tx| values.commit_reference(tx, &staged, b"row")),
             Err(LargeValueError::IntentLost)
         );
-        assert!(kv
-            .transact(|tx| tx.scan_prefix(b"T_lv:ref:", None, 10))
-            .unwrap()
-            .is_empty());
+        assert!(values.references(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_doomed_intent_refuses_its_commit_and_an_interrupted_delete_is_finished() {
+        let (values, kv, root) = index_with_root(Duration::ZERO);
+        let staged = values.stage(b"doomed").unwrap();
+        // A sweeper that doomed the upload and died before its DELETE.
+        assert!(matches!(
+            values.decide(&staged.reference.upload, now_ms()).unwrap(),
+            Decision::Delete(_)
+        ));
+        assert_eq!(
+            kv.transact(|tx| values.commit_reference(tx, &staged, b"row")),
+            Err(LargeValueError::IntentLost)
+        );
+        // Another sweeper finishes the deletion.
+        assert_eq!(values.sweep([2; 16]).unwrap().deleted, 1);
+        assert!(uploads(&root).is_empty());
+        // A retry of the same content is a new upload and commits.
+        let retry = values.stage(b"doomed").unwrap();
+        reference(&values, &kv, &retry, b"row");
+        assert_eq!(values.read(&retry.reference).unwrap(), b"doomed");
+    }
+
+    #[test]
+    fn an_upload_that_lands_after_its_deletion_is_still_collected() {
+        let (values, _kv, root) = index_with_root(Duration::ZERO);
+        let bytes = b"late upload";
+        let staged = values.stage(bytes).unwrap();
+        assert_eq!(values.sweep(HOLDER).unwrap().deleted, 1);
+        // The writer's PUT reaches the store late, after the sweeper deleted the key ...
+        let key = values.object_key(&staged.reference);
+        values
+            .objects()
+            .put(&key, bytes, &staged.reference.digest)
+            .unwrap();
+        // ... its commit fails, and it abandons.
+        values.abandon(&staged);
+        assert_eq!(values.sweep(HOLDER).unwrap().deleted, 1);
+        assert!(uploads(&root).is_empty());
     }
 
     #[test]
@@ -899,71 +872,66 @@ mod tests {
     }
 
     #[test]
-    fn writes_wait_for_an_unfinished_deletion_and_a_second_sweeper_is_excluded() {
-        let (values, kv) = index(Duration::ZERO);
-        let staged = values.stage(b"marked").unwrap();
-        values.abandon(&staged);
-        // A sweeper (another holder) that marked the object and died before deleting it.
-        let digest = staged.reference.digest;
-        kv.transact(|tx| {
-            for (key, _) in tx.scan_prefix(b"T_lv:int:", None, 10)? {
-                tx.clear(&key)?;
-            }
-            tx.set(&values.deleting_key(&digest), &[9; 16])
-        })
-        .unwrap();
-        assert_eq!(values.stage(b"marked"), Err(LargeValueError::BeingSwept));
-        // This holder adopts the tombstone, deletes the object, and (with no grace) clears it.
-        let report = values.sweep(HOLDER).unwrap();
-        assert_eq!((report.deleted, report.tombstones_cleared), (1, 1));
-        assert!(values.stage(b"marked").is_ok());
+    fn a_second_sweeper_waits_for_the_lease() {
+        let (values, _kv) = index(Duration::ZERO);
+        assert!(values.sweep(HOLDER).unwrap().held_lease);
         assert!(!values.sweep([2; 16]).unwrap().held_lease);
     }
 
-    #[test]
-    fn concurrent_writers_and_sweeper_never_lose_a_referenced_object() {
-        let (values, kv, root) = index_with_root(Duration::ZERO);
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let sweeper = {
-            let values = values.clone();
-            let stop = stop.clone();
-            std::thread::spawn(move || {
-                let mut deleted = 0;
-                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    deleted += values.sweep(HOLDER).unwrap().deleted;
-                }
-                deleted
-            })
+    /// Writers and sweepers race with every intent already expired; `sweepers` replicas, each
+    /// its own index handle, sweep with no lease exclusion at all.
+    fn race(sweepers: usize) {
+        let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
+        let local = Arc::new(LocalFsObjectStore::temporary());
+        let root = local.root().to_path_buf();
+        let objects: Arc<dyn ObjectStore> = local;
+        let open = || {
+            LargeValues::new(kv.clone(), objects.clone(), b"T_lv:", "test")
+                .with_intent_ttl(Duration::ZERO)
+                .with_lease_ttl(Duration::ZERO)
         };
-        let writers: Vec<_> = (0..4u8)
-            .map(|writer| {
-                let values = values.clone();
-                let kv = kv.clone();
-                std::thread::spawn(move || {
-                    let mut committed = Vec::new();
-                    for round in 0..50u8 {
-                        // Every intent is already expired, so the sweeper races each commit.
-                        let bytes = vec![round % 5; 1000];
-                        let Ok(staged) = values.stage(&bytes) else {
-                            continue;
-                        };
-                        let owner = [writer, round];
-                        match kv.transact(|tx| values.commit_reference(tx, &staged, &owner)) {
-                            Ok(()) => committed.push(staged.reference),
-                            Err(LargeValueError::IntentLost) => values.abandon(&staged),
-                            Err(error) => panic!("{error}"),
+        let stop = AtomicBool::new(false);
+        let (committed, deleted) = std::thread::scope(|scope| {
+            let sweepers: Vec<_> = (0..sweepers)
+                .map(|n| {
+                    let (values, stop) = (open(), &stop);
+                    scope.spawn(move || {
+                        let mut deleted = 0;
+                        while !stop.load(Ordering::SeqCst) {
+                            deleted += values.sweep([n as u8 + 1; 16]).unwrap().deleted;
                         }
-                    }
-                    committed
+                        deleted
+                    })
                 })
-            })
-            .collect();
-        let committed: Vec<LargeValueRef> = writers
-            .into_iter()
-            .flat_map(|writer| writer.join().unwrap())
-            .collect();
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        let deleted = sweeper.join().unwrap();
+                .collect();
+            let writers: Vec<_> = (0..4u8)
+                .map(|writer| {
+                    let (values, kv) = (open(), kv.clone());
+                    scope.spawn(move || {
+                        let mut committed = Vec::new();
+                        for round in 0..50u8 {
+                            // Equal content across writers and rounds.
+                            let staged = values.stage(&vec![round % 5; 1000]).unwrap();
+                            let owner = [writer, round];
+                            match kv.transact(|tx| values.commit_reference(tx, &staged, &owner)) {
+                                Ok(()) => committed.push(staged.reference),
+                                Err(LargeValueError::IntentLost) => values.abandon(&staged),
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                        committed
+                    })
+                })
+                .collect();
+            let committed: Vec<LargeValueRef> = writers
+                .into_iter()
+                .flat_map(|writer| writer.join().unwrap())
+                .collect();
+            stop.store(true, Ordering::SeqCst);
+            let deleted: usize = sweepers.into_iter().map(|s| s.join().unwrap()).sum();
+            (committed, deleted)
+        });
+        let values = open();
         values.sweep(HOLDER).unwrap();
         assert!(!committed.is_empty());
         for reference in &committed {
@@ -972,97 +940,62 @@ mod tests {
                 "a referenced object was deleted"
             );
         }
-        // Every unreferenced upload, including one that landed after its deletion, is gone.
-        let mut remaining: Vec<String> = std::fs::read_dir(root.join("test/sha256"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .filter(|name| !name.starts_with('.'))
-            .collect();
-        remaining.sort();
-        let mut expected: Vec<String> = committed.iter().map(|r| hex::encode(r.digest)).collect();
+        // Every unreferenced upload, including one that landed after its deletion, is gone,
+        // and nothing is left blocking a later write of the same content.
+        let mut expected: Vec<String> = committed.iter().map(key_of).collect();
         expected.sort();
-        expected.dedup();
-        assert_eq!(remaining, expected);
+        assert_eq!(uploads(&root), expected);
+        let again = values.stage(&[0; 1000]).unwrap();
+        assert_eq!(values.read(&again.reference).unwrap(), vec![0; 1000]);
         eprintln!(
-            "{} committed references survived {deleted} concurrent deletions",
+            "{sweepers} sweepers: {} committed references survived {deleted} deletions",
             committed.len()
         );
     }
 
-    /// Overlapping sweepers: A decides and stalls past its lease, B takes over and finishes,
-    /// a writer re-uploads and references the same content, then A's delayed DELETE runs.
     #[test]
-    fn a_stalled_sweeper_never_deletes_a_reupload_after_another_took_over() {
-        let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
-        let objects: Arc<dyn ObjectStore> = Arc::new(LocalFsObjectStore::temporary());
-        let open = || {
-            LargeValues::new(kv.clone(), objects.clone(), b"T_lv:", "test")
-                .with_intent_ttl(Duration::ZERO)
-                .with_tombstone_grace(Duration::from_millis(300))
-        };
-        // Separate processes: separate in-memory tombstone ownership.
-        let (a, b, writer) = (open(), open(), open());
-        let (holder_a, holder_b) = ([0xa; 16], [0xb; 16]);
-        let staged = writer.stage(b"content").unwrap();
-        writer.abandon(&staged);
-        let digest = staged.reference.digest;
-
-        assert!(a.renew_lease(&holder_a).unwrap());
-        assert!(matches!(
-            a.decide(&holder_a, &digest, now_ms()).unwrap(),
-            Decision::Delete
-        ));
-        // A stalls; its lease expires.
-        kv.transact(|tx| {
-            tx.set(
-                &a.lease_key(),
-                &[holder_a.as_slice(), &0u64.to_be_bytes()].concat(),
-            )
-        })
-        .unwrap();
-        let report = b.sweep(holder_b).unwrap();
-        assert_eq!((report.deleted, report.tombstones_cleared), (1, 0));
-        // B adopted the tombstone: writers wait out its grace, and A cannot clear or delete.
-        assert_eq!(writer.stage(b"content"), Err(LargeValueError::BeingSwept));
-        assert_eq!(
-            a.finish_delete(&holder_a, &digest),
-            Err(LargeValueError::LeaseLost)
-        );
-        assert!(!a.try_clear(&holder_a, &digest).unwrap());
-
-        std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(b.sweep(holder_b).unwrap().tombstones_cleared, 1);
-        let again = writer.stage(b"content").unwrap();
-        kv.transact(|tx| writer.commit_reference(tx, &again, b"row"))
-            .unwrap();
-        // A's delayed DELETE: refused before it reaches the object store.
-        assert_eq!(
-            a.finish_delete(&holder_a, &digest),
-            Err(LargeValueError::LeaseLost)
-        );
-        assert_eq!(writer.read(&again.reference).unwrap(), b"content");
-        // Even with the lease back, A does not own a tombstone, so it sends nothing.
-        kv.transact(|tx| tx.clear(&a.lease_key())).unwrap();
-        assert_eq!(
-            a.finish_delete(&holder_a, &digest),
-            Err(LargeValueError::LeaseLost)
-        );
-        assert_eq!(writer.read(&again.reference).unwrap(), b"content");
+    fn concurrent_writers_and_sweeper_never_lose_a_referenced_object() {
+        race(1);
     }
 
     #[test]
-    fn a_tombstone_is_kept_for_its_grace_before_writers_may_upload_again() {
-        let (values, _kv) = index(Duration::ZERO);
-        let values = values.with_tombstone_grace(Duration::from_millis(300));
-        let staged = values.stage(b"graced").unwrap();
-        values.abandon(&staged);
-        let report = values.sweep(HOLDER).unwrap();
-        assert_eq!((report.deleted, report.tombstones_cleared), (1, 0));
-        assert_eq!(values.stage(b"graced"), Err(LargeValueError::BeingSwept));
-        assert_eq!(values.sweep(HOLDER).unwrap().tombstones_cleared, 0);
-        std::thread::sleep(Duration::from_millis(350));
-        assert_eq!(values.sweep(HOLDER).unwrap().tombstones_cleared, 1);
-        assert!(values.stage(b"graced").is_ok());
+    fn several_replicas_sweeping_at_once_never_lose_a_referenced_object() {
+        race(3);
+    }
+
+    /// Two replicas sweeping in turn, each its own handle: every orphan is collected and a
+    /// later write of the same content is never blocked.
+    #[test]
+    fn alternating_sweepers_make_progress() {
+        let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
+        let local = Arc::new(LocalFsObjectStore::temporary());
+        let root = local.root().to_path_buf();
+        let objects: Arc<dyn ObjectStore> = local;
+        let open = || {
+            LargeValues::new(kv.clone(), objects.clone(), b"T_lv:", "test")
+                .with_intent_ttl(Duration::ZERO)
+                .with_lease_ttl(Duration::ZERO)
+        };
+        let (a, b, writer) = (open(), open(), open());
+        let mut kept = Vec::new();
+        for round in 0..20u8 {
+            writer.stage(b"orphan").unwrap();
+            let staged = writer.stage(b"orphan").unwrap();
+            if round % 2 == 0 {
+                reference(&writer, &kv, &staged, &[round]);
+                kept.push(staged.reference);
+            }
+            let sweeper = if round % 2 == 0 { &a } else { &b };
+            let report = sweeper.sweep([round % 2 + 1; 16]).unwrap();
+            assert!(report.held_lease);
+            assert_eq!(report.deleted, if round % 2 == 0 { 1 } else { 2 });
+        }
+        let mut expected: Vec<String> = kept.iter().map(key_of).collect();
+        expected.sort();
+        assert_eq!(uploads(&root), expected);
+        for reference in &kept {
+            assert_eq!(writer.read(reference).unwrap(), b"orphan");
+        }
     }
 
     #[test]
@@ -1078,10 +1011,11 @@ mod tests {
         assert!(open(&first_kv, "groups").stage(b"mine").is_ok());
         // Another relay's index (its own store) in the same bucket namespace.
         let other = open(&second_kv, "groups");
-        assert_eq!(
-            other.stage(b"theirs"),
-            Err(LargeValueError::NamespaceClaimed("groups".into()))
-        );
+        let refused = other.stage(b"theirs").unwrap_err();
+        assert_eq!(refused, LargeValueError::NamespaceClaimed("groups".into()));
+        assert!(refused
+            .to_string()
+            .contains("delete the object <bucket prefix>/groups/claim"));
         assert!(matches!(
             other.sweep(HOLDER),
             Err(LargeValueError::NamespaceClaimed(_))
@@ -1089,5 +1023,30 @@ mod tests {
         // The same index, reopened, and another namespace are fine.
         assert!(open(&first_kv, "groups").stage(b"again").is_ok());
         assert!(open(&second_kv, "groups-b").stage(b"theirs").is_ok());
+    }
+
+    #[test]
+    fn of_two_indexes_racing_on_an_empty_namespace_exactly_one_claims_it() {
+        for _ in 0..20 {
+            let objects: Arc<dyn ObjectStore> = Arc::new(LocalFsObjectStore::temporary());
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let racers: Vec<_> = (0..4)
+                    .map(|_| {
+                        let values = LargeValues::new(
+                            Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+                            objects.clone(),
+                            b"T_lv:",
+                            "groups",
+                        );
+                        scope.spawn(move || values.claim_namespace())
+                    })
+                    .collect();
+                racers.into_iter().map(|r| r.join().unwrap()).collect()
+            });
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+            assert!(results
+                .iter()
+                .all(|r| matches!(r, Ok(()) | Err(LargeValueError::NamespaceClaimed(_)))));
+        }
     }
 }

@@ -40,7 +40,8 @@ acceptance. Ordered reads and persisted authenticated receipts remain authoritat
 
 The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-binary-rows-v1`.
 Message rows are binary CBOR; a ciphertext over 64 KiB is stored in the relay's large-value object
-store (`groups/sha256/<hex>`) and the row keeps its SHA-256 and length. A store with the earlier
+store as its own upload (`groups/sha256/<hex>/<upload-id>`) and the row keeps the upload id,
+SHA-256 and length. A store with the earlier
 `group-append-idempotency-v1` marker (JSON rows) is refused without migration.
 Read-only opening inspects only GroupStore-owned prefixes and never writes a marker.
 Unrelated KV namespaces are ignored. An empty group namespace is valid; the first authorized

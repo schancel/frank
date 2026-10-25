@@ -16,7 +16,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -31,7 +31,9 @@ use tokio_tungstenite::{connect_async, tungstenite};
 
 #[path = "../../../labs/solonet_payer.rs"]
 mod solonet_payer;
-use solonet_payer::{commitment_calldata, paid_body, write_policy, Payer, Solonet, WritePolicy};
+use solonet_payer::{
+    commitment_calldata, paid_body, write_policy, Funded, Payer, Solonet, WritePolicy,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Lab access
@@ -245,11 +247,11 @@ struct Write {
 }
 
 /// Funded payers for one test and the relays' write policy. All three replicas share one
-/// public origin (the proxy's), so one policy holds for every one of them.
+/// public origin (the proxy's), so one policy holds for every one of them. Dropped at the end
+/// of the test, passed or failed, it sweeps the payers' leftovers back to the faucet.
 struct Payments {
-    solonet: Solonet,
     policy: WritePolicy,
-    payers: Mutex<Vec<Payer>>,
+    payers: Funded,
 }
 
 impl Payments {
@@ -265,30 +267,26 @@ impl Payments {
             policy.host_origin.starts_with("http://127.0.0.1:"),
             "{policy:?}"
         );
-        let payers = Mutex::new(solonet.fund(count).await);
-        Arc::new(Payments {
-            solonet,
-            policy,
-            payers,
-        })
+        let payers = solonet.fund(count).await;
+        Arc::new(Payments { policy, payers })
     }
 
-    fn payer(&self) -> Payer {
-        self.payers
-            .lock()
-            .unwrap()
-            .pop()
-            .expect("the test used more payers than it funded")
+    fn solonet(&self) -> &Solonet {
+        self.payers.solonet()
+    }
+
+    fn payer(&self) -> &Payer {
+        self.payers.take()
     }
 
     /// `envelope`, paid as the policy asks by a payer used for nothing else.
     fn pay(&self, envelope: GroupMessageEnvelope) -> Write {
-        self.pay_by(&self.payer(), envelope)
+        self.pay_by(self.payer(), envelope)
     }
 
     /// `envelope`, paid as the policy asks by `payer` at its nonce 0.
     fn pay_by(&self, payer: &Payer, envelope: GroupMessageEnvelope) -> Write {
-        let (payment, tx_hash) = self.solonet.payment(payer, &self.policy, &envelope);
+        let (payment, tx_hash) = self.solonet().payment(payer, &self.policy, &envelope);
         Write {
             envelope,
             payment,
@@ -789,7 +787,7 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     let accepted = append(&client, &b, &first).await.unwrap();
     assert_eq!(accepted.status, 200, "{:?}", accepted.error);
     assert_eq!(accepted.disposition.as_deref(), Some("appended"));
-    payments.solonet.wait_landed(&first.tx_hash).await;
+    payments.solonet().wait_landed(&first.tx_hash).await;
     // Its payment does not fund another write on C (it commits to the first one).
     let replay = Write {
         envelope: group.envelope(group.current(), "replayed payment"),
@@ -854,7 +852,7 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     ];
     for (index, (reason, network, chain_id, to, value, data)) in cases.into_iter().enumerate() {
         let (payment, tx_hash) = payments
-            .solonet
+            .solonet()
             .payment_tx(&payer, network, chain_id, to, value, data);
         let write = Write {
             envelope: envelope.clone(),
@@ -872,7 +870,7 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
         assert_eq!(error["error"], "group_payment_invalid", "{error}");
         assert_eq!(error["reason"], reason, "{error}");
     }
-    let checked = payments.pay_by(&payer, envelope);
+    let checked = payments.pay_by(payer, envelope);
     let accepted = append(&client, &a, &checked).await.unwrap();
     assert_eq!(accepted.status, 200, "{:?}", accepted.error);
     assert_eq!(
@@ -884,8 +882,8 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     // Two payments at one payer nonce for two writes, sent to A and C at once: one funds a
     // write, the other is refused, whichever replica each reaches.
     let payer = payments.payer();
-    let one = payments.pay_by(&payer, group.envelope(group.current(), "nonce 0, one"));
-    let two = payments.pay_by(&payer, group.envelope(group.current(), "nonce 0, two"));
+    let one = payments.pay_by(payer, group.envelope(group.current(), "nonce 0, one"));
+    let two = payments.pay_by(payer, group.envelope(group.current(), "nonce 0, two"));
     let (to_a, to_c) = tokio::join!(append(&client, &a, &one), append(&client, &c, &two));
     let mut statuses = [to_a.unwrap(), to_c.unwrap()];
     statuses.sort_by_key(|answer| answer.status);
@@ -897,7 +895,18 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
         statuses[1].error
     );
     assert_eq!(statuses[0].message.as_ref().unwrap().server_seq, 3);
-    assert_eq!(statuses[1].error.as_ref().unwrap()["reason"], "nonce_used");
+    // The loser is `nonce_used`, or `stale_nonce` when the winner's payment was mined before
+    // the loser's funding check read the payer's nonce. Either way it consumed no sequence:
+    // the log below holds exactly 3 writes.
+    let refusal = statuses[1].error.as_ref().unwrap();
+    assert!(
+        matches!(
+            (refusal["error"].as_str(), refusal["reason"].as_str()),
+            (Some("group_payment_invalid"), Some("nonce_used"))
+                | (Some("group_payment_unfunded"), Some("stale_nonce"))
+        ),
+        "{refusal}"
+    );
 
     let messages = read_from(&client, &b, &group.id, &group.current().token, 0).await;
     assert_gap_free(&messages, &b);

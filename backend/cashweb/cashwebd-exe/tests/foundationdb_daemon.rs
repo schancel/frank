@@ -281,7 +281,9 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     let solonet = Solonet::from_env().await;
     let checkpoint = solonet.block_hash(1).await;
     let chain = (solonet.rpc_url(), checkpoint.as_str());
-    let payer = solonet.fund(1).await.pop().unwrap();
+    // Swept back to the faucet when dropped, at the end of the test or while it unwinds.
+    let funded = solonet.fund(1).await;
+    let payer = funded.take();
 
     let a = Relay::start(&temp.path().join("a"), &shared, &cluster, &subspace, chain);
     let b = Relay::start(&temp.path().join("b"), &shared, &cluster, &subspace, chain);
@@ -376,7 +378,7 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     envelope.write_sig = sign(&write, &envelope.signing_digest().unwrap());
     // Paid as B asks: B's own origin, so the payment funds this write on B only.
     let policy = write_policy(&http, &b.origin, &group_id).await;
-    let (payment, tx_hash) = solonet.payment(&payer, &policy, &envelope);
+    let (payment, tx_hash) = solonet.payment(payer, &policy, &envelope);
     let appended = http
         .put(format!("{}/groups/{group_id}/messages", b.origin))
         .header("content-type", "application/json")

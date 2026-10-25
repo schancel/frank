@@ -1198,6 +1198,22 @@ export const rawFrFR = {
       failed:
         'Son message n’a pas pu être livré. Le paiement est conservé ; ses fonds sont retenus.',
     },
+    notSettled: {
+      'not-in-block':
+        'Pas encore terminé : le transfert est auprès du réseau et pas encore dans un bloc. Le portefeuille continue de vérifier. Rien n’a été payé de nouveau.',
+      'chain-unreadable':
+        'Pas encore terminé : le réseau est injoignable, le portefeuille ne peut donc pas savoir si le transfert est arrivé. Il continue de vérifier. Rien n’a été payé de nouveau.',
+      'not-taken':
+        'Pas encore terminé : le réseau n’a pas accepté le transfert. Le portefeuille continue de proposer le même transfert signé. Rien n’a été payé de nouveau.',
+      'not-shown':
+        'Pas encore terminé : le réseau ne montre pas encore le transfert. Le portefeuille continue de vérifier. Rien n’a été payé de nouveau.',
+      'reverted':
+        'Le réseau a inclus le transfert et celui-ci a échoué. Rien n’a été payé de nouveau.',
+      'no-record':
+        'Le portefeuille n’a aucune trace du transfert signé de ce paiement. Rien n’a été payé de nouveau.',
+    },
+    finishFailed:
+      'Le paiement n’a pas pu être terminé pour le moment. Rien n’a été payé de nouveau ; réessayez plus tard.',
   },
   chatMessageStealth: {
     outboundState: {

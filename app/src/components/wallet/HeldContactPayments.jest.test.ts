@@ -2,10 +2,11 @@
 
 import { mount } from '@vue/test-utils'
 import type { ContactPaymentInfo } from '@frank/wallet/chain'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, ContactPaymentNotSettledError } from '@frank/wallet/chain'
 import HeldContactPayments from './HeldContactPayments.vue'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import enUS from '../../i18n/en-us'
+import { errorNotify } from 'src/utils/notifications'
 
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
@@ -134,6 +135,42 @@ describe('HeldContactPayments', () => {
     expect(wrapper.find('[data-testid="held-contact-payments"]').exists()).toBe(
       false,
     )
+    wrapper.unmount()
+  })
+
+  it('Finish that cannot end the payment shows why, and the payment stays listed', async () => {
+    payments = [
+      payment({
+        state: 'delivered',
+        holdsFunds: false,
+        ephemeralPubKey: '02ee',
+      }),
+    ]
+    const notSettled = new ContactPaymentNotSettledError('m', 'not-in-block')
+    settleContactPayment.mockRejectedValue(notSettled)
+    const wrapper = mountList()
+    await settle()
+    const finish = () =>
+      wrapper
+        .find('[data-testid="held-contact-payment-finish"]')
+        .trigger('click')
+    await finish()
+    await settle()
+    expect(errorNotify).toHaveBeenLastCalledWith(notSettled, {
+      fallbackKey: 'heldContactPayments.notSettled.not-in-block',
+    })
+    expect(t('heldContactPayments.notSettled.not-in-block')).toMatch(
+      /not in a block yet/,
+    )
+    settleContactPayment.mockRejectedValue(new Error('journal unavailable'))
+    await finish()
+    await settle()
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      fallbackKey: 'heldContactPayments.finishFailed',
+    })
+    expect(
+      wrapper.findAll('[data-testid="held-contact-payment"]'),
+    ).toHaveLength(1)
     wrapper.unmount()
   })
 })

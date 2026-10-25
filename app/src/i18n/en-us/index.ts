@@ -1172,6 +1172,22 @@ export const rawEnUS = {
       failed:
         'Its message could not be delivered. The payment is kept; its funds are held.',
     },
+    notSettled: {
+      'not-in-block':
+        'Not finished yet: the transfer is with the network and not in a block yet. The wallet keeps checking. Nothing was paid again.',
+      'chain-unreadable':
+        'Not finished yet: the network could not be reached, so the wallet cannot tell whether the transfer landed. It keeps checking. Nothing was paid again.',
+      'not-taken':
+        'Not finished yet: the network did not take the transfer. The wallet keeps offering the same signed transfer. Nothing was paid again.',
+      'not-shown':
+        'Not finished yet: the network does not show the transfer yet. The wallet keeps checking. Nothing was paid again.',
+      'reverted':
+        'The network included the transfer and it failed. Nothing was paid again.',
+      'no-record':
+        'The wallet has no record of this payment’s signed transfer. Nothing was paid again.',
+    },
+    finishFailed:
+      'The payment could not be finished just now. Nothing was paid again; try again later.',
   },
   chatMessageStealth: {
     outboundState: {

@@ -173,7 +173,7 @@ fn worker() {
         let (kv, rows) = open(&subspace);
         let holder: [u8; 16] = rand::random();
         let mut stdin = std::io::stdin().lock().lines();
-        let mut say = |line: &str| println!("{PROTOCOL}{line}");
+        let say = |line: &str| println!("{PROTOCOL}{line}");
         match std::env::var("FRANK_DIRECTORY_FDB_ROLE").unwrap().as_str() {
             // Claim the forward, report it, then wait to be killed before sending anything.
             "claim-and-die" => {

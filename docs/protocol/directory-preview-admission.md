@@ -112,7 +112,7 @@ another, fails unavailable with its development reset path. Within the store:
 | --- | --- |
 | `p/m/` K | Local version and installed anchor (the enrollment marker) |
 | `p/h/` K | Versioned metadata, local sequence, head/revision/generations, S10a pair, checked time, counts/charge, fork flag, evidence digest |
-| `p/e/` K, u32 slot, u64 revision, exact T1 | One original validating wrapper: tag 0 then the bytes, or tag 1 then its SHA-256 and length when it is an object |
+| `p/e/` K, u32 slot, u64 revision, exact T1 | One original validating wrapper: tag 0 then the bytes, or tag 1 then its SHA-256, big-endian u64 length and 16-byte upload id when it is an object |
 
 K is one network-length byte, the network and the full compressed P. Integers
 in keys are big endian. Metadata is strict, bounded local JSON; local storage
@@ -121,7 +121,8 @@ wrapper without re-encoding. History is stored once per record, not inside each
 successor. Accepted rows precede proof-only rows. A wrapper over 64 KiB, or
 beyond 6 MiB of inline rows in one commit, is uploaded first to the object
 store (`[registry.large_values]`, S3 in a cluster) as
-`directory/sha256/<hex>`, and its reference is committed with the row, so a
+`directory/sha256/<hex>/<upload>`, one object per upload, and its reference is
+committed with the row, so a
 commit stays inside FoundationDB's value and transaction limits. Reads check
 every object against its digest and length.
 

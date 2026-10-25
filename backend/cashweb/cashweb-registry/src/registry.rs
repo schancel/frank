@@ -72,6 +72,8 @@ pub struct RegistryBackends {
     pub groups: crate::store::groups::GroupBackend,
     /// Where values over the inline limit (group ciphertexts) live (`registry.large_values`).
     pub objects: Arc<dyn crate::store::large_values::ObjectStore>,
+    /// Where the directory keeps its state (`registry.cluster.driver`).
+    pub directory: crate::store::directory_store::DirectoryBackend,
     /// Group append policy (`registry.groups`).
     pub group_policy: cashweb_config::GroupAppendPolicy,
     /// Where direct messages keep their state (`registry.cluster.driver`): `None` is this
@@ -223,6 +225,8 @@ impl Registry {
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
         let groups = crate::store::groups::GroupBackend::rocksdb_beside(db.owned_path());
+        let directory =
+            crate::store::directory_store::DirectoryBackend::RocksDbInside(db.owned_path().into());
         let objects = Arc::new(crate::store::large_values::LocalFsObjectStore::new(
             Self::local_large_values_path(db.owned_path()),
         ));
@@ -232,6 +236,7 @@ impl Registry {
             net,
             Arc::new(crate::events::StandaloneEventBus::new()),
             RegistryBackends {
+                directory,
                 groups,
                 objects,
                 group_policy,
@@ -248,12 +253,13 @@ impl Registry {
     /// Construct new [`Registry`] with a custom notification event bus and the backends daemon
     /// composition chose for it.
     pub fn new_with_event_bus(
-        db: Db,
+        mut db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         event_bus: Arc<dyn crate::events::RelayEventBus>,
         backends: RegistryBackends,
     ) -> Self {
+        db.set_directory_backend(backends.directory, Arc::clone(&backends.objects));
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = match backends.messages {
             Some(store) => crate::store::monad_dm_cbor::Owner::with_store(store),
@@ -316,8 +322,24 @@ impl Registry {
 
     pub(crate) fn directory_subjects(
         &self,
-    ) -> Result<crate::store::directory_subjects::DbDirectorySubjects<'_>> {
+    ) -> Result<crate::store::directory_subjects::DbDirectorySubjects> {
         self.db.directory_subjects()
+    }
+
+
+    /// Delete unreferenced directory objects (large evidence frames and forward bodies) as sweep
+    /// lease holder `holder`. Nothing is done before the directory store exists. Blocks.
+    pub fn sweep_directory_large_values(
+        &self,
+        holder: [u8; 16],
+    ) -> std::result::Result<crate::store::large_values::SweepReport, String> {
+        match self.db.directory_store(false) {
+            Ok(store) => store.sweep_large_values(holder),
+            Err(crate::store::directory_store::StoreError::Missing) => {
+                Ok(crate::store::large_values::SweepReport::default())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// The store of unique usernames.

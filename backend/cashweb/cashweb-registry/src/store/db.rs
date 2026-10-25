@@ -69,16 +69,15 @@ const OWNED_PREFIXES: &[&[u8]] = &[
 pub(crate) const SCAN_BATCH: usize = 64;
 
 /// Registry database: the registry's transaction store, and the local directory that anchors
-/// the owners not yet moved to that store (directory preview and subjects, forum, messages).
+/// the owners not yet moved to a shared store (forum, and the single-node directory store).
 pub struct Db {
     kv: Arc<dyn RelayKvStore>,
     /// The RocksDB driver when the store is on this replica's disk.
     local: Option<Arc<RocksDbKvStore>>,
     path: PathBuf,
-    /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
-    directory_preview_owner: super::directory_preview_owner::Owner,
-    /// Lazy separate store of self-published subjects, inside the registry directory.
-    directory_subjects: super::directory_subjects::Owner,
+    /// Lazy owner of the directory's transaction store (preview evidence, subjects, forwards).
+    /// Ordinary startup never opens it.
+    directory: super::directory_store::Owner,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -151,6 +150,7 @@ impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         Self::refuse_old_message_store(path)?;
+        Self::refuse_old_directory_sidecars(path)?;
         let local = match RocksDbKvStore::open(path) {
             Ok(store) => Arc::new(store),
             // RocksDB refuses to open a database holding tables it was not told about, which is
@@ -189,6 +189,7 @@ impl Db {
     pub fn open_shared(path: impl AsRef<Path>, kv: Arc<dyn RelayKvStore>) -> Result<Self> {
         let path = path.as_ref();
         Self::refuse_old_message_store(path)?;
+        Self::refuse_old_directory_sidecars(path)?;
         if path.join("CURRENT").exists() {
             return Err(Self::old_format(
                 path,
@@ -208,13 +209,18 @@ impl Db {
         local: Option<Arc<RocksDbKvStore>>,
     ) -> Result<Self> {
         let canonical = std::fs::canonicalize(path).wrap_err(RocksDb)?;
+        // A single-node directory by default; composition chooses a shared one.
+        let objects = Arc::new(super::large_values::LocalFsObjectStore::new(
+            crate::registry::Registry::local_large_values_path(&canonical),
+        ));
         Ok(Db {
             kv,
             local,
-            // The subjects owner resolves `path` itself on first access.
             path: path.to_path_buf(),
-            directory_preview_owner: super::directory_preview_owner::Owner::new(canonical),
-            directory_subjects: super::directory_subjects::Owner::new(),
+            directory: super::directory_store::Owner::new(
+                super::directory_store::DirectoryBackend::RocksDbInside(canonical),
+                objects,
+            ),
         })
     }
 
@@ -296,6 +302,29 @@ impl Db {
         Ok(())
     }
 
+    /// The directory once kept two RocksDB sidecars inside the registry path. This build keeps
+    /// the directory in one transaction store and has no reader for them.
+    fn refuse_old_directory_sidecars(path: &Path) -> Result<()> {
+        let left: Vec<_> = super::directory_store::OLD_SIDECARS
+            .iter()
+            .map(|name| path.join(name))
+            .filter(|sidecar| sidecar.exists())
+            .collect();
+        if left.is_empty() {
+            return Ok(());
+        }
+        Err(OldFormat {
+            path: path.display().to_string(),
+            found: "earlier directory stores".to_owned(),
+            delete: left
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+        .into())
+    }
+
     fn old_format(path: &Path, found: String) -> DbError {
         let mut delete = vec![
             path.to_path_buf(),
@@ -335,11 +364,37 @@ impl Db {
         super::directory_preview::Directory::open(self, anchor, mode)
     }
 
-    /// Continuity rows and the address index of self-published directory subjects.
+    /// Continuity rows, indexes, counters and forwards of self-published directory subjects.
+    /// Creates the directory store on first use.
     pub(crate) fn directory_subjects(
         &self,
-    ) -> Result<super::directory_subjects::DbDirectorySubjects<'_>> {
-        self.directory_subjects.rows(&self.path)
+    ) -> Result<super::directory_subjects::DbDirectorySubjects> {
+        let store = self
+            .directory
+            .open(true)
+            .map_err(|error| bitcoinsuite_error::Report::msg(error.to_string()))?;
+        Ok(super::directory_subjects::DbDirectorySubjects::new(store))
+    }
+
+    /// The directory's transaction store. Without `create`, a store that does not exist yet is
+    /// [`StoreError::Missing`](super::directory_store::StoreError::Missing) and nothing is written.
+    pub(crate) fn directory_store(
+        &self,
+        create: bool,
+    ) -> std::result::Result<
+        std::sync::Arc<super::directory_store::DirectoryStore>,
+        super::directory_store::StoreError,
+    > {
+        self.directory.open(create)
+    }
+
+    /// Choose where the directory keeps its state (composition, before first use).
+    pub fn set_directory_backend(
+        &mut self,
+        backend: super::directory_store::DirectoryBackend,
+        objects: std::sync::Arc<dyn super::large_values::ObjectStore>,
+    ) {
+        self.directory = super::directory_store::Owner::new(backend, objects);
     }
 
     /// Returns `DbTopics`, allowing access to registry metadata.
@@ -404,15 +459,6 @@ impl Db {
         &self.path
     }
 
-    pub(super) fn open_directory_preview(
-        &self,
-        mode: crate::directory_admission::OpenMode,
-    ) -> std::result::Result<
-        std::sync::Arc<super::directory_preview_owner::Store>,
-        crate::directory_admission::AdmissionError,
-    > {
-        self.directory_preview_owner.open(mode)
-    }
 }
 
 /// A transaction body's own error, or the store's.

@@ -717,7 +717,7 @@ async fn forged_entries_are_refused_and_publish_nothing() {
             get(&routes, &head(unpublished)).await.0,
             StatusCode::NOT_FOUND
         );
-        assert!(!runtime.is_published(NETWORK, unpublished));
+        assert!(!runtime.is_published(NETWORK, unpublished).await);
     }
     assert_eq!(
         get(&routes, &by_address(&victim.address)).await.0,
@@ -785,8 +785,8 @@ async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_r
         assert_eq!(current.0, StatusCode::OK);
         assert_eq!(current.2, renew);
     }
-    assert_eq!(runtime.listed(NETWORK, SUBJECT).unwrap().1, 2);
-    assert!(!runtime.listed(NETWORK, SUBJECT).unwrap().2);
+    assert_eq!(runtime.listed(NETWORK, SUBJECT).await.unwrap().1, 2);
+    assert!(!runtime.listed(NETWORK, SUBJECT).await.unwrap().2);
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }
@@ -837,7 +837,7 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
     let limited = publish(2, "203.0.113.7").await;
     assert_eq!(limited.0, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(limited.1["x-frank-directory-disposition"], "rejected");
-    assert!(!runtime.is_published(NETWORK, &accounts[2].subject));
+    assert!(!runtime.is_published(NETWORK, &accounts[2].subject).await);
     // Re-publishing an existing account is not a first publication and is not charged.
     assert_eq!(publish(0, "203.0.113.7").await.0, StatusCode::OK);
     // Another source is unaffected, until the relay-wide cap of four subjects is reached.
@@ -847,7 +847,7 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
         publish(4, "192.0.2.33").await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
-    assert!(!runtime.is_published(NETWORK, &accounts[4].subject));
+    assert!(!runtime.is_published(NETWORK, &accounts[4].subject).await);
     assert_eq!(
         get(&routes, &head(&accounts[3].subject)).await.0,
         StatusCode::OK
@@ -1009,7 +1009,7 @@ async fn real_http_socket_exact_bytes_and_expired_current_never_promote_history(
         .await
         .unwrap();
     assert_eq!(refused.status().as_u16(), 409);
-    assert!(!runtime.is_published(NETWORK, &stale.subject));
+    assert!(!runtime.is_published(NETWORK, &stale.subject).await);
     // The published entry has expired too: it is no longer served as current, by key or address.
     assert_eq!(
         client.get(&path).send().await.unwrap().status().as_u16(),
@@ -1222,4 +1222,8 @@ async fn forwarded_for_is_ignored_unless_the_connection_is_from_a_listed_proxy()
     );
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
+}
+
+mod replicas {
+    include!("directory_replica_tests.rs");
 }

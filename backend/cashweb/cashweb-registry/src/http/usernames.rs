@@ -147,7 +147,10 @@ async fn claim(
         return refused(UsernameError::Taken);
     }
     // A name must resolve to someone who can be messaged, and that needs their directory entry.
-    if !runtime.is_published(network, &hex::encode(record.subject)) {
+    if !runtime
+        .is_published(network, &hex::encode(record.subject))
+        .await
+    {
         return refusal(
             StatusCode::CONFLICT,
             "not-published",

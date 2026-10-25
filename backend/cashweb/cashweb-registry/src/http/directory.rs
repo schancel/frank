@@ -121,7 +121,11 @@ async fn lookup(
         let Ok(address) = crate::monad_http::Address::from_hex(&second) else {
             return error(RuntimeError::Invalid);
         };
-        let Some(subject) = routes.runtime.subject_for_address(&network, &address.0) else {
+        let Some(subject) = routes
+            .runtime
+            .subject_for_address(&network, &address.0)
+            .await
+        else {
             return error(RuntimeError::NotFound);
         };
         let mut response = evidence(current(&routes, &network, &subject).await);
@@ -208,7 +212,7 @@ async fn put(
     // Publishing is free, so a key this relay has never seen is charged to its source, and only
     // once the entry is known to be signed by that key: a forgery costs its sender nothing here
     // and cannot use up anyone's allowance.
-    if !runtime.is_published(&network, &subject) {
+    if !runtime.is_published(&network, &subject).await {
         let signed_by_subject = frank_cbor::verify_preview_directory_evidence(&bytes, &network)
             .ok()
             .is_some_and(|verified| {
@@ -307,10 +311,10 @@ async fn new_accounts(
         },
         Some(Err(_)) => return error(RuntimeError::Invalid),
     };
-    let Some((accounts, cursor)) =
-        routes
-            .runtime
-            .first_accepted(&network, query.since.unwrap_or(0), after.as_ref(), limit)
+    let Some((accounts, cursor)) = routes
+        .runtime
+        .first_accepted(&network, query.since.unwrap_or(0), after.as_ref(), limit)
+        .await
     else {
         return error(RuntimeError::NotFound);
     };

@@ -24,10 +24,12 @@ be restarted in-process.
 `fdb_subspace_prefix` is one or more segments of letters, digits, `-` or `_`, each ending in
 `/` (for example `frank-prod/`), so `frank/` and `frank2/` never share keys. Two relays must
 not use a prefix that is a leading run of the other's segments. The driver currently backs
-two owners: groups under `<fdb_subspace_prefix>groups-v1/`, and the registry `Db` under
-`<fdb_subspace_prefix>registry-v1/`. Group store calls run on blocking workers; registry
-calls on a shared store hand their async worker over with `block_in_place`. Startup and
-`--check-db` open both stores and read their format markers, and fail if either cannot be
+three owners: groups under `<fdb_subspace_prefix>groups-v1/`, the registry `Db` under
+`<fdb_subspace_prefix>registry-v1/`, and the directory under
+`<fdb_subspace_prefix>directory-v1/`. Group and directory store calls run on blocking
+workers; registry calls on a shared store hand their async worker over with
+`block_in_place`. Startup and `--check-db` open these stores and read their format markers
+(the directory only when `[registry.directory]` is configured), and fail if one cannot be
 read. Every other owner below still opens its own RocksDB.
 
 Cluster mode is `registry.cluster.enabled = true`. It requires an enabled
@@ -56,16 +58,16 @@ replicas share data. Clients recover missed notifications by reading durable sta
 | --- | --- | --- |
 | Registry metadata, profiles, topics, usernames and derived indexes | `store/db.rs` and its typed stores over `RelayKvStore` | RocksDB at the registry path, or FoundationDB (`driver = "foundationdb"`); one transaction per claim or replace, including its index rows (key layout in `store/db.rs`) |
 | Canonical messages, payment claims, inboxes, challenges, notification policies and VAPID identity (the provisioned `registry.vapid_private_key_file` when set) | `store/monad_dm_cbor.rs::Owner` | Separate RocksDB database, lazy opening and process-local mutation locks |
-| Directory preview history | `store/directory_preview_owner.rs` | Separate RocksDB owner |
-| Self-published directory subjects and continuity | `store/directory_subjects.rs` | Separate RocksDB database owned by the registry |
+| Directory preview history, self-published subjects and continuity, address and first-accepted indexes, subject counters, forwards and their bodies, federation lease | `store/directory_store.rs` (`directory_preview.rs`, `directory_subjects.rs`) over `RelayKvStore` | RocksDB `directory-kv-v1.rocksdb` inside the registry path, or FoundationDB (`driver = "foundationdb"`); values over 64 KiB in the object store (`[registry.large_values]`) |
+| Directory enrollment quota per source per hour | `http/directory.rs` (`FixedHourQuota`) | Process memory, per replica |
 | Shared group mailboxes | `store/groups.rs::GroupStore` over `RelayKvStore` | RocksDB beside the registry database, or FoundationDB (`driver = "foundationdb"`) |
 | Session signing secret for challenges, cursors and RPC capabilities | Daemon composition / `SessionSecret` | `registry.session_secret_file` (required in cluster mode), else a file beside the registry database |
 | Notification delivery hints | `events::RelayEventBus` | In-memory broadcast or Core NATS; no durable authority |
 
 `RelayKvStore` is a component transaction interface. Its existence does not replace the
-owners above: `GroupStore` and the registry `Db` use it today, so it is not evidence that
-canonical message admission or the directory do. Groups and the registry are the owners a
-FoundationDB-backed relay shares between replicas.
+owners above: `GroupStore`, the registry `Db` and the directory use it today, so it is not
+evidence that canonical message admission does. Groups, the registry and the directory are
+the owners a FoundationDB-backed relay shares between replicas.
 
 The registry's earlier RocksDB column families (including the retired protobuf topic
 tables) have no reader: a registry database holding any of them is refused at startup with

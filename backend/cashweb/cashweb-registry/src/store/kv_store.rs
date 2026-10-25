@@ -342,6 +342,18 @@ impl RocksDbKvStore {
         })
     }
 
+    /// Open the existing database at `path`. Unlike [`Self::open`], a missing or empty
+    /// directory is an error and nothing is created.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, KvError> {
+        let mut options = Options::default();
+        options.create_if_missing(false);
+        Ok(Self {
+            db: rocksdb::DB::open(&options, path.as_ref()).map_err(backend)?,
+            resolver: Mutex::default(),
+            _temporary: None,
+        })
+    }
+
     /// Open a fresh database in a temporary directory that is removed with the store.
     pub fn open_temporary() -> Result<Self, KvError> {
         let directory = tempfile::tempdir().map_err(backend)?;

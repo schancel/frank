@@ -98,28 +98,48 @@ not require a current routing authorization. Fork resolution is external.
 
 ## Durable layout and continuity
 
-Three column families live only in the lazy isolated sidecar
-`<canonical-registry-path>/directory-preview-v1.rocksdb`, owned privately by the
-existing `Db` lifetime. Ordinary `Db::open` retains the legacy descriptors
-unchanged and does not open, create, inspect, or repair the sidecar. Corrupt
-sidecar storage therefore cannot block ordinary registry startup. The sidecar
-is opened only through explicit preview admission:
+Preview history lives in the directory's one transaction store
+(`cashweb-registry/src/store/directory_store.rs`), behind the `RelayKvStore`
+transaction contract. A single-node relay keeps it in RocksDB at
+`<canonical-registry-path>/directory-kv-v1.rocksdb`; every replica of a cluster
+opens the same FoundationDB keys under `<fdb_subspace_prefix>directory-v1/`.
+Ordinary `Db::open` does not open, create, inspect or repair it, so corrupt
+directory storage cannot block registry startup. The store carries a format
+marker (`format` = `frank-directory-kv-v1`); a store without it, or with
+another, fails unavailable with its development reset path. Within the store:
 
-| Family | Key | Value |
-| --- | --- | --- |
-| `directory_preview_enrollment_v1` | u8 network-byte-length, network, full compressed P | Local version and installed anchor |
-| `directory_preview_head_v1` | Same subject key | Versioned metadata, local sequence, head/revision/generations, S10a pair, checked time, counts/charge, fork flag, evidence digest |
-| `directory_preview_evidence_v1` | Subject key, u32 slot, u64 revision, exact T1 | One original validating wrapper |
+| Key | Value |
+| --- | --- |
+| `p/m/` K | Local version and installed anchor (the enrollment marker) |
+| `p/h/` K | Versioned metadata, local sequence, head/revision/generations, S10a pair, checked time, counts/charge, fork flag, evidence digest |
+| `p/e/` K, u32 slot, u64 revision, exact T1 | One original validating wrapper: tag 0 then the bytes, or tag 1 then its SHA-256 and length when it is an object |
 
-Integers in keys are big endian. Metadata is strict, bounded local JSON; local
-storage version 1 is not a wire allocation. The exact bare frame is recovered
-from its wrapper without re-encoding. History is stored once per record, not
-inside each successor. Accepted rows precede proof-only rows. A single
-directory mutex serializes reads, validation and writes within the exclusive
-sidecar RocksDB owner, shared by all handles of the registry owner. Lazy owner
-initialization is serialized separately. The public handle still borrows the
-registry lifetime. All marker/head/history/pair/counter/fork changes use one
-`WriteBatch` with `sync = true`. No accepted result precedes successful write.
+K is one network-length byte, the network and the full compressed P. Integers
+in keys are big endian. Metadata is strict, bounded local JSON; local storage
+version 1 is not a wire allocation. The exact bare frame is recovered from its
+wrapper without re-encoding. History is stored once per record, not inside each
+successor. Accepted rows precede proof-only rows. A wrapper over 64 KiB, or
+beyond 6 MiB of inline rows in one commit, is uploaded first to the object
+store (`[registry.large_values]`, S3 in a cluster) as
+`directory/sha256/<hex>`, and its reference is committed with the row, so a
+commit stays inside FoundationDB's value and transaction limits. Reads check
+every object against its digest and length.
+
+Each operation reads the subject's marker, metadata and rows in one
+transaction, validates outside it, and commits the new rows, marker and
+metadata in one transaction that first checks the marker and metadata are
+still exactly what it read (the metadata's local sequence makes every commit's
+bytes unique). When another handle, process or replica committed in between,
+the operation starts again from a fresh read, so two conflicting revisions
+raced to two replicas are classified one after the other: the first is
+accepted and the second is a fork. After 64 such rounds the operation fails
+`contended` and changes nothing. A commit whose outcome is unknown is learned
+by reading the metadata back. No accepted result precedes a successful commit.
+The relay's routing path also writes the subject's continuity row, indexes and
+counters (below) in the same transaction. On that path trusted time is the
+later of the replica's clock and the subject's stored checked time, because
+replicas share the checked time but not a clock; the explicit `Exact` policy
+keeps the strict clock check.
 
 Each operation rereads the bounded durable state rather than trusting a stale
 cached projection. Reopen verifies every signature, chain transition, key-use
@@ -147,22 +167,28 @@ strict accepted-head requirement; they cannot be downgraded to proof-only
 state. Both kinds require an actual marked enrollment and exact retained
 evidence, so neither creates permission to bootstrap a missing database.
 
-The relay keeps each subject's checkpoint in its own store inside the
-registry path (`directory-subjects-v1.rocksdb`: `directory_subjects_v1`, with
-`directory_addresses_v1` mapping the 20-byte address to P). It is a separate
-store so the registry's own column families stay those an earlier relay
-version can open. That protects against a lost or partial evidence store, not
-against rolling the whole data directory back: a caller that needs that
-protection must retain checkpoints **outside this database's rollback
-domain**. Ordinary RocksDB cannot detect complete disk rollback/deletion on
-its own. A checkpoint that was itself
+The relay keeps each subject's checkpoint in the same store: `s/r/` K holds
+the continuity row, `s/a/` maps the 20-byte address to P, `s/f/` orders first
+publications for the new-accounts listing, and `s/n/local` and
+`s/n/replicated` count subjects against the relay-wide caps. They are written
+in the transaction that commits the subject's evidence, and the enrollment
+transaction reads the counter it adds to, so the caps hold exactly across
+replicas and an interrupted enrollment leaves nothing behind. That protects
+against a lost or partial evidence store, not against rolling the whole store
+back: a caller that needs that protection must retain checkpoints **outside
+this database's rollback domain**. Neither RocksDB nor FoundationDB detects a
+complete restore of an older backup on its own. A checkpoint that was itself
 rolled back cannot protect later observations. The installed anchor alone
 cannot distinguish an old complete valid database. `Db::open` may create its
 generic database path; a subsequent preview `Reopen` still refuses missing
-enrollment. Only explicit `NewEnrollment` may create an absent sidecar. Existing
-sidecar opens use neither create-if-missing nor create-missing-column-families;
-an interrupted empty creation, corrupt manifest, missing CF, file/symlink in
-place of the directory, or missing sidecar under `Reopen` fails unavailable.
+enrollment. Only explicit `NewEnrollment` may create an absent single-node
+store. An existing store directory is opened without create-if-missing; an
+interrupted empty creation, corrupt manifest, missing format marker,
+file/symlink in place of the directory, or missing store under `Reopen` fails
+unavailable. The two RocksDB sidecars of earlier development builds
+(`directory-preview-v1.rocksdb`, `directory-subjects-v1.rocksdb`) stop registry
+startup with their paths and the reset (delete them; entries are public and
+accounts publish again).
 Artifacts are preserved, never automatically repaired or reset. After a storage
 error the current handle fails unavailable until
 verified reopen. Sync durability depends on RocksDB, the filesystem and device
@@ -197,7 +223,7 @@ are required before integration. No active route, DM, profile consumer, writer
 or default codec context is switched by this enabling stage.
 
 The private persistence gate is `cargo test --locked -p cashweb-registry --lib
-directory_preview -- --test-threads=1`. It uses real temporary RocksDB databases,
+directory_preview -- --test-threads=1`. It uses real temporary RocksDB stores,
 process exits immediately before/after synchronous commit, injected boundary
 write failures, concurrent calls, corrupt/partial records, and a complete valid
 older database snapshot. It also signs and stores an actual 4096-record history
@@ -210,11 +236,14 @@ operational latency guarantee. Before route adoption, release-build maximum
 history latency and contention under the single directory lock require a
 separate performance assessment. Every operation currently reauthenticates
 bounded retained history; no throughput claim or caching trust shortcut is
-part of this stage. Process-exit and boundary-fault tests establish the stated
+part of this stage. The single directory lock is gone: concurrency is the
+store's own conflict detection, exercised by the replica tests in
+`http/directory_replica_tests.rs`, the cross-process FoundationDB test in
+`store/directory_subjects_fdb_tests.rs` and the cluster lab. Process-exit and boundary-fault tests establish the stated
 old-or-complete-new recovery behavior, not hardware power-loss guarantees.
 
 Before adoption, rollback can remove the unused additive facade and namespace
-definition while preserving any created sidecar records. The directory never
+definition while preserving any created directory records. The directory never
 adds a table to the registry database and never changes a value already in it;
 an integration test pins the registry's table list and a pre-existing value
 across directory use. Rolling back to a binary from before the message

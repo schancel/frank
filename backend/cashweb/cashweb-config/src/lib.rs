@@ -921,7 +921,8 @@ pub struct DirectoryConf {
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// Usernames only one key may claim: name -> that key (compressed secp256k1, lowercase
     /// hex). Anyone else claiming a listed name is told it is taken, whether or not the key
-    /// has claimed it yet. For names people would trust, such as an operator's bots.
+    /// has claimed it yet. For names people would trust, such as an operator's bots. In
+    /// cluster mode this must be identical on every replica: it guards their shared namespace.
     #[serde(default)]
     pub reserved_usernames: std::collections::BTreeMap<String, String>,
     /// Optional operator-owned email gateway advertised by this relay.

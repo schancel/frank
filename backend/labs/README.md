@@ -168,11 +168,11 @@ on your machine (the file's fallback, 18080, is often already taken by another l
 service).
 
 **What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
-app can use. Message routes are off, profiles, usernames and the directory are still
-replica-local (each relay has its own), and there is no chain upstream unless you supply
-one. Those owners move to the shared store in HA steps 6 (direct messages), 7 (registry
-database) and 8 (directory); until they land, an app pointed at the proxy sees a
-different profile store on each request.
+app can use. Message routes are off, the directory is off and still replica-local, and
+there is no chain upstream unless you supply one. Profiles, usernames, metadata and topics
+are in the shared registry database (HA step 7). Direct messages and the directory move to
+the shared store in HA steps 6 and 8; until they land, an app cannot message through the
+proxy.
 
 Overrides, all optional:
 
@@ -213,9 +213,9 @@ Services:
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
   policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
-  its own RocksDB registry database in its own volume. Groups are the only owner they
-  share. The other owners are still replica-local, so the preview flag is set, and each
-  relay's startup log names them:
+  its own RocksDB volume. Groups and the registry database are shared through
+  FoundationDB, and large values through MinIO; the other owners are still replica-local, so the preview flag is set,
+  and each relay's startup log names them:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'

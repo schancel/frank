@@ -42,7 +42,8 @@ reads and checks both. A single node without these keys
 keeps creating its session secret beside the database. Cluster mode refuses to start while
 any enabled owner is still replica-local (`RegistryConf::replica_local_owners`) unless
 `registry.cluster.preview_replica_local_owners = true`, in which case each is logged by name.
-The flag is refused when cluster mode is off.
+The flag is refused when cluster mode is off. `reserved_usernames` must be identical on every
+replica, because it guards the username namespace they now share.
 
 Core NATS is selected separately by `registry.cluster.nats`. It carries ephemeral
 notifications, not durable messages, on `frank.<cluster>.dm.<address>` and

@@ -39,6 +39,8 @@ message ListMonadProfilesEntry {
 // registered at or after `since`, ordered by registration timestamp ascending. Lets a bot
 // discover newly-registered identities by polling with an advancing cursor, mirroring
 // StoredMonadMessages/the inbox response (originally `GET /message/monad?since=`, ticket #37)'s identical shape for messages.
+// The relay reads the listing in batches, so it may repeat an address whose profile was replaced
+// while paging; clients dedupe by address.
 message ListMonadProfilesResponse {
     // Profiles registered at or after the request's `since`, ordered by timestamp ascending.
     repeated ListMonadProfilesEntry entries = 1;

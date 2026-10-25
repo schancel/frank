@@ -67,6 +67,8 @@ message ListMonadProfilesEntry {
 // -- lets a bot discover newly-registered identities by polling with an advancing cursor,
 // mirroring `StoredMonadMessages`/the inbox feed (originally `GET /message/monad?since=`, ticket #37/#72's precedent for this
 // exact "add message(s) to an existing client proto file + regenerate" pattern).
+// The relay reads the listing in batches, so it may repeat an address whose profile was replaced
+// while paging; clients dedupe by address.
 message ListMonadProfilesResponse {
   // Profiles registered at or after the request's `since`, ordered by timestamp ascending.
   repeated ListMonadProfilesEntry entries = 1;

@@ -84,6 +84,21 @@ async function blockNumber(rpcUrl: string): Promise<number | undefined> {
   }
 }
 
+async function chainId(rpcUrl: string): Promise<bigint | undefined> {
+  try {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+      signal: AbortSignal.timeout(3000),
+    })
+    const body = (await response.json()) as { result?: string }
+    return body.result ? BigInt(body.result) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function vmRunning(): Promise<boolean> {
   const status = await run('colima', ['status', PROFILE], 30_000)
   return status.code === 0
@@ -93,7 +108,9 @@ export interface SolonetStatus {
   /** Set when FRANK_SOLONET_RPC_URL names a solonet this harness does not manage. */
   external: boolean
   vm: 'running' | 'stopped' | 'colima-not-installed' | 'not-managed'
-  container: 'running' | 'absent' | 'not-managed'
+  /** `stopped` is a container of an earlier run that no longer runs (exited, created or dead).
+   * A paused, restarting or removing container is reported as an error instead. */
+  container: 'running' | 'stopped' | 'absent' | 'not-managed'
   rpcUrl: string
   /** The chain's height, when it answers. */
   block?: number
@@ -109,8 +126,21 @@ export async function solonetStatus(env: Record<string, string | undefined> = pr
     return { external: false, vm: 'colima-not-installed', container: 'absent', rpcUrl }
   }
   if (!(await vmRunning())) return { external: false, vm: 'stopped', container: 'absent', rpcUrl }
-  const running = await run('docker', [...DOCKER, 'ps', '--filter', `name=^${CONTAINER}$`, '--format', '{{.Names}}'], 30_000)
-  const container = running.out.trim() === CONTAINER ? 'running' : 'absent'
+  const listed = await run(
+    'docker',
+    [...DOCKER, 'ps', '-a', '--filter', `name=^${CONTAINER}$`, '--format', '{{.State}}'],
+    30_000,
+  )
+  // A failed listing (a lost Colima socket forward, a timeout) says nothing about the chain:
+  // reporting it absent would let ensureSolonet remove a running chain.
+  if (listed.code !== 0) {
+    throw new Error(`cannot read the state of the ${CONTAINER} container; leaving it alone:\n${listed.out.slice(-2000)}`)
+  }
+  const state = listed.out.trim()
+  if (['paused', 'restarting', 'removing'].includes(state)) {
+    throw new Error(`the ${CONTAINER} container is ${state}; resolve that by hand (docker --context colima-${PROFILE} ...)`)
+  }
+  const container = state === '' ? 'absent' : state === 'running' ? 'running' : 'stopped'
   return { external: false, vm: 'running', container, rpcUrl, block: container === 'running' ? await blockNumber(rpcUrl) : undefined }
 }
 
@@ -120,6 +150,14 @@ export async function ensureSolonet(
   env: Record<string, string | undefined> = process.env,
   log: (line: string) => void = line => console.log(line),
 ): Promise<{ rpcUrl: string; wsUrl?: string }> {
+  // A chain that answers as solonet is in use: never restart or replace it, and need no docker.
+  if (!env.FRANK_SOLONET_RPC_URL) {
+    const rpcUrl = `http://127.0.0.1:${RPC_PORT}`
+    if ((await chainId(rpcUrl)) === MONAD_REGTEST_CHAIN_ID) {
+      const block = await blockNumber(rpcUrl)
+      if (block !== undefined && block >= 12) return { rpcUrl, wsUrl: `ws://127.0.0.1:${WS_PORT}` }
+    }
+  }
   let status = await solonetStatus(env)
   if (status.external) {
     if (status.block === undefined) throw new Error(`FRANK_SOLONET_RPC_URL (${status.rpcUrl}) does not answer`)
@@ -145,8 +183,9 @@ export async function ensureSolonet(
       'net.core.rmem_max=62500000', 'net.core.rmem_default=62500000',
       'net.core.wmem_max=62500000', 'net.core.wmem_default=62500000',
     ])
-    // A stopped container of an earlier run holds an old chain; start a new one.
-    await run('docker', [...DOCKER, 'rm', '-f', CONTAINER], 60_000)
+    // A stopped container of an earlier run holds an old chain; start a new one. Only a container
+    // known not to be running is removed.
+    if (status.container === 'stopped') await must('docker', [...DOCKER, 'rm', CONTAINER], 60_000)
     log('[solonet] starting the chain (about 5 minutes under emulation; the first run also downloads the image)')
     await must(
       'docker',

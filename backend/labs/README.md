@@ -140,6 +140,132 @@ docker compose -f backend/labs/compose.foundationdb-nats.yml down
 docker compose -f backend/labs/compose.foundationdb-nats.yml down --volumes
 ```
 
+## Three-relay cluster: FoundationDB, NATS, MinIO and a proxy
+
+`compose.cluster.yml` runs three real relays (`relay-a`, `relay-b`, `relay-c`) built
+with `--features foundationdb`, in cluster mode against one FoundationDB 7.3.63, one
+Core NATS server, and MinIO, with an nginx round-robin proxy on
+`127.0.0.1:$FRANK_LAB_CLUSTER_PORT`. Nothing else is published. Pick a port that is free
+on your machine (the file's fallback, 18080, is often already taken by another local
+service).
+
+**What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
+app can use. Message routes are off, profiles, usernames and the directory are still
+replica-local (each relay has its own), and there is no chain upstream unless you supply
+one. Those owners move to the shared store in HA steps 6 (direct messages), 7 (registry
+database) and 8 (directory); until they land, an app pointed at the proxy sees a
+different profile store on each request.
+
+Overrides, all optional:
+
+- `FRANK_LAB_CLUSTER_PORT`: the proxy's host port; set it to a free port. It also sets
+  the relays' public `url`, which `lab-init` renders into their configuration on every
+  start.
+- `FRANK_LAB_CLUSTER_SUBNET`: the first three octets of the lab's own /24 network
+  (default `10.89.42`), so two labs, or a colliding local network, can coexist. Run
+  `down` before changing it on an existing project: Compose does not move a running
+  network, and FoundationDB's cluster file keeps the old coordinator address, so with
+  kept volumes also run `down --volumes`.
+- `MONAD_TESTNET_HTTP_RPC_URL`: a Monad testnet RPC upstream, passed through from your
+  shell to the relays and never written to a file. Unset, the relays serve no chain.
+  Set, each relay checks the upstream's chain id and checkpoint before serving it, which
+  is what turning the mailbox on will need once step 6 lands. Never commit a URL or key.
+
+Services:
+
+- `fdb-init` creates the single-node database only on a fresh volume. `status` cannot
+  tell "no database yet" from "not reachable yet" (both time out), so the first
+  successful `configure new single ssd` leaves a marker in the cluster volume; with the
+  marker present, or once `status` reports the database available, it only waits and
+  never configures again. FoundationDB has a fixed address (`.10` on the lab subnet)
+  because its cluster file names the coordinator by address and the contract restarts it.
+- `lab-init` writes the operator-provisioned files once into the `secrets` volume, mode
+  0400 and never on the host: a random 32-byte session secret, a random VAPID key below
+  the P-256 order, and MinIO's root user and random password. On every start it renders
+  `cluster/relay.toml.in` into the `config` volume with the proxy origin as the relays'
+  `url`. All three relays mount the same files. The relay refuses a provisioned file its
+  group or other users can access, so this mode matters; see "Provisioned file
+  permissions" below for real deployments.
+- `minio` reads its root credentials from those files, and `minio-init` creates the
+  `frank-lab-blobs` bucket with one SigV4 request. MinIO stopped publishing container
+  images, so `Dockerfile.minio` builds the server from its upstream source at a pinned
+  release tag. No relay uses S3 yet; step 4 of the HA plan adds the first consumer.
+- The relays share one configuration: driver `foundationdb`, subspace
+  `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
+  policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
+  its own RocksDB registry database in its own volume. Groups are the only owner they
+  share. The other owners are still replica-local, so the preview flag is set, and each
+  relay's startup log names them:
+
+```sh
+docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'
+```
+
+Commands, from the repository root of a clean checkout:
+
+```sh
+# Choose a free port for the proxy.
+export COMPOSE_PROJECT_NAME=frank-lab-cluster FRANK_LAB_CLUSTER_PORT=<free port>
+docker compose -f backend/labs/compose.cluster.yml up -d --build
+curl --fail "http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT}/chains"
+
+docker compose -f backend/labs/compose.cluster.yml --profile cluster-contract \
+  run --build --rm cluster-contract
+
+docker compose -f backend/labs/compose.cluster.yml --profile cluster-contract down --volumes
+```
+
+A cold first build is slow: building MinIO from source took about 14 minutes here, and
+the release build of the relay and the contract several more. Both are cached afterwards.
+
+### Provisioned file permissions
+
+`registry.session_secret_file` and `registry.vapid_private_key_file` must be readable by
+their owner only (mode 0400 or 0600); a relay refuses anything looser at `--check-config`
+and at start. How to get there depends on how the files reach the container:
+
+- Kubernetes Secret volume: set `defaultMode: 0400` (or per-item `mode: 0400`) on the
+  volume. Mode 0400 gives no group access, so the relay must run as the files' owner
+  (root, or the `runAsUser` the files are projected for).
+- Compose or Docker bind mount of host files: `chmod 0400` the files on the host and own
+  them by the uid the relay runs as; a bind mount keeps the host mode.
+- Compose `secrets:` (long syntax): set `mode: 0400` and `uid` to the relay's user.
+- This lab: `lab-init` creates the files with `umask 077` and `chmod 0400`.
+
+The `cluster-contract` profile (`cluster_contract.rs`) is an HTTP test binary that talks
+to all three relays and to the proxy:
+
+- create a group on A, append on B, read on C, and read the same rows through the proxy;
+- 3 × 200 concurrent appends, 200 per relay, all acknowledged, with sequence numbers
+  1..=600, unique and gap-free on every relay;
+- the same signed message sent to A and B at once gives one receipt (one `appended`, one
+  `existing`, the same row), over 20 rounds;
+- after a rotation on A, an old-epoch append on B is refused (403), the old read token is
+  refused, and an exact retry of a pre-rotation message keeps its receipt;
+- a websocket subscriber on A wakes within 3 s of an append on B, before A's own 5 s
+  recovery tick, so the wakeup came over NATS;
+- with NATS killed (the open socket is drained first, so no earlier wakeup counts), 20
+  appends on B are still acknowledged; while it is still down, the open subscriber on A
+  is still woken (by A's own tick) and readers on C and A catch up
+  from their cursors with nothing lost; after NATS starts again, wakeups cross replicas
+  again on that same socket and on a new one;
+- FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
+  three writers append 150 messages each and retry a failed append, with the same
+  envelope, on the next relay. The test checks that the container really restarted
+  (`State.StartedAt` changed) and that the writers felt it: an attempt overlapping the
+  fault window failed or took at least 1 s. Relay-b's kill must cause a failed attempt.
+  The pre-fault baseline, measured after each writer's first 10 attempts, is only
+  reported. Afterwards every acknowledged append is readable on
+  every relay at its acknowledged sequence number, and no retried append was stored
+  twice. The load fails instead of hanging if it does not finish within 300 s.
+
+The fault cases stop and start this project's own containers through the Docker socket,
+which the profile mounts; the test finds them by its own container's Compose project
+label. The tests therefore run one at a time. Each uses a fresh group, so reruns against
+the same volumes are fine. Paid group writes are not covered yet: HA step 5 (PR #1847)
+adds them, on solonet, once `[registry.group_writes]` lands, and the hook is marked at the
+top of `cluster_contract.rs` and in `cluster/relay.toml.in`.
+
 ## References
 
 - [FDB container entrypoint](https://github.com/apple/foundationdb/blob/main/packaging/docker/fdb.bash)

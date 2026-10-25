@@ -1,0 +1,61 @@
+# One configuration for relay-a, relay-b and relay-c of the disposable cluster lab.
+# A template: lab-init writes it to the shared `config` volume with @PUBLIC_ORIGIN@ set to the
+# proxy origin (http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT), the one origin clients use.
+# Synthetic and local-only: no funded identity and no production state.
+host = "0.0.0.0:8080"
+url = "@PUBLIC_ORIGIN@"
+
+[registry]
+# Free group appends: the current policy. Paid group writes (HA step 5, PR #1847) add
+# [registry.group_writes] with a payee and a solonet (monad-regtest) upstream here once they land.
+groups = { per_message_price_credits = 0 }
+db_path = "/data/registry.rocksdb"
+network = "monad-testnet"
+net = "mainnet"
+peers = []
+public_relay_urls = []
+# Written once by lab-init into a shared volume (mode 0400); identical on every replica.
+session_secret_file = "/secrets/session-secret"
+vapid_private_key_file = "/secrets/vapid-private-key"
+
+[registry.cluster]
+enabled = true
+driver = "foundationdb"
+fdb_cluster_file = "/cluster/fdb.cluster"
+fdb_subspace_prefix = "frank-cluster-lab/"
+cluster_name = "lab"
+# Every owner but groups still keeps its state on each replica; the startup log names them.
+preview_replica_local_owners = true
+
+[registry.cluster.nats]
+enabled = true
+url = "nats://nats:4222"
+
+# Optional chain upstream. The URL is read from MONAD_TESTNET_HTTP_RPC_URL, which compose passes
+# through from the host environment and which is never written to a file. Unset, the row is
+# omitted and the relay serves no chain. Set, the relay checks the upstream's chain id and
+# checkpoint before serving it, so the mailbox below can be switched on once the direct
+# messages owner is shared (HA step 6).
+[registry.evm_rpc]
+enabled = true
+capability_ttl_ms = 3600000
+anonymous_units_per_hour = 1000000
+
+[[registry.evm_rpc.chains]]
+id = "monad-testnet"
+expected_chain_id = 10143
+upstream_env = "MONAD_TESTNET_HTTP_RPC_URL"
+checkpoint_block_number = 0
+checkpoint_block_hash = "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9"
+max_get_logs_range = 10
+
+# Message routes off: direct messages are still replica-local until HA step 6.
+[registry.monad_mailbox]
+enabled = false
+
+[registry.pop]
+enabled = false
+monad_rpc_url = "http://unused.invalid"
+hmac_secret = "unused-because-pop-is-disabled"
+payment_recipient = "0x0000000000000000000000000000000000000000"
+min_value_wei = "0"

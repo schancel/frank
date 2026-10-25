@@ -1,0 +1,244 @@
+# Disposable three-relay cluster lab: FoundationDB, Core NATS, MinIO, relay-a/b/c and a
+# round-robin proxy. Every published port binds to 127.0.0.1. See README.md for the commands.
+# Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18080), FRANK_LAB_CLUSTER_SUBNET
+# (first three octets of the lab's /24, default 10.89.42), MONAD_TESTNET_HTTP_RPC_URL
+# (optional chain upstream, passed through and never written to disk).
+name: frank-lab-cluster
+
+x-relay: &relay
+  build:
+    context: ../..
+    dockerfile: backend/labs/Dockerfile.cluster
+    target: relay
+  networks: [cluster]
+  environment:
+    # Empty unless the host sets it: the relay then omits the chain row.
+    MONAD_TESTNET_HTTP_RPC_URL: ${MONAD_TESTNET_HTTP_RPC_URL:-}
+  depends_on:
+    fdb-init:
+      condition: service_completed_successfully
+    lab-init:
+      condition: service_completed_successfully
+    minio-init:
+      condition: service_completed_successfully
+    nats:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1:8080/chains"]
+    interval: 2s
+    timeout: 2s
+    retries: 60
+
+services:
+  fdb:
+    image: foundationdb/foundationdb:7.3.63
+    environment:
+      FDB_NETWORKING_MODE: container
+      FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FDB_PORT: "4500"
+    volumes:
+      - fdb-data:/var/fdb/data
+      - fdb-cluster:/cluster
+    # The cluster file names the coordinator by address, so the address is fixed: a restart
+    # (the contract restarts FDB mid-load) must come back at the same one.
+    networks:
+      cluster:
+        ipv4_address: ${FRANK_LAB_CLUSTER_SUBNET:-10.89.42}.10
+    healthcheck:
+      test: ["CMD-SHELL", "fdbcli -C /cluster/fdb.cluster --timeout 5 --exec 'status minimal' | grep -F 'The database is available.'"]
+      interval: 3s
+      timeout: 6s
+      retries: 40
+
+  # One-shot: create the single-node database only on a volume that has never had one.
+  # `status` cannot tell "no database yet" from "not reachable yet" (both just time out), so the
+  # first successful `configure new` leaves a marker in the cluster volume. With the marker
+  # present this only waits for the existing database and never configures again.
+  fdb-init:
+    image: foundationdb/foundationdb:7.3.63
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        marker=/cluster/.frank-lab-database-created
+        for attempt in $$(seq 1 90); do
+          if [ -s /cluster/fdb.cluster ]; then
+            status=$$(fdbcli -C /cluster/fdb.cluster --timeout 5 --exec 'status minimal' 2>&1)
+            case "$$status" in
+              *"The database is available"*)
+                touch "$$marker"
+                echo "FoundationDB database exists and is available"
+                exit 0 ;;
+            esac
+            if [ ! -e "$$marker" ]; then
+              result=$$(fdbcli -C /cluster/fdb.cluster --timeout 10 --exec 'configure new single ssd' 2>&1)
+              case "$$result" in
+                *"Database created"*) touch "$$marker"; echo "FoundationDB database created" ;;
+                *"Database already exists"*) touch "$$marker"; echo "FoundationDB database already existed" ;;
+              esac
+            fi
+          fi
+          sleep 1
+        done
+        echo "FoundationDB did not become available" >&2
+        exit 1
+    volumes:
+      - fdb-cluster:/cluster
+    networks: [cluster]
+    depends_on:
+      fdb:
+        condition: service_started
+  nats:
+    image: nats:2.10-alpine
+    command: ["-m", "8222"]
+    networks: [cluster]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  minio:
+    build:
+      context: .
+      dockerfile: Dockerfile.minio
+    # Root credentials come from lab-init's files, not from this file or the environment.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export MINIO_ROOT_USER=$$(cat /secrets/minio-root-user)
+        export MINIO_ROOT_PASSWORD=$$(cat /secrets/minio-root-password)
+        exec minio server /data
+    volumes:
+      - minio-data:/data
+      - secrets:/secrets:ro
+    networks: [cluster]
+    depends_on:
+      lab-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # One-shot: create the lab bucket with one SigV4 request (no MinIO client image exists).
+  minio-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        bucket=http://minio:9000/frank-lab-blobs
+        auth="--user $$(cat /secrets/minio-root-user):$$(cat /secrets/minio-root-password) --aws-sigv4 aws:amz:us-east-1:s3"
+        if curl --fail --silent --output /dev/null $$auth --head "$$bucket"; then
+          echo "bucket exists"
+        else
+          curl --fail --silent --show-error $$auth --request PUT "$$bucket"
+          echo "bucket created"
+        fi
+    volumes:
+      - secrets:/secrets:ro
+    networks: [cluster]
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # One-shot: the lab's operator-provisioned files, written once into a shared volume and never
+  # on the host (session secret, VAPID key and MinIO root credentials, all mode 0400), and the
+  # relay configuration rendered from cluster/relay.toml.in with the proxy's origin on every
+  # start. Real deployments provision these files themselves.
+  lab-init:
+    image: nats:2.10-alpine
+    environment:
+      PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        umask 077
+        [ -s /secrets/session-secret ] || head -c 32 /dev/urandom > /secrets/session-secret
+        # A P-256 private key must be below the group order n; a leading 0x7f byte keeps it there.
+        [ -s /secrets/vapid-private-key ] || { printf 7f; od -An -tx1 -N31 /dev/urandom | tr -d ' \n'; } > /secrets/vapid-private-key
+        [ -s /secrets/minio-root-user ] || printf frank-lab > /secrets/minio-root-user
+        [ -s /secrets/minio-root-password ] || od -An -tx1 -N24 /dev/urandom | tr -d ' \n' > /secrets/minio-root-password
+        chmod 0400 /secrets/*
+        sed "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" /template/relay.toml.in > /config/cashwebd.toml
+        chmod 0444 /config/cashwebd.toml
+        echo "provisioned files present; relay origin $$PUBLIC_ORIGIN"
+    volumes:
+      - ./cluster/relay.toml.in:/template/relay.toml.in:ro
+      - secrets:/secrets
+      - config:/config
+    networks: [cluster]
+  relay-a:
+    <<: *relay
+    volumes:
+      - config:/etc/cashwebd:ro
+      - fdb-cluster:/cluster:ro
+      - secrets:/secrets:ro
+      - relay-a-data:/data
+  relay-b:
+    <<: *relay
+    volumes:
+      - config:/etc/cashwebd:ro
+      - fdb-cluster:/cluster:ro
+      - secrets:/secrets:ro
+      - relay-b-data:/data
+  relay-c:
+    <<: *relay
+    volumes:
+      - config:/etc/cashwebd:ro
+      - fdb-cluster:/cluster:ro
+      - secrets:/secrets:ro
+      - relay-c-data:/data
+
+  proxy:
+    image: nginx:1.29-alpine
+    volumes:
+      - ./cluster/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}:8080"
+    networks: [cluster]
+    depends_on:
+      relay-a:
+        condition: service_healthy
+      relay-b:
+        condition: service_healthy
+      relay-c:
+        condition: service_healthy
+
+  # HTTP contract against all three relays. Its fault cases stop and start this project's
+  # containers through the Docker socket, so it is a test profile only.
+  cluster-contract:
+    profiles: ["cluster-contract"]
+    build:
+      context: ../..
+      dockerfile: backend/labs/Dockerfile.cluster
+      target: contract
+    environment:
+      FRANK_CLUSTER_RELAYS: http://relay-a:8080,http://relay-b:8080,http://relay-c:8080
+      FRANK_CLUSTER_PROXY: http://proxy:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [cluster]
+    depends_on:
+      proxy:
+        condition: service_started
+
+networks:
+  cluster:
+    ipam:
+      config:
+        - subnet: ${FRANK_LAB_CLUSTER_SUBNET:-10.89.42}.0/24
+
+volumes:
+  fdb-data:
+  fdb-cluster:
+  minio-data:
+  secrets:
+  config:
+  relay-a-data:
+  relay-b-data:
+  relay-c-data:

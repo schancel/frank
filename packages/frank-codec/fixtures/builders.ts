@@ -322,11 +322,12 @@ export function payment(t3: Uint8Array, o: PaymentOpts): Fields {
   value[31] = 1 + (o.index % 200)
   value[30] = 0x0f
   return M([
-    [PAYMENT_MEMBER.childIndex, o.index],
+    [PAYMENT_MEMBER.network, NET],
     [PAYMENT_MEMBER.transactionId, bytesOf(32, o.txSeed ?? 100 + o.index)],
     [PAYMENT_MEMBER.value, value],
     [PAYMENT_MEMBER.address, bytesOf(20, o.addrSeed ?? 50 + o.index)],
     [PAYMENT_MEMBER.commitment, paymentCommitment(t3, o.index)],
+    [PAYMENT_MEMBER.childIndex, o.index],
   ])
 }
 

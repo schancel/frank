@@ -1,638 +1,294 @@
 import {
-  decodeCanonical,
-  encodeCanonical,
-  encodePaymentTransfer,
-  decodePaymentTransfer,
-  projectPaymentTransfer,
-  paymentTransferToCborMap,
-  paymentTransfer,
-  stealthMetadata,
-  paymentTransferFromMember,
-  paymentTransferToMember,
-  paymentTransferFromStealthItem,
-  paymentTransferToStealthItem,
-  fromHex,
-  toHex,
   FrankCodecError,
-  type PaymentTransfer,
-  type PaymentMember,
-  type CanonicalPaymentTransfer,
-  type StealthMetadata,
+  cborMap,
+  decodeCanonical,
+  decodePaymentMember,
+  encodeCanonical,
+  encodePaymentMember,
+  paymentMember,
+  stealthMetadata,
 } from '../src'
+import { bytesOf } from '../fixtures/builders'
 import {
   ACCOUNT_REF,
   KEY_TYPE,
-  PAYMENT_TRANSFER,
+  PAYMENT_MEMBER,
   STEALTH_METADATA,
 } from '../src/constants'
 
-function mapOf(entries: Array<[number | bigint, any]>): Map<bigint, any> {
+function ephemeral() {
+  const keyBytes = new Uint8Array(33)
+  keyBytes[0] = 0x02
+  keyBytes.set(bytesOf(32, 9), 1)
+  return { keyType: 1, keyBytes }
+}
+
+const stamp = {
+  network: 'monad-testnet',
+  transactionId: bytesOf(32, 1),
+  value: 1n,
+  address: bytesOf(20, 2),
+  commitment: bytesOf(32, 4),
+  childIndex: 0,
+  vout: 1,
+  rawTx: bytesOf(8, 6),
+}
+
+const stealth = {
+  network: 'xpi-mainnet',
+  transactionId: bytesOf(32, 3),
+  value: bytesOf(32, 5),
+  address: bytesOf(32, 8),
+  stealthMetadata: { ephemeralPubKey: ephemeral(), viewTag: 7 },
+  token: bytesOf(32, 9),
+  rawTx: bytesOf(4, 2),
+}
+
+describe('unified payment-member', () => {
+  it('round-trips a stamp payment and a stealth payment', () => {
+    const decodedStamp = decodePaymentMember(encodePaymentMember(stamp))
+    expect(decodedStamp).toEqual(stamp)
+    const decodedStealth = decodePaymentMember(encodePaymentMember(stealth))
+    expect(decodedStealth.network).toBe('xpi-mainnet')
+    expect(decodedStealth.childIndex).toBeUndefined()
+    expect(decodedStealth.stealthMetadata?.viewTag).toBe(7)
+    expect(decodedStealth.token).toEqual(stealth.token)
+    expect(decodedStealth.value).toEqual(stealth.value)
+  })
+
+  it('requires exactly one of the stamp child index and stealth metadata', () => {
+    expect(() =>
+      encodePaymentMember({
+        ...stamp,
+        stealthMetadata: stealth.stealthMetadata,
+      }),
+    ).toThrow(/exactly one of field 7 or field 8/)
+    expect(() =>
+      encodePaymentMember({
+        network: 'monad-testnet',
+        transactionId: stamp.transactionId,
+        value: 1n,
+        address: stamp.address,
+      }),
+    ).toThrow(/exactly one of field 7 or field 8/)
+  })
+
+  it('requires a commitment on a stamp and allows a token only with stealth metadata', () => {
+    const { commitment: _commitment, ...withoutCommitment } = stamp
+    expect(() => encodePaymentMember(withoutCommitment)).toThrow(
+      /stamp payment requires a T4 commitment/,
+    )
+    expect(() =>
+      encodePaymentMember({ ...stamp, token: stealth.token }),
+    ).toThrow(/token identifier is allowed only on a stealth payment/)
+    expect(decodePaymentMember(encodePaymentMember(stealth)).token).toEqual(
+      stealth.token,
+    )
+  })
+
+  it('rejects the old stamp map and the old payment-transfer map', () => {
+    const oldStamp = cborMap([
+      [0, 0], // raw-cbor-key: retired stamp child index
+      [1, stamp.transactionId], // raw-cbor-key: retired layout
+      [2, 1n], // raw-cbor-key: retired layout
+      [3, stamp.address], // raw-cbor-key: retired layout
+      [4, stamp.commitment], // raw-cbor-key: retired layout
+    ])
+    const oldMetadata = cborMap([
+      [
+        STEALTH_METADATA.ephemeralPubKey,
+        cborMap([
+          [ACCOUNT_REF.keyType, KEY_TYPE.secp256k1],
+          [ACCOUNT_REF.keyBytes, ephemeral().keyBytes],
+        ]),
+      ],
+    ])
+    const oldTransfer = cborMap([
+      [0, 'monad'], // raw-cbor-key: retired payment-transfer network tag
+      [1, stamp.transactionId], // raw-cbor-key: retired layout
+      [3, stamp.address], // raw-cbor-key: retired layout
+      [4, 1n], // raw-cbor-key: retired payment-transfer value
+      [6, oldMetadata], // raw-cbor-key: retired payment-transfer stealth metadata
+    ])
+    for (const map of [oldStamp, oldTransfer]) {
+      expect(() =>
+        paymentMember(decodeCanonical(encodeCanonical(map)), 'payment-member'),
+      ).toThrow(FrankCodecError)
+    }
+  })
+
+  it('rejects a stealth payment on a network that is not in the chain registry', () => {
+    for (const network of ['lotus', 'monad', 'zz-not-a-chain']) {
+      expect(() => encodePaymentMember({ ...stealth, network })).toThrow(
+        /not a chain identifier in docs\/protocol\/chains\/v1.json/,
+      )
+      const map = decodeCanonical(encodePaymentMember(stealth)) as Map<
+        bigint,
+        unknown
+      >
+      map.set(BigInt(PAYMENT_MEMBER.network), network)
+      expect(() => paymentMember(map, 'payment-member')).toThrow(
+        /not a chain identifier/,
+      )
+    }
+  })
+})
+
+function mapOf(
+  entries: Array<[number | bigint, unknown]>,
+): Map<bigint, unknown> {
   return new Map(entries.map(([k, v]) => [BigInt(k), v]))
 }
 
-describe('unified payment transfer schema and codec (Issue #948)', () => {
-  const sampleNetwork = 'monad-testnet'
-  const sampleTxId = 'aa'.repeat(32)
-  const sampleTxIdBytes = fromHex(sampleTxId)
-  const sampleDest = 'bb'.repeat(20)
-  const sampleDestBytes = fromHex(sampleDest)
-  const sampleToken = 'cc'.repeat(20)
-  const sampleTokenBytes = fromHex(sampleToken)
-  const sampleCommitment = 'dd'.repeat(32)
-  const sampleCommitmentBytes = fromHex(sampleCommitment)
+function secp(bytes: Uint8Array): Map<bigint, unknown> {
+  return mapOf([
+    [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
+    [ACCOUNT_REF.keyBytes, bytes],
+  ])
+}
 
-  const sampleSecpPub = '02' + '11'.repeat(32) // 33 bytes compressed
-  const sampleSecpPubBytes = fromHex(sampleSecpPub)
-  const sampleEdPub = '22'.repeat(32) // 32 bytes ed25519
-  const sampleEdPubBytes = fromHex(sampleEdPub)
+/** The member as a CBOR map, with `changes` applied (`undefined` deletes a key). */
+function memberMap(
+  base: Parameters<typeof encodePaymentMember>[0],
+  changes: Array<[number, unknown]>,
+): Map<bigint, unknown> {
+  const map = decodeCanonical(encodePaymentMember(base)) as Map<bigint, unknown>
+  for (const [key, value] of changes) {
+    if (value === undefined) map.delete(BigInt(key))
+    else map.set(BigInt(key), value)
+  }
+  return map
+}
 
-  describe('schema validation: paymentTransfer and stealthMetadata', () => {
-    it('validates minimal valid payment-transfer with uint satoshis', () => {
-      const map = mapOf([
-        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-        [PAYMENT_TRANSFER.destination, sampleDestBytes],
-        [PAYMENT_TRANSFER.value, 50000n],
-      ])
+describe('payment-member and stealth-metadata validation', () => {
+  const secp33 = ephemeral().keyBytes
+  const ed32 = bytesOf(32, 0x22)
 
-      const parsed = paymentTransfer(map)
-      expect(parsed.networkTag).toBe(sampleNetwork)
-      expect(toHex(parsed.txId)).toBe(sampleTxId)
-      expect(parsed.vout).toBeUndefined()
-      expect(toHex(parsed.destination)).toBe(sampleDest)
-      expect(parsed.value).toBe(50000n)
-      expect(parsed.token).toBeUndefined()
-      expect(parsed.stealthMetadata).toBeUndefined()
-      expect(parsed.commitment).toBeUndefined()
-    })
-
-    it('validates minimal valid payment-transfer with 32-byte EVM quantity', () => {
-      const evmQty = fromHex('00'.repeat(30) + '04d2') // 1234
-      const map = mapOf([
-        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-        [PAYMENT_TRANSFER.destination, sampleDestBytes],
-        [PAYMENT_TRANSFER.value, evmQty],
-      ])
-
-      const parsed = paymentTransfer(map)
-      expect(parsed.value).toBeInstanceOf(Uint8Array)
-      expect(toHex(parsed.value as Uint8Array)).toBe(toHex(evmQty))
-    })
-
-    it('validates payment-transfer with all fields populated (UTXO, token, stealth, commitment)', () => {
-      const stealthMap = mapOf([
-        [
-          STEALTH_METADATA.ephemeralPubKey,
-          mapOf([
-            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
-            [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
-          ]),
-        ],
-        [STEALTH_METADATA.viewTag, 0x2an], // view tag
-      ])
-
-      const map = mapOf([
-        [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-        [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-        [PAYMENT_TRANSFER.vout, 3n], // vout
-        [PAYMENT_TRANSFER.destination, sampleDestBytes],
-        [PAYMENT_TRANSFER.value, 1000000n],
-        [PAYMENT_TRANSFER.token, sampleTokenBytes],
-        [PAYMENT_TRANSFER.stealthMetadata, stealthMap],
-        [PAYMENT_TRANSFER.commitment, sampleCommitmentBytes],
-      ])
-
-      const parsed = paymentTransfer(map)
-      expect(parsed.networkTag).toBe(sampleNetwork)
-      expect(toHex(parsed.txId)).toBe(sampleTxId)
-      expect(parsed.vout).toBe(3)
-      expect(toHex(parsed.destination)).toBe(sampleDest)
-      expect(parsed.value).toBe(1000000n)
-      expect(toHex(parsed.token!)).toBe(sampleToken)
-      expect(toHex(parsed.commitment!)).toBe(sampleCommitment)
-      expect(parsed.stealthMetadata).toBeDefined()
-      expect(parsed.stealthMetadata?.ephemeralPubKey.keyType).toBe(1)
-      expect(toHex(parsed.stealthMetadata!.ephemeralPubKey.keyBytes)).toBe(
-        sampleSecpPub,
-      )
-      expect(parsed.stealthMetadata?.viewTag).toBe(0x2a)
-    })
-
-    it('validates stealth-metadata with byte-string view tag', () => {
-      const viewTagBytes = new Uint8Array([0x01, 0x02, 0x03, 0x04])
-      const stealthMap = mapOf([
-        [
-          STEALTH_METADATA.ephemeralPubKey,
-          mapOf([
-            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.ed25519)],
-            [ACCOUNT_REF.keyBytes, sampleEdPubBytes],
-          ]),
-        ],
-        [STEALTH_METADATA.viewTag, viewTagBytes],
-      ])
-
-      const parsed = stealthMetadata(stealthMap)
-      expect(parsed.ephemeralPubKey.keyType).toBe(2)
-      expect(toHex(parsed.ephemeralPubKey.keyBytes)).toBe(sampleEdPub)
-      expect(parsed.viewTag).toEqual(viewTagBytes)
-    })
-
-    it('validates stealth-metadata without view tag', () => {
-      const stealthMap = mapOf([
-        [
-          STEALTH_METADATA.ephemeralPubKey,
-          mapOf([
-            [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
-            [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
-          ]),
-        ],
-      ])
-
-      const parsed = stealthMetadata(stealthMap)
-      expect(parsed.ephemeralPubKey.keyType).toBe(1)
-      expect(parsed.viewTag).toBeUndefined()
-    })
-
-    it('rejects non-map inputs', () => {
-      expect(() => paymentTransfer('not a map' as any)).toThrow(FrankCodecError)
-      expect(() => paymentTransfer(123 as any)).toThrow(FrankCodecError)
-      expect(() => paymentTransfer(null as any)).toThrow(FrankCodecError)
-      expect(() => paymentTransfer([] as any)).toThrow(FrankCodecError)
-    })
-
-    it('rejects missing required fields', () => {
-      // Missing key 0
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/missing required key 0/)
-
-      // Missing key 1
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/missing required key 1/)
-
-      // Missing key 3
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/missing required key 3/)
-
-      // Missing key 4
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-          ]),
-        ),
-      ).toThrow(/missing required key 4/)
-    })
-
-    it('rejects undeclared keys (C12 closed schema rule)', () => {
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-            // raw-cbor-key: key 9 is undeclared in a payment transfer
-            [9, 'unexpected'],
-          ]),
-        ),
-      ).toThrow(/undeclared key 9/)
-    })
-
-    it('rejects invalid field bounds and types', () => {
-      // Empty networkTag
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, ''],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/text size outside 1..64/)
-
-      // NetworkTag too long (>64)
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, 'a'.repeat(65)],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/text size outside 1..64/)
-
-      // Empty txId
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, new Uint8Array(0)],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/byte string size outside 1..128/)
-
-      // txId too long (>128)
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, new Uint8Array(129)],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/byte string size outside 1..128/)
-
-      // rawTx too long (>16384)
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-            [PAYMENT_TRANSFER.rawTx, new Uint8Array(16385)],
-          ]),
-        ),
-      ).toThrow(/byte string size outside 1..16384/)
-
-      // vout negative or exceeding u32
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.vout, 4294967296n],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/integer outside/)
-
-      // destination empty
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, new Uint8Array(0)],
-            [PAYMENT_TRANSFER.value, 100n],
-          ]),
-        ),
-      ).toThrow(/byte string size outside 1..128/)
-
-      // value not 32-byte bstr and not uint
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 'invalid-value'],
-          ]),
-        ),
-      ).toThrow(/expected a 32-byte string or an unsigned integer/)
-
-      // commitment not 32 bytes
-      expect(() =>
-        paymentTransfer(
-          mapOf([
-            [PAYMENT_TRANSFER.networkTag, sampleNetwork],
-            [PAYMENT_TRANSFER.txId, sampleTxIdBytes],
-            [PAYMENT_TRANSFER.destination, sampleDestBytes],
-            [PAYMENT_TRANSFER.value, 100n],
-            [PAYMENT_TRANSFER.commitment, new Uint8Array(31)],
-          ]),
-        ),
-      ).toThrow(/byte string size outside 32..32/)
-    })
-
-    it('rejects invalid stealth-metadata', () => {
-      // not a map
-      expect(() => stealthMetadata('bad' as any)).toThrow(FrankCodecError)
-
-      // missing key 0 (ephemeral-pubkey)
-      expect(() =>
-        stealthMetadata(mapOf([[STEALTH_METADATA.viewTag, 42n]])),
-      ).toThrow(/missing required key 0/)
-
-      // keyType 1 with mismatched length (expects 33, given 32)
-      expect(() =>
-        stealthMetadata(
-          mapOf([
-            [
-              STEALTH_METADATA.ephemeralPubKey,
-              mapOf([
-                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
-                [ACCOUNT_REF.keyBytes, sampleEdPubBytes],
-              ]),
-            ],
-          ]),
-        ),
-      ).toThrow(/requires 33 key bytes/)
-
-      // keyType 2 with mismatched length (expects 32, given 33)
-      expect(() =>
-        stealthMetadata(
-          mapOf([
-            [
-              STEALTH_METADATA.ephemeralPubKey,
-              mapOf([
-                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.ed25519)],
-                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
-              ]),
-            ],
-          ]),
-        ),
-      ).toThrow(/requires 32 key bytes/)
-
-      // viewTag exceeding uint16
-      expect(() =>
-        stealthMetadata(
-          mapOf([
-            [
-              STEALTH_METADATA.ephemeralPubKey,
-              mapOf([
-                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
-                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
-              ]),
-            ],
-            [STEALTH_METADATA.viewTag, 65536n],
-          ]),
-        ),
-      ).toThrow(/integer outside/)
-
-      // extra key in stealth-metadata
-      expect(() =>
-        stealthMetadata(
-          mapOf([
-            [
-              STEALTH_METADATA.ephemeralPubKey,
-              mapOf([
-                [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.secp256k1)],
-                [ACCOUNT_REF.keyBytes, sampleSecpPubBytes],
-              ]),
-            ],
-            // raw-cbor-key: key 2 is undeclared in stealth metadata
-            [2, 'unexpected'],
-          ]),
-        ),
-      ).toThrow(/undeclared key 2/)
-    })
+  it('rejects stealth metadata that is malformed', () => {
+    for (const notMap of ['bad', 123n, null, [], new Uint8Array(1)]) {
+      expect(() => stealthMetadata(notMap as never)).toThrow(FrankCodecError)
+    }
+    expect(() =>
+      stealthMetadata(mapOf([[STEALTH_METADATA.viewTag, 42n]])),
+    ).toThrow(/missing required key 0/)
+    // Key type 1 needs 33 bytes and key type 2 needs 32.
+    expect(() =>
+      stealthMetadata(mapOf([[STEALTH_METADATA.ephemeralPubKey, secp(ed32)]])),
+    ).toThrow(/requires 33 key bytes/)
+    expect(() =>
+      stealthMetadata(
+        mapOf([
+          [
+            STEALTH_METADATA.ephemeralPubKey,
+            mapOf([
+              [ACCOUNT_REF.keyType, BigInt(KEY_TYPE.ed25519)],
+              [ACCOUNT_REF.keyBytes, secp33],
+            ]),
+          ],
+        ]),
+      ),
+    ).toThrow(/requires 32 key bytes/)
+    // The view tag is at most 65535.
+    expect(
+      stealthMetadata(
+        mapOf([
+          [STEALTH_METADATA.ephemeralPubKey, secp(secp33)],
+          [STEALTH_METADATA.viewTag, 65535n],
+        ]),
+      ).viewTag,
+    ).toBe(65535)
+    expect(() =>
+      stealthMetadata(
+        mapOf([
+          [STEALTH_METADATA.ephemeralPubKey, secp(secp33)],
+          [STEALTH_METADATA.viewTag, 65536n],
+        ]),
+      ),
+    ).toThrow(/integer outside/)
+    expect(() =>
+      stealthMetadata(
+        mapOf([
+          [STEALTH_METADATA.ephemeralPubKey, secp(secp33)],
+          // raw-cbor-key: key 2 is undeclared in stealth metadata
+          [2, 'unexpected'],
+        ]),
+      ),
+    ).toThrow(/undeclared key 2/)
   })
 
-  describe('encoding, decoding, and round-trips', () => {
-    it('encodes and decodes a minimal PaymentTransfer', () => {
-      const transfer: PaymentTransfer = {
-        networkTag: sampleNetwork,
-        txId: sampleTxIdBytes,
-        destination: sampleDestBytes,
-        value: 123456n,
-      }
-
-      const encoded = encodePaymentTransfer(transfer)
-      expect(encoded).toBeInstanceOf(Uint8Array)
-
-      const decoded = decodePaymentTransfer(encoded)
-      expect(decoded.networkTag).toBe(sampleNetwork)
-      expect(toHex(decoded.txId)).toBe(sampleTxId)
-      expect(toHex(decoded.destination)).toBe(sampleDest)
-      expect(decoded.value).toBe(123456n)
-      expect(decoded.vout).toBeUndefined()
-      expect(decoded.token).toBeUndefined()
-      expect(decoded.stealthMetadata).toBeUndefined()
-      expect(decoded.commitment).toBeUndefined()
-    })
-
-    it('encodes and decodes from a CanonicalPaymentTransfer (hex strings)', () => {
-      const canonical: CanonicalPaymentTransfer = {
-        networkTag: sampleNetwork,
-        txId: '0x' + sampleTxId,
-        vout: 0,
-        destination: '0x' + sampleDest,
-        value: 99999,
-        token: '0x' + sampleToken,
-        stealthMetadata: {
-          keyType: 1,
-          ephemeralPubKey: '0x' + sampleSecpPub,
-          viewTag: 0x5a,
-        },
-        commitment: '0x' + sampleCommitment,
-      }
-
-      const encoded = encodePaymentTransfer(canonical)
-      const decoded = decodePaymentTransfer(encoded)
-
-      expect(decoded.networkTag).toBe(sampleNetwork)
-      expect(toHex(decoded.txId)).toBe(sampleTxId)
-      expect(decoded.vout).toBe(0)
-      expect(toHex(decoded.destination)).toBe(sampleDest)
-      expect(decoded.value).toBe(99999n)
-      expect(toHex(decoded.token!)).toBe(sampleToken)
-      expect(toHex(decoded.commitment!)).toBe(sampleCommitment)
-      expect(decoded.stealthMetadata?.ephemeralPubKey.keyType).toBe(1)
-      expect(toHex(decoded.stealthMetadata!.ephemeralPubKey.keyBytes)).toBe(
-        sampleSecpPub,
+  it('rejects a payment member that is not a map', () => {
+    for (const notMap of ['not a map', 123n, null, []]) {
+      expect(() => paymentMember(notMap as never, 'payment-member')).toThrow(
+        FrankCodecError,
       )
-      expect(decoded.stealthMetadata?.viewTag).toBe(0x5a)
-
-      const projected = projectPaymentTransfer(decoded)
-      expect(projected).toEqual({
-        networkTag: sampleNetwork,
-        txId: sampleTxId,
-        vout: 0,
-        destination: sampleDest,
-        value: 99999n,
-        token: sampleToken,
-        stealthMetadata: {
-          keyType: 1,
-          ephemeralPubKey: sampleSecpPub,
-          viewTag: 0x5a,
-        },
-        commitment: sampleCommitment,
-      })
-    })
-
-    it('encodes and decodes a large 256-bit EVM value', () => {
-      const largeValue = 2n ** 128n + 42n
-      const canonical: CanonicalPaymentTransfer = {
-        networkTag: sampleNetwork,
-        txId: sampleTxId,
-        destination: sampleDest,
-        value: largeValue,
-      }
-
-      const encoded = encodePaymentTransfer(canonical)
-      const decoded = decodePaymentTransfer(encoded)
-      expect(decoded.value).toBeInstanceOf(Uint8Array)
-      const decodedBigInt = BigInt('0x' + toHex(decoded.value as Uint8Array))
-      expect(decodedBigInt).toBe(largeValue)
-    })
-
-    it('returns CBOR map representation with paymentTransferToCborMap', () => {
-      const map = paymentTransferToCborMap({
-        networkTag: sampleNetwork,
-        txId: sampleTxIdBytes,
-        destination: sampleDestBytes,
-        value: 500n,
-      })
-      expect(map).toBeInstanceOf(Map)
-      expect(map.get(BigInt(PAYMENT_TRANSFER.networkTag))).toBe(sampleNetwork)
-      expect(map.get(BigInt(PAYMENT_TRANSFER.txId))).toEqual(sampleTxIdBytes)
-      expect(map.get(BigInt(PAYMENT_TRANSFER.destination))).toEqual(
-        sampleDestBytes,
-      )
-      expect(map.get(BigInt(PAYMENT_TRANSFER.value))).toBe(500n)
-    })
+    }
   })
 
-  describe('conversions: envelope stamps and in-chat stealth transfers', () => {
-    it('converts PaymentMember (stamp) -> PaymentTransfer -> PaymentMember', () => {
-      const member: PaymentMember = {
-        childIndex: 5,
-        transactionId: sampleTxIdBytes,
-        value: 2500000000000000n,
-        address: sampleDestBytes,
-        commitment: sampleCommitmentBytes,
-        vout: 1,
-      }
-
-      const transfer = paymentTransferFromMember(member, 'monad-testnet')
-      expect(transfer.networkTag).toBe('monad-testnet')
-      expect(transfer.txId).toEqual(member.transactionId)
-      expect(transfer.vout).toBe(1)
-      expect(transfer.destination).toEqual(member.address)
-      expect(transfer.value).toBe(member.value)
-      expect(transfer.commitment).toEqual(member.commitment)
-
-      const roundTrip = paymentTransferToMember(transfer, 5)
-      expect(roundTrip).toEqual(member)
-    })
-
-    it('rejects converting PaymentTransfer to PaymentMember without commitment', () => {
-      const transfer: PaymentTransfer = {
-        networkTag: 'monad-testnet',
-        txId: sampleTxIdBytes,
-        destination: sampleDestBytes,
-        value: 100n,
-      }
-
-      expect(() => paymentTransferToMember(transfer)).toThrow(
-        /must have a commitment/,
-      )
-    })
-
-    it('converts StealthMessageItem -> PaymentTransfer -> CanonicalStealthItem', () => {
-      const stealthTransfer = paymentTransferFromStealthItem(
-        {
-          type: 'stealth',
-          networkTag: 'MONT',
-          keyType: 1,
-          ephemeralPubKey: sampleSecpPub,
-          transactions: [sampleTxId],
-          amount: 50000,
-        },
-        sampleDestBytes,
-      )
-
-      expect(stealthTransfer.networkTag).toBe('MONT')
-      expect(toHex(stealthTransfer.txId)).toBe(sampleTxId)
-      expect(toHex(stealthTransfer.destination)).toBe(sampleDest)
-      expect(stealthTransfer.value).toBe(50000n)
-      expect(stealthTransfer.stealthMetadata?.ephemeralPubKey.keyType).toBe(1)
-      expect(
-        toHex(stealthTransfer.stealthMetadata!.ephemeralPubKey.keyBytes),
-      ).toBe(sampleSecpPub)
-
-      const reconverted = paymentTransferToStealthItem(
-        stealthTransfer,
-        'Coffee payment',
-      )
-      expect(reconverted).toEqual({
-        type: 'stealth',
-        networkTag: 'MONT',
-        keyType: 1,
-        ephemeralPubKey: sampleSecpPub,
-        transactions: [sampleTxId],
-        amount: 50000n,
-        memo: 'Coffee payment',
-      })
-    })
-
-    it('rejects converting PaymentTransfer to stealth item without stealthMetadata', () => {
-      const transfer: PaymentTransfer = {
-        networkTag: 'MONT',
-        txId: sampleTxIdBytes,
-        destination: sampleDestBytes,
-        value: 100n,
-      }
-
-      expect(() => paymentTransferToStealthItem(transfer)).toThrow(
-        /must have stealthMetadata/,
-      )
-    })
-
-    it('round-trips PaymentTransfer with rawTx and converts to/from PaymentMember', () => {
-      const sampleRawTx = fromHex(
-        '02f87082279f80843b9aca008502540be40082520894' +
-          'ee'.repeat(20) +
-          '830186a080c0',
-      )
-      const transfer: PaymentTransfer = {
-        networkTag: sampleNetwork,
-        txId: sampleTxIdBytes,
-        destination: sampleDestBytes,
-        value: 50000n,
-        commitment: sampleCommitmentBytes,
-        rawTx: sampleRawTx,
-      }
-
-      const encoded = encodePaymentTransfer(transfer)
-      const decoded = decodePaymentTransfer(encoded)
-      expect(decoded.rawTx).toBeDefined()
-      expect(toHex(decoded.rawTx!)).toBe(toHex(sampleRawTx))
-
-      const member = paymentTransferToMember(transfer, 5)
-      expect(member.childIndex).toBe(5)
-      expect(toHex(member.transactionId)).toBe(sampleTxId)
-      expect(member.rawTx).toBeDefined()
-      expect(toHex(member.rawTx!)).toBe(toHex(sampleRawTx))
-
-      const back = paymentTransferFromMember(member, sampleNetwork)
-      expect(back.rawTx).toBeDefined()
-      expect(toHex(back.rawTx!)).toBe(toHex(sampleRawTx))
-      expect(toHex(back.txId)).toBe(sampleTxId)
-
-      const projected = projectPaymentTransfer(transfer)
-      expect(projected.rawTx).toBe(toHex(sampleRawTx))
-    })
+  it('rejects payment-member fields outside their bounds', () => {
+    const cases: Array<[Map<bigint, unknown>, RegExp]> = [
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.transactionId, new Uint8Array(0)]]),
+        /byte string size outside 1..128/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.transactionId, new Uint8Array(129)]]),
+        /byte string size outside 1..128/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.rawTx, new Uint8Array(16385)]]),
+        /byte string size outside 1..16384/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.value, 'invalid-value']]),
+        /expected a 32-byte string or an unsigned integer/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.value, new Uint8Array(31)]]),
+        /byte string size outside 32..32/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.commitment, new Uint8Array(31)]]),
+        /byte string size outside 32..32/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.vout, 4294967296n]]),
+        /integer outside/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.address, new Uint8Array(0)]]),
+        /byte string size outside 1..128/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.network, '']]),
+        /text size outside 1..64/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.network, 'a'.repeat(65)]]),
+        /text size outside 1..64/,
+      ],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.network, 'Monad']]),
+        /network tag does not match S1/,
+      ],
+      // raw-cbor-key: key 10 is undeclared in a payment member
+      [memberMap(stamp, [[10, 'unexpected']]), /undeclared key 10/],
+      [
+        memberMap(stamp, [[PAYMENT_MEMBER.transactionId, undefined]]),
+        /missing required key 1/,
+      ],
+    ]
+    for (const [map, error] of cases) {
+      expect(() => paymentMember(map, 'payment-member')).toThrow(error)
+    }
+    // The boundary values themselves are accepted.
+    expect(
+      paymentMember(
+        memberMap(stamp, [
+          [PAYMENT_MEMBER.transactionId, new Uint8Array(128)],
+          [PAYMENT_MEMBER.rawTx, new Uint8Array(16384)],
+        ]),
+        'payment-member',
+      ).transactionId,
+    ).toHaveLength(128)
   })
 })

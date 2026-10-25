@@ -23,20 +23,22 @@ describe('UTXO payment-member extensions', () => {
 
   it('parses payment-member with field 5 (vout: 0, 1, 4294967295)', () => {
     const p0 = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, bytesOf(32, 1)],
       [PAYMENT_MEMBER.value, new Uint8Array(32)],
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
       [PAYMENT_MEMBER.vout, 0], // vout: 0
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const p1 = M([
-      [PAYMENT_MEMBER.childIndex, 1],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, bytesOf(32, 2)],
       [PAYMENT_MEMBER.value, new Uint8Array(32)],
       [PAYMENT_MEMBER.address, bytesOf(20, 11)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 1)],
       [PAYMENT_MEMBER.vout, 4294967295], // vout: max u32
+      [PAYMENT_MEMBER.childIndex, 1],
     ])
 
     const frame = deliveryFrame({ payloadFrame: pf, payments: [p0, p1] })
@@ -50,12 +52,13 @@ describe('UTXO payment-member extensions', () => {
 
   it('rejects vout exceeding uint32 range or negative', () => {
     const badVout = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, bytesOf(32, 1)],
       [PAYMENT_MEMBER.value, new Uint8Array(32)],
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
       [PAYMENT_MEMBER.vout, 4294967296n], // > u32 max
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const frame = deliveryFrame({ payloadFrame: pf, payments: [badVout] })
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
@@ -63,12 +66,13 @@ describe('UTXO payment-member extensions', () => {
 
   it('accepts payment-member with satoshi amount as uint64 bigint', () => {
     const pSatoshi = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, bytesOf(32, 1)],
       [PAYMENT_MEMBER.value, 50_000n], // 50,000 satoshis (uint)
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
       [PAYMENT_MEMBER.vout, 1],
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const frame = deliveryFrame({ payloadFrame: pf, payments: [pSatoshi] })
     const validated = validateFrame(frame, ctx)
@@ -80,11 +84,12 @@ describe('UTXO payment-member extensions', () => {
 
   it('rejects negative satoshi amount', () => {
     const badAmount = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, bytesOf(32, 1)],
       [PAYMENT_MEMBER.value, -1n], // negative integer (major type 1)
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const frame = deliveryFrame({ payloadFrame: pf, payments: [badAmount] })
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
@@ -93,20 +98,22 @@ describe('UTXO payment-member extensions', () => {
   it('allows same transactionId when vout differs across payment members in one delivery', () => {
     const sharedTxId = bytesOf(32, 42)
     const p0 = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, sharedTxId], // Same txid
       [PAYMENT_MEMBER.value, 10_000n],
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
       [PAYMENT_MEMBER.vout, 0], // output 0
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const p1 = M([
-      [PAYMENT_MEMBER.childIndex, 1],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, sharedTxId], // Same txid
       [PAYMENT_MEMBER.value, 20_000n],
       [PAYMENT_MEMBER.address, bytesOf(20, 11)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 1)],
       [PAYMENT_MEMBER.vout, 1], // output 1
+      [PAYMENT_MEMBER.childIndex, 1],
     ])
 
     const frame = deliveryFrame({ payloadFrame: pf, payments: [p0, p1] })
@@ -122,20 +129,22 @@ describe('UTXO payment-member extensions', () => {
   it('rejects duplicate (transactionId, vout) across payment members', () => {
     const sharedTxId = bytesOf(32, 42)
     const p0 = M([
-      [PAYMENT_MEMBER.childIndex, 0],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, sharedTxId],
       [PAYMENT_MEMBER.value, 10_000n],
       [PAYMENT_MEMBER.address, bytesOf(20, 10)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 0)],
       [PAYMENT_MEMBER.vout, 0],
+      [PAYMENT_MEMBER.childIndex, 0],
     ])
     const p1 = M([
-      [PAYMENT_MEMBER.childIndex, 1],
+      [PAYMENT_MEMBER.network, NET],
       [PAYMENT_MEMBER.transactionId, sharedTxId],
       [PAYMENT_MEMBER.value, 20_000n],
       [PAYMENT_MEMBER.address, bytesOf(20, 11)],
       [PAYMENT_MEMBER.commitment, paymentCommitment(t3, 1)],
       [PAYMENT_MEMBER.vout, 0], // Duplicate vout on same txid!
+      [PAYMENT_MEMBER.childIndex, 1],
     ])
 
     const frame = deliveryFrame({ payloadFrame: pf, payments: [p0, p1] })

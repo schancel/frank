@@ -1,9 +1,13 @@
 // T1/T1a content hashes and the pure-hash helpers T3/T4 (README section 8). No signature is
 // verified here and no stage 10 check is implemented.
 import { sha256 } from '@noble/hashes/sha256'
+import { decodeCanonical } from './cbor'
 import { utf8Encode } from './utf8'
 import type { ParsedFrame } from './types'
 import {
+  DIRECT_MESSAGE_DELIVERY,
+  FRAME_HEADER_BYTES,
+  FRANK_ENVELOPE,
   TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
   TYPE_CONTAINER_MESSAGE_ITEM,
@@ -19,6 +23,8 @@ import {
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
 } from './constants'
+
+const NETWORK_TAG = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
 const ASCII_LITERAL = /^[\x20-\x7e]*$/
 
@@ -102,12 +108,22 @@ export function contentHashNetwork(p: ParsedFrame): string {
     case TYPE_KEY_TRANSITION_STATEMENT:
     case TYPE_TOPIC_POST:
     case TYPE_TOPIC_POST_SUBMISSION:
-    case TYPE_TOPIC_VOTE_SUBMISSION:
-    case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
+    case TYPE_TOPIC_VOTE_SUBMISSION: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(
         `T1 for a type-${p.typeId} frame needs the stage 8 typed projection`,
+      )
+    }
+    case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
+      const t = p.typed
+      if (
+        t?.type === TYPE_FORWARDING_DELIVERY_ENVELOPE &&
+        t.payloadFrame.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY
+      )
+        return t.payloadFrame.typed.network
+      throw new Error(
+        `T1 for a type-${TYPE_FORWARDING_DELIVERY_ENVELOPE} frame needs the opened type-${TYPE_DIRECT_MESSAGE_DELIVERY} network`,
       )
     }
     default:
@@ -188,13 +204,41 @@ export function recipientPayloadDigest(
   )
 }
 
-/** T3f: forwarding payload digest of a complete inner frame with destination network. */
-export function forwardingPayloadDigest(
-  network: string,
-  innerFrame: Uint8Array,
-): Uint8Array {
+function mapGet(value: unknown, key: bigint): unknown {
+  return value instanceof Map ? value.get(key) : undefined
+}
+
+/** Network tag from a type-10 frame's own network field. The frame bytes are not re-encoded.
+ * Throws `RangeError` when `frame` is not a type-10 frame with a network tag. */
+export function directMessageDeliveryNetwork(frame: Uint8Array): string {
+  if (frame.length < FRAME_HEADER_BYTES)
+    throw new RangeError('inner frame is shorter than a FRNK header')
+  const envelope = decodeCanonical(frame.subarray(FRAME_HEADER_BYTES))
+  if (
+    mapGet(envelope, BigInt(FRANK_ENVELOPE.typeId)) !==
+    BigInt(TYPE_DIRECT_MESSAGE_DELIVERY)
+  )
+    throw new RangeError('forwarding digest requires a type-10 inner frame')
+  const payload = mapGet(envelope, BigInt(FRANK_ENVELOPE.payload))
+  if (!(payload instanceof Uint8Array))
+    throw new RangeError('type-10 payload is not a byte string')
+  const network = mapGet(
+    decodeCanonical(payload),
+    BigInt(DIRECT_MESSAGE_DELIVERY.network),
+  )
+  if (typeof network !== 'string' || !NETWORK_TAG.test(network))
+    throw new RangeError('type-10 network tag is missing')
+  return network
+}
+
+/** T3f: forwarding payload digest of the exact inner type-10 frame, using that frame's network. */
+export function forwardingPayloadDigest(innerFrame: Uint8Array): Uint8Array {
   return sha256(
-    commonTranscript('frank/forwarding-payload/v1', network, innerFrame),
+    commonTranscript(
+      'frank/forwarding-payload/v1',
+      directMessageDeliveryNetwork(innerFrame),
+      innerFrame,
+    ),
   )
 }
 

@@ -2,14 +2,14 @@
 mod common;
 use common::{acct1, acct2, fr, int};
 use frank_cbor::message_fields::{
-    account_ref, container_message_item, payment_transfer as xfer,
+    account_ref, container_message_item, payment_member as xfer,
     stealth_asset_message_item as item, stealth_asset_transfer as entry_k,
     stealth_derivation_scheme as scheme_k, stealth_message_item, stealth_metadata,
 };
 use frank_cbor::message_types::{TYPE_CONTAINER_MESSAGE_ITEM, TYPE_STEALTH_MESSAGE_ITEM};
 use frank_cbor::{
     cbor_map, default_context, encode_frame, validate_frame, CborValue, EnvelopeFields,
-    FramePayload, Projection, StealthQuantity, TypedPayload, ValidationResult,
+    FramePayload, PaymentValue, Projection, TypedPayload, ValidationResult,
 };
 
 fn set(v: &mut CborValue, key: u64, value: Option<CborValue>) {
@@ -22,9 +22,9 @@ fn set(v: &mut CborValue, key: u64, value: Option<CborValue>) {
 }
 fn transfer() -> CborValue {
     cbor_map(vec![
-        (xfer::NETWORK_TAG, CborValue::Text("monad-testnet".into())),
-        (xfer::TX_ID, CborValue::Bytes(vec![7; 32])),
-        (xfer::DESTINATION, CborValue::Bytes(vec![8; 20])),
+        (xfer::NETWORK, CborValue::Text("monad-testnet".into())),
+        (xfer::TRANSACTION_ID, CborValue::Bytes(vec![7; 32])),
+        (xfer::ADDRESS, CborValue::Bytes(vec![8; 20])),
         (xfer::VALUE, CborValue::Bytes(vec![255; 32])),
         (xfer::TOKEN, CborValue::Bytes(vec![9; 20])),
         (
@@ -88,11 +88,11 @@ fn exact_token_quantity_and_native_uint64_round_trip() {
     };
     assert_eq!(
         p.entries[0].transfer.value,
-        StealthQuantity::Quantity256([255; 32])
+        PaymentValue::Quantity(vec![255; 32])
     );
     assert_eq!(
         p.entries[1].transfer.value,
-        StealthQuantity::Uint64(u64::MAX)
+        PaymentValue::Satoshis(u64::MAX)
     );
     assert_eq!(p.entries[0].transfer.token, Some(vec![9; 20]));
     assert_eq!(p.entries[1].transfer.token, None);
@@ -225,8 +225,8 @@ fn rejects_unsafe_or_ambiguous_entries() {
     bad.push(extra);
     let mut nested_extra = entry();
     let mut t = transfer();
-    // raw-cbor-key: undeclared transfer field
-    set(&mut t, 9, Some(int(1)));
+    // raw-cbor-key: undeclared payment-member field
+    set(&mut t, 10, Some(int(1)));
     set(&mut nested_extra, entry_k::TRANSFER, Some(t));
     bad.push(nested_extra);
     for (i, e) in bad.into_iter().enumerate() {

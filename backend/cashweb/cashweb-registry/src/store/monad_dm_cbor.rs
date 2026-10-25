@@ -1053,7 +1053,7 @@ mod persistence_tests {
         let mut amount = [0; 32];
         amount[31] = 1;
         let member = cbor_map(vec![
-            (0, CborValue::Int(0)),
+            (0, CborValue::Text(network.to_string())),
             (1, CborValue::Bytes(payment_hash.to_vec())),
             (2, CborValue::Bytes(amount.to_vec())),
             (3, CborValue::Bytes(address.to_vec())),
@@ -1061,6 +1061,7 @@ mod persistence_tests {
                 4,
                 CborValue::Bytes(frank_cbor::payment_commitment(&policy.payload_hash, 0).to_vec()),
             ),
+            (7, CborValue::Int(0)),
         ]);
         let CborValue::Map(mut outer) = frame.payload else {
             panic!("direct message map");

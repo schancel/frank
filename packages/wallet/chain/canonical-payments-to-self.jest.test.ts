@@ -14,6 +14,7 @@ const previous = key('22')
 const someoneElse = key('33')
 const sharedPoint = key('44').keyBytes
 const child = (stampKey: ReturnType<typeof key>, childIndex: number) => ({
+  network: NETWORK,
   childIndex,
   address: canonicalStampDestination({
     network: NETWORK,
@@ -38,6 +39,7 @@ describe('paymentsToSelf', () => {
   it('drops a payment whose address is the child of another index or shared point', () => {
     const wrongIndex = { ...child(mine, 0), childIndex: 1 }
     const otherPoint = {
+      network: NETWORK,
       childIndex: 0,
       address: canonicalStampDestination({
         network: NETWORK,
@@ -62,5 +64,31 @@ describe('paymentsToSelf', () => {
         paid,
       ),
     ).toEqual(paid)
+  })
+
+  it('drops a stamp relabelled to another network, even with its address re-derived there', () => {
+    // The reviewer's case: the sender names another chain and pays the address derived for it.
+    // That account is not the one the wallet records as its stamp coin, so it is never reported.
+    for (const network of ['xpi-mainnet', 'lotus', 'zz-not-a-chain']) {
+      const relabelled = {
+        network,
+        childIndex: 0,
+        address: canonicalStampDestination({
+          network,
+          stampKey: mine,
+          sharedPoint,
+          childIndex: 0,
+        }).address,
+      }
+      expect(paymentsToSelf(NETWORK, self, sharedPoint, [relabelled])).toEqual(
+        [],
+      )
+      // The label alone does not move a payment to the wallet's network either.
+      expect(
+        paymentsToSelf(NETWORK, self, sharedPoint, [
+          { ...child(mine, 0), network },
+        ]),
+      ).toEqual([])
+    }
   })
 })

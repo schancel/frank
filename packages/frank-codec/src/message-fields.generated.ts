@@ -6,6 +6,8 @@ export interface MapShape {
   readonly required: readonly number[]
   readonly optional: readonly number[]
   readonly open: boolean
+  /** Lowest undeclared key an open map may retain (CDDL `* (uint .ge N)`); 0 for `* uint`. */
+  readonly openFrom: number
 }
 
 /** `account-ref` field keys. */
@@ -18,6 +20,7 @@ export const ACCOUNT_REF_SHAPE: MapShape = {
   required: [ACCOUNT_REF.keyType, ACCOUNT_REF.keyBytes],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `blackjack-hand-item` field keys: Type 26 schema 2 (closed): one peer-to-peer hand. Key 1 is the action code (blackjack-hand-action). */
@@ -45,6 +48,7 @@ export const BLACKJACK_HAND_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` challenge-player map shape. */
 export const BLACKJACK_HAND_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
@@ -56,6 +60,7 @@ export const BLACKJACK_HAND_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` accept map shape. */
 export const BLACKJACK_HAND_ITEM_ACCEPT_SHAPE: MapShape = {
@@ -67,6 +72,7 @@ export const BLACKJACK_HAND_ITEM_ACCEPT_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` deal map shape. */
 export const BLACKJACK_HAND_ITEM_DEAL_SHAPE: MapShape = {
@@ -78,6 +84,7 @@ export const BLACKJACK_HAND_ITEM_DEAL_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` card map shape. */
 export const BLACKJACK_HAND_ITEM_CARD_SHAPE: MapShape = {
@@ -88,6 +95,7 @@ export const BLACKJACK_HAND_ITEM_CARD_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` reveal map shape. */
 export const BLACKJACK_HAND_ITEM_REVEAL_SHAPE: MapShape = {
@@ -100,6 +108,7 @@ export const BLACKJACK_HAND_ITEM_REVEAL_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` refund map shape. */
 export const BLACKJACK_HAND_ITEM_REFUND_SHAPE: MapShape = {
@@ -110,12 +119,14 @@ export const BLACKJACK_HAND_ITEM_REFUND_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-item` action-only map shape. */
 export const BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE: MapShape = {
   required: [BLACKJACK_HAND_ITEM.gameId, BLACKJACK_HAND_ITEM.action],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). */
@@ -142,6 +153,7 @@ export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-v3-item` challenge-player map shape. */
 export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
@@ -154,6 +166,7 @@ export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_PLAYER_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-v3-item` accept map shape. */
 export const BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE: MapShape = {
@@ -167,6 +180,7 @@ export const BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-v3-item` bet map shape. */
 export const BLACKJACK_HAND_V3_ITEM_BET_SHAPE: MapShape = {
@@ -179,6 +193,7 @@ export const BLACKJACK_HAND_V3_ITEM_BET_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-v3-item` refund map shape. */
 export const BLACKJACK_HAND_V3_ITEM_REFUND_SHAPE: MapShape = {
@@ -191,6 +206,7 @@ export const BLACKJACK_HAND_V3_ITEM_REFUND_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-hand-v3-item` move map shape. */
 export const BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE: MapShape = {
@@ -203,6 +219,7 @@ export const BLACKJACK_HAND_V3_ITEM_MOVE_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `blackjack-item` field keys: Type 26 schema 1 (closed). Key 1 is the action code (blackjack-action); each action is one closed shape. */
@@ -231,6 +248,7 @@ export const BLACKJACK_ITEM_BET_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` deal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-deal). */
 export const BLACKJACK_ITEM_DEAL_SHAPE: MapShape = {
@@ -243,18 +261,21 @@ export const BLACKJACK_ITEM_DEAL_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` hit map shape. */
 export const BLACKJACK_ITEM_HIT_SHAPE: MapShape = {
   required: [BLACKJACK_ITEM.gameId, BLACKJACK_ITEM.action],
   optional: [BLACKJACK_ITEM.playerCards],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` stand map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-stand). */
 export const BLACKJACK_ITEM_STAND_SHAPE: MapShape = {
   required: [BLACKJACK_ITEM.gameId, BLACKJACK_ITEM.action],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` double-request map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-request). */
 export const BLACKJACK_ITEM_DOUBLE_REQUEST_SHAPE: MapShape = {
@@ -265,6 +286,7 @@ export const BLACKJACK_ITEM_DOUBLE_REQUEST_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` double-response map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-double-response). */
 export const BLACKJACK_ITEM_DOUBLE_RESPONSE_SHAPE: MapShape = {
@@ -275,6 +297,7 @@ export const BLACKJACK_ITEM_DOUBLE_RESPONSE_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` reveal map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-reveal). */
 export const BLACKJACK_ITEM_REVEAL_SHAPE: MapShape = {
@@ -287,6 +310,7 @@ export const BLACKJACK_ITEM_REVEAL_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 /** `blackjack-item` welcome map shape (docs/protocol/proposals/blackjack-items/blackjack.cddl#bj-welcome). */
 export const BLACKJACK_ITEM_WELCOME_SHAPE: MapShape = {
@@ -298,6 +322,7 @@ export const BLACKJACK_ITEM_WELCOME_SHAPE: MapShape = {
   ],
   optional: [BLACKJACK_ITEM.feeHintWei, BLACKJACK_ITEM.rules],
   open: false,
+  openFrom: 0,
 }
 
 /** `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash. */
@@ -319,6 +344,7 @@ export const CANONICAL_DM_MESSAGE_ROW_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `chain-allocation` field keys. */
@@ -336,6 +362,7 @@ export const CHAIN_ALLOCATION_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `channel-update-item` field keys. */
@@ -360,6 +387,7 @@ export const CHANNEL_UPDATE_ITEM_SHAPE: MapShape = {
   ],
   optional: [CHANNEL_UPDATE_ITEM.settlementRef],
   open: true,
+  openFrom: 0,
 }
 
 /** `container-message-item` field keys. */
@@ -371,6 +399,7 @@ export const CONTAINER_MESSAGE_ITEM_SHAPE: MapShape = {
   required: [CONTAINER_MESSAGE_ITEM.items],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `dice-game-payload` field keys. */
@@ -392,6 +421,7 @@ export const DICE_GAME_PAYLOAD_SHAPE: MapShape = {
   ],
   optional: [DICE_GAME_PAYLOAD.revealSeed, DICE_GAME_PAYLOAD.targetRoll],
   open: true,
+  openFrom: 0,
 }
 
 /** `direct-message-delivery` field keys. */
@@ -418,6 +448,7 @@ export const DIRECT_MESSAGE_DELIVERY_V1_SHAPE: MapShape = {
     DIRECT_MESSAGE_DELIVERY.dleqProof,
   ],
   open: true,
+  openFrom: 0,
 }
 /** `direct-message-delivery` v2 map shape (docs/protocol/cbor/direct-message.cddl#direct-message-delivery). */
 export const DIRECT_MESSAGE_DELIVERY_V2_SHAPE: MapShape = {
@@ -433,6 +464,7 @@ export const DIRECT_MESSAGE_DELIVERY_V2_SHAPE: MapShape = {
     DIRECT_MESSAGE_DELIVERY.dleqProof,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `directory-attestation` field keys. */
@@ -448,6 +480,7 @@ export const DIRECTORY_ATTESTATION_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `directory-preview-key` field keys. */
@@ -460,6 +493,7 @@ export const DIRECTORY_PREVIEW_KEY_SHAPE: MapShape = {
   required: [DIRECTORY_PREVIEW_KEY.keyType, DIRECTORY_PREVIEW_KEY.keyBytes],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `directory-preview-relay` field keys. */
@@ -479,6 +513,7 @@ export const DIRECTORY_PREVIEW_RELAY_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `directory-statement` field keys: One key space across schemas 1-4; each schema is a shape. */
@@ -519,6 +554,7 @@ export const DIRECTORY_STATEMENT_V1_SHAPE: MapShape = {
     DIRECTORY_STATEMENT.botRole,
   ],
   open: true,
+  openFrom: 0,
 }
 /** `directory-statement` v2 map shape (docs/protocol/cbor/directory.cddl#directory-statement). */
 export const DIRECTORY_STATEMENT_V2_SHAPE: MapShape = {
@@ -539,6 +575,7 @@ export const DIRECTORY_STATEMENT_V2_SHAPE: MapShape = {
     DIRECTORY_STATEMENT.botRole,
   ],
   open: true,
+  openFrom: 0,
 }
 /** `directory-statement` v3 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v3). */
 export const DIRECTORY_STATEMENT_V3_SHAPE: MapShape = {
@@ -560,6 +597,7 @@ export const DIRECTORY_STATEMENT_V3_SHAPE: MapShape = {
     DIRECTORY_STATEMENT.botRole,
   ],
   open: true,
+  openFrom: 0,
 }
 /** `directory-statement` v4 map shape (docs/protocol/cbor/directory.cddl#directory-statement-v4). */
 export const DIRECTORY_STATEMENT_V4_SHAPE: MapShape = {
@@ -582,6 +620,7 @@ export const DIRECTORY_STATEMENT_V4_SHAPE: MapShape = {
     DIRECTORY_STATEMENT.botRole,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `dm-crypto-context-v1` field keys. */
@@ -625,6 +664,7 @@ export const DM_CRYPTO_CONTEXT_V1_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `email-attachment` field keys. */
@@ -643,6 +683,7 @@ export const EMAIL_ATTACHMENT_SHAPE: MapShape = {
   ],
   optional: [EMAIL_ATTACHMENT.contentId],
   open: true,
+  openFrom: 0,
 }
 
 /** `email-message-item` field keys. */
@@ -677,6 +718,7 @@ export const EMAIL_MESSAGE_ITEM_SHAPE: MapShape = {
     EMAIL_MESSAGE_ITEM.replyTo,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `email-party` field keys. */
@@ -690,6 +732,7 @@ export const EMAIL_PARTY_SHAPE: MapShape = {
   required: [EMAIL_PARTY.address],
   optional: [EMAIL_PARTY.name, EMAIL_PARTY.frankAccount],
   open: true,
+  openFrom: 0,
 }
 
 /** `encrypted-message-content` field keys. */
@@ -716,6 +759,7 @@ export const ENCRYPTED_MESSAGE_CONTENT_SHAPE: MapShape = {
     ENCRYPTED_MESSAGE_CONTENT.tokenTransfer,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-aggregate` field keys. */
@@ -728,6 +772,7 @@ export const FORUM_AGGREGATE_SHAPE: MapShape = {
   required: [FORUM_AGGREGATE.negative, FORUM_AGGREGATE.magnitude],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-content` field keys. */
@@ -740,6 +785,7 @@ export const FORUM_CONTENT_SHAPE: MapShape = {
   required: [FORUM_CONTENT.authored, FORUM_CONTENT.entries],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-cursor-last` field keys. */
@@ -752,6 +798,7 @@ export const FORUM_CURSOR_LAST_SHAPE: MapShape = {
   required: [FORUM_CURSOR_LAST.timestamp, FORUM_CURSOR_LAST.hash],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-discovery-cursor` field keys. */
@@ -775,6 +822,7 @@ export const FORUM_DISCOVERY_CURSOR_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-discovery-entry` field keys. */
@@ -792,6 +840,7 @@ export const FORUM_DISCOVERY_ENTRY_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-discovery-page` field keys. */
@@ -816,6 +865,7 @@ export const FORUM_DISCOVERY_PAGE_SHAPE: MapShape = {
     FORUM_DISCOVERY_PAGE.requestCursor,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-discovery-row` field keys: Per-topic post count and last activity (cashweb-registry forum store; local RocksDB value, never on the wire). */
@@ -833,6 +883,7 @@ export const FORUM_DISCOVERY_ROW_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-entry` field keys: Every forum entry's discriminating field 0. */
@@ -844,6 +895,7 @@ export const FORUM_ENTRY_SHAPE: MapShape = {
   required: [FORUM_ENTRY.kind],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-game-entry` field keys. */
@@ -876,6 +928,7 @@ export const FORUM_GAME_ENTRY_SHAPE: MapShape = {
     FORUM_GAME_ENTRY.message,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-observation-row` field keys: One observed topic post or vote burn, keyed by transaction hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
@@ -902,6 +955,7 @@ export const FORUM_OBSERVATION_ROW_SHAPE: MapShape = {
     FORUM_OBSERVATION_ROW.visible,
   ],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-operation-status` field keys. */
@@ -938,6 +992,7 @@ export const FORUM_OPERATION_STATUS_SHAPE: MapShape = {
     FORUM_OPERATION_STATUS.transactionIndex,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-pending-accounting` field keys: Pending-operation count and byte charge (cashweb-registry forum store; local RocksDB value, never on the wire). */
@@ -955,6 +1010,7 @@ export const FORUM_PENDING_ACCOUNTING_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-post-entry` field keys. */
@@ -973,6 +1029,7 @@ export const FORUM_POST_ENTRY_SHAPE: MapShape = {
     FORUM_POST_ENTRY.message,
   ],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-post-row` field keys: Aggregate state of one forum post, keyed by post hash (cashweb-registry forum store; local RocksDB value, never on the wire). */
@@ -1000,6 +1057,7 @@ export const FORUM_POST_ROW_SHAPE: MapShape = {
   ],
   optional: [FORUM_POST_ROW.author, FORUM_POST_ROW.visible],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-single-view` field keys. */
@@ -1033,6 +1091,7 @@ export const FORUM_SINGLE_VIEW_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `forum-store-header` field keys: Forum store header binding the database to its network and burn policy (cashweb-registry forum store; local RocksDB value, never on the wire). */
@@ -1052,6 +1111,7 @@ export const FORUM_STORE_HEADER_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-topic-cursor` field keys. */
@@ -1079,6 +1139,7 @@ export const FORUM_TOPIC_CURSOR_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `forum-topic-page` field keys. */
@@ -1104,11 +1165,11 @@ export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
   ],
   optional: [FORUM_TOPIC_PAGE.nextCursor, FORUM_TOPIC_PAGE.requestCursor],
   open: true,
+  openFrom: 0,
 }
 
 /** `forwarding-delivery-envelope` field keys. */
 export const FORWARDING_DELIVERY_ENVELOPE = {
-  network: 0,
   destination: 1,
   payloadFrame: 2,
   payloadDigest: 3,
@@ -1119,7 +1180,6 @@ export const FORWARDING_DELIVERY_ENVELOPE = {
 /** `forwarding-delivery-envelope` map shape (docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope). */
 export const FORWARDING_DELIVERY_ENVELOPE_SHAPE: MapShape = {
   required: [
-    FORWARDING_DELIVERY_ENVELOPE.network,
     FORWARDING_DELIVERY_ENVELOPE.destination,
     FORWARDING_DELIVERY_ENVELOPE.payloadFrame,
     FORWARDING_DELIVERY_ENVELOPE.payloadDigest,
@@ -1130,6 +1190,7 @@ export const FORWARDING_DELIVERY_ENVELOPE_SHAPE: MapShape = {
     FORWARDING_DELIVERY_ENVELOPE.expiresAt,
   ],
   open: true,
+  openFrom: 7,
 }
 
 /** `frank-envelope` field keys: The outer map of every frame after the FRNK header (README E1). */
@@ -1149,6 +1210,7 @@ export const FRANK_ENVELOPE_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `group-epoch-frame` field keys: Shared group mailbox epoch transition frame: the cashweb-registry 'G_meta'/'G_epoch' store value and the optional CBOR body of PUT /groups/:group_id/epochs. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. */
@@ -1176,6 +1238,7 @@ export const GROUP_EPOCH_FRAME_SHAPE: MapShape = {
   ],
   optional: [GROUP_EPOCH_FRAME.prevEpochHash, GROUP_EPOCH_FRAME.epochHash],
   open: true,
+  openFrom: 0,
 }
 
 /** `group-message-envelope` field keys: Sealed-sender group message: the optional CBOR body of PUT /groups/:group_id/messages. Each field is text or bytes (bytes are read as hex); unknown keys are ignored. */
@@ -1197,6 +1260,7 @@ export const GROUP_MESSAGE_ENVELOPE_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `journal-fact` field keys. */
@@ -1216,6 +1280,7 @@ export const JOURNAL_FACT_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `key-transition` field keys. */
@@ -1235,6 +1300,7 @@ export const KEY_TRANSITION_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `key-transition-statement` field keys. */
@@ -1256,6 +1322,7 @@ export const KEY_TRANSITION_STATEMENT_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `mailbox-checkpoint` field keys. */
@@ -1278,6 +1345,7 @@ export const MAILBOX_CHECKPOINT_SHAPE: MapShape = {
   ],
   optional: [MAILBOX_CHECKPOINT.sections],
   open: true,
+  openFrom: 0,
 }
 
 /** `message-content-revision` field keys. */
@@ -1290,6 +1358,7 @@ export const MESSAGE_CONTENT_REVISION_SHAPE: MapShape = {
   required: [MESSAGE_CONTENT_REVISION.network, MESSAGE_CONTENT_REVISION.items],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `opaque-section` field keys. */
@@ -1307,6 +1376,7 @@ export const OPAQUE_SECTION_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `participant-balance` field keys. */
@@ -1319,59 +1389,40 @@ export const PARTICIPANT_BALANCE_SHAPE: MapShape = {
   required: [PARTICIPANT_BALANCE.participant, PARTICIPANT_BALANCE.balance],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `payment-member` field keys. */
 export const PAYMENT_MEMBER = {
-  childIndex: 0,
+  network: 0,
   transactionId: 1,
   value: 2,
   address: 3,
   commitment: 4,
   vout: 5,
   rawTx: 6,
+  childIndex: 7,
+  stealthMetadata: 8,
+  token: 9,
 } as const
 /** `payment-member` map shape (docs/protocol/cbor/direct-message.cddl#payment-member). */
 export const PAYMENT_MEMBER_SHAPE: MapShape = {
   required: [
-    PAYMENT_MEMBER.childIndex,
+    PAYMENT_MEMBER.network,
     PAYMENT_MEMBER.transactionId,
     PAYMENT_MEMBER.value,
     PAYMENT_MEMBER.address,
-    PAYMENT_MEMBER.commitment,
-  ],
-  optional: [PAYMENT_MEMBER.vout, PAYMENT_MEMBER.rawTx],
-  open: false,
-}
-
-/** `payment-transfer` field keys. */
-export const PAYMENT_TRANSFER = {
-  networkTag: 0,
-  txId: 1,
-  vout: 2,
-  destination: 3,
-  value: 4,
-  token: 5,
-  stealthMetadata: 6,
-  commitment: 7,
-  rawTx: 8,
-} as const
-/** `payment-transfer` map shape (docs/protocol/cbor/direct-message.cddl#payment-transfer). */
-export const PAYMENT_TRANSFER_SHAPE: MapShape = {
-  required: [
-    PAYMENT_TRANSFER.networkTag,
-    PAYMENT_TRANSFER.txId,
-    PAYMENT_TRANSFER.destination,
-    PAYMENT_TRANSFER.value,
   ],
   optional: [
-    PAYMENT_TRANSFER.vout,
-    PAYMENT_TRANSFER.token,
-    PAYMENT_TRANSFER.stealthMetadata,
-    PAYMENT_TRANSFER.commitment,
-    PAYMENT_TRANSFER.rawTx,
+    PAYMENT_MEMBER.commitment,
+    PAYMENT_MEMBER.vout,
+    PAYMENT_MEMBER.rawTx,
+    PAYMENT_MEMBER.childIndex,
+    PAYMENT_MEMBER.stealthMetadata,
+    PAYMENT_MEMBER.token,
   ],
   open: false,
+  openFrom: 0,
 }
 
 /** `plugin-message-item` field keys. */
@@ -1384,6 +1435,7 @@ export const PLUGIN_MESSAGE_ITEM_SHAPE: MapShape = {
   required: [PLUGIN_MESSAGE_ITEM.itemType, PLUGIN_MESSAGE_ITEM.data],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `poker-game-payload` field keys. */
@@ -1403,6 +1455,7 @@ export const POKER_GAME_PAYLOAD_SHAPE: MapShape = {
   ],
   optional: [POKER_GAME_PAYLOAD.cardCommitments, POKER_GAME_PAYLOAD.keys],
   open: true,
+  openFrom: 0,
 }
 
 /** `profile-entry` field keys. */
@@ -1416,6 +1469,7 @@ export const PROFILE_ENTRY_SHAPE: MapShape = {
   required: [PROFILE_ENTRY.kind, PROFILE_ENTRY.headers, PROFILE_ENTRY.body],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `profile-header` field keys. */
@@ -1428,6 +1482,7 @@ export const PROFILE_HEADER_SHAPE: MapShape = {
   required: [PROFILE_HEADER.name, PROFILE_HEADER.value],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `raffle-payload` field keys. */
@@ -1446,6 +1501,7 @@ export const RAFFLE_PAYLOAD_SHAPE: MapShape = {
   ],
   optional: [RAFFLE_PAYLOAD.winningHash],
   open: true,
+  openFrom: 0,
 }
 
 /** `recipient-encrypted-payload-v1` field keys. */
@@ -1475,6 +1531,7 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V1_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `recipient-encrypted-payload-v2` field keys. */
@@ -1502,6 +1559,7 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V2_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `relay-binding` field keys. */
@@ -1521,6 +1579,7 @@ export const RELAY_BINDING_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `signature-entry` field keys. */
@@ -1538,6 +1597,7 @@ export const SIGNATURE_ENTRY_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `stamp-economic-binding` field keys: The intended stamp economics a canonical stamp attempt is bound to (wallet stamp-attempt journal; local, never on the wire). */
@@ -1555,6 +1615,7 @@ export const STAMP_ECONOMIC_BINDING_SHAPE: MapShape = {
   ],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `stealth-asset-message-item` field keys: Type 24 schema 2 and later. */
@@ -1567,6 +1628,7 @@ export const STEALTH_ASSET_MESSAGE_ITEM_SHAPE: MapShape = {
   required: [STEALTH_ASSET_MESSAGE_ITEM.transfers],
   optional: [STEALTH_ASSET_MESSAGE_ITEM.memo],
   open: true,
+  openFrom: 0,
 }
 
 /** `stealth-asset-transfer` field keys. */
@@ -1589,6 +1651,7 @@ export const STEALTH_ASSET_TRANSFER_SHAPE: MapShape = {
     STEALTH_ASSET_TRANSFER.derivationContext,
   ],
   open: false,
+  openFrom: 0,
 }
 
 /** `stealth-message-item` field keys: Type 24 schema 1. */
@@ -1609,6 +1672,7 @@ export const STEALTH_MESSAGE_ITEM_SHAPE: MapShape = {
   ],
   optional: [STEALTH_MESSAGE_ITEM.memo],
   open: true,
+  openFrom: 0,
 }
 
 /** `stealth-metadata` field keys. */
@@ -1621,6 +1685,7 @@ export const STEALTH_METADATA_SHAPE: MapShape = {
   required: [STEALTH_METADATA.ephemeralPubKey],
   optional: [STEALTH_METADATA.viewTag],
   open: false,
+  openFrom: 0,
 }
 
 /** `swap-offer-payload` field keys. */
@@ -1645,6 +1710,7 @@ export const SWAP_OFFER_PAYLOAD_SHAPE: MapShape = {
   ],
   optional: [SWAP_OFFER_PAYLOAD.htlcHash],
   open: true,
+  openFrom: 0,
 }
 
 /** `text-message-item` field keys. */
@@ -1656,6 +1722,7 @@ export const TEXT_MESSAGE_ITEM_SHAPE: MapShape = {
   required: [TEXT_MESSAGE_ITEM.text],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `timestamp` field keys. */
@@ -1668,6 +1735,7 @@ export const TIMESTAMP_SHAPE: MapShape = {
   required: [TIMESTAMP.seconds, TIMESTAMP.nanoseconds],
   optional: [],
   open: false,
+  openFrom: 0,
 }
 
 /** `token-transfer` field keys. */
@@ -1690,6 +1758,7 @@ export const TOKEN_TRANSFER_SHAPE: MapShape = {
   ],
   optional: [TOKEN_TRANSFER.rawTxOrPermit],
   open: false,
+  openFrom: 0,
 }
 
 /** `tombstone-fact-payload` field keys. */
@@ -1706,6 +1775,7 @@ export const TOMBSTONE_FACT_PAYLOAD_SHAPE: MapShape = {
   ],
   optional: [TOMBSTONE_FACT_PAYLOAD.revisionDigest],
   open: true,
+  openFrom: 0,
 }
 
 /** `topic-post` field keys. */
@@ -1722,6 +1792,7 @@ export const TOPIC_POST_SHAPE: MapShape = {
   required: [TOPIC_POST.network, TOPIC_POST.topic, TOPIC_POST.body],
   optional: [TOPIC_POST.parentHash, TOPIC_POST.author, TOPIC_POST.signature],
   open: true,
+  openFrom: 0,
 }
 
 /** `topic-post-submission` field keys. */
@@ -1739,6 +1810,7 @@ export const TOPIC_POST_SUBMISSION_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `topic-vote-submission` field keys. */
@@ -1756,6 +1828,7 @@ export const TOPIC_VOTE_SUBMISSION_SHAPE: MapShape = {
   ],
   optional: [],
   open: true,
+  openFrom: 0,
 }
 
 /** `account-type` values: Directory statement field 15 (ticket #1120); absent means person. */

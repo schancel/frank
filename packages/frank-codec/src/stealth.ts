@@ -3,7 +3,7 @@ import type { FrankValue } from './cbor'
 import {
   ACCOUNT_REF,
   KEY_TYPE,
-  PAYMENT_TRANSFER,
+  PAYMENT_MEMBER,
   STEALTH_MESSAGE_ITEM,
   STEALTH_METADATA,
   TYPE_STEALTH_MESSAGE_ITEM,
@@ -15,14 +15,13 @@ import type {
   AccountRef,
   ParsedFrame,
   PaymentMember,
-  PaymentTransfer,
   StealthMessageItem,
   StealthMetadata,
 } from './types'
 import { parseFrame } from './validate'
-import { paymentTransfer, stealthMetadata } from './schema'
+import { paymentMember, stealthMetadata } from './schema'
 
-export { paymentTransfer, stealthMetadata }
+export { paymentMember, stealthMetadata }
 
 export interface CanonicalStealthMetadata {
   keyType: 1 | 2 | number
@@ -30,16 +29,18 @@ export interface CanonicalStealthMetadata {
   viewTag?: number | string | Uint8Array
 }
 
-export interface CanonicalPaymentTransfer {
-  networkTag: string
-  txId: string | Uint8Array
-  vout?: number
-  destination: string | Uint8Array
+/** Writer input for one payment-member. Exactly one of `childIndex` or `stealthMetadata`. */
+export interface PaymentMemberInput {
+  network: string
+  transactionId: string | Uint8Array
   value: number | bigint | string | Uint8Array
-  token?: string | Uint8Array
-  stealthMetadata?: CanonicalStealthMetadata | StealthMetadata
+  address: string | Uint8Array
   commitment?: string | Uint8Array
+  vout?: number
   rawTx?: string | Uint8Array
+  childIndex?: number
+  stealthMetadata?: CanonicalStealthMetadata | StealthMetadata
+  token?: string | Uint8Array
 }
 
 export interface CanonicalStealthItem {
@@ -302,233 +303,100 @@ function parseStealthMetadata(
   return cborMap(entries)
 }
 
-export function encodePaymentTransfer(
-  transfer: PaymentTransfer | CanonicalPaymentTransfer,
-): Uint8Array {
-  if (
-    transfer === null ||
-    typeof transfer !== 'object' ||
-    Array.isArray(transfer)
-  ) {
-    throw bad('expected a payment transfer object')
+const NETWORK_TAG = /^[a-z0-9][a-z0-9._-]{0,63}$/
+
+export function encodePaymentMember(member: PaymentMemberInput): Uint8Array {
+  if (member === null || typeof member !== 'object' || Array.isArray(member)) {
+    throw bad('expected a payment member object')
   }
-  if (
-    typeof transfer.networkTag !== 'string' ||
-    transfer.networkTag.length === 0 ||
-    transfer.networkTag.length > 64
-  ) {
-    throw bad('networkTag must be a non-empty string <= 64 characters')
+  if (typeof member.network !== 'string' || !NETWORK_TAG.test(member.network)) {
+    throw bad('network tag does not match S1')
   }
-  const txIdBytes = parseBytes(transfer.txId, 1, 128, 'txId')
-  if (transfer.vout !== undefined) {
+  const transactionId = parseBytes(
+    member.transactionId,
+    1,
+    128,
+    'transactionId',
+  )
+  if (member.vout !== undefined) {
     if (
-      !Number.isSafeInteger(transfer.vout) ||
-      transfer.vout < 0 ||
-      transfer.vout > 4294967295
+      !Number.isSafeInteger(member.vout) ||
+      member.vout < 0 ||
+      member.vout > 4294967295
     ) {
       throw bad('vout must be an unsigned integer <= 4294967295')
     }
   }
-  const destBytes = parseBytes(transfer.destination, 1, 128, 'destination')
-  const valEnc = parseValue(transfer.value)
-  const tokenBytes =
-    transfer.token !== undefined
-      ? parseBytes(transfer.token, 1, 128, 'token')
+  if (member.childIndex !== undefined) {
+    if (
+      !Number.isSafeInteger(member.childIndex) ||
+      member.childIndex < 0 ||
+      member.childIndex > 2147483647
+    ) {
+      throw bad('childIndex must be in 0..2147483647')
+    }
+  }
+  const address = parseBytes(member.address, 1, 128, 'address')
+  const value = parseValue(member.value)
+  const token =
+    member.token !== undefined
+      ? parseBytes(member.token, 1, 128, 'token')
       : undefined
-  const stealthMap =
-    transfer.stealthMetadata !== undefined
-      ? parseStealthMetadata(transfer.stealthMetadata)
+  const stealth =
+    member.stealthMetadata !== undefined
+      ? parseStealthMetadata(member.stealthMetadata)
       : undefined
-  const commitmentBytes =
-    transfer.commitment !== undefined
-      ? parseBytes(transfer.commitment, 32, 32, 'commitment')
+  const commitment =
+    member.commitment !== undefined
+      ? parseBytes(member.commitment, 32, 32, 'commitment')
       : undefined
-  const rawTxBytes =
-    transfer.rawTx !== undefined
-      ? parseBytes(transfer.rawTx, 1, 16384, 'rawTx')
+  const rawTx =
+    member.rawTx !== undefined
+      ? parseBytes(member.rawTx, 1, 16384, 'rawTx')
       : undefined
+  const stamp = member.childIndex !== undefined
+  if (stamp === (stealth !== undefined)) {
+    throw bad(
+      `payment member requires exactly one of field ${PAYMENT_MEMBER.childIndex} or field ${PAYMENT_MEMBER.stealthMetadata}`,
+    )
+  }
+  if (stamp && commitment === undefined) {
+    throw bad('stamp payment requires a T4 commitment')
+  }
+  if (token !== undefined && stealth === undefined) {
+    throw bad('token identifier is allowed only on a stealth payment')
+  }
 
   const entries: Array<[number, any]> = [
-    [PAYMENT_TRANSFER.networkTag, transfer.networkTag],
-    [PAYMENT_TRANSFER.txId, txIdBytes],
+    [PAYMENT_MEMBER.network, member.network],
+    [PAYMENT_MEMBER.transactionId, transactionId],
+    [PAYMENT_MEMBER.value, value],
+    [PAYMENT_MEMBER.address, address],
   ]
-  if (transfer.vout !== undefined) {
-    entries.push([PAYMENT_TRANSFER.vout, transfer.vout])
-  }
-  entries.push([PAYMENT_TRANSFER.destination, destBytes])
-  entries.push([PAYMENT_TRANSFER.value, valEnc])
-  if (tokenBytes !== undefined) {
-    entries.push([PAYMENT_TRANSFER.token, tokenBytes])
-  }
-  if (stealthMap !== undefined) {
-    entries.push([PAYMENT_TRANSFER.stealthMetadata, stealthMap])
-  }
-  if (commitmentBytes !== undefined) {
-    entries.push([PAYMENT_TRANSFER.commitment, commitmentBytes])
-  }
-  if (rawTxBytes !== undefined) {
-    entries.push([PAYMENT_TRANSFER.rawTx, rawTxBytes])
-  }
+  if (commitment !== undefined)
+    entries.push([PAYMENT_MEMBER.commitment, commitment])
+  if (member.vout !== undefined)
+    entries.push([PAYMENT_MEMBER.vout, member.vout])
+  if (rawTx !== undefined) entries.push([PAYMENT_MEMBER.rawTx, rawTx])
+  if (stamp) entries.push([PAYMENT_MEMBER.childIndex, member.childIndex])
+  if (stealth !== undefined)
+    entries.push([PAYMENT_MEMBER.stealthMetadata, stealth])
+  if (token !== undefined) entries.push([PAYMENT_MEMBER.token, token])
 
-  const map = cborMap(entries)
-  const bytes = encodeCanonical(map)
-  paymentTransfer(decodeCanonical(bytes))
+  const bytes = encodeCanonical(cborMap(entries))
+  paymentMember(decodeCanonical(bytes), 'payment-member')
   return bytes
 }
 
-export function decodePaymentTransfer(bytes: Uint8Array): PaymentTransfer {
-  const cbor = decodeCanonical(bytes)
-  return paymentTransfer(cbor)
+export function decodePaymentMember(bytes: Uint8Array): PaymentMember {
+  return paymentMember(decodeCanonical(bytes), 'payment-member')
 }
 
-export function projectPaymentTransfer(
-  transfer: PaymentTransfer,
-): CanonicalPaymentTransfer {
-  return {
-    networkTag: transfer.networkTag,
-    txId: toHex(transfer.txId),
-    ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
-    destination: toHex(transfer.destination),
-    value:
-      transfer.value instanceof Uint8Array
-        ? toHex(transfer.value)
-        : transfer.value,
-    ...(transfer.token !== undefined ? { token: toHex(transfer.token) } : {}),
-    ...(transfer.stealthMetadata !== undefined
-      ? {
-          stealthMetadata: {
-            keyType: transfer.stealthMetadata.ephemeralPubKey.keyType,
-            ephemeralPubKey: toHex(
-              transfer.stealthMetadata.ephemeralPubKey.keyBytes,
-            ),
-            ...(transfer.stealthMetadata.viewTag !== undefined
-              ? {
-                  viewTag:
-                    transfer.stealthMetadata.viewTag instanceof Uint8Array
-                      ? toHex(transfer.stealthMetadata.viewTag)
-                      : transfer.stealthMetadata.viewTag,
-                }
-              : {}),
-          },
-        }
-      : {}),
-    ...(transfer.commitment !== undefined
-      ? { commitment: toHex(transfer.commitment) }
-      : {}),
-    ...(transfer.rawTx !== undefined
-      ? {
-          rawTx:
-            transfer.rawTx instanceof Uint8Array
-              ? toHex(transfer.rawTx)
-              : transfer.rawTx,
-        }
-      : {}),
-  }
-}
-
-export function paymentTransferToCborMap(
-  transfer: PaymentTransfer | CanonicalPaymentTransfer,
+export function paymentMemberToCborMap(
+  member: PaymentMemberInput,
 ): ReadonlyMap<bigint, FrankValue> {
-  const bytes = encodePaymentTransfer(transfer)
-  return decodeCanonical(bytes) as ReadonlyMap<bigint, FrankValue>
-}
-
-export function paymentTransferFromMember(
-  member: PaymentMember,
-  networkTag: string,
-): PaymentTransfer {
-  return {
-    networkTag,
-    txId: member.transactionId,
-    ...(member.vout !== undefined ? { vout: member.vout } : {}),
-    destination: member.address,
-    value: member.value,
-    commitment: member.commitment,
-    ...(member.rawTx !== undefined ? { rawTx: member.rawTx } : {}),
-  }
-}
-
-export function paymentTransferToMember(
-  transfer: PaymentTransfer,
-  childIndex = 0,
-): PaymentMember {
-  if (!transfer.commitment) {
-    throw bad(
-      'payment transfer must have a commitment to convert to a payment member',
-    )
-  }
-  return {
-    childIndex,
-    transactionId: transfer.txId,
-    ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
-    address: transfer.destination,
-    value: transfer.value,
-    commitment: transfer.commitment,
-    ...(transfer.rawTx !== undefined ? { rawTx: transfer.rawTx } : {}),
-  }
-}
-
-export function paymentTransferFromStealthItem(
-  item: CanonicalStealthItem | StealthMessageItem,
-  destination?: string | Uint8Array,
-): PaymentTransfer {
-  const isTyped = 'type' in item && item.type === TYPE_STEALTH_MESSAGE_ITEM
-  const networkTag = item.networkTag
-  const keyType = isTyped ? item.ephemeralPubKey.keyType : item.keyType
-  const keyBytes = isTyped
-    ? item.ephemeralPubKey.keyBytes
-    : parseBytes(item.ephemeralPubKey, 1, 128, 'ephemeralPubKey')
-  const txList = item.transactions
-  if (!txList || txList.length === 0) {
-    throw bad('stealth item has no transactions')
-  }
-  const firstTx = txList[0]
-  const txBytes =
-    firstTx instanceof Uint8Array
-      ? firstTx
-      : parseBytes(firstTx, 1, 16384, 'transaction')
-  let destBytes: Uint8Array
-  if (destination) {
-    destBytes = parseBytes(destination, 1, 128, 'destination')
-  } else {
-    destBytes = keyBytes
-  }
-
-  return {
-    networkTag,
-    txId: txBytes,
-    destination: destBytes,
-    value: isTyped ? item.amount : BigInt(item.amount),
-    stealthMetadata: {
-      ephemeralPubKey: {
-        keyType,
-        keyBytes,
-      },
-    },
-  }
-}
-
-export function paymentTransferToStealthItem(
-  transfer: PaymentTransfer,
-  memo?: string,
-): CanonicalStealthItem {
-  if (!transfer.stealthMetadata) {
-    throw bad(
-      'payment transfer must have stealthMetadata to convert to a stealth item',
-    )
-  }
-  return {
-    type: 'stealth',
-    networkTag: transfer.networkTag,
-    keyType: transfer.stealthMetadata.ephemeralPubKey.keyType as 1 | 2,
-    ephemeralPubKey: toHex(transfer.stealthMetadata.ephemeralPubKey.keyBytes),
-    transactions: [toHex(transfer.txId)],
-    amount:
-      typeof transfer.value === 'bigint'
-        ? transfer.value
-        : transfer.value instanceof Uint8Array
-        ? BigInt('0x' + toHex(transfer.value))
-        : BigInt(transfer.value),
-    ...(memo !== undefined ? { memo } : {}),
-  }
+  return decodeCanonical(encodePaymentMember(member)) as ReadonlyMap<
+    bigint,
+    FrankValue
+  >
 }

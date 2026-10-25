@@ -129,9 +129,11 @@ export function shaped(
     shape.optional,
     shape.open,
     allowUnknown,
+    shape.openFrom,
   )
 }
 
+/** `openFrom` is the lowest undeclared key an open map may retain (CDDL `* (uint .ge N)`). */
 export function fields(
   v: FrankValue | undefined,
   path: string,
@@ -139,6 +141,7 @@ export function fields(
   optional: readonly number[],
   open: boolean,
   allowUnknown: boolean,
+  openFrom = 0,
 ): MapView {
   if (!isMap(v)) throw bad(path, 'expected a map')
   for (const k of required) {
@@ -148,7 +151,7 @@ export function fields(
   for (const [k, val] of v) {
     const n = k <= BigInt(U32_MAX) ? Number(k) : -1
     if (required.includes(n) || optional.includes(n)) continue
-    if (open && allowUnknown) unknown.set(k, val)
+    if (open && allowUnknown && k >= BigInt(openFrom)) unknown.set(k, val)
     else throw bad(path, `undeclared key ${k} (C12)`)
   }
   return { get: k => v.get(BigInt(k)), has: k => v.has(BigInt(k)), unknown }

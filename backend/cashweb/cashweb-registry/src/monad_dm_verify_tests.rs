@@ -73,6 +73,66 @@ fn fixture_current_evidence(evidence: HistoricalEvidence, now: Timestamp) -> Cur
     }
 }
 
+/// The reviewer's case: the runtime stamp relabelled from the delivery network to another chain,
+/// with its address re-derived for that chain. Stamps settle only on the delivery network (S3).
+#[test]
+fn a_stamp_relabelled_to_another_chain_is_rejected() {
+    let v = &corpus()["runtime_case"];
+    let current = fixture_current(v);
+    let delivery = bytes(v, "delivery");
+    let context = bytes(v, "context");
+    let checks = check(&delivery, &context, &current).unwrap();
+    assert_eq!(checks.payments[0].network, "monad");
+    let ValidationResult::Parsed(original) = validate_frame(&delivery, &default_context()).unwrap()
+    else {
+        panic!("frame")
+    };
+    let Some(TypedPayload::DirectMessage {
+        destination,
+        payload_frame,
+        ..
+    }) = original.typed.as_deref()
+    else {
+        panic!("direct message");
+    };
+    let Some(TypedPayload::RecipientPayload { shared_point, .. }) = payload_frame.typed.as_deref()
+    else {
+        panic!("recipient payload");
+    };
+    use frank_cbor::message_fields::{direct_message_delivery as dmd, payment_member as pay};
+    for network in ["monad", "lotus", "xpi-mainnet", "zz-not-a-chain"] {
+        let (_, address) =
+            canonical_stamp_destination(network, destination, shared_point, 0).unwrap();
+        let mut payload = original.payload.clone();
+        let CborValue::Array(members) = map_value(&mut payload, dmd::PAYMENTS) else {
+            panic!("members")
+        };
+        *map_value(&mut members[0], pay::NETWORK) = CborValue::Text(network.into());
+        *map_value(&mut members[0], pay::ADDRESS) = CborValue::Bytes(address.to_vec());
+        let frame = encode_frame(
+            EnvelopeFields {
+                type_id: original.type_id,
+                schema_version: original.schema_version,
+                min_reader_version: original.min_reader_version,
+            },
+            FramePayload::Value(&payload),
+        )
+        .unwrap();
+        // The unchanged network is the control: the rebuilt frame is otherwise admissible.
+        assert_eq!(
+            check(&frame, &context, &current).is_ok(),
+            network == "monad",
+            "{network}"
+        );
+        if network != "monad" {
+            assert!(
+                validate_frame(&frame, &default_context()).is_err(),
+                "{network}"
+            );
+        }
+    }
+}
+
 fn check(delivery: &[u8], context: &[u8], recipient: &Current) -> Result<CanonicalStampChecks> {
     verify_canonical_stamp(CanonicalStampCheckInput {
         delivery,
@@ -95,7 +155,7 @@ fn exact_ts_envelope_context_and_stamp_checks_do_not_claim_a_payment() {
     );
     assert_eq!(checks.payments.len(), 1);
     assert_eq!(
-        hex::encode(&checks.payments[0].commitment),
+        hex::encode(checks.payments[0].commitment.as_deref().unwrap()),
         v["t4"].as_str().unwrap()
     );
     let mut bad_context = context.clone();
@@ -436,7 +496,12 @@ fn delivery_rejects_wrong_t3_t4_destination_and_duplicate_or_noncontiguous_membe
                 "t4" => *map_value(&mut members[0], 4) = CborValue::Bytes(vec![0; 32]),
                 "address" => *map_value(&mut members[0], 3) = CborValue::Bytes(vec![0; 20]),
                 "duplicate" => members.push(members[0].clone()),
-                "index" => *map_value(&mut members[0], 0) = CborValue::Int(1),
+                "index" => {
+                    *map_value(
+                        &mut members[0],
+                        frank_cbor::message_fields::payment_member::CHILD_INDEX,
+                    ) = CborValue::Int(1)
+                }
                 _ => unreachable!(),
             }
         }

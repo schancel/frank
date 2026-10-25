@@ -13,7 +13,7 @@ use frank_cbor::message_types::{
 };
 use frank_cbor::{cbor_map, validate_frame, CborValue, Error, ValidationResult};
 
-use common::{fr, typed_context, NET};
+use common::{fr, typed_context};
 
 fn text(s: &str) -> CborValue {
     CborValue::Text(s.to_string())
@@ -52,7 +52,7 @@ fn text_item(body: &str) -> Vec<u8> {
 fn a_relay_refuses_a_forwarding_envelope_as_a_message_item() {
     let envelope = fr(
         TYPE_FORWARDING_DELIVERY_ENVELOPE,
-        &cbor_map(vec![(envelope_k::NETWORK, text(NET))]),
+        &cbor_map(vec![(envelope_k::ENDPOINT, text("https://relay.example"))]),
     );
     assert_eq!(
         outcome(&revision_with(vec![

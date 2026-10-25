@@ -13,7 +13,6 @@ import {
 } from '../src/constants'
 import {
   M,
-  NET,
   fr,
   revision8,
   textItem,
@@ -23,7 +22,7 @@ import {
 const envelope = (): Uint8Array =>
   fr(
     TYPE_FORWARDING_DELIVERY_ENVELOPE,
-    M([[FORWARDING_DELIVERY_ENVELOPE.network, NET]]),
+    M([[FORWARDING_DELIVERY_ENVELOPE.endpoint, 'https://relay.example']]),
   )
 
 function parsedRevision(items: Uint8Array[]) {

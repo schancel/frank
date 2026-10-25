@@ -1741,7 +1741,6 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           payloadDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
           stampValueWei: 0n,
           stampPayments: [],
-          paymentTransfers: [],
           preparationTxHashes: [],
         })
         // One request: a schema-2 delivery with no payment member and no transaction.

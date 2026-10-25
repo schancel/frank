@@ -45,6 +45,10 @@ configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) includes and v
 directly; the relay's chain adapters (`backend/cashweb/cashweb-registry/src/chains/`) are built
 from its rows and the operator's configured subset.
 
+The CBOR codecs also read `v1.json` directly, with no copy: `packages/frank-codec/src/chain-registry.ts`
+imports it and `backend/cashweb/frank-cbor/src/chain_registry.rs` includes it, so both reject a
+stealth payment member whose network is not an `id` here (`docs/protocol/cbor/README.md` S3).
+
 `packages/wallet/chain/chains-registry.ts` imports `v1.json` directly through the pure
 `chain/protocol-chain-registry.ts` projection, and `packages/wallet/chain/chain-adapter.ts`
 exposes the unified `ChainAdapter` interface across all supported chain families (`MON`, `ETH`

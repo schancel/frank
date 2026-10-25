@@ -24,7 +24,10 @@ import type {
   DirectMessageStampQuote,
 } from "./chain/active-chain";
 import type { NativeTransactionAttemptStore } from "./chain/chain-wallet";
-import type { StealthItem } from "@frank/cashweb/types/messages";
+import type {
+  RecipientAssetPaymentItem,
+  StealthItem,
+} from "@frank/cashweb/types/messages";
 import type { ContactPayment } from "./storage/evm-coin-store";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import type { EvmBlockWatcher } from "./evm-block-watcher";
@@ -43,6 +46,13 @@ export interface ReceivedCoinOwner {
   recordStealthItem(
     item: StealthItem,
     origin: { payloadDigest?: string; timestampMs: number }
+  ): Promise<void>;
+  /** Records the one-time accounts a received `stealth-asset` item pays on this chain, each with
+   * its whole signed transfer set. Transfers for another chain or wallet, or that do not pay
+   * what they claim, are ignored. Re-reading one is a no-op. */
+  recordStealthAssetItem(
+    item: RecipientAssetPaymentItem,
+    origin: { payloadDigest: string }
   ): Promise<void>;
   /** Records the one-time accounts of the stamp payments a received message carried. */
   recordStampPayments(message: DirectMessageReceived): Promise<void>;

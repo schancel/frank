@@ -19,8 +19,12 @@ import { stealthSharedPoint } from '@frank/cashweb/relay/stealth-shared'
 import { stealthPointDigest } from '@frank/cashweb/relay/stealth-point-digest'
 import { stealthParentPublicKey } from '@frank/cashweb/relay/stealth-public'
 import { stealthParentSecret } from '@frank/cashweb/relay/stealth-parent'
-import type { StealthItem } from '@frank/cashweb/types/messages'
+import type {
+  RecipientAssetPaymentItem,
+  StealthItem,
+} from '@frank/cashweb/types/messages'
 import type { EvmCoin } from './storage/evm-coin-store'
+import type { StealthPaymentReceiptClaim } from './stealth-payment'
 const SECP256K1_ORDER =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 
@@ -230,4 +234,84 @@ export function stealthCoinFromItem(params: {
     ephemeralPubKey: bare(item.ephemeralPubKey),
     discoveredAtMs: params.discoveredAtMs,
   }
+}
+
+/** The receipt claims a received `stealth-asset` item makes on `chainIdentifier`: one claim per
+ * one-time account and asset, carrying every signed transfer to it. Only transfers this family
+ * can open are read (derivation scheme 1, secp256k1 keys, a signed transaction to a 20-byte
+ * address); anything else in the item is ignored, never an error. Whether a claim is addressed
+ * to this wallet, and whether its transactions pay what it says, is the coin list's check. */
+export function evmReceiptClaimsFromItem(
+  item: Pick<RecipientAssetPaymentItem, 'transfers'>,
+  chainIdentifier: string,
+  payloadDigest: string,
+): StealthPaymentReceiptClaim[] {
+  const claims = new Map<
+    string,
+    {
+      asset: StealthPaymentReceiptClaim['asset']
+      destination: string
+      ephemeralPubKey: string
+      amountAtomic: bigint
+      rawTransactions: string[]
+    }
+  >()
+  for (const transfer of item.transfers ?? []) {
+    if (
+      transfer?.chainIdentifier !== chainIdentifier ||
+      transfer.derivationScheme !== 1 ||
+      transfer.stealthMetadata?.keyType !== 1 ||
+      transfer.recipientSpendKey?.keyType !== 1 ||
+      typeof transfer.rawTx !== 'string' ||
+      typeof transfer.destination !== 'string' ||
+      typeof transfer.stealthMetadata.ephemeralPubKey !== 'string' ||
+      !/^[1-9][0-9]*$/.test(transfer.amountAtomic ?? '')
+    )
+      continue
+    const destination = bare(transfer.destination)
+    const ephemeralPubKey = bare(transfer.stealthMetadata.ephemeralPubKey)
+    const rawTransaction = bare(transfer.rawTx)
+    if (
+      !/^[0-9a-f]{40}$/.test(destination) ||
+      !/^0[23][0-9a-f]{64}$/.test(ephemeralPubKey) ||
+      !/^(?:[0-9a-f]{2})+$/.test(rawTransaction)
+    )
+      continue
+    let asset: StealthPaymentReceiptClaim['asset']
+    if (transfer.asset?.kind === 'native') asset = { kind: 'native' }
+    else if (
+      transfer.asset?.kind === 'token' &&
+      /^[0-9a-f]{40}$/.test(bare(transfer.asset.identifier ?? ''))
+    )
+      asset = {
+        kind: 'erc20',
+        contractAddress: '0x' + bare(transfer.asset.identifier),
+      }
+    else continue
+    const key = [
+      destination,
+      ephemeralPubKey,
+      asset.kind === 'native' ? 'native' : asset.contractAddress,
+    ].join(':')
+    const claim = claims.get(key) ?? {
+      asset,
+      destination,
+      ephemeralPubKey,
+      amountAtomic: 0n,
+      rawTransactions: [],
+    }
+    if (claim.rawTransactions.includes(rawTransaction)) continue
+    claim.amountAtomic += BigInt(transfer.amountAtomic)
+    claim.rawTransactions.push(rawTransaction)
+    claims.set(key, claim)
+  }
+  return [...claims.values()].map(claim => ({
+    chainIdentifier,
+    asset: claim.asset,
+    recipientDestination: fromHex(claim.destination),
+    ephemeralPublicKey: fromHex(claim.ephemeralPubKey),
+    amountAtomic: claim.amountAtomic,
+    rawTransactions: claim.rawTransactions,
+    payloadDigest: bare(payloadDigest),
+  }))
 }

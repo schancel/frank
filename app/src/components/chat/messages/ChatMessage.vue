@@ -114,6 +114,11 @@
                 )?.state
               "
             />
+            <chat-message-stealth
+              v-else-if="item.type == 'stealth-asset' && stealthAssetCard(item)"
+              v-bind="stealthAssetCard(item)"
+              :outbound="message.outbound"
+            />
             <!-- A picture the text shows where it is referenced is not shown a second time. -->
             <template v-else-if="item.type == 'image'">
               <chat-message-image
@@ -259,6 +264,7 @@ import {
 import { useSentContactPayments } from 'src/composables/useSentContactPayments'
 import {
   contactPaymentState,
+  stealthAssetCard,
   stealthTransactionDetails,
 } from 'src/utils/stealth-transaction-details'
 import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
@@ -421,6 +427,7 @@ export default defineComponent({
     return {
       stampSettled,
       applicationRenderer,
+      stealthAssetCard,
       sentContactPayments,
       deleteMessage: chats.deleteMessage,
       sendDirectMessage: chats.sendMessage,

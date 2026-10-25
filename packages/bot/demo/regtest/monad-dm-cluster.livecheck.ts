@@ -421,6 +421,8 @@ async function main() {
     console.log(`lab up: relays A, B, C on ${ALL.map(r => RELAYS[r]).join(', ')} sharing FDB and NATS (project ${PROJECT}); proxy ${ENDPOINT}`)
     const stack: RegtestStack = {
       relayUrl: ENDPOINT,
+      // One relay as far as the wallets can tell: the proxy in front of A, B and C.
+      relayUrls: [ENDPOINT],
       chains: { [monad.chainIdentifier]: monad },
       stateDir,
       relayLogPath: '',

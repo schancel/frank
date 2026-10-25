@@ -24,9 +24,10 @@ be restarted in-process.
 `fdb_subspace_prefix` is one or more segments of letters, digits, `-` or `_`, each ending in
 `/` (for example `frank-prod/`), so `frank/` and `frank2/` never share keys. Two relays must
 not use a prefix that is a leading run of the other's segments. The driver currently backs
-three owners: groups under `<fdb_subspace_prefix>groups-v1/`, the registry `Db` under
-`<fdb_subspace_prefix>registry-v1/`, and the directory under
-`<fdb_subspace_prefix>directory-v1/`. Group and directory store calls run on blocking
+these owners: groups under `<fdb_subspace_prefix>groups-v1/`, the registry `Db` under
+`<fdb_subspace_prefix>registry-v1/`, direct messages under `<fdb_subspace_prefix>messages-v3/`,
+the directory under `<fdb_subspace_prefix>directory-v1/`, and the forum under
+`<fdb_subspace_prefix>forum-v1/` (probed at startup only when `[registry.forum]` is set). Group and directory store calls run on blocking
 workers; registry calls on a shared store hand their async worker over with
 `block_in_place`. Startup and `--check-db` open these stores and read their format markers
 (the directory only when `[registry.directory]` is configured), and fail if one cannot be
@@ -78,13 +79,17 @@ subspace. Profile and topic values longer than 100 KB are split into parts in th
 transaction until large values move to the object store.
 
 Large values over 64 KiB live in `[registry.large_values]`, one object namespace per owner:
-`groups/` and `directory/`. Each namespace holds a `claim` object tying it to that owner's
+`groups/`, `directory/` and `forum/`. Each namespace holds a `claim` object tying it to that owner's
 transaction store. A development reset of an owner therefore deletes both its transaction
 store (RocksDB path or FoundationDB subspace) and its object prefix (`<bucket
-prefix>/groups/` or `<bucket prefix>/directory/`), or the next start refuses the namespace
+prefix>/groups/`, `<bucket prefix>/directory/` or `<bucket prefix>/forum/`), or the next start refuses the namespace
 as claimed by another index. A single-node relay without `[registry.large_values]` keeps its
 objects in `<registry db_path>.large-values`, for example `registry.rocksdb.large-values`. A
 relay built before #1858 kept local large values at `<stem>.large-values`; delete it.
+
+A single-node relay keeps the forum in `<registry db_path>.forum-kv-v1`. The earlier forum
+sidecar `<registry db_path>.forum-cbor-v1` has no reader: startup refuses while it exists and
+names it (public posts and burn records only; no keys, no funds).
 
 ## Required predecessor stack
 

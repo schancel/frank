@@ -3659,11 +3659,11 @@ continuity_file = "/var/lib/frank/continuity"
         use super::{ClusterConfigError, ReplicaLocalOwner};
         let mut conf = cluster_mode_conf();
         // The shipped local config enables the mailbox, directory, forum and the RPC proxies.
-        // The registry database, direct messages, groups and the directory are on FoundationDB
-        // here, so none is listed; the directory's per-source hourly quota is not yet shared.
+        // The registry database, direct messages, groups, the directory and the forum are on
+        // FoundationDB here, so none is listed; the directory's per-source hourly quota is not
+        // yet shared.
         let every_enabled = vec![
             ReplicaLocalOwner::DirectoryEnrollmentQuotas,
-            ReplicaLocalOwner::Forum,
             ReplicaLocalOwner::HourlyQuotas,
         ];
         assert_eq!(conf.replica_local_owners(), every_enabled);

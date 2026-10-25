@@ -186,9 +186,9 @@ service).
 
 **What it is for today:** the app and the bots through the proxy (see "The app and the bots
 on the cluster" below), the HTTP contract, and the direct-message livecheck. Groups, direct
-messages (the solonet mailbox, paid with stamps), profiles, usernames, metadata, topics and
-the directory are shared through FoundationDB. The forum, the hourly RPC proxy quotas and the
-directory's per-source enrollment quota are still replica-local (HA steps 9 and 10).
+messages (the solonet mailbox, paid with stamps), profiles, usernames, metadata, topics, the
+directory and the forum are shared through FoundationDB. The hourly RPC proxy quotas and the
+directory's per-source enrollment quota are still replica-local (HA step 10).
 
 Overrides, all optional:
 
@@ -234,10 +234,10 @@ Services:
   10^12 wei each, the solonet mailbox (message stamps of at least 10^12 wei to the burn
   address), large values in the MinIO bucket above, the open directory with the proxy origin
   as its endpoint, and the forum with the burn address. Each keeps its own RocksDB volume.
-  Groups, direct messages, the registry database and the directory are shared through
-  FoundationDB, and large group values through MinIO. The forum, the hourly quotas and the
+  Groups, direct messages, the registry database, the directory and the forum are shared
+  through FoundationDB, and large values through MinIO. The hourly quotas and the
   directory's per-source hourly enrollment quota are still replica-local, so the preview
-  flag is set, and each relay's startup log names exactly those three:
+  flag is set, and each relay's startup log names exactly those two:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'

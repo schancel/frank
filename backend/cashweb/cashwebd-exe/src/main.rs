@@ -1304,15 +1304,15 @@ max_get_logs_range = 10\n\n\
         let text = format!("{error:#}");
         for owner in [
             "directory",
-            "forum",
             "hourly RPC proxy quotas",
             // No [registry.large_values]: the local driver beside the database.
             "large values",
         ] {
             assert!(text.contains(owner), "{owner}: {text}");
         }
-        // The registry database, groups and direct messages are on FoundationDB here, so
-        // none is replica-local.
+        // The registry database, groups, direct messages and the forum are on FoundationDB
+        // here, so none is replica-local.
+        assert!(!text.contains("forum"), "{text}");
         assert!(!text.contains("groups"), "{text}");
         assert!(!text.contains("registry database"), "{text}");
         assert!(!text.contains("direct messages"), "{text}");
@@ -1321,7 +1321,7 @@ max_get_logs_range = 10\n\n\
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 4);
+        assert_eq!(conf.registry.replica_local_owners().len(), 3);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");

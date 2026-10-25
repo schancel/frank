@@ -114,12 +114,11 @@ the faucet, `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`, from the app, and run
 ## Shared across replicas, and replica-local
 
 Shared through FoundationDB (and MinIO for large values): groups, direct messages, the registry
-database (profiles, usernames), the directory, and group values over 64 KiB.
+database (profiles, usernames), the directory, the forum (posts, votes, burn records, cursors),
+and values over 64 KiB.
 
 Still replica-local; each relay's startup log names them:
 
-- **The forum (`/topics`):** it works, but a cursor from one replica may not continue on another
-  (HA step 9).
 - **The hourly RPC proxy quotas and the directory enrollment quotas:** each replica counts its own
   (HA step 10).
 

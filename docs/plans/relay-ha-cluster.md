@@ -126,6 +126,14 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.
 8. **Directory port.** Accept: an entry published on A resolves on B; conflicting revisions on A and B leave one accepted and no fork; a forward interrupted by killing A is delivered exactly once.
 9. **Forum port.** Accept: a cursor from A works on B; one burn presented to A and B gives one post.
+   - Progress (branch `ha/forum-shared-store`): the forum owner runs on `RelayKvStore`
+     transactions under `<fdb_subspace_prefix>forum-v1/` (single node: `<db>.forum-kv-v1`).
+     Exact frames are authority (`e/`, inline up to 64 KiB, else objects under `forum/`) with
+     their burn state (`o/`); posts, the topic index, discovery counts, pending accounting and
+     the revision are written in the same transaction as the burn they derive from, so nothing
+     is rebuilt on open. Unknown commits are settled by a fence on the pending-accounting key.
+     The cluster contract checks a post on A read on B and C, a vote on C, one burn sent to A
+     and B with replays, and a cursor from A continued on B and C.
 10. **Remaining process-local state.** Directory enrollment and hourly quotas become cluster-wide counters. Wakeup coalescing moves into FDB. The rebroadcast throttle stays local, and that is documented.
 11. **Cutover.**
     - Remove the preview flag and the remaining RocksDB-only owners.

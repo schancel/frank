@@ -65,6 +65,17 @@ pub struct Registry {
     event_bus: Arc<dyn crate::events::RelayEventBus>,
 }
 
+/// What daemon composition injects into a [`Registry`] beside its RocksDB `Db`.
+#[derive(Debug)]
+pub struct RegistryBackends {
+    /// Where groups keep their state (`registry.cluster.driver`).
+    pub groups: crate::store::groups::GroupBackend,
+    /// Group append policy (`registry.groups`).
+    pub group_policy: cashweb_config::GroupAppendPolicy,
+    /// The operator-provisioned VAPID key (`registry.vapid_private_key_file`), if configured.
+    pub provisioned_vapid: Option<crate::store::notification_policy::VapidKeyPair>,
+}
+
 /// Result of putting metadata into the registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PutMetadataResult {
@@ -196,26 +207,33 @@ impl Registry {
         net: Net,
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
+        let groups = crate::store::groups::GroupBackend::rocksdb_beside(db.owned_path());
         Self::new_with_event_bus(
             db,
             chain_adapter,
             net,
             Arc::new(crate::events::StandaloneEventBus::new()),
-            group_policy,
+            RegistryBackends {
+                groups,
+                group_policy,
+                provisioned_vapid: None,
+            },
         )
     }
 
-    /// Construct new [`Registry`] with a custom notification event bus.
+    /// Construct new [`Registry`] with a custom notification event bus and the backends daemon
+    /// composition chose for it.
     pub fn new_with_event_bus(
         db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         event_bus: Arc<dyn crate::events::RelayEventBus>,
-        group_policy: cashweb_config::GroupAppendPolicy,
+        backends: RegistryBackends,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
-        let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
-        let groups = crate::store::groups::Owner::new(db.owned_path().to_path_buf(), group_policy);
+        let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf())
+            .with_provisioned_vapid(backends.provisioned_vapid);
+        let groups = crate::store::groups::Owner::new(backends.groups, backends.group_policy);
         Registry {
             db,
             forum,
@@ -301,6 +319,12 @@ impl Registry {
 
     pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {
         &self.canonical_dm
+    }
+
+    /// Open the group store (on its first use) and read its format marker. Composition calls
+    /// this at startup for a shared backend, so an unreachable cluster fails the start.
+    pub fn check_group_store(&self) -> std::result::Result<(), crate::store::groups::GroupError> {
+        self.groups.get().map(drop)
     }
 
     pub(crate) fn groups(

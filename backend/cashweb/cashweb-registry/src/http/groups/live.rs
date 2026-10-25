@@ -106,7 +106,8 @@ async fn run(
     }
     // A promoted mirror is still foreign. Omission must not turn its stale cached epoch into
     // local read authority after upstream removal/rotation.
-    match store.get_mirror_state(&group_id) {
+    let owned_group_id = group_id.clone();
+    match on_store(&store, move |store| store.get_mirror_state(&owned_group_id)).await {
         Ok(Some(state)) if !headers.contains_key(HEADER_GROUP_UPSTREAM_RELAY) => {
             let Ok(value) = HeaderValue::from_str(&state.upstream_relay) else {
                 return;

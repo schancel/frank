@@ -200,7 +200,7 @@ pub struct NodeClusterAttestation {
 - **Clustered Mode Behavior**:
   - Node A durably stores the message payload in Blob Storage (S3/MinIO) or inline if `<= 64KB`, and indexes the envelope in Kvrocks.
   - Node A publishes a tiny, ephemeral notification to Core NATS:
-    `frank.relay.notify.<recipient_account_address_hex>`
+    `frank.<cluster>.dm.<recipient_account_address_hex>` (groups: `frank.<cluster>.grp.<group_id>`; `<cluster>` is `registry.cluster.cluster_name`)
   - **No JetStream**: Ephemeral Core NATS runs purely in memory with zero WAL or persistence overhead.
   - Every cluster node subscribes to notification subjects matching its currently active WebSocket sessions.
   - If a client is offline, the NATS ping is safely discarded; on next connection, the client catches up via standard inbox HTTP queries.

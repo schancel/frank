@@ -352,12 +352,15 @@ export function validateMonadWalletState(params: {
   const finalizedChangeIndices = new Set(
     changeSnapshot.map(record => record.index),
   )
+  // Seed discovery records the indices the chain shows in use, in index order. Indices a build
+  // reserved and never funded leave gaps, so the snapshot is not a contiguous prefix.
   for (const [offset, recovered] of recoveredChangeSnapshot.entries()) {
     if (
       typeof recovered.index !== 'number' ||
       !Number.isSafeInteger(recovered.index) ||
       recovered.index < 0 ||
-      recovered.index !== offset ||
+      (offset > 0 &&
+        recovered.index <= recoveredChangeSnapshot[offset - 1]!.index) ||
       typeof recovered.address !== 'string' ||
       typeof recovered.nonce !== 'number' ||
       !Number.isSafeInteger(recovered.nonce) ||
@@ -374,7 +377,8 @@ export function validateMonadWalletState(params: {
   }
   if (
     recoveredChangeSnapshot.length > 0 &&
-    params.changePool.nextUnusedIndex() < recoveredChangeSnapshot.length
+    params.changePool.nextUnusedIndex() <=
+      recoveredChangeSnapshot[recoveredChangeSnapshot.length - 1]!.index
   ) {
     throw new Error('Recovered change high-water mark moved backward')
   }

@@ -11,6 +11,7 @@ import {
   encodeFrame,
   previewDirectoryContext,
   parseFrame,
+  TYPE_DIRECTORY_ATTESTATION,
   TYPE_DIRECTORY_STATEMENT,
 } from '@frank/codec'
 import {
@@ -87,7 +88,7 @@ function fixture(
     ]),
   )
   const attestation = encodeFrame(
-    { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: TYPE_DIRECTORY_ATTESTATION, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, statement],
       [

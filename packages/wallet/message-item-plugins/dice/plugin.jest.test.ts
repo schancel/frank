@@ -8,6 +8,7 @@ import {
   validateFrame,
   type Encodable,
   TYPE_MESSAGE_CONTENT_REVISION,
+  TYPE_PLUGIN_MESSAGE_ITEM,
 } from '@frank/codec'
 import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
@@ -124,7 +125,7 @@ describe('dice rejection schema', () => {
       rejectionReason: 'payout-limit',
     })
     const frame = encodeFrame(
-      { typeId: 27, schemaVersion: 999, minReaderVersion: 999 },
+      { typeId: TYPE_PLUGIN_MESSAGE_ITEM, schemaVersion: 999, minReaderVersion: 999 },
       new Map<number, Encodable>([
         [0, 'dice'],
         [1, data],

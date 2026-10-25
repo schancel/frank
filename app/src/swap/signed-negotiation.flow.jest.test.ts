@@ -310,9 +310,10 @@ beforeEach(async () => {
       records: [...f.requests, ...f.selfNotes]
         .flatMap((request: unknown, i: number) => {
           const r = restoreCanonicalRequest(request)
-          const context = require('@frank/codec').decodeDirectMessageCryptoContext(
-            r.parts.context,
-          )
+          const context =
+            require('@frank/codec').decodeDirectMessageCryptoContext(
+              r.parts.context,
+            )
           const direction =
             toHex(context.recipient.keyBytes) === auth.subject
               ? 'in'

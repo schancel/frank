@@ -32,6 +32,9 @@ const demoEntries = new Map([
   ['packages/bot/qwen-bot-common.ts', null],
   ['packages/bot/qwen-host-safety.jest.test.ts', '/node'],
   ['packages/wallet/chain/canonical-dm.jest.test.ts', '/node'],
+  // The sealed directory-renewal cases keep the sender's statement history in a real Node
+  // store, so recovery resolves the original statement as it does after a renewal.
+  ['packages/wallet/chain/canonical-dm-message-id.jest.test.ts', '/node'],
   ['packages/wallet/chain/canonical-polling.testutil.ts', '/node'],
 ])
 // A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.

@@ -453,6 +453,28 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(mockRouterPush).toHaveBeenCalledWith('/forum')
   })
 
+  it('on a phone a new post is titled New post, shows back only, and none of the forum list controls', async () => {
+    const wrapper = mountLayout({
+      route: { path: '/new-post', params: {} },
+      width: 375,
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-test="forum-compact-title"]').text()).toBe(
+      'New post',
+    )
+    expect(wrapper.find('[data-test="forum-back"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="forum-menu"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="forum-refresh"]').exists()).toBe(false)
+    expect(wrapper.find('button[data-icon="post_add"]').exists()).toBe(false)
+    expect(wrapper.find('button[data-icon="settings"]').exists()).toBe(false)
+  })
+
+  it('on a wide screen the forum list keeps its menu', async () => {
+    const wrapper = mountLayout({ width: 1280 })
+    await flushPromises()
+    expect(wrapper.find('[data-test="forum-menu"]').exists()).toBe(true)
+  })
+
   it('on a phone keeps both the compact title and manual refresh alongside pull-to-refresh', async () => {
     const store = useForumStore()
     store.setSelectedTopic('memes')

@@ -140,7 +140,13 @@ export function createAccountCeremony() {
           const subject = toHex(identity.compressedPubKey)
           const address = identity.displayAddress
           identityDetails = { subject, address }
-          discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
+          discoveredRelayUrl = await probeDirectoryRelay(
+            { subject, address },
+            {
+              relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+              network: activeChain.chainIdentifier,
+            },
+          )
         } catch {
           // probe failure should never block account recovery
         }

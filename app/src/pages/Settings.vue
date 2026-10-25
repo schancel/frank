@@ -425,11 +425,17 @@
             </template>
 
             <template v-else-if="activeSection === 'appearance'">
-              <div class="row items-center q-mb-md">
-                <q-toggle
-                  :label="$t('settings.darkMode')"
-                  v-model="darkMode"
-                  data-test="dark-mode-toggle"
+              <div class="q-mb-md">
+                <div class="text-subtitle2 q-mb-sm">
+                  {{ $t('settings.darkMode') }}
+                </div>
+                <q-btn-toggle
+                  v-model="colorScheme"
+                  no-caps
+                  unelevated
+                  toggle-color="primary"
+                  :options="colorSchemeOptions"
+                  data-test="color-scheme-toggle"
                 />
               </div>
               <div class="q-mb-lg">
@@ -739,8 +745,14 @@ import PersistentStoragePanel from 'src/components/settings/PersistentStoragePan
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import { activeChain, getChainRegistryEntry } from '@frank/wallet/chain'
 import { DEFAULT_CHAIN_STATIC_STAMP_COIN } from '@frank/wallet/oracle'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { walletSupport } from 'src/utils/wallet-support'
+import { COLOR_SCHEMES, type ColorScheme } from 'src/utils/color-scheme'
+import {
+  RelayWalletRouteUnavailableError,
+  requireRelayWalletRoute,
+} from 'src/accounts/relay-wallet-route'
 import { profileAvatar } from 'src/utils/avatar'
 import { useReactiveOwnCanonicalAddress } from 'src/utils/own-address'
 import {
@@ -840,10 +852,11 @@ export default defineComponent({
     const { updateInterval: storeUpdateInterval } = storeToRefs(contactStore)
     const myAddress = useReactiveOwnCanonicalAddress()
 
-    const darkMode = computed<boolean>({
-      get: () => Boolean(appearanceStore.darkMode),
-      set: value => appearanceStore.setDarkMode(Boolean(value)),
+    const colorScheme = computed<ColorScheme>({
+      get: () => appearanceStore.colorScheme ?? 'system',
+      set: value => appearanceStore.setColorScheme(value),
     })
+    const darkMode = computed<boolean>(() => Boolean(appearanceStore.darkMode))
     const theme = computed<SignetStone>(
       () => appearanceStore.theme || DEFAULT_SIGNET_THEME,
     )
@@ -1207,8 +1220,40 @@ export default defineComponent({
     // Stated, not chosen: the toggle shows the network the app is running on and cannot be
     // flipped. Swapping the chain under an open wallet breaks every call that wallet makes.
     const isTestnetMode = activeChain.isTestnet ?? false
-    const chainStatus = (chain: { id: string }) =>
-      walletSupport(chain.id, isTestnetMode).status
+    // What the app supports on a network is not enough: the account's relay must also route
+    // it (its /chains advertisement), or nothing can be sent or received there. Unknown until
+    // the relay answers; a relay that cannot be asked asserts nothing.
+    const relayRouteMissing = ref<Record<string, boolean>>({})
+    const checkRelayRoutes = () => {
+      const relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl
+      for (const chain of WALLET_CONFIGS) {
+        if (chain.enabled === false) continue
+        const support = walletSupport(chain.id, isTestnetMode)
+        if (support.status !== 'available') continue
+        requireRelayWalletRoute(relayBaseUrl, support.entry.id).then(
+          () => {
+            relayRouteMissing.value = {
+              ...relayRouteMissing.value,
+              [chain.id]: false,
+            }
+          },
+          (err: unknown) => {
+            if (err instanceof RelayWalletRouteUnavailableError)
+              relayRouteMissing.value = {
+                ...relayRouteMissing.value,
+                [chain.id]: true,
+              }
+          },
+        )
+      }
+    }
+    checkRelayRoutes()
+    const chainStatus = (chain: { id: string }) => {
+      const status = walletSupport(chain.id, isTestnetMode).status
+      return status === 'available' && relayRouteMissing.value[chain.id]
+        ? 'relay-unavailable'
+        : status
+    }
 
     // The stamp amount in the running network's own unit, from the registry; no amount when
     // the network has no configured default stamp.
@@ -1225,6 +1270,7 @@ export default defineComponent({
       settingsStore,
       isTestnetMode,
       darkMode,
+      colorScheme,
       theme,
       themeOptions,
       uiScale,
@@ -1278,10 +1324,14 @@ export default defineComponent({
       getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
-      chainStatusKey: (chain: { id: string }) =>
-        chainStatus(chain) === 'available'
+      chainStatusKey: (chain: { id: string }) => {
+        const status = chainStatus(chain)
+        return status === 'available'
           ? 'settings.chainSendReceive'
-          : 'settings.chainUnsupported',
+          : status === 'relay-unavailable'
+          ? 'settings.chainRelayUnavailable'
+          : 'settings.chainUnsupported'
+      },
       profileAvatar,
       myAddress,
       myName: computed(() => profileStore.profile?.name ?? ''),
@@ -1290,6 +1340,12 @@ export default defineComponent({
     }
   },
   computed: {
+    colorSchemeOptions(): Array<{ label: string; value: ColorScheme }> {
+      return COLOR_SCHEMES.map(value => ({
+        label: String(this.$t(`settings.colorScheme.${value}`)),
+        value,
+      }))
+    },
     locale: {
       get(): string {
         return this.appearanceStore.locale

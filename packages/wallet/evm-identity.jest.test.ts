@@ -45,6 +45,15 @@ import {
 import { publicFromPrivate } from '@frank/nakamoto'
 import { validateProfileDisplayName } from './profile-display-name'
 
+/** A home relay as it would describe itself at `/relay/v1/info`. */
+const TEST_RELAY = {
+  relayId: new Uint8Array(16).fill(7),
+  endpoint: 'http://127.0.0.1:18180',
+  identityKey: Uint8Array.from([2, ...new Uint8Array(32).fill(9)]),
+  expiry: { seconds: 2_000_000_000n, nanoseconds: 0 },
+}
+
+
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
 
@@ -323,6 +332,8 @@ describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const timestampMs = Date.now() - 60_000
     const frame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
+      network: 'monad-testnet',
       timestampMs,
       ttlMs: 30_000,
       profile: { name: 'Expired profile' },
@@ -828,6 +839,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('buildSignedDirectoryStatement produces a valid Stage 10.6 Type-2 attestation', () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const frame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: {
         name: 'Alice',
@@ -864,7 +876,107 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     }
   })
 
+  const relayInfo = (network = 'monad-regtest') => ({
+    status: 200,
+    data: {
+      network,
+      relayId: '07'.repeat(16),
+      endpoint: 'http://127.0.0.1:18180',
+      relayKey: '02' + '09'.repeat(32),
+      bindingExpiry: '2000000000000000000',
+      forwarding: false,
+    },
+  })
+
+  it('registerMonadIdentityCbor names the relay it publishes to, as that relay describes itself', async () => {
+    mockedAxios.mockResolvedValueOnce(relayInfo())
+    mockedAxios.mockResolvedValueOnce({ status: 200, data: '' })
+    const identity = MonadIdentity.fromSeed(SEED)
+    await registerMonadIdentityCbor({
+      relayBaseUrl: RELAY_BASE_URL,
+      identity,
+      profile: { name: 'Bob' },
+      network: 'monad-regtest',
+    })
+
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/relay/v1/info`,
+      }),
+    )
+    const sent = (mockedAxios.mock.calls[1][0] as { data: Buffer }).data
+    const validated = validateFrame(
+      new Uint8Array(sent),
+      defaultContext({ operation: 'full' }),
+    )
+    expect(validated.typed?.type).toBe(2)
+    if (validated.typed?.type !== 2) return
+    const statement = validated.typed.statementFrame
+    expect(statement.typed?.type).toBe(TYPE_DIRECTORY_STATEMENT)
+    if (statement.typed?.type !== TYPE_DIRECTORY_STATEMENT) return
+    expect(statement.typed.network).toBe('monad-regtest')
+    expect(statement.typed.relays).toHaveLength(1)
+    const [relay] = statement.typed.relays
+    expect(relay.endpoint).toBe('http://127.0.0.1:18180')
+    expect(relay.relayId).toEqual(new Uint8Array(16).fill(7))
+    expect(relay.identity.keyBytes).toEqual(
+      Uint8Array.from([2, ...new Uint8Array(32).fill(9)]),
+    )
+    expect(relay.expiry).toEqual(
+      expect.objectContaining({ seconds: 2_000_000_000n, nanoseconds: 0 }),
+    )
+    expect(new TextDecoder().decode(sent)).not.toContain('frank.example')
+  })
+
+  it('registerMonadIdentityCbor refuses a relay serving another network and publishes nothing', async () => {
+    mockedAxios.mockResolvedValueOnce(relayInfo('monad-testnet'))
+    await expect(
+      registerMonadIdentityCbor({
+        relayBaseUrl: RELAY_BASE_URL,
+        identity: MonadIdentity.fromSeed(SEED),
+        profile: { name: 'Bob' },
+        network: 'monad-regtest',
+      }),
+    ).rejects.toThrow(/serves monad-testnet, not monad-regtest/)
+    expect(mockedAxios).toHaveBeenCalledTimes(1)
+  })
+
+  it('registerMonadIdentityCbor without a network uses the network the relay serves', async () => {
+    mockedAxios.mockResolvedValueOnce(relayInfo('monad-regtest'))
+    mockedAxios.mockResolvedValueOnce({ status: 200, data: '' })
+    await registerMonadIdentityCbor({
+      relayBaseUrl: RELAY_BASE_URL,
+      identity: MonadIdentity.fromSeed(SEED),
+      profile: { name: 'Bob' },
+    })
+    const sent = (mockedAxios.mock.calls[1][0] as { data: Buffer }).data
+    const validated = validateFrame(
+      new Uint8Array(sent),
+      defaultContext({ operation: 'full' }),
+    )
+    if (validated.typed?.type !== 2) throw new Error('not an attestation')
+    const statement = validated.typed.statementFrame
+    if (statement.typed?.type !== TYPE_DIRECTORY_STATEMENT)
+      throw new Error('not a statement')
+    expect(statement.typed.network).toBe('monad-regtest')
+  })
+
+  it('registerMonadIdentityCbor refuses a relay that does not describe itself', async () => {
+    mockedAxios.mockResolvedValueOnce({ status: 200, data: { network: 'monad-regtest' } })
+    await expect(
+      registerMonadIdentityCbor({
+        relayBaseUrl: RELAY_BASE_URL,
+        identity: MonadIdentity.fromSeed(SEED),
+        profile: { name: 'Bob' },
+      }),
+    ).rejects.toThrow(/did not describe itself/)
+    expect(mockedAxios).toHaveBeenCalledTimes(1)
+  })
+
   it('registerMonadIdentityCbor sends Content-Type application/cbor to PUT /metadata/:addr', async () => {
+    mockedAxios.mockResolvedValueOnce(relayInfo())
     mockedAxios.mockResolvedValueOnce({
       status: 200,
       data: '',
@@ -895,6 +1007,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('fetchMonadIdentityPubKey and fetchMonadProfile decode CBOR frames correctly', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: {
         name: 'Charlie',
@@ -941,6 +1054,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('encodes and decodes accountType and botRole in directory statements', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: {
         name: 'FaucetBot',
@@ -986,6 +1100,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('fetchMonadProfilesSince and searchMonadProfiles handle CBOR frames and populate rawBytes', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Dan', bot: true },
     })
@@ -1040,6 +1155,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('fails closed when CBOR frame has tampered signature', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Eve' },
     })
@@ -1071,6 +1187,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
     })
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Alice' },
     })
@@ -1107,6 +1224,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
     })
     const otherCborFrame = buildSignedDirectoryStatement(otherIdentity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       profile: { name: 'Attacker' },
     })
@@ -1149,6 +1267,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     const edKey = new Uint8Array(32).fill(0x77)
 
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
       curveKeys: {
         secp256k1: identity.compressedPubKey,
@@ -1195,6 +1314,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
   it('falls back to secp256k1 subject pubkey when spend keys are omitted', () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const cborFrame = buildSignedDirectoryStatement(identity, {
+      relay: TEST_RELAY,
       network: 'monad-testnet',
     })
 

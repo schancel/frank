@@ -87,6 +87,7 @@ export const rawFrFR = {
     retry: 'Réessayer',
     loginSignUp: 'Connexion / Inscription',
     thread: 'Fil de discussion',
+    newPost: 'Nouvelle publication',
     allTopics: 'Tous les sujets',
     filteredBy: 'Filtré par sujet',
     clearTopicFilter: 'Effacer le filtre',
@@ -870,9 +871,14 @@ export const rawFrFR = {
     directMessages: 'Messages privés',
     composeEmail: 'Rédiger un e-mail',
     openingConversation: 'Ouverture de la conversation…',
+    conversationNotFound: 'Conversation introuvable',
+    conversationNotFoundDetail:
+      'Ce lien mène à une conversation que ce compte ne possède pas. Elle a peut-être été supprimée, ou le lien est erroné.',
+    backToConversations: 'Retour aux conversations',
     selectChatOrAddContact:
       'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
-    searchPlaceholder: 'Rechercher messages, sujets, contacts… (⌘K)',
+    searchPlaceholder: 'Rechercher messages, sujets, contacts…',
+    searchShortcut: '{placeholder} (raccourci ⌘K)',
     clearSearch: 'Effacer la recherche',
     noSearchResults: 'Aucun message ou conversation correspondant trouvé.',
     screenerFilterLabel: 'Filtrage ({count}) · {value}',
@@ -1644,6 +1650,7 @@ export const rawFrFR = {
     contactRefreshIntervalHint:
       'Intervalle entre mise à jour des contacts (minutes)', //? Interval between contact updates (minutes)
     darkMode: 'Mode Nuit/Sombre',
+    colorScheme: { system: 'Système', light: 'Clair', dark: 'Sombre' },
     themeTitle: 'Pierre de Signet',
     uiScaleTitle: 'Taille d’affichage (Zoom de l’interface)',
     uiScaleHint:
@@ -1684,6 +1691,7 @@ export const rawFrFR = {
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
     chainSendReceive: 'Envoi et réception',
     chainUnsupported: 'Non pris en charge',
+    chainRelayUnavailable: 'Indisponible via ce relais',
     notificationFeeThresholdAvu: 'Seuil de frais de notification (AVU)',
     notificationFeeThresholdAvuHint:
       'Valeur minimale de timbre en AVU (1 AVU = 1 kWh, ex. 0,01 AVU) requise pour déclencher une notification push (les messages inférieurs à ce seuil sont quand même livrés silencieusement dans votre boîte de réception)',

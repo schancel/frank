@@ -329,9 +329,11 @@ describe('AddContact latest lookup', () => {
         }),
       },
     })
-    // In contact mode, Add saves contact to store without opening chat immediately
+    // In contact mode, Add saves the contact and, with no page to go back to, shows that
+    // contact (never the most recent conversation, which may be a group).
     expect(mockOpenChat).not.toHaveBeenCalled()
-    expect(mockRouter.push).toHaveBeenCalledWith('/chat')
+    expect(mockRouter.push).toHaveBeenCalledTimes(1)
+    expect(mockRouter.push).toHaveBeenCalledWith('/chat/canonical:a')
   })
 
   it('offers any address with a published directory entry even though it has no display profile', async () => {
@@ -843,6 +845,24 @@ describe('AddContact latest lookup', () => {
         expect(mockRouter.push).toHaveBeenCalledWith('/chat')
         expect(mockRouter.push).not.toHaveBeenCalledWith('/')
         expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      } finally {
+        Object.defineProperty(window.history, 'state', {
+          value: origState,
+          configurable: true,
+        })
+      }
+    })
+
+    it('goes back to where the user came from, whatever chat is most recent', async () => {
+      const origState = window.history.state
+      try {
+        Object.defineProperty(window.history, 'state', {
+          value: { back: '/contacts' },
+          configurable: true,
+        })
+        await cancelButton(wrapper).trigger('click')
+        expect(mockRouter.back).toHaveBeenCalledTimes(1)
+        expect(mockRouter.push).not.toHaveBeenCalled()
       } finally {
         Object.defineProperty(window.history, 'state', {
           value: origState,
@@ -1471,6 +1491,50 @@ describe('AddContact latest lookup', () => {
       expect(chain.fetchProfile).not.toHaveBeenCalled()
       ;(wrapper.vm as any).addContactOnly()
       expect(mockAddContactToStore).not.toHaveBeenCalled()
+    })
+
+    it('a bare username without @ resolves through the relay the same as @name', async () => {
+      mockResolveUsername.mockResolvedValue({
+        username: 'daveqa',
+        address: 'b',
+      })
+      wrapper = mountPage()
+      await typeAndWait('daveqa')
+
+      expect(mockResolveUsername).toHaveBeenCalledWith('daveqa')
+      expect((wrapper.vm as any).acceptedLookup.resolvedAddress).toBe(ADDRESS_B)
+      expect((wrapper.vm as any).canAdd).toBe(true)
+      ;(wrapper.vm as any).addContactOnly()
+      const added = mockAddContactToStore.mock.calls[0][0]
+      expect(added.address).toBe(ADDRESS_B)
+      expect(added.contact.profile.addedByUsername).toBe('daveqa')
+    })
+
+    it('a bare name nobody holds is not found', async () => {
+      mockResolveUsername.mockResolvedValue(undefined)
+      wrapper = mountPage()
+      await typeAndWait('nobodyhere')
+
+      expect(mockResolveUsername).toHaveBeenCalledWith('nobodyhere')
+      expect((wrapper.vm as any).acceptedLookup).toBeNull()
+      expect((wrapper.vm as any).showNotFound).toBe(true)
+    })
+
+    it('a bare name matching a saved contact shows that suggestion and does not ask the relay', async () => {
+      wrapper = mountPage()
+      await typeAndWait('qwe')
+      expect(mockResolveUsername).not.toHaveBeenCalled()
+      expect(
+        wrapper.find('[data-test="existing-contacts-suggestions"]').exists(),
+      ).toBe(true)
+    })
+
+    it('text that cannot be a username is never sent to the relay as one', async () => {
+      wrapper = mountPage()
+      await typeAndWait('dave qa')
+      await typeAndWait('ab')
+      expect(mockResolveUsername).not.toHaveBeenCalled()
+      expect((wrapper.vm as any).showNotFound).toBe(true)
     })
 
     it('a relay that cannot be asked resolves nothing', async () => {

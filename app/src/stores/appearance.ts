@@ -4,6 +4,11 @@ import { LevelDB } from 'level'
 import { defaultLocale } from 'src/i18n'
 import { DEFAULT_SIGNET_THEME, SignetStone } from 'src/utils/theme'
 import {
+  isColorScheme,
+  schemeIsDark,
+  type ColorScheme,
+} from 'src/utils/color-scheme'
+import {
   DEFAULT_UI_SCALE,
   UiScaleSetting,
   getSavedUiScaleSetting,
@@ -12,7 +17,8 @@ import {
 } from 'src/utils/mobile-viewport-scale'
 
 export interface State {
-  darkMode: boolean
+  /** Follow the system (the default), or always light, or always dark. */
+  colorScheme: ColorScheme
   lastDismissed: number
   /** The committed (Saved) UI locale -- ticket #156. Never written directly from a Settings
    * draft in progress; only `save()` in `Settings.vue` commits a new value here. */
@@ -39,7 +45,12 @@ export async function restoreAppearance(
   } catch (err) {
     //
   }
-  const deserializedProfile = JSON.parse(appearance) as State
+  const deserializedProfile = JSON.parse(appearance) as Partial<State>
+  // A saved value that is not a scheme (an older format) is not restored: the default applies.
+  if (!isColorScheme(deserializedProfile.colorScheme))
+    delete deserializedProfile.colorScheme
+  // `darkMode` is derived now (a getter), never restored.
+  delete (deserializedProfile as Record<string, unknown>).darkMode
   if (deserializedProfile.uiScale !== undefined) {
     saveUiScaleSetting(normalizeUiScaleSetting(deserializedProfile.uiScale))
   }
@@ -48,15 +59,19 @@ export async function restoreAppearance(
 
 export const useAppearanceStore = defineStore('appearance', {
   state: (): State => ({
-    darkMode: false,
+    colorScheme: 'system',
     lastDismissed: 0,
     locale: defaultLocale,
     theme: DEFAULT_SIGNET_THEME,
     uiScale: getSavedUiScaleSetting() || DEFAULT_UI_SCALE,
   }),
+  getters: {
+    /** Whether the app shows dark now: the chosen scheme, or the system's when following it. */
+    darkMode: (state): boolean => schemeIsDark(state.colorScheme),
+  },
   actions: {
-    setDarkMode(darkMode: boolean) {
-      this.darkMode = darkMode
+    setColorScheme(scheme: ColorScheme) {
+      if (isColorScheme(scheme)) this.colorScheme = scheme
     },
     setTheme(theme: SignetStone) {
       this.theme = theme

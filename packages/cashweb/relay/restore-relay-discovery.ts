@@ -12,10 +12,10 @@ const CBOR_MEDIA = "application/vnd.frank.cbor";
 const DEFAULT_PROBE_TIMEOUT_MS = 5000;
 
 export interface ProbeDirectoryOptions {
-  /** Relay URL to probe. Defaults to build/environment relay URL or window.location.origin. */
-  relayBaseUrl?: string;
-  /** Frank protocol directory network (e.g. 'monad-testnet' or 'monad-mainnet'). Defaults to 'monad-testnet'. */
-  network?: string;
+  /** Relay URL to probe: the account's configured relay. */
+  relayBaseUrl: string;
+  /** The account's canonical chain identifier (e.g. 'monad-regtest'). Never defaulted. */
+  network: string;
   /** Request timeout in milliseconds. Defaults to 5000ms. */
   timeoutMs?: number;
   /** Custom fetch implementation (useful for tests or Node environments). */
@@ -89,35 +89,13 @@ export function normalizeProbeTarget(target: ProbeTarget): {
 }
 
 /**
- * Fallback resolution of default relay URL if none is provided in options.
- */
-function resolveDefaultProbeRelayUrl(): string {
-  try {
-    if (typeof process !== "undefined" && process.env) {
-      if (process.env.FRANK_RELAY_URL) {
-        return process.env.FRANK_RELAY_URL.replace(/\/+$/, "");
-      }
-      if (process.env.FRANK_DEMO_RELAY_PORT) {
-        return `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT}`;
-      }
-    }
-    if (typeof window !== "undefined" && window.location?.origin) {
-      return window.location.origin.replace(/\/+$/, "");
-    }
-  } catch {
-    // fallback
-  }
-  return "http://127.0.0.1:8098";
-}
-
-/**
  * Probes the directory entry for a Monad address or compressed public key on the bootstrap relay.
  * If a valid signed entry is found, returns the discovered home relay endpoint URL (`head.relay.endpoint`).
  * If not found, offline, or invalid, returns `undefined`.
  */
 export async function probeDirectoryRelay(
   target: ProbeTarget,
-  options?: ProbeDirectoryOptions
+  options: ProbeDirectoryOptions
 ): Promise<string | undefined> {
   try {
     const { subject, address } = normalizeProbeTarget(target);
@@ -125,10 +103,8 @@ export async function probeDirectoryRelay(
       return undefined;
     }
 
-    const relayBaseUrl = options?.relayBaseUrl ?? resolveDefaultProbeRelayUrl();
-    const cleanOrigin = relayBaseUrl.trim().replace(/\/+$/, "");
-
-    const network = options?.network ?? "monad-testnet";
+    const cleanOrigin = options.relayBaseUrl.trim().replace(/\/+$/, "");
+    const network = options.network;
 
     const url = subject
       ? `${cleanOrigin}/directory/v1/${network}/${subject}/head`

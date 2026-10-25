@@ -300,6 +300,59 @@ export function authContextFromMonadIdentity(
   }
 }
 
+const POLICY_SYNC_SETTLE_MS = 5_000
+
+/**
+ * `run`, made so that any number of calls while it is running cause exactly one more run after
+ * it, and calls made in the same turn share one run. Each run reads the state when it starts,
+ * so the state at the last call is always what the final run sees.
+ */
+export function coalesceRuns(
+  run: () => Promise<unknown>,
+  /** How long a run waits for further calls to join it before it starts. */
+  settleMs = 0,
+): () => Promise<void> {
+  let running: Promise<void> | null = null
+  let again = false
+  return () => {
+    if (running) {
+      again = true
+      return running
+    }
+    running = (async () => {
+      try {
+        do {
+          // Calls made in the same turn (or within `settleMs`) join this run.
+          if (settleMs > 0)
+            await new Promise(resolve => setTimeout(resolve, settleMs))
+          else await Promise.resolve()
+          again = false
+          await run().catch(() => undefined)
+        } while (again)
+      } finally {
+        running = null
+      }
+    })()
+    return running
+  }
+}
+
+/**
+ * Ask for the relay's notification policy to be brought up to date with this device's state,
+ * for changes that need no options (a contact added, muted, deleted or given a token).
+ *
+ * Every sync is a challenge round trip: the relay answers the unsigned request `401` with a
+ * single-use challenge, and the request is signed over it and sent again. That `401` is the
+ * protocol, not a failure, but a browser logs each one. A burst of changes (contacts added at
+ * startup) therefore makes one sync, a few seconds after the burst settles, plus one more if
+ * anything changed while it ran, rather than one per change.
+ */
+export const requestRelayNotificationPolicySync = coalesceRuns(
+  () => syncRelayNotificationPolicy(),
+  // Contacts arrive one by one at startup, a few seconds apart: wait for them to settle.
+  POLICY_SYNC_SETTLE_MS,
+)
+
 /**
  * Recompute and push the user's `MailboxNotificationPolicy` (including active unmuted
  * contact wakeup token hashes, AVU threshold, and WebPush subscription) to the home relay.

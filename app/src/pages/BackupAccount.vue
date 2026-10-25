@@ -15,7 +15,9 @@
           {{ $t('accountRecovery.backup_account_codex32') }}
         </q-toolbar-title>
         <extension-popout-btn />
+        <!-- Phones: back only; the navigation menu belongs to top-level pages. -->
         <q-btn
+          v-if="!narrow"
           flat
           dense
           class="q-px-sm"
@@ -309,6 +311,9 @@ import {
 } from '../accounts/backup-status'
 import { accountStatus } from '../accounts/session'
 import { recoveryErrorMessage } from '../accounts/ceremony'
+import { useQuasar } from 'quasar'
+import { isNarrowWidth } from '../utils/layout'
+import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 
 defineEmits<{
   (e: 'toggleMyDrawerOpen'): void
@@ -318,6 +323,21 @@ defineEmits<{
 }>()
 
 const router = useRouter()
+const $q = (() => {
+  try {
+    return useQuasar() as { screen?: { width?: number } } | undefined
+  } catch {
+    return undefined
+  }
+})()
+const narrow = computed(() =>
+  isNarrowWidth(
+    getEffectiveScreenWidth(
+      $q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024),
+    ),
+  ),
+)
 const {
   backupLoading,
   backupError,

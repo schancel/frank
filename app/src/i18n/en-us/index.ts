@@ -121,6 +121,7 @@ export const rawEnUS = {
     retry: 'Retry',
     loginSignUp: 'Log in / Sign up',
     thread: 'Thread',
+    newPost: 'New post',
     allTopics: 'All topics',
     filteredBy: 'Filtered by topic',
     clearTopicFilter: 'Clear filter',
@@ -854,9 +855,14 @@ export const rawEnUS = {
     directMessages: 'Direct Messages',
     composeEmail: 'Compose Email',
     openingConversation: 'Opening conversation…',
+    conversationNotFound: 'Conversation not found',
+    conversationNotFoundDetail:
+      'This link points to a conversation this account does not have. It may have been deleted, or the link may be wrong.',
+    backToConversations: 'Back to conversations',
     selectChatOrAddContact:
       'Select a conversation or add a contact to start messaging.',
-    searchPlaceholder: 'Search messages, subjects, contacts… (⌘K)',
+    searchPlaceholder: 'Search messages, subjects, contacts…',
+    searchShortcut: '{placeholder} (⌘K)',
     clearSearch: 'Clear search',
     noSearchResults: 'No matching messages or conversations found.',
     screenerFilterLabel: 'Screener ({count}) · {value}',
@@ -1604,6 +1610,7 @@ export const rawEnUS = {
     contactRefreshInterval: 'Contact Refresh Interval (minutes)',
     contactRefreshIntervalHint: 'Interval between contact updates (minutes)',
     darkMode: 'Dark Mode',
+    colorScheme: { system: 'System', light: 'Light', dark: 'Dark' },
     themeTitle: 'Signet Theme Stone',
     uiScaleTitle: 'Display Size (UI Zoom)',
     uiScaleHint:
@@ -1644,6 +1651,7 @@ export const rawEnUS = {
     supportedChainsTitle: 'Supported Settlement Networks',
     chainSendReceive: 'Send and receive',
     chainUnsupported: 'Not supported',
+    chainRelayUnavailable: 'Not available through this relay',
     notificationFeeThresholdAvu: 'Notification Fee Threshold (AVU)',
     notificationFeeThresholdAvuHint:
       'Minimum stamp value in AVU (1 AVU = 1 kWh, e.g. 0.01 AVU) required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',

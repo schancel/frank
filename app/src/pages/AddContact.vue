@@ -214,7 +214,8 @@
                 <q-item-label
                   caption
                   v-if="acceptedLookup?.resolvedAddress"
-                  class="font-mono"
+                  class="font-mono add-contact-full-address"
+                  data-test="selected-contact-address"
                 >
                   {{ acceptedLookup.resolvedAddress }}
                 </q-item-label>
@@ -276,7 +277,7 @@
               color="negative"
               flat
               no-caps
-              @click="cancel"
+              @click="cancel()"
             />
             <template v-if="isEmailRecipient">
               <q-btn
@@ -368,6 +369,7 @@ import {
 import { discoverWellKnown } from 'src/utils/frank-wellknown-discovery'
 import { assertDiscoveryRelay } from 'src/utils/frank-discovery-relay'
 import { relayHandleOf, resolveUsername } from 'src/utils/contact-username'
+import { isValidCanonicalUsername } from '@frank/codec'
 
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 
@@ -608,6 +610,28 @@ export default defineComponent({
 
       const normalizedAddress = this.canonicalizeAddress(newAddress)
       if (!normalizedAddress) {
+        // Not an address: a bare "name" that fits the username rules is a username, the same
+        // as "@name", unless it matches saved contacts, whose suggestions are shown instead
+        // (type "@name" to ask the relay regardless). Anything else stays unresolved.
+        if (
+          this.matchingExistingContacts.length === 0 &&
+          isValidCanonicalUsername(newAddress.trim().toLowerCase())
+        ) {
+          this.lookupPending = true
+          const fireBareUsername = () => {
+            this.lookupSchedule.timer = null
+            this.lookupSchedule.lastFiredAt = Date.now()
+            void this.lookupByUsername(generation, newAddress.trim())
+          }
+          if (busy) {
+            this.lookupSchedule.timer = setTimeout(
+              fireBareUsername,
+              LOOKUP_DEBOUNCE_MS,
+            )
+          } else {
+            fireBareUsername()
+          }
+        }
         return
       }
       this.lookupPending = true
@@ -940,7 +964,7 @@ export default defineComponent({
           timeout: 2000,
         })
       }
-      this.cancel()
+      this.cancel(`/chat/${resolvedAddress}`)
     },
     addContactAndOpenChat() {
       if (!this.isConversationMode) return
@@ -973,39 +997,23 @@ export default defineComponent({
         this.addContactOnly()
       }
     },
-    cancel() {
+    /**
+     * Leave the page for where the user came from. With no page to go back to (a direct link),
+     * go to `fallback`, or the conversation list. Never guess a chat from the chat store: the
+     * most recent conversation may be a group or a thread whose id is not a peer address.
+     */
+    cancel(fallback?: string) {
       const from = this.$route?.query?.from
-      if (typeof from === 'string' && from.length > 0) {
+      if (typeof from === 'string' && from.startsWith('/')) {
         void this.$router.push(from)
         return
       }
       const previous = (window.history.state as { back?: unknown } | null)?.back
-      if (typeof previous === 'string' && previous.startsWith('/chat')) {
+      if (typeof previous === 'string' && previous.length > 0) {
         this.$router.back()
         return
       }
-      let address: string | undefined
-      try {
-        const chatStore = useChatStore()
-        address =
-          chatStore.activeChatAddr ?? chatStore.getSortedChatOrder[0]?.address
-      } catch {
-        // Pinia not active in test environment
-      }
-      if (address) {
-        void this.$router.push(`/chat/${address}`)
-        return
-      }
-      if (
-        typeof previous === 'string' &&
-        previous.length > 0 &&
-        previous !== '/' &&
-        previous !== '/forum'
-      ) {
-        this.$router.back()
-        return
-      }
-      void this.$router.push('/chat')
+      void this.$router.push(fallback ?? '/chat')
     },
   },
   mounted() {
@@ -1024,3 +1032,11 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+/* A full 0x address is wider than a phone: it wraps inside the card. */
+.add-contact-full-address {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+</style>

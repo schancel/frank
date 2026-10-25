@@ -89,6 +89,7 @@ jest.mock('../composables/useActiveWallet', () => ({
 jest.mock('../utils/webpush-sync', () => ({
   ...jest.requireActual('../utils/webpush-sync'),
   syncRelayNotificationPolicy: jest.fn(),
+  requestRelayNotificationPolicySync: jest.fn(async () => undefined),
 }))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),

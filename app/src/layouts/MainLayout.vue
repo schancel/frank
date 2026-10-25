@@ -80,7 +80,7 @@
             : undefined
         "
         data-testid="mobile-nav-contacts"
-        @click="$router.push('/add-contact')"
+        @click="$router.push('/contacts')"
       />
       <q-btn
         flat
@@ -171,6 +171,8 @@ export default defineComponent({
       (this as unknown as { $q?: { screen?: { width?: number } } }).$q?.screen
         ?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1024)
     return {
+      /** A text field has focus: on a phone the keyboard is up. */
+      textEntryFocused: false,
       railNavigation: false,
       removeAfterEach: undefined as (() => void) | undefined,
       removeOnError: undefined as (() => void) | undefined,
@@ -524,12 +526,30 @@ export default defineComponent({
       ) {
         return
       }
+      const entering =
+        e?.type === 'focusin' &&
+        Boolean(target) &&
+        !(
+          target!.tagName === 'INPUT' &&
+          /^(checkbox|radio|button|submit|reset|range|color|file)$/i.test(
+            (target as HTMLInputElement).type,
+          )
+        )
+      this.textEntryFocused = entering
       this.clearViewportSyncTimers()
       this.syncMobileViewport()
       for (const delayMs of [50, 150, 300, 450]) {
         const timer = setTimeout(() => {
           if (this.disposed) return
           this.syncMobileViewport()
+          // Once the keyboard has settled, keep the field being typed in on screen.
+          if (
+            delayMs === 450 &&
+            entering &&
+            isNarrowWidth(this.screenWidth) &&
+            typeof target?.scrollIntoView === 'function'
+          )
+            target.scrollIntoView({ block: 'nearest' })
         }, delayMs)
         this.viewportSyncTimers.push(timer)
       }
@@ -653,6 +673,8 @@ export default defineComponent({
       )
       if (!setup || this.setupNavigationLocked) return false
       if (!isNarrowWidth(this.screenWidth)) return false
+      // While typing the keyboard takes the bottom of the screen: the bar gives it the room.
+      if (this.textEntryFocused) return false
       const path = this.currentRoutePath
       // Every top-level screen keeps the bar, the conversation list (/chat) included; only an
       // open conversation (/chat/<id>) hides it, as Telegram and WhatsApp do.

@@ -97,7 +97,7 @@
 
           <!-- Bundled Browser Extension Download Card (when viewing on web/PWA) -->
           <div
-            v-if="!isExtensionRuntime"
+            v-if="offerExtensionDownload"
             class="welcome-extension-download q-mt-md q-pa-sm rounded-borders"
             data-test="welcome-download-extension-section"
           >
@@ -266,6 +266,7 @@ import { computed, defineComponent, ref } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { isBrowserExtensionRuntime } from '../../src-bex/runtime-adapter'
 import {
+  canInstallDesktopExtension,
   detectPreferredExtensionTarget,
   EXTENSION_DOWNLOAD_TARGETS,
   type ExtensionTargetBrowser,
@@ -279,7 +280,9 @@ export default defineComponent({
     const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
       detectPreferredExtensionTarget(),
     )
-    const isExtensionRuntime = computed(() => isBrowserExtensionRuntime())
+    const offerExtensionDownload = computed(
+      () => !isBrowserExtensionRuntime() && canInstallDesktopExtension(),
+    )
     const selectedExtensionInfo = computed(() =>
       getExtensionDownloadInfo(selectedExtensionTarget.value),
     )
@@ -291,7 +294,7 @@ export default defineComponent({
 
     return {
       myDrawerOpen: useMyDrawerOpen(),
-      isExtensionRuntime,
+      offerExtensionDownload,
       selectedExtensionTarget,
       selectedExtensionInfo,
       allExtensionTargets,

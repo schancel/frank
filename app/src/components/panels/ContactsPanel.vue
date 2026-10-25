@@ -299,7 +299,11 @@ import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import DeleteContactDialog from 'src/components/dialogs/DeleteContactDialog.vue'
-import { isOwnAddress } from 'src/utils/own-address'
+import {
+  isOwnAddress,
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+} from 'src/utils/own-address'
 import {
   searchMonadProfiles,
   decodeProfileBytes,
@@ -357,10 +361,16 @@ export default defineComponent({
       return isNarrowWidth(width)
     }
 
+    // The account itself is not one of its contacts, even when a record for it exists.
+    const ownAddress = useReactiveOwnCanonicalAddress()
     const contactEntries = computed(() => {
       const contacts = getContacts.value ?? {}
       return Object.entries(contacts).filter(
-        (entry): entry is [string, ContactState] => Boolean(entry[1]),
+        (entry): entry is [string, ContactState] =>
+          Boolean(entry[1]) &&
+          !(
+            ownAddress.value && sameCanonicalAddress(entry[0], ownAddress.value)
+          ),
       )
     })
 

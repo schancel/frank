@@ -20,7 +20,10 @@
           :aria-label="$t('a11y.backToForum')"
           data-test="forum-back"
         />
+        <!-- Phones: a thread or a new post gets back, and only back; the navigation menu
+        belongs to top-level pages (as in ChatLayout). -->
         <q-btn
+          v-if="!(narrow && isThreadRoute)"
           class="q-px-sm no-shrink"
           flat
           dense
@@ -39,7 +42,8 @@
             data-test="forum-compact-title"
             @click="isThreadRoute && navigateBack()"
           >
-            <template v-if="selectedTopic">#{{ selectedTopic }}</template>
+            <template v-if="isNewPostRoute">{{ $t('forum.newPost') }}</template>
+            <template v-else-if="selectedTopic">#{{ selectedTopic }}</template>
             <template v-else-if="isThreadRoute">{{
               $t('forum.thread')
             }}</template>
@@ -53,7 +57,10 @@
           >
             <span>{{ $t('leftDrawer.forum') }}</span>
             <q-icon name="chevron_right" size="1em" class="q-mx-xs" />
-            <span v-if="selectedTopic" data-test="forum-thread-topic">
+            <span v-if="isNewPostRoute" data-test="forum-new-post-title">{{
+              $t('forum.newPost')
+            }}</span>
+            <span v-else-if="selectedTopic" data-test="forum-thread-topic">
               #{{ selectedTopic }}
             </span>
             <span v-else class="text-body2 text-grey-4">{{
@@ -76,7 +83,9 @@
           </div>
           <span v-else>{{ $t('leftDrawer.forum') }}</span>
         </q-toolbar-title>
+        <!-- Writing a post: the forum's list controls do not apply. -->
         <q-btn
+          v-if="!isNewPostRoute"
           icon="refresh"
           :aria-label="$t('a11y.forumRefresh')"
           flat
@@ -86,6 +95,7 @@
           @click="refreshContent"
         />
         <q-btn
+          v-if="!isNewPostRoute"
           flat
           icon="post_add"
           class="q-mx-none q-pa-sm no-shrink"
@@ -94,6 +104,7 @@
         />
         <extension-popout-btn class="no-shrink" />
         <q-btn
+          v-if="!isNewPostRoute"
           icon="settings"
           flat
           :aria-label="$t('a11y.forumSettings')"
@@ -477,6 +488,9 @@ export default defineComponent({
         this.$q?.screen?.width ??
         (typeof window !== 'undefined' ? window.innerWidth : 1024)
       return isNarrowWidth(getEffectiveScreenWidth(raw))
+    },
+    isNewPostRoute(): boolean {
+      return Boolean(this.$route?.path?.startsWith('/new-post'))
     },
     isThreadRoute(): boolean {
       return (

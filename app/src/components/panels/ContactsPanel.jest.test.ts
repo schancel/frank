@@ -37,8 +37,13 @@ jest.mock('@frank/wallet/chain/evm-chain', () => ({
   loadMonadChainConfigFromEnv: () => ({ relayBaseUrl: 'http://relay.test' }),
 }))
 
+let mockOwnAddress: string | null = null
 jest.mock('src/utils/own-address', () => ({
   isOwnAddress: jest.fn(async () => false),
+  sameCanonicalAddress: jest.requireActual('src/utils/own-address')
+    .sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress: () =>
+    jest.requireActual('vue').ref(mockOwnAddress),
 }))
 
 const mockSearchUsernames = jest.fn(async (..._args: any[]) => [] as any[])
@@ -171,6 +176,19 @@ describe('ContactsPanel navigation', () => {
     wrappers.push(wrapper)
     return wrapper
   }
+
+  it('never lists the account itself as a contact', async () => {
+    mockOwnAddress = '0x1111111111111111111111111111111111111111'
+    try {
+      const wrapper = mountPanel()
+      await flushPromises()
+      const rows = wrapper.findAll('[data-test="contact-list-row"]')
+      expect(rows.length).toBe(1)
+      expect(rows[0].text()).not.toContain('0x1111')
+    } finally {
+      mockOwnAddress = null
+    }
+  })
 
   it('clicking a contact row opens the contact profile instead of chat directly', async () => {
     const wrapper = mountPanel()

@@ -1689,6 +1689,9 @@ describe('money the chain lets be spent only from a later block', () => {
       origin: 'root',
       spendableFromBlock: 104,
     })
+    let other:
+      | Awaited<ReturnType<typeof preparer.constructTransactionSet>>
+      | undefined
     try {
       const refused = await constructWhenSpendable(
         () =>
@@ -1701,7 +1704,7 @@ describe('money the chain lets be spent only from a later block', () => {
           untilBlock: async () => {
             current = { ...policy, head: 104 }
             // Another send reaches the coin first.
-            await preparer.constructTransactionSet({
+            other = await preparer.constructTransactionSet({
               operationId: 'other',
               amountWei: 400000n,
               kdf,
@@ -1712,7 +1715,50 @@ describe('money the chain lets be spent only from a later block', () => {
       ).catch(error => error)
       expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
       expect(refused.spendableFromBlock).toBeUndefined()
+      expect(other?.bundle.map(tx => tx.sourceAccount)).toEqual([
+        deposit.address.toLowerCase(),
+      ])
       expect(f.coins.all().filter(coin => coin.holder === 'first')).toEqual([])
+    } finally {
+      await f.journal.Close()
+    }
+  })
+
+  it('still waits when a coin worth less than its fee is also selectable', async () => {
+    // 10000 cannot pay its own 21000 fee; the deposit alone covers 300000 from block 104.
+    const f = await setup([10000n])
+    let current: EvmTransactionSetPolicy = policy
+    const preparer = new EvmTransactionSetPreparer({
+      ...f.options,
+      policy: () => current,
+    })
+    const deposit = signer(9)
+    await f.coins.put({
+      account: deposit.address,
+      privateKey: deposit.privateKey,
+      nonce: 0,
+      valueWei: 321000n,
+      origin: 'root',
+      spendableFromBlock: 104,
+    })
+    try {
+      const request = { operationId: 'beside-dust', amountWei: 300000n, kdf }
+      const waited: number[] = []
+      const result = await constructWhenSpendable(
+        () => preparer.constructTransactionSet(request),
+        {
+          untilBlock: async block => {
+            waited.push(block)
+          },
+          refresh: async () => {
+            current = { ...policy, head: waited.at(-1)! }
+          },
+        },
+      )
+      expect(waited).toEqual([104])
+      expect(result.bundle.map(tx => tx.sourceAccount)).toEqual([
+        deposit.address.toLowerCase(),
+      ])
     } finally {
       await f.journal.Close()
     }

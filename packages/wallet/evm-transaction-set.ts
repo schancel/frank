@@ -841,7 +841,11 @@ export class EvmTransactionSetPreparer {
     if (block === undefined) return undefined
     const then = coins
       .selectableAt({ ...query, head: block })
-      .reduce((sum, coin) => sum + capacity(coin), 0n)
+      .reduce((sum, coin) => {
+        // A coin worth less than its fee adds nothing; it never takes from the others.
+        const part = capacity(coin)
+        return part > 0n ? sum + part : sum
+      }, 0n)
     return then >= amountWei ? block : undefined
   }
 

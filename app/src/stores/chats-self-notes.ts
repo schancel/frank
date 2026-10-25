@@ -200,9 +200,6 @@ export function blockingMessage<
 }
 
 export function isNoResponseError(error: unknown): boolean {
-  const failure = describeWalletFailure(error)
-  if (failure.observationUnavailable || failure.retry === 'transient')
-    return true
   try {
     const candidate = error as { isAxiosError?: unknown; response?: unknown }
     return (

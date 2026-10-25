@@ -52,7 +52,7 @@ const examples = [
   [new OpenDirectoryError('not-published'), 'recipient-unregistered'],
   [new InsufficientStampFundsError('changed wording'), 'insufficient-funds'],
   [new EvmTransactionSetInsufficientFundsError(), 'insufficient-funds'],
-  [new ChainUnreachableError(new Error('observation failed')), 'unreachable'],
+  [new ChainUnreachableError(new Error('observation failed')), 'error'],
   [new SolanaStealthSendRefusedError(), 'error'],
   [new DirectMessageStampBelowFeeError(1n, 2n), 'stamp-below-fee'],
   [new OpenDirectoryError('unreachable'), 'unreachable'],
@@ -61,7 +61,7 @@ const examples = [
     recordWalletFailure(new Error('changed observation wording'), {
       observationUnavailable: true,
     }),
-    'unreachable',
+    'error',
   ],
   [new Error('unknown'), 'error'],
 ] as const

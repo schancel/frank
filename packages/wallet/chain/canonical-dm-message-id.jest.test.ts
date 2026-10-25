@@ -27,7 +27,8 @@ import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journ
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
 import { toHex } from '@frank/codec'
-import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { CanonicalTransportError, restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { describeWalletFailure } from '../wallet-failure'
 import {
   allocateOpeningConversationId,
   formatConversationId,
@@ -131,7 +132,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   let bobInbox: InboxRecord[]
   /** Every body the relay was handed, in any relay mode, in order. */
   let relayBodies: { body: Uint8Array; contentType: string }[]
-  let relayMode: 'fixture' | 'ended' | 'lost' | 'held'
+  let relayMode: 'fixture' | 'ended' | 'lost' | 'held' | 'busy'
   /** In `held` mode every request waits here before the fixture relay answers it. */
   let relayGate: Promise<void>
   /** One call signs one message's payment set: the count of payment attempts made. */
@@ -168,17 +169,20 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         if (relayMode === 'lost') throw new Error('relay answer lost')
         if (relayMode === 'held') await relayGate
         if (relayMode === 'fixture' || relayMode === 'held') return base.fetch!(url, init)
+        // `busy`: the relay is out of challenge capacity and refuses with 429.
         const answer = new TextEncoder().encode(
-          JSON.stringify({
-            version: 1,
-            phase: 'dead',
-            identity: restoreCanonicalRequest(request).identity,
-            reason: 'undeliverable',
-          }),
+          JSON.stringify(relayMode === 'busy'
+            ? { version: 1, error: 'mailbox_challenge_capacity' }
+            : {
+                version: 1,
+                phase: 'dead',
+                identity: restoreCanonicalRequest(request).identity,
+                reason: 'undeliverable',
+              }),
         )
         let read = false
         return {
-          status: 200,
+          status: relayMode === 'busy' ? 429 : 200,
           url,
           headers: {
             get: (name: string) =>
@@ -315,6 +319,16 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       expect(two.result?.payloadDigest).toBe(one.result?.payloadDigest)
       expect(callback).not.toHaveBeenCalled()
       expect(relayBodies).toHaveLength(1)
+      expect(sign).not.toHaveBeenCalled()
+    })
+
+    it('a free send refused for relay challenge capacity (429) is a transient transport failure', async () => {
+      relayMode = 'busy'
+      const sent = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async () => undefined })
+      expect(sent.requests).toBe(1)
+      expect(sent.error).toBeInstanceOf(CanonicalTransportError)
+      expect((sent.error as CanonicalTransportError).status).toBe(429)
+      expect(describeWalletFailure(sent.error).retry).toBe('transient')
       expect(sign).not.toHaveBeenCalled()
     })
 

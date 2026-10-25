@@ -1,4 +1,5 @@
 import { validateSharedStoredMessage } from '../storage/outgoing-message-store'
+import { recordWalletFailure } from '../wallet-failure'
 import type {
   StoredPayment,
   StoredMessage,
@@ -76,6 +77,7 @@ import {
   installedCanonicalOrigin,
   restoreCanonicalRequest,
   submitCanonicalRequest,
+  CanonicalTransportError,
   type CanonicalAcceptedBody,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -1867,6 +1869,12 @@ async function send(
         expectedNetworkTag: owner.installedNetworkTag,
         request,
         fetch: directory.fetch,
+      }).catch((error: unknown) => {
+        // A relay that is out of challenge capacity answers 429: resending the same stored
+        // envelope is transport retry. This grants no no-effect evidence.
+        if (error instanceof CanonicalTransportError && error.status === 429)
+          recordWalletFailure(error, { transientTransport: true })
+        throw error
       })
       if (accepted.phase === 'dead') {
         // Host-bound IDs retain this terminal receipt; only an unbound send drops its envelope.

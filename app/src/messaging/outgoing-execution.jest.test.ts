@@ -1,3 +1,4 @@
+import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
 import {
   createOutgoingExecution,
   type ExecutionMessage,
@@ -364,10 +365,12 @@ it.each([true, false])(
   'queues only exact every-call no-effect evidence (%s)',
   async labelled => {
     const f = fixture()
-    const failure = Object.assign(new Error('rate limited'), {
-      code: 429,
-      ...(labelled ? { [directMessageNotAttempted]: true } : {}),
-    })
+    const failure = recordEvmRpcFailure(
+      Object.assign(new Error('rate limited'), {
+        code: 429,
+        ...(labelled ? { [directMessageNotAttempted]: true } : {}),
+      }),
+    )
     f.send.mockRejectedValue(failure)
     await expect(f.engine.runOutgoing(request)).resolves.toEqual(
       labelled

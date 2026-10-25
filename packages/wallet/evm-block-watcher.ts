@@ -1,3 +1,4 @@
+import { describeWalletFailure, recordWalletFailure } from './wallet-failure'
 /**
  * The one source of "what block is the chain at" for a wallet on one EVM chain, and of whether
  * that chain can be reached at all.
@@ -27,6 +28,7 @@ export class ChainWaitCancelledError extends Error {
   constructor() {
     super('The wait was cancelled. Nothing was signed or sent.')
     this.name = 'ChainWaitCancelledError'
+    recordWalletFailure(this, { retryVeto: 'cancelled' })
   }
 }
 
@@ -38,6 +40,12 @@ export class ChainUnreachableError extends Error {
       `The chain could not be read (${errorKindOf(cause)}). Nothing was signed.`,
     )
     this.name = 'ChainUnreachableError'
+    const facts = describeWalletFailure(cause)
+    recordWalletFailure(this, { observationUnavailable: true,
+      ...(facts.retry === 'transient' ? { transientTransport: true } : {}),
+      ...(facts.retry === 'forbidden' ? { retryVeto: 'nontransient-transport' } : {}),
+    }, { cause })
+    for (const retryVeto of facts.retryVetoes) recordWalletFailure(this, { retryVeto })
   }
 }
 

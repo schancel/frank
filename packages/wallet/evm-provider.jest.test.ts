@@ -1,3 +1,4 @@
+import { describeWalletFailure } from './wallet-failure'
 import { createServer, Server } from "http";
 import { AddressInfo } from "net";
 import { createHash } from "crypto";
@@ -137,9 +138,10 @@ describe("MonadJsonRpcProvider (#534)", () => {
     });
 
     try {
-      await expect(
-        provider.getBalance("0x0000000000000000000000000000000000000001")
-      ).rejects.toThrow(/network (?:mismatch|changed)/i);
+      const error = await provider.getBalance("0x0000000000000000000000000000000000000001").catch(error => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/network (?:mismatch|changed)/i);
+      expect(describeWalletFailure(error)).toMatchObject({ retry: 'forbidden', retryVetoes: ['identity'] });
     } finally {
       provider.destroy();
     }
@@ -1788,9 +1790,10 @@ describe("Multi-RPC failover, cooldown, and 429 rollover", () => {
       });
 
       try {
-        await expect(
-          provider.getBalance("0x0000000000000000000000000000000000000001")
-        ).rejects.toThrow(/429/);
+        const error = await provider.getBalance("0x0000000000000000000000000000000000000001").catch(error => error);
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message).toMatch(/429/);
+        expect(describeWalletFailure(error).retry).toBe('transient');
       } finally {
         provider.destroy();
       }

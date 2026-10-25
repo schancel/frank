@@ -2,8 +2,16 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import ts from 'typescript'
 
-// Only the pre-existing error-class identity crosses this local policy boundary.
+// Only explicit error classes and the pure wallet description cross this boundary.
 // Inspect dependency syntax, including type-only edges and computed module access.
+const allowed: Record<string, readonly string[]> = {
+  '@frank/wallet/chain': [
+    'CanonicalMessagingPendingError',
+    'CanonicalMessageItemsNotInstalledError',
+  ],
+  '@frank/wallet/wallet-failure': ['describeWalletFailure'],
+  '@frank/cashweb/relay/open-directory': ['OpenDirectoryError'],
+}
 function forbiddenDependencies(source: string): string[] {
   const file = ts.createSourceFile(
     'policy.ts',
@@ -15,7 +23,7 @@ function forbiddenDependencies(source: string): string[] {
   const inspect = (node: ts.Node | undefined, classImport = false) => {
     const name =
       node && ts.isStringLiteralLike(node) ? node.text : '<computed module>'
-    if (name !== '@frank/wallet/chain' || !classImport) forbidden.push(name)
+    if (!allowed[name] || !classImport) forbidden.push(name)
   }
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
@@ -27,9 +35,13 @@ function forbiddenDependencies(source: string): string[] {
         node.importClause?.name === undefined &&
         bindings !== undefined &&
         ts.isNamedImports(bindings) &&
-        bindings.elements.length === 1 &&
-        (bindings.elements[0].propertyName ?? bindings.elements[0].name)
-          .text === 'CanonicalMessagingPendingError'
+        bindings.elements.length > 0 &&
+        ts.isStringLiteralLike(node.moduleSpecifier) &&
+        bindings.elements.every(binding =>
+          allowed[(node.moduleSpecifier as ts.StringLiteral).text]?.includes(
+            (binding.propertyName ?? binding.name).text,
+          ),
+        )
       if (node.moduleSpecifier) inspect(node.moduleSpecifier, classImport)
     } else if (
       ts.isImportEqualsDeclaration(node) &&
@@ -69,6 +81,7 @@ it.each([
   "import { useChatStore } from 'src/stores/chats'",
   "import { useChatStore } from '@/stores/chats'",
   "import { activeChain } from '@frank/wallet/chain'",
+  "import { recordWalletFailure } from '@frank/wallet/wallet-failure'",
   "import * as wallet from '@frank/wallet/chain'",
   "export { CanonicalMessagingPendingError } from '@frank/wallet/chain'",
   "export { messagingWallet } from '../utils/identity-session'",

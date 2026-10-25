@@ -1,4 +1,9 @@
-import { CanonicalMessagingPendingError } from '@frank/wallet/chain'
+import {
+  CanonicalMessagingPendingError,
+  CanonicalMessageItemsNotInstalledError,
+} from '@frank/wallet/chain'
+import { describeWalletFailure } from '@frank/wallet/wallet-failure'
+import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
 
 export type OutgoingRetryDecision =
   | {
@@ -28,12 +33,21 @@ export function decideOutgoingRetry(
     readonly isCurrent: () => boolean
   },
 ): OutgoingRetryDecision {
-  const isPendingMessaging =
-    (typeof CanonicalMessagingPendingError === 'function' &&
-      error instanceof CanonicalMessagingPendingError) ||
-    (error instanceof Error &&
-      (error.name === 'CanonicalMessagingPendingError' ||
-        error.name === 'CanonicalMessageItemsNotInstalledError'))
+  const failure = describeWalletFailure(error)
+  if (failure.retry === 'forbidden') return { kind: 'fail' }
+  let isPendingMessaging = false
+  let isDirectoryUnreachable = false
+  // Owning-class checks may invoke a Proxy's prototype trap. Unknown rejections
+  // must not turn classification into another exception or permission to retry.
+  try {
+    isPendingMessaging =
+      error instanceof CanonicalMessagingPendingError ||
+      error instanceof CanonicalMessageItemsNotInstalledError
+    isDirectoryUnreachable =
+      error instanceof OpenDirectoryError && error.code === 'unreachable'
+  } catch {
+    return { kind: 'fail' }
+  }
   if (
     isPendingMessaging &&
     ownDigest === undefined &&
@@ -47,43 +61,7 @@ export function decideOutgoingRetry(
     }
   }
 
-  const errorStr =
-    String(error) +
-    (error instanceof Error ? ' ' + error.message : '') +
-    (typeof error === 'object' && error !== null && 'info' in error
-      ? ' ' + JSON.stringify((error as { info: unknown }).info)
-      : '')
-  const isDirectoryUnreachable =
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { name?: unknown }).name === 'OpenDirectoryError' &&
-    (error as { code?: unknown }).code === 'unreachable'
-  const transportError =
-    typeof error === 'object' && error !== null
-      ? (error as {
-          code?: unknown
-          status?: unknown
-          statusCode?: unknown
-        })
-      : undefined
-  const isTransientRpc =
-    isDirectoryUnreachable ||
-    ['SERVER_ERROR', 'TIMEOUT', 'NETWORK_ERROR', 429].some(
-      code => transportError?.code === code,
-    ) ||
-    transportError?.status === 429 ||
-    transportError?.statusCode === 429 ||
-    errorStr.includes('502') ||
-    errorStr.includes('503') ||
-    errorStr.includes('504') ||
-    errorStr.includes('429') ||
-    errorStr.includes('SERVER_ERROR') ||
-    errorStr.includes('TIMEOUT') ||
-    errorStr.includes('invalid_rpc_upstream_response') ||
-    errorStr.includes('rpc_upstream_unavailable') ||
-    errorStr.includes('network') ||
-    errorStr.includes('failed to fetch') ||
-    errorStr.includes('Failed to fetch')
+  const isTransientRpc = failure.retry === 'transient' || isDirectoryUnreachable
 
   if (
     isTransientRpc &&

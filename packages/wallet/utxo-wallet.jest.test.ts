@@ -1,3 +1,4 @@
+import { describeWalletFailure } from './wallet-failure'
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha256";
 import { ripemd160 } from "@noble/hashes/ripemd160";
@@ -735,7 +736,10 @@ describe("coin selection", () => {
   });
 
   it("refuses when the coins cannot cover amount plus fee, and below-dust amounts", () => {
-    expect(() => plan([coin(10_000n)], 10_000n)).toThrow("Insufficient funds");
+    let error: unknown;
+    try { plan([coin(10_000n)], 10_000n); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    expect(describeWalletFailure(error)).toMatchObject({ kind: 'insufficient-funds', retry: 'forbidden' });
     expect(() => plan([coin(90_000n, { state: "pending" })], 1_000n)).toThrow(
       "Insufficient funds"
     );

@@ -1,3 +1,5 @@
+import { recordEvmRpcFailure } from './evm-rpc-failure'
+import { describeWalletFailure, recordWalletFailure } from './wallet-failure'
 import {
   FetchRequest,
   JsonRpcApiProviderOptions,
@@ -95,16 +97,26 @@ const MAX_RELAY_RPC_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 async function readBoundedRelayResponse(
   response: RelayFetchResponse,
-  maxBytes: number
+  maxBytes: number,
+  onRefusal?: () => void
 ): Promise<Uint8Array> {
   const declared = response.headers.get?.("content-length");
   if (declared !== undefined && declared !== null) {
     const length = Number(declared);
-    if (Number.isFinite(length) && length > maxBytes)
-      throw makeError("relay response too large", "SERVER_ERROR");
+    if (Number.isFinite(length) && length > maxBytes) {
+      onRefusal?.();
+      throw recordWalletFailure(
+        makeError("relay response too large", "SERVER_ERROR"),
+        { retryVeto: 'nontransient-transport' },
+      );
+    }
   }
   if (!response.body) {
-    throw makeError("relay response streaming unavailable", "SERVER_ERROR");
+    onRefusal?.();
+    throw recordWalletFailure(
+      makeError("relay response streaming unavailable", "SERVER_ERROR"),
+      { retryVeto: 'nontransient-transport' },
+    );
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -115,8 +127,12 @@ async function readBoundedRelayResponse(
     if (!value) continue;
     length += value.length;
     if (length > maxBytes) {
+      onRefusal?.();
       await reader.cancel();
-      throw makeError("relay response too large", "SERVER_ERROR");
+      throw recordWalletFailure(
+        makeError("relay response too large", "SERVER_ERROR"),
+        { retryVeto: 'nontransient-transport' },
+      );
     }
     chunks.push(value);
   }
@@ -127,6 +143,17 @@ async function readBoundedRelayResponse(
     offset += chunk.length;
   }
   return body;
+}
+
+// Preserve only finite retry vetoes across the existing credential-safe error replacement.
+// Never retain the original transport error: it may contain the capability URL.
+function sanitizedRelayTransportError(original: unknown, refusedResponse = false): Error {
+  const error = makeError("relay RPC transport failed", "SERVER_ERROR");
+  if (refusedResponse) recordWalletFailure(error, { retryVeto: 'nontransient-transport' });
+  for (const retryVeto of describeWalletFailure(original).retryVetoes) {
+    recordWalletFailure(error, { retryVeto });
+  }
+  return error;
 }
 
 export class RpcCooldownTracker {
@@ -204,6 +231,7 @@ export function makeRelayGetUrl(
         : [request.url];
 
     let lastError: Error | null = null;
+    let lastResponseRefused = false;
     let lastResponse:
       | {
           statusCode: number;
@@ -219,6 +247,7 @@ export function makeRelayGetUrl(
 
       const controller = new AbortController();
       let cancellationError: Error | null = null;
+      let responseRefused = false;
       const timer = setTimeout(() => {
         cancellationError = makeError("request timeout", "TIMEOUT");
         controller.abort();
@@ -282,20 +311,26 @@ export function makeRelayGetUrl(
           body:
             maxResponseBytes === undefined
               ? new Uint8Array(await response.arrayBuffer())
-              : await readBoundedRelayResponse(response, maxResponseBytes),
+              : await readBoundedRelayResponse(response, maxResponseBytes, () => {
+                  responseRefused = true;
+                }),
         };
       } catch (error) {
         // Once fetch has returned headers, every rejection path must still tear down the body.
         // In particular, an oversized declared Content-Length is rejected before a reader exists.
         controller.abort();
         if (cancellationError) throw cancellationError;
+        // Cleanup may reject with a primitive; retain that exact value, while keeping
+        // the known refusal local for the existing sanitized reporting boundary.
+        if (responseRefused) recordWalletFailure(error, { retryVeto: 'nontransient-transport' });
         tracker.markFailure(targetUrl);
         lastError = error as Error;
+        lastResponseRefused = responseRefused;
         if (hasNext) {
           continue;
         }
         if (sanitizeTransportErrors)
-          throw makeError("relay RPC transport failed", "SERVER_ERROR");
+          throw sanitizedRelayTransportError(error, responseRefused);
         throw error;
       } finally {
         clearTimeout(timer);
@@ -306,7 +341,7 @@ export function makeRelayGetUrl(
     if (lastResponse) return lastResponse;
     if (lastError) {
       if (sanitizeTransportErrors)
-        throw makeError("relay RPC transport failed", "SERVER_ERROR");
+        throw sanitizedRelayTransportError(lastError, lastResponseRefused);
       throw lastError;
     }
     throw makeError("no RPC endpoints available", "SERVER_ERROR");
@@ -937,6 +972,14 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     }
   }
 
+  override async send(method: string, params: Parameters<JsonRpcProvider['send']>[1]): ReturnType<JsonRpcProvider['send']> {
+    try {
+      return await super.send(method, params);
+    } catch (error) {
+      throw recordEvmRpcFailure(error);
+    }
+  }
+
   override async _detectNetwork(): Promise<Network> {
     if (this.destroyed) {
       throw makeError(
@@ -962,11 +1005,11 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
         const actualChainId = getBigInt(raw);
 
         if (actualChainId !== this.expectedChainId) {
-          throw makeError(
+          throw recordWalletFailure(makeError(
             `network mismatch: expected ${this.expectedChainId} but RPC reported ${actualChainId}`,
             "NETWORK_ERROR",
             { event: "changed" }
-          );
+          ), { retryVeto: 'identity' });
         }
 
         const network = new Network("monad", actualChainId);

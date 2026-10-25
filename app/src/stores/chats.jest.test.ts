@@ -82,6 +82,7 @@ import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface
 import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
 import { serializeMessageWrapper } from '@frank/cashweb/relay/storage/level-storage'
 import { desktopNotify } from '../utils/notifications'
+import { InsufficientStampFundsError } from '@frank/wallet/evm-account-pool'
 import { useSettingsStore } from './settings'
 const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
 
@@ -1486,13 +1487,12 @@ describe('stores/chats.ts (ticket #42)', () => {
     it('classifies stamp preparation insufficient funds without exposing wallet detail', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
-      jest
-        .spyOn(activeChain.directMessages, 'send')
-        .mockRejectedValue(
-          new Error(
-            'Insufficient main account balance to prepare stamp accounts: secret technical totals',
-          ),
-        )
+      jest.spyOn(activeChain.directMessages, 'send').mockRejectedValue(
+        // The stamp-account preparer's own refusal; wording alone classifies nothing.
+        new InsufficientStampFundsError(
+          'Insufficient main account balance to prepare stamp accounts: secret technical totals',
+        ),
+      )
 
       await expect(
         chats.sendMessage({

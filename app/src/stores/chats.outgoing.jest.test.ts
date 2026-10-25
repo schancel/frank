@@ -23,7 +23,17 @@ import { accountSession } from '../accounts/session'
 ;(global as any).document = { hasFocus: () => true }
 
 import { outgoingMessageId, rehydateChat, useChatStore } from './chats'
-import { activeChain } from '@frank/wallet/chain'
+import {
+  activeChain,
+  CanonicalMessagingPendingError,
+} from '@frank/wallet/chain'
+import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
+import { MonadMailboxRetryableError } from '@frank/cashweb/relay/mailbox-client'
+import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
+const transientRpcError = (message: string) =>
+  recordEvmRpcFailure(
+    Object.assign(new Error(message), { code: 'NETWORK_ERROR' }),
+  )
 import { DirectMessageAlreadyAttemptedError } from '@frank/wallet/chain'
 import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import type {
@@ -1230,10 +1240,12 @@ describe('outgoing direct messages (#269, #270)', () => {
   })
 
   it('queues a throttled retained intent and recovers the same message after restart', async () => {
-    const unavailable = Object.assign(new Error('relay RPC transport failed'), {
-      code: 'SERVER_ERROR',
-      status: 429,
-    })
+    const unavailable = recordEvmRpcFailure(
+      Object.assign(new Error('relay RPC transport failed'), {
+        code: 'SERVER_ERROR',
+        status: 429,
+      }),
+    )
     const send = jest
       .spyOn(activeChain.directMessages, 'send')
       .mockRejectedValueOnce(unavailable)
@@ -1272,7 +1284,7 @@ describe('outgoing direct messages (#269, #270)', () => {
 
   describe('reconnecting an explicitly unattempted send', () => {
     const offline = () =>
-      Object.assign(new Error('network unavailable'), {
+      Object.assign(transientRpcError('network unavailable'), {
         [directMessageNotAttempted]: true,
       })
 
@@ -1360,7 +1372,7 @@ describe('outgoing direct messages (#269, #270)', () => {
     it('never queues a later labelled refusal after an ambiguous call', async () => {
       const send = jest
         .spyOn(activeChain.directMessages, 'send')
-        .mockRejectedValueOnce(new Error('network response lost'))
+        .mockRejectedValueOnce(transientRpcError('network response lost'))
         .mockRejectedValue(offline())
       const chats = useChatStore()
       expect(
@@ -1383,7 +1395,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         .spyOn(activeChain.directMessages, 'send')
         .mockImplementation(async params => {
           await params.onAttemptCreated?.(HASH)
-          throw new Error('network response lost')
+          throw transientRpcError('network response lost')
         })
       const chats = useChatStore()
       await chats.sendMessage({
@@ -1430,7 +1442,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             items: JSON.stringify(request.items),
             stampValue: request.stampValue,
           })
-          throw new Error('network response lost')
+          throw transientRpcError('network response lost')
         })
       const chats = useChatStore()
       const sending = chats.sendMessage({
@@ -1473,12 +1485,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         const wait = jest
           .spyOn(identitySession, 'waitForMessagingReady')
           .mockResolvedValue(ready)
-        const pending = Object.assign(
-          new Error('directory publication pending'),
-          {
-            name: 'CanonicalMessagingPendingError',
-          },
-        )
+        const pending = new CanonicalMessagingPendingError()
         const send = jest
           .spyOn(activeChain.directMessages, 'send')
           .mockRejectedValueOnce(pending)
@@ -1508,12 +1515,18 @@ describe('outgoing direct messages (#269, #270)', () => {
     )
 
     it('does not treat a labelled cause as proof that the rejected call did nothing', async () => {
-      const unattempted = Object.assign(new Error('network unavailable'), {
-        [directMessageNotAttempted]: true,
-      })
-      const wrapped = Object.assign(new Error('network response lost'), {
-        cause: unattempted,
-      })
+      const unattempted = Object.assign(
+        transientRpcError('network unavailable'),
+        {
+          [directMessageNotAttempted]: true,
+        },
+      )
+      const wrapped = Object.assign(
+        transientRpcError('network response lost'),
+        {
+          cause: unattempted,
+        },
+      )
       const send = jest
         .spyOn(activeChain.directMessages, 'send')
         .mockRejectedValueOnce(wrapped)
@@ -1532,9 +1545,7 @@ describe('outgoing direct messages (#269, #270)', () => {
     it('keeps the text and the failure reason across a reload', async () => {
       jest
         .spyOn(activeChain.directMessages, 'send')
-        .mockRejectedValue(
-          Object.assign(new Error('no response'), { isAxiosError: true }),
-        )
+        .mockRejectedValue(new MonadMailboxRetryableError('no response'))
       const chats = useChatStore()
       const outcome = await chats.sendMessage({
         wallet,
@@ -1628,7 +1639,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       const sendSpy = jest
         .spyOn(activeChain.directMessages, 'send')
         .mockRejectedValueOnce(
-          new Error(
+          transientRpcError(
             'server response 502 Bad Gateway (invalid_rpc_upstream_response)',
           ),
         )
@@ -4218,10 +4229,9 @@ describe('persisted application message handoff', () => {
       .mockImplementation(async () => {
         calls++
         if (calls === 1) {
-          const pendingErr = new Error(
+          const pendingErr = new CanonicalMessagingPendingError(
             'Messaging cannot be used until the account directory entry is published',
           )
-          pendingErr.name = 'CanonicalMessagingPendingError'
           throw pendingErr
         }
         return okResult(HASH)
@@ -4244,13 +4254,7 @@ describe('persisted application message handoff', () => {
 
     const chats = useChatStore()
     jest.spyOn(activeChain.directMessages, 'send').mockImplementation(() => {
-      const err = Object.assign(
-        new Error('The relay could not be reached for a directory entry.'),
-        {
-          name: 'OpenDirectoryError',
-          code: 'unreachable',
-        },
-      )
+      const err = new OpenDirectoryError('unreachable')
       return Promise.reject(err)
     })
     const outcome = await chats.sendMessage({

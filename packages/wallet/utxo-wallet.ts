@@ -1,3 +1,4 @@
+import { recordWalletFailure } from './wallet-failure'
 /**
  * Wallet for Bitcoin-family chains read through an Electrum server (Bitcoin, Bitcoin Cash).
  *
@@ -691,7 +692,7 @@ export function planUtxoSend(params: {
       return { inputs, fee: total - value };
     }
   }
-  throw new Error("Insufficient funds for this amount and its network fee");
+  throw recordWalletFailure(new Error("Insufficient funds for this amount and its network fee"), { diagnosis: 'insufficient-funds' });
 }
 
 export class UtxoWallet implements NativeWalletHandle {

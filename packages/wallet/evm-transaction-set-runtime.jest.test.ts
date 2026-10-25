@@ -1,3 +1,4 @@
+import { describeWalletFailure } from './wallet-failure'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
@@ -216,6 +217,7 @@ it.each([false, true])('preserves funding observation failures without blocking 
       expect(prepared.bundle[0]!.sourceAccount).toBe(mainAccount.address.toLowerCase())
     } else {
       await expect(preparation).rejects.toBe(unavailable)
+      expect(describeWalletFailure(unavailable).observationUnavailable).toBe(true)
       expect(coinList.all()).toHaveLength(0)
       blocked = false
       const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61000)
@@ -263,7 +265,10 @@ it.each(['cold', 'warm', 'funded'] as const)('keeps failed policy observations v
       kdf: () => new Wallet('0x' + '22'.repeat(32)).address,
     })
     if (mode === 'funded') expect((await preparation).bundle).toHaveLength(1)
-    else await expect(preparation).rejects.toBe(unavailable)
+    else {
+      await expect(preparation).rejects.toBe(unavailable)
+      expect(describeWalletFailure(unavailable).observationUnavailable).toBe(true)
+    }
   } finally {
     await runtime.stop()
     await journal.Close()

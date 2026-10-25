@@ -6,11 +6,12 @@ Start with [README.md](README.md) and the module you are changing.
 - `outgoing-retry-policy.ts` stays effect-free: no timers, RPC, storage, locks,
   signing, exposure authorization, Vue/Pinia state or session selection.
 - Preserve branch order and short-circuit evaluation, including separate
-  `isCurrent()` calls. Error formatting may throw; this extraction preserves that
-  behavior. Typed wallet outcomes are a separately contracted change.
+  `isCurrent()` calls. Consume typed wallet facts and guarded actual messaging
+  classes; unknown names, strings and vendor shapes grant no retry permission.
 - The caller owns exact-rejection no-effect evidence and original operation IDs.
   Retryability and missing digests never establish that a payment was unattempted.
-- Retry policy retains only its existing error-class import. Recovery imports
+- Retry policy imports only explicit owning error classes and the pure wallet
+  description accessor. Recovery imports
   only public wallet/cashweb capability types. AST tests enforce these direct
   boundaries, including type-only, alias, re-export and dynamic imports.
 - `outgoing-recovery.ts` owns the three recovery algorithms, but no state. Inject

@@ -200,10 +200,10 @@ Overrides, all optional:
   `down` before changing it on an existing project: Compose does not move a running
   network, and FoundationDB's cluster file keeps the old coordinator address, so with
   kept volumes also run `down --volumes`.
-- `FRANK_LAB_SOLONET_RPC_URL`: solonet's JSON-RPC as the containers reach it. Every group
-  write pays its relay on solonet, so the contract needs it; see "Paid group writes"
-  below. Unset, the relays start but serve no chain and answer every group write 503
-  `group_payment_check_unavailable`.
+- `FRANK_LAB_SOLONET_RPC_URL`: solonet's JSON-RPC as the containers reach it, default
+  `http://host.docker.internal:48080`. Every message stamp and group write pays on solonet
+  (see "Paid group writes" below), so lab-init stops with an error, and the relays don't
+  start, when solonet doesn't answer there.
 
 Services:
 

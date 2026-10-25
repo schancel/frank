@@ -65,9 +65,9 @@ price_wei = "1000000000000"
 payee = "burn"
 
 # solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
-# MONAD_REGTEST_HTTP_RPC_URL; unset, the row is omitted, the relay serves no chain and every
-# group write is answered 503 group_payment_check_unavailable, and no message is admitted. Set,
-# the relay checks the upstream's chain id and the checkpoint block before serving it. No
+# MONAD_REGTEST_HTTP_RPC_URL (default http://host.docker.internal:48080). The mailbox and the
+# forum need it, so a relay without it refuses to start. The relay checks the upstream's chain id
+# and the checkpoint block before serving it. No
 # WebSocket upstream: each new one is verified against the checkpoint, which solonet prunes
 # within an hour.
 [registry.evm_rpc]

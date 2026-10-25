@@ -2,9 +2,10 @@
 # round-robin proxy. Every published port binds to 127.0.0.1. See README.md for the commands.
 # Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18080), FRANK_LAB_CLUSTER_SUBNET
 # (first three octets of the lab's /24, default 10.89.42), FRANK_LAB_SOLONET_RPC_URL (solonet's
-# JSON-RPC as containers reach it, for example http://host.docker.internal:48080 while
+# JSON-RPC as containers reach it, default http://host.docker.internal:48080, where
 # `yarn --cwd packages/bot regtest:monad-start` runs it). Every group write and message stamp pays
-# on solonet, so without it the relays start but refuse every group write and message. scripts/lab-cluster-app.sh starts it all for the app.
+# on solonet, so lab-init refuses to start the relays when solonet does not answer.
+# scripts/lab-cluster-app.sh starts solonet first and refreshes the checkpoint for the app.
 name: frank-lab-cluster
 
 x-relay: &relay
@@ -17,7 +18,7 @@ x-relay: &relay
   extra_hosts: ["host.docker.internal:host-gateway"]
   environment:
     # Empty unless the host sets it: the relay then omits the chain row.
-    MONAD_REGTEST_HTTP_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+    MONAD_REGTEST_HTTP_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-http://host.docker.internal:48080}
   depends_on:
     fdb-init:
       condition: service_completed_successfully
@@ -160,7 +161,7 @@ services:
     extra_hosts: ["host.docker.internal:host-gateway"]
     environment:
       PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
-      SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+      SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-http://host.docker.internal:48080}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -173,24 +174,19 @@ services:
         [ -s /secrets/minio-root-password ] || od -An -tx1 -N24 /dev/urandom | tr -d ' \n' > /secrets/minio-root-password
         [ -s /secrets/s3-credentials ] || printf 'access_key_id = "%s"\nsecret_access_key = "%s"\n' "$$(cat /secrets/minio-root-user)" "$$(cat /secrets/minio-root-password)" > /secrets/s3-credentials
         chmod 0400 /secrets/*
-        checkpoint=0x$$(printf '0%.0s' $$(seq 1 64))
-        number=1
-        if [ -n "$$SOLONET_RPC_URL" ]; then
-          head=$$(wget -q -O - --header 'content-type: application/json' \
-            --post-data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
-            "$$SOLONET_RPC_URL" | sed -n 's/.*"result":"\(0x[0-9a-f]*\)".*/\1/p')
-          [ -n "$$head" ] || { echo "no block number from solonet at $$SOLONET_RPC_URL" >&2; exit 1; }
-          number=$$(( $$(printf '%d' "$$head") - 16 ))
-          [ "$$number" -ge 1 ] || number=1
-          block=$$(wget -q -O - --header 'content-type: application/json' \
-            --post-data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\",\"params\":[\"$$(printf '0x%x' "$$number")\",false]}" \
-            "$$SOLONET_RPC_URL")
-          checkpoint=$$(printf '%s' "$$block" | sed -n 's/.*"hash":"\(0x[0-9a-f]\{64\}\)".*/\1/p')
-          [ -n "$$checkpoint" ] || { echo "no block $$number from solonet at $$SOLONET_RPC_URL: $$block" >&2; exit 1; }
-          echo "solonet at $$SOLONET_RPC_URL, checkpoint block $$number $$checkpoint"
-        else
-          echo "FRANK_LAB_SOLONET_RPC_URL unset: the relays serve no chain and refuse every group write"
-        fi
+        [ -n "$$SOLONET_RPC_URL" ] || { echo "FRANK_LAB_SOLONET_RPC_URL is empty: the relays' mailbox, forum and group writes need solonet" >&2; exit 1; }
+        head=$$(wget -q -O - --header 'content-type: application/json' \
+          --post-data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+          "$$SOLONET_RPC_URL" | sed -n 's/.*"result":"\(0x[0-9a-f]*\)".*/\1/p')
+        [ -n "$$head" ] || { echo "no block number from solonet at $$SOLONET_RPC_URL" >&2; exit 1; }
+        number=$$(( $$(printf '%d' "$$head") - 16 ))
+        [ "$$number" -ge 1 ] || number=1
+        block=$$(wget -q -O - --header 'content-type: application/json' \
+          --post-data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\",\"params\":[\"$$(printf '0x%x' "$$number")\",false]}" \
+          "$$SOLONET_RPC_URL")
+        checkpoint=$$(printf '%s' "$$block" | sed -n 's/.*"hash":"\(0x[0-9a-f]\{64\}\)".*/\1/p')
+        [ -n "$$checkpoint" ] || { echo "no block $$number from solonet at $$SOLONET_RPC_URL: $$block" >&2; exit 1; }
+        echo "solonet at $$SOLONET_RPC_URL, checkpoint block $$number $$checkpoint"
         sed -e "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" -e "s|@SOLONET_CHECKPOINT_NUMBER@|$$number|" \
           -e "s|@SOLONET_CHECKPOINT_HASH@|$$checkpoint|" \
           /template/relay.toml.in > /config/cashwebd.toml
@@ -251,7 +247,7 @@ services:
       FRANK_CLUSTER_PROXY: http://proxy:8080
       # The relays' public origin, which is also their directory endpoint.
       FRANK_LAB_PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
-      FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+      FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-http://host.docker.internal:48080}
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -16,8 +16,12 @@
  *    `monad_message_cbor_tests.rs` are re-signed as plain transfers (#826).
  * 5. The Rust-origin and interoperability corpora are rewritten by their Rust tests.
  *
- * Steps that need cargo run only when generating (`--no-rust` skips them); under --check the
- * TypeScript suite-1 checker verifies `rust-origin.json`, and `cargo test` compares the rest.
+ * 6. The Rust proposal checkers (suite-1 directory, Forum content read, message stamp
+ *    derivation) read the committed corpora and fail if any frame or derived value disagrees.
+ *
+ * Steps 1-5 need cargo only when generating; under --check the TypeScript suite-1 checker
+ * verifies `rust-origin.json`, and `cargo test` compares the rest. Step 6 runs in both modes.
+ * `--no-rust` skips every cargo step.
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -26,7 +30,8 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const check = process.argv.includes('--check')
-const rust = !check && !process.argv.includes('--no-rust')
+const noRust = process.argv.includes('--no-rust')
+const rust = !check && !noRust
 
 function run(
   cmd: string,
@@ -128,6 +133,21 @@ if (rust) {
   run('cargo', ['test', '--quiet', ...manifest, '--test', 'interoperability'], {
     FRANK_UPDATE_INTEROPERABILITY_VECTORS: '1',
   })
+}
+if (!noRust) {
+  const proposals = [
+    ...(check ? ['suite1-directory'] : []),
+    'forum-content-read',
+    'message-stamp-derivation',
+  ]
+  for (const proposal of proposals)
+    run('cargo', [
+      'run',
+      '--quiet',
+      '--locked',
+      '--manifest-path',
+      `backend/cashweb/frank-cbor/proposals/${proposal}/Cargo.toml`,
+    ])
 }
 console.log(
   check

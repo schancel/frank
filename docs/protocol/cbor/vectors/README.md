@@ -42,8 +42,14 @@ Both run `packages/frank-codec/scripts/vectors.mts`. The `typecheck` workflow ru
 5. `cargo test` with `FRANK_UPDATE_RUST_VECTORS=1` and `FRANK_UPDATE_INTEROPERABILITY_VECTORS=1`
    rewrites `rust-origin.json` and `interoperability.json`.
 
-Steps that need cargo run only when generating (`--no-rust` skips them). Under `--check`, the
-TypeScript suite-1 checker verifies `rust-origin.json`, and `cargo test` compares the rest.
+6. The Rust proposal checkers read the committed corpora and fail on any disagreement:
+   `backend/cashweb/frank-cbor/proposals/{suite1-directory,forum-content-read,message-stamp-derivation}`,
+   each run as `cargo run --locked --manifest-path <dir>/Cargo.toml`. (When generating, step 3
+   has already run the suite-1 one with `--write`.)
+
+Steps 1–5 need cargo only when generating. Under `--check`, the TypeScript suite-1 checker
+verifies `rust-origin.json`, and `cargo test` compares the rest. Step 6 runs in both modes, so
+`yarn vectors:check` needs cargo. `--no-rust` skips every cargo step.
 
 ## Renumbering
 

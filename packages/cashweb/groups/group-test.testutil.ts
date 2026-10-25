@@ -77,8 +77,9 @@ const TEST_NATIVE_CHAIN_IDS: Record<string, bigint> = {
   'monad-testnet': 10143n,
 }
 
-/** A payment for `envelope` under `policy`, signed by a real key that holds no funds. The
- * relays under test verify it from its bytes; nothing is broadcast to any chain. */
+/** A payment for `envelope` under `policy`, signed by a real key that holds no funds, at a
+ * nonce derived from the write. The relays under test verify it from its bytes; nothing is
+ * broadcast to any chain. */
 export function groupTestPaymentFor(
   policy: GroupWritePolicy,
   groupIdHex: string,
@@ -88,10 +89,15 @@ export function groupTestPaymentFor(
   if (chainId === undefined)
     throw new Error(`No test chain id for ${policy.network}`)
   const plan = groupWritePaymentPlan(policy, groupIdHex, envelope)
+  // One payer key pays every test write, and a relay accepts one write per payer nonce, so
+  // each write gets its own nonce, from its commitment (calldata after `GRPW || 0x01`).
+  const nonce = plan.calldata
+    .slice(5, 11)
+    .reduce((value, byte) => value * 256 + byte, 0)
   const tx = Transaction.from({
     type: 2,
     chainId,
-    nonce: 0,
+    nonce,
     to: plan.destination,
     value: plan.amountWei,
     data: hexlify(plan.calldata),

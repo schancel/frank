@@ -249,6 +249,8 @@ services:
     environment:
       FRANK_CLUSTER_RELAYS: http://relay-a:8080,http://relay-b:8080,http://relay-c:8080
       FRANK_CLUSTER_PROXY: http://proxy:8080
+      # The relays' public origin, which is also their directory endpoint.
+      FRANK_LAB_PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
       FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:

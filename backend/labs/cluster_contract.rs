@@ -47,6 +47,11 @@ fn relays() -> Vec<String> {
         .collect()
 }
 
+/// The relays' public origin and directory endpoint, as lab-init renders it.
+fn lab_relay_endpoint() -> String {
+    std::env::var("FRANK_LAB_PUBLIC_ORIGIN").expect("FRANK_LAB_PUBLIC_ORIGIN")
+}
+
 fn proxy() -> String {
     std::env::var("FRANK_CLUSTER_PROXY").expect("FRANK_CLUSTER_PROXY")
 }
@@ -1110,11 +1115,11 @@ async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
 // Directory (HA step 8): one directory store on FoundationDB, large evidence in MinIO
 // ---------------------------------------------------------------------------------------------
 
-/// The lab relay tuple, as in `cluster/relay.toml`'s `[registry.directory]`.
+/// The lab relay tuple, as in `cluster/relay.toml`'s `[registry.directory]`. Its endpoint is
+/// the relays' public origin (`lab_relay_endpoint`), which group-write payments commit to too.
 const LAB_RELAY_ID: &str = "000102030405060708090a0b0c0d0e0f";
 const LAB_RELAY_IDENTITY: &str =
     "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13";
-const LAB_RELAY_ENDPOINT: &str = "https://relay.example.invalid";
 const LAB_BINDING_EXPIRY_S: i64 = 1_830_297_600;
 const DIRECTORY_NETWORK: &str = "monad-testnet";
 const DIRECTORY_MEDIA: &str = "application/vnd.frank.cbor";
@@ -1185,7 +1190,7 @@ impl Account {
         ]);
         let relay = cbor_map(vec![
             (0, CborValue::Bytes(hex::decode(LAB_RELAY_ID).unwrap())),
-            (1, CborValue::Text(LAB_RELAY_ENDPOINT.into())),
+            (1, CborValue::Text(lab_relay_endpoint())),
             (
                 2,
                 cbor_map(vec![

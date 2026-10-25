@@ -43,12 +43,13 @@ enabled = true
 url = "nats://nats:4222"
 
 # The open directory, shared by all three replicas through FoundationDB, with evidence over
-# 64 KiB in the MinIO above. A synthetic relay tuple (the reviewed vectors' relay); the cluster
-# contract signs entries naming it.
+# 64 KiB in the MinIO above. A synthetic relay id and identity (the reviewed vectors' relay)
+# with the proxy origin as the endpoint, which must be the relay's `url`; the cluster contract
+# signs entries naming it.
 [registry.directory]
 relay_id = "000102030405060708090a0b0c0d0e0f"
 relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
-endpoint = "https://relay.example.invalid"
+endpoint = "@PUBLIC_ORIGIN@"
 # 2028-01-01T00:00:00Z
 binding_expiry_ns = "1830297600000000000"
 # The contract publishes hundreds of accounts from one container; the per-source hourly

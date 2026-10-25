@@ -1206,9 +1206,15 @@ max_get_logs_range = 10\n\n\
 
     #[test]
     fn the_cluster_lab_relay_configuration_is_valid_and_shares_the_directory() {
-        // The template lab-init fills in, with the proxy origin it substitutes.
+        // The template lab-init fills in, with the proxy origin and the solonet checkpoint it
+        // substitutes.
         let config = include_str!("../../../labs/cluster/relay.toml.in")
-            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18080");
+            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18080")
+            .replace("@SOLONET_CHECKPOINT_NUMBER@", "52000")
+            .replace(
+                "@SOLONET_CHECKPOINT_HASH@",
+                &format!("0x{}", "ab".repeat(32)),
+            );
         let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
         assert!(conf.registry.directory.is_some());

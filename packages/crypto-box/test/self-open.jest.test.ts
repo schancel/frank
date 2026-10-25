@@ -392,4 +392,51 @@ describe('openAsSender', () => {
       error: { code: 'not-self-openable' },
     })
   })
+
+  it('round-trips sealed-sender envelopes via openAsSender and rejects tampered maskedSender', () => {
+    const salt = randomBytes(32)
+    const ephSecret = selfOpenEphemeral({
+      selfOpenKey,
+      salt,
+      recipientPublicKey: recipientPublic,
+      senderPublicKey: senderPublic,
+    })!
+
+    const sealed = seal({
+      suiteId: SUITE_AUTH_XCHACHA,
+      senderPrivateKey: senderPrivate,
+      senderPublicKey: senderPublic,
+      recipientPublicKey: recipientPublic,
+      plaintext,
+      context,
+      salt,
+      ephemeralSecret: ephSecret,
+      sealedSender: true,
+    })
+    expect(sealed.ok).toBe(true)
+    if (!sealed.ok) return
+
+    const res = openAsSender({
+      envelope: sealed.value,
+      selfOpenKey,
+      senderPrivateKey: senderPrivate,
+      recipientPublicKey: recipientPublic,
+      context,
+    })
+    expect(res).toEqual({ ok: true, value: plaintext })
+
+    const tampered = new Uint8Array(sealed.value)
+    tampered[tampered.length - 1] ^= 0x01
+    const bad = openAsSender({
+      envelope: tampered,
+      selfOpenKey,
+      senderPrivateKey: senderPrivate,
+      recipientPublicKey: recipientPublic,
+      context,
+    })
+    expect(bad).toEqual({
+      ok: false,
+      error: { code: 'open-failed' },
+    })
+  })
 })

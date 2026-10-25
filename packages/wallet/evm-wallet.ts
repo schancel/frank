@@ -230,6 +230,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   checkMessagePayment!: EvmChainWalletHandle["checkMessagePayment"];
   sweepReceivedCoins!: EvmChainWalletHandle["sweepReceivedCoins"];
   recordReceivedCoin!: EvmChainWalletHandle["recordReceivedCoin"];
+  recordSyncedSpend!: EvmChainWalletHandle["recordSyncedSpend"];
   noteReceivedCoins!: EvmChainWalletHandle["noteReceivedCoins"];
   getContactPayments!: EvmChainWalletHandle["getContactPayments"];
   sendToContact!: EvmChainWalletHandle["sendToContact"];

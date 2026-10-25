@@ -71,6 +71,8 @@ enum Parties {
     SenderKey([u8; 33]),
     /// The captured recipient writing to itself.
     ToSelf,
+    /// Sealed-sender: sender omitted from the type 11 payload and the 13-entry context.
+    SealedSender,
 }
 
 /// The genuine message with `tag` mixed into its sealed body, so each tag is a different
@@ -123,6 +125,15 @@ fn build(
             for (sender, recipient) in [(2, 3), (4, 5), (6, 7)] {
                 *entry(&mut context, sender) = entry(&mut context, recipient).clone();
             }
+        }
+        Parties::SealedSender => {
+            use frank_cbor::message_fields::{
+                dm_crypto_context_v1 as C, recipient_encrypted_payload_v2 as R,
+            };
+            sealed.retain(|(k, _)| *k != R::SENDER);
+            context.retain(|(k, _)| {
+                ![C::SENDER, C::SENDER_STATEMENT_HASH, C::SENDER_MESSAGE_KEY].contains(k)
+            });
         }
     }
     let sealed = frank_cbor::encode_frame(
@@ -1573,4 +1584,26 @@ fn an_account_paying_twice_must_cover_both_payments_and_their_gas() {
     // One of them already held by the node: a retry, delivered whatever the balance says.
     let held = HashSet::from([payments[0].tx_hash]);
     assert_eq!(judge_payments(&payments, &state(0), &held), None);
+}
+
+/// Sealed-sender message: omits sender from the type 11 payload and the 13-entry context, is admitted
+/// with sender_t1 zeroed, lands in the recipient's inbox (`b'I'`), and writes NO `b'O'` outbox row.
+#[tokio::test]
+async fn sealed_sender_message_delivers_to_recipient_inbox_without_sender_outbox_row() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = build(77_777, Parties::SealedSender, 1, Payment::signed);
+    let answer = relay.put(&request).await;
+    delivered(&answer, &request);
+    assert_eq!(answer.1["identity"]["sender_t1"], "00".repeat(32));
+
+    let hash = payload_hash(&request);
+    assert_eq!(relay.inbox(), [hash]);
+    assert_eq!(
+        relay.mailbox(relay.recipient()),
+        [(hash, MailboxDirection::In)]
+    );
+    // The relay never learns the sender's identity, so no `b'O'` row is written.
+    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.broadcasts(), raws(&request));
+    relay.stop().await;
 }

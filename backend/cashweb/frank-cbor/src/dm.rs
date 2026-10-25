@@ -23,16 +23,16 @@ pub const DM_CRYPTO_MIN_READER_VERSION: u32 = 2;
 pub struct DirectMessageCryptoContext<'a> {
     /// Canonical network tag.
     pub network: &'a str,
-    /// Outer routing sender identity.
-    pub sender: &'a AccountRef,
+    /// Outer routing sender identity (absent when sealed-sender is used).
+    pub sender: Option<&'a AccountRef>,
     /// Outer routing recipient identity.
     pub recipient: &'a AccountRef,
-    /// T1 hash of the exact opened sender directory statement.
-    pub sender_directory_hash: &'a [u8],
+    /// T1 hash of the exact opened sender directory statement (absent when sealed-sender is used).
+    pub sender_directory_hash: Option<&'a [u8]>,
     /// T1 hash of the exact opened recipient directory statement.
     pub recipient_directory_hash: &'a [u8],
-    /// Sender message-DH account reference.
-    pub sender_message_key: &'a AccountRef,
+    /// Sender message-DH account reference (absent when sealed-sender is used).
+    pub sender_message_key: Option<&'a AccountRef>,
     /// Recipient message-DH account reference.
     pub recipient_message_key: &'a AccountRef,
     /// Recipient stamp-key account reference.
@@ -110,50 +110,63 @@ pub fn encode_direct_message_crypto_context(
     if input.network.is_empty() {
         return Err(UsageError("network must be a non-empty string".into()));
     }
-    encode_canonical(&CborValue::Map(vec![
-        (k::DOMAIN, CborValue::Text(DM_CRYPTO_CONTEXT_DOMAIN.into())),
-        (k::NETWORK, CborValue::Text(input.network.into())),
-        (k::SENDER, account(input.sender, "sender", false)?),
-        (k::RECIPIENT, account(input.recipient, "recipient", false)?),
-        (
+    if input.sender.is_some() != input.sender_directory_hash.is_some()
+        || input.sender.is_some() != input.sender_message_key.is_some()
+    {
+        return Err(UsageError(
+            "sender, sender_directory_hash, and sender_message_key must be all present or all absent".into(),
+        ));
+    }
+    let mut entries = Vec::with_capacity(16);
+    entries.push((k::DOMAIN, CborValue::Text(DM_CRYPTO_CONTEXT_DOMAIN.into())));
+    entries.push((k::NETWORK, CborValue::Text(input.network.into())));
+    if let Some(sender) = input.sender {
+        entries.push((k::SENDER, account(sender, "sender", false)?));
+    }
+    entries.push((k::RECIPIENT, account(input.recipient, "recipient", false)?));
+    if let Some(sender_directory_hash) = input.sender_directory_hash {
+        entries.push((
             k::SENDER_STATEMENT_HASH,
-            exact(input.sender_directory_hash, 32, "sender_directory_hash")?,
-        ),
-        (
-            k::RECIPIENT_STATEMENT_HASH,
-            exact(
-                input.recipient_directory_hash,
-                32,
-                "recipient_directory_hash",
-            )?,
-        ),
-        (
+            exact(sender_directory_hash, 32, "sender_directory_hash")?,
+        ));
+    }
+    entries.push((
+        k::RECIPIENT_STATEMENT_HASH,
+        exact(
+            input.recipient_directory_hash,
+            32,
+            "recipient_directory_hash",
+        )?,
+    ));
+    if let Some(sender_message_key) = input.sender_message_key {
+        entries.push((
             k::SENDER_MESSAGE_KEY,
-            account(input.sender_message_key, "sender_message_key", true)?,
-        ),
-        (
-            k::RECIPIENT_MESSAGE_KEY,
-            account(input.recipient_message_key, "recipient_message_key", true)?,
-        ),
-        (
-            k::RECIPIENT_STAMP_KEY,
-            account(input.stamp_key, "stamp_key", true)?,
-        ),
-        (
-            k::EPHEMERAL_POINT,
-            point(input.ephemeral_point, "ephemeral_point")?,
-        ),
-        (k::SHARED_POINT, point(input.shared_point, "shared_point")?),
-        (k::DLEQ_PROOF, proof(input.dleq_proof)?),
-        (k::SUITE, CborValue::Int(i128::from(DM_CRYPTO_SUITE))),
-        (k::OBJECT_TYPE, CborValue::Int(i128::from(DM_CRYPTO_TYPE))),
-        (
-            k::SCHEMA_VERSION,
-            CborValue::Int(i128::from(DM_CRYPTO_SCHEMA_VERSION)),
-        ),
-        (
-            k::MIN_READER_VERSION,
-            CborValue::Int(i128::from(DM_CRYPTO_MIN_READER_VERSION)),
-        ),
-    ]))
+            account(sender_message_key, "sender_message_key", true)?,
+        ));
+    }
+    entries.push((
+        k::RECIPIENT_MESSAGE_KEY,
+        account(input.recipient_message_key, "recipient_message_key", true)?,
+    ));
+    entries.push((
+        k::RECIPIENT_STAMP_KEY,
+        account(input.stamp_key, "stamp_key", true)?,
+    ));
+    entries.push((
+        k::EPHEMERAL_POINT,
+        point(input.ephemeral_point, "ephemeral_point")?,
+    ));
+    entries.push((k::SHARED_POINT, point(input.shared_point, "shared_point")?));
+    entries.push((k::DLEQ_PROOF, proof(input.dleq_proof)?));
+    entries.push((k::SUITE, CborValue::Int(i128::from(DM_CRYPTO_SUITE))));
+    entries.push((k::OBJECT_TYPE, CborValue::Int(i128::from(DM_CRYPTO_TYPE))));
+    entries.push((
+        k::SCHEMA_VERSION,
+        CborValue::Int(i128::from(DM_CRYPTO_SCHEMA_VERSION)),
+    ));
+    entries.push((
+        k::MIN_READER_VERSION,
+        CborValue::Int(i128::from(DM_CRYPTO_MIN_READER_VERSION)),
+    ));
+    encode_canonical(&CborValue::Map(entries))
 }

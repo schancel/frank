@@ -626,6 +626,9 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
           result = await messagingChain.directMessages.send({
             wallet,
             recipient,
+            // Sealed: the relay learns the recipient, not who wrote to them. The wallet sends
+            // this device's other frontends a note to self in place of the relay's outbox row.
+            sealedSender: true,
             // One ID for this message, whatever attempt this is: the wallet makes one payment
             // per ID, ever, and answers a repeat with the attempt it already holds.
             messageId: message.sealedMessageId ?? ports.messageId(id),

@@ -48,11 +48,11 @@ fn dm_context_matches_typescript_vector() {
     let encode_with = |message_key: &AccountRef, ephemeral_point: &[u8]| {
         encode_direct_message_crypto_context(&DirectMessageCryptoContext {
             network: context["network"].as_str().unwrap(),
-            sender: &sender,
+            sender: Some(&sender),
             recipient: &recipient,
-            sender_directory_hash: &sender_hash,
+            sender_directory_hash: Some(&sender_hash),
             recipient_directory_hash: &recipient_hash,
-            sender_message_key: message_key,
+            sender_message_key: Some(message_key),
             recipient_message_key: &recipient_message_key,
             stamp_key: &stamp_key,
             ephemeral_point,
@@ -69,6 +69,22 @@ fn dm_context_matches_typescript_vector() {
             .as_str()
             .expect("encodedHex")
     );
+
+    let sealed_encoded = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
+        network: context["network"].as_str().unwrap(),
+        sender: None,
+        recipient: &recipient,
+        sender_directory_hash: None,
+        recipient_directory_hash: &recipient_hash,
+        sender_message_key: None,
+        recipient_message_key: &recipient_message_key,
+        stamp_key: &stamp_key,
+        ephemeral_point: &ephemeral,
+        shared_point: &shared,
+        dleq_proof: &proof,
+    })
+    .expect("sealed context");
+    assert_eq!(sealed_encoded[0], 0xad); // 13-entry map omitting keys 2, 4, 6
 
     let uncompressed = hex::decode(concat!(
         "04",
@@ -116,5 +132,94 @@ fn dm_context_matches_typescript_vector() {
     assert_eq!(
         hex::encode(frame),
         corpus["type5FrameHex"].as_str().expect("type5FrameHex")
+    );
+}
+
+/// The sealed-sender corpus (`dm-sealed-sender.json`, printed by
+/// `packages/frank-codec/scripts/dm-sealed-sender-corpus.mts` from `dm-suite-1.json`): the
+/// 13-entry context, the type-11 payload without its sender, and its type-12 content, which
+/// carries the sender as fields 7, 8 and 9. The TypeScript codec and crypto-box suites read
+/// the same file.
+#[test]
+fn sealed_sender_matches_typescript_vector() {
+    let named: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/cbor/vectors/dm-suite-1.json"
+    ))
+    .expect("named vector JSON");
+    let sealed: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/cbor/vectors/dm-sealed-sender.json"
+    ))
+    .expect("sealed vector JSON");
+    let context = &named["context"];
+    let hex_of = |value: &serde_json::Value| hex::decode(value.as_str().unwrap()).unwrap();
+    let recipient = account(&context["recipient"]);
+    let recipient_message_key = account(&context["recipientMessageKey"]);
+    let stamp_key = account(&context["stampKey"]);
+    let recipient_hash = hex_of(&context["recipientDirectoryHashHex"]);
+    let ephemeral = hex_of(&context["ephemeralPointHex"]);
+    let shared = hex_of(&context["sharedPointHex"]);
+    let proof = hex_of(&context["dleqProofHex"]);
+
+    let encoded = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
+        network: context["network"].as_str().unwrap(),
+        sender: None,
+        recipient: &recipient,
+        sender_directory_hash: None,
+        recipient_directory_hash: &recipient_hash,
+        sender_message_key: None,
+        recipient_message_key: &recipient_message_key,
+        stamp_key: &stamp_key,
+        ephemeral_point: &ephemeral,
+        shared_point: &shared,
+        dleq_proof: &proof,
+    })
+    .expect("sealed context");
+    assert_eq!(sealed["context"]["entries"].as_u64(), Some(13));
+    assert_eq!(encoded[0], 0xa0 + 13);
+    assert_eq!(
+        hex::encode(&encoded),
+        sealed["context"]["encodedHex"].as_str().unwrap()
+    );
+
+    let envelope = hex_of(&sealed["cryptoBox"]["envelopeHex"]);
+    assert_eq!(sealed["cryptoBox"]["entries"].as_u64(), Some(7));
+    assert_eq!(envelope[0], 0xa0 + 7);
+    let payload = cbor_map(vec![
+        (
+            rep2::NETWORK,
+            CborValue::Text(context["network"].as_str().unwrap().into()),
+        ),
+        (rep2::RECIPIENT, account_value(&recipient)),
+        (
+            rep2::SUITE,
+            CborValue::Int(encryption_suite::DM_AUTH_XCHACHA.into()),
+        ),
+        (rep2::CRYPTO_BOX_ENVELOPE, CborValue::Bytes(envelope)),
+        (rep2::EPHEMERAL_POINT, CborValue::Bytes(ephemeral)),
+        (rep2::SHARED_POINT, CborValue::Bytes(shared)),
+        (rep2::DLEQ_PROOF, CborValue::Bytes(proof)),
+    ]);
+    let frame = encode_frame(
+        EnvelopeFields {
+            type_id: TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+            schema_version: 2,
+            min_reader_version: 2,
+        },
+        FramePayload::Value(&payload),
+    )
+    .expect("sealed type-11 frame");
+    assert_eq!(
+        hex::encode(&frame),
+        sealed["payload"]["frameHex"].as_str().unwrap()
+    );
+
+    // The payload and its authenticated content validate together, as the relay and the
+    // recipient check them.
+    let content = hex_of(&sealed["content"]["frameHex"]);
+    assert!(
+        frank_cbor::begin_direct_message_validation(&frame, &frank_cbor::default_context())
+            .expect("sealed type-11 session")
+            .complete_authenticated_content(&content)
+            .is_ok()
     );
 }

@@ -757,11 +757,17 @@ export class MonadCanonicalStampClient {
       context = new Uint8Array(input.context)
     const parsed = parseFrame(payload),
       fields = decodeCanonical(context)
+    // `bindPrepared` and the stamp attempt journal behind it cannot carry a sealed-sender
+    // message: the journal binds an attempt to the sender subject and sender T1 read from the
+    // type 11 payload and the 16-entry context, and a sealed message carries neither outside its
+    // ciphertext. A sealed paid message goes through the shared transaction-set construction
+    // (`canonical-dm.ts`) instead; one handed here is refused.
     if (
       parsed.kind !== 'parsed' ||
       parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
       parsed.schemaVersion !== 2 ||
       parsed.typed.suite !== ENCRYPTION_SUITE.dmAuthXchacha ||
+      !parsed.typed.sender ||
       !(fields instanceof Map)
     )
       throw new Error('canonical-wallet:prepared-required')

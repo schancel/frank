@@ -45,6 +45,8 @@ export const ENVELOPE_FIELDS = {
   salt: 3,
   enc: 4,
   ciphertext: 5,
+  /** Sealed-sender only: the sender's public key, masked (7-entry map). */
+  maskedSender: 6,
 } as const
 
 export const MAX_MESSAGE = 1_048_576

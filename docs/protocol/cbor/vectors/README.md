@@ -25,7 +25,10 @@ Both run `packages/frank-codec/scripts/vectors.mts`. The `typecheck` workflow ru
 2. `packages/frank-codec/scripts/vectors-builders.ts` writes the corpora built from
    `packages/frank-codec/fixtures/` (`manifest.json`, `topic-commitments.json`,
    `stealth-assets.json`, `blackjack-hand*.json`, `forum-content-read.json`,
-   `directory-preview.json`, the experimental Solana stealth vectors), and
+   `directory-preview.json`, the experimental Solana stealth vectors),
+   `packages/frank-codec/scripts/dm-sealed-sender-corpus.mts` writes `dm-sealed-sender.json`
+   (the sealed-sender context, type-12 content, 7-entry crypto-box envelope and type-11
+   payload, derived from the renumbered `dm-suite-1.json`), and
    `packages/domain-roots/proposals/message-stamp-derivation/run.cjs --emit` writes that
    proposal's `vectors.json` (it pins hashes of its source files, so a source edit needs a
    regenerate).

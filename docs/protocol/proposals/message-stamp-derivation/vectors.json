@@ -1150,7 +1150,7 @@
     },
     {
       "path": "packages/wallet/evm-wallet-material.ts",
-      "sha256": "41179115346567a37f7b44d95099ffa8bfe7c8ec60be80f9d7a48836e31f6e4e"
+      "sha256": "c59957e8888cfb38c427b008987b237bee6e993a527f324fc1f4bf9336cd756a"
     },
     {
       "path": "packages/wallet/secp256k1-hd-keyring.ts",

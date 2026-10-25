@@ -577,8 +577,8 @@ pub mod dm_crypto_context_v1 {
     pub const MIN_READER_VERSION: u64 = 15;
     /// `dm-crypto-context-v1` map shape (docs/protocol/cbor/direct-message.cddl#dm-crypto-context-v1).
     pub const SHAPE: MapShape = MapShape {
-        required: &[DOMAIN, NETWORK, SENDER, RECIPIENT, SENDER_STATEMENT_HASH, RECIPIENT_STATEMENT_HASH, SENDER_MESSAGE_KEY, RECIPIENT_MESSAGE_KEY, RECIPIENT_STAMP_KEY, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF, SUITE, OBJECT_TYPE, SCHEMA_VERSION, MIN_READER_VERSION],
-        optional: &[],
+        required: &[DOMAIN, NETWORK, RECIPIENT, RECIPIENT_STATEMENT_HASH, RECIPIENT_MESSAGE_KEY, RECIPIENT_STAMP_KEY, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF, SUITE, OBJECT_TYPE, SCHEMA_VERSION, MIN_READER_VERSION],
+        optional: &[SENDER, SENDER_STATEMENT_HASH, SENDER_MESSAGE_KEY],
         open: false,
         open_from: 0,
     };
@@ -677,10 +677,16 @@ pub mod encrypted_message_content {
     pub const CONVERSATION_NAME: u64 = 5;
     /// Field `token-transfer`.
     pub const TOKEN_TRANSFER: u64 = 6;
+    /// Field `sender`.
+    pub const SENDER: u64 = 7;
+    /// Field `sender-directory-hash`.
+    pub const SENDER_DIRECTORY_HASH: u64 = 8;
+    /// Field `sender-message-key`.
+    pub const SENDER_MESSAGE_KEY: u64 = 9;
     /// `encrypted-message-content` map shape (docs/protocol/cbor/direct-message.cddl#encrypted-message-content).
     pub const SHAPE: MapShape = MapShape {
         required: &[NETWORK, MESSAGE_ID, REVISION_FRAME, CONTENT_DIGEST],
-        optional: &[CONVERSATION_ID, CONVERSATION_NAME, TOKEN_TRANSFER],
+        optional: &[CONVERSATION_ID, CONVERSATION_NAME, TOKEN_TRANSFER, SENDER, SENDER_DIRECTORY_HASH, SENDER_MESSAGE_KEY],
         open: true,
         open_from: 0,
     };
@@ -1548,8 +1554,8 @@ pub mod recipient_encrypted_payload_v2 {
     pub const DLEQ_PROOF: u64 = 7;
     /// `recipient-encrypted-payload-v2` map shape (docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v2).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, SENDER, RECIPIENT, SUITE, CRYPTO_BOX_ENVELOPE, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF],
-        optional: &[],
+        required: &[NETWORK, RECIPIENT, SUITE, CRYPTO_BOX_ENVELOPE, EPHEMERAL_POINT, SHARED_POINT, DLEQ_PROOF],
+        optional: &[SENDER],
         open: true,
         open_from: 0,
     };

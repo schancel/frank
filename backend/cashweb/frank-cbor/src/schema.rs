@@ -648,7 +648,7 @@ pub(crate) enum Draft {
     Recipient {
         schema_version: u32,
         network: String,
-        sender: AccountRef,
+        sender: Option<AccountRef>,
         recipient: AccountRef,
         suite: u32,
         nonce: Option<Vec<u8>>,
@@ -666,6 +666,9 @@ pub(crate) enum Draft {
         content_digest: Vec<u8>,
         conversation_id: Option<Vec<u8>>,
         conversation_name: Option<String>,
+        sender: Option<AccountRef>,
+        sender_directory_hash: Option<Vec<u8>>,
+        sender_message_key: Option<AccountRef>,
         unknown: Vec<(u64, CborValue)>,
     },
     TransitionStatement {
@@ -1622,10 +1625,16 @@ pub(crate) fn parse_draft(
             if schema.effective >= 2 {
                 use mf::recipient_encrypted_payload_v2 as k;
                 let map = shaped(Some(payload), path, &k::SHAPE, allow)?;
+                // Field 1 is absent in a sealed-sender delivery.
+                let sender = if map.has(k::SENDER) {
+                    Some(account(map.get(k::SENDER), &at(path, k::SENDER))?)
+                } else {
+                    None
+                };
                 Ok(Draft::Recipient {
                     schema_version: 2,
                     network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
-                    sender: account(map.get(k::SENDER), &at(path, k::SENDER))?,
+                    sender,
                     recipient: account(map.get(k::RECIPIENT), &at(path, k::RECIPIENT))?,
                     suite: u32_in(map.get(k::SUITE), &at(path, k::SUITE), 0, 65_535)?,
                     nonce: None,
@@ -1650,7 +1659,7 @@ pub(crate) fn parse_draft(
                 Ok(Draft::Recipient {
                     schema_version: 1,
                     network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
-                    sender: account(map.get(k::SENDER), &at(path, k::SENDER))?,
+                    sender: Some(account(map.get(k::SENDER), &at(path, k::SENDER))?),
                     recipient: account(map.get(k::RECIPIENT), &at(path, k::RECIPIENT))?,
                     suite: u32_in(map.get(k::SUITE), &at(path, k::SUITE), 0, 65_535)?,
                     nonce: Some(bstr(map.get(k::NONCE), &at(path, k::NONCE), 1, 64)?),
@@ -1675,11 +1684,18 @@ pub(crate) fn parse_draft(
             // Field 4 is optional on the wire: writers should send it, readers accept absence.
             use mf::encrypted_message_content as k;
             // This reader does not declare field 6 (token transfer); it is retained as unknown.
+            // Fields 7, 8 and 9 carry the optional sealed-sender identity (all or none).
             let map = fields(
                 Some(payload),
                 path,
                 k::SHAPE.required,
-                &[k::CONVERSATION_ID, k::CONVERSATION_NAME],
+                &[
+                    k::CONVERSATION_ID,
+                    k::CONVERSATION_NAME,
+                    k::SENDER,
+                    k::SENDER_DIRECTORY_HASH,
+                    k::SENDER_MESSAGE_KEY,
+                ],
                 k::SHAPE.open.then_some(k::SHAPE.open_from),
                 allow,
             )?;
@@ -1701,6 +1717,29 @@ pub(crate) fn parse_draft(
             } else {
                 None
             };
+            let sender = if map.has(k::SENDER) {
+                Some(account(map.get(k::SENDER), &at(path, k::SENDER))?)
+            } else {
+                None
+            };
+            let sender_directory_hash = if map.has(k::SENDER_DIRECTORY_HASH) {
+                Some(bstr(
+                    map.get(k::SENDER_DIRECTORY_HASH),
+                    &at(path, k::SENDER_DIRECTORY_HASH),
+                    32,
+                    32,
+                )?)
+            } else {
+                None
+            };
+            let sender_message_key = if map.has(k::SENDER_MESSAGE_KEY) {
+                Some(account(
+                    map.get(k::SENDER_MESSAGE_KEY),
+                    &at(path, k::SENDER_MESSAGE_KEY),
+                )?)
+            } else {
+                None
+            };
             Ok(Draft::Encrypted {
                 network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
                 message_id: bstr(map.get(k::MESSAGE_ID), &at(path, k::MESSAGE_ID), 16, 16)?,
@@ -1713,6 +1752,9 @@ pub(crate) fn parse_draft(
                 )?,
                 conversation_id,
                 conversation_name,
+                sender,
+                sender_directory_hash,
+                sender_message_key,
                 unknown: map.unknown,
             })
         }
@@ -2018,7 +2060,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
                     && k::RECIPIENT == mf::recipient_encrypted_payload_v1::RECIPIENT
                     && k::SUITE == mf::recipient_encrypted_payload_v1::SUITE
             );
-            check_key_type(sender, &at(path, k::SENDER))?;
+            if let Some(sender) = sender {
+                check_key_type(sender, &at(path, k::SENDER))?;
+            }
             check_key_type(recipient, &at(path, k::RECIPIENT))?;
             if (*schema_version == 1 && *suite != ENCRYPTION_SUITE_PROOF)
                 || (*schema_version == 2 && *suite != ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
@@ -2027,6 +2071,20 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
                     &at(path, k::SUITE),
                     format!("encryption suite {suite} is unallocated (S2c)"),
                 ));
+            }
+            Ok(())
+        }
+        Draft::Encrypted {
+            sender,
+            sender_message_key,
+            ..
+        } => {
+            use mf::encrypted_message_content as k;
+            if let Some(s) = sender {
+                check_key_type(s, &at(path, k::SENDER))?;
+            }
+            if let Some(m) = sender_message_key {
+                check_key_type(m, &at(path, k::SENDER_MESSAGE_KEY))?;
             }
             Ok(())
         }
@@ -2068,8 +2126,7 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             }
             Ok(())
         }
-        Draft::Encrypted { .. }
-        | Draft::TopicPost { .. }
+        Draft::TopicPost { .. }
         | Draft::TopicPostSubmission { .. }
         | Draft::TopicVoteSubmission { .. }
         | Draft::ForumView(_)

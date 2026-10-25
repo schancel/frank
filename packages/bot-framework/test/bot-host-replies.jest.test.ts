@@ -963,6 +963,8 @@ describe("FrankBotHost replies", () => {
       expect(calls).toBe(2);
       expect(textsSent()).toEqual([FAILED_REPLY_TEXT, "fine now"]);
       expect(mockSend.mock.calls[0][0].recipient.raw).toBe(peer.address);
+      // A bot's reply is sealed: the relay is not told who sent it.
+      expect(mockSend.mock.calls[0][0].sealedSender).toBe(true);
       expect(mockSend.mock.calls[0][0].conversationId).toBe(
         first.conversationId
       );

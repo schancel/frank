@@ -1457,10 +1457,13 @@ export function parseDraft(
             m.get(RECIPIENT_ENCRYPTED_PAYLOAD_V2.network),
             at(P, RECIPIENT_ENCRYPTED_PAYLOAD_V2.network),
           ),
-          sender: account(
-            m.get(RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender),
-            at(P, RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender),
-          ),
+          // Field 1 is absent in a sealed-sender delivery.
+          sender: m.has(RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender)
+            ? account(
+                m.get(RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender),
+                at(P, RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender),
+              )
+            : undefined,
           recipient: account(
             m.get(RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient),
             at(P, RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient),
@@ -1540,6 +1543,20 @@ export function parseDraft(
           : undefined,
         conversationName: convName,
         tokenTransfer: transfer,
+        sender: m.has(K.sender)
+          ? account(m.get(K.sender), at(P, K.sender))
+          : undefined,
+        senderDirectoryHash: m.has(K.senderDirectoryHash)
+          ? bstr(
+              m.get(K.senderDirectoryHash),
+              at(P, K.senderDirectoryHash),
+              32,
+              32,
+            )
+          : undefined,
+        senderMessageKey: m.has(K.senderMessageKey)
+          ? account(m.get(K.senderMessageKey), at(P, K.senderMessageKey))
+          : undefined,
         unknownFields: m.unknown,
       }
     }
@@ -2138,7 +2155,7 @@ export function checkAllocated(
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
       // Fields 1-3 have the same keys in schemas 1 and 2.
       const K = RECIPIENT_ENCRYPTED_PAYLOAD_V2
-      checkKeyType(d.sender, at(P, K.sender))
+      if (d.sender) checkKeyType(d.sender, at(P, K.sender))
       checkKeyType(d.recipient, at(P, K.recipient))
       if (
         (d.schemaVersion === 1 && d.suite !== ENCRYPTION_SUITE_PROOF) ||
@@ -2149,6 +2166,13 @@ export function checkAllocated(
           `encryption suite ${d.suite} is unallocated (S2c)`,
         )
       }
+      break
+    }
+    case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
+      const K = ENCRYPTED_MESSAGE_CONTENT
+      if (d.sender) checkKeyType(d.sender, at(P, K.sender))
+      if (d.senderMessageKey)
+        checkKeyType(d.senderMessageKey, at(P, K.senderMessageKey))
       break
     }
     case TYPE_KEY_TRANSITION_STATEMENT: {

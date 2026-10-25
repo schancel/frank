@@ -2196,6 +2196,10 @@ const settled = (promise: Promise<unknown>) =>
   )
 
 describe('retained native owner: recording a spend from the journal under the input admission (#1235 Stage 1)', () => {
+  // The coin list reports each spend its keys signed (`recordSyncedSpend`), beside the pool.
+  const synced = (item: { txHash: string }) => ({
+    syncedSpends: [item.txHash.toLowerCase()],
+  })
   let dir: string
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'frank-1235-stage-1-'))
@@ -2335,7 +2339,7 @@ describe('retained native owner: recording a spend from the journal under the in
     expect(wallet.pool.getRecord(0)).toEqual(availableRow)
     release()
     await send
-    expect(await dispatched).toEqual({ affectedIndices: [0] })
+    expect(await dispatched).toEqual({ affectedIndices: [0], ...synced(item) })
     expect(putMany).toHaveBeenCalledTimes(1)
     const tx = Transaction.from(rawTx)
     const row = {
@@ -2354,7 +2358,7 @@ describe('retained native owner: recording a spend from the journal under the in
     ]
     expect(await retained(f)).toEqual(projected)
     // Repeating it is a no-op.
-    expect(await applyWalletSyncItem(wallet, item)).toEqual({})
+    expect(await applyWalletSyncItem(wallet, item)).toEqual(synced(item))
     expect(putMany).toHaveBeenCalledTimes(1)
     await wallet.close()
     const second = await f.open()
@@ -2404,17 +2408,18 @@ describe('retained native owner: recording a spend from the journal under the in
       if (order === 'caller B then caller A') {
         expect(await applyWalletSyncItem(wallet, item)).toEqual({
           affectedIndices: [0],
+          ...synced(item),
         })
         await f.sendFromMain()
       } else {
         await f.sendFromMain()
-        expect(await applyWalletSyncItem(wallet, item)).toEqual({})
+        expect(await applyWalletSyncItem(wallet, item)).toEqual(synced(item))
       }
       expect(putMany).toHaveBeenCalledTimes(1)
       const operation = wallet.getNativeOperations!()[0]!
       expect(wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
       // Either order again: nothing more is written, and other bytes for the pair stay refused.
-      expect(await applyWalletSyncItem(wallet, item)).toEqual({})
+      expect(await applyWalletSyncItem(wallet, item)).toEqual(synced(item))
       await expect(applyWalletSyncItem(wallet, other.item)).rejects.toBeInstanceOf(
         Error,
       )
@@ -2481,6 +2486,7 @@ describe('retained native owner: recording a spend from the journal under the in
     intents.mockRestore()
     expect(await applyWalletSyncItem(wallet, item)).toEqual({
       affectedIndices: [0],
+      ...synced(item),
     })
   })
 

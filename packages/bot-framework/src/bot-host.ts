@@ -1769,6 +1769,8 @@ export class FrankBotHost {
           wallet: instance.wallet,
           recipient: toChainAddress(row.peerAddress),
           items: [{ type: "text", text }],
+          // Sealed: the relay learns the recipient, not who wrote to them.
+          sealedSender: true,
           conversationId: row.conversationId,
           messageId: replyMessageId(instance.operations.owner, digest),
           // Paid only if what it carries is at or above the chain's fee floor right now.
@@ -2278,6 +2280,8 @@ export class FrankBotHost {
       wallet,
       recipient: toChainAddress(recipientAddress),
       items,
+      // Sealed: the relay learns the recipient, not who wrote to them.
+      sealedSender: true,
       conversationId:
         conversationId === undefined
           ? undefined

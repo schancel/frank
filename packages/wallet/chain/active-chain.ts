@@ -423,6 +423,8 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     recipient: ChainAddress;
     items: MessageItem[];
+    /** Hide sender routing identity inside authenticated ciphertext. */
+    sealedSender?: boolean;
     /** 16 bytes or their lowercase `8-4-4-4-12` form; anything else supplied rejects with
      * {@link DirectMessageArgumentError}. Only `undefined` means omitted. */
     conversationId?: string | Uint8Array;
@@ -610,6 +612,9 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     onRecord: (record: DirectMessageReceived) => void;
     onError?: (error: Error) => void;
+    /** A streamed record that can never be opened (as `fetchSince` reports it): it is dropped,
+     * not reported through `onError`. The stream moves no read position. */
+    onQuarantinedTimestamp?: (timestampMs: number, payloadDigest: string) => void;
   }): () => void;
   listRecoveredStampPayments(params: {
     wallet: WalletHandle;

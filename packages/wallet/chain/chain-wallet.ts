@@ -354,6 +354,15 @@ export interface NativeWalletHandle {
    * coin, pending until the chain is read, only if that key opens the note's account. True when
    * it does (recorded now, or known already); recording twice changes nothing. */
   recordReceivedCoin?(note: ReceivedCoinItem): Promise<boolean>;
+  /** The wallet sync boundary's way in for an outgoing `wallet-sync` note this account wrote to
+   * itself (`applyWalletSyncItem`): another device of the account signed `item.rawTx`, spending
+   * the coin `[signer, nonce]` of this wallet. That coin leaves selection, and its account is read
+   * from the chain again, which lists what it holds after the spend. True when the transaction is
+   * one this wallet's keys signed (marked now, or this device's own spend already); false when it
+   * is not about this wallet. Applying it twice changes nothing. The spent coin leaves the list
+   * durably, so it is never offered again after a restart, and the account is read until a read
+   * succeeds. Rejects only when that record could not be written. */
+  recordSyncedSpend?(item: WalletSyncItem): Promise<boolean>;
   /** Writes, in free notes to self, how the key of each received coin not yet noted is derived,
    * so the account's other devices and a restore from the seed find those coins without their
    * messages. A mailbox read does this by itself; it moves no money and never rejects. */
@@ -535,7 +544,7 @@ import type {
   MessagePayment,
   ReceivedPayment,
 } from "../storage/evm-coin-store";
-import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
+import type { ReceivedCoinItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface LegacySendResult {
   /** Final transaction hash that paid the recipient. */

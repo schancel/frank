@@ -357,6 +357,35 @@ export function checkSemantics(
           at(P, ENCRYPTED_MESSAGE_CONTENT.tokenTransfer),
         )
       }
+      const hasSender = typed.sender !== undefined
+      const hasSenderDirHash = typed.senderDirectoryHash !== undefined
+      const hasSenderMsgKey = typed.senderMessageKey !== undefined
+      if (hasSender !== hasSenderDirHash || hasSender !== hasSenderMsgKey) {
+        throw semantic(
+          `sealed-sender fields (${ENCRYPTED_MESSAGE_CONTENT.sender}, ${ENCRYPTED_MESSAGE_CONTENT.senderDirectoryHash}, ${ENCRYPTED_MESSAGE_CONTENT.senderMessageKey}) must either all be present or all be absent`,
+          P,
+        )
+      }
+      if (
+        typed.sender !== undefined &&
+        (typed.sender.keyType !== KEY_TYPE.secp256k1 ||
+          !isCompressedPoint(typed.sender.keyBytes))
+      ) {
+        throw semantic(
+          'sealed-sender account must be a compressed secp256k1 point',
+          at(P, ENCRYPTED_MESSAGE_CONTENT.sender),
+        )
+      }
+      if (
+        typed.senderMessageKey !== undefined &&
+        (typed.senderMessageKey.keyType !== KEY_TYPE.secp256k1 ||
+          !isCompressedPoint(typed.senderMessageKey.keyBytes))
+      ) {
+        throw semantic(
+          'sealed-sender message key must be a compressed secp256k1 point',
+          at(P, ENCRYPTED_MESSAGE_CONTENT.senderMessageKey),
+        )
+      }
       return
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {

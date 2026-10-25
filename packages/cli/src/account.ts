@@ -11,7 +11,7 @@
  * which has to hold the stamp and its fee.
  */
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
-import { createHash, randomBytes } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -87,33 +87,53 @@ export function cliAccountAddresses(
   }
 }
 
-/** Messages handed to the relay whose delivery no run has confirmed yet: what was asked for
- * (recipient, items and stamp, hashed) mapped to the payload digest of the message sent for it. */
-function readUnconfirmed(file: string): Record<string, string> {
-  if (!existsSync(file)) return {}
-  return JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>
+/** Requests whose message no run has confirmed delivered yet: what was asked for (recipient,
+ * items and stamp, hashed) mapped to the ID the message is sent under and, once the wallet has
+ * named it, its payload digest. */
+interface Unconfirmed {
+  messageId: string
+  digest?: string
 }
 
-function writeUnconfirmed(file: string, entries: Record<string, string>): void {
+function readUnconfirmed(file: string): Record<string, Unconfirmed> {
+  if (!existsSync(file)) return {}
+  const entries = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+  for (const value of Object.values(entries))
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      typeof (value as Unconfirmed).messageId !== 'string'
+    )
+      throw new Error(
+        `${file} was written by an earlier CLI and is not read. Development reset: delete it ` +
+          '(it holds no keys); a message it named is then not followed to its end.',
+      )
+  return entries as Record<string, Unconfirmed>
+}
+
+function writeUnconfirmed(file: string, entries: Record<string, Unconfirmed>): void {
   const next = `${file}.next`
   writeFileSync(next, JSON.stringify(entries), { mode: 0o600 })
   renameSync(next, file)
 }
 
 /**
- * Sends one message, or follows the one an earlier run already handed to the relay for the same
- * request, until the relay has delivered it. Returns its payload digest.
+ * Sends one message, or follows the one an earlier run already started for the same request,
+ * until the relay has delivered it. Returns its payload digest.
  *
- * `file` records each message from the moment it may have reached the relay until it is known
- * delivered or dead. While a request has a record, running it again resumes that message.
+ * `file` records each request from before its message is sent until it is known delivered or
+ * dead: the message ID it is sent under, and its digest once known. While a request has a
+ * record, running it again sends under the same ID, which the wallet answers with the message
+ * it already has (the same sealed bytes), or follows that digest. A second message is never
+ * sealed in its place.
  */
 export async function sendOrResume(params: {
   file: string
   to: string
   items: MessageItem[]
   stampValueWei: bigint
-  /** Sends a new message. Calls `onAttemptCreated` once it may reach the relay. */
-  send(onAttemptCreated: (digest: string) => void): Promise<string>
+  /** Sends the message under `messageId`. Calls `onAttemptCreated` once it may reach the relay. */
+  send(messageId: string, onAttemptCreated: (digest: string) => void): Promise<string>
   /** What the wallet and relay now know about a message; re-submits its same bytes if needed. */
   status(digest: string): Promise<string>
   waitMs?: number
@@ -124,23 +144,36 @@ export async function sendOrResume(params: {
       JSON.stringify([params.to.toLowerCase(), params.items, params.stampValueWei.toString()]),
     )
     .digest('hex')
+  const record = (entry: Unconfirmed) =>
+    writeUnconfirmed(params.file, { ...readUnconfirmed(params.file), [key]: entry })
   const forget = () => {
     const entries = readUnconfirmed(params.file)
     delete entries[key]
     writeUnconfirmed(params.file, entries)
   }
-  let digest: string | undefined = readUnconfirmed(params.file)[key]
+  let entry = readUnconfirmed(params.file)[key]
+  if (!entry) {
+    // A new message: its ID is durable before any byte of it can leave.
+    entry = { messageId: randomUUID() }
+    record(entry)
+  }
+  let digest = entry.digest
   if (digest === undefined) {
+    const messageId = entry.messageId
     try {
-      const sent = await params.send(created => {
+      const sent = await params.send(messageId, created => {
         digest = created
-        writeUnconfirmed(params.file, { ...readUnconfirmed(params.file), [key]: created })
+        record({ messageId, digest: created })
       })
-      if (digest !== undefined) forget()
+      forget()
       return sent
     } catch (err) {
-      // Nothing was handed to the relay: the send simply failed.
-      if (digest === undefined) throw err
+      // The wallet already holds a paid message under this ID: follow it.
+      const held = (err as { payloadDigest?: unknown }).payloadDigest
+      if (typeof held === 'string' && /^[0-9a-f]{64}$/.test(held)) {
+        digest = held
+        record({ messageId, digest })
+      } else if (digest === undefined) throw err
     }
   }
   // The relay may have the message although its answer was lost, or an earlier run stopped
@@ -241,12 +274,15 @@ export async function openCliAccount(params: {
         to,
         items,
         stampValueWei,
-        send: async onAttemptCreated =>
+        send: async (messageId, onAttemptCreated) =>
           (
             await chain.directMessages.send({
               wallet: handle,
               recipient: { raw: to },
+              messageId,
               items,
+              // Sealed: the relay learns the recipient, not who wrote to them.
+              sealedSender: true,
               stampValue: stampValueWei,
               onAttemptCreated,
             })

@@ -1379,6 +1379,8 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
+        // A person's message is sealed: the relay is not told who sent it.
+        sealedSender: true,
         // The message's own ID, fixed by its saved key: every attempt of it names the same.
         messageId: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,

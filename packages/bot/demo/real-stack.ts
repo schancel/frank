@@ -345,6 +345,8 @@ export async function openRealWallet(params: {
           wallet: handle,
           recipient: { raw: to },
           items,
+          // Sealed, as the app sends: the relay learns the recipient, not the sender.
+          sealedSender: true,
           stampValue: stampValueWei ?? params.stampValueWei,
           onAttemptCreated: created => {
             digest = created

@@ -89,6 +89,10 @@ export interface StoredMessage {
    * during one leaves the bytes possibly out), and set again only by such a refusal. Never set
    * for a recipient reached through forwarding. */
   unexposed?: true
+  /** A sealed-sender message: the relay keeps no outbox row for it, so once it is delivered a
+   * note to self carrying the message and its spends is sent to the account's other devices.
+   * Set when the record is created; removed, durably, once that note is delivered. */
+  selfCopyOwed?: true
   createdAt: number
 }
 
@@ -108,6 +112,8 @@ export interface OutgoingMessageStore {
   unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined
   /** `undefined` drops the record. */
   setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
+  /** Delivered sealed envelopes whose note to self is still owed, by message ID. */
+  owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[]
 }
 /** Hex throughout. `recipientSubject`: whom the envelope is sealed to. */
 export interface UnpaidEnvelope {
@@ -126,6 +132,12 @@ export interface UnpaidEnvelope {
    * part of the request that is not fixed by the envelope. A record without it, written by
    * earlier code, cannot be repeated exactly and is not used: the message is sealed again. */
   boundary: string
+  /** A delivered sealed message whose note to self (the relay keeps no outbox row for it) has
+   * not been delivered yet. The message itself is delivered; only the note is retried. Removed,
+   * with the record unless it is host-bound, once the note is delivered. */
+  selfCopyOwed?: true
+  /** The relay's time for the delivered original, carried by its note to self. */
+  sentAt?: number
 }
 export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly rows = new Map<string, StoredMessage>()
@@ -144,6 +156,11 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
+    return [...this.envelopes.entries()]
+      .filter(([, envelope]) => envelope.selfCopyOwed === true)
+      .map(([messageId, envelope]) => ({ ...envelope, messageId }))
   }
   unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {
     const found = [...this.envelopes.entries()].find(([, envelope]) =>
@@ -315,6 +332,11 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
+    return [...this.envelopes.entries()]
+      .filter(([, envelope]) => envelope.selfCopyOwed === true)
+      .map(([messageId, envelope]) => ({ ...envelope, messageId }))
   }
   unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {
     const found = [...this.envelopes.entries()].find(([, envelope]) =>

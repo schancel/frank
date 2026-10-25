@@ -5,6 +5,9 @@
  * Dispatches a generic WalletSyncItem across wallet sub-systems:
  * - Sub-account pool: records a spent sub-account through the pool's own sync operation
  * - Legacy UTXO storage: deletes spent outpoints, registers created outpoints
+ * - Coin list: an outgoing item's signed transaction is handed to the wallet's coin list
+ *   (`recordSyncedSpend`), which, if its keys signed it, drops the spent coin from the list
+ *   durably and reads the account again (every later refresh does, until a read succeeds)
  * - Received coins: a `received-coin` note is handed to the wallet's coin list
  *   (`recordReceivedCoin`), which derives the key itself and records the coin only if it opens the
  *   named account. Recording a coin twice changes nothing.
@@ -24,6 +27,9 @@ export interface WalletSyncDispatchResult {
   affectedIndices?: number[];
   /** Addresses of received coins the wallet's own keys open (new or known already). */
   recordedCoins?: string[];
+  /** Hashes of outgoing signed transactions the wallet's coin list took as spends of its own
+   * coins (marked and read again, or already known). */
+  syncedSpends?: string[];
   deletedUtxos?: string[];
   putUtxos?: unknown[];
 }
@@ -87,6 +93,19 @@ export async function applyWalletSyncItem(
     if (poolRes?.affectedIndices && poolRes.affectedIndices.length > 0) {
       result.affectedIndices = poolRes.affectedIndices;
     }
+  }
+
+  // 1b. A wallet's coin list: an outgoing item's signed transaction spent one of its coins on
+  // another device of the account. The wallet decides whether its keys signed it.
+  if (
+    item.direction === "out" &&
+    item.rawTx !== undefined &&
+    typeof wallet.recordSyncedSpend === "function"
+  ) {
+    // Awaited and not caught: a coin list that could not record the spend rejects, and the
+    // caller keeps the item for a later pass.
+    if (await wallet.recordSyncedSpend(item))
+      result.syncedSpends = [item.txHash.toLowerCase()];
   }
 
   // 2. Dispatch UTXO operations: wallet.deleteUtxo

@@ -249,7 +249,6 @@ export interface PreviewDirectoryRoles {
 interface RecipientEncryptedPayloadCommon {
   type: typeof TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
   network: string
-  sender: AccountRef
   recipient: AccountRef
   suite: number
   /** Field 5 in schema 2, `E = e*G`; field 6 in legacy proof schema 1. */
@@ -264,6 +263,7 @@ interface RecipientEncryptedPayloadCommon {
 export interface RecipientEncryptedPayloadV1
   extends RecipientEncryptedPayloadCommon {
   readonly schemaVersion: 1
+  sender: AccountRef
   nonce: Uint8Array
   ciphertext: Uint8Array
 }
@@ -271,6 +271,8 @@ export interface RecipientEncryptedPayloadV1
 export interface RecipientEncryptedPayloadV2
   extends RecipientEncryptedPayloadCommon {
   readonly schemaVersion: 2
+  /** Field 1: present for legacy/unsealed envelopes, omitted when sealed-sender is enabled. */
+  sender?: AccountRef
   /** Field 4: the complete deterministic-CBOR crypto-box v2 envelope. */
   cryptoBoxEnvelope: Uint8Array
 }
@@ -297,6 +299,12 @@ export interface EncryptedMessageContent<F> {
   conversationId?: Uint8Array
   conversationName?: string
   tokenTransfer?: TokenTransfer
+  /** Field 7: sealed-sender routing identity P_S (present iff fields 7, 8, 9 are all present). */
+  sender?: AccountRef
+  /** Field 8: sealed-sender directory statement T1 hash (32 bytes). */
+  senderDirectoryHash?: Uint8Array
+  /** Field 9: sealed-sender message-DH key M_S (key type 1). */
+  senderMessageKey?: AccountRef
   /** The type-20 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array

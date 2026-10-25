@@ -66,16 +66,29 @@ const examples = [
   [new Error('unknown'), 'error'],
 ] as const
 
+// Only an abandoned stamp (its own payload) and an unclassified or unreachable failure keep
+// an attempt digest; every other reason proves nothing was left to recover for this message.
+const keptDigest = (
+  error: unknown,
+  reason: string,
+  ownDigest: string | undefined,
+) =>
+  error instanceof MonadStampAbandonedError
+    ? other
+    : reason === 'unreachable' || reason === 'error'
+    ? ownDigest
+    : undefined
+
 it.each(examples)(
-  'retains the original digest for actual producer %s',
+  'keeps the same attempt digest as before for actual producer %s',
   (error, reason) => {
-    expect(classifySendFailure(error, own)).toEqual({ reason, keepDigest: own })
-    expect(classifySendFailure(error, undefined)).toEqual({
-      reason,
-      ...(error instanceof MonadStampAbandonedError
-        ? { keepDigest: other }
-        : {}),
-    })
+    for (const ownDigest of [own, undefined]) {
+      const keepDigest = keptDigest(error, reason, ownDigest)
+      expect(classifySendFailure(error, ownDigest)).toEqual({
+        reason,
+        ...(keepDigest === undefined ? {} : { keepDigest }),
+      })
+    }
   },
 )
 
@@ -93,7 +106,6 @@ it.each(examples)(
 it.each([
   { kind: 'insufficient-funds' },
   { name: 'OpenDirectoryError', code: 'unreachable' },
-  { isAxiosError: true },
   new Error('insufficient funds'),
   new MonadMailboxAuthError('401', 'request'),
   new EvmInputAdmissionError('conflicting-authorization'),
@@ -104,6 +116,11 @@ it.each([
     reason: 'error',
     keepDigest: own,
   })
+})
+
+it('reports no-response for an axios request that never got a response', () => {
+  expect(isNoResponseError({ isAxiosError: true })).toBe(true)
+  expect(isNoResponseError({ isAxiosError: true, response: {} })).toBe(false)
 })
 
 it('contains hostile getters/prototype traps and retains original digest', () => {

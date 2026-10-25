@@ -20,9 +20,12 @@ export function recordEvmRpcFailure<T>(error: T): T {
       return recordWalletFailure(error, { retryVeto: code === 'CANCELLED' ? 'cancelled' : 'authorization' })
     if (code === 'INVALID_ARGUMENT' || code === 'UNSUPPORTED_OPERATION' || code === 'NOT_IMPLEMENTED')
       return recordWalletFailure(error, { retryVeto: 'programmer-error' })
+    // ethers reports every HTTP failure, including a plain 500, as SERVER_ERROR. A direct
+    // (non-relay) fetch that never reached the endpoint rejects with the browser's TypeError.
     if ([429, 502, 503, 504].includes(status as number) ||
         code === 'TIMEOUT' || code === 'NETWORK_ERROR' || code === 429 ||
-        (code === 'SERVER_ERROR' && status === undefined && value.info?.error === undefined))
+        code === 'SERVER_ERROR' ||
+        (error instanceof TypeError && /failed to fetch|network/i.test(error.message)))
       return recordWalletFailure(error, { transientTransport: true })
     if (typeof status === 'number' && status >= 400)
       return recordWalletFailure(error, { retryVeto: 'nontransient-transport' })

@@ -204,7 +204,9 @@ export function isNoResponseError(error: unknown): boolean {
   if (failure.observationUnavailable || failure.retry === 'transient')
     return true
   try {
+    const candidate = error as { isAxiosError?: unknown; response?: unknown }
     return (
+      (candidate?.isAxiosError === true && candidate.response === undefined) ||
       error instanceof MonadMailboxRetryableError ||
       (error instanceof OpenDirectoryError && error.code === 'unreachable')
     )
@@ -217,38 +219,39 @@ export function isInsufficientFundsError(error: unknown): boolean {
   return describeWalletFailure(error).kind === 'insufficient-funds'
 }
 
-/** Presentation never discards a known original attempt digest. Retry and financial
- * authorization remain with the original-operation owners. */
+/** Maps a failed send to the reason class shown to the user, and says whether the message must
+ * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 export function classifySendFailure(
   error: unknown,
   ownDigest: string | undefined,
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
-  let reason: OutgoingFailureReason = 'error'
-  let keepDigest = ownDigest
   try {
-    if (error instanceof MonadStampRecoveredAttemptError) reason = 'recovered'
-    else if (error instanceof StampBlockedError) reason = 'blocked'
-    else if (error instanceof MonadStampAbandonedError) {
-      reason = 'unverified'
-      keepDigest = ownDigest ?? error.payloadHashHex
-    } else if (
+    if (error instanceof MonadStampRecoveredAttemptError)
+      return { reason: 'recovered' }
+    // Nothing was taken or signed for this message: it is not an attempt to keep.
+    if (error instanceof StampBlockedError) return { reason: 'blocked' }
+    if (error instanceof MonadStampAbandonedError)
+      return { reason: 'unverified', keepDigest: error.payloadHashHex }
+    if (
       error instanceof MonadStampTerminalError ||
       error instanceof MonadStampRejectedError
     )
-      reason = 'rejected'
-    else if (error instanceof MonadMailboxUnavailableError)
-      reason = 'unavailable'
-    else if (
+      return { reason: 'rejected' }
+    if (error instanceof MonadMailboxUnavailableError)
+      return { reason: 'unavailable' }
+    if (
       error instanceof CanonicalRecipientNotPublishedError ||
       (error instanceof OpenDirectoryError && error.code === 'not-published')
     )
-      reason = 'recipient-unregistered'
-    else if (isInsufficientFundsError(error)) reason = 'insufficient-funds'
-    else if (error instanceof DirectMessageStampBelowFeeError)
-      reason = 'stamp-below-fee'
-    else if (isNoResponseError(error)) reason = 'unreachable'
+      return { reason: 'recipient-unregistered' }
+    if (isInsufficientFundsError(error)) return { reason: 'insufficient-funds' }
+    if (error instanceof DirectMessageStampBelowFeeError)
+      return { reason: 'stamp-below-fee' }
   } catch {
     // Hostile unknown values have no presentation classification authority.
   }
-  return { reason, ...(keepDigest === undefined ? {} : { keepDigest }) }
+  return {
+    reason: isNoResponseError(error) ? 'unreachable' : 'error',
+    keepDigest: ownDigest,
+  }
 }

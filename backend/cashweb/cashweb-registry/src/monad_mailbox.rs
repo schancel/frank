@@ -11,7 +11,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::{
     chains::EvmChainAdapter,
     monad_http::{Address, HttpTransport},
-    store::kv_store::{KvError, RelayKvStore},
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -66,36 +65,7 @@ impl fmt::Debug for SessionSecret {
     }
 }
 
-// Logical relay-session metadata key; the injected backend owns the relay's subspace.
-const SESSION_SECRET_STORAGE_KEY: &[u8] = b"M_relay_session_secret_v1";
-
 impl SessionSecret {
-    /// Load or atomically bootstrap the shared secret at `M_relay_session_secret_v1` within
-    /// the injected store's subspace. Existing file storage and derivation formats are separate
-    /// and unchanged; this does not migrate a file or select a runtime backend.
-    ///
-    /// One absent-key CAS elects the winner. A conflicting winner must be exactly 32 bytes;
-    /// corrupt data and backend errors fail closed without a rewrite, retry, or random fallback.
-    /// In particular, an uncertain CAS outcome propagates even if the candidate was committed.
-    pub fn from_kv_store(kv: &dyn RelayKvStore) -> Result<Self, KvError> {
-        let parse = |bytes: &[u8]| {
-            <[u8; 32]>::try_from(bytes).map(Self).map_err(|_| {
-                KvError::Backend("stored relay session secret is not exactly 32 bytes".into())
-            })
-        };
-        if let Some(existing) = kv.get(SESSION_SECRET_STORAGE_KEY)? {
-            return parse(&existing);
-        }
-        let candidate = Self::random();
-        match kv.compare_and_swap(SESSION_SECRET_STORAGE_KEY, None, &candidate.0) {
-            Ok(()) => Ok(candidate),
-            Err(KvError::CasConflict {
-                current: Some(existing),
-            }) => parse(&existing),
-            Err(error) => Err(error),
-        }
-    }
-
     /// A secret that lasts as long as this process.
     pub fn random() -> Self {
         let mut secret = [0; 32];
@@ -615,8 +585,6 @@ pub(crate) fn parse_mailbox_authentication(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    mod shared_secret;
 
     fn runtime_with(session: &SessionSecret, config: MailboxConfig) -> MonadMailboxRuntime {
         MonadMailboxRuntime::enabled(

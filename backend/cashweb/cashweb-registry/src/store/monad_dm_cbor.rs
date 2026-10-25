@@ -554,17 +554,6 @@ impl Owner {
             Ok(generated)
         })
     }
-
-    /// Return the relay's cluster-safe VAPID P-256 keypair backed by any [`crate::store::kv_store::RelayKvStore`]
-    /// (RocksDB, Memory, or FoundationDB cluster subspace) using atomic CAS on `b"M_vapid_privkey"`.
-    #[allow(dead_code)]
-    pub(crate) fn get_or_init_vapid_keypair_from_kv(
-        &self,
-        kv: &dyn crate::store::kv_store::RelayKvStore,
-    ) -> Result<crate::store::notification_policy::VapidKeyPair> {
-        crate::store::notification_policy::VapidKeyPair::from_kv_store_or_env(kv)
-            .map_err(|_| CanonicalError::Unavailable)
-    }
 }
 
 use crate::store::notification_policy::VAPID_PRIVATE_KEY_STORAGE_KEY;

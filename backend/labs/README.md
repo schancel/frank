@@ -11,8 +11,8 @@ NATS. There are no chain RPC credentials or wallet keys in these files.
 
 This ordinary implementation adds local test infrastructure only. The daemon
 currently opens the registry and direct-message stores with raw RocksDB APIs.
-`RelayKvStore` is a separate transactional storage contract; implementing its
-FoundationDB driver does not switch those daemon stores to FoundationDB.
+`RelayKvStore` is a separate transaction contract with RocksDB and FoundationDB
+drivers; only the group store uses it, and the daemon does not select FoundationDB.
 NATS carries ephemeral wakeups, while durable store reads supply catch-up data.
 No persistent or wire format changes, migrations, production configuration changes,
 or deployment commands are part of these labs.
@@ -66,10 +66,9 @@ docker compose -f backend/labs/compose.rocks-nats.yml down --volumes
 ## FoundationDB + Core NATS infrastructure and driver contract
 
 This Compose file does **not** launch a FoundationDB-backed Frank relay. It
-provides FDB 7.3.63 and Core NATS, plus an optional `driver-contract` profile for
-checkouts containing the `cashweb-registry` `foundationdb` feature and ignored
-`live_foundationdb_contract` test. Server and native client versions are matched.
-The profile intentionally fails to build if that implementation is absent.
+provides FDB 7.3.63 and Core NATS, plus a `driver-contract` profile that runs the
+`RelayKvStore` transaction contract against the live cluster. Server and native
+client versions are matched.
 
 ```sh
 docker compose -f backend/labs/compose.foundationdb-nats.yml up -d fdb nats
@@ -84,19 +83,30 @@ docker compose -f backend/labs/compose.foundationdb-nats.yml --profile test \
   run --build --rm driver-contract
 ```
 
-The first test runs:
+The first test runs the transaction contract
+(`cashweb-registry/tests/kv_transaction_contract.rs`):
 
 ```sh
-cargo test -p cashweb-registry --features foundationdb live_foundationdb_contract \
-  -- --ignored --nocapture
+FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster cargo test -p cashweb-registry \
+  --features foundationdb --test kv_transaction_contract -- --ignored --exact \
+  live_fdb::foundationdb_transaction_contract --nocapture
 ```
 
+It starts two worker processes from its own executable, each booting its own FDB
+client, and runs 1,000 rounds in which both read one key before either commits:
+each round must have exactly one winner, the loser must have re-run, and the final
+value must equal the number of wins. It also checks that a range read conflicts
+with a concurrent insert into that range (and not with one outside it), that
+oversized values and transactions and a transaction over 5 s return their typed
+errors without committing, and that concurrent atomic adds commute. The same
+contract runs against RocksDB in every `cargo test` (`rocksdb_transaction_contract`).
+It uses a fresh random subspace and clears only that subspace on success.
+
 `FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster` points at the cluster file shared
-with the FDB container. The driver tests use a fresh subspace and check real
-transactional behavior. A second process runs the same real NATS/offline cursor
-contract as the Rocks lab, with `FoundationDbKvStore` and the live driver selected
-at compile time by the feature. It reopens an independent client and deletes only
-its random test subspace's inbox rows on success. NATS does not provide the FDB
+with the FDB container. A second process runs the same real NATS/offline cursor
+contract as the Rocks lab, with `FoundationDbKvStore` selected at compile time by
+the feature. It reopens an independent client and deletes only its random test
+subspace's inbox rows on success. NATS does not provide the FDB
 durability or CAS.
 FDB advertises its container IP, so tests run inside the Compose network. Merely
 publishing its coordinator port would not provide a working host client on

@@ -31,8 +31,8 @@ methods on blocking workers. The local labs describe the executable test boundar
 | Notification delivery hints | `events::RelayEventBus` | In-memory broadcast or Core NATS; no durable authority |
 
 `RelayKvStore` is a component transaction interface. Its existence does not replace the
-owners above. In particular, a VAPID helper accepting this interface is not evidence
-that canonical message admission or registry writes use it.
+owners above: only `GroupStore` uses it today, so it is not evidence that canonical message
+admission or registry writes do.
 
 ## Required predecessor stack
 

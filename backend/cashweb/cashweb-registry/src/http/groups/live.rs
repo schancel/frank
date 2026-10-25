@@ -181,7 +181,7 @@ mod tests {
             axum::Server::from_tcp(listener)
                 .unwrap()
                 .serve(
-                    router_with_store(GroupStore::new_in_memory(
+                    router_with_store(GroupStore::new_temporary(
                         cashweb_config::GroupAppendPolicy {
                             per_message_price_credits: 0,
                         },

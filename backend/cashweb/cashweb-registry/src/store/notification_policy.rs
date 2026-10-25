@@ -569,7 +569,7 @@ pub fn verify_p256_ecdsa(
     u256_mod(&rx, &P256_N) == r
 }
 
-/// Storage key for the cluster-wide 32-byte P-256 VAPID private scalar in [`crate::store::kv_store::RelayKvStore`].
+/// Storage key for the relay's 32-byte P-256 VAPID private scalar.
 pub const VAPID_PRIVATE_KEY_STORAGE_KEY: &[u8] = b"M_vapid_privkey";
 
 /// Alias for [`VapidKeyPair`] when used as the cluster-wide WebPush VAPID signer/dispatcher.
@@ -577,11 +577,10 @@ pub type VapidDispatcher = VapidKeyPair;
 
 /// Relay P-256 VAPID keypair for signing RFC 8292 WebPush JWT headers.
 ///
-/// Cluster-safe and persistent:
+/// Persistent:
 /// - In multi-node relay deployments, set `FRANK_VAPID_PRIVATE_KEY` (32-byte hex or base64url)
-///   from a shared secret or use [`VapidKeyPair::from_kv_store_or_env`] against a shared
-///   [`crate::store::kv_store::RelayKvStore`] so every relay pod advertises the same
-///   `vapid_public_key` and can push to subscriptions registered on any pod.
+///   from a shared secret so every relay pod advertises the same `vapid_public_key` and can
+///   push to subscriptions registered on any pod.
 /// - In single-node deployments without `FRANK_VAPID_PRIVATE_KEY`, the 32-byte private key is
 ///   generated once and persisted in RocksDB under `M_vapid_privkey` so subscriptions survive
 ///   process restarts.
@@ -637,75 +636,6 @@ impl VapidKeyPair {
     /// Parse a 32-byte VAPID private key from hex or base64url string.
     pub fn from_private_key_str(encoded: &str) -> Result<Self, String> {
         decode_vapid_private_key(encoded).map(|bytes| Self::from_private_key_bytes(&bytes))
-    }
-
-    // Persisted/configured identities must already be valid scalars: normalizing them would
-    // silently advertise a different identity. Keep the permissive constructors unchanged.
-    fn from_checked_private_key_bytes(
-        raw_key: &[u8],
-    ) -> Result<Self, crate::store::kv_store::KvError> {
-        use crate::store::kv_store::KvError;
-        let bytes: [u8; 32] = raw_key
-            .try_into()
-            .map_err(|_| KvError::Backend("corrupted VAPID private key length".into()))?;
-        let scalar = u256_from_be_bytes(&bytes);
-        if u256_is_zero(&scalar) || u256_cmp(&scalar, &P256_N) != std::cmp::Ordering::Less {
-            return Err(KvError::Backend(
-                "corrupted VAPID private key scalar".into(),
-            ));
-        }
-        Ok(Self::from_private_key_bytes(&bytes))
-    }
-
-    /// Load or atomically bootstrap the cluster's shared VAPID keypair from:
-    /// 1. `FRANK_VAPID_PRIVATE_KEY` environment variable (if set and non-empty), or
-    /// 2. [`crate::store::kv_store::RelayKvStore`] under `b"M_vapid_privkey"` using atomic
-    ///    `compare_and_swap(b"M_vapid_privkey", None, candidate)` so multiple stateless
-    ///    relay replicas booting simultaneously converge on the single winning keypair.
-    /// An invalid non-empty override fails before accessing `kv`.
-    pub fn from_kv_store_or_env(
-        kv: &dyn crate::store::kv_store::RelayKvStore,
-    ) -> Result<Self, crate::store::kv_store::KvError> {
-        use crate::store::kv_store::KvError;
-        match std::env::var("FRANK_VAPID_PRIVATE_KEY") {
-            Ok(raw_env) if !raw_env.trim().is_empty() => {
-                let bytes = decode_vapid_private_key(&raw_env).map_err(|_| {
-                    KvError::InvalidArgument(
-                        "invalid FRANK_VAPID_PRIVATE_KEY encoding or length".into(),
-                    )
-                })?;
-                Self::from_checked_private_key_bytes(&bytes).map_err(|_| {
-                    KvError::InvalidArgument("invalid FRANK_VAPID_PRIVATE_KEY scalar".into())
-                })
-            }
-            Ok(_) | Err(std::env::VarError::NotPresent) => Self::from_kv_store(kv),
-            Err(std::env::VarError::NotUnicode(_)) => Err(KvError::InvalidArgument(
-                "FRANK_VAPID_PRIVATE_KEY must be Unicode".into(),
-            )),
-        }
-    }
-
-    /// Load or atomically bootstrap the cluster's shared VAPID keypair from `kv` under
-    /// `b"M_vapid_privkey"` using serializable `compare_and_swap`.
-    /// Corrupt stored identities and CAS winners fail without rotation or retry.
-    pub fn from_kv_store(
-        kv: &dyn crate::store::kv_store::RelayKvStore,
-    ) -> Result<Self, crate::store::kv_store::KvError> {
-        if let Some(existing) = kv.get(VAPID_PRIVATE_KEY_STORAGE_KEY)? {
-            return Self::from_checked_private_key_bytes(&existing);
-        }
-        let candidate = Self::generate();
-        match kv.compare_and_swap(
-            VAPID_PRIVATE_KEY_STORAGE_KEY,
-            None,
-            candidate.private_key_bytes(),
-        ) {
-            Ok(()) => Ok(candidate),
-            Err(crate::store::kv_store::KvError::CasConflict {
-                current: Some(existing),
-            }) => Self::from_checked_private_key_bytes(&existing),
-            Err(other) => Err(other),
-        }
     }
 
     /// Generate a fresh random P-256 VAPID keypair.
@@ -924,49 +854,11 @@ mod tests {
             &sig_bytes
         ));
     }
-
-    #[test]
-    fn multi_replica_vapid_bootstrap_converges_via_shared_kv_cas() {
-        use crate::store::kv_store::{FoundationDbKvStore, SimulatedFdbCluster};
-        use std::thread;
-
-        let cluster = SimulatedFdbCluster::new();
-        let mut handles = Vec::new();
-        for _ in 0..10 {
-            let replica_kv = FoundationDbKvStore::connect_simulated(
-                "/etc/foundationdb/fdb.cluster",
-                b"frank_cluster:",
-                cluster.clone(),
-            );
-            handles.push(thread::spawn(move || {
-                VapidKeyPair::from_kv_store(&replica_kv).unwrap()
-            }));
-        }
-
-        let results: Vec<VapidKeyPair> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        assert_eq!(results.len(), 10);
-        let first = &results[0];
-        for kp in &results[1..] {
-            assert_eq!(
-                kp.public_key_base64url(),
-                first.public_key_base64url(),
-                "all 10 concurrent relay replicas must converge on the single CAS-winning VAPID keypair"
-            );
-            assert_eq!(kp.private_key_bytes(), first.private_key_bytes());
-        }
-    }
 }
 
 #[cfg(test)]
-mod kv_validation_tests {
+mod key_validation_tests {
     use super::*;
-    use crate::store::kv_store::{
-        KvError, KvTransactionOp, MemoryKvStore, RelayKvStore, Versionstamp,
-    };
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Mutex,
-    };
 
     fn one() -> Vec<u8> {
         let mut bytes = vec![0; 32];
@@ -993,161 +885,6 @@ mod kv_validation_tests {
         ]
     }
 
-    #[derive(Debug)]
-    struct Probe {
-        initial: Result<Option<Vec<u8>>, KvError>,
-        cas: Result<(), KvError>,
-        gets: AtomicUsize,
-        candidates: Mutex<Vec<Vec<u8>>>,
-    }
-    impl Probe {
-        fn new(initial: Result<Option<Vec<u8>>, KvError>, cas: Result<(), KvError>) -> Self {
-            Self {
-                initial,
-                cas,
-                gets: AtomicUsize::new(0),
-                candidates: Mutex::new(vec![]),
-            }
-        }
-        fn counts(&self) -> (usize, usize) {
-            (
-                self.gets.load(Ordering::SeqCst),
-                self.candidates.lock().unwrap().len(),
-            )
-        }
-    }
-    impl RelayKvStore for Probe {
-        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
-            assert_eq!(key, VAPID_PRIVATE_KEY_STORAGE_KEY);
-            self.gets.fetch_add(1, Ordering::SeqCst);
-            self.initial.clone()
-        }
-        fn compare_and_swap(
-            &self,
-            key: &[u8],
-            expected: Option<&[u8]>,
-            value: &[u8],
-        ) -> Result<(), KvError> {
-            assert_eq!(key, VAPID_PRIVATE_KEY_STORAGE_KEY);
-            assert!(expected.is_none());
-            assert_eq!(value.len(), 32);
-            assert!(value.iter().any(|b| *b != 0) && value < order().as_slice());
-            self.candidates.lock().unwrap().push(value.to_vec());
-            self.cas.clone()
-        }
-        fn put(&self, _: &[u8], _: &[u8]) -> Result<(), KvError> {
-            panic!("unexpected unconditional write")
-        }
-        fn delete(&self, _: &[u8]) -> Result<(), KvError> {
-            panic!("unexpected identity deletion")
-        }
-        fn put_versionstamped(
-            &self,
-            _: &[u8],
-            _: &[u8],
-            _: &[u8],
-        ) -> Result<(Vec<u8>, Versionstamp), KvError> {
-            panic!("unexpected stamped write")
-        }
-        fn scan_prefix_range(
-            &self,
-            _: &[u8],
-            _: Option<&[u8]>,
-            _: usize,
-        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
-            panic!("unexpected scan")
-        }
-        fn execute_transaction(
-            &self,
-            _: Vec<KvTransactionOp>,
-        ) -> Result<Option<Versionstamp>, KvError> {
-            panic!("unexpected transaction")
-        }
-    }
-
-    #[test]
-    fn corrupted_initial_identity_is_refused_without_cas_or_rotation() {
-        for invalid in corrupt_values() {
-            let kv = Probe::new(Ok(Some(invalid)), Ok(()));
-            assert!(
-                VapidKeyPair::from_kv_store(&kv).is_err(),
-                "corrupt stored identity accepted"
-            );
-            assert_eq!(kv.counts(), (1, 0));
-        }
-    }
-
-    #[test]
-    fn corrupted_cas_winner_is_refused_without_retry_or_rotation() {
-        for invalid in corrupt_values() {
-            let kv = Probe::new(
-                Ok(None),
-                Err(KvError::CasConflict {
-                    current: Some(invalid),
-                }),
-            );
-            assert!(
-                VapidKeyPair::from_kv_store(&kv).is_err(),
-                "corrupt CAS winner accepted"
-            );
-            assert_eq!(kv.counts(), (1, 1));
-        }
-    }
-
-    #[test]
-    fn valid_existing_and_cas_winner_keep_the_exact_identity() {
-        let mut below_order = order();
-        below_order[31] -= 1;
-        for valid in [one(), below_order] {
-            for existing in [true, false] {
-                let kv = if existing {
-                    Probe::new(Ok(Some(valid.clone())), Ok(()))
-                } else {
-                    Probe::new(
-                        Ok(None),
-                        Err(KvError::CasConflict {
-                            current: Some(valid.clone()),
-                        }),
-                    )
-                };
-                let identity = VapidKeyPair::from_kv_store(&kv).unwrap();
-                assert!(identity.private_key_bytes().as_slice() == valid);
-                assert_eq!(kv.counts(), (1, usize::from(!existing)));
-            }
-        }
-    }
-
-    #[test]
-    fn absent_identity_bootstraps_once_and_reloads_the_persisted_key() {
-        let kv = MemoryKvStore::new();
-        assert!(kv.get(VAPID_PRIVATE_KEY_STORAGE_KEY).unwrap().is_none());
-        let first = VapidKeyPair::from_kv_store(&kv).unwrap();
-        let persisted = kv.get(VAPID_PRIVATE_KEY_STORAGE_KEY).unwrap().unwrap();
-        assert!(persisted.as_slice() == first.private_key_bytes());
-        assert_eq!(persisted.len(), 32);
-        assert!(persisted.iter().any(|b| *b != 0) && persisted < order());
-        let second = VapidKeyPair::from_kv_store(&kv).unwrap();
-        assert!(first == second);
-        assert!(kv.get(VAPID_PRIVATE_KEY_STORAGE_KEY).unwrap().unwrap() == persisted);
-    }
-
-    #[test]
-    fn backend_and_missing_or_ambiguous_winner_errors_propagate_without_retry() {
-        let unavailable = KvError::Backend("read unavailable".into());
-        let kv = Probe::new(Err(unavailable.clone()), Ok(()));
-        assert!(VapidKeyPair::from_kv_store(&kv) == Err(unavailable));
-        assert_eq!(kv.counts(), (1, 0));
-        for error in [
-            KvError::CasConflict { current: None },
-            KvError::Backend("commit outcome unknown".into()),
-            KvError::InvalidArgument("backend rejected argument".into()),
-        ] {
-            let kv = Probe::new(Ok(None), Err(error.clone()));
-            assert!(VapidKeyPair::from_kv_store(&kv) == Err(error));
-            assert_eq!(kv.counts(), (1, 1));
-        }
-    }
-
     #[test]
     fn permissive_constructors_keep_their_existing_normalization_contract() {
         let expected = VapidKeyPair::from_private_key_bytes(&one().try_into().unwrap());
@@ -1164,93 +901,5 @@ mod kv_validation_tests {
             }
         }
         assert!(VapidKeyPair::from_private_key_str("invalid encoding").is_err());
-    }
-
-    #[test]
-    fn actual_environment_overrides_validate_before_backend_access() {
-        const CHILD: &str = "FRANK_VAPID_KV_VALIDATION_CHILD";
-        if let Ok(case) = std::env::var(CHILD) {
-            let kv = Probe::new(Ok(Some(one())), Ok(()));
-            let result = VapidKeyPair::from_kv_store_or_env(&kv);
-            match case.as_str() {
-                "invalid" => {
-                    assert!(result.is_err(), "invalid explicit override accepted");
-                    assert_eq!(kv.counts(), (0, 0));
-                }
-                "valid" => {
-                    assert!(result.unwrap().private_key_bytes().as_slice() == one());
-                    assert_eq!(kv.counts(), (0, 0));
-                }
-                "absent-or-empty" => {
-                    assert!(result.unwrap().private_key_bytes().as_slice() == one());
-                    assert_eq!(kv.counts(), (1, 0));
-                }
-                _ => panic!("unknown test case"),
-            }
-            return;
-        }
-        let exact = std::thread::current().name().unwrap().to_owned();
-        let mut cases: Vec<(String, Option<std::ffi::OsString>)> = vec![
-            ("absent-or-empty".into(), None),
-            ("absent-or-empty".into(), Some("".into())),
-            ("absent-or-empty".into(), Some(" \t\n".into())),
-            ("invalid".into(), Some("invalid encoding".into())),
-        ];
-        for invalid in corrupt_values() {
-            cases.push(("invalid".into(), Some(hex::encode(invalid).into())));
-        }
-        // Empty is intentionally equivalent to no override, rather than malformed key bytes.
-        cases.retain(|(case, value)| {
-            case != "invalid" || value.as_ref().is_some_and(|v| !v.is_empty())
-        });
-        for valid in [
-            hex::encode(one()),
-            format!("  0X{}  ", hex::encode(one())),
-            base64::encode_config(one(), base64::URL_SAFE_NO_PAD),
-            base64::encode(one()),
-        ] {
-            cases.push(("valid".into(), Some(valid.into())));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            cases.push((
-                "invalid".into(),
-                Some(std::ffi::OsString::from_vec(vec![0xff])),
-            ));
-        }
-        for (case, value) in cases {
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-            child
-                .args(["--exact", &exact, "--nocapture"])
-                .env(CHILD, case)
-                .env_remove("FRANK_VAPID_PRIVATE_KEY");
-            if let Some(value) = value {
-                child.env("FRANK_VAPID_PRIVATE_KEY", value);
-            }
-            let output = child.output().unwrap();
-            assert!(
-                output.status.success(),
-                "isolated VAPID override boundary failed"
-            );
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            assert!(
-                stdout.contains(&format!("test {exact} ... ok")),
-                "child did not run the selected boundary test"
-            );
-            let summaries: Vec<_> = stdout
-                .lines()
-                .filter(|line| line.starts_with("test result:"))
-                .collect();
-            assert_eq!(
-                summaries.len(),
-                1,
-                "child test summary missing or duplicated"
-            );
-            assert!(
-                summaries[0].starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"),
-                "child did not pass exactly one unignored test"
-            );
-        }
     }
 }

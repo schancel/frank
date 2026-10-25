@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::store::kv_store::{KvError, KvTransactionOp, RelayKvStore};
+use crate::store::kv_store::{KvError, RelayKvStore, Transact};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -304,7 +304,10 @@ impl ManifestChunkSpec {
                 CHUNK_SPEC_KEY_BYTE_LEN,
                 CborValue::Int(i128::from(self.byte_len)),
             ),
-            (CHUNK_SPEC_KEY_SHA256, CborValue::Bytes(self.sha256.to_vec())),
+            (
+                CHUNK_SPEC_KEY_SHA256,
+                CborValue::Bytes(self.sha256.to_vec()),
+            ),
         ])
     }
 
@@ -328,7 +331,9 @@ impl ManifestChunkSpec {
                         ));
                     };
                     let idx = u32::try_from(*n).map_err(|_| {
-                        BlobError::InvalidManifest(format!("chunk spec index out of u32 range: {n}"))
+                        BlobError::InvalidManifest(format!(
+                            "chunk spec index out of u32 range: {n}"
+                        ))
                     })?;
                     index = Some(idx);
                 }
@@ -420,11 +425,12 @@ impl EncryptedAttachmentManifest {
                 count: chunk_slices.len(),
                 max_chunks: MAX_CHUNK_COUNT,
             })?;
-            let byte_len = u32::try_from(slice.len()).map_err(|_| BlobError::InvalidChunkLength {
-                chunk_index: index,
-                expected: max_chunk_bytes,
-                actual: usize::MAX,
-            })?;
+            let byte_len =
+                u32::try_from(slice.len()).map_err(|_| BlobError::InvalidChunkLength {
+                    chunk_index: index,
+                    expected: max_chunk_bytes,
+                    actual: usize::MAX,
+                })?;
             total_ciphertext_bytes = total_ciphertext_bytes
                 .checked_add(u64::from(byte_len))
                 .ok_or(BlobError::AttachmentTooLarge {
@@ -506,12 +512,12 @@ impl EncryptedAttachmentManifest {
                     actual: spec.byte_len as usize,
                 });
             }
-            computed_total = computed_total
-                .checked_add(u64::from(spec.byte_len))
-                .ok_or(BlobError::AttachmentTooLarge {
+            computed_total = computed_total.checked_add(u64::from(spec.byte_len)).ok_or(
+                BlobError::AttachmentTooLarge {
                     total_bytes: u64::MAX,
                     max_bytes: MAX_ATTACHMENT_BYTES,
-                })?;
+                },
+            )?;
         }
 
         if computed_total != self.total_ciphertext_bytes {
@@ -541,8 +547,11 @@ impl EncryptedAttachmentManifest {
     /// Convert this manifest to a [`CborValue::Map`], including any retained [`Self::extra_fields`].
     pub fn to_cbor_value(&self) -> Result<CborValue, BlobError> {
         self.validate()?;
-        let chunk_values: Vec<CborValue> =
-            self.chunks.iter().map(ManifestChunkSpec::to_cbor_value).collect();
+        let chunk_values: Vec<CborValue> = self
+            .chunks
+            .iter()
+            .map(ManifestChunkSpec::to_cbor_value)
+            .collect();
         let mut entries = vec![
             (
                 MANIFEST_KEY_SCHEMA_VERSION,
@@ -568,9 +577,7 @@ impl EncryptedAttachmentManifest {
         ];
         for (extra_k, extra_v) in &self.extra_fields {
             let k_u64 = u64::try_from(*extra_k).map_err(|_| {
-                BlobError::InvalidManifest(format!(
-                    "extra_fields key {extra_k} out of u64 range"
-                ))
+                BlobError::InvalidManifest(format!("extra_fields key {extra_k} out of u64 range"))
             })?;
             entries.push((k_u64, extra_v.clone()));
         }
@@ -668,9 +675,7 @@ impl EncryptedAttachmentManifest {
                         ));
                     };
                     let max_cb = u32::try_from(*n).map_err(|_| {
-                        BlobError::InvalidManifest(format!(
-                            "max_chunk_bytes out of u32 range: {n}"
-                        ))
+                        BlobError::InvalidManifest(format!("max_chunk_bytes out of u32 range: {n}"))
                     })?;
                     max_chunk_bytes = Some(max_cb);
                 }
@@ -1202,10 +1207,7 @@ fn gc_tombstone_key(attachment_id: &AttachmentId) -> Vec<u8> {
     key
 }
 
-fn verify_chunk_bytes(
-    spec: &ManifestChunkSpec,
-    bytes: &[u8],
-) -> Result<ChunkDigest, BlobError> {
+fn verify_chunk_bytes(spec: &ManifestChunkSpec, bytes: &[u8]) -> Result<ChunkDigest, BlobError> {
     if bytes.len() != spec.byte_len as usize {
         return Err(BlobError::InvalidChunkLength {
             chunk_index: spec.index,
@@ -1250,12 +1252,14 @@ impl<B: ChunkPayloadBackend> CoordinatedBlobStore<B> {
         &self,
         session_id: &UploadSessionId,
     ) -> Result<Option<(StoredStagingSession, EncryptedAttachmentManifest)>, BlobError> {
-        let Some(raw) = self.kv.get(&staging_session_key(session_id))? else {
+        let Some(raw) = self
+            .kv
+            .transact(|tx| tx.get(&staging_session_key(session_id)))?
+        else {
             return Ok(None);
         };
-        let stored: StoredStagingSession = serde_json::from_slice(&raw).map_err(|e| {
-            BlobError::Backend(format!("corrupt staging session record: {e}"))
-        })?;
+        let stored: StoredStagingSession = serde_json::from_slice(&raw)
+            .map_err(|e| BlobError::Backend(format!("corrupt staging session record: {e}")))?;
         let manifest = EncryptedAttachmentManifest::decode_canonical(&stored.manifest_cbor)?;
         Ok(Some((stored, manifest)))
     }
@@ -1265,7 +1269,9 @@ impl<B: ChunkPayloadBackend> CoordinatedBlobStore<B> {
         session_id: &UploadSessionId,
     ) -> Result<Vec<u32>, BlobError> {
         let prefix = staging_chunk_got_prefix(session_id);
-        let rows = self.kv.scan_prefix_range(&prefix, None, MAX_CHUNK_COUNT + 1)?;
+        let rows = self
+            .kv
+            .transact(|tx| tx.scan_prefix(&prefix, None, MAX_CHUNK_COUNT + 1))?;
         let mut indices = Vec::with_capacity(rows.len());
         for (k, _) in rows {
             if k.len() == prefix.len() + 4 {
@@ -1282,19 +1288,23 @@ impl<B: ChunkPayloadBackend> CoordinatedBlobStore<B> {
         &self,
         attachment_id: &AttachmentId,
     ) -> Result<Option<(StoredPublishedManifest, EncryptedAttachmentManifest)>, BlobError> {
-        let Some(raw) = self.kv.get(&manifest_key(attachment_id))? else {
+        let Some(raw) = self
+            .kv
+            .transact(|tx| tx.get(&manifest_key(attachment_id)))?
+        else {
             return Ok(None);
         };
-        let stored: StoredPublishedManifest = serde_json::from_slice(&raw).map_err(|e| {
-            BlobError::Backend(format!("corrupt published manifest record: {e}"))
-        })?;
+        let stored: StoredPublishedManifest = serde_json::from_slice(&raw)
+            .map_err(|e| BlobError::Backend(format!("corrupt published manifest record: {e}")))?;
         let manifest = EncryptedAttachmentManifest::decode_canonical(&stored.manifest_cbor)?;
         Ok(Some((stored, manifest)))
     }
 
     fn scan_references(&self, attachment_id: &AttachmentId) -> Result<Vec<[u8; 32]>, BlobError> {
         let prefix = reference_prefix(attachment_id);
-        let rows = self.kv.scan_prefix_range(&prefix, None, usize::MAX)?;
+        let rows = self
+            .kv
+            .transact(|tx| tx.scan_prefix(&prefix, None, usize::MAX))?;
         let mut refs = Vec::with_capacity(rows.len());
         for (k, _) in rows {
             if k.len() == prefix.len() + 32 {
@@ -1342,35 +1352,37 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         let encoded = serde_json::to_vec(&record)
             .map_err(|e| BlobError::Backend(format!("serialize staging session: {e}")))?;
 
-        match self
-            .kv
-            .compare_and_swap(&staging_session_key(&session_id), None, &encoded)
-        {
-            Ok(()) => Ok(StagingSessionState {
+        let created = self.kv.transact(|tx| {
+            let key = staging_session_key(&session_id);
+            if tx.get(&key)?.is_some() {
+                return Ok::<_, KvError>(false);
+            }
+            tx.set(&key, &encoded)?;
+            Ok(true)
+        })?;
+        if created {
+            return Ok(StagingSessionState {
                 session_id,
                 manifest,
                 staged_at_ms,
                 staged_expires_at_ms,
                 verified_chunks: Vec::new(),
-            }),
-            Err(KvError::CasConflict { .. }) => {
-                let (existing, existing_manifest) = self
-                    .load_staging_session(&session_id)?
-                    .ok_or(BlobError::SessionConflict(session_id))?;
-                if existing.manifest_cbor != record.manifest_cbor {
-                    return Err(BlobError::SessionConflict(session_id));
-                }
-                let verified_chunks = self.load_verified_chunk_indices(&session_id)?;
-                Ok(StagingSessionState {
-                    session_id,
-                    manifest: existing_manifest,
-                    staged_at_ms: existing.staged_at_ms,
-                    staged_expires_at_ms: existing.staged_expires_at_ms,
-                    verified_chunks,
-                })
-            }
-            Err(e) => Err(BlobError::Kv(e)),
+            });
         }
+        let (existing, existing_manifest) = self
+            .load_staging_session(&session_id)?
+            .ok_or(BlobError::SessionConflict(session_id))?;
+        if existing.manifest_cbor != record.manifest_cbor {
+            return Err(BlobError::SessionConflict(session_id));
+        }
+        let verified_chunks = self.load_verified_chunk_indices(&session_id)?;
+        Ok(StagingSessionState {
+            session_id,
+            manifest: existing_manifest,
+            staged_at_ms: existing.staged_at_ms,
+            staged_expires_at_ms: existing.staged_expires_at_ms,
+            verified_chunks,
+        })
     }
 
     async fn get_staging_status(
@@ -1400,13 +1412,14 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
             .load_staging_session(&session_id)?
             .ok_or(BlobError::SessionNotFound(session_id))?;
 
-        let spec = manifest
-            .chunks
-            .get(chunk_index as usize)
-            .ok_or(BlobError::ChunkIndexOutOfBounds {
-                chunk_index,
-                chunk_count: manifest.chunks.len(),
-            })?;
+        let spec =
+            manifest
+                .chunks
+                .get(chunk_index as usize)
+                .ok_or(BlobError::ChunkIndexOutOfBounds {
+                    chunk_index,
+                    chunk_count: manifest.chunks.len(),
+                })?;
 
         verify_chunk_bytes(spec, bytes)?;
 
@@ -1415,7 +1428,7 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
             .write_staged_chunk(&session_id, chunk_index, bytes, &spec.sha256)
             .await?;
         self.kv
-            .put(&staging_chunk_got_key(&session_id, chunk_index), &[1u8])?;
+            .transact(|tx| tx.set(&staging_chunk_got_key(&session_id, chunk_index), &[1u8]))?;
         Ok(())
     }
 
@@ -1488,35 +1501,30 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         let cleanup_bytes = serde_json::to_vec(&cleanup_record)
             .map_err(|e| BlobError::Backend(format!("serialize cleanup tombstone: {e}")))?;
 
-        let mut ops = Vec::with_capacity(manifest.chunks.len() + 4);
-        ops.push(KvTransactionOp::Put {
-            key: manifest_key(&attachment_id),
-            value: published_bytes,
-        });
-        ops.push(KvTransactionOp::Put {
-            key: reference_key(&attachment_id, &owner_ref),
-            value: published_at_ms.to_be_bytes().to_vec(),
-        });
-        ops.push(KvTransactionOp::Put {
-            key: staging_cleanup_key(&session_id),
-            value: cleanup_bytes,
-        });
-        ops.push(KvTransactionOp::Delete {
-            key: staging_session_key(&session_id),
-        });
-        for spec in &manifest.chunks {
-            ops.push(KvTransactionOp::Delete {
-                key: staging_chunk_got_key(&session_id, spec.index),
-            });
-        }
-        self.kv.execute_transaction(ops)?;
+        self.kv.transact(|tx| {
+            tx.set(&manifest_key(&attachment_id), &published_bytes)?;
+            tx.set(
+                &reference_key(&attachment_id, &owner_ref),
+                &published_at_ms.to_be_bytes(),
+            )?;
+            tx.set(&staging_cleanup_key(&session_id), &cleanup_bytes)?;
+            tx.clear(&staging_session_key(&session_id))?;
+            for spec in &manifest.chunks {
+                tx.clear(&staging_chunk_got_key(&session_id, spec.index))?;
+            }
+            Ok::<_, KvError>(())
+        })?;
 
         // Phase 3: Best-effort immediate cleanup of staged chunk payloads (if interrupted by
         // a crash here, `B_cln:{session_id}` ensures `gc_expired` finishes the cleanup).
         for spec in &manifest.chunks {
-            let _ = self.chunks.delete_staged_chunk(&session_id, spec.index).await?;
+            let _ = self
+                .chunks
+                .delete_staged_chunk(&session_id, spec.index)
+                .await?;
         }
-        self.kv.delete(&staging_cleanup_key(&session_id))?;
+        self.kv
+            .transact(|tx| tx.clear(&staging_cleanup_key(&session_id)))?;
 
         let owner_references = self.scan_references(&attachment_id)?;
         Ok(PublishedAttachmentState {
@@ -1535,22 +1543,16 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         let Some((stored, _)) = self.load_published_record(attachment_id)? else {
             return Err(BlobError::NotFound(*attachment_id));
         };
-        let ops = vec![
-            KvTransactionOp::CheckAndSet {
-                key: manifest_key(attachment_id),
-                expected: Some(
-                    serde_json::to_vec(&stored)
-                        .map_err(|e| BlobError::Backend(format!("serialize manifest: {e}")))?,
-                ),
-                new_value: serde_json::to_vec(&stored)
-                    .map_err(|e| BlobError::Backend(format!("serialize manifest: {e}")))?,
-            },
-            KvTransactionOp::Put {
-                key: reference_key(attachment_id, &owner_ref),
-                value: vec![1u8],
-            },
-        ];
-        self.kv.execute_transaction(ops)?;
+        let expected = serde_json::to_vec(&stored)
+            .map_err(|e| BlobError::Backend(format!("serialize manifest: {e}")))?;
+        // The reference commits only while the manifest it was checked against is unchanged.
+        self.kv.transact(|tx| {
+            if tx.get(&manifest_key(attachment_id))?.as_deref() != Some(&expected) {
+                return Err(BlobError::NotFound(*attachment_id));
+            }
+            tx.set(&reference_key(attachment_id, &owner_ref), &[1u8])?;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -1562,7 +1564,8 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         if self.load_published_record(attachment_id)?.is_none() {
             return Err(BlobError::NotFound(*attachment_id));
         }
-        self.kv.delete(&reference_key(attachment_id, &owner_ref))?;
+        self.kv
+            .transact(|tx| tx.clear(&reference_key(attachment_id, &owner_ref)))?;
         let remaining = self.scan_references(attachment_id)?;
         Ok(remaining.len())
     }
@@ -1595,13 +1598,14 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
             .load_published_record(attachment_id)?
             .ok_or(BlobError::NotFound(*attachment_id))?;
 
-        let spec = manifest
-            .chunks
-            .get(chunk_index as usize)
-            .ok_or(BlobError::ChunkIndexOutOfBounds {
-                chunk_index,
-                chunk_count: manifest.chunks.len(),
-            })?;
+        let spec =
+            manifest
+                .chunks
+                .get(chunk_index as usize)
+                .ok_or(BlobError::ChunkIndexOutOfBounds {
+                    chunk_index,
+                    chunk_count: manifest.chunks.len(),
+                })?;
 
         let bytes = self
             .chunks
@@ -1648,7 +1652,7 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         // 1. Finish any interrupted post-publish staging cleanups (`B_cln:`).
         let cleanup_rows = self
             .kv
-            .scan_prefix_range(KEY_PREFIX_STAGING_CLEANUP, None, usize::MAX)?;
+            .transact(|tx| tx.scan_prefix(KEY_PREFIX_STAGING_CLEANUP, None, usize::MAX))?;
         for (key, val) in cleanup_rows {
             if let Ok(record) = serde_json::from_slice::<StoredStagingCleanup>(&val) {
                 let session_id = UploadSessionId(record.session_id);
@@ -1658,13 +1662,13 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
                     }
                 }
             }
-            self.kv.delete(&key)?;
+            self.kv.transact(|tx| tx.clear(&key))?;
         }
 
         // 2. Reclaim expired staging sessions (`now_ms >= staged_expires_at_ms`).
         let staging_rows = self
             .kv
-            .scan_prefix_range(KEY_PREFIX_STAGING_SESSION, None, usize::MAX)?;
+            .transact(|tx| tx.scan_prefix(KEY_PREFIX_STAGING_SESSION, None, usize::MAX))?;
         for (key, val) in staging_rows {
             let stored: StoredStagingSession = serde_json::from_slice(&val).map_err(|e| {
                 BlobError::Backend(format!("corrupt staging session during GC: {e}"))
@@ -1698,13 +1702,12 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
             }
 
             let got_prefix = staging_chunk_got_prefix(&session_id);
-            let got_rows = self.kv.scan_prefix_range(&got_prefix, None, usize::MAX)?;
-            let mut ops = Vec::with_capacity(got_rows.len() + 1);
-            for (got_k, _) in got_rows {
-                ops.push(KvTransactionOp::Delete { key: got_k });
-            }
-            ops.push(KvTransactionOp::Delete { key });
-            self.kv.execute_transaction(ops)?;
+            self.kv.transact(|tx| {
+                for (got_k, _) in tx.scan_prefix(&got_prefix, None, usize::MAX)? {
+                    tx.clear(&got_k)?;
+                }
+                tx.clear(&key)
+            })?;
             report.expired_staging_sessions_removed += 1;
         }
 
@@ -1712,12 +1715,11 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         // have zero remaining live references, and atomically move them to `B_gc:` tombstones.
         let manifest_rows = self
             .kv
-            .scan_prefix_range(KEY_PREFIX_MANIFEST, None, usize::MAX)?;
+            .transact(|tx| tx.scan_prefix(KEY_PREFIX_MANIFEST, None, usize::MAX))?;
         for (m_key, m_val) in manifest_rows {
-            let stored: StoredPublishedManifest =
-                serde_json::from_slice(&m_val).map_err(|e| {
-                    BlobError::Backend(format!("corrupt published manifest during GC: {e}"))
-                })?;
+            let stored: StoredPublishedManifest = serde_json::from_slice(&m_val).map_err(|e| {
+                BlobError::Backend(format!("corrupt published manifest during GC: {e}"))
+            })?;
             let manifest = EncryptedAttachmentManifest::decode_canonical(&stored.manifest_cbor)?;
             let attachment_id = manifest.id();
             let refs = self.scan_references(&attachment_id)?;
@@ -1735,18 +1737,13 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
             let tombstone_bytes = serde_json::to_vec(&tombstone)
                 .map_err(|e| BlobError::Backend(format!("serialize GC tombstone: {e}")))?;
 
-            let mut ops = Vec::with_capacity(refs.len() + 2);
-            ops.push(KvTransactionOp::Delete { key: m_key });
-            for r in &refs {
-                ops.push(KvTransactionOp::Delete {
-                    key: reference_key(&attachment_id, r),
-                });
-            }
-            ops.push(KvTransactionOp::Put {
-                key: gc_tombstone_key(&attachment_id),
-                value: tombstone_bytes,
-            });
-            self.kv.execute_transaction(ops)?;
+            self.kv.transact(|tx| {
+                tx.clear(&m_key)?;
+                for r in &refs {
+                    tx.clear(&reference_key(&attachment_id, r))?;
+                }
+                tx.set(&gc_tombstone_key(&attachment_id), &tombstone_bytes)
+            })?;
 
             if is_expired {
                 report.expired_attachments_removed += 1;
@@ -1759,11 +1756,10 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
         // earlier crash mid-chunk-deletion), deleting their published chunks and the tombstone.
         let gc_rows = self
             .kv
-            .scan_prefix_range(KEY_PREFIX_GC_TOMBSTONE, None, usize::MAX)?;
+            .transact(|tx| tx.scan_prefix(KEY_PREFIX_GC_TOMBSTONE, None, usize::MAX))?;
         for (gc_key, gc_val) in gc_rows {
-            let tombstone: StoredGcTombstone = serde_json::from_slice(&gc_val).map_err(|e| {
-                BlobError::Backend(format!("corrupt GC tombstone: {e}"))
-            })?;
+            let tombstone: StoredGcTombstone = serde_json::from_slice(&gc_val)
+                .map_err(|e| BlobError::Backend(format!("corrupt GC tombstone: {e}")))?;
             let attachment_id = AttachmentId(tombstone.attachment_id);
             // Safety guard: never delete chunks if a live manifest somehow exists for this ID.
             if self.load_published_record(&attachment_id)?.is_none() {
@@ -1777,7 +1773,7 @@ impl<B: ChunkPayloadBackend + 'static> BlobStore for CoordinatedBlobStore<B> {
                     }
                 }
             }
-            self.kv.delete(&gc_key)?;
+            self.kv.transact(|tx| tx.clear(&gc_key))?;
         }
 
         Ok(report)
@@ -1803,7 +1799,7 @@ impl ChunkPayloadBackend for KvChunkBackend {
         _expected_sha256: &[u8; 32],
     ) -> Result<(), BlobError> {
         self.kv
-            .put(&staging_chunk_data_key(session_id, chunk_index), bytes)?;
+            .transact(|tx| tx.set(&staging_chunk_data_key(session_id, chunk_index), bytes))?;
         Ok(())
     }
 
@@ -1812,7 +1808,9 @@ impl ChunkPayloadBackend for KvChunkBackend {
         session_id: &UploadSessionId,
         chunk_index: u32,
     ) -> Result<Option<Vec<u8>>, BlobError> {
-        Ok(self.kv.get(&staging_chunk_data_key(session_id, chunk_index))?)
+        Ok(self
+            .kv
+            .transact(|tx| tx.get(&staging_chunk_data_key(session_id, chunk_index)))?)
     }
 
     async fn delete_staged_chunk(
@@ -1821,9 +1819,9 @@ impl ChunkPayloadBackend for KvChunkBackend {
         chunk_index: u32,
     ) -> Result<bool, BlobError> {
         let key = staging_chunk_data_key(session_id, chunk_index);
-        let existed = self.kv.get(&key)?.is_some();
+        let existed = self.kv.transact(|tx| tx.get(&key))?.is_some();
         if existed {
-            self.kv.delete(&key)?;
+            self.kv.transact(|tx| tx.clear(&key))?;
         }
         Ok(existed)
     }
@@ -1836,7 +1834,7 @@ impl ChunkPayloadBackend for KvChunkBackend {
         _expected_sha256: &[u8; 32],
     ) -> Result<(), BlobError> {
         self.kv
-            .put(&published_chunk_data_key(attachment_id, chunk_index), bytes)?;
+            .transact(|tx| tx.set(&published_chunk_data_key(attachment_id, chunk_index), bytes))?;
         Ok(())
     }
 
@@ -1847,7 +1845,7 @@ impl ChunkPayloadBackend for KvChunkBackend {
     ) -> Result<Option<Vec<u8>>, BlobError> {
         Ok(self
             .kv
-            .get(&published_chunk_data_key(attachment_id, chunk_index))?)
+            .transact(|tx| tx.get(&published_chunk_data_key(attachment_id, chunk_index)))?)
     }
 
     async fn delete_published_chunk(
@@ -1856,16 +1854,17 @@ impl ChunkPayloadBackend for KvChunkBackend {
         chunk_index: u32,
     ) -> Result<bool, BlobError> {
         let key = published_chunk_data_key(attachment_id, chunk_index);
-        let existed = self.kv.get(&key)?.is_some();
+        let existed = self.kv.transact(|tx| tx.get(&key))?.is_some();
         if existed {
-            self.kv.delete(&key)?;
+            self.kv.transact(|tx| tx.clear(&key))?;
         }
         Ok(existed)
     }
 }
 
-/// Embedded [`BlobStore`] backed by [`RelayKvStore`] (such as `RocksDbKvStore` or
-/// `MemoryKvStore`), persisting each bounded chunk under its own `B_stg:` / `B_chk:` key.
+/// Embedded [`BlobStore`] backed by [`RelayKvStore`], persisting each bounded chunk under its
+/// own `B_stg:` / `B_chk:` key. Each chunk is one value, so chunks over the store's value limit
+/// (`kv_store::MAX_VALUE_BYTES`) fail with `KvError::ValueTooLarge`.
 #[derive(Debug, Clone)]
 pub struct RocksDbBlobStore {
     inner: CoordinatedBlobStore<KvChunkBackend>,
@@ -2113,7 +2112,9 @@ impl ChunkPayloadBackend for FsChunkBackend {
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(BlobError::Backend(format!("read published chunk file: {e}"))),
+            Err(e) => Err(BlobError::Backend(format!(
+                "read published chunk file: {e}"
+            ))),
         }
     }
 
@@ -2149,10 +2150,7 @@ pub struct LocalFsBlobStore {
 
 impl LocalFsBlobStore {
     /// Open or initialize a [`LocalFsBlobStore`] at `root_dir` coordinated by `kv`.
-    pub fn new(
-        kv: Arc<dyn RelayKvStore>,
-        root_dir: impl Into<PathBuf>,
-    ) -> Result<Self, BlobError> {
+    pub fn new(kv: Arc<dyn RelayKvStore>, root_dir: impl Into<PathBuf>) -> Result<Self, BlobError> {
         let root_dir = root_dir.into();
         let backend = Arc::new(FsChunkBackend::new(root_dir.clone())?);
         Ok(Self {
@@ -2327,9 +2325,8 @@ pub fn sign_s3_v4_request(
     content_sha256_hex: &str,
 ) -> S3SigV4Headers {
     let date_stamp = &amz_date[0..8];
-    let canonical_headers = format!(
-        "host:{host}\nx-amz-content-sha256:{content_sha256_hex}\nx-amz-date:{amz_date}\n"
-    );
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{content_sha256_hex}\nx-amz-date:{amz_date}\n");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{content_sha256_hex}"
@@ -2805,7 +2802,40 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::store::kv_store::{MemoryKvStore, RocksDbKvStore};
+    use crate::store::kv_store::{KvError, RocksDbKvStore};
+
+    /// Single-operation transactions for test setup and inspection.
+    trait Direct {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError>;
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError>;
+        fn delete(&self, key: &[u8]) -> Result<(), KvError>;
+        fn scan_prefix_range(
+            &self,
+            prefix: &[u8],
+            after: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError>;
+    }
+
+    impl<S: RelayKvStore + ?Sized> Direct for S {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+            self.transact(|tx| tx.get(key))
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            self.transact(|tx| tx.set(key, value))
+        }
+        fn delete(&self, key: &[u8]) -> Result<(), KvError> {
+            self.transact(|tx| tx.clear(key))
+        }
+        fn scan_prefix_range(
+            &self,
+            prefix: &[u8],
+            after: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+            self.transact(|tx| tx.scan_prefix(prefix, after, limit))
+        }
+    }
 
     // -----------------------------------------------------------------------------------------
     // In-Process Axum S3-Compatible HTTP Test Server (validates SigV4 + x-amz-content-sha256)
@@ -2862,7 +2892,11 @@ mod tests {
                     )
                         .into_response();
                 }
-                state.objects.lock().unwrap().insert(full_key, body.to_vec());
+                state
+                    .objects
+                    .lock()
+                    .unwrap()
+                    .insert(full_key, body.to_vec());
                 (AxumStatusCode::OK, Vec::new()).into_response()
             }
             axum::http::Method::GET => {
@@ -3156,7 +3190,7 @@ mod tests {
     #[tokio::test]
     async fn conformance_s3_blob_store_against_live_http_server() {
         let (addr, s3_state) = spawn_mock_s3_server().await;
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
         let config = S3BlobStoreConfig {
             endpoint: format!("http://{addr}"),
             region: "us-east-1".to_string(),
@@ -3197,9 +3231,7 @@ mod tests {
         manifest
             .extra_fields
             .insert(99, CborValue::Text("future-capability-hint".to_string()));
-        manifest
-            .extra_fields
-            .insert(100, CborValue::Int(42));
+        manifest.extra_fields.insert(100, CborValue::Int(42));
 
         let encoded_1 = manifest.encode_canonical().unwrap();
         let decoded = EncryptedAttachmentManifest::decode_canonical(&encoded_1).unwrap();
@@ -3275,7 +3307,10 @@ mod tests {
         let n_1 = derive_chunk_nonce(&k_blob, &att_1, &base_nonce, 1);
         let n_att2_0 = derive_chunk_nonce(&k_blob, &att_2, &base_nonce, 0);
 
-        assert_ne!(n_0, n_1, "distinct chunk indices must produce distinct nonces");
+        assert_ne!(
+            n_0, n_1,
+            "distinct chunk indices must produce distinct nonces"
+        );
         assert_ne!(
             n_0, n_att2_0,
             "distinct attachment_ids must produce distinct nonces"
@@ -3291,7 +3326,7 @@ mod tests {
 
     #[tokio::test]
     async fn crash_injection_across_staging_publish_and_gc_boundaries() {
-        let kv = Arc::new(MemoryKvStore::new());
+        let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
         let store = RocksDbBlobStore::new(kv.clone());
 
         // Scenario A: Crash mid-staging before session completion -> GC reclaims all staged data
@@ -3392,8 +3427,8 @@ mod tests {
         // Verify that a generic file attachment, a video attachment, and an unknown plugin blob
         // of identical chunk structure produce the exact same KV key prefixes and manifest
         // schema with zero application metadata leakage.
-        let kv_file = Arc::new(MemoryKvStore::new());
-        let kv_video = Arc::new(MemoryKvStore::new());
+        let kv_file = Arc::new(RocksDbKvStore::open_temporary().unwrap());
+        let kv_video = Arc::new(RocksDbKvStore::open_temporary().unwrap());
         let store_file = RocksDbBlobStore::new(kv_file.clone());
         let store_video = RocksDbBlobStore::new(kv_video.clone());
 
@@ -3410,7 +3445,10 @@ mod tests {
             .begin_staging(sess, manifest.clone(), 100, 1000)
             .await
             .unwrap();
-        store_file.put_staged_chunk(sess, 0, &payload).await.unwrap();
+        store_file
+            .put_staged_chunk(sess, 0, &payload)
+            .await
+            .unwrap();
         store_file.publish_staged(sess, 200, owner).await.unwrap();
 
         store_video

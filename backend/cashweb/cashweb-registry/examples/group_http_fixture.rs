@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdout().flush()?;
     axum::Server::from_tcp(listener)?
         .serve(
-            router_with_store(GroupStore::new_in_memory(
+            router_with_store(GroupStore::new_temporary(
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },

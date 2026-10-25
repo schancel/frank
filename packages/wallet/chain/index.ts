@@ -203,6 +203,7 @@ export type {
   ContactSendResult,
   ContactSendParams,
   ContactPaymentInfo,
+  ContactPaymentUnsettledReason,
   PreparedContactPayment,
   ReceivedPayment,
   ReceivedPaymentStatus,
@@ -212,6 +213,7 @@ export type {
 export {
   ContactPaymentPendingError,
   ContactPaymentFailedError,
+  ContactPaymentNotSettledError,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
   MAX_STEALTH_ITEM_AMOUNT,

@@ -72,6 +72,17 @@ const node = {
   broadcasts: [] as { from: string; to: string; value: bigint; hash: string }[],
   /** Wallets whose own broadcasts are refused (their node is unreachable). */
   unreachable: new Set<EvmChainWalletHandle>(),
+  /** While set, a broadcast moving exactly this value is held in the mempool: its receipt
+   * waits for `mine()`. */
+  holdValue: undefined as bigint | undefined,
+  held: new Map<string, TransactionReceipt>(),
+  /** Wallets whose chain reads fail (their node is unreachable for reads too). */
+  unreadable: new Set<EvmChainWalletHandle>(),
+}
+/** Puts every held transaction in a block. */
+function mine() {
+  for (const [hash, receipt] of node.held) node.receipts.set(hash, receipt)
+  node.held.clear()
 }
 function attach(wallet: EvmChainWalletHandle) {
   jest
@@ -93,7 +104,10 @@ function attach(wallet: EvmChainWalletHandle) {
     .mockImplementation(async hash => node.transactions.get(hash) ?? null)
   jest
     .spyOn(wallet.provider, 'getTransactionReceipt')
-    .mockImplementation(async hash => node.receipts.get(hash) ?? null)
+    .mockImplementation(async hash => {
+      if (node.unreadable.has(wallet)) throw new Error('node unreachable')
+      return node.receipts.get(hash) ?? null
+    })
   jest
     .spyOn(wallet.provider, 'broadcastTransaction')
     .mockImplementation(async raw => {
@@ -119,7 +133,7 @@ function attach(wallet: EvmChainWalletHandle) {
           index: 0,
         }) as unknown as TransactionResponse,
       )
-      node.receipts.set(hash, {
+      ;(tx.value === node.holdValue ? node.held : node.receipts).set(hash, {
         hash,
         from: tx.from,
         to: tx.to,
@@ -229,6 +243,9 @@ describe('a payment to a contact', () => {
     node.receipts.clear()
     node.broadcasts.length = 0
     node.unreachable.clear()
+    node.unreadable.clear()
+    node.holdValue = undefined
+    node.held.clear()
     extraRoots = []
     useProviderStandIns()
     // Match the provider's fee quote and keep this payment/recovery suite's graphs small.
@@ -481,6 +498,88 @@ describe('a payment to a contact', () => {
     expect(node.broadcasts).toHaveLength(count)
     expect(bobMailbox).toHaveLength(1)
     expect(alice.getContactPayments!()[0].state).toBe('paid')
+  })
+
+  describe('the sender reaches paid once the chain shows the transfer', () => {
+    /** The host's background passes: re-observe broadcast members, then read the mailbox. */
+    const backgroundPass = async (wallet: EvmChainWalletHandle) => {
+      await wallet.reobserveNativeOperations!()
+      await wallet.resumeContactPayments!()
+    }
+    const sendHeld = async () => {
+      // The account's other devices hear of its spends at once (a delivered note to self), so
+      // a settled set is retired from the active journal as soon as the wallet sees it settle.
+      f.config.emitWalletSync = async () => undefined
+      node.holdValue = VALUE
+      const sent = await sendContact({ recipient: bob.identity.address, value: VALUE })
+      // Delivered and broadcast; the node holds the transfer to the contact in its mempool.
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ messageId: sent.messageId, state: 'delivered' }),
+      ])
+      expect(toOneTimeAddresses()).toEqual([expect.objectContaining({ hash: sent.txHash })])
+      return sent
+    }
+
+    it('settles after inclusion, after its set was settled and retired by the wallet', async () => {
+      const sent = await sendHeld()
+      mine()
+      const broadcasts = node.broadcasts.length
+      for (let pass = 0; pass < 3; pass++) await backgroundPass(alice)
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ messageId: sent.messageId, state: 'paid', holdsFunds: false }),
+      ])
+      // The settled set left the active journal; the payment did not depend on finding it there.
+      expect(
+        alice.getNativeOperations!().some(row => row.members.some(m => m.signed?.transactionHash === sent.txHash)),
+      ).toBe(false)
+      // Nothing was sent again: no broadcast, no second message.
+      expect(node.broadcasts).toHaveLength(broadcasts)
+      expect(bobMailbox).toHaveLength(1)
+    })
+
+    it('settles after a reload', async () => {
+      const sent = await sendHeld()
+      mine()
+      // The wallet sees the inclusion and retires the set, then the app is reloaded.
+      await alice.reobserveNativeOperations!()
+      await alice.reobserveNativeOperations!()
+      await alice.close()
+      const restarted = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(restarted)
+      try {
+        installCanonicalDirectory(restarted, await f.directoryFor('alice-restarted', restarted, bob))
+        expect(restarted.getContactPayments!()[0].state).toBe('delivered')
+        const broadcasts = node.broadcasts.length
+        for (let pass = 0; pass < 3; pass++) await backgroundPass(restarted)
+        expect(restarted.getContactPayments!()).toEqual([
+          expect.objectContaining({ messageId: sent.messageId, state: 'paid', holdsFunds: false }),
+        ])
+        expect(node.broadcasts).toHaveLength(broadcasts)
+        expect(bobMailbox).toHaveLength(1)
+      } finally {
+        await restarted.close()
+      }
+    })
+
+    it('Finish settles a landed payment, and says why when it cannot', async () => {
+      const sent = await sendHeld()
+      const key = alice.getContactPayments!()[0].ephemeralPubKey
+      const broadcasts = node.broadcasts.length
+      // Not in a block yet: Finish says so instead of doing nothing.
+      await expect(alice.settleContactPayment!(key)).rejects.toMatchObject({ name: 'ContactPaymentNotSettledError', reason: 'not-in-block' })
+      // The node cannot be read: Finish says that.
+      node.unreadable.add(alice)
+      await expect(alice.settleContactPayment!(key)).rejects.toMatchObject({ name: 'ContactPaymentNotSettledError', reason: 'chain-unreadable' })
+      node.unreadable.delete(alice)
+      expect(alice.getContactPayments!()[0].state).toBe('delivered')
+      mine()
+      expect(await alice.settleContactPayment!(key)).toBe('paid')
+      expect(alice.getContactPayments!()[0]).toEqual(
+        expect.objectContaining({ messageId: sent.messageId, state: 'paid', holdsFunds: false }),
+      )
+      expect(node.broadcasts).toHaveLength(broadcasts)
+      expect(bobMailbox).toHaveLength(1)
+    })
   })
 
   it('the encrypted host message and signed graph are durable before the first broadcast', async () => {

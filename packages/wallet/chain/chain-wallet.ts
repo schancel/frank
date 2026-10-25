@@ -322,7 +322,9 @@ export interface NativeWalletHandle {
    * if its message is stored, otherwise delivered again by the wallet in a new message with the
    * same signed transfer; the answer is its state then. A host calls this to end a held payment
    * (the Wallet page's unfinished payments). Deleting the message that carried a payment does
-   * not call it: the payment stays listed until it is finished. */
+   * not call it: the payment stays listed until it is finished. It never fails silently: when
+   * the message is delivered and the chain does not show the transfer included, it rejects with
+   * `ContactPaymentNotSettledError` saying why; any other failure rejects as it happened. */
   settleContactPayment?(
     ephemeralPubKey: string
   ): Promise<ContactPaymentInfo["state"] | "none">;
@@ -627,6 +629,43 @@ export class ContactPaymentFailedError extends Error {
       `The relay will not deliver this payment's message (${failure}). The payment is kept and can be delivered again.`
     );
     this.name = "ContactPaymentFailedError";
+  }
+}
+
+/** Why a delivered payment is not paid yet, as the chain answered:
+ * - `not-in-block`: its transfer is with the chain node and not in a block yet.
+ * - `chain-unreadable`: the chain could not be read, so whether it landed is not known.
+ * - `not-taken`: the chain node did not take the transfer; the same signed bytes are offered again.
+ * - `not-shown`: the chain does not show the transfer yet.
+ * - `reverted`: the chain included the transfer and it failed.
+ * - `no-record`: the wallet has no record of the signed transfer. */
+export type ContactPaymentUnsettledReason =
+  | "not-in-block"
+  | "chain-unreadable"
+  | "not-taken"
+  | "not-shown"
+  | "reverted"
+  | "no-record";
+
+const UNSETTLED_TEXT: Record<ContactPaymentUnsettledReason, string> = {
+  "not-in-block": "its transfer is with the chain node and not in a block yet; the wallet keeps checking.",
+  "chain-unreadable": "the chain could not be read, so the wallet cannot tell whether its transfer landed; it keeps checking.",
+  "not-taken": "the chain node did not take its transfer; the wallet keeps offering the same signed transfer.",
+  "not-shown": "the chain does not show its transfer yet; the wallet keeps checking.",
+  reverted: "the chain included its transfer and the transfer failed.",
+  "no-record": "the wallet has no record of its signed transfer.",
+};
+
+/** Asked to finish a payment whose message is delivered, the wallet could not show it paid:
+ * `reason` says what the chain answered. Nothing was signed or paid again; the wallet keeps
+ * reconciling the original transfer. */
+export class ContactPaymentNotSettledError extends Error {
+  constructor(
+    readonly messageId: string,
+    readonly reason: ContactPaymentUnsettledReason
+  ) {
+    super(`This payment is not finished yet: ${UNSETTLED_TEXT[reason]} Nothing was paid again.`);
+    this.name = "ContactPaymentNotSettledError";
   }
 }
 

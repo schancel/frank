@@ -26,11 +26,13 @@ import {
 } from "./chain/active-chain";
 import {
   ContactPaymentFailedError,
+  ContactPaymentNotSettledError,
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeTransactionSubmissionError,
+  type ContactPaymentUnsettledReason,
   type ContactSendParams,
   type ContactSendResult,
   type PreparedContactPayment,
@@ -763,6 +765,14 @@ export function createEvmReceivedCoinAndContactManager(
           .find((row) => row.operationId === payment.operationId));
   const transferIncluded = (payment: ContactPayment): boolean =>
     transferMember(payment)?.observation.state === "included-success";
+  /** The payment's transfer as the durable journal records it, active or retired to completed
+   * history. A settled transaction set leaves the active list (its financial completion is
+   * archived), so settlement must never depend on finding it there. */
+  const readTransferMember = async (payment: ContactPayment) =>
+    payment.operationId === undefined
+      ? undefined
+      : primaryMember(await getTopicOwner().runLifetime(() =>
+          getTopicOwner().nativeJournal!.readOperation(payment.operationId!)));
 
   const holdsItsSource = (payment: ContactPayment): boolean =>
     (payment.state === "prepared" || payment.state === "failed") &&
@@ -835,26 +845,57 @@ export function createEvmReceivedCoinAndContactManager(
       return true;
     });
 
+  /** Why the last attempt to settle a delivered payment left it unpaid, by stealth address. */
+  const unsettledWhy = new Map<string, ContactPaymentUnsettledReason>();
+
+  const markPaid = async (payment: ContactPayment): Promise<ContactPayment> => {
+    unsettledWhy.delete(payment.stealthAddress);
+    if (payment.state === "paid") return payment;
+    const paid: ContactPayment = { ...payment, state: "paid" };
+    await paymentStore.put(payment.stealthAddress, paid);
+    return paid;
+  };
+
+  /** Brings a delivered payment's original signed transfer to the chain and records `paid`
+   * once the chain shows it included. Never signs or pays anything new: an already included
+   * transfer is only recorded; otherwise the original operation is resumed (its same bytes). */
   const broadcastContactTransfer = async (
     payment: ContactPayment
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
     const operationId = payment.operationId!;
+    if ((await readTransferMember(payment))?.observation.state === "included-success") {
+      return markPaid(payment);
+    }
+    let pendingReason: string | undefined;
     if (payment.transactionSetOperationId) {
-      await wallet.transactionSetSubmission!.sendTransaction(
+      const report = await wallet.transactionSetSubmission!.sendTransaction(
         await wallet.transactionSetPreparer!.readTransactionSet(payment.transactionSetOperationId)
       );
+      pendingReason = report.pendingReason;
     } else {
       await runWalletExclusive(wallet, (admission) =>
         runMainAccountExclusive(wallet, () => nativeOwner().resumeOperation(operationId, admission))
       );
     }
     invalidateBalanceRead();
-    const member = transferMember(payment);
-    if (member?.observation.state !== "included-success") return payment;
-    const paid: ContactPayment = { ...payment, state: "paid" };
-    await paymentStore.put(payment.stealthAddress, paid);
-    return paid;
+    const member = await readTransferMember(payment);
+    if (member?.observation.state === "included-success") return markPaid(payment);
+    unsettledWhy.set(
+      payment.stealthAddress,
+      member === undefined
+        ? "no-record"
+        : member.observation.state === "included-revert"
+        ? "reverted"
+        : pendingReason === "observation-unavailable"
+        ? "chain-unreadable"
+        : pendingReason === "submission-uncertain"
+        ? "not-taken"
+        : member.observation.state === "pending"
+        ? "not-in-block"
+        : "not-shown"
+    );
+    return payment;
   };
 
   let contactQueue: Promise<unknown> = Promise.resolve();
@@ -911,8 +952,11 @@ export function createEvmReceivedCoinAndContactManager(
         wallet, payloadDigests: [payment.payloadDigest],
       });
       if (statuses[payment.payloadDigest] === "delivered") {
-        payment = { ...payment, state: "delivered" };
-        await paymentStore.put(stealthAddress, payment);
+        // A paid payment whose message is delivered is finished; it is only confirmed here.
+        if (payment.state !== "paid") {
+          payment = { ...payment, state: "delivered" };
+          await paymentStore.put(stealthAddress, payment);
+        }
         return broadcastContactTransfer(payment);
       }
       // Repair already-persisted early `paid` projections without changing the original
@@ -1212,9 +1256,8 @@ export function createEvmReceivedCoinAndContactManager(
               nativeOwner().observe(operationId, 0, lifetime)
             )
             .catch(() => undefined);
-          if (transferIncluded(payment)) {
-            payment = { ...payment, state: "paid" };
-            await paymentStore.put(payment.stealthAddress, payment);
+          if ((await readTransferMember(payment))?.observation.state === "included-success") {
+            payment = await markPaid(payment);
             continue;
           }
         }
@@ -1268,9 +1311,12 @@ export function createEvmReceivedCoinAndContactManager(
         payment.state === "delivered" ||
         (payment.state === "paid" && payment.transactionSetOperationId !== undefined)
       ) {
-        await finishContactPayment(address, undefined, true).catch(
-          () => undefined
-        );
+        // A failure is the answer: the host shows it. Nothing here pays again.
+        const finished = await finishContactPayment(address, undefined, true);
+        const why = unsettledWhy.get(address);
+        if (finished.state === "delivered" && why !== undefined) {
+          throw new ContactPaymentNotSettledError(finished.messageId, why);
+        }
       }
       return paymentStore.get(address)?.state ?? "none";
     });

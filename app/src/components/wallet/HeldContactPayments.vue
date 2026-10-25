@@ -39,7 +39,7 @@
 
 <script lang="ts">
 import { defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, ContactPaymentNotSettledError } from '@frank/wallet/chain'
 import type { ContactPaymentInfo } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { errorNotify } from 'src/utils/notifications'
@@ -84,7 +84,13 @@ export default defineComponent({
         const wallet = await useActiveWallet()
         await wallet.settleContactPayment?.(payment.ephemeralPubKey)
       } catch (error) {
-        errorNotify(error)
+        // The wallet's answer is shown, never swallowed: why it could not finish the payment.
+        errorNotify(error, {
+          fallbackKey:
+            error instanceof ContactPaymentNotSettledError
+              ? `heldContactPayments.notSettled.${error.reason}`
+              : 'heldContactPayments.finishFailed',
+        })
       } finally {
         busy.value = ''
         await read()

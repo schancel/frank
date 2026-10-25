@@ -74,8 +74,10 @@ pub struct RegistryBackends {
     pub objects: Arc<dyn crate::store::large_values::ObjectStore>,
     /// Group append policy (`registry.groups`).
     pub group_policy: cashweb_config::GroupAppendPolicy,
-    /// The operator-provisioned VAPID key (`registry.vapid_private_key_file`), if configured.
-    pub provisioned_vapid: Option<crate::store::notification_policy::VapidKeyPair>,
+    /// Where direct messages keep their state (`registry.cluster.driver`): `None` is this
+    /// replica's RocksDB beside the registry database (`<db>.messages-v3`), `Some` a
+    /// transaction store every replica shares (FoundationDB, under `<prefix>messages-v3/`).
+    pub messages: Option<Arc<dyn crate::store::kv_store::RelayKvStore>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -233,7 +235,7 @@ impl Registry {
                 groups,
                 objects,
                 group_policy,
-                provisioned_vapid: None,
+                messages: None,
             },
         )
     }
@@ -253,8 +255,10 @@ impl Registry {
         backends: RegistryBackends,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
-        let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf())
-            .with_provisioned_vapid(backends.provisioned_vapid);
+        let canonical_dm = match backends.messages {
+            Some(store) => crate::store::monad_dm_cbor::Owner::with_store(store),
+            None => crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+        };
         let groups = crate::store::groups::Owner::new(
             backends.groups,
             backends.objects,

@@ -1027,7 +1027,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
         1,
     )
     .unwrap();
-    let stored = relay.owner().claim(input, now_ms()).unwrap();
+    let stored = relay.owner().claim(input, now_ms()).unwrap().claim;
     // What the store froze is what the request says about itself.
     assert!(stored.request.exact_equal(&request));
     assert_eq!(stored.policy.sender_t1, sender.evidence.hash);
@@ -1108,12 +1108,15 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
     let clock = now_ms() + 60_000;
 
     // Two messages in the same millisecond get different, increasing times.
-    let a = owner.claim(input(400_001), clock).unwrap();
-    let b = owner.claim(input(400_002), clock).unwrap();
+    let a = owner.claim(input(400_001), clock).unwrap().claim;
+    let b = owner.claim(input(400_002), clock).unwrap().claim;
     assert_eq!(delivery_time(&a), clock);
     assert_eq!(delivery_time(&b), clock + 1);
     // The clock steps back an hour: the next message is still after the last one.
-    let c = owner.claim(input(400_003), clock - 3_600_000).unwrap();
+    let c = owner
+        .claim(input(400_003), clock - 3_600_000)
+        .unwrap()
+        .claim;
     assert_eq!(delivery_time(&c), clock + 2);
     // A reader who has seen up to `b` and asks for what came after gets exactly `c`.
     let after_b: Vec<_> = owner
@@ -1166,7 +1169,7 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
             .map(|inputs| {
                 scope.spawn(move || {
                     for input in inputs {
-                        owner.claim(input, clock - 5_000).unwrap();
+                        owner.claim(input, clock - 5_000).unwrap().claim;
                     }
                 })
             })
@@ -1183,7 +1186,10 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
     let fixture = relay.shut_down().await.reopen().await;
     let owner = fixture.registry.canonical_dm();
     let last = clock + 2 + i64::from(WRITERS * EACH);
-    let next = owner.claim(input(420_000), clock - 3_600_000).unwrap();
+    let next = owner
+        .claim(input(420_000), clock - 3_600_000)
+        .unwrap()
+        .claim;
     assert_eq!(delivery_time(&next), last + 1);
     fixture.stop().await;
 }
@@ -1211,7 +1217,7 @@ async fn reading_after_a_position_reads_only_what_follows_it() {
         let input =
             crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
                 .unwrap();
-        times.push(owner.claim(input, now_ms()).unwrap().delivered_at);
+        times.push(owner.claim(input, now_ms()).unwrap().claim.delivered_at);
     }
     let rows_read = |read: &dyn Fn() -> usize| {
         ROWS_READ.with(|count| count.set(0));
@@ -1270,7 +1276,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
         let input =
             crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
                 .unwrap();
-        relay.owner().claim(input, now_ms()).unwrap();
+        relay.owner().claim(input, now_ms()).unwrap().claim;
     }
     assert_eq!(relay.inbox().len(), MESSAGES as usize);
     assert_eq!(relay.mailbox(relay.sender()).len(), MESSAGES as usize);
@@ -1293,7 +1299,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
     policy.payload_hash = payload_hash(&after);
     let input =
         crate::monad_dm_payment::CanonicalPaymentInput::without_directory(after, policy).unwrap();
-    owner.claim(input, now_ms()).unwrap();
+    owner.claim(input, now_ms()).unwrap().claim;
     fixture.stop().await;
 }
 
@@ -1605,5 +1611,347 @@ async fn sealed_sender_message_delivers_to_recipient_inbox_without_sender_outbox
     // The relay never learns the sender's identity, so no `b'O'` row is written.
     assert!(relay.mailbox(relay.sender()).is_empty());
     assert_eq!(relay.broadcasts(), raws(&request));
+    relay.stop().await;
+}
+
+type MailboxSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// `account`'s authenticated mailbox socket on `relay`.
+async fn mailbox_socket(relay: &Relay, account: usize) -> MailboxSocket {
+    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    let client = reqwest::Client::new();
+    let origin = relay.fixture.directory.info().binding.endpoint.clone();
+    let point = relay.fixture.accounts[account].subject.clone();
+    let address = address(&hex::decode(&point).unwrap());
+    let binding = MailboxRequestBinding {
+        resource: MailboxResource::MailboxStream,
+        recipient: address,
+        since: 0,
+        cursor: None,
+        limit: 1,
+        max_bytes: 0,
+    };
+    let headers = private_headers(
+        &client,
+        &relay.url,
+        relay.fixture.root.path(),
+        &point,
+        &binding,
+        &origin,
+    )
+    .await;
+    let field = |name: &str| headers[name].to_str().unwrap().to_owned();
+    let url = format!(
+        "{}/message/mailbox/{}/ws?epoch={}&nonce={}&token={}&expires_at_ms={}&signature={}&subject={}",
+        relay.url.replacen("http", "ws", 1),
+        address.to_hex(),
+        field("x-frank-mailbox-epoch"),
+        field("x-frank-mailbox-nonce"),
+        field("x-frank-mailbox-token"),
+        field("x-frank-mailbox-expires-at-ms"),
+        field("x-frank-mailbox-signature"),
+        point,
+    );
+    tokio_tungstenite::connect_async(url).await.unwrap().0
+}
+
+/// The next JSON push on a mailbox socket, within 5 s.
+async fn next_push(socket: &mut MailboxSocket) -> serde_json::Value {
+    use futures::StreamExt;
+    loop {
+        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("a push in time")
+            .unwrap()
+            .unwrap();
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+            return serde_json::from_str(&text).unwrap();
+        }
+    }
+}
+
+/// The mailbox socket is fed by the event bus only. A hint whose row the store does not hold
+/// is dropped (the client catches up from its cursor); a stored message is pushed with the
+/// time and bytes the store holds, to the recipient as `in` and to the sender as `out`.
+#[tokio::test]
+async fn the_mailbox_socket_pushes_only_rows_the_store_holds_after_the_bus_announces_them() {
+    use futures::StreamExt;
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let mut recipient_socket = mailbox_socket(&relay, 1).await;
+    // Wait until a push can only come from the bus, then announce a row nobody stored.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    relay
+        .server
+        .event_bus
+        .publish_message_arrival(&relay.recipient().to_hex(), &[0x5a; 32])
+        .await
+        .unwrap();
+    let request = message(90_000, 1);
+    delivered(&relay.put(&request).await, &request);
+    let stored = relay.owner().get(&payload_hash(&request)).unwrap().unwrap();
+    // The first push is the stored message: the missing row's hint was dropped.
+    let push = next_push(&mut recipient_socket).await;
+    let sender_push = crate::http::monad_message_cbor::mailbox_push(
+        &relay.server,
+        relay.sender(),
+        payload_hash(&request),
+    )
+    .await
+    .unwrap();
+    let sender_push = serde_json::to_value(sender_push).unwrap();
+    // The sender's own sockets get the same row as `out` (only the recipient's key can sign
+    // a login in this fixture, so the sender's side is read through the same function).
+    for (push, direction) in [(push, "in"), (sender_push, "out")] {
+        assert_eq!(push["direction"], direction);
+        assert_eq!(push["payload_hash"], hex::encode(payload_hash(&request)));
+        assert_eq!(push["timestamp_ms"], stored.delivered_at);
+        assert_eq!(push["delivery"], hex::encode(request.delivery()));
+        assert_eq!(push["context"], hex::encode(request.context()));
+        assert_eq!(
+            push["submission_identity"],
+            hex::encode(request.submission_identity())
+        );
+    }
+    // A mailbox that is neither side of the row gets nothing.
+    assert!(crate::http::monad_message_cbor::mailbox_push(
+        &relay.server,
+        Address([0x77; 20]),
+        payload_hash(&request),
+    )
+    .await
+    .is_none());
+    // An exact repeat is not a new commit: it is not announced again.
+    delivered(&relay.put(&request).await, &request);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), recipient_socket.next())
+            .await
+            .map_or(true, |frame| !matches!(
+                frame,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+            ))
+    );
+    relay.stop().await;
+}
+
+/// Two replicas over one shared transaction backend, as a cluster runs on FoundationDB (here
+/// the RocksDB driver of the same contract). Concurrent messages to one mailbox through both
+/// get unique, strictly increasing times, a reader polling from its cursor misses none, one
+/// request presented to both is stored once, and a challenge used on one is refused on the
+/// other.
+#[tokio::test]
+async fn replicas_sharing_one_store_agree_on_times_rows_and_challenges() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let first = message(600_000, 0);
+    delivered(&relay.put(&first).await, &first);
+    let policy = relay
+        .owner()
+        .get(&payload_hash(&first))
+        .unwrap()
+        .unwrap()
+        .policy;
+    let input = |tag: u32| {
+        let request = message(tag, 0);
+        let mut policy = policy.clone();
+        policy.payload_hash = payload_hash(&request);
+        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
+    };
+    let shared: Arc<dyn crate::store::kv_store::RelayKvStore> =
+        Arc::new(crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap());
+    let replicas = [
+        Owner::with_store(Arc::clone(&shared)),
+        Owner::with_store(Arc::clone(&shared)),
+    ];
+    let recipient = relay.recipient();
+    let clock = now_ms();
+    const EACH: u32 = 100;
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let seen = std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            // Polls replica 1 as a client does: strictly after the last position it saw.
+            let mut seen = Vec::new();
+            let mut after = None;
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::SeqCst);
+                for claim in replicas[1].inbox(recipient, 0, after, 7).unwrap() {
+                    after = Some((claim.delivered_at, claim.policy.payload_hash));
+                    seen.push(claim.delivered_at);
+                }
+                if finished
+                    && replicas[1]
+                        .inbox(recipient, 0, after, 1)
+                        .unwrap()
+                        .is_empty()
+                {
+                    return seen;
+                }
+            }
+        });
+        let writers: Vec<_> = (0..4u32)
+            .map(|writer| {
+                let owner = &replicas[(writer % 2) as usize];
+                let input = &input;
+                scope.spawn(move || {
+                    for n in 0..EACH {
+                        // Every writer on one stuck clock, the worst case for ties.
+                        assert!(
+                            owner
+                                .claim(input(610_000 + writer * 1000 + n), clock)
+                                .unwrap()
+                                .new
+                        );
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        reader.join().unwrap()
+    });
+    assert_eq!(seen.len(), 4 * EACH as usize);
+    assert!(seen.windows(2).all(|pair| pair[0] < pair[1]), "{seen:?}");
+
+    // One request presented to both replicas at once: one row, one new commit.
+    let same = || input(620_000);
+    let barrier = std::sync::Barrier::new(2);
+    let outcomes = std::thread::scope(|scope| {
+        let handles: Vec<_> = replicas
+            .iter()
+            .map(|owner| {
+                let (barrier, same) = (&barrier, &same);
+                scope.spawn(move || {
+                    let input = same();
+                    barrier.wait();
+                    owner.claim(input, clock).unwrap()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(outcomes.iter().filter(|admitted| admitted.new).count(), 1);
+    assert_eq!(
+        outcomes[0].claim.delivered_at,
+        outcomes[1].claim.delivered_at
+    );
+    let all = replicas[0].inbox(recipient, 0, None, 10_000).unwrap();
+    assert_eq!(all.len(), 4 * EACH as usize + 1);
+
+    // A challenge used on one replica is refused on the other, and on itself.
+    let use_on = |owner: &Owner| {
+        owner
+            .consume_challenge([1; 32], recipient, [2; 32], clock + 60_000, clock, 240)
+            .unwrap()
+    };
+    assert_eq!(
+        use_on(&replicas[0]),
+        crate::monad_mailbox::ChallengeConsumption::Consumed
+    );
+    assert_eq!(
+        use_on(&replicas[1]),
+        crate::monad_mailbox::ChallengeConsumption::Rejected
+    );
+    assert_eq!(
+        use_on(&replicas[0]),
+        crate::monad_mailbox::ChallengeConsumption::Rejected
+    );
+    relay.stop().await;
+}
+
+/// A shared store whose next transactions lose their answer: the backend reports an unknown
+/// commit outcome after committing, or after discarding the writes.
+#[derive(Debug)]
+struct LostAnswers {
+    inner: crate::store::kv_store::RocksDbKvStore,
+    /// One entry per coming transaction, front first; `None` answers normally.
+    plan: Mutex<std::collections::VecDeque<Option<bool>>>,
+}
+
+impl crate::store::kv_store::RelayKvStore for LostAnswers {
+    fn run_transaction(
+        &self,
+        body: &mut dyn FnMut(
+            &mut dyn crate::store::kv_store::KvTransaction,
+        ) -> crate::store::kv_store::Outcome,
+    ) -> std::result::Result<crate::store::kv_store::Outcome, crate::store::kv_store::KvError> {
+        use crate::store::kv_store::{KvError, Outcome};
+        let next = self.plan.lock().unwrap().pop_front().flatten();
+        match next {
+            None => self.inner.run_transaction(body),
+            Some(committed) => {
+                self.inner.run_transaction(&mut |tx| {
+                    let outcome = body(tx);
+                    if committed {
+                        outcome
+                    } else {
+                        Outcome::Abort
+                    }
+                })?;
+                Err(KvError::CommitUnknownResult("answer lost".into()))
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_commit_outcome_is_settled_by_a_fence_and_admits_the_message_once() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let first = message(700_000, 0);
+    delivered(&relay.put(&first).await, &first);
+    let policy = relay
+        .owner()
+        .get(&payload_hash(&first))
+        .unwrap()
+        .unwrap()
+        .policy;
+    let input = |tag: u32| {
+        let request = message(tag, 0);
+        let mut policy = policy.clone();
+        policy.payload_hash = payload_hash(&request);
+        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
+    };
+    let store = Arc::new(LostAnswers {
+        inner: crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap(),
+        plan: Mutex::new(Default::default()),
+    });
+    let owner = Owner::with_store(store.clone());
+    let recipient = relay.recipient();
+    let now = now_ms();
+    let plan = |steps: &[Option<bool>]| {
+        *store.plan.lock().unwrap() = steps.iter().copied().collect();
+    };
+
+    // Committed, answer lost: the fence finds the row. One row, reported as new once.
+    plan(&[Some(true)]);
+    let landed = owner.claim(input(700_001), now).unwrap();
+    assert!(landed.new);
+    // Not committed, answer lost: the fence finds nothing, so admission runs again and stores it.
+    plan(&[Some(false)]);
+    let retried = owner.claim(input(700_002), now).unwrap();
+    assert!(retried.new);
+    // The fence itself loses its answer once (after committing): it is simply run again.
+    plan(&[Some(false), Some(true)]);
+    let fenced_twice = owner.claim(input(700_003), now).unwrap();
+    assert!(fenced_twice.new);
+    assert!(store.plan.lock().unwrap().is_empty());
+
+    let inbox = owner.inbox(recipient, 0, None, 100).unwrap();
+    let hashes: Vec<_> = inbox
+        .iter()
+        .map(|claim| claim.policy.payload_hash)
+        .collect();
+    assert_eq!(
+        hashes,
+        [&landed, &retried, &fenced_twice].map(|admitted| admitted.claim.policy.payload_hash)
+    );
+    assert!(inbox
+        .windows(2)
+        .all(|pair| pair[0].delivered_at < pair[1].delivered_at));
+    // Each is a repeat now, wherever it is presented.
+    assert!(!owner.claim(input(700_001), now).unwrap().new);
     relay.stop().await;
 }

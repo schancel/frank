@@ -245,6 +245,12 @@ fn unsupported_storage_fails_before_creating_database_or_session_state() {
             "driver = 'rocksdb'\nfdb_subspace_prefix = 'frank/'",
             "only used with driver = \"foundationdb\"",
         ),
+        // A shared store needs cluster mode, which brings the bus and the provisioned files.
+        (
+            "driver = 'foundationdb'\nfdb_cluster_file = '/nonexistent/fdb.cluster'\n\
+             fdb_subspace_prefix = 'frank/'",
+            "shares state between replicas, so it needs cluster mode",
+        ),
     ] {
         let temp = tempdir::TempDir::new("unsupported-relay-storage").unwrap();
         let db = temp.path().join("must-not-exist").join("registry.rocksdb");
@@ -410,10 +416,25 @@ fn write_secret(path: &std::path::Path, contents: &[u8], mode: u32) {
 fn a_build_without_foundationdb_refuses_the_driver_before_any_state() {
     let temp = tempdir::TempDir::new("fdb-not-built").unwrap();
     let db = temp.path().join("must-not-exist").join("registry.rocksdb");
+    // A complete cluster-mode configuration, so the only refusal left is the missing feature.
+    let (session, vapid) = (temp.path().join("s"), temp.path().join("v"));
+    write_secret(&session, &[7u8; 32], 0o400);
+    write_secret(&vapid, hex::encode([9u8; 32]).as_bytes(), 0o400);
     let config = local_config_without_network_upstream(
         &db,
-        "[registry.cluster]\ndriver = 'foundationdb'\nfdb_cluster_file = '/nonexistent/fdb.cluster'\n\
-         fdb_subspace_prefix = 'frank/'",
+        "[registry.cluster]\nenabled = true\ndriver = 'foundationdb'\n\
+         fdb_cluster_file = '/nonexistent/fdb.cluster'\nfdb_subspace_prefix = 'frank/'\n\
+         cluster_name = 'cli-test'\npreview_replica_local_owners = true\n\
+         [registry.cluster.nats]\nenabled = true\nurl = 'nats://127.0.0.1:9'\n",
+    )
+    .replacen(
+        "[registry]\n",
+        &format!(
+            "[registry]\nsession_secret_file = '{}'\nvapid_private_key_file = '{}'\n",
+            session.display(),
+            vapid.display()
+        ),
+        1,
     );
     assert_refused_before_state(temp.path(), &config, "--features foundationdb");
 }

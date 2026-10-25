@@ -569,22 +569,15 @@ pub fn verify_p256_ecdsa(
     u256_mod(&rx, &P256_N) == r
 }
 
-/// Storage key for the relay's 32-byte P-256 VAPID private scalar.
-pub const VAPID_PRIVATE_KEY_STORAGE_KEY: &[u8] = b"M_vapid_privkey";
-
 /// Alias for [`VapidKeyPair`] when used as the cluster-wide WebPush VAPID signer/dispatcher.
 pub type VapidDispatcher = VapidKeyPair;
 
 /// Relay P-256 VAPID keypair for signing RFC 8292 WebPush JWT headers.
 ///
-/// Persistent:
-/// - In multi-node relay deployments, set `FRANK_VAPID_PRIVATE_KEY` (32-byte hex or base64url)
-///   from a shared secret so every relay pod advertises the same `vapid_public_key` and can
-///   push to subscriptions registered on any pod.
-/// - In single-node deployments without `FRANK_VAPID_PRIVATE_KEY`, the 32-byte private key is
-///   generated once and persisted in RocksDB under `M_vapid_privkey` so subscriptions survive
-///   process restarts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// It is read from a file the host composition names ([`VapidKeyPair::load_or_create`]). Every
+/// replica of a cluster must read the same key, or a subscription registered through one would
+/// be refused pushes signed by another. Changing the key orphans every push subscription.
+#[derive(Clone, PartialEq, Eq)]
 pub struct VapidKeyPair {
     private_key: [u8; 32],
     public_key_uncompressed: [u8; 65],
@@ -614,7 +607,66 @@ fn decode_vapid_private_key(encoded: &str) -> Result<[u8; 32], String> {
     Err("VAPID private key must be 32 bytes in hex or base64url".to_string())
 }
 
+impl std::fmt::Debug for VapidKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VapidKeyPair")
+            .field("public_key", &self.public_key_base64url)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VapidKeyPair {
+    /// Read the key from `path`: 32 raw bytes, or the scalar as hex or base64url text. A
+    /// missing file is created (owner-only) with a new key, as a single relay does on its first
+    /// start. A file that holds anything else is refused, never replaced.
+    pub fn load_or_create(path: &std::path::Path) -> std::io::Result<Self> {
+        let invalid = |what: &str| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: {what}", path.display()),
+            )
+        };
+        match crate::provisioned::read_secret_file(path) {
+            Ok(bytes) => {
+                let scalar = match <[u8; 32]>::try_from(bytes.as_slice()) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        let text = std::str::from_utf8(&bytes).map_err(|_| {
+                            invalid("not a 32-byte P-256 VAPID private key (raw, hex or base64url)")
+                        })?;
+                        decode_vapid_private_key(text).map_err(|error| invalid(&error))?
+                    }
+                };
+                Self::from_valid_scalar(&scalar).ok_or_else(|| {
+                    invalid("not a P-256 private key (the scalar must be between 1 and n - 1)")
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                use std::io::Write;
+                let key = Self::generate();
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                let mut file = options.open(path)?;
+                file.write_all(key.private_key_bytes())?;
+                file.sync_all()?;
+                Ok(key)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The key for `scalar` when it is a P-256 private key as given (`0 < d < n`); never
+    /// reduced, so a stored or provisioned key is the key that signs.
+    fn from_valid_scalar(scalar: &[u8; 32]) -> Option<Self> {
+        let d = u256_from_be_bytes(scalar);
+        if u256_is_zero(&d) || u256_cmp(&d, &P256_N) != std::cmp::Ordering::Less {
+            return None;
+        }
+        Some(Self::from_private_key_bytes(scalar))
+    }
+
     /// Construct a `VapidKeyPair` from a 32-byte private scalar.
     pub fn from_private_key_bytes(raw_key: &[u8; 32]) -> Self {
         let private_key = normalize_p256_scalar(raw_key);
@@ -651,14 +703,12 @@ impl VapidKeyPair {
             .map_err(|_| format!("{}: VAPID key file is not text", path.display()))?;
         let scalar = decode_vapid_private_key(text)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        let d = u256_from_be_bytes(&scalar);
-        if u256_is_zero(&d) || u256_cmp(&d, &P256_N) != std::cmp::Ordering::Less {
-            return Err(format!(
+        Self::from_valid_scalar(&scalar).ok_or_else(|| {
+            format!(
                 "{}: not a P-256 private key (the scalar must be between 1 and n - 1)",
                 path.display()
-            ));
-        }
-        Ok(Self::from_private_key_bytes(&scalar))
+            )
+        })
     }
 
     /// Generate a fresh random P-256 VAPID keypair.
@@ -882,6 +932,63 @@ mod tests {
 #[cfg(test)]
 mod key_validation_tests {
     use super::*;
+
+    /// Every replica reads the operator's file; a single relay creates its own once.
+    #[test]
+    fn the_vapid_key_file_is_created_once_read_back_and_never_replaced_or_printed() {
+        let dir = tempdir::TempDir::new("vapid-key").unwrap();
+        let path = dir.path().join("relay.vapid-key");
+        let created = VapidKeyPair::load_or_create(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), created.private_key_bytes());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(VapidKeyPair::load_or_create(&path).unwrap() == created);
+        // The key in text form, as an operator might write it, owner-only.
+        let write_private = |path: &std::path::Path, bytes: &[u8]| {
+            std::fs::write(path, bytes).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        };
+        let text = dir.path().join("text.vapid-key");
+        write_private(
+            &text,
+            format!("{}\n", hex::encode(created.private_key_bytes())).as_bytes(),
+        );
+        assert!(VapidKeyPair::load_or_create(&text).unwrap() == created);
+        // A key its group or other users can read is refused.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&text, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = VapidKeyPair::load_or_create(&text).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        }
+        // Anything else is refused and left as it is.
+        let broken = dir.path().join("broken.vapid-key");
+        write_private(&broken, b"not a key");
+        assert!(VapidKeyPair::load_or_create(&broken).is_err());
+        assert_eq!(std::fs::read(&broken).unwrap(), b"not a key");
+        // Zero, n and above n, raw or as text, are refused, never reduced to another key.
+        for scalar in corrupt_values() {
+            for bytes in [scalar.clone(), hex::encode(&scalar).into_bytes()] {
+                write_private(&broken, &bytes);
+                let error = VapidKeyPair::load_or_create(&broken).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+                assert!(scalar.is_empty() || !error.to_string().contains(&hex::encode(&scalar)));
+                assert_eq!(std::fs::read(&broken).unwrap(), bytes);
+            }
+        }
+        let printed = format!("{created:?}");
+        assert!(!printed.contains(&hex::encode(created.private_key_bytes())));
+        assert!(printed.contains(created.public_key_base64url()));
+    }
 
     fn one() -> Vec<u8> {
         let mut bytes = vec![0; 32];

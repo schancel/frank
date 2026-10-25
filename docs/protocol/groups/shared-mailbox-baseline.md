@@ -134,10 +134,15 @@ A payment the node already holds, pending or mined, passes.
   `group_payment_check_unavailable` with `Retry-After`, so a relay never accepts writes it
   cannot check.
 
-No sequence is consumed in any of these cases. The remaining exposure: a payment that never
-lands, because the writer replaces it or one of its predecessor nonces at the same nonce after
-the write is accepted, buys that write; at most one write per window slot, the same class as the
-replaced-nonce exposure DM stamps have. A Monad node checks a new transaction against state a
+No sequence is consumed in any of these cases. The check keeps no state; the store does. The
+accept transaction also writes `'G_pnonce:' || u8(len(network)) || network || payer || nonce_be`
+with the payment's hash. A different payment at a (payer, nonce) that already funded a write is
+refused, 402 `group_payment_invalid` with reason `nonce_used`, and nothing is stored; the exact
+retry of the accepted write still gets its receipt first. The remaining exposure: an accepted
+payment that never lands, because the payer gets another transaction included at its nonce. Each
+such write still costs the payer one landed transaction at that nonce, and at most 64 of a payer's
+writes (the window) can be outstanding unlanded: the same class as the replaced-nonce exposure DM
+stamps have. A Monad node checks a new transaction against state a
 few blocks behind the head and keeps turning down bytes it once turned down, so a payment the host
 accepts right after its deposit may be refused by that node for a while (seen on solonet). A home relay forwards the payment untouched: only the host checks
 it, and a payment committed to one host is `wrong_commitment` on every other. Before any of these checks the host looks up whether

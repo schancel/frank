@@ -257,16 +257,21 @@ impl GroupWriteRuntime {
             payer: payment.sender.0,
             payee: payment.payee,
             value_wei: payment.value_wei,
+            nonce: payment.nonce,
         }
     }
 
-    /// Ask the node whether `payment` can land now, before the write is accepted: its nonce is
-    /// the payer's next one and the payer's balance covers its value and most gas cost. A
-    /// payment the node already holds (an earlier attempt's copy) passes. Without an answer the
-    /// write is refused retryably: the relay never accepts a write it could not check.
+    /// Ask the node whether `payment` can land, before the write is accepted: its nonce is in
+    /// `[pending, pending + PAYMENT_NONCE_WINDOW]` and the payer's balance covers its value and
+    /// most gas cost. A payment the node already holds (an earlier attempt's copy) passes.
+    /// Without an answer the write is deferred retryably: the relay never accepts a write it
+    /// could not check. This check keeps no state; the store admits at most one accepted write
+    /// per (network, payer, nonce) (`G_pnonce`), in the accept transaction.
     ///
-    /// What this cannot rule out: a payer that signs a second transaction at the same nonce
-    /// and gets it included first buys one write for that replacement's cost.
+    /// What this cannot rule out: an accepted payment that never lands because the payer gets
+    /// another transaction included at its nonce. With one write per nonce, each such write
+    /// still costs the payer one landed transaction at that nonce, and at most
+    /// `PAYMENT_NONCE_WINDOW + 1` (64) of a payer's writes can be outstanding unlanded.
     pub async fn check_funded(
         &self,
         payment: &VerifiedGroupPayment,

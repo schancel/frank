@@ -17,6 +17,7 @@
  *   `appended` and one `existing` answer with the same receipt from A, and a refusal from B;
  * - a retry returns the original receipt; the payment is broadcast by A after the commit and
  *   mined;
+ * - two different payments at one payer nonce: one write accepted, the other 402 `nonce_used`;
  * - an unfunded payer's write is deferred, then accepted with the same bytes after a deposit;
  * - a payment two nonces above the payer's pending one (behind its own self-sends) is accepted,
  *   and lands once the writer broadcasts its predecessors;
@@ -374,6 +375,32 @@ async function main() {
       }, payment mined in block ${lateReceipt!.blockNumber}`,
     )
 
+    // Only one of a payer's transactions at a nonce can land, so one nonce funds one write: a
+    // second, different payment at the same nonce is refused and stores nothing.
+    const sameNonceA = seal('first at this nonce')
+    const sameNonceB = seal('second at this nonce')
+    const paymentA = await sign(groupWritePaymentPlan(policy, id, sameNonceA))
+    const paymentB = await sign(groupWritePaymentPlan(policy, id, sameNonceB))
+    assert.equal(
+      Transaction.from(`0x${paymentA.raw_transaction}`).nonce,
+      Transaction.from(`0x${paymentB.raw_transaction}`).nonce,
+    )
+    const acceptedA = await put(hostUrl, id, sameNonceA, wire(paymentA))
+    assert.equal(acceptedA.status, 200, JSON.stringify(acceptedA.body))
+    const refusedB = await put(hostUrl, id, sameNonceB, wire(paymentB))
+    assert.equal(refusedB.status, 402, JSON.stringify(refusedB.body))
+    assert.equal(refusedB.body.reason, 'nonce_used')
+    const countAfterNonce = (await messages()).length
+    const receiptA = await monad.provider.waitForTransaction(
+      paymentA.hash,
+      1,
+      60_000,
+    )
+    assert.equal(receiptA?.status, 1)
+    console.log(
+      `two payments at one nonce: seq ${acceptedA.body.server_seq} accepted, the other 402 ${refusedB.body.reason}; ${countAfterNonce} writes stored`,
+    )
+
     // The wallet shuffles a payment among its own self-sends on the same account, and a set
     // can follow a predecessor set not yet landed ([account, n+1] is claimed at reservation),
     // so the payment can sit above the pending nonce. Here two self-sends precede it: the host
@@ -461,7 +488,7 @@ async function main() {
       console.log(
         `wallet write: seq ${seq}, payment ${payment.hash} at nonce ${payment.nonce} of its account mined in block ${receipt.blockNumber}`,
       )
-      assert.equal((await messages()).length, 4)
+      assert.equal((await messages()).length, 5)
     } finally {
       await writer.close()
     }

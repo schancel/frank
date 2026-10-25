@@ -89,20 +89,22 @@ fn relay(kv: &Arc<FoundationDbKvStore>, objects: &Arc<S3ObjectStore>) -> GroupSt
 }
 
 /// Append `envelope` as the HTTP layer does once it has verified the write's payment. This
-/// contract is about where ciphertext lives, so the store is handed a payment fact (keyed by
-/// the envelope's digest, so a retry of one envelope is the same payment) rather than a
+/// contract is about where ciphertext lives, so the store is handed a payment fact (hash and
+/// nonce from the envelope's digest, so a retry of one envelope is the same payment) rather than a
 /// transaction checked on a chain; the cluster lab pays for real.
 fn put_message(
     store: &GroupStore,
     group_id: &str,
     envelope: GroupMessageEnvelope,
 ) -> Result<GroupAppendOutcome, GroupError> {
+    let digest = envelope.signing_digest()?;
     let payment = GroupWritePaymentFact {
         network: "monad-regtest".into(),
-        tx_hash: envelope.signing_digest()?,
+        tx_hash: digest,
         payer: [1; 20],
         payee: [2; 20],
         value_wei: 1,
+        nonce: u64::from_be_bytes(digest[..8].try_into().unwrap()),
     };
     store.put_paid_message(group_id, envelope, &payment)
 }

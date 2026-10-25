@@ -15,6 +15,9 @@
 //!   committed with message/sequence/epoch/ownership guards.
 //! - `'G_pay:' || tx_hash`: the [`GroupPaymentRecord`] of the payment that funded one accepted
 //!   write, committed in that write's acceptance transaction. One payment funds one write.
+//! - `'G_pnonce:' || u8(len(network)) || network || payer[20] || nonce_be[8]`: the hash of the
+//!   payment that took this payer's nonce, written in the same transaction. One nonce funds
+//!   one write: a second, different payment at the same nonce is refused.
 //! - `'G_part:' || key || part_be32`: interim, for epoch frames and mirror state only (an epoch
 //!   descriptor may be 256 KiB; the subscriber set is unbounded). A value longer than the store's
 //!   value limit (or starting with `0x00`) is stored at `key` as `0x00 || part_count_be32` and
@@ -508,6 +511,9 @@ pub enum GroupError {
     /// The payment already funded another accepted write.
     #[error("group write payment already funded another write")]
     PaymentAlreadyUsed,
+    /// Another payment from the same payer at the same nonce already funded an accepted write.
+    #[error("another payment at this payer's nonce already funded a write")]
+    PaymentNonceUsed,
     /// Underlying KV store failure.
     #[error("group storage error: {0}")]
     Storage(String),
@@ -614,6 +620,8 @@ pub struct GroupWritePaymentFact {
     pub payee: [u8; 20],
     /// Value paid, in wei.
     pub value_wei: u128,
+    /// The payer's transaction nonce. At most one accepted write per (network, payer, nonce).
+    pub nonce: u64,
 }
 
 /// `'G_pay:' || tx_hash`: which accepted write a payment funded, written in that write's
@@ -640,6 +648,19 @@ fn payment_key(tx_hash: &[u8; 32]) -> Vec<u8> {
     [GROUP_PAYMENT_PREFIX, tx_hash.as_slice()].concat()
 }
 
+fn payment_nonce_key(network: &str, payer: &[u8; 20], nonce: u64) -> Result<Vec<u8>, GroupError> {
+    let length = u8::try_from(network.len())
+        .map_err(|_| GroupError::InvalidInput("payment network name too long".into()))?;
+    Ok([
+        GROUP_PAYMENT_NONCE_PREFIX,
+        &[length],
+        network.as_bytes(),
+        payer.as_slice(),
+        &nonce.to_be_bytes(),
+    ]
+    .concat())
+}
+
 /// The authoritative acceptance receipt and whether this operation created it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupAppendOutcome {
@@ -656,6 +677,7 @@ const GROUP_PAYMENT_PREFIX: &[u8] = b"G_pay:";
 const GROUP_LARGE_VALUE_PREFIX: &[u8] = b"G_lv:";
 /// Object namespace of group ciphertexts in the shared bucket.
 pub const GROUP_OBJECT_NAMESPACE: &str = "groups";
+const GROUP_PAYMENT_NONCE_PREFIX: &[u8] = b"G_pnonce:";
 const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G:",
     b"G_meta:",
@@ -665,6 +687,7 @@ const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G_vs:",
     b"G_accept:",
     GROUP_PAYMENT_PREFIX,
+    GROUP_PAYMENT_NONCE_PREFIX,
     GROUP_PART_PREFIX,
     GROUP_LARGE_VALUE_PREFIX,
 ];
@@ -1210,8 +1233,8 @@ impl GroupStore {
     /// `payment` as the payment that funded it in the same transaction. Accepted signed content
     /// (including equivalent signature encodings) is authenticated against its historical
     /// certificate and returns the original receipt, without a new sequence, wake or payment
-    /// record. A payment that already funded another write is refused before anything is
-    /// written.
+    /// record. A payment that already funded another write, or a different payment at a
+    /// (payer, nonce) that already funded one, is refused before anything is written.
     pub fn put_paid_message(
         &self,
         path_group_id: &str,
@@ -1297,6 +1320,7 @@ impl GroupStore {
         let authority_key = meta_key(&group_id);
         let sequence_key = seq_key(&group_id);
         let pay_key = payment_key(&payment.tx_hash);
+        let nonce_key = payment_nonce_key(&payment.network, &payment.payer, payment.nonce)?;
         let strip = |value: &str| value.strip_prefix("0x").unwrap_or(value).to_lowercase();
         loop {
             // This is the authorization linearization point: epoch rotation and append read
@@ -1312,6 +1336,11 @@ impl GroupStore {
                 // the re-run of the loser finds the winner's record.
                 if tx.get(&pay_key)?.is_some() {
                     return Err(GroupError::PaymentAlreadyUsed);
+                }
+                // Only one of a payer's transactions at a nonce can ever land, so only one may
+                // fund a write; read here too, so racing writes at one nonce conflict.
+                if tx.get(&nonce_key)?.is_some() {
+                    return Err(GroupError::PaymentNonceUsed);
                 }
                 let server_seq = match tx.get(&sequence_key)? {
                     Some(bytes) => parse_sequence(&bytes, "G_seq value")?
@@ -1345,6 +1374,7 @@ impl GroupStore {
                 tx.set(accept_key, &server_seq.to_be_bytes())?;
                 tx.set(&sequence_key, &server_seq.to_be_bytes())?;
                 tx.set(&pay_key, &record)?;
+                tx.set(&nonce_key, &payment.tx_hash)?;
                 write_message_row(
                     tx,
                     &self.large_values,
@@ -1472,12 +1502,14 @@ impl GroupStore {
         path_group_id: &str,
         envelope: GroupMessageEnvelope,
     ) -> Result<GroupAppendOutcome, GroupError> {
+        let digest = self.local_write(path_group_id, envelope.clone())?.2;
         let payment = GroupWritePaymentFact {
             network: "monad-testnet".into(),
-            tx_hash: self.local_write(path_group_id, envelope.clone())?.2,
+            tx_hash: digest,
             payer: [1; 20],
             payee: [2; 20],
             value_wei: 1,
+            nonce: u64::from_be_bytes(digest[..8].try_into().unwrap()),
         };
         self.put_paid_message(path_group_id, envelope, &payment)
     }
@@ -2042,6 +2074,7 @@ mod tests {
             payer: [1; 20],
             payee: [2; 20],
             value_wei: 1_000,
+            nonce: 0,
         };
         let first = store
             .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment)
@@ -2079,6 +2112,110 @@ mod tests {
     }
 
     #[test]
+    fn one_payer_nonce_funds_one_write() {
+        let kv = temporary();
+        let store = GroupStore::new(kv.clone(), test_objects());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let payment = |tx: u8, nonce: u64| GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: [tx; 32],
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei: 1_000,
+            nonce,
+        };
+        let first = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment(9, 5))
+            .unwrap();
+        assert!(first.appended);
+        // A different payment from the same payer at the same nonce: only one can land, so it
+        // funds nothing, and nothing of it is stored.
+        let before = kv.scan_prefix_range(&[], None, 100).unwrap();
+        assert_eq!(
+            store.put_paid_message(&id, message_for(&id, 0, 2, &write_sk), &payment(8, 5)),
+            Err(GroupError::PaymentNonceUsed)
+        );
+        assert_eq!(kv.scan_prefix_range(&[], None, 100).unwrap(), before);
+        // The exact retry of the accepted write still gets its receipt.
+        let retry = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &payment(9, 5))
+            .unwrap();
+        assert_eq!((retry.appended, retry.message), (false, first.message));
+        // The payer's next nonce, or the same nonce from another payer, funds a write.
+        assert!(
+            store
+                .put_paid_message(&id, message_for(&id, 0, 3, &write_sk), &payment(7, 6))
+                .unwrap()
+                .appended
+        );
+        let other_payer = GroupWritePaymentFact {
+            payer: [3; 20],
+            ..payment(6, 5)
+        };
+        assert!(
+            store
+                .put_paid_message(&id, message_for(&id, 0, 4, &write_sk), &other_payer)
+                .unwrap()
+                .appended
+        );
+    }
+
+    #[test]
+    fn two_payments_racing_at_one_nonce_give_one_append() {
+        for _ in 0..20 {
+            let kv = temporary();
+            let initial = root_frame(3, 0, &"00".repeat(32));
+            let id = initial.group_id.clone();
+            GroupStore::new(kv.clone(), test_objects())
+                .put_epoch(&id, initial)
+                .unwrap();
+            let (write_sk, _) = keypair(42);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let results: Vec<_> = (1..=2u8)
+                .map(|n| {
+                    let store = GroupStore::new(kv.clone(), test_objects());
+                    let payment = GroupWritePaymentFact {
+                        network: "monad-testnet".into(),
+                        tx_hash: [n; 32],
+                        payer: [1; 20],
+                        payee: [2; 20],
+                        value_wei: 1_000,
+                        nonce: 0,
+                    };
+                    let (id, barrier) = (id.clone(), barrier.clone());
+                    let message = message_for(&id, 0, n, &write_sk);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        store.put_paid_message(&id, message, &payment)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let appended = results
+                .iter()
+                .filter(|result| matches!(result, Ok(outcome) if outcome.appended))
+                .count();
+            let refused = results
+                .iter()
+                .filter(|result| **result == Err(GroupError::PaymentNonceUsed))
+                .count();
+            assert_eq!((appended, refused), (1, 1), "{results:?}");
+            assert_eq!(
+                GroupStore::new(kv, test_objects())
+                    .list_messages(&id, 0, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
     fn two_writes_racing_on_one_payment_give_one_append() {
         for _ in 0..20 {
             let kv = temporary();
@@ -2095,6 +2232,7 @@ mod tests {
                 payer: [1; 20],
                 payee: [2; 20],
                 value_wei: 1_000,
+                nonce: 0,
             };
             let barrier = Arc::new(std::sync::Barrier::new(2));
             let results: Vec<_> = (1..=2u8)

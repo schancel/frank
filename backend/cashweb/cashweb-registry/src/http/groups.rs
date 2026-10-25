@@ -125,6 +125,15 @@ fn group_error_response(err: GroupError) -> Response {
             }),
         )
             .into_response(),
+        GroupError::PaymentNonceUsed => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_invalid",
+                reason: "nonce_used",
+                detail: GroupError::PaymentNonceUsed.to_string(),
+            }),
+        )
+            .into_response(),
         GroupError::PaymentAlreadyUsed => (
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentErrorBody {
@@ -1503,10 +1512,12 @@ mod tests {
             [0x42; 32],
         )
         .unwrap();
+        // One accepted write per payer nonce: each write's payment takes its own nonce.
+        let nonce = u64::from_be_bytes(target.signing_digest[..8].try_into().unwrap()) >> 1;
         let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
             &payer,
             chain_id,
-            0,
+            nonce,
             crate::monad_http::Address(to),
             value_wei,
             &calldata,

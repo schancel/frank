@@ -152,8 +152,11 @@ the owner ports, and the ports are written against the new formats.
     gas in the balance. A nonce below pending is refused (402, definitive). A nonce past the
     window or too little balance is deferred (503 `group_payment_not_ready`, retried with the same
     bytes), and so is an unreadable node (503).
-  - Remaining exposure: a payment that never lands, because it or a predecessor nonce is replaced
-    after acceptance, buys that write; at most one write per window slot, the same class as the
+  - One accepted write per (network, payer, nonce): the accept transaction writes `G_pnonce`
+    beside `G_pay`, and a different payment at a used nonce is refused (402 `nonce_used`).
+  - Remaining exposure: an accepted payment that never lands, because another transaction of the
+    payer's lands at its nonce. Each such write costs the payer one landed transaction at that
+    nonce, with at most 64 of its writes outstanding unlanded: the same class as the
     replaced-nonce exposure DMs have.
   - The payer's address links a wallet to its group writes at the host, as DM stamps already do.
   - Still open: the price, and the exact xpub derivation path and index rule.

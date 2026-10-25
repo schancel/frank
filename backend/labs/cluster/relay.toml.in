@@ -1,7 +1,8 @@
 # One configuration for relay-a, relay-b and relay-c of the disposable cluster lab.
 # A template: lab-init writes it to the shared `config` volume with @PUBLIC_ORIGIN@ set to the
 # proxy origin (http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT), the one origin clients use, and
-# @SOLONET_CHECKPOINT_HASH@ set to block 1 of the solonet run it reached (see below).
+# @SOLONET_CHECKPOINT_NUMBER@ and @SOLONET_CHECKPOINT_HASH@ set to a block a few behind the head
+# of the solonet run it reached (see below).
 # Synthetic and local-only: no funded identity and no production state.
 host = "0.0.0.0:8080"
 url = "@PUBLIC_ORIGIN@"
@@ -64,7 +65,7 @@ payee = "burn"
 # solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
 # MONAD_REGTEST_HTTP_RPC_URL; unset, the row is omitted, the relay serves no chain and every
 # group write is answered 503 group_payment_check_unavailable. Set, the relay checks the
-# upstream's chain id and this run's block 1 before serving it. The mailbox below can be
+# upstream's chain id and the checkpoint block before serving it. The mailbox below can be
 # switched on once the direct messages owner is shared (HA step 6).
 [registry.evm_rpc]
 enabled = true
@@ -75,7 +76,7 @@ anonymous_units_per_hour = 1000000
 id = "monad-regtest"
 expected_chain_id = 20143
 upstream_env = "MONAD_REGTEST_HTTP_RPC_URL"
-checkpoint_block_number = 1
+checkpoint_block_number = @SOLONET_CHECKPOINT_NUMBER@
 checkpoint_block_hash = "@SOLONET_CHECKPOINT_HASH@"
 max_get_logs_range = 10
 

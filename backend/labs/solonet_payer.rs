@@ -468,6 +468,14 @@ impl Solonet {
         )
     }
 
+    /// A relay checkpoint for this solonet run: a block a few behind the head and its hash.
+    /// Not block 1: the node keeps only a few thousand blocks of history, so on a solonet that
+    /// has run longer than that block 1 is gone and a relay could not verify it at startup.
+    pub async fn checkpoint(&self) -> (u64, String) {
+        let number = u64::try_from(self.block().await.saturating_sub(16).max(1)).unwrap();
+        (number, self.block_hash(number).await)
+    }
+
     /// Hash of block `number`, as a relay's `checkpoint_block_hash`.
     pub async fn block_hash(&self, number: u64) -> String {
         let block = self

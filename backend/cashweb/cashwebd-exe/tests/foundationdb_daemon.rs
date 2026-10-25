@@ -44,13 +44,13 @@ struct Relay {
 
 impl Relay {
     /// Start one replica of `cluster` with its own local disk under `dir`, on solonet at
-    /// `rpc` whose block 1 is `checkpoint`.
+    /// `rpc` whose block `checkpoint.0` has the hash `checkpoint.1`.
     fn start(
         dir: &Path,
         shared: &Path,
         cluster: &str,
         subspace: &str,
-        (rpc, checkpoint): (&str, &str),
+        (rpc, (checkpoint_number, checkpoint)): (&str, (u64, &str)),
     ) -> Self {
         std::fs::create_dir_all(dir).unwrap();
         let port = TcpListener::bind("127.0.0.1:0")
@@ -97,7 +97,7 @@ anonymous_units_per_hour = 1000000
 id = "monad-regtest"
 expected_chain_id = 20143
 upstream_env = "MONAD_REGTEST_HTTP_RPC_URL"
-checkpoint_block_number = 1
+checkpoint_block_number = {checkpoint_number}
 checkpoint_block_hash = "{checkpoint}"
 max_get_logs_range = 10
 
@@ -279,8 +279,8 @@ async fn cluster_mode_daemons_share_groups_through_foundationdb() {
     let cluster = format!("daemon-{run}");
     let subspace = format!("frank-daemon-test/{run}/");
     let solonet = Solonet::from_env().await;
-    let checkpoint = solonet.block_hash(1).await;
-    let chain = (solonet.rpc_url(), checkpoint.as_str());
+    let (checkpoint_number, checkpoint) = solonet.checkpoint().await;
+    let chain = (solonet.rpc_url(), (checkpoint_number, checkpoint.as_str()));
     // Swept back to the faucet when dropped, at the end of the test or while it unwinds.
     let funded = solonet.fund(1).await;
     let payer = funded.take();

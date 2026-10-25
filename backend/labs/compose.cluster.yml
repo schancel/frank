@@ -152,7 +152,8 @@ services:
   # One-shot: the lab's operator-provisioned files, written once into a shared volume and never
   # on the host (session secret, VAPID key and MinIO root credentials, all mode 0400), and the
   # relay configuration rendered from cluster/relay.toml.in with the proxy's origin on every
-  # start, with solonet's block 1 as the chain checkpoint (a fresh solonet has a new one). Real
+  # start, with a block 16 behind solonet's head as the chain checkpoint: solonet keeps only a
+  # few thousand blocks of history, so block 1 is gone once it has run a while. Real
   # deployments provision these files themselves.
   lab-init:
     image: nats:2.10-alpine
@@ -173,17 +174,25 @@ services:
         [ -s /secrets/s3-credentials ] || printf 'access_key_id = "%s"\nsecret_access_key = "%s"\n' "$$(cat /secrets/minio-root-user)" "$$(cat /secrets/minio-root-password)" > /secrets/s3-credentials
         chmod 0400 /secrets/*
         checkpoint=0x$$(printf '0%.0s' $$(seq 1 64))
+        number=1
         if [ -n "$$SOLONET_RPC_URL" ]; then
+          head=$$(wget -q -O - --header 'content-type: application/json' \
+            --post-data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            "$$SOLONET_RPC_URL" | sed -n 's/.*"result":"\(0x[0-9a-f]*\)".*/\1/p')
+          [ -n "$$head" ] || { echo "no block number from solonet at $$SOLONET_RPC_URL" >&2; exit 1; }
+          number=$$(( $$(printf '%d' "$$head") - 16 ))
+          [ "$$number" -ge 1 ] || number=1
           block=$$(wget -q -O - --header 'content-type: application/json' \
-            --post-data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}' \
+            --post-data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockByNumber\",\"params\":[\"$$(printf '0x%x' "$$number")\",false]}" \
             "$$SOLONET_RPC_URL")
           checkpoint=$$(printf '%s' "$$block" | sed -n 's/.*"hash":"\(0x[0-9a-f]\{64\}\)".*/\1/p')
-          [ -n "$$checkpoint" ] || { echo "no block 1 from solonet at $$SOLONET_RPC_URL: $$block" >&2; exit 1; }
-          echo "solonet at $$SOLONET_RPC_URL, block 1 $$checkpoint"
+          [ -n "$$checkpoint" ] || { echo "no block $$number from solonet at $$SOLONET_RPC_URL: $$block" >&2; exit 1; }
+          echo "solonet at $$SOLONET_RPC_URL, checkpoint block $$number $$checkpoint"
         else
           echo "FRANK_LAB_SOLONET_RPC_URL unset: the relays serve no chain and refuse every group write"
         fi
-        sed -e "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" -e "s|@SOLONET_CHECKPOINT_HASH@|$$checkpoint|" \
+        sed -e "s|@PUBLIC_ORIGIN@|$$PUBLIC_ORIGIN|" -e "s|@SOLONET_CHECKPOINT_NUMBER@|$$number|" \
+          -e "s|@SOLONET_CHECKPOINT_HASH@|$$checkpoint|" \
           /template/relay.toml.in > /config/cashwebd.toml
         chmod 0444 /config/cashwebd.toml
         echo "provisioned files present; relay origin $$PUBLIC_ORIGIN"

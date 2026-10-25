@@ -213,8 +213,9 @@ Services:
   marker present, or once `status` reports the database available, it only waits and
   never configures again. FoundationDB has a fixed address (`.10` on the lab subnet)
   because its cluster file names the coordinator by address and the contract restarts it.
-- `lab-init` reads block 1 from solonet, the relays' chain checkpoint (each solonet run
-  has its own), and writes the operator-provisioned files once into the `secrets` volume, mode
+- `lab-init` reads a block 16 behind solonet's head, the relays' chain checkpoint (each
+  solonet run has its own blocks, and the node keeps only a few thousand blocks of history,
+  so block 1 is gone once solonet has run a while), and writes the operator-provisioned files once into the `secrets` volume, mode
   0400 and never on the host: a random 32-byte session secret, a random VAPID key below
   the P-256 order, and MinIO's root user and random password. On every start it renders
   `cluster/relay.toml.in` into the `config` volume with the proxy origin as the relays'
@@ -340,8 +341,10 @@ payer pays once, at nonce 0; a retry resends the same bytes.
 Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run takes 5 to 8
 minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`
 on Docker Desktop (the Compose files map that name to the host gateway on Linux). Stop it
-with `yarn --cwd packages/bot regtest:monad-stop`. A fresh solonet has a new block 1, so
-restart the cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet.
+with `yarn --cwd packages/bot regtest:monad-stop`. A fresh solonet has new blocks, and
+a checkpoint falls out of solonet's history after a few thousand blocks, so restart the
+cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet or before a run on
+a lab that has been up for a while.
 
 ## Large-value store: FoundationDB + MinIO acceptance
 

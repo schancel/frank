@@ -189,33 +189,46 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 impl Registry {
-    /// Construct new [`Registry`] with the default in-process event bus.
+    /// Construct new [`Registry`] with the default in-process event bus, keeping large values
+    /// in a local directory beside the database (single-node relays and tests).
     pub fn new(
         db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
+        let objects = Arc::new(crate::store::large_values::LocalFsObjectStore::new(
+            Self::local_large_values_path(db.owned_path()),
+        ));
         Self::new_with_event_bus(
             db,
             chain_adapter,
             net,
             Arc::new(crate::events::StandaloneEventBus::new()),
+            objects,
             group_policy,
         )
     }
 
-    /// Construct new [`Registry`] with a custom notification event bus.
+    /// Where a single-node relay keeps large values: beside `registry_db`.
+    pub fn local_large_values_path(registry_db: &std::path::Path) -> std::path::PathBuf {
+        registry_db.with_extension("large-values")
+    }
+
+    /// Construct new [`Registry`] with a custom notification event bus and the object store
+    /// that holds values over the inline limit.
     pub fn new_with_event_bus(
         db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         event_bus: Arc<dyn crate::events::RelayEventBus>,
+        objects: Arc<dyn crate::store::large_values::ObjectStore>,
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
-        let groups = crate::store::groups::Owner::new(db.owned_path().to_path_buf(), group_policy);
+        let groups =
+            crate::store::groups::Owner::new(db.owned_path().to_path_buf(), objects, group_policy);
         Registry {
             db,
             forum,
@@ -308,6 +321,18 @@ impl Registry {
     ) -> std::result::Result<crate::store::groups::GroupStore, crate::store::groups::GroupError>
     {
         self.groups.get()
+    }
+
+    /// Delete unreferenced large group ciphertexts as sweep lease holder `holder`. Blocks; run
+    /// it on a blocking worker.
+    pub fn sweep_large_values(
+        &self,
+        holder: [u8; 16],
+    ) -> std::result::Result<
+        crate::store::large_values::SweepReport,
+        crate::store::groups::GroupError,
+    > {
+        self.groups.get()?.sweep_large_values(holder)
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.

@@ -10,11 +10,13 @@ pub mod directory_usernames;
 pub(crate) mod forum;
 pub mod groups;
 pub mod kv_store;
+pub mod large_values;
 pub mod metadata;
 pub(crate) mod monad_dm_cbor;
 pub mod monad_profiles;
 pub mod notification_policy;
 pub mod pubkeyhash;
+pub mod s3_objects;
 pub mod topics;
 
 #[cfg(feature = "foundationdb")]

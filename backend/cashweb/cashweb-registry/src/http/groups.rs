@@ -1437,6 +1437,7 @@ mod tests {
         });
         let home = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1614,6 +1615,7 @@ mod tests {
         let (origin, origin_task) = spawn_group_router(upstream.clone()).await;
         let home = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1852,6 +1854,7 @@ mod tests {
         // Create a Home Relay (`Relay_Home`) with `mirror_threshold = 2`
         let home_store = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             2,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,

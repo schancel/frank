@@ -5,13 +5,17 @@
 //! - `'G_meta' || group_id`: current [`GroupEpochFrame`], replaced in one transaction.
 //! - `'G_epoch' || group_id || epoch_be`: historical [`GroupEpochFrame`]s by epoch number.
 //! - `'G_seq' || group_id`: monotonic `u64` per-group sequence counter.
-//! - `'G' || group_id || server_seq_be`: ordered [`StoredGroupMessage`] rows.
+//! - `'G' || group_id || server_seq_be`: ordered message rows (binary CBOR). A ciphertext up to
+//!   [`INLINE_LIMIT`] (64 KiB) is inline; a larger one is a [`LargeValueRef`] to the
+//!   content-addressed object store (`groups/sha256/<hex>`), committed with the row.
+//! - `'G_lv:'`: this owner's [`LargeValues`] index (upload intents, references, sweep lease).
 //! - `'G_mirror' || group_id`: home-relay subscriber tracking and mirror state for foreign groups.
 //! - `'G_accept' || group_id || signed_content_digest`: derived original-receipt locator, atomically
 //!   committed with message/sequence/epoch/ownership guards.
-//! - `'G_part:' || key || part_be32`: a frame or row longer than the store's value limit (or
-//!   starting with `0x00`) is stored at `key` as `0x00 || part_count_be32` and split across
-//!   these parts in the same transaction, until large values move to the object store.
+//! - `'G_part:' || key || part_be32`: interim, for epoch frames and mirror state only (an epoch
+//!   descriptor may be 256 KiB; the subscriber set is unbounded). A value longer than the store's
+//!   value limit (or starting with `0x00`) is stored at `key` as `0x00 || part_count_be32` and
+//!   split across these parts in the same transaction. Message rows never use it.
 //! - `'G_format'`: explicit development baseline; old owned records fail without migration.
 
 use std::{
@@ -30,6 +34,10 @@ use thiserror::Error;
 
 use crate::store::kv_store::{
     KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact, MAX_VALUE_BYTES,
+};
+use crate::store::large_values::{
+    LargeValueError, LargeValueRef, LargeValues, LocalFsObjectStore, ObjectStore, Staged,
+    SweepReport, INLINE_LIMIT,
 };
 
 const SUBSPACE_GROUP_MESSAGES: &[u8] = b"G";
@@ -508,6 +516,12 @@ impl From<KvError> for GroupError {
     }
 }
 
+impl From<LargeValueError> for GroupError {
+    fn from(err: LargeValueError) -> Self {
+        GroupError::Storage(err.to_string())
+    }
+}
+
 fn meta_key(group_id: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::with_capacity(SUBSPACE_GROUP_META.len() + 1 + 32);
     k.extend_from_slice(SUBSPACE_GROUP_META);
@@ -569,8 +583,11 @@ pub struct GroupAppendOutcome {
 }
 
 const GROUP_FORMAT_KEY: &[u8] = b"G_format";
-const GROUP_FORMAT: &[u8] = b"group-append-idempotency-v1";
+const GROUP_FORMAT: &[u8] = b"group-binary-rows-v1";
 const GROUP_PART_PREFIX: &[u8] = b"G_part:";
+const GROUP_LARGE_VALUE_PREFIX: &[u8] = b"G_lv:";
+/// Object namespace of group ciphertexts in the shared bucket.
+pub const GROUP_OBJECT_NAMESPACE: &str = "groups";
 const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G:",
     b"G_meta:",
@@ -580,7 +597,144 @@ const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G_vs:",
     b"G_accept:",
     GROUP_PART_PREFIX,
+    GROUP_LARGE_VALUE_PREFIX,
 ];
+
+/// A stored message's ciphertext: inline, or a reference to the object store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredCiphertext {
+    Inline(Vec<u8>),
+    Large(LargeValueRef),
+}
+
+impl StoredCiphertext {
+    fn matches(&self, ciphertext: &[u8]) -> bool {
+        match self {
+            Self::Inline(bytes) => bytes == ciphertext,
+            Self::Large(reference) => *reference == LargeValueRef::of(ciphertext),
+        }
+    }
+}
+
+/// One persisted message row. `group_id` is in the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MessageRow {
+    server_seq: u64,
+    server_time_ms: u64,
+    epoch: u64,
+    nonce: Vec<u8>,
+    write_sig: Vec<u8>,
+    ciphertext: StoredCiphertext,
+}
+
+const ROW_SERVER_SEQ: u64 = 1;
+const ROW_SERVER_TIME_MS: u64 = 2;
+const ROW_EPOCH: u64 = 3;
+const ROW_NONCE: u64 = 4;
+const ROW_WRITE_SIG: u64 = 5;
+const ROW_CIPHERTEXT: u64 = 6;
+const ROW_CIPHERTEXT_SHA256: u64 = 7;
+const ROW_CIPHERTEXT_LEN: u64 = 8;
+
+impl MessageRow {
+    fn from_message(
+        message: &StoredGroupMessage,
+        ciphertext: StoredCiphertext,
+    ) -> Result<Self, GroupError> {
+        Ok(Self {
+            server_seq: message.server_seq,
+            server_time_ms: message.server_time_ms,
+            epoch: message.epoch,
+            nonce: parse_var_hex(&message.nonce, "nonce", 64)?,
+            write_sig: parse_var_hex(&message.write_sig, "write_sig", 73)?,
+            ciphertext,
+        })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, GroupError> {
+        let mut fields = vec![
+            (ROW_SERVER_SEQ, CborValue::Int(self.server_seq.into())),
+            (
+                ROW_SERVER_TIME_MS,
+                CborValue::Int(self.server_time_ms.into()),
+            ),
+            (ROW_EPOCH, CborValue::Int(self.epoch.into())),
+            (ROW_NONCE, CborValue::Bytes(self.nonce.clone())),
+            (ROW_WRITE_SIG, CborValue::Bytes(self.write_sig.clone())),
+        ];
+        match &self.ciphertext {
+            StoredCiphertext::Inline(bytes) => {
+                fields.push((ROW_CIPHERTEXT, CborValue::Bytes(bytes.clone())));
+            }
+            StoredCiphertext::Large(reference) => {
+                fields.push((
+                    ROW_CIPHERTEXT_SHA256,
+                    CborValue::Bytes(reference.digest.to_vec()),
+                ));
+                fields.push((ROW_CIPHERTEXT_LEN, CborValue::Int(reference.len.into())));
+            }
+        }
+        encode_canonical(&cbor_map(fields)).map_err(|e| GroupError::Storage(e.to_string()))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, GroupError> {
+        let corrupt =
+            |what: &str| GroupError::Storage(format!("corrupt group message row: {what}"));
+        let CborValue::Map(entries) =
+            decode_canonical(bytes).map_err(|e| corrupt(&e.to_string()))?
+        else {
+            return Err(corrupt("not a map"));
+        };
+        let (mut seq, mut time, mut epoch, mut nonce, mut sig) = (None, None, None, None, None);
+        let (mut inline, mut digest, mut len) = (None, None, None);
+        let int = |value: CborValue| match value {
+            CborValue::Int(n) => u64::try_from(n).map_err(|_| corrupt("integer out of range")),
+            _ => Err(corrupt("expected an integer")),
+        };
+        for (key, value) in entries {
+            match (key, value) {
+                (ROW_SERVER_SEQ, v) => seq = Some(int(v)?),
+                (ROW_SERVER_TIME_MS, v) => time = Some(int(v)?),
+                (ROW_EPOCH, v) => epoch = Some(int(v)?),
+                (ROW_NONCE, CborValue::Bytes(b)) => nonce = Some(b),
+                (ROW_WRITE_SIG, CborValue::Bytes(b)) => sig = Some(b),
+                (ROW_CIPHERTEXT, CborValue::Bytes(b)) => inline = Some(b),
+                (ROW_CIPHERTEXT_SHA256, CborValue::Bytes(b)) => {
+                    digest = Some(<[u8; 32]>::try_from(b).map_err(|_| corrupt("digest length"))?)
+                }
+                (ROW_CIPHERTEXT_LEN, v) => len = Some(int(v)?),
+                _ => return Err(corrupt("unexpected field")),
+            }
+        }
+        let ciphertext = match (inline, digest, len) {
+            (Some(bytes), None, None) => StoredCiphertext::Inline(bytes),
+            (None, Some(digest), Some(len)) => {
+                StoredCiphertext::Large(LargeValueRef { digest, len })
+            }
+            _ => return Err(corrupt("ciphertext")),
+        };
+        Ok(Self {
+            server_seq: seq.ok_or_else(|| corrupt("server_seq"))?,
+            server_time_ms: time.ok_or_else(|| corrupt("server_time_ms"))?,
+            epoch: epoch.ok_or_else(|| corrupt("epoch"))?,
+            nonce: nonce.ok_or_else(|| corrupt("nonce"))?,
+            write_sig: sig.ok_or_else(|| corrupt("write_sig"))?,
+            ciphertext,
+        })
+    }
+
+    fn into_message(self, group_id_hex: &str, ciphertext: &[u8]) -> StoredGroupMessage {
+        StoredGroupMessage {
+            group_id: group_id_hex.to_string(),
+            server_seq: self.server_seq,
+            server_time_ms: self.server_time_ms,
+            epoch: self.epoch,
+            nonce: hex::encode(&self.nonce),
+            ciphertext: hex::encode(ciphertext),
+            write_sig: hex::encode(&self.write_sig),
+        }
+    }
+}
 
 fn acceptance_key(group_id: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
     [b"G_accept:".as_slice(), group_id, digest].concat()
@@ -686,31 +840,114 @@ fn parse_sequence(bytes: &[u8], what: &str) -> Result<u64, GroupError> {
 #[derive(Debug, Clone)]
 pub struct GroupStore {
     kv: Arc<dyn RelayKvStore>,
+    large_values: LargeValues,
     mirror_threshold: usize,
     group_policy: cashweb_config::GroupAppendPolicy,
 }
 
-impl GroupStore {
-    /// Construct a `GroupStore` over the given [`RelayKvStore`] with default mirror threshold (`2`).
-    pub fn new(kv: Arc<dyn RelayKvStore>, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
-        Self {
-            kv,
-            mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
-            group_policy,
+/// Write a message row at `key`, committing `staged`'s reference with it and dropping the
+/// reference of any row it replaces.
+fn write_message_row(
+    tx: &mut dyn KvTransaction,
+    large_values: &LargeValues,
+    key: &[u8],
+    row: &MessageRow,
+    staged: Option<&Staged>,
+) -> Result<(), GroupError> {
+    if let Some(previous) = tx.get(key)? {
+        if let StoredCiphertext::Large(reference) = MessageRow::decode(&previous)?.ciphertext {
+            large_values.clear_reference(tx, &reference, key)?;
         }
+    }
+    if let Some(staged) = staged {
+        large_values.commit_reference(tx, staged, key)?;
+    }
+    tx.set(key, &row.encode()?)?;
+    Ok(())
+}
+
+impl GroupStore {
+    /// Construct a `GroupStore` over the given [`RelayKvStore`] with default mirror threshold
+    /// (`2`). Ciphertexts over [`INLINE_LIMIT`] are stored in `objects`.
+    pub fn new(
+        kv: Arc<dyn RelayKvStore>,
+        objects: Arc<dyn ObjectStore>,
+        group_policy: cashweb_config::GroupAppendPolicy,
+    ) -> Self {
+        Self::with_mirror_threshold(kv, objects, DEFAULT_GROUP_MIRROR_THRESHOLD, group_policy)
     }
 
     /// Construct a `GroupStore` with a custom subscriber threshold `n` for auto-mirroring.
     pub fn with_mirror_threshold(
         kv: Arc<dyn RelayKvStore>,
+        objects: Arc<dyn ObjectStore>,
         mirror_threshold: usize,
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
+        let large_values = LargeValues::new(
+            kv.clone(),
+            objects,
+            GROUP_LARGE_VALUE_PREFIX,
+            GROUP_OBJECT_NAMESPACE,
+        );
         Self {
             kv,
+            large_values,
             mirror_threshold: mirror_threshold.max(1),
             group_policy,
         }
+    }
+
+    /// Replace how long an unreferenced upload is protected from the sweep.
+    pub fn with_large_value_intent_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.large_values = self.large_values.with_intent_ttl(ttl);
+        self
+    }
+
+    /// This store's large-value index.
+    pub fn large_values(&self) -> &LargeValues {
+        &self.large_values
+    }
+
+    /// Delete unreferenced group ciphertext objects, as lease holder `holder`. A store without
+    /// its format marker has no group state and is left untouched.
+    pub fn sweep_large_values(&self, holder: [u8; 16]) -> Result<SweepReport, GroupError> {
+        let initialized = self.kv.transact(|tx| {
+            check_baseline(tx)?;
+            Ok::<_, GroupError>(tx.get(GROUP_FORMAT_KEY)?.is_some())
+        })?;
+        if !initialized {
+            return Ok(SweepReport::default());
+        }
+        Ok(self.large_values.sweep(holder)?)
+    }
+
+    /// Stage `ciphertext` in the object store when it is too large to inline.
+    fn stage_ciphertext(&self, ciphertext: &[u8]) -> Result<Option<Staged>, GroupError> {
+        if ciphertext.len() <= INLINE_LIMIT {
+            return Ok(None);
+        }
+        Ok(Some(self.large_values.stage(ciphertext)?))
+    }
+
+    fn stored_ciphertext(ciphertext: &[u8], staged: Option<&Staged>) -> StoredCiphertext {
+        match staged {
+            Some(staged) => StoredCiphertext::Large(staged.reference),
+            None => StoredCiphertext::Inline(ciphertext.to_vec()),
+        }
+    }
+
+    /// Materialize a row, fetching a large ciphertext from the object store.
+    fn row_message(
+        &self,
+        group_id_hex: &str,
+        row: MessageRow,
+    ) -> Result<StoredGroupMessage, GroupError> {
+        let ciphertext = match &row.ciphertext {
+            StoredCiphertext::Inline(bytes) => bytes.clone(),
+            StoredCiphertext::Large(reference) => self.large_values.read(reference)?,
+        };
+        Ok(row.into_message(group_id_hex, &ciphertext))
     }
 
     /// A `GroupStore` over a RocksDB database in a temporary directory, removed when the last
@@ -720,7 +957,11 @@ impl GroupStore {
     /// If the temporary database cannot be created.
     pub fn new_temporary(group_policy: cashweb_config::GroupAppendPolicy) -> Self {
         let kv = RocksDbKvStore::open_temporary().expect("open temporary group store");
-        Self::new(Arc::new(kv), group_policy)
+        Self::new(
+            Arc::new(kv),
+            Arc::new(LocalFsObjectStore::temporary()),
+            group_policy,
+        )
     }
 
     /// Configured subscriber count threshold `n` for promoting a foreign group from proxy to mirror.
@@ -879,7 +1120,6 @@ impl GroupStore {
                 appended: false,
             });
         }
-        let ownership_key = mirror_key(&group_id);
         let authority_key = meta_key(&group_id);
         let authority_snapshot = self
             .read(|tx| get_value(tx, &authority_key))?
@@ -925,15 +1165,49 @@ impl GroupStore {
             return Err(GroupError::CreditFundingUnavailable);
         }
 
+        // The object is written before the commit that references it. If the object store is
+        // unavailable the append fails here, before any sequence is allocated.
+        let ciphertext = hex::decode(&envelope.ciphertext)
+            .map_err(|_| GroupError::InvalidInput("ciphertext must be valid hex".into()))?;
+        let staged = self.stage_ciphertext(&ciphertext)?;
+        let result = self.append_staged(
+            path_group_id,
+            &envelope,
+            &accept_key,
+            &authority_snapshot,
+            &ciphertext,
+            staged.as_ref(),
+        );
+        if let Some(staged) = &staged {
+            if !matches!(&result, Ok(outcome) if outcome.appended) {
+                self.large_values.abandon(staged);
+            }
+        }
+        result
+    }
+
+    /// The append loop of [`Self::put_message`], after authentication and staging.
+    fn append_staged(
+        &self,
+        path_group_id: &str,
+        envelope: &GroupMessageEnvelope,
+        accept_key: &[u8],
+        authority_snapshot: &[u8],
+        ciphertext: &[u8],
+        staged: Option<&Staged>,
+    ) -> Result<GroupAppendOutcome, GroupError> {
+        let group_id = parse_group_id_hex(path_group_id)?;
+        let ownership_key = mirror_key(&group_id);
+        let authority_key = meta_key(&group_id);
         let sequence_key = seq_key(&group_id);
         let strip = |value: &str| value.strip_prefix("0x").unwrap_or(value).to_lowercase();
         loop {
             // This is the authorization linearization point: epoch rotation and append read
             // and write in one storage transaction, including across relay instances.
             let committed = self.kv.transact(|tx| {
-                if tx.get(&accept_key)?.is_some()
+                if tx.get(accept_key)?.is_some()
                     || tx.get(&ownership_key)?.is_some()
-                    || get_value(tx, &authority_key)?.as_deref() != Some(&authority_snapshot)
+                    || get_value(tx, &authority_key)?.as_deref() != Some(authority_snapshot)
                 {
                     return Ok::<_, GroupError>(None);
                 }
@@ -952,12 +1226,17 @@ impl GroupStore {
                     ciphertext: strip(&envelope.ciphertext),
                     write_sig: strip(&envelope.write_sig),
                 };
-                let serialized = serde_json::to_vec(&stored).map_err(|error| {
-                    GroupError::Storage(format!("serialize group message: {error}"))
-                })?;
-                tx.set(&accept_key, &server_seq.to_be_bytes())?;
+                let row =
+                    MessageRow::from_message(&stored, Self::stored_ciphertext(ciphertext, staged))?;
+                tx.set(accept_key, &server_seq.to_be_bytes())?;
                 tx.set(&sequence_key, &server_seq.to_be_bytes())?;
-                put_value(tx, &msg_key(&group_id, server_seq), &serialized)?;
+                write_message_row(
+                    tx,
+                    &self.large_values,
+                    &msg_key(&group_id, server_seq),
+                    &row,
+                    staged,
+                )?;
                 Ok(Some(stored))
             })?;
             if let Some(message) = committed {
@@ -966,7 +1245,7 @@ impl GroupStore {
                     appended: true,
                 });
             }
-            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+            if let Some(message) = self.accepted_message(path_group_id, envelope, accept_key)? {
                 return Ok(GroupAppendOutcome {
                     message,
                     appended: false,
@@ -977,8 +1256,7 @@ impl GroupStore {
                     "group ownership changed before message commit".into(),
                 ));
             }
-            if self.read(|tx| get_value(tx, &authority_key))?.as_deref()
-                != Some(&authority_snapshot)
+            if self.read(|tx| get_value(tx, &authority_key))?.as_deref() != Some(authority_snapshot)
             {
                 return Err(GroupError::Forbidden(
                     "group epoch changed before message commit".into(),
@@ -1004,7 +1282,7 @@ impl GroupStore {
                 return Ok(None);
             };
             let sequence = parse_sequence(&locator, "group acceptance locator")?;
-            let raw = get_value(tx, &msg_key(&group_id, sequence))?.ok_or_else(|| {
+            let raw = tx.get(&msg_key(&group_id, sequence))?.ok_or_else(|| {
                 GroupError::Storage("group acceptance index references missing receipt".into())
             })?;
             Ok(Some((sequence, raw)))
@@ -1012,19 +1290,20 @@ impl GroupStore {
         else {
             return Ok(None);
         };
-        let stored: StoredGroupMessage = serde_json::from_slice(&raw).map_err(|error| {
-            GroupError::Storage(format!("corrupt group acceptance receipt: {error}"))
-        })?;
-        if stored.group_id != group_id_hex
-            || stored.server_seq != sequence
-            || stored.epoch != envelope.epoch
-            || stored.nonce != envelope.nonce
-            || stored.ciphertext != envelope.ciphertext
+        let row = MessageRow::decode(&raw)?;
+        let ciphertext = hex::decode(&envelope.ciphertext)
+            .map_err(|_| GroupError::InvalidInput("ciphertext must be valid hex".into()))?;
+        // The digest proves the content; a retry needs no object store read.
+        if row.server_seq != sequence
+            || row.epoch != envelope.epoch
+            || hex::encode(&row.nonce) != envelope.nonce
+            || !row.ciphertext.matches(&ciphertext)
         {
             return Err(GroupError::Storage(
                 "group acceptance index does not match signed content".into(),
             ));
         }
+        let stored = row.into_message(group_id_hex, &ciphertext);
         let cert = self.get_epoch(group_id_hex, stored.epoch)?.ok_or_else(|| {
             GroupError::Storage("accepted message missing historical certificate".into())
         })?;
@@ -1068,21 +1347,14 @@ impl GroupStore {
         let after_key = (after_seq > 0).then(|| msg_key(&group_id, after_seq));
         let bounded_limit = (limit as usize).clamp(1, 500);
         let rows = self.read(|tx| {
-            let rows = tx.scan_prefix(&prefix, after_key.as_deref(), bounded_limit)?;
-            let mut values = Vec::with_capacity(rows.len());
-            for (key, value) in rows {
-                values.push(match split_header(&value)? {
-                    Some(_) => get_value(tx, &key)?.unwrap_or_default(),
-                    None => value,
-                });
-            }
-            Ok(values)
+            tx.scan_prefix(&prefix, after_key.as_deref(), bounded_limit)?
+                .into_iter()
+                .map(|(_, value)| MessageRow::decode(&value))
+                .collect::<Result<Vec<_>, _>>()
         })?;
-        rows.iter()
-            .map(|value| {
-                serde_json::from_slice(value)
-                    .map_err(|e| GroupError::Storage(format!("decode stored group message: {e}")))
-            })
+        // Large ciphertexts are fetched after the read transaction, never inside it.
+        rows.into_iter()
+            .map(|row| self.row_message(group_id_hex, row))
             .collect()
     }
 
@@ -1240,10 +1512,20 @@ impl GroupStore {
 
         let mut max_seq = 0u64;
         for msg in messages {
-            let serialized =
-                serde_json::to_vec(msg).map_err(|e| GroupError::Storage(e.to_string()))?;
-            self.kv
-                .transact(|tx| put_value(tx, &msg_key(&group_id, msg.server_seq), &serialized))?;
+            let ciphertext = parse_var_hex(&msg.ciphertext, "ciphertext", 1024 * 1024)?;
+            let staged = self.stage_ciphertext(&ciphertext)?;
+            let row = MessageRow::from_message(
+                msg,
+                Self::stored_ciphertext(&ciphertext, staged.as_ref()),
+            )?;
+            let key = msg_key(&group_id, msg.server_seq);
+            let written = self.kv.transact(|tx| {
+                write_message_row(tx, &self.large_values, &key, &row, staged.as_ref())
+            });
+            if let (Err(_), Some(staged)) = (&written, &staged) {
+                self.large_values.abandon(staged);
+            }
+            written?;
             max_seq = max_seq.max(msg.server_seq);
         }
 
@@ -1293,16 +1575,23 @@ impl GroupStore {
 #[derive(Debug)]
 pub struct Owner {
     path: PathBuf,
+    objects: Arc<dyn ObjectStore>,
     store: Mutex<Option<GroupStore>>,
     mirror_threshold: usize,
     group_policy: cashweb_config::GroupAppendPolicy,
 }
 
 impl Owner {
-    /// Create a lazy group store owner beside `registry_db`.
-    pub fn new(registry_db: PathBuf, group_policy: cashweb_config::GroupAppendPolicy) -> Self {
+    /// Create a lazy group store owner beside `registry_db`, storing large ciphertexts in
+    /// `objects`.
+    pub fn new(
+        registry_db: PathBuf,
+        objects: Arc<dyn ObjectStore>,
+        group_policy: cashweb_config::GroupAppendPolicy,
+    ) -> Self {
         Self {
             path: registry_db.with_extension(GROUP_STORE_EXTENSION),
+            objects,
             store: Mutex::new(None),
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
             group_policy,
@@ -1321,6 +1610,7 @@ impl Owner {
         }
         let opened = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open(&self.path)?),
+            self.objects.clone(),
             self.mirror_threshold,
             self.group_policy,
         );
@@ -1407,6 +1697,15 @@ mod tests {
         Arc::new(RocksDbKvStore::open_temporary().unwrap())
     }
 
+    /// One object directory shared by this process's tests. Objects are content-addressed, so
+    /// sharing is safe; tests that sweep use their own directory.
+    fn test_objects() -> Arc<dyn ObjectStore> {
+        static SHARED: std::sync::OnceLock<Arc<LocalFsObjectStore>> = std::sync::OnceLock::new();
+        SHARED
+            .get_or_init(|| Arc::new(LocalFsObjectStore::temporary()))
+            .clone()
+    }
+
     /// Delegates to a real store; `on_get` and `on_write` observe each operation first.
     struct ObservedTransaction<'a> {
         inner: &'a mut dyn KvTransaction,
@@ -1478,12 +1777,14 @@ mod tests {
         let kv = temporary();
         let healthy = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
         );
         let failing = GroupStore::new(
             Arc::new(FailingCommitKv(kv)),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1567,6 +1868,7 @@ mod tests {
         let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: u64::MAX,
             },
@@ -1594,6 +1896,7 @@ mod tests {
         let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1636,6 +1939,7 @@ mod tests {
         {
             let store = GroupStore::new(
                 Arc::new(RocksDbKvStore::open(&path).unwrap()),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -1655,6 +1959,7 @@ mod tests {
         {
             let store = GroupStore::new(
                 Arc::new(RocksDbKvStore::open(&path).unwrap()),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 7,
                 },
@@ -1691,6 +1996,7 @@ mod tests {
     fn verify_rotation_serializes_with_in_flight_appends(backend: Arc<dyn RelayKvStore>) {
         let store = GroupStore::new(
             backend.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1707,6 +2013,7 @@ mod tests {
         });
         let in_flight = GroupStore::new(
             paused_kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1739,6 +2046,7 @@ mod tests {
         for nonce in 2..10 {
             let replica = GroupStore::new(
                 backend.clone(),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -1781,6 +2089,7 @@ mod tests {
         ));
         let reopened = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1795,6 +2104,7 @@ mod tests {
         let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1836,6 +2146,7 @@ mod tests {
         let dir = tempdir::TempDir::new("group-owner").unwrap();
         let owner = Arc::new(Owner::new(
             dir.path().join("registry.db"),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1871,12 +2182,14 @@ mod tests {
         let kv = temporary();
         let healthy = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
         );
         let failing = GroupStore::new(
             Arc::new(FailingCommitKv(kv.clone())),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -1914,6 +2227,7 @@ mod tests {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
             let failing = GroupStore::new(
                 Arc::new(FailingCommitKv(backend)),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -1924,6 +2238,7 @@ mod tests {
             let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
             let healthy = GroupStore::new(
                 backend.clone(),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -1933,6 +2248,7 @@ mod tests {
             let committed = healthy.put_epoch(&id, initial).unwrap();
             let failing = GroupStore::new(
                 Arc::new(FailingCommitKv(backend)),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -1943,6 +2259,7 @@ mod tests {
         }
         let reopened = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2399,6 +2716,7 @@ mod tests {
         let empty = temporary();
         GroupStore::new(
             empty.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2410,6 +2728,7 @@ mod tests {
         kv.put(b"unrelated:registry", b"preserved").unwrap();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2441,6 +2760,7 @@ mod tests {
             .map(|seed| {
                 let replica = GroupStore::new(
                     kv.clone(),
+                    test_objects(),
                     cashweb_config::GroupAppendPolicy {
                         per_message_price_credits: 0,
                     },
@@ -2470,6 +2790,7 @@ mod tests {
         .unwrap();
         let unsupported = GroupStore::new(
             old.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2493,6 +2814,7 @@ mod tests {
         let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2507,6 +2829,7 @@ mod tests {
             .map(|_| {
                 let replica = GroupStore::new(
                     kv.clone(),
+                    test_objects(),
                     cashweb_config::GroupAppendPolicy {
                         per_message_price_credits: 0,
                     },
@@ -2554,6 +2877,7 @@ mod tests {
             let kv = Arc::new(RocksDbKvStore::open(&path).unwrap());
             let store = GroupStore::new(
                 kv.clone(),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -2561,6 +2885,7 @@ mod tests {
             let initial = store.put_epoch(&id, initial).unwrap();
             let failing = GroupStore::new(
                 Arc::new(FailingCommitKv(kv.clone())),
+                test_objects(),
                 cashweb_config::GroupAppendPolicy {
                     per_message_price_credits: 0,
                 },
@@ -2585,6 +2910,7 @@ mod tests {
         };
         let store = GroupStore::new(
             Arc::new(RocksDbKvStore::open(&path).unwrap()),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2604,6 +2930,7 @@ mod tests {
         let backend = temporary();
         let store = GroupStore::new(
             backend.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2622,6 +2949,7 @@ mod tests {
         let envelope = message_for(&id, 0, 1, &key);
         let replica = GroupStore::new(
             paused.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2645,6 +2973,7 @@ mod tests {
         let kv = temporary();
         let store = GroupStore::new(
             kv.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2665,9 +2994,15 @@ mod tests {
         kv.put(&index, &receipt.server_seq.to_be_bytes()).unwrap();
         let mut corrupt = receipt.clone();
         corrupt.write_sig = "00".repeat(64);
+        // A well-formed row whose original signature no longer authenticates the content.
+        let row = MessageRow::from_message(
+            &corrupt,
+            StoredCiphertext::Inline(hex::decode(&corrupt.ciphertext).unwrap()),
+        )
+        .unwrap();
         kv.put(
             &msg_key(&group_id, receipt.server_seq),
-            &serde_json::to_vec(&corrupt).unwrap(),
+            &row.encode().unwrap(),
         )
         .unwrap();
         assert!(matches!(
@@ -2694,6 +3029,7 @@ mod tests {
         }
         assert!(Owner::new(
             registry,
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0
             }
@@ -2709,6 +3045,7 @@ mod tests {
         let backend = temporary();
         let store = GroupStore::new(
             backend.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2727,6 +3064,7 @@ mod tests {
         let envelope = message_for(&id, 0, 1, &key);
         let replica = GroupStore::new(
             paused.clone(),
+            test_objects(),
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
             },
@@ -2755,5 +3093,276 @@ mod tests {
             store.put_message(&id, message_for(&id, 0, 2, &key)),
             Err(GroupError::Forbidden(_))
         ));
+    }
+
+    fn large_message(
+        id: &str,
+        nonce: u8,
+        len: usize,
+        write_sk: &SecretKey,
+    ) -> GroupMessageEnvelope {
+        let mut message = message_for(id, 0, nonce, write_sk);
+        message.ciphertext = hex::encode(
+            (0..len)
+                .map(|i| (i * 31 + nonce as usize) as u8)
+                .collect::<Vec<_>>(),
+        );
+        message.write_sig = sign_digest(write_sk, &message.signing_digest().unwrap());
+        message
+    }
+
+    fn object_count(root: &std::path::Path) -> usize {
+        std::fs::read_dir(root.join("groups/sha256"))
+            .map(|dir| {
+                dir.filter(|entry| {
+                    !entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with('.')
+                })
+                .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn large_ciphertext_is_stored_by_reference_and_inline_up_to_64_kib() {
+        let kv = temporary();
+        let objects = Arc::new(LocalFsObjectStore::temporary());
+        let store = GroupStore::new(
+            kv.clone(),
+            objects.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let inline = large_message(&id, 1, INLINE_LIMIT, &write_sk);
+        let large = large_message(&id, 2, 1024 * 1024, &write_sk);
+        store.put_message(&id, inline.clone()).unwrap();
+        let receipt = store.put_message(&id, large.clone()).unwrap();
+        assert!(receipt.appended);
+        assert_eq!(receipt.message.ciphertext, large.ciphertext);
+
+        // Only the 1 MiB ciphertext left the row; both rows fit FoundationDB's value limit.
+        assert_eq!(object_count(objects.root()), 1);
+        let group_id = parse_group_id_hex(&id).unwrap();
+        let rows = kv
+            .scan_prefix_range(&msg_prefix(&group_id), None, 10)
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].1.len() > INLINE_LIMIT && rows[0].1.len() < MAX_VALUE_BYTES);
+        assert!(rows[1].1.len() < 200);
+        assert!(kv
+            .scan_prefix_range(GROUP_PART_PREFIX, None, 10)
+            .unwrap()
+            .is_empty());
+
+        let listed = store.list_messages(&id, 0, 10).unwrap();
+        assert_eq!(listed[0].ciphertext, inline.ciphertext);
+        assert_eq!(listed[1], receipt.message);
+
+        // A retry is answered from the digest in the row, without reading the object.
+        let reference = LargeValueRef::of(&hex::decode(&large.ciphertext).unwrap());
+        let object_key = store.large_values().object_key(&reference);
+        objects.delete(&object_key).unwrap();
+        let retry = store.put_message(&id, large).unwrap();
+        assert!(!retry.appended);
+        assert_eq!(retry.message, receipt.message);
+        // A missing referenced object fails the read closed rather than returning a gap.
+        assert!(matches!(
+            store.list_messages(&id, 0, 10),
+            Err(GroupError::Storage(_))
+        ));
+    }
+
+    /// A real directory store whose writes and reads fail while `down` is set.
+    #[derive(Debug)]
+    struct OutageObjects {
+        inner: LocalFsObjectStore,
+        down: std::sync::atomic::AtomicBool,
+    }
+
+    impl OutageObjects {
+        fn check(&self) -> Result<(), crate::store::large_values::ObjectStoreError> {
+            if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::store::large_values::ObjectStoreError(
+                    "connection refused".into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl ObjectStore for OutageObjects {
+        fn put(
+            &self,
+            key: &str,
+            bytes: &[u8],
+            sha256: &[u8; 32],
+        ) -> Result<(), crate::store::large_values::ObjectStoreError> {
+            self.check()?;
+            self.inner.put(key, bytes, sha256)
+        }
+        fn get(
+            &self,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, crate::store::large_values::ObjectStoreError> {
+            self.check()?;
+            self.inner.get(key)
+        }
+        fn delete(&self, key: &str) -> Result<(), crate::store::large_values::ObjectStoreError> {
+            self.check()?;
+            self.inner.delete(key)
+        }
+        fn contains(
+            &self,
+            key: &str,
+        ) -> Result<bool, crate::store::large_values::ObjectStoreError> {
+            self.check()?;
+            self.inner.contains(key)
+        }
+    }
+
+    #[test]
+    fn object_store_outage_fails_a_large_append_closed_without_consuming_a_sequence() {
+        let kv = temporary();
+        let objects = Arc::new(OutageObjects {
+            inner: LocalFsObjectStore::temporary(),
+            down: std::sync::atomic::AtomicBool::new(true),
+        });
+        let store = GroupStore::new(
+            kv.clone(),
+            objects.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        )
+        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let large = large_message(&id, 1, INLINE_LIMIT + 1, &write_sk);
+        assert!(matches!(
+            store.put_message(&id, large.clone()),
+            Err(GroupError::Storage(_))
+        ));
+        let group_id = parse_group_id_hex(&id).unwrap();
+        assert!(kv.get(&seq_key(&group_id)).unwrap().is_none());
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+        // Small messages do not depend on the object store.
+        assert_eq!(
+            store
+                .put_message(&id, message_for(&id, 0, 2, &write_sk))
+                .unwrap()
+                .message
+                .server_seq,
+            1
+        );
+        objects
+            .down
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let receipt = store.put_message(&id, large.clone()).unwrap();
+        assert_eq!(receipt.message.server_seq, 2);
+        assert_eq!(
+            store.list_messages(&id, 1, 10).unwrap()[0].ciphertext,
+            large.ciphertext
+        );
+        // The referenced object survives a sweep even though every intent has expired.
+        assert!(store.sweep_large_values([7; 16]).unwrap().held_lease);
+        assert_eq!(
+            store.list_messages(&id, 1, 10).unwrap()[0].ciphertext,
+            large.ciphertext
+        );
+    }
+
+    #[test]
+    fn sweep_collects_an_abandoned_upload_and_never_a_referenced_ciphertext() {
+        let kv = temporary();
+        let objects = Arc::new(LocalFsObjectStore::temporary());
+        let store = GroupStore::new(
+            kv.clone(),
+            objects.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        )
+        .with_large_value_intent_ttl(std::time::Duration::ZERO);
+        // A store with no group state is left untouched, not initialized.
+        assert_eq!(
+            store.sweep_large_values([7; 16]).unwrap(),
+            SweepReport::default()
+        );
+        assert!(kv.scan_prefix_range(b"", None, 1).unwrap().is_empty());
+
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let kept = large_message(&id, 1, 200 * 1024, &write_sk);
+        store.put_message(&id, kept.clone()).unwrap();
+        // A writer that uploaded and then died before its commit.
+        let orphan = store.large_values().stage(&vec![5u8; 100 * 1024]).unwrap();
+        // A second writer of the referenced content that died before its commit.
+        store
+            .large_values()
+            .stage(&hex::decode(&kept.ciphertext).unwrap())
+            .unwrap();
+        assert_eq!(object_count(objects.root()), 2);
+
+        let report = store.sweep_large_values([7; 16]).unwrap();
+        assert_eq!((report.deleted, report.kept_referenced), (1, 1));
+        assert!(!objects
+            .contains(&store.large_values().object_key(&orphan.reference))
+            .unwrap());
+        assert_eq!(object_count(objects.root()), 1);
+        assert_eq!(
+            store.list_messages(&id, 0, 10).unwrap()[0].ciphertext,
+            kept.ciphertext
+        );
+        // Another replica's sweeper cannot take the lease while it is held.
+        assert!(!store.sweep_large_values([8; 16]).unwrap().held_lease);
+    }
+
+    #[test]
+    fn mirrored_large_messages_are_stored_by_reference() {
+        let upstream = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
+        let objects = Arc::new(LocalFsObjectStore::temporary());
+        let home = GroupStore::new(
+            temporary(),
+            objects.clone(),
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
+        let initial = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
+        let id = initial.group_id.clone();
+        upstream.put_epoch(&id, initial.clone()).unwrap();
+        let (write_sk, _) = keypair(42);
+        upstream
+            .put_message(&id, large_message(&id, 1, 300 * 1024, &write_sk))
+            .unwrap();
+        let synced = upstream.list_messages(&id, 0, 10).unwrap();
+        assert_eq!(
+            home.ingest_mirrored_upstream(&id, Some(initial.clone()), &synced)
+                .unwrap(),
+            1
+        );
+        // Re-ingesting the same batch keeps one reference and one object.
+        assert_eq!(
+            home.ingest_mirrored_upstream(&id, Some(initial), &synced)
+                .unwrap(),
+            1
+        );
+        assert_eq!(object_count(objects.root()), 1);
+        assert_eq!(home.list_messages(&id, 0, 10).unwrap(), synced);
     }
 }

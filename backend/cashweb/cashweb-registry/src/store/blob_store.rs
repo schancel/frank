@@ -2313,6 +2313,31 @@ fn sha256_hex(data: &[u8]) -> String {
     hex::encode(ChunkDigest::compute(data).0)
 }
 
+/// The SigV4 `x-amz-date` (`YYYYMMDD'T'HHMMSS'Z'`, UTC) for `time`.
+pub fn amz_date(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
+}
+
 /// Compute deterministic AWS Signature Version 4 headers for an S3 HTTP request.
 pub fn sign_s3_v4_request(
     method: &str,
@@ -2386,10 +2411,13 @@ pub struct ReqwestS3Transport {
 impl ReqwestS3Transport {
     /// Construct a [`ReqwestS3Transport`] from `config`.
     pub fn new(config: S3BlobStoreConfig) -> Self {
-        Self {
-            client: Client::new(),
-            config,
-        }
+        // An unreachable object store must fail a request promptly, not hang an append.
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("build S3 HTTP client");
+        Self { client, config }
     }
 
     fn full_key(&self, key: &str) -> String {
@@ -2423,7 +2451,8 @@ impl ReqwestS3Transport {
         canonical_uri: &str,
         content_sha256_hex: &str,
     ) -> Result<HeaderMap, BlobError> {
-        let amz_date = "20261017T000000Z";
+        // S3 rejects a request whose date is more than 15 minutes from its clock.
+        let amz_date = amz_date(std::time::SystemTime::now());
         let sig = sign_s3_v4_request(
             method,
             host,
@@ -2431,7 +2460,7 @@ impl ReqwestS3Transport {
             &self.config.region,
             &self.config.access_key_id,
             &self.config.secret_access_key,
-            amz_date,
+            &amz_date,
             content_sha256_hex,
         );
         let mut headers = HeaderMap::new();
@@ -2803,6 +2832,15 @@ mod tests {
 
     use super::*;
     use crate::store::kv_store::{KvError, RocksDbKvStore};
+
+    #[test]
+    fn amz_date_is_the_current_utc_time() {
+        let at = |secs| amz_date(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs));
+        assert_eq!(at(0), "19700101T000000Z");
+        assert_eq!(at(951_782_400), "20000229T000000Z");
+        assert_eq!(at(1_792_886_399), "20261024T235959Z");
+        assert_eq!(at(4_107_542_400), "21000301T000000Z");
+    }
 
     /// Single-operation transactions for test setup and inspection.
     trait Direct {

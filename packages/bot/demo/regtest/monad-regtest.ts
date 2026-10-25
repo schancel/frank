@@ -108,7 +108,8 @@ export interface SolonetStatus {
   /** Set when FRANK_SOLONET_RPC_URL names a solonet this harness does not manage. */
   external: boolean
   vm: 'running' | 'stopped' | 'colima-not-installed' | 'not-managed'
-  /** `stopped` is a container of an earlier run that no longer runs (exited, created or dead). */
+  /** `stopped` is a container of an earlier run that no longer runs (exited, created or dead).
+   * A paused, restarting or removing container is reported as an error instead. */
   container: 'running' | 'stopped' | 'absent' | 'not-managed'
   rpcUrl: string
   /** The chain's height, when it answers. */
@@ -136,6 +137,9 @@ export async function solonetStatus(env: Record<string, string | undefined> = pr
     throw new Error(`cannot read the state of the ${CONTAINER} container; leaving it alone:\n${listed.out.slice(-2000)}`)
   }
   const state = listed.out.trim()
+  if (['paused', 'restarting', 'removing'].includes(state)) {
+    throw new Error(`the ${CONTAINER} container is ${state}; resolve that by hand (docker --context colima-${PROFILE} ...)`)
+  }
   const container = state === '' ? 'absent' : state === 'running' ? 'running' : 'stopped'
   return { external: false, vm: 'running', container, rpcUrl, block: container === 'running' ? await blockNumber(rpcUrl) : undefined }
 }
@@ -146,6 +150,14 @@ export async function ensureSolonet(
   env: Record<string, string | undefined> = process.env,
   log: (line: string) => void = line => console.log(line),
 ): Promise<{ rpcUrl: string; wsUrl?: string }> {
+  // A chain that answers as solonet is in use: never restart or replace it, and need no docker.
+  if (!env.FRANK_SOLONET_RPC_URL) {
+    const rpcUrl = `http://127.0.0.1:${RPC_PORT}`
+    if ((await chainId(rpcUrl)) === MONAD_REGTEST_CHAIN_ID) {
+      const block = await blockNumber(rpcUrl)
+      if (block !== undefined && block >= 12) return { rpcUrl, wsUrl: `ws://127.0.0.1:${WS_PORT}` }
+    }
+  }
   let status = await solonetStatus(env)
   if (status.external) {
     if (status.block === undefined) throw new Error(`FRANK_SOLONET_RPC_URL (${status.rpcUrl}) does not answer`)
@@ -155,11 +167,6 @@ export async function ensureSolonet(
     throw new Error('colima is not installed: brew install lima colima lima-additional-guestagents (see monad-regtest.ts)')
   }
   const urls = { rpcUrl: status.rpcUrl, wsUrl: `ws://127.0.0.1:${WS_PORT}` }
-  // A chain that answers as solonet is in use: never restart or replace it.
-  if ((await chainId(urls.rpcUrl)) === MONAD_REGTEST_CHAIN_ID) {
-    const block = await blockNumber(urls.rpcUrl)
-    if (block !== undefined && block >= 12) return urls
-  }
   if (status.vm === 'stopped') {
     log(`[solonet] starting the x86_64 VM "${PROFILE}" (about 3 minutes; your Docker context is not changed)`)
     await must(

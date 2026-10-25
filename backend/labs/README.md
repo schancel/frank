@@ -189,7 +189,9 @@ Services:
 - `minio` reads its root credentials from those files, and `minio-init` creates the
   `frank-lab-blobs` bucket with one SigV4 request. MinIO stopped publishing container
   images, so `Dockerfile.minio` builds the server from its upstream source at a pinned
-  release tag. No relay uses S3 yet; step 4 of the HA plan adds the first consumer.
+  release tag. `lab-init` also writes `/secrets/s3-credentials` from those root credentials,
+  and the relays keep group ciphertexts over 64 KiB in that bucket under the prefix `lab`
+  (`[registry.large_values]`, HA step 4).
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
   policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
@@ -236,6 +238,8 @@ The `cluster-contract` profile (`cluster_contract.rs`) is an HTTP test binary th
 to all three relays and to the proxy:
 
 - create a group on A, append on B, read on C, and read the same rows through the proxy;
+- a 1 MiB message appended on A (stored in MinIO) reads back byte-exact on B and C, and an
+  exact retry on B is answered from the row;
 - 3 × 200 concurrent appends, 200 per relay, all acknowledged, with sequence numbers
   1..=600, unique and gap-free on every relay;
 - the same signed message sent to A and B at once gives one receipt (one `appended`, one

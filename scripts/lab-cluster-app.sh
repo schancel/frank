@@ -21,7 +21,9 @@
 # Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18180), COMPOSE_PROJECT_NAME (default
 # frank-lab-app), FRANK_LAB_CLUSTER_SUBNET (default 10.89.180), FRANK_LAB_DIR (bot state and the
 # bot funding key, default ~/.frank-lab-cluster/<project>), FRANK_LAB_BOT_FUNDING_MON (what the
-# bot funding wallet is topped up to, default 200), FRANK_BOTS (default qwen,lobby,faucet).
+# bot funding wallet is topped up to, default 1000), FRANK_BOTS (default: every bot),
+# FAUCET_AMOUNT_WEI (what the faucet bot grants each account once, default 1 MON, the most the
+# faucet bot allows; for more, use `fund`).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -36,6 +38,7 @@ ORIGIN=http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT
 SOLONET_HOST_RPC=http://127.0.0.1:48080
 BURN=0x000000000000000000000000000000000000dEaD
 MIN_STAMP_WEI=1000000000000
+FAUCET_WEI=1000000000000000000
 COMPOSE=(docker compose -f "$ROOT/backend/labs/compose.cluster.yml")
 BOT_KEY_FILE=$LAB_DIR/bot-funding-key.json
 RELAYS=(relay-a relay-b relay-c)
@@ -132,7 +135,8 @@ Bots (another terminal): scripts/lab-cluster-app.sh bots, which runs
   BOT_STATE_DIR=$LAB_DIR/bots MONAD_RELAY_BASE_URL=$ORIGIN MONAD_RPC_CHAIN=monad-regtest \\
     MONAD_RPC_URL=$SOLONET_HOST_RPC MONAD_STAMP_BURN_ADDRESS=$BURN \\
     CASHWEB_STAMP_MIN_BURN_VALUE_WEI=$MIN_STAMP_WEI QWEN_BOT_MODE=stub \\
-    FRANK_BOTS=\${FRANK_BOTS:-qwen,lobby,faucet} E2E_DEMO_MAIN_WALLET_PRIVATE_KEY=<lab key> \\
+    FAUCET_AMOUNT_WEI=\${FAUCET_AMOUNT_WEI:-$FAUCET_WEI} \${FRANK_BOTS:+FRANK_BOTS=\$FRANK_BOTS} \\
+    E2E_DEMO_MAIN_WALLET_PRIVATE_KEY=<lab key> \\
     yarn --cwd packages/bot target:all
 
   with a funding key of its own in $BOT_KEY_FILE, topped up from the faucet.
@@ -164,7 +168,7 @@ case "${1:-up}" in
     wait_cluster
     ensure_bot_key
     address=$(bot_address)
-    target=${FRANK_LAB_BOT_FUNDING_MON:-200}
+    target=${FRANK_LAB_BOT_FUNDING_MON:-1000}
     have=$(balance_mon "$address")
     if ((have < target)); then
       bot regtest:monad-fund "$address" "$((target - have))"
@@ -174,7 +178,7 @@ case "${1:-up}" in
     BOT_STATE_DIR=$LAB_DIR/bots MONAD_RELAY_BASE_URL=$ORIGIN MONAD_RPC_CHAIN=monad-regtest \
       MONAD_RPC_URL=$SOLONET_HOST_RPC MONAD_STAMP_BURN_ADDRESS=$BURN \
       CASHWEB_STAMP_MIN_BURN_VALUE_WEI=$MIN_STAMP_WEI QWEN_BOT_MODE=stub \
-      FRANK_BOTS=${FRANK_BOTS:-qwen,lobby,faucet} \
+      FAUCET_AMOUNT_WEI=${FAUCET_AMOUNT_WEI:-$FAUCET_WEI} \
       E2E_DEMO_MAIN_WALLET_PRIVATE_KEY=$(bot_private_key) \
       exec yarn target:all
     ;;

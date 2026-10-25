@@ -45,6 +45,87 @@ pub enum CashwebdExeError {
 
 use self::CashwebdExeError::*;
 
+/// How often this replica tries to take the sweep lease and collect unreferenced objects.
+const LARGE_VALUE_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// Build the object store for values over the inline limit. Composition is the only reader of
+/// the S3 credentials, from `credentials_file` or from the environment.
+fn large_value_objects(
+    registry: &cashweb_config::RegistryConf,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Arc<dyn cashweb_registry::store::large_values::ObjectStore>> {
+    use cashweb_config::{LargeValuesConf, S3Credentials};
+    use cashweb_registry::store::{
+        blob_store::S3BlobStoreConfig, large_values::LocalFsObjectStore, s3_objects::S3ObjectStore,
+    };
+    let report = |message: String| bitcoinsuite_error::Report::msg(message);
+    match &registry.large_values {
+        None => {
+            let path = Registry::local_large_values_path(&registry.db_path);
+            info!(
+                "Large values are stored in the local directory {} (single replica only)",
+                path.display()
+            );
+            Ok(Arc::new(LocalFsObjectStore::new(path)))
+        }
+        Some(LargeValuesConf::Local { path }) => {
+            info!(
+                "Large values are stored in the local directory {}",
+                path.display()
+            );
+            Ok(Arc::new(LocalFsObjectStore::new(path)))
+        }
+        Some(LargeValuesConf::S3 {
+            endpoint,
+            region,
+            bucket,
+            prefix,
+            credentials_file,
+        }) => {
+            let credentials =
+                match credentials_file {
+                    Some(path) => {
+                        let text = std::fs::read_to_string(path).wrap_err_with(|| {
+                            format!("Reading S3 credentials file {}", path.display())
+                        })?;
+                        S3Credentials::parse(&text).map_err(|error| {
+                            report(format!(
+                                "Invalid S3 credentials file {}: {error}",
+                                path.display()
+                            ))
+                        })?
+                    }
+                    None => match (
+                        env("FRANK_S3_ACCESS_KEY_ID"),
+                        env("FRANK_S3_SECRET_ACCESS_KEY"),
+                    ) {
+                        (Some(access_key_id), Some(secret_access_key)) => S3Credentials {
+                            access_key_id,
+                            secret_access_key,
+                        },
+                        _ => return Err(report(
+                            "[registry.large_values] driver = \"s3\" needs credentials_file, or \
+                             FRANK_S3_ACCESS_KEY_ID and FRANK_S3_SECRET_ACCESS_KEY"
+                                .into(),
+                        )),
+                    },
+                };
+            info!("Large values are stored in S3 bucket {bucket} at {endpoint}");
+            let store = S3ObjectStore::new(S3BlobStoreConfig {
+                endpoint: endpoint.as_str().trim_end_matches('/').to_string(),
+                region: region.clone(),
+                bucket: bucket.clone(),
+                prefix: prefix.clone(),
+                access_key_id: credentials.access_key_id,
+                secret_access_key: credentials.secret_access_key,
+                force_path_style: true,
+            })
+            .map_err(|error| report(error.to_string()))?;
+            Ok(Arc::new(store))
+        }
+    }
+}
+
 fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> {
     let mut conf_contents = String::new();
     if conf_path == "-" {
@@ -292,12 +373,14 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
 /// timeout bounds the wait, so an unreachable cluster fails here with a typed error.
 async fn probe_shared_groups(
     groups: &GroupBackend,
+    objects: &Arc<dyn cashweb_registry::store::large_values::ObjectStore>,
     policy: cashweb_config::GroupAppendPolicy,
 ) -> Result<()> {
     let GroupBackend::Shared(_) = groups else {
         return Ok(());
     };
-    let owner = cashweb_registry::store::groups::Owner::new(groups.clone(), policy);
+    let owner =
+        cashweb_registry::store::groups::Owner::new(groups.clone(), Arc::clone(objects), policy);
     tokio::task::spawn_blocking(move || owner.get().map(drop))
         .await
         .wrap_err("FoundationDB probe task failed")?
@@ -354,7 +437,8 @@ async fn run(
     let db = Db::open(&conf.registry.db_path)?;
     let groups = group_backend(&driver, &conf.registry.db_path)?;
     // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
-    probe_shared_groups(&groups, conf.registry.groups).await?;
+    let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
+    probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
     if check_db {
         return Ok(());
     }
@@ -413,10 +497,33 @@ async fn run(
         Arc::clone(&event_bus),
         RegistryBackends {
             groups,
+            objects,
             group_policy: conf.registry.groups,
             provisioned_vapid,
         },
     ));
+    // Collect unreferenced large values. Replicas compete for one lease; the others skip.
+    {
+        let registry = Arc::clone(&registry);
+        let holder: [u8; 16] = rand::random();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(LARGE_VALUE_SWEEP_INTERVAL);
+            loop {
+                interval.tick().await;
+                let registry = Arc::clone(&registry);
+                let sweep =
+                    tokio::task::spawn_blocking(move || registry.sweep_large_values(holder));
+                match sweep.await {
+                    Ok(Ok(report)) if report.deleted > 0 => {
+                        info!("Large-value sweep deleted {} objects", report.deleted)
+                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => tracing::warn!("Large-value sweep failed: {error}"),
+                    Err(error) => tracing::warn!("Large-value sweep panicked: {error}"),
+                }
+            }
+        });
+    }
     // Every upstream proves it is its chain before it carries traffic; startup waits briefly for
     // the first round and the rest are checked again in the background.
     let chains = Arc::new(chains);
@@ -869,6 +976,8 @@ max_get_logs_range = 10\n\n\
             "directory",
             "forum",
             "hourly RPC proxy quotas",
+            // No [registry.large_values]: the local driver beside the database.
+            "large values",
         ] {
             assert!(text.contains(owner), "{owner}: {text}");
         }
@@ -879,7 +988,7 @@ max_get_logs_range = 10\n\n\
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 5);
+        assert_eq!(conf.registry.replica_local_owners().len(), 6);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");
@@ -1074,5 +1183,47 @@ max_get_logs_range = 10\n\n\
         assert!(conf.registry.forum.is_none());
         assert_eq!(chains.network().id, "monad-testnet");
         assert!(chains.network_adapter().is_none());
+    }
+
+    #[test]
+    fn s3_large_values_need_credentials_from_a_file_or_the_environment() {
+        use super::large_value_objects;
+        let s3 = "[registry.large_values]\ndriver = \"s3\"\nendpoint = \"http://127.0.0.1:9\"\n\
+                  region = \"us-east-1\"\nbucket = \"frank\"\n";
+        let parse = |extra: &str| {
+            let config = format!("{LOCAL}\n{s3}{extra}");
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
+                .unwrap()
+                .0
+        };
+        let conf = parse("");
+        let error = large_value_objects(&conf.registry, |_| None).unwrap_err();
+        assert!(format!("{error:#}").contains("FRANK_S3_ACCESS_KEY_ID"));
+        assert!(large_value_objects(&conf.registry, |name| match name {
+            "FRANK_S3_ACCESS_KEY_ID" => Some("id".into()),
+            "FRANK_S3_SECRET_ACCESS_KEY" => Some("secret".into()),
+            _ => None,
+        })
+        .is_ok());
+
+        let dir = tempdir::TempDir::new("s3-credentials").unwrap();
+        let file = dir.path().join("s3.toml");
+        let conf = parse(&format!(
+            "credentials_file = {:?}\n",
+            file.display().to_string()
+        ));
+        assert!(large_value_objects(&conf.registry, |_| None).is_err());
+        std::fs::write(
+            &file,
+            "access_key_id = \"id\"\nsecret_access_key = \"hunter2\"\n",
+        )
+        .unwrap();
+        assert!(large_value_objects(&conf.registry, |_| None).is_ok());
+        std::fs::write(&file, "access_key_id = \"id\"\nsecret = \"hunter2\"\n").unwrap();
+        let error = format!(
+            "{:#}",
+            large_value_objects(&conf.registry, |_| None).unwrap_err()
+        );
+        assert!(!error.contains("hunter2"), "{error}");
     }
 }

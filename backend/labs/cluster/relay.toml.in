@@ -18,6 +18,16 @@ public_relay_urls = []
 session_secret_file = "/secrets/session-secret"
 vapid_private_key_file = "/secrets/vapid-private-key"
 
+# Group ciphertexts over 64 KiB go to the lab's MinIO, shared by every replica. lab-init writes
+# the credentials file (mode 0400) from MinIO's generated root credentials.
+[registry.large_values]
+driver = "s3"
+endpoint = "http://minio:9000"
+region = "us-east-1"
+bucket = "frank-lab-blobs"
+prefix = "lab"
+credentials_file = "/secrets/s3-credentials"
+
 [registry.cluster]
 enabled = true
 driver = "foundationdb"

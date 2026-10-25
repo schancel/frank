@@ -14,9 +14,10 @@ mod live;
 #[cfg(test)]
 mod nats_tests;
 
+use crate::store::large_values::LargeValueError;
 use axum::{
     body::Bytes,
-    extract::{Path, Query},
+    extract::{Path, Query, RawBody},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing, Extension, Json, Router,
@@ -128,6 +129,20 @@ fn group_error_response(err: GroupError) -> Response {
             Json(ErrorBody { error: msg }),
         )
             .into_response(),
+        GroupError::LargeValue(error) => {
+            // The detail may name the object store endpoint, bucket and key: log, never echo.
+            tracing::warn!("group large-value store: {error}");
+            let (status, code) = match error {
+                LargeValueError::Corrupt(_) | LargeValueError::NamespaceClaimed(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "group_storage_error")
+                }
+                _ => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "group_large_value_store_unavailable",
+                ),
+            };
+            (status, Json(ErrorBody { error: code.into() })).into_response()
+        }
     }
 }
 
@@ -334,6 +349,42 @@ async fn read_upstream_body_before(
     })
     .await
     .map_err(|_| GroupError::Storage("upstream body deadline exceeded".into()))?
+}
+
+/// Largest group message request body: a JSON envelope carrying the largest ciphertext
+/// (1 MiB, 2 MiB as hex) plus its other fields. Axum's default 2 MB extractor limit is below
+/// that, so the message routes read their bodies themselves with this bound.
+const MAX_GROUP_MESSAGE_BODY: usize = 2 * 1024 * 1024 + 64 * 1024;
+
+/// Read a group message request body, or answer 413 once it exceeds
+/// [`MAX_GROUP_MESSAGE_BODY`].
+async fn read_message_body(mut body: axum::body::Body) -> Result<Bytes, Response> {
+    use axum::body::HttpBody;
+    let too_large = || {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorBody {
+                error: "group message body too large".into(),
+            }),
+        )
+            .into_response()
+    };
+    if body.size_hint().lower() > MAX_GROUP_MESSAGE_BODY as u64 {
+        return Err(too_large());
+    }
+    let mut collected = Vec::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.map_err(|error| {
+            group_error_response(GroupError::InvalidInput(format!(
+                "reading request body: {error}"
+            )))
+        })?;
+        if chunk.len() > MAX_GROUP_MESSAGE_BODY - collected.len() {
+            return Err(too_large());
+        }
+        collected.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(collected))
 }
 
 /// Build the `/groups/:group_id/*` router using the server's `Registry` group store.
@@ -657,8 +708,12 @@ async fn handle_put_group_message(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(server): Extension<RegistryServer>,
-    body: Bytes,
+    RawBody(body): RawBody,
 ) -> Response {
+    let body = match read_message_body(body).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
     let bus = server.event_bus().clone();
     let store = match registry_group_store(&server).await {
         Ok(s) => s,
@@ -686,8 +741,12 @@ async fn handle_put_group_message_store(
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
     Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
-    body: Bytes,
+    RawBody(body): RawBody,
 ) -> Response {
+    let body = match read_message_body(body).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
     let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
     if response.status().is_success()
         && response
@@ -1157,6 +1216,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_1_mib_message_is_accepted_over_http_and_a_larger_body_is_refused() {
+        let store = GroupStore::new_temporary(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
+        let (root_sk, root_pk) = keypair(7);
+        let (write_sk, write_pk) = keypair(70);
+        let group_id = hex::encode(derive_group_id(&root_pk));
+        store
+            .put_epoch(
+                &group_id,
+                signed_epoch(
+                    &root_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(root_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"descriptor"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        let mut message = GroupMessageEnvelope {
+            group_id: group_id.clone(),
+            epoch: 0,
+            nonce: hex::encode([1; 24]),
+            ciphertext: hex::encode(vec![0xab; 1024 * 1024]),
+            write_sig: String::new(),
+        };
+        message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
+        let put = |body: Vec<u8>| {
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/groups/{group_id}/messages"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let body = serde_json::to_vec(&message).unwrap();
+        assert!(body.len() > 2 * 1024 * 1024, "beyond axum's default limit");
+        let response = router_with_store(store.clone())
+            .oneshot(put(body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[HEADER_GROUP_APPEND], "appended");
+        assert_eq!(
+            store.list_messages(&group_id, 0, 10).unwrap()[0].ciphertext,
+            message.ciphertext
+        );
+        let response = router_with_store(store.clone())
+            .oneshot(put(vec![b' '; MAX_GROUP_MESSAGE_BODY + 1]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn object_store_errors_are_logged_and_answered_without_endpoint_or_key() {
+        use crate::store::large_values::ObjectStoreError;
+        let detail = "S3 PUT http://minio.internal:9000/frank-bucket/lab/groups/sha256/ab \
+                      returned HTTP 403: <Error><Code>AccessDenied</Code></Error>";
+        for (error, status) in [
+            (
+                LargeValueError::Unavailable(ObjectStoreError(detail.into())),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                LargeValueError::Corrupt(detail.into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            let response = group_error_response(GroupError::LargeValue(error));
+            assert_eq!(response.status(), status);
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            for secret in ["minio.internal", "frank-bucket", "sha256", "AccessDenied"] {
+                assert!(!body.contains(secret), "{body}");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn upstream_body_limits_cover_chunked_errors_and_stalled_streams() {
         use futures::StreamExt;
         let fixture = Router::new()
@@ -1506,6 +1652,7 @@ mod tests {
         });
         let home = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1683,6 +1830,7 @@ mod tests {
         let (origin, origin_task) = spawn_group_router(upstream.clone()).await;
         let home = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             1,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,
@@ -1921,6 +2069,7 @@ mod tests {
         // Create a Home Relay (`Relay_Home`) with `mirror_threshold = 2`
         let home_store = GroupStore::with_mirror_threshold(
             Arc::new(RocksDbKvStore::open_temporary().unwrap()),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
             2,
             cashweb_config::GroupAppendPolicy {
                 per_message_price_credits: 0,

@@ -585,6 +585,37 @@ async fn create_on_a_append_on_b_read_on_c() {
     println!("PASS create on A, append on B, read on C and through the proxy");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_1_mib_message_appended_on_a_reads_back_byte_exact_on_b_and_c() {
+    let [a, b, c]: [String; 3] = relays().try_into().unwrap();
+    for origin in [&a, &b, &c] {
+        wait_ready(origin).await;
+    }
+    let client = http();
+    let group = Group::new();
+    create(&client, &a, &group).await;
+    // Over the 64 KiB inline limit, so the ciphertext lives in MinIO, not in FoundationDB.
+    let body: String = (0..1024 * 1024)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect();
+    let envelope = group.envelope(group.current(), &body);
+    let appended = append(&client, &a, &envelope).await.unwrap();
+    assert_eq!(appended.status, 200);
+    assert_eq!(appended.disposition.as_deref(), Some("appended"));
+    for origin in [&b, &c] {
+        let messages = read_from(&client, origin, &group.id, &group.current().token, 0).await;
+        assert_eq!(messages.len(), 1, "{origin}");
+        assert!(
+            messages[0].ciphertext == envelope.ciphertext,
+            "{origin}: 1 MiB ciphertext differs"
+        );
+    }
+    // An exact retry on B is answered from the row.
+    let retry = append(&client, &b, &envelope).await.unwrap();
+    assert_eq!(retry.disposition.as_deref(), Some("existing"));
+    println!("PASS 1 MiB message appended on A, read byte-exact on B and C");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_appends_on_three_relays_get_gap_free_unique_sequence_numbers() {
     let relays = relays();

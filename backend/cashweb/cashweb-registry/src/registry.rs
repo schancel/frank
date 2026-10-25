@@ -70,6 +70,8 @@ pub struct Registry {
 pub struct RegistryBackends {
     /// Where groups keep their state (`registry.cluster.driver`).
     pub groups: crate::store::groups::GroupBackend,
+    /// Where values over the inline limit (group ciphertexts) live (`registry.large_values`).
+    pub objects: Arc<dyn crate::store::large_values::ObjectStore>,
     /// Group append policy (`registry.groups`).
     pub group_policy: cashweb_config::GroupAppendPolicy,
     /// The operator-provisioned VAPID key (`registry.vapid_private_key_file`), if configured.
@@ -200,7 +202,8 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 impl Registry {
-    /// Construct new [`Registry`] with the default in-process event bus.
+    /// Construct new [`Registry`] with the default in-process event bus, keeping large values
+    /// in a local directory beside the database (single-node relays and tests).
     pub fn new(
         db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
@@ -208,6 +211,9 @@ impl Registry {
         group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
         let groups = crate::store::groups::GroupBackend::rocksdb_beside(db.owned_path());
+        let objects = Arc::new(crate::store::large_values::LocalFsObjectStore::new(
+            Self::local_large_values_path(db.owned_path()),
+        ));
         Self::new_with_event_bus(
             db,
             chain_adapter,
@@ -215,10 +221,16 @@ impl Registry {
             Arc::new(crate::events::StandaloneEventBus::new()),
             RegistryBackends {
                 groups,
+                objects,
                 group_policy,
                 provisioned_vapid: None,
             },
         )
+    }
+
+    /// Where a single-node relay keeps large values: beside `registry_db`.
+    pub fn local_large_values_path(registry_db: &std::path::Path) -> std::path::PathBuf {
+        registry_db.with_extension("large-values")
     }
 
     /// Construct new [`Registry`] with a custom notification event bus and the backends daemon
@@ -233,7 +245,11 @@ impl Registry {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf())
             .with_provisioned_vapid(backends.provisioned_vapid);
-        let groups = crate::store::groups::Owner::new(backends.groups, backends.group_policy);
+        let groups = crate::store::groups::Owner::new(
+            backends.groups,
+            backends.objects,
+            backends.group_policy,
+        );
         Registry {
             db,
             forum,
@@ -326,6 +342,27 @@ impl Registry {
     ) -> std::result::Result<crate::store::groups::GroupStore, crate::store::groups::GroupError>
     {
         self.groups.get()
+    }
+
+    /// Delete unreferenced large group ciphertexts as sweep lease holder `holder`. Blocks; run
+    /// it on a blocking worker.
+    ///
+    /// This sweeps only once a request has opened the group store; until then it does nothing.
+    /// A replica that serves no group traffic therefore never sweeps, and orphans wait for a
+    /// replica that does (in a cluster any replica's sweep covers the shared index).
+    pub fn sweep_large_values(
+        &self,
+        holder: [u8; 16],
+    ) -> std::result::Result<
+        crate::store::large_values::SweepReport,
+        crate::store::groups::GroupError,
+    > {
+        // Never open the group database just to sweep: until a request opened it, this relay
+        // has written nothing there since it started, and leftovers wait for the next sweep.
+        match self.groups.opened() {
+            Some(store) => store.sweep_large_values(holder),
+            None => Ok(Default::default()),
+        }
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.

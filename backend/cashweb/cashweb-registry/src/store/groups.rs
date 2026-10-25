@@ -508,6 +508,10 @@ pub enum GroupError {
     /// Underlying KV store or upstream proxy failure.
     #[error("group storage error: {0}")]
     Storage(String),
+    /// The large-value (object) store failed or refused. The detail can name the endpoint,
+    /// bucket and object key, so the HTTP layer logs it and answers generically.
+    #[error("group large-value store: {0}")]
+    LargeValue(LargeValueError),
 }
 
 impl From<KvError> for GroupError {
@@ -518,7 +522,10 @@ impl From<KvError> for GroupError {
 
 impl From<LargeValueError> for GroupError {
     fn from(err: LargeValueError) -> Self {
-        GroupError::Storage(err.to_string())
+        match err {
+            LargeValueError::Kv(kv) => GroupError::Storage(kv.to_string()),
+            other => GroupError::LargeValue(other),
+        }
     }
 }
 
@@ -901,6 +908,13 @@ impl GroupStore {
     /// Replace how long an unreferenced upload is protected from the sweep.
     pub fn with_large_value_intent_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.large_values = self.large_values.with_intent_ttl(ttl);
+        self
+    }
+
+    /// Replace how long a deletion tombstone blocks re-uploads. Zero is safe only when one
+    /// process sweeps.
+    pub fn with_large_value_tombstone_grace(mut self, grace: std::time::Duration) -> Self {
+        self.large_values = self.large_values.with_tombstone_grace(grace);
         self
     }
 
@@ -1596,6 +1610,12 @@ impl Owner {
             mirror_threshold: DEFAULT_GROUP_MIRROR_THRESHOLD,
             group_policy,
         }
+    }
+
+    /// The store if a request has already opened it. The sweep uses this so it never opens
+    /// (or creates) the group database itself.
+    pub fn opened(&self) -> Option<GroupStore> {
+        self.store.lock().ok()?.clone()
     }
 
     /// Access or initialize the [`GroupStore`].
@@ -3177,7 +3197,7 @@ mod tests {
         // A missing referenced object fails the read closed rather than returning a gap.
         assert!(matches!(
             store.list_messages(&id, 0, 10),
-            Err(GroupError::Storage(_))
+            Err(GroupError::LargeValue(LargeValueError::Corrupt(_)))
         ));
     }
 
@@ -3251,7 +3271,7 @@ mod tests {
         let large = large_message(&id, 1, INLINE_LIMIT + 1, &write_sk);
         assert!(matches!(
             store.put_message(&id, large.clone()),
-            Err(GroupError::Storage(_))
+            Err(GroupError::LargeValue(LargeValueError::Unavailable(_)))
         ));
         let group_id = parse_group_id_hex(&id).unwrap();
         assert!(kv.get(&seq_key(&group_id)).unwrap().is_none());

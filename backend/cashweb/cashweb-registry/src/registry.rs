@@ -332,7 +332,12 @@ impl Registry {
         crate::store::large_values::SweepReport,
         crate::store::groups::GroupError,
     > {
-        self.groups.get()?.sweep_large_values(holder)
+        // Never open the group database just to sweep: until a request opened it, this relay
+        // has written nothing there since it started, and leftovers wait for the next sweep.
+        match self.groups.opened() {
+            Some(store) => store.sweep_large_values(holder),
+            None => Ok(Default::default()),
+        }
     }
 
     /// Read a signed [`proto::AddressMetadata`] entry from the database.

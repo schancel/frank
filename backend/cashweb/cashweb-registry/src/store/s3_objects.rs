@@ -45,8 +45,7 @@ fn s3_error(error: BlobError) -> ObjectStoreError {
 impl S3ObjectStore {
     /// Connect lazily to the bucket in `config`. No request is made until the first call.
     pub fn new(config: S3BlobStoreConfig) -> Result<Self, ObjectStoreError> {
-        url::Url::parse(&config.endpoint)
-            .map_err(|e| ObjectStoreError(format!("invalid S3 endpoint: {e}")))?;
+        config.validate().map_err(ObjectStoreError)?;
         let (endpoint, bucket) = (config.endpoint.clone(), config.bucket.clone());
         let transport: Arc<dyn S3ObjectTransport> = Arc::new(ReqwestS3Transport::new(config));
         let (jobs, mut queue) = tokio::sync::mpsc::unbounded_channel::<Job>();

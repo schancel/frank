@@ -20,7 +20,7 @@ use cashweb_registry::store::{
         GROUP_OBJECT_NAMESPACE,
     },
     kv_store::{KvError, RelayKvStore, Transact},
-    large_values::{LargeValueRef, ObjectStore, INLINE_LIMIT},
+    large_values::{LargeValueError, LargeValueRef, ObjectStore, INLINE_LIMIT},
     s3_objects::S3ObjectStore,
 };
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
@@ -209,7 +209,10 @@ fn with_minio_stopped_a_large_append_fails_closed() {
         assert_eq!(sequence(&kv), Some(2));
         let result = store.put_message(&group_id(), message("during-outage", 2 * INLINE_LIMIT));
         assert!(
-            matches!(&result, Err(GroupError::Storage(error)) if error.contains("unavailable")),
+            matches!(
+                &result,
+                Err(GroupError::LargeValue(LargeValueError::Unavailable(_)))
+            ),
             "{result:?}"
         );
         assert_eq!(
@@ -222,7 +225,7 @@ fn with_minio_stopped_a_large_append_fails_closed() {
         // A read that needs the stopped object store fails rather than returning a gap.
         assert!(matches!(
             store.list_messages(&group_id(), 0, 10),
-            Err(GroupError::Storage(_))
+            Err(GroupError::LargeValue(LargeValueError::Unavailable(_)))
         ));
         eprintln!("with MinIO stopped the append failed closed; sequence still 2");
     });
@@ -248,8 +251,8 @@ fn after_minio_restarts_the_append_lands_as_the_next_sequence() {
     });
 }
 
-/// Phase 5: an orphan is swept and a referenced object never is, including while writers race
-/// the sweeper with every intent already expired.
+/// Phase 5: an orphan is swept and a referenced object never is, including while two writer
+/// threads race a sweeper thread in this one process, with every intent already expired.
 #[test]
 #[ignore = "phase of backend/labs/large-values-acceptance.sh"]
 fn an_orphan_is_swept_and_a_referenced_object_never_is() {
@@ -277,54 +280,66 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
             .contains(&object_key(&content("large", MIB)))
             .unwrap());
 
-        // Writers on two relays race a sweeper on a third.
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let sweeper = {
-            let store = relay(&kv, &s3()).with_large_value_intent_ttl(Duration::ZERO);
-            let stop = stop.clone();
-            std::thread::spawn(move || {
-                let mut deleted = 0;
-                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    deleted += store.sweep_large_values([1; 16]).unwrap().deleted;
-                }
-                deleted
-            })
-        };
-        let writers: Vec<_> = ["a", "b"]
-            .into_iter()
-            .map(|relay_name| {
-                let store = relay(&kv, &s3()).with_large_value_intent_ttl(Duration::ZERO);
-                std::thread::spawn(move || {
-                    let mut appended = Vec::new();
-                    let mut failed = 0;
-                    for index in 0..15 {
-                        // Shared contents across relays, so uploads deduplicate and race.
-                        let envelope =
-                            message(&format!("race-{relay_name}-{index}"), INLINE_LIMIT + 1);
-                        let mut shared = envelope.clone();
-                        shared.ciphertext =
-                            hex::encode(content(&format!("race-{}", index % 4), INLINE_LIMIT + 1));
-                        shared.write_sig =
-                            sign(&keypair("write").0, &shared.signing_digest().unwrap());
-                        match store.put_message(&group_id(), shared.clone()) {
-                            Ok(receipt) => appended.push((receipt.message.server_seq, shared)),
-                            Err(GroupError::Storage(_)) => failed += 1,
-                            Err(error) => panic!("{error}"),
-                        }
+        // Two writer threads race a sweeper thread, all in this one process, each with its own
+        // FDB-backed store handle and its own S3 client. One sweeper holder, so no tombstone
+        // grace is needed and re-uploads are not held off.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (appended, failed, deleted) = std::thread::scope(|scope| {
+            // On any panic below, stop the sweeper so the scope can join every thread before
+            // this phase drops the FDB network guard.
+            let _stop_on_drop = StopOnDrop(&stop);
+            let sweeper = {
+                let store = relay(&kv, &s3())
+                    .with_large_value_intent_ttl(Duration::ZERO)
+                    .with_large_value_tombstone_grace(Duration::ZERO);
+                let stop = &stop;
+                scope.spawn(move || {
+                    let mut deleted = 0;
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        deleted += store.sweep_large_values([1; 16]).unwrap().deleted;
                     }
-                    (appended, failed)
+                    deleted
                 })
-            })
-            .collect();
-        let mut appended = Vec::new();
-        let mut failed = 0;
-        for writer in writers {
-            let (mine, lost) = writer.join().unwrap();
-            appended.extend(mine);
-            failed += lost;
-        }
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        let deleted = sweeper.join().unwrap();
+            };
+            let writers: Vec<_> = ["a", "b"]
+                .into_iter()
+                .map(|writer_name| {
+                    let store = relay(&kv, &s3()).with_large_value_intent_ttl(Duration::ZERO);
+                    scope.spawn(move || {
+                        let mut appended = Vec::new();
+                        let mut failed = 0;
+                        for index in 0..15 {
+                            // Shared contents across writers, so uploads deduplicate and race.
+                            let mut shared =
+                                message(&format!("race-{writer_name}-{index}"), INLINE_LIMIT + 1);
+                            shared.ciphertext = hex::encode(content(
+                                &format!("race-{}", index % 4),
+                                INLINE_LIMIT + 1,
+                            ));
+                            shared.write_sig =
+                                sign(&keypair("write").0, &shared.signing_digest().unwrap());
+                            match store.put_message(&group_id(), shared.clone()) {
+                                Ok(receipt) => appended.push((receipt.message.server_seq, shared)),
+                                Err(GroupError::LargeValue(_) | GroupError::Storage(_)) => {
+                                    failed += 1
+                                }
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                        (appended, failed)
+                    })
+                })
+                .collect();
+            let mut appended = Vec::new();
+            let mut failed = 0;
+            for writer in writers {
+                let (mine, lost) = writer.join().unwrap();
+                appended.extend(mine);
+                failed += lost;
+            }
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            (appended, failed, sweeper.join().unwrap())
+        });
         store.sweep_large_values([1; 16]).unwrap();
         assert!(!appended.is_empty());
         let reader = relay(&kv, &s3());
@@ -345,6 +360,15 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
             appended.len()
         );
     });
+}
+
+/// Sets the flag when dropped, including while unwinding from a panic.
+struct StopOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Last phase: remove this run's FDB subspace.

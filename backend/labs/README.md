@@ -147,8 +147,11 @@ Phases, in order:
    that needs an object fails instead of returning a gap.
 4. With MinIO restarted, the same append lands as the next sequence.
 5. An orphan (uploaded, never committed) is swept and the referenced 1 MiB object is
-   kept; then writers on two clients race a sweeper with every intent already
-   expired, and every committed message still reads back.
+   kept. Then, inside that one container and process, two writer threads race a
+   sweeper thread (each with its own store handle and S3 client) with every intent
+   already expired, and every committed message still reads back. Overlapping
+   sweepers in separate processes are covered by the unit test
+   `a_stalled_sweeper_never_deletes_a_reupload_after_another_took_over`.
 6. The run's FDB subspace is cleared.
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.

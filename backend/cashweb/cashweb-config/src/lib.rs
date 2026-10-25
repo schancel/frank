@@ -871,8 +871,9 @@ impl fmt::Display for RegistryConfigError {
                  [registry.evm_rpc] enabled): the mailbox and the forum verify payments through \
                  that row's upstreams"
             ),
-            Self::InvalidForumBurnAddress => formatter
-                .write_str("registry.forum.burn_address must be 0x followed by 40 hex characters"),
+            Self::InvalidForumBurnAddress => formatter.write_str(
+                "registry.forum.burn_address must be 0x followed by 40 hex characters",
+            ),
         }
     }
 }
@@ -894,8 +895,8 @@ impl RegistryConf {
             return Err(RegistryConfigError::NetworkNotEvm(self.network.clone()));
         }
         if self.monad_mailbox.enabled || self.forum.is_some() {
-            let proxied =
-                self.evm_rpc.enabled && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
+            let proxied = self.evm_rpc.enabled
+                && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
             if !proxied {
                 return Err(RegistryConfigError::NetworkNotProxied(self.network.clone()));
             }
@@ -1854,9 +1855,9 @@ mod tests {
         parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
         ClusterConf, ClusterNatsConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
         EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf, MonadMailboxConf,
-        MonadMailboxConfigError, MonadMailboxMode, PopConf, ProtocolChainFamily,
-        ProtocolProxyCapability, RegistryConf, RegistryConfigError, SolanaProxyChainConf,
-        SolanaProxyConf, SolanaProxyConfigError,
+        MonadMailboxConfigError,
+        MonadMailboxMode, PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
+        RegistryConfigError, SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -2439,10 +2440,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn network_is_required_canonical_evm_and_proxied_when_payments_run_on_it() {
         let shipped = include_str!("../../cashwebd.local.toml");
         let conf = parse_conf(shipped).unwrap();
-        assert_eq!(
-            conf.registry.validate_network().unwrap().id,
-            "monad-testnet"
-        );
+        assert_eq!(conf.registry.validate_network().unwrap().id, "monad-testnet");
 
         // No network at all is a parse error, never a default.
         let missing = shipped.replace("network = \"monad-testnet\"\nnet =", "net =");
@@ -2619,9 +2617,7 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
             assert_eq!(
-                conf.registry
-                    .validate_network()
-                    .map(|chain| chain.id.as_str()),
+                conf.registry.validate_network().map(|chain| chain.id.as_str()),
                 Ok("monad-testnet"),
                 "{name}"
             );
@@ -2770,10 +2766,7 @@ continuity_file = "/var/lib/frank/continuity"
             "enabled = true\nmin_value_wei = '1'\nrpc_url = 'https://rpc.example'",
             "enabled = true\nmin_value_wei = '1'\nexpected_chain_id = 10143",
         ] {
-            assert!(
-                toml::from_str::<MonadMailboxConf>(removed).is_err(),
-                "{removed}"
-            );
+            assert!(toml::from_str::<MonadMailboxConf>(removed).is_err(), "{removed}");
         }
     }
 

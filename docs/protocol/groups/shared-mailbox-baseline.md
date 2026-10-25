@@ -38,7 +38,10 @@ Only a newly committed append publishes an ephemeral wake. The HTTP
 hint through the home proxy; it never advances a durable cursor or establishes financial
 acceptance. Ordered reads and persisted authenticated receipts remain authoritative.
 
-The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-append-idempotency-v1`.
+The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-binary-rows-v1`.
+Message rows are binary CBOR; a ciphertext over 64 KiB is stored in the relay's large-value object
+store (`groups/sha256/<hex>`) and the row keeps its SHA-256 and length. A store with the earlier
+`group-append-idempotency-v1` marker (JSON rows) is refused without migration.
 Read-only opening inspects only GroupStore-owned prefixes and never writes a marker.
 Unrelated KV namespaces are ignored. An empty group namespace is valid; the first authorized
 epoch/foreign-admission/import mutation initializes the marker by CAS. A crash leaving only

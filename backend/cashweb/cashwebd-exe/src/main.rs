@@ -371,6 +371,36 @@ fn registry_db(driver: &RelayStorageDriver, db_path: &std::path::Path) -> Result
     }
 }
 
+/// Where direct messages keep their state, selected by `registry.cluster.driver`: `None` for
+/// this replica's RocksDB beside the registry database, or the shared FoundationDB store under
+/// `<fdb_subspace_prefix>messages-v3/` (the format version is part of the key space).
+fn message_backend(
+    driver: &RelayStorageDriver,
+) -> Result<Option<Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>> {
+    match driver {
+        RelayStorageDriver::RocksDb => Ok(None),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => {
+            let cluster_file = cluster_file.to_str().ok_or_else(|| {
+                bitcoinsuite_error::Report::msg("registry.cluster.fdb_cluster_file is not UTF-8")
+            })?;
+            let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
+                cluster_file,
+                format!("{subspace_prefix}messages-v3/"),
+            )
+            .map_err(|error| {
+                bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}"))
+            })?;
+            Ok(Some(Arc::new(store)))
+        }
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by require_driver_built"),
+    }
+}
+
 /// Log the cluster shape once at startup: the shared backend and every owner whose state still
 /// lives on this replica. Validation already refused cluster mode without the preview flag.
 fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStorageDriver) {
@@ -380,7 +410,8 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
     {
         info!(
             subspace_prefix = %subspace_prefix,
-            "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/"
+            "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/ and direct \
+             messages under {subspace_prefix}messages-v3/"
         );
         info!(
             subspace_prefix = %subspace_prefix,
@@ -444,6 +475,26 @@ fn probe_shared_registry(db: &Db, driver: &RelayStorageDriver) -> Result<()> {
     Ok(())
 }
 
+/// Read one key of a shared direct-message store, so an unreachable cluster fails the start.
+async fn probe_shared_messages(
+    messages: Option<&Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>,
+) -> Result<()> {
+    use cashweb_registry::store::kv_store::{KvError, Transact};
+    let Some(store) = messages.cloned() else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || store.transact(|tx| tx.get(b"probe")))
+        .await
+        .wrap_err("FoundationDB probe task failed")?
+        .map_err(|error: KvError| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Reading the FoundationDB direct-message store: {error}"
+            ))
+        })?;
+    info!("FoundationDB direct-message store is readable");
+    Ok(())
+}
+
 /// A stopped FoundationDB network cannot be restarted in this process, and calls already
 /// waiting on it never return. Exit so the supervisor restarts the replica.
 #[cfg(feature = "foundationdb")]
@@ -492,10 +543,12 @@ async fn run(
     }
     let db = registry_db(&driver, &conf.registry.db_path)?;
     let groups = group_backend(&driver, &conf.registry.db_path)?;
+    let messages = message_backend(&driver)?;
     // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
     let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
     probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
     probe_shared_registry(&db, &driver)?;
+    probe_shared_messages(messages.as_ref()).await?;
     if check_db {
         return Ok(());
     }
@@ -553,7 +606,7 @@ async fn run(
             groups,
             objects,
             group_policy: conf.registry.groups,
-            provisioned_vapid,
+            messages,
         },
     ));
     // Collect unreferenced large values. Replicas compete for one lease; the others skip.
@@ -599,12 +652,25 @@ async fn run(
             );
             MonadMailboxRuntime::Disabled
         }
-        MonadMailboxMode::Enabled { min_value_wei } => MonadMailboxRuntime::enabled(
-            network_adapter()?,
-            MailboxConfig::default(),
-            min_value_wei,
-            &session,
-        ),
+        MonadMailboxMode::Enabled { min_value_wei } => {
+            // Cluster mode requires the provisioned key, so every replica signs with it. A single
+            // node keeps its own beside the database, made on first start.
+            let vapid = match provisioned_vapid {
+                Some(vapid) => vapid,
+                None => {
+                    let vapid_path = conf.registry.db_path.with_extension("vapid-key");
+                    VapidKeyPair::load_or_create(&vapid_path)
+                        .wrap_err_with(|| format!("Reading VAPID key {}", vapid_path.display()))?
+                }
+            };
+            MonadMailboxRuntime::enabled(
+                network_adapter()?,
+                MailboxConfig::default(),
+                min_value_wei,
+                &session,
+                vapid,
+            )
+        }
     };
     let forum = match &conf.registry.forum {
         Some(forum) => Some(Arc::new(
@@ -941,9 +1007,23 @@ max_get_logs_range = 10\n\n\
 
     #[test]
     fn the_foundationdb_driver_carries_its_cluster_file_and_prefix_to_composition() {
+        let driver = "[registry.cluster]\ndriver = 'foundationdb'\n\
+             fdb_cluster_file = '/cluster/fdb.cluster'\nfdb_subspace_prefix = 'frank-lab/'\n";
+        // The shared driver shares state between replicas, so it is refused outside cluster mode.
+        let single = format!("{LOCAL}\n{driver}");
+        let error = read_and_validate_conf_with_env("-", &mut Cursor::new(single), env(FULL_ENV))
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("so it needs cluster mode"),
+            "{error:#}"
+        );
+        let secrets =
+            "[registry]\nsession_secret_file = '/run/s'\nvapid_private_key_file = '/run/v'\n";
         let config = format!(
-            "{LOCAL}\n[registry.cluster]\ndriver = 'foundationdb'\n\
-             fdb_cluster_file = '/cluster/fdb.cluster'\nfdb_subspace_prefix = 'frank-lab/'\n"
+            "{}\n{driver}enabled = true\ncluster_name = 'lab'\n\
+             preview_replica_local_owners = true\n\
+             [registry.cluster.nats]\nenabled = true\nurl = 'nats://nats:4222'\n",
+            LOCAL.replacen("[registry]\n", secrets, 1)
         );
         let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
@@ -1025,7 +1105,6 @@ max_get_logs_range = 10\n\n\
             .unwrap_err();
         let text = format!("{error:#}");
         for owner in [
-            "direct messages",
             "directory",
             "forum",
             "hourly RPC proxy quotas",
@@ -1034,15 +1113,17 @@ max_get_logs_range = 10\n\n\
         ] {
             assert!(text.contains(owner), "{owner}: {text}");
         }
-        // The registry database and groups are on FoundationDB here, so not replica-local.
+        // The registry database, groups and direct messages are on FoundationDB here, so
+        // none is replica-local.
         assert!(!text.contains("groups"), "{text}");
         assert!(!text.contains("registry database"), "{text}");
+        assert!(!text.contains("direct messages"), "{text}");
         let previewed = format!("{base}\n{cluster}preview_replica_local_owners = true\n{nats}");
         let (conf, _, _) =
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 5);
+        assert_eq!(conf.registry.replica_local_owners().len(), 4);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");

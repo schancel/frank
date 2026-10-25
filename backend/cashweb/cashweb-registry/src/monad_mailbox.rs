@@ -274,6 +274,8 @@ pub struct EnabledMonadMailboxRuntime {
     private_read_permits: Arc<Semaphore>,
     min_value_wei: u128,
     auth: MailboxAuthState,
+    /// Signs the relay's blind WebPush wakeups. The same key on every replica.
+    vapid: crate::store::notification_policy::VapidKeyPair,
 }
 
 /// Public facts a recipient signs to authorize one private request.
@@ -428,6 +430,7 @@ impl MonadMailboxRuntime {
         config: MailboxConfig,
         min_value_wei: u128,
         session: &SessionSecret,
+        vapid: crate::store::notification_policy::VapidKeyPair,
     ) -> Self {
         Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
             chain,
@@ -435,6 +438,7 @@ impl MonadMailboxRuntime {
             config,
             min_value_wei,
             auth: MailboxAuthState::new(session),
+            vapid,
         }))
     }
 
@@ -472,6 +476,11 @@ impl EnabledMonadMailboxRuntime {
     /// Minimum total a paid message must carry.
     pub fn min_value_wei(&self) -> u128 {
         self.min_value_wei
+    }
+
+    /// The relay's WebPush (VAPID) key.
+    pub fn vapid(&self) -> &crate::store::notification_policy::VapidKeyPair {
+        &self.vapid
     }
 
     /// Network tag for newly admitted envelopes.
@@ -612,6 +621,7 @@ mod tests {
             config,
             1,
             session,
+            crate::store::notification_policy::VapidKeyPair::generate(),
         )
     }
     fn binding(recipient: Address) -> MailboxRequestBinding {

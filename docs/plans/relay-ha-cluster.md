@@ -115,6 +115,13 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      - after A is killed mid-admission, a retry to B gives one message and one effect;
      - with NATS down, readers catch up from their cursor;
      - an 8 MiB request round-trips through S3.
+   - Progress (branch `ha/dm-owner-port`): the owner runs on `RelayKvStore` transactions, opened
+     through step 2's driver selection under `<fdb_subspace_prefix>messages-v3/`; an ambiguous
+     commit is settled by a fence on the recipient's delivery-time key.
+     `packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` checks every item above except S3
+     on three real relays in cluster mode (`backend/labs/compose.dm-owner.yml`). Until step 4,
+     rows over 100 kB are split across FDB values. Clients seal at most 512 KiB of ciphertext per
+     message, so the livecheck sends a 400 kB message and a unit test covers an 8 MiB row.
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.
 8. **Directory port.** Accept: an entry published on A resolves on B; conflicting revisions on A and B leave one accepted and no fork; a forward interrupted by killing A is delivered exactly once.
 9. **Forum port.** Accept: a cursor from A works on B; one burn presented to A and B gives one post.

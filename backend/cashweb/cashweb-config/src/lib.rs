@@ -649,7 +649,7 @@ impl RegistryConf {
         if local_driver {
             owners.push(ReplicaLocalOwner::RegistryDb);
         }
-        if self.monad_mailbox.enabled {
+        if self.monad_mailbox.enabled && local_driver {
             owners.push(ReplicaLocalOwner::DirectMessages);
         }
         if self.directory.is_some() {
@@ -703,6 +703,14 @@ impl RegistryConf {
             return Err(ClusterConfigError::InvalidClusterName);
         }
         if !cluster.enabled {
+            // A shared store without cluster mode would run with no bus and with secrets each
+            // replica makes for itself: challenges, cursors and push keys would not carry over.
+            if matches!(
+                self.storage_driver()?,
+                RelayStorageDriver::FoundationDb { .. }
+            ) {
+                return Err(ClusterConfigError::SharedDriverWithoutCluster);
+            }
             return Ok(());
         }
         if !cluster.is_nats_enabled() {
@@ -825,6 +833,8 @@ pub enum ClusterConfigError {
     InvalidFdbSubspacePrefix,
     /// `preview_replica_local_owners` is set but cluster mode is off, so it would do nothing.
     PreviewWithoutCluster,
+    /// `driver = "foundationdb"` without `registry.cluster.enabled = true`.
+    SharedDriverWithoutCluster,
     /// Enabled Core NATS requires an explicit NATS/TLS endpoint with a host.
     InvalidNatsUrl,
     /// Enabled Core NATS requires a `cluster_name` that is one NATS subject token.
@@ -847,6 +857,7 @@ impl fmt::Display for ClusterConfigError {
             Self::UnusedFdbSettings => formatter.write_str("registry.cluster.fdb_cluster_file and fdb_subspace_prefix are only used with driver = \"foundationdb\""),
             Self::MissingFdbSettings => formatter.write_str("registry.cluster.driver = \"foundationdb\" requires fdb_cluster_file and a non-empty fdb_subspace_prefix"),
             Self::InvalidFdbSubspacePrefix => formatter.write_str("registry.cluster.fdb_subspace_prefix must be one or more segments of letters, digits, '-' or '_', each ending in '/' (for example \"frank-prod/\"), so no two prefixes overlap by accident"),
+            Self::SharedDriverWithoutCluster => formatter.write_str("registry.cluster.driver = \"foundationdb\" shares state between replicas, so it needs cluster mode: set registry.cluster.enabled = true (with NATS, cluster_name, session_secret_file and vapid_private_key_file), or use driver = \"rocksdb\" for a single node"),
             Self::PreviewWithoutCluster => formatter.write_str("registry.cluster.preview_replica_local_owners only applies with registry.cluster.enabled = true; remove it or enable cluster mode"),
             Self::InvalidNatsUrl => formatter.write_str("enabled registry.cluster.nats requires a valid nats:// or tls:// URL with a host"),
             Self::InvalidClusterName => formatter.write_str("enabled registry.cluster.nats requires registry.cluster.cluster_name: 1 to 64 letters, digits, '-' or '_' (it names the NATS subjects frank.<cluster>.…)"),
@@ -3212,6 +3223,46 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
+    fn the_foundationdb_driver_is_refused_outside_cluster_mode() {
+        use super::ClusterConfigError;
+        let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
+            .unwrap()
+            .registry;
+        let foundationdb = ClusterConf {
+            enabled: false,
+            driver: "foundationdb".into(),
+            fdb_cluster_file: Some("/cluster/fdb.cluster".into()),
+            fdb_subspace_prefix: Some("frank-lab/".into()),
+            ..ClusterConf::default()
+        };
+        // Without cluster mode there is no bus and no provisioned secret or VAPID key, so each
+        // replica would sign with keys of its own over one shared store.
+        conf.cluster = Some(foundationdb.clone());
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::SharedDriverWithoutCluster)
+        );
+        let text = ClusterConfigError::SharedDriverWithoutCluster.to_string();
+        assert!(text.contains("registry.cluster.enabled = true"), "{text}");
+        // Also with a bus configured: it is cluster mode that brings the provisioned files.
+        conf.cluster = Some(ClusterConf {
+            cluster_name: Some("lab".into()),
+            nats: Some(ClusterNatsConf {
+                enabled: true,
+                url: "nats://nats:4222".into(),
+            }),
+            ..foundationdb
+        });
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::SharedDriverWithoutCluster)
+        );
+        // The RocksDB driver stays a valid single node.
+        conf.cluster = Some(ClusterConf::default());
+        assert_eq!(conf.validate_cluster(), Ok(()));
+    }
+
+    #[test]
     fn preview_flag_is_refused_outside_cluster_mode() {
         use super::ClusterConfigError;
         let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
@@ -3304,13 +3355,22 @@ continuity_file = "/var/lib/frank/continuity"
             conf.validate_cluster(),
             Err(ClusterConfigError::InvalidClusterName)
         );
-        // A single node keeps creating its own secret beside the database.
+        // A single node keeps creating its own secret beside the database, on its own RocksDB:
+        // the shared FoundationDB driver is cluster mode only.
         let mut conf = cluster_mode_conf();
         let cluster = conf.cluster.as_mut().unwrap();
         cluster.enabled = false;
         cluster.preview_replica_local_owners = false;
         conf.session_secret_file = None;
         conf.vapid_private_key_file = None;
+        assert_eq!(
+            conf.validate_cluster(),
+            Err(ClusterConfigError::SharedDriverWithoutCluster)
+        );
+        let cluster = conf.cluster.as_mut().unwrap();
+        cluster.driver = "rocksdb".into();
+        cluster.fdb_cluster_file = None;
+        cluster.fdb_subspace_prefix = None;
         assert_eq!(conf.validate_cluster(), Ok(()));
         assert!(!conf.is_cluster_mode());
     }
@@ -3320,9 +3380,9 @@ continuity_file = "/var/lib/frank/continuity"
         use super::{ClusterConfigError, ReplicaLocalOwner};
         let mut conf = cluster_mode_conf();
         // The shipped local config enables the mailbox, directory, forum and the RPC proxies.
-        // The registry database and groups are on FoundationDB here, so neither is listed.
+        // The registry database, direct messages and groups are on FoundationDB here, so none
+        // is listed.
         let every_enabled = vec![
-            ReplicaLocalOwner::DirectMessages,
             ReplicaLocalOwner::Directory,
             ReplicaLocalOwner::Forum,
             ReplicaLocalOwner::HourlyQuotas,
@@ -3358,6 +3418,16 @@ continuity_file = "/var/lib/frank/continuity"
         assert_eq!(
             conf.replica_local_owners(),
             vec![ReplicaLocalOwner::RegistryDb, ReplicaLocalOwner::Groups]
+        );
+        // So are direct messages on RocksDB, when the mailbox is enabled.
+        conf.monad_mailbox.enabled = true;
+        assert_eq!(
+            conf.replica_local_owners(),
+            vec![
+                ReplicaLocalOwner::RegistryDb,
+                ReplicaLocalOwner::DirectMessages,
+                ReplicaLocalOwner::Groups
+            ]
         );
         // Large values are shared only in S3: the local driver, or none configured, is
         // replica-local and refused without the preview flag.

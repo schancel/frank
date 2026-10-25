@@ -321,6 +321,30 @@ Phases, in order:
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.
 
+## Three relays sharing direct messages (HA plan step 6)
+
+`compose.dm-owner.yml` layers three real relays (`relay-a`, `relay-b`, `relay-c` on
+127.0.0.1:18301-18303) over the FoundationDB + NATS lab above, in cluster mode on the
+FoundationDB driver. Their direct messages and groups live in one FoundationDB subspace, and
+their hints go over the lab's NATS (`frank.dm-owner-lab.…`); the registry, directory and forum
+stay on each relay's own RocksDB under the preview flag until steps 7 to 9. It runs the mailbox
+against the local Monad network, which the cluster lab above does not yet do; it will be retired
+once direct messages are wired into `compose.cluster.yml`.
+
+The livecheck writes the configurations and the provisioned session secret and VAPID key (0400),
+starts the lab under its own Compose project (`FRANK_DM_LAB_PROJECT`, default `frank-ha-dm`),
+runs the checks with real wallets on the local Monad network (monad-solonet), and removes the
+project with its volumes:
+
+```sh
+docker build -f backend/labs/Dockerfile.relay-foundationdb -t frank-ha-dm-relay:latest .
+yarn --cwd packages/bot regtest:monad-dm-cluster
+```
+
+`FRANK_DM_LAB_KEEP=1` leaves the lab running; remove it later with
+`docker compose -p frank-ha-dm -f compose.foundationdb-nats.yml -f compose.dm-owner.yml down --volumes`
+(with `FRANK_DM_LAB_STATE` set to any directory). `FRANK_DM_LAB_LOGS=1` saves the relays' logs.
+
 ## References
 
 - [FDB container entrypoint](https://github.com/apple/foundationdb/blob/main/packaging/docker/fdb.bash)

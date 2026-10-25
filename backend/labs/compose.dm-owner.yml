@@ -1,0 +1,39 @@
+# Three real relays sharing one FoundationDB direct-message store and one Core NATS bus.
+# The lab of HA plan step 6 (the DM owner port); it will be retired once direct messages are
+# wired into compose.cluster.yml. Layered over compose.foundationdb-nats.yml and driven by
+# packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts, which writes each relay's
+# configuration and the provisioned secrets first.
+#
+# The relays run in cluster mode on the FoundationDB driver: direct messages (<prefix>messages-v3/)
+# and groups (<prefix>groups-v1/) are shared. The registry, directory and forum of each relay stay
+# on its own RocksDB under the preview flag (their ports are steps 7 to 9), so the livecheck copies
+# directory and profile publications to every relay.
+services:
+  nats:
+    # Nothing outside the lab network talks to this NATS; no host port can clash with another lab.
+    ports: !reset []
+  relay-a: &relay
+    image: frank-ha-dm-relay:latest
+    command: ["/state/relay-a/relay.toml"]
+    environment:
+      MONAD_REGTEST_HTTP_RPC_URL: ${FRANK_DM_LAB_MONAD_RPC:-http://host.docker.internal:48080}
+    volumes:
+      - ${FRANK_DM_LAB_STATE:?set by monad-dm-cluster.livecheck.ts}:/state
+      - fdb-cluster:/cluster:ro
+    ports:
+      - "127.0.0.1:18301:8080"
+    depends_on:
+      nats:
+        condition: service_healthy
+      fdb:
+        condition: service_healthy
+  relay-b:
+    <<: *relay
+    command: ["/state/relay-b/relay.toml"]
+    ports:
+      - "127.0.0.1:18302:8080"
+  relay-c:
+    <<: *relay
+    command: ["/state/relay-c/relay.toml"]
+    ports:
+      - "127.0.0.1:18303:8080"

@@ -449,6 +449,7 @@ fn server_with(
             config,
             min_value_wei,
             &crate::monad_mailbox::SessionSecret::random(),
+            crate::store::notification_policy::VapidKeyPair::generate(),
         ),
         evm_rpc: None,
         bitcoin_proxy: None,
@@ -852,6 +853,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         config,
         10143,
         &crate::monad_mailbox::SessionSecret::random(),
+        crate::store::notification_policy::VapidKeyPair::generate(),
     );
     let server = super::super::server::RegistryServer {
         registry: fixture.registry.clone(),
@@ -1525,13 +1527,9 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         assert_eq!(decoded_vapid.len(), 65);
         assert_eq!(decoded_vapid[0], 0x04);
 
-        // Verify a second Owner instance opened on the same RocksDB path reads the identical VAPID key
-        let reopened_vapid = fixture
-            .registry
-            .canonical_dm()
-            .get_or_init_vapid_keypair()
-            .unwrap();
-        assert_eq!(reopened_vapid.public_key_base64url(), vapid_pubkey);
+        // The key served is the one composition handed the mailbox runtime.
+        let installed_vapid = runtime_server.monad_mailbox.as_enabled().unwrap().vapid();
+        assert_eq!(installed_vapid.public_key_base64url(), vapid_pubkey);
 
         // 2. Authenticated GET returns default policy + x-cashweb-vapid-public-key header
         let get_headers = signed_notification_policy_headers(

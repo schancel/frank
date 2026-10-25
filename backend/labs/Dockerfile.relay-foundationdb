@@ -1,0 +1,28 @@
+# The relay daemon built with the FoundationDB feature, for the direct-message owner lab
+# (compose.dm-owner.yml), retired with it once direct messages are wired into compose.cluster.yml.
+# Keep server/client release versions identical. FDB's image supplies native libfdb_c.
+FROM foundationdb/foundationdb:7.3.63 AS fdb-client
+FROM rust:1-bookworm AS build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-12 g++-12 libclang-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
+COPY --from=fdb-client /usr/lib/libfdb_c.so /usr/local/lib/libfdb_c.so
+RUN ldconfig
+ENV CC=gcc-12 CXX=g++-12 PROTOC=/usr/bin/protoc
+WORKDIR /build
+COPY backend/bitcoinsuite backend/bitcoinsuite
+COPY backend/cashweb backend/cashweb
+COPY docs docs
+COPY fixtures fixtures
+WORKDIR /build/backend/cashweb
+RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,sharing=locked,id=frank-labs-git,target=/usr/local/cargo/git \
+    --mount=type=cache,sharing=locked,id=frank-labs-relay-fdb-target,target=/build/backend/cashweb/target \
+    find /build/backend /build/docs -type d -name target -prune -o -type f -exec touch {} + && \
+    cargo build --locked --release -p cashwebd-exe --features foundationdb && \
+    cp target/release/cashwebd-exe /cashwebd-exe
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=fdb-client /usr/lib/libfdb_c.so /usr/local/lib/libfdb_c.so
+RUN ldconfig
+COPY --from=build /cashwebd-exe /usr/local/bin/cashwebd-exe
+ENTRYPOINT ["/usr/local/bin/cashwebd-exe"]

@@ -196,9 +196,11 @@ mainnet relay set `[registry] network = "monad-mainnet"` and give the `monad-mai
 variable; review `min_value_wei` for their spam-resistance policy; and persist `/data`.
 
 What the relay keeps there: the registry database (`registry.rocksdb`), the message store beside
-it (`registry.messages-v2`), and the session secret (`registry.session-secret`) that signs login
-challenges, page cursors and RPC capabilities so they survive a restart. None of them holds a
-wallet key or funds.
+it (`registry.messages-v3`), the session secret (`registry.session-secret`) that signs login
+challenges, page cursors and RPC capabilities so they survive a restart, and the VAPID key
+(`registry.vapid-key`) that signs push wakeups. None of them holds a wallet key or funds. The
+VAPID key is not a wallet key either, but losing it orphans every browser push subscription; an
+upgraded relay whose key was kept in RocksDB (`M_vapid_privkey`) makes a new one on its first start.
 
 **Development reset.** Frank has no users yet, so a stored format changes without migration. A
 relay started beside a database from an earlier build refuses to start and prints the paths to

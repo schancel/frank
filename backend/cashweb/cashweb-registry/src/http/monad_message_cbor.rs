@@ -66,52 +66,63 @@ pub(crate) async fn handle_put(
     let owner = server.registry.canonical_dm();
     // An exact repeat of a stored message is answered from the store, whatever the directory
     // or the admission policy says today.
-    let claim = if let Some(stored) = owner.find_request(&request)? {
-        if stored.policy.network != network || stored.policy.chain_id != evm_chain_id {
-            return Err(CanonicalError::Unavailable);
-        }
-        stored
-    } else {
-        if request.transaction_count() > crate::monad_dm_payment::MAX_STAMP_PAYMENTS {
-            return Err(CanonicalError::Invalid);
-        }
-        let principals = request_principals(&request, network)?;
-        // The recipient's own entry says which relay holds its mailbox. When this relay cannot
-        // deliver there, say so as a final answer: nothing is stored, no payment is broadcast.
-        let Some(recipient_current) =
-            deliverable_recipient(owner, network, &principals.recipient).await?
-        else {
-            return dead_response(&request, network, &principals, "undeliverable");
-        };
-        // The sender is whoever the message says. The relay does not look the sender up:
-        // checking who wrote a message is the job of the recipient's client, which opens it
-        // with the key the sender published.
-        let historical = match principals.recipient_t1 {
-            Some(t1) if recipient_current.evidence.hash != t1 => {
-                Some(history(owner, network, &principals.recipient, t1).await?)
+    let repeat = request.clone();
+    let (claim, new) =
+        if let Some(stored) = on_store(&server, move |owner| owner.find_request(&repeat)).await? {
+            if stored.policy.network != network || stored.policy.chain_id != evm_chain_id {
+                return Err(CanonicalError::Unavailable);
             }
-            _ => None,
+            (stored, false)
+        } else {
+            if request.transaction_count() > crate::monad_dm_payment::MAX_STAMP_PAYMENTS {
+                return Err(CanonicalError::Invalid);
+            }
+            let principals = request_principals(&request, network)?;
+            // The recipient's own entry says which relay holds its mailbox. When this relay cannot
+            // deliver there, say so as a final answer: nothing is stored, no payment is broadcast.
+            let Some(recipient_current) =
+                deliverable_recipient(owner, network, &principals.recipient).await?
+            else {
+                return dead_response(&request, network, &principals, "undeliverable");
+            };
+            // The sender is whoever the message says. The relay does not look the sender up:
+            // checking who wrote a message is the job of the recipient's client, which opens it
+            // with the key the sender published.
+            let historical = match principals.recipient_t1 {
+                Some(t1) if recipient_current.evidence.hash != t1 => {
+                    Some(history(owner, network, &principals.recipient, t1).await?)
+                }
+                _ => None,
+            };
+            // Everything that can refuse the message is decided from its bytes, here and in the
+            // store's own checks, before anything is stored or broadcast.
+            let input = crate::monad_dm_payment::validate_canonical_payment_set(
+                request,
+                &recipient_current,
+                historical.as_ref(),
+                network,
+                evm_chain_id,
+                runtime.min_value_wei(),
+            )?;
+            // A payment the node can never take is refused here, before anything is stored or
+            // delivered, so the sender learns it while nothing has happened yet.
+            if let Some(dead) = precheck_payments(runtime, input.payments()).await {
+                return dead_response(&input.request, network, &principals, dead.reason());
+            }
+            let admitted = on_store(&server, move |owner| owner.claim(input, now_ms())).await?;
+            (admitted.claim, admitted.new)
         };
-        // Everything that can refuse the message is decided from its bytes, here and in the
-        // store's own checks, before anything is stored or broadcast.
-        let input = crate::monad_dm_payment::validate_canonical_payment_set(
-            request,
-            &recipient_current,
-            historical.as_ref(),
-            network,
-            evm_chain_id,
-            runtime.min_value_wei(),
-        )?;
-        // A payment the node can never take is refused here, before anything is stored or
-        // delivered, so the sender learns it while nothing has happened yet.
-        if let Some(dead) = precheck_payments(runtime, input.payments()).await {
-            return dead_response(&input.request, network, &principals, dead.reason());
-        }
-        owner.claim(input, now_ms())?
-    };
-    // The message is in the recipient's inbox from here on. Nothing below can undo that.
+    // The message is in the recipient's inbox from here on, committed in the store every
+    // replica reads. Nothing below can undo that.
+    if new {
+        announce(&server, &claim).await;
+    }
     if let Ok(recipient) = claim.policy.recipient() {
-        let policy = owner.get_notification_policy(recipient).unwrap_or_default();
+        let policy = on_store(&server, move |owner| {
+            owner.get_notification_policy(recipient)
+        })
+        .await
+        .unwrap_or_default();
         let stamp_value_wei: u128 = claim
             .request
             .raw_transactions()
@@ -135,32 +146,20 @@ pub(crate) async fn handle_put(
         ) {
             if let Some(wakeup_event) = owner.record_wakeup(recipient, &policy, claim.delivered_at)
             {
-                if !wakeup_event.subscriptions.is_empty() {
-                    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
-                        for subscription in wakeup_event.subscriptions {
-                            let vapid_clone = vapid.clone();
-                            tokio::spawn(async move {
-                                let _ = crate::store::notification_policy::dispatch_blind_webpush_wakeup(
-                                    &subscription,
-                                    &vapid_clone,
-                                )
-                                .await;
-                            });
-                        }
-                    }
+                for subscription in wakeup_event.subscriptions {
+                    let vapid = runtime.vapid().clone();
+                    tokio::spawn(async move {
+                        let _ = crate::store::notification_policy::dispatch_blind_webpush_wakeup(
+                            &subscription,
+                            &vapid,
+                        )
+                        .await;
+                    });
                 }
             }
-            // The notification is a courtesy to connected readers. A slow event bus must not
-            // hold up the payments or the answer.
-            let _ = tokio::time::timeout(
-                EVENT_BUS_TIMEOUT,
-                server
-                    .event_bus
-                    .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash),
-            )
-            .await;
         }
     }
+    // Payments are handed to the node only once the message is known to be stored.
     if owner.may_broadcast_payments(&claim.policy.payload_hash, REBROADCAST_INTERVAL) {
         broadcast_payments(runtime, &claim).await;
     }
@@ -169,6 +168,50 @@ pub(crate) async fn handle_put(
 
 /// Longest the relay waits on the event bus to announce a delivered message.
 const EVENT_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Run a call of the message store on a blocking worker. The store's calls block (on
+/// FoundationDB's network thread or on RocksDB), and must not hold up the async runtime.
+pub(crate) async fn on_store<T, F>(server: &super::server::RegistryServer, call: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&crate::store::monad_dm_cbor::Owner) -> Result<T> + Send + 'static,
+{
+    let registry = Arc::clone(&server.registry);
+    tokio::task::spawn_blocking(move || call(registry.canonical_dm()))
+        .await
+        .map_err(|_| CanonicalError::Unavailable)?
+}
+
+/// Tell every replica's open mailbox sockets that the recipient's and the sender's mailboxes
+/// have a new row. The hint names only the mailbox and the payload hash; a reader takes the
+/// row from the store, and one that misses the hint (the bus is down, or it was not connected)
+/// finds the row from its cursor. A slow event bus must not hold up the payments or the answer.
+async fn announce(
+    server: &super::server::RegistryServer,
+    claim: &crate::store::monad_dm_cbor::Claim,
+) {
+    // A sealed-sender message names no sender, so only the recipient's mailbox has it.
+    let Ok(mailboxes) = claim.policy.parties() else {
+        return;
+    };
+    let hash = claim.policy.payload_hash;
+    for mailbox in mailboxes {
+        let published = tokio::time::timeout(
+            EVENT_BUS_TIMEOUT,
+            server
+                .event_bus
+                .publish_message_arrival(&mailbox.to_hex(), &hash),
+        )
+        .await;
+        if !matches!(published, Ok(Ok(()))) {
+            tracing::event!(
+                tracing::Level::DEBUG,
+                payload_hash = %hex::encode(hash),
+                "Message stored but not announced on the event bus; readers catch up from their cursor"
+            );
+        }
+    }
+}
 
 /// A message's payments are handed to the node at most once in this long. A repeat of the
 /// same message inside it is answered `delivered` without sending them again. That includes a
@@ -1121,7 +1164,6 @@ async fn authenticate(
     headers: &HeaderMap,
     binding: &crate::monad_mailbox::MailboxRequestBinding,
 ) -> Result<()> {
-    use crate::monad_mailbox::ChallengeConsumption;
     let runtime = server
         .monad_mailbox
         .as_enabled()
@@ -1159,14 +1201,28 @@ async fn authenticate(
     if !valid {
         return Err(CanonicalError::Unauthorized);
     }
-    match server.registry.canonical_dm().consume_challenge(
-        challenge.epoch,
-        binding.recipient,
-        challenge.nonce,
-        challenge.expires_at_ms,
-        now_ms(),
-        crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
-    )? {
+    consume(server, binding.recipient, challenge).await
+}
+/// Use up a challenge whose signature checked out, in the store every replica shares: a
+/// challenge issued by one replica is used once, on whichever replica it is presented.
+async fn consume(
+    server: &super::server::RegistryServer,
+    recipient: Address,
+    challenge: crate::monad_mailbox::MailboxChallenge,
+) -> Result<()> {
+    use crate::monad_mailbox::ChallengeConsumption;
+    let consumed = on_store(server, move |owner| {
+        owner.consume_challenge(
+            challenge.epoch,
+            recipient,
+            challenge.nonce,
+            challenge.expires_at_ms,
+            now_ms(),
+            crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
+        )
+    })
+    .await?;
+    match consumed {
         ChallengeConsumption::Consumed => Ok(()),
         ChallengeConsumption::Rejected => Err(CanonicalError::Unauthorized),
         ChallengeConsumption::AtCapacity => Err(CanonicalError::Capacity),
@@ -1312,13 +1368,13 @@ async fn page(
         .ok_or(CanonicalError::Unavailable)?;
     let binding = private_binding(runtime, recipient, resource, query)?;
     authenticate(server, headers, &binding).await?;
-    let owner = server.registry.canonical_dm();
     type Record = (
         crate::store::monad_dm_cbor::Claim,
         Option<crate::store::monad_dm_cbor::MailboxDirection>,
     );
+    let since = binding.since;
     // The next record strictly after a position. The store starts its scan there.
-    let fetch = |after: Option<MailboxCursor>| -> Result<Option<Record>> {
+    let fetch = |after: Option<MailboxCursor>| {
         let after = after.map(|cursor| match cursor {
             MailboxCursor::Inbox {
                 timestamp,
@@ -1329,22 +1385,24 @@ async fn page(
                 payload_hash,
             } => (timestamp, payload_hash),
         });
-        Ok(match resource {
-            MailboxResource::Inbox => owner
-                .inbox(recipient, binding.since, after, 1)?
-                .into_iter()
-                .next()
-                .map(|claim| (claim, None)),
-            MailboxResource::Mailbox => owner
-                .mailbox(recipient, binding.since, after, 1)?
-                .into_iter()
-                .next()
-                .map(|(claim, direction)| (claim, Some(direction))),
-            MailboxResource::MailboxStream
-            | MailboxResource::NotificationPolicyRead
-            | MailboxResource::NotificationPolicyWrite => {
-                unreachable!("only the inbox and the mailbox are paged")
-            }
+        on_store(server, move |owner| -> Result<Option<Record>> {
+            Ok(match resource {
+                MailboxResource::Inbox => owner
+                    .inbox(recipient, since, after, 1)?
+                    .into_iter()
+                    .next()
+                    .map(|claim| (claim, None)),
+                MailboxResource::Mailbox => owner
+                    .mailbox(recipient, since, after, 1)?
+                    .into_iter()
+                    .next()
+                    .map(|(claim, direction)| (claim, Some(direction))),
+                MailboxResource::MailboxStream
+                | MailboxResource::NotificationPolicyRead
+                | MailboxResource::NotificationPolicyWrite => {
+                    unreachable!("only the inbox and the mailbox are paged")
+                }
+            })
         })
     };
     let position = |claim: &crate::store::monad_dm_cbor::Claim| match resource {
@@ -1364,12 +1422,12 @@ async fn page(
     }
     let mut bytes = Vec::new();
     let mut next_cursor = None;
-    let mut candidate = fetch(binding.cursor.as_ref().map(|cursor| cursor.position))?;
+    let mut candidate = fetch(binding.cursor.as_ref().map(|cursor| cursor.position)).await?;
     let mut count = 0;
     while let Some((claim, dir)) = candidate {
         let at = position(&claim);
         // One-record lookahead: a page never allocates limit full request bodies in advance.
-        let following = fetch(Some(at))?;
+        let following = fetch(Some(at)).await?;
         let cursor = following
             .as_ref()
             .map(|_| runtime.encode_cursor(recipient, at));
@@ -1519,7 +1577,7 @@ fn notification_policy_challenge(
 /// Verify the owner's signature over [`notification_policy_auth_preimage`] and consume the
 /// challenge, so the request cannot be replayed. The challenge itself was already checked to be
 /// one this relay issued for this method and address and still live.
-fn authenticate_notification_policy(
+async fn authenticate_notification_policy(
     server: &super::server::RegistryServer,
     runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
     headers: &HeaderMap,
@@ -1528,7 +1586,6 @@ fn authenticate_notification_policy(
     method: &str,
     body: &[u8],
 ) -> Result<()> {
-    use crate::monad_mailbox::ChallengeConsumption;
     let subject = single_header(headers, NOTIFICATION_POLICY_SUBJECT_HEADER)
         .map_err(|_| CanonicalError::Unauthorized)?;
     let mut pubkey = [0u8; 33];
@@ -1565,25 +1622,17 @@ fn authenticate_notification_policy(
     {
         return Err(CanonicalError::Unauthorized);
     }
-    match server.registry.canonical_dm().consume_challenge(
-        challenge.epoch,
-        binding.recipient,
-        challenge.nonce,
-        challenge.expires_at_ms,
-        now_ms(),
-        crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
-    )? {
-        ChallengeConsumption::Consumed => Ok(()),
-        ChallengeConsumption::Rejected => Err(CanonicalError::Unauthorized),
-        ChallengeConsumption::AtCapacity => Err(CanonicalError::Capacity),
-    }
+    consume(server, binding.recipient, challenge).await
 }
 
 pub(crate) async fn handle_get_vapid_public_key(
     Extension(server): Extension<super::server::RegistryServer>,
 ) -> Result<Response> {
-    let vapid = server.registry.canonical_dm().get_or_init_vapid_keypair()?;
-    let pubkey = vapid.public_key_base64url();
+    let runtime = server
+        .monad_mailbox
+        .as_enabled()
+        .ok_or(CanonicalError::Unavailable)?;
+    let pubkey = runtime.vapid().public_key_base64url();
     let mut response = (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -1618,16 +1667,14 @@ pub(crate) async fn handle_get_notification_policy(
     else {
         return Ok(notification_policy_challenge(runtime, &binding));
     };
-    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "GET", &[])?;
-    let owner = server.registry.canonical_dm();
-    let policy = owner.get_notification_policy(address)?;
+    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "GET", &[])
+        .await?;
+    let policy = on_store(&server, move |owner| owner.get_notification_policy(address)).await?;
     let mut response = (StatusCode::OK, Json(policy)).into_response();
-    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
-        if let Ok(header_val) = vapid.public_key_base64url().parse() {
-            response
-                .headers_mut()
-                .insert("x-cashweb-vapid-public-key", header_val);
-        }
+    if let Ok(header_val) = runtime.vapid().public_key_base64url().parse() {
+        response
+            .headers_mut()
+            .insert("x-cashweb-vapid-public-key", header_val);
     }
     Ok(response)
 }
@@ -1662,7 +1709,8 @@ pub(crate) async fn handle_put_notification_policy(
         }
         bytes.extend_from_slice(&chunk);
     }
-    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "PUT", &bytes)?;
+    authenticate_notification_policy(&server, runtime, &headers, &binding, auth, "PUT", &bytes)
+        .await?;
     let mut policy: crate::store::notification_policy::MailboxNotificationPolicy =
         serde_json::from_slice(&bytes).map_err(|_| CanonicalError::Invalid)?;
     if policy
@@ -1676,15 +1724,16 @@ pub(crate) async fn handle_put_notification_policy(
     if policy.updated_at_ms == 0 {
         policy.updated_at_ms = now_ms().max(0) as u64;
     }
-    let owner = server.registry.canonical_dm();
-    owner.put_notification_policy(address, &policy)?;
+    let stored = policy.clone();
+    on_store(&server, move |owner| {
+        owner.put_notification_policy(address, &stored)
+    })
+    .await?;
     let mut response = (StatusCode::OK, Json(policy)).into_response();
-    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
-        if let Ok(header_val) = vapid.public_key_base64url().parse() {
-            response
-                .headers_mut()
-                .insert("x-cashweb-vapid-public-key", header_val);
-        }
+    if let Ok(header_val) = runtime.vapid().public_key_base64url().parse() {
+        response
+            .headers_mut()
+            .insert("x-cashweb-vapid-public-key", header_val);
     }
     Ok(response)
 }
@@ -1782,7 +1831,9 @@ pub(crate) async fn handle_mailbox_ws(
 
     authenticate(&server, &headers, &binding).await?;
 
-    let mut rx = server.registry.canonical_dm().subscribe_finalized();
+    // The bus is the only source of pushes: a message stored by any replica is announced on it
+    // after its commit, and the row is then read from the shared store. Nothing is pushed that
+    // the store cannot show.
     let mut event_rx = server
         .event_bus
         .subscribe(&address.to_hex())
@@ -1824,98 +1875,49 @@ pub(crate) async fn handle_mailbox_ws(
                     }
                 }
                 notif = event_rx.recv() => {
-                    match notif {
-                        Some(notification) => {
-                            if seen_payloads.contains(&notification.payload_hash) {
-                                continue;
-                            }
-                            seen_payloads.insert(notification.payload_hash);
-                            let (sub_id, ts, delivery, context) = if let Ok(Some(claim)) = server.registry.canonical_dm().get(&notification.payload_hash) {
-                                (
-                                    hex::encode(claim.request.submission_identity()),
-                                    claim.delivered_at,
-                                    hex::encode(claim.request.delivery()),
-                                    hex::encode(claim.request.context()),
-                                )
-                            } else {
-                                (
-                                    String::new(),
-                                    now_ms(),
-                                    String::new(),
-                                    String::new(),
-                                )
-                            };
-                            let push = MailboxWsPush {
-                                direction: "in",
-                                submission_identity: sub_id,
-                                payload_hash: hex::encode(notification.payload_hash),
-                                timestamp_ms: ts,
-                                delivery,
-                                context,
-                            };
-                            let json = match serde_json::to_string(&push) {
-                                Ok(j) => j,
-                                Err(_) => continue,
-                            };
-                            if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
+                    let Some(notification) = notif else { break };
+                    if seen_payloads.contains(&notification.payload_hash) {
+                        continue;
                     }
-                }
-                res = rx.recv() => {
-                    match res {
-                        Ok(envelope) => {
-                            if envelope.recipient == address {
-                                if seen_payloads.contains(&envelope.payload_hash) {
-                                    continue;
-                                }
-                                seen_payloads.insert(envelope.payload_hash);
-                                let push = MailboxWsPush {
-                                    direction: "in",
-                                    submission_identity: hex::encode(envelope.submission_identity),
-                                    payload_hash: hex::encode(envelope.payload_hash),
-                                    timestamp_ms: envelope.timestamp,
-                                    delivery: hex::encode(&envelope.delivery),
-                                    context: hex::encode(&envelope.context),
-                                };
-                                let json = match serde_json::to_string(&push) {
-                                    Ok(j) => j,
-                                    Err(_) => continue,
-                                };
-                                if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
-                                    break;
-                                }
-                            } else if envelope.sender == Some(address) {
-                                let push = MailboxWsPush {
-                                    direction: "out",
-                                    submission_identity: hex::encode(envelope.submission_identity),
-                                    payload_hash: hex::encode(envelope.payload_hash),
-                                    timestamp_ms: envelope.timestamp,
-                                    delivery: hex::encode(&envelope.delivery),
-                                    context: hex::encode(&envelope.context),
-                                };
-                                let json = match serde_json::to_string(&push) {
-                                    Ok(j) => j,
-                                    Err(_) => continue,
-                                };
-                                if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            continue;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            break;
-                        }
+                    let Some(push) = mailbox_push(&server, address, notification.payload_hash).await else {
+                        // No such row here, or not this mailbox's: the hint is dropped. The client
+                        // catches up from its cursor.
+                        continue;
+                    };
+                    seen_payloads.insert(notification.payload_hash);
+                    let json = match serde_json::to_string(&push) {
+                        Ok(j) => j,
+                        Err(_) => continue,
+                    };
+                    if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
+                        break;
                     }
                 }
             }
         }
     }))
+}
+
+/// The push for a bus hint: the stored row the hint names, from `address`'s side of it. `None`
+/// when the store has no such row (or cannot be read now), or the row is not in `address`'s
+/// mailbox.
+async fn mailbox_push(
+    server: &super::server::RegistryServer,
+    address: Address,
+    payload_hash: [u8; 32],
+) -> Option<MailboxWsPush> {
+    let claim = on_store(server, move |owner| owner.get(&payload_hash))
+        .await
+        .ok()??;
+    let direction = claim.direction_for(address)?;
+    Some(MailboxWsPush {
+        direction: direction.as_str(),
+        submission_identity: hex::encode(claim.request.submission_identity()),
+        payload_hash: hex::encode(payload_hash),
+        timestamp_ms: claim.delivered_at,
+        delivery: hex::encode(claim.request.delivery()),
+        context: hex::encode(claim.request.context()),
+    })
 }
 #[cfg(test)]
 #[path = "monad_message_cbor_tests.rs"]

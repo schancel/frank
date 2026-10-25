@@ -1,34 +1,42 @@
-//! Where the relay keeps direct messages.
+//! Where the relay keeps direct messages, over the [`RelayKvStore`] transaction contract.
 //!
-//! One RocksDB directory beside the registry database, holding exactly this:
+//! Every key starts with `dm/`, so the store can share one transaction backend (and one
+//! FoundationDB subspace) with other owners:
 //!
 //! | key | value | what it is |
 //! |---|---|---|
-//! | `R` + payload hash | the stored message | the request bytes as submitted, and when it was delivered |
-//! | `I` + recipient + time + payload hash | payload hash | the recipient's inbox, in delivery order |
-//! | `O` + sender + time + payload hash | payload hash | the sender's own copies, in delivery order |
-//! | `T` + transaction hash | payload hash | a payment already used, so it pays for one message only |
-//! | `L` | time | the last delivery time issued |
-//! | `N` + recipient + epoch + nonce | expiry | a login challenge already used |
+//! | `dm/R` + payload hash | the stored message | the request bytes as submitted, and when it was delivered |
+//! | `dm/r` + payload hash + part | part of a stored message | a stored message longer than one value, split |
+//! | `dm/I` + recipient + time + payload hash | payload hash | the recipient's inbox, in delivery order |
+//! | `dm/O` + sender + time + payload hash | payload hash | the sender's own copies, in delivery order |
+//! | `dm/T` + transaction hash | payload hash | a payment already used, so it pays for one message only |
+//! | `dm/L` + address | time | the last delivery time issued in that address's mailbox |
+//! | `dm/N` + recipient + epoch + nonce | expiry | a login challenge already used |
+//! | `dm/P` + address | policy JSON | the mailbox's notification policy |
 //!
-//! A message is written once, with all of its keys, in one synced batch, and never changed.
-//! Nothing is ever deleted except expired login challenges.
+//! A message is written once, with all of its keys, in one transaction, and never changed.
+//! Nothing is ever deleted except expired login challenges. There is no key every message
+//! writes: two messages conflict only when they share a party (or are the same message).
 //!
-//! The directory name carries the format version. Frank has no users yet, so there is no
-//! reader for any earlier format: [`crate::store::db::Db::open`] refuses to start beside a
-//! store of an older one and says what to delete.
+//! Single-replica relays keep these keys in a RocksDB directory beside the registry database.
+//! Its name carries the format version. Frank has no users yet, so there is no reader for any
+//! earlier format: [`crate::store::db::Db::open`] refuses to start beside a store of an older
+//! one and says what to delete. A cluster hands the owner its shared transaction backend
+//! ([`Owner::with_store`]) and starts from an empty subspace.
+//!
+//! The store's calls block (FoundationDB waits on its own network thread), so async callers run
+//! them on blocking workers.
 use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
+    time::{Duration, Instant},
 };
 
 use frank_cbor::message_fields::{canonical_dm_message_row as R, canonical_dm_message_row_version};
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
-mod rocks;
-use rocks::{Admission, MessageRead, RocksCanonicalMessages};
 
 use crate::{
     directory_runtime::DirectoryRuntime,
@@ -36,12 +44,16 @@ use crate::{
     monad_dm_payment::CanonicalPaymentInput,
     monad_http::{Address, Hash32},
     monad_mailbox::ChallengeConsumption,
+    store::kv_store::{
+        key_after, prefix_end, KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact,
+        MAX_VALUE_BYTES,
+    },
 };
 
 /// The message store's directory is the registry database's path with this extension.
-pub(crate) const STORE_EXTENSION: &str = "messages-v2";
+pub(crate) const STORE_EXTENSION: &str = "messages-v3";
 /// Extensions of message stores written by earlier development builds. None can be read.
-pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1"];
+pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1", "messages-v2"];
 const ROW_VERSION: i128 = canonical_dm_message_row_version::V2 as i128;
 
 /// What admission established about a message, kept with it: who it is from and to, and the
@@ -66,6 +78,25 @@ impl FrozenCanonicalPolicy {
             .map_err(|_| CanonicalError::Unavailable)
     }
 
+    /// The sender, or `None` for a sealed-sender message, which names no sender to the relay.
+    pub(crate) fn named_sender(&self) -> Result<Option<Address>> {
+        if self.sender_p.is_empty() {
+            Ok(None)
+        } else {
+            self.sender().map(Some)
+        }
+    }
+
+    /// Every mailbox a message is in: the recipient's, and the named sender's when it is
+    /// someone else (a sealed-sender message has no sender mailbox row).
+    pub(crate) fn parties(&self) -> Result<Vec<Address>> {
+        let recipient = self.recipient()?;
+        Ok(match self.named_sender()? {
+            Some(sender) if sender != recipient => vec![recipient, sender],
+            _ => vec![recipient],
+        })
+    }
+
     pub(crate) fn recipient(&self) -> Result<Address> {
         crate::monad_stamp_stealth::recipient_address_from_public_key(&self.recipient_p)
             .map_err(|_| CanonicalError::Unavailable)
@@ -85,18 +116,6 @@ impl MailboxDirection {
             Self::Out => "out",
         }
     }
-}
-
-/// A delivered message as announced to open mailbox sockets.
-#[derive(Debug, Clone)]
-pub(crate) struct FinalizedEnvelope {
-    pub(crate) sender: Option<Address>,
-    pub(crate) recipient: Address,
-    pub(crate) payload_hash: [u8; 32],
-    pub(crate) submission_identity: [u8; 32],
-    pub(crate) timestamp: i64,
-    pub(crate) delivery: Vec<u8>,
-    pub(crate) context: Vec<u8>,
 }
 
 /// A stored message. To be stored is to be delivered: there is no other state.
@@ -120,59 +139,179 @@ impl Claim {
             &self.policy.recipient_t1,
         ))
     }
+
+    /// Which side of this message `address` is, if either. A message to oneself is inbound.
+    pub(crate) fn direction_for(&self, address: Address) -> Option<MailboxDirection> {
+        if self.policy.recipient() == Ok(address) {
+            Some(MailboxDirection::In)
+        } else if self.policy.sender() == Ok(address) {
+            Some(MailboxDirection::Out)
+        } else {
+            None
+        }
+    }
+}
+
+/// What [`Owner::claim`] did with a message.
+#[derive(Debug, Clone)]
+pub(crate) struct Admitted {
+    pub(crate) claim: Claim,
+    /// The message may have been committed by this call: a new row, or one whose commit
+    /// outcome was unknown and was then found stored. `false` for an exact repeat that was
+    /// already stored. Announcing a row twice is harmless; readers drop repeats.
+    pub(crate) new: bool,
 }
 
 /// How often every recipient's expired login challenges are deleted. A recipient's own are
 /// deleted each time it uses a new one; this pass clears those of recipients who went away.
 const AUTH_NONCE_SWEEP_INTERVAL_MS: i64 = 60_000;
+/// Used challenges cleared per sweep transaction.
+const AUTH_NONCE_SWEEP_PAGE: usize = 1024;
+/// How long one admission keeps retrying a transaction that lost every attempt to concurrent
+/// commits on the same mailbox. Each attempt is short; this bounds a burst at one recipient.
+const ADMISSION_BUDGET: Duration = Duration::from_secs(20);
 
-/// The message store of one registry. Opened on first use.
+/// Where the owner's keys live.
+#[derive(Debug)]
+enum Storage {
+    /// A transaction backend handed over by composition (FoundationDB in a cluster).
+    Shared(Arc<dyn RelayKvStore>),
+    /// A single replica's own RocksDB directory beside the registry database, opened on the
+    /// first write. Reads before then find an empty store and create nothing.
+    Beside {
+        path: PathBuf,
+        opened: Mutex<Option<Arc<RocksDbKvStore>>>,
+    },
+}
+
+impl Storage {
+    fn open(&self, create: bool) -> Result<Option<Arc<dyn RelayKvStore>>> {
+        let (path, opened) = match self {
+            Self::Shared(store) => return Ok(Some(Arc::clone(store))),
+            Self::Beside { path, opened } => (path, opened),
+        };
+        let mut guard = opened.lock().map_err(|_| CanonicalError::Unavailable)?;
+        if guard.is_none() {
+            match std::fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(CanonicalError::Unavailable)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                    return Ok(None)
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(CanonicalError::Unavailable)
+                }
+                _ => {}
+            }
+            *guard = Some(Arc::new(
+                RocksDbKvStore::open(path).map_err(|_| CanonicalError::Unavailable)?,
+            ));
+        }
+        // A directory whose database was removed underneath the open handle is not read as
+        // empty.
+        if !path.join("CURRENT").is_file() {
+            return Err(CanonicalError::Unavailable);
+        }
+        let store = Arc::clone(guard.as_ref().ok_or(CanonicalError::Unavailable)?);
+        Ok(Some(store as Arc<dyn RelayKvStore>))
+    }
+}
+
+/// Why a transaction body stopped: a refusal of the message, or the store.
+enum Stop {
+    Refused(CanonicalError),
+    Store(KvError),
+}
+impl From<KvError> for Stop {
+    fn from(error: KvError) -> Self {
+        Self::Store(error)
+    }
+}
+impl From<CanonicalError> for Stop {
+    fn from(error: CanonicalError) -> Self {
+        Self::Refused(error)
+    }
+}
+fn store_error(error: KvError) -> CanonicalError {
+    match error {
+        KvError::TransactionTooLarge { .. } => CanonicalError::TooLarge,
+        _ => CanonicalError::Unavailable,
+    }
+}
+impl From<Stop> for CanonicalError {
+    fn from(stop: Stop) -> Self {
+        match stop {
+            Stop::Refused(error) => error,
+            Stop::Store(error) => store_error(error),
+        }
+    }
+}
+type Body<T> = std::result::Result<T, Stop>;
+
+/// The message store of one registry.
 #[derive(Debug)]
 pub(crate) struct Owner {
-    storage: RocksCanonicalMessages,
+    storage: Storage,
     /// Newly stored canonical messages since this relay process started. Retries are excluded.
     messages_stored_total: AtomicU64,
     directory: Mutex<Weak<DirectoryRuntime>>,
-    broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
-    /// When each message's payments were last handed to the node. In memory only.
+    /// When each message's payments were last handed to the node. In memory only, and per
+    /// replica: it only stops one relay hammering the node for one client's resends.
     payment_broadcasts: Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
     /// When every recipient's expired login challenges were last deleted. In memory only: the
     /// first use after a restart sweeps.
     auth_nonces_swept_at_ms: Mutex<Option<i64>>,
-    /// Recorded blind wakeup events for inspection and push dispatch (#384, #1574).
+    /// Recorded blind wakeup events, for tests to inspect.
+    #[cfg(test)]
     wakeups: Mutex<Vec<crate::store::notification_policy::BlindWakeupEvent>>,
-    /// Per-recipient timestamp (ms) of the last emitted blind wakeup for coalescing.
+    /// Per-recipient timestamp (ms) of the last emitted blind wakeup, for coalescing. Per
+    /// replica until wakeup coalescing moves into the shared store (HA plan step 10).
     last_wakeup_at_ms: Mutex<std::collections::HashMap<Address, i64>>,
-    /// Operator-provisioned VAPID key (`registry.vapid_private_key_file`), read by composition.
-    /// When present it is the relay's only VAPID key: nothing is read from the environment or
-    /// generated into the store.
-    provisioned_vapid: Option<crate::store::notification_policy::VapidKeyPair>,
 }
 impl Owner {
     /// The store that belongs beside the registry database at `registry_db`.
     pub(crate) fn new(registry_db: PathBuf) -> Self {
-        let (broadcast, _) = tokio::sync::broadcast::channel(1024);
+        Self::with_storage(Storage::Beside {
+            path: registry_db.with_extension(STORE_EXTENSION),
+            opened: Mutex::new(None),
+        })
+    }
+
+    /// The store on a transaction backend shared by every replica of a cluster.
+    pub(crate) fn with_store(store: Arc<dyn RelayKvStore>) -> Self {
+        Self::with_storage(Storage::Shared(store))
+    }
+
+    fn with_storage(storage: Storage) -> Self {
         Self {
-            storage: RocksCanonicalMessages::new(registry_db.with_extension(STORE_EXTENSION)),
+            storage,
             messages_stored_total: AtomicU64::new(0),
             directory: Mutex::new(Weak::new()),
-            broadcast,
             payment_broadcasts: Default::default(),
             auth_nonces_swept_at_ms: Mutex::new(None),
+            #[cfg(test)]
             wakeups: Default::default(),
             last_wakeup_at_ms: Default::default(),
-            provisioned_vapid: None,
         }
     }
 
-    /// Use the operator-provisioned VAPID key instead of an environment or stored one.
-    pub(crate) fn with_provisioned_vapid(
-        mut self,
-        vapid: Option<crate::store::notification_policy::VapidKeyPair>,
-    ) -> Self {
-        self.provisioned_vapid = vapid;
-        self
+    /// Run a read-only transaction. A store that was never written reads as empty.
+    fn read<T>(
+        &self,
+        empty: impl FnOnce() -> T,
+        body: impl FnMut(&mut dyn KvTransaction) -> Body<T>,
+    ) -> Result<T> {
+        match self.storage.open(false)? {
+            None => Ok(empty()),
+            Some(store) => Ok(store.transact(body)?),
+        }
     }
+
+    fn writable(&self) -> Result<Arc<dyn RelayKvStore>> {
+        self.storage.open(true)?.ok_or(CanonicalError::Unavailable)
+    }
+
     /// Whether this message's payments may be handed to the node now: at most once per
     /// `interval`, so a client repeating one message cannot make the relay hammer the node.
     /// The interval starts when the payments are handed over, whether or not the node took
@@ -194,11 +333,6 @@ impl Owner {
         sent.insert(*payload_hash, now);
         true
     }
-    pub(crate) fn subscribe_finalized(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<FinalizedEnvelope> {
-        self.broadcast.subscribe()
-    }
     pub(crate) fn attach_directory(&self, directory: Arc<DirectoryRuntime>) -> Result<()> {
         let mut installed = self
             .directory
@@ -217,90 +351,161 @@ impl Owner {
         self.directory.lock().ok()?.upgrade()
     }
     pub(crate) fn get(&self, payload_hash: &[u8; 32]) -> Result<Option<Claim>> {
-        self.storage
-            .read_messages(|db| load(db, payload_hash))
-            .map(Option::flatten)
+        self.read(|| None, |tx| load(tx, payload_hash))
     }
     /// The stored message this request is an exact repeat of, if any. The same message under
     /// different bytes is a conflict.
     pub(crate) fn find_request(&self, request: &ExactRequest) -> Result<Option<Claim>> {
-        self.storage
-            .read_messages(|db| find_request_locked(db, request))
-            .map(Option::flatten)
+        if self.storage.open(false)?.is_none() {
+            return Ok(None);
+        }
+        let hash = request_hash(request)?;
+        let Some(existing) = self.get(&hash)? else {
+            return Ok(None);
+        };
+        if !existing.request.exact_equal(request) {
+            return Err(CanonicalError::Conflict);
+        }
+        Ok(Some(existing))
     }
     /// Store a checked message in the recipient's inbox and the sender's own mailbox, in one
-    /// durable write. An exact repeat returns what is already stored. A refusal (a payment
-    /// already used for another message) leaves nothing behind. The number of messages already
-    /// stored never refuses one.
+    /// transaction. An exact repeat returns what is already stored, on whichever replica it is
+    /// presented. A refusal (a payment already used for another message) leaves nothing behind.
+    /// The number of messages already stored never refuses one.
     ///
-    /// `now` is the caller's clock; the delivery time is decided here, under the store's
-    /// lock: see [`next_delivery_time`].
-    pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Claim> {
-        let (message, stored) = self.storage.admit_message(|admission| {
-            if let Some(existing) = find_request_locked(&admission.messages(), &input.request)? {
-                return Ok((existing, false));
-            }
-            let hash = input.policy.payload_hash;
-            // One signed payment pays for one message. Nothing on chain names the message,
-            // so this index is what stops a payment being presented again for another.
-            for payment in input.payment_hashes() {
-                if admission.payment_used(&payment_key(&payment))? {
-                    return Err(CanonicalError::Conflict);
+    /// `now` is the caller's clock; the delivery time is decided inside the transaction: see
+    /// [`next_delivery_time`].
+    ///
+    /// A commit whose outcome the backend could not report is settled by a fence (see
+    /// [`Owner::fence`]): a transaction that reads the message's row and rewrites the
+    /// recipient's delivery-time key, which the first attempt read. Once the fence commits, the
+    /// first attempt has either landed (the fence saw its row) or can never land (its read is
+    /// now stale). Found, the row is the stored message; not found, admission runs again. So
+    /// nothing is announced and no payment is broadcast for a message that may not exist, and
+    /// a late commit cannot add a second row or a time behind one a reader has already seen.
+    pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Admitted> {
+        let store = self.writable()?;
+        let hash = input.policy.payload_hash;
+        let recipient = input.policy.recipient()?;
+        // The recipient first: the fence after an unknown commit outcome writes its key.
+        let parties = input.policy.parties()?;
+        let payment_keys: Vec<Vec<u8>> = input
+            .payment_hashes()
+            .map(|payment| payment_key(&payment))
+            .collect();
+        let started = Instant::now();
+        loop {
+            let attempt = store.transact(|tx| -> Body<Admitted> {
+                if let Some(existing) = load(tx, &hash)? {
+                    if !existing.request.exact_equal(&input.request) {
+                        return Err(Stop::Refused(CanonicalError::Conflict));
+                    }
+                    return Ok(Admitted {
+                        claim: existing,
+                        new: false,
+                    });
                 }
-            }
-            let delivered_at = next_delivery_time(&admission, now)?;
-            let payment_keys = input
-                .payment_hashes()
-                .map(|payment| payment_key(&payment))
-                .collect();
-            let message = Claim {
-                request: input.request,
-                policy: input.policy,
-                delivered_at,
-            };
-            let row = encode_row(&message)?;
-            let recipient = message.policy.recipient()?;
-            let sender = if message.policy.sender_p.is_empty() {
-                None
-            } else {
-                Some(message.policy.sender()?)
-            };
-            let recipient_key = mailbox_key(b'I', recipient, delivered_at, &hash);
-            let sender_key = sender
-                .filter(|&sender| sender != recipient)
-                .map(|sender| mailbox_key(b'O', sender, delivered_at, &hash));
-            admission.commit_delivery(rocks::Delivery {
-                last_delivery_key: LAST_DELIVERY_KEY,
-                delivered_at: delivered_at.to_be_bytes(),
-                payment_keys,
-                hash: &hash,
-                row_key: &row_key(&hash),
-                row: &row,
-                recipient_key: &recipient_key,
-                sender_key: sender_key.as_deref(),
-            })?;
-            Ok((message, true))
-        })?;
-        if stored {
-            self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
-            if let Ok(recipient) = message.policy.recipient() {
-                let sender = if message.policy.sender_p.is_empty() {
-                    None
-                } else {
-                    message.policy.sender().ok()
+                // One signed payment pays for one message. Nothing on chain names the message,
+                // so this index is what stops a payment being presented again for another.
+                for key in &payment_keys {
+                    if tx.get(key)?.is_some() {
+                        return Err(Stop::Refused(CanonicalError::Conflict));
+                    }
+                }
+                let delivered_at = next_delivery_time(tx, &parties, now)?;
+                let message = Claim {
+                    request: input.request.clone(),
+                    policy: input.policy.clone(),
+                    delivered_at,
                 };
-                let _ = self.broadcast.send(FinalizedEnvelope {
-                    sender,
-                    recipient,
-                    payload_hash: message.policy.payload_hash,
-                    submission_identity: message.request.submission_identity(),
-                    timestamp: message.delivered_at,
-                    delivery: message.request.delivery().to_vec(),
-                    context: message.request.context().to_vec(),
-                });
+                put_split(tx, &hash, &encode_row(&message)?)?;
+                for key in &payment_keys {
+                    tx.set(key, &hash)?;
+                }
+                tx.set(&mailbox_key(b'I', recipient, delivered_at, &hash), &hash)?;
+                for sender in &parties[1..] {
+                    tx.set(&mailbox_key(b'O', *sender, delivered_at, &hash), &hash)?;
+                }
+                for party in &parties {
+                    tx.set(&last_delivery_key(*party), &delivered_at.to_be_bytes())?;
+                }
+                Ok(Admitted {
+                    claim: message,
+                    new: true,
+                })
+            });
+            match attempt {
+                Ok(admitted) => {
+                    if admitted.new {
+                        self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return Ok(admitted);
+                }
+                Err(Stop::Refused(error)) => return Err(error),
+                // Every attempt lost to another commit on one of these mailboxes. The body has
+                // no effect outside the transaction, so it is simply run again.
+                Err(Stop::Store(KvError::ConflictRetriesExhausted { .. }))
+                    if started.elapsed() < ADMISSION_BUDGET =>
+                {
+                    std::thread::sleep(Duration::from_millis(1 + rand::random::<u64>() % 20));
+                }
+                Err(Stop::Store(KvError::CommitUnknownResult(reason))) => {
+                    tracing::event!(
+                        tracing::Level::WARN,
+                        payload_hash = %hex::encode(hash),
+                        reason = %reason,
+                        "Direct-message commit outcome unknown; fencing and reading the store"
+                    );
+                    match self.fence(&store, &hash, recipient, started)? {
+                        Some(claim) if claim.request.exact_equal(&input.request) => {
+                            self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
+                            return Ok(Admitted { claim, new: true });
+                        }
+                        Some(_) => return Err(CanonicalError::Conflict),
+                        // The first attempt can no longer commit: admit the message afresh.
+                        None if started.elapsed() < ADMISSION_BUDGET => {}
+                        None => return Err(CanonicalError::Unavailable),
+                    }
+                }
+                Err(Stop::Store(error)) => return Err(store_error(error)),
             }
         }
-        Ok(message)
+    }
+
+    /// Settle an attempt whose commit outcome is unknown. In one transaction, read the row and
+    /// write the recipient's delivery-time key back unchanged (cleared if it was absent). A
+    /// transaction that read that key, as every admission naming the recipient did, and has not
+    /// committed when the fence commits now conflicts and never commits. So when this returns,
+    /// the row it read is final: present, the attempt landed; absent, it never will.
+    fn fence(
+        &self,
+        store: &Arc<dyn RelayKvStore>,
+        hash: &[u8; 32],
+        recipient: Address,
+        started: Instant,
+    ) -> Result<Option<Claim>> {
+        let key = last_delivery_key(recipient);
+        loop {
+            let fenced = store.transact(|tx| -> Body<Option<Claim>> {
+                let row = load(tx, hash)?;
+                match tx.get(&key)? {
+                    Some(current) => tx.set(&key, &current)?,
+                    None => tx.clear(&key)?,
+                }
+                Ok(row)
+            });
+            match fenced {
+                Ok(row) => return Ok(row),
+                Err(Stop::Refused(error)) => return Err(error),
+                // The fence writes nothing new, so running it again is harmless.
+                Err(Stop::Store(
+                    KvError::CommitUnknownResult(_) | KvError::ConflictRetriesExhausted { .. },
+                )) if started.elapsed() < ADMISSION_BUDGET => {
+                    std::thread::sleep(Duration::from_millis(1 + rand::random::<u64>() % 20));
+                }
+                Err(Stop::Store(error)) => return Err(store_error(error)),
+            }
+        }
     }
 
     /// Newly stored messages since process start; exact request retries do not increment it.
@@ -308,16 +513,31 @@ impl Owner {
         self.messages_stored_total.load(Ordering::Relaxed)
     }
 
-    /// Estimated live key/value bytes for the separate message store, if it has been created.
+    /// Estimated live key/value bytes of a single replica's message store, if it has been
+    /// created. `None` on a shared backend, which reports its own size.
     pub(crate) fn estimated_live_data_size_bytes(&self) -> Result<Option<u64>> {
-        self.storage.estimated_live_data_size_bytes()
+        let Storage::Beside { opened, .. } = &self.storage else {
+            return Ok(None);
+        };
+        if self.storage.open(false)?.is_none() {
+            return Ok(None);
+        }
+        let guard = opened.lock().map_err(|_| CanonicalError::Unavailable)?;
+        let store = guard.as_ref().ok_or(CanonicalError::Unavailable)?;
+        store
+            .estimated_live_data_size_bytes()
+            .map(Some)
+            .map_err(|_| CanonicalError::Unavailable)
     }
-    /// Records one authenticated login challenge as used, so it cannot be replayed.
+    /// Records one authenticated login challenge as used, so it cannot be replayed on any
+    /// replica.
     ///
     /// A challenge is refused when it has expired or was already used. A recipient holding `cap`
-    /// used challenges that have not expired yet is at capacity until one does. There is no
-    /// bound over all recipients: one recipient's use never refuses another's. Used challenges
-    /// are deleted once expired.
+    /// used challenges that have not expired yet is at capacity until one does. The capacity
+    /// check reads the recipient's whole range of used challenges, so two uses for one
+    /// recipient conflict and are decided one after the other. There is no bound over all
+    /// recipients: one recipient's use never refuses another's. Used challenges are deleted
+    /// once expired.
     pub(crate) fn consume_challenge(
         &self,
         epoch: [u8; 32],
@@ -327,58 +547,85 @@ impl Owner {
         now: i64,
         cap: usize,
     ) -> Result<ChallengeConsumption> {
-        let sweep_all = {
-            let mut swept = self
-                .auth_nonces_swept_at_ms
-                .lock()
-                .map_err(|_| CanonicalError::Unavailable)?;
-            let due = !matches!(
-                *swept,
-                Some(at) if now >= at && now - at < AUTH_NONCE_SWEEP_INTERVAL_MS
-            );
-            if due {
-                *swept = Some(now);
-            }
-            due
-        };
-        self.storage.consume_challenge(|mut challenge| {
-            let mut prefix = b"N".to_vec();
-            prefix.extend_from_slice(&recipient.0);
-            let mut key = prefix.clone();
-            key.extend_from_slice(&epoch);
-            key.extend_from_slice(&nonce);
-            if expires < now || challenge.nonce_used(&key)? {
+        if expires < now {
+            return Ok(ChallengeConsumption::Rejected);
+        }
+        let store = self.writable()?;
+        let prefix = challenge_prefix(Some(recipient));
+        let key = [prefix.as_slice(), &epoch, &nonce].concat();
+        let consumed = store.transact(|tx| -> Body<ChallengeConsumption> {
+            if tx.get(&key)?.is_some() {
                 return Ok(ChallengeConsumption::Rejected);
             }
             let mut live = 0usize;
-            let scanned: &[u8] = if sweep_all { b"N" } else { &prefix };
-            let (lower, upper) = prefix_bounds(scanned)?;
-            for item in challenge.used_challenges(lower, upper) {
-                let (row, value) = item?;
-                if row.len() != 85 {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let time = i64::from_be_bytes(
-                    value
-                        .as_ref()
-                        .try_into()
-                        .map_err(|_| CanonicalError::Unavailable)?,
-                );
-                if time < now {
-                    challenge.prune_expired(&row);
-                } else if row.starts_with(&prefix) {
+            for (row, value) in tx.scan_prefix(&prefix, None, usize::MAX)? {
+                if challenge_expiry(&row, &value)? < now {
+                    tx.clear(&row)?;
+                } else {
                     live += 1;
                 }
             }
             if live >= cap {
                 // Expired challenges found on the way are still cleared, so a full recipient
                 // drains even while it is being refused.
-                challenge.commit_pruning()?;
                 return Ok(ChallengeConsumption::AtCapacity);
             }
-            challenge.commit_consumption(&key, expires.to_be_bytes())?;
+            tx.set(&key, &expires.to_be_bytes())?;
             Ok(ChallengeConsumption::Consumed)
-        })
+        })?;
+        // The challenge is already decided and committed; cleaning up other recipients' expired
+        // challenges is housekeeping, so its failure is logged and never fails this request.
+        if self.sweep_due(now).unwrap_or(false) {
+            if let Err(error) = self.sweep_expired_challenges(&store, now) {
+                tracing::event!(
+                    tracing::Level::WARN,
+                    error = %error,
+                    "Sweeping expired mailbox challenges failed; the next sweep retries"
+                );
+                if let Ok(mut swept) = self.auth_nonces_swept_at_ms.lock() {
+                    *swept = None;
+                }
+            }
+        }
+        Ok(consumed)
+    }
+
+    fn sweep_due(&self, now: i64) -> Result<bool> {
+        let mut swept = self
+            .auth_nonces_swept_at_ms
+            .lock()
+            .map_err(|_| CanonicalError::Unavailable)?;
+        let due = !matches!(
+            *swept,
+            Some(at) if now >= at && now - at < AUTH_NONCE_SWEEP_INTERVAL_MS
+        );
+        if due {
+            *swept = Some(now);
+        }
+        Ok(due)
+    }
+
+    /// Delete every recipient's expired used challenges, a page per transaction.
+    fn sweep_expired_challenges(&self, store: &Arc<dyn RelayKvStore>, now: i64) -> Result<()> {
+        let all = challenge_prefix(None);
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page = store.transact(|tx| -> Body<Option<Vec<u8>>> {
+                let rows = tx.scan_prefix(&all, after.as_deref(), AUTH_NONCE_SWEEP_PAGE)?;
+                for (row, value) in &rows {
+                    if challenge_expiry(row, value)? < now {
+                        tx.clear(row)?;
+                    }
+                }
+                Ok((rows.len() == AUTH_NONCE_SWEEP_PAGE)
+                    .then(|| rows.last().map(|(row, _)| row.clone()))
+                    .flatten())
+            })?;
+            match page {
+                Some(last) => after = Some(last),
+                None => return Ok(()),
+            }
+        }
     }
     /// Up to `limit` messages delivered to `recipient` at or after `since` and strictly after
     /// the position `after`, in delivery order. The scan starts at that position: messages
@@ -390,23 +637,19 @@ impl Owner {
         after: Option<(i64, [u8; 32])>,
         limit: usize,
     ) -> Result<Vec<Claim>> {
-        self.storage
-            .read_messages(|db| {
-                let mut entries = Entries::new(db, b'I', recipient, since, after);
-                let mut result = Vec::new();
-                while result.len() < limit {
-                    let Some((time, hash)) = entries.next()? else {
-                        break;
-                    };
-                    let message = load_delivered(db, &hash, time)?;
-                    if message.policy.recipient() != Ok(recipient) {
-                        return Err(CanonicalError::Unavailable);
-                    }
-                    result.push(message);
+        let entries = self.read(Vec::new, |tx| {
+            entries(tx, b'I', recipient, since, after, limit)
+        })?;
+        entries
+            .into_iter()
+            .map(|(time, hash)| {
+                let message = self.load_delivered(&hash, time)?;
+                if message.policy.recipient() != Ok(recipient) {
+                    return Err(CanonicalError::Unavailable);
                 }
-                Ok(result)
+                Ok(message)
             })
-            .map(|rows| rows.unwrap_or_default())
+            .collect()
     }
     /// Up to `limit` messages `address` received or sent, at or after `since` and strictly
     /// after the position `after`, in delivery order. Both scans start at that position.
@@ -417,49 +660,51 @@ impl Owner {
         after: Option<(i64, [u8; 32])>,
         limit: usize,
     ) -> Result<Vec<(Claim, MailboxDirection)>> {
-        self.storage
-            .read_messages(|db| {
-                let mut received = Entries::new(db, b'I', address, since, after);
-                let mut sent = Entries::new(db, b'O', address, since, after);
-                let mut result = Vec::new();
-                if limit == 0 {
-                    return Ok(result);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (received, sent) = self.read(
+            || (Vec::new(), Vec::new()),
+            |tx| {
+                Ok((
+                    entries(tx, b'I', address, since, after, limit)?,
+                    entries(tx, b'O', address, since, after, limit)?,
+                ))
+            },
+        )?;
+        let mut merged: Vec<_> = received
+            .into_iter()
+            .map(|entry| (entry, MailboxDirection::In))
+            .chain(sent.into_iter().map(|entry| (entry, MailboxDirection::Out)))
+            .collect();
+        // Received before sent at an equal position, as the scans have always been merged.
+        merged.sort_by_key(|(entry, direction)| (*entry, *direction == MailboxDirection::Out));
+        merged.truncate(limit);
+        merged
+            .into_iter()
+            .map(|((time, hash), direction)| {
+                let message = self.load_delivered(&hash, time)?;
+                let party = match direction {
+                    MailboxDirection::In => message.policy.recipient(),
+                    MailboxDirection::Out => message.policy.sender(),
+                };
+                if party != Ok(address) {
+                    return Err(CanonicalError::Unavailable);
                 }
-                let (mut next_received, mut next_sent) = (received.next()?, sent.next()?);
-                while result.len() < limit {
-                    let take_received = match (next_received, next_sent) {
-                        (Some(received), Some(sent)) => received <= sent,
-                        (Some(_), None) => true,
-                        (None, Some(_)) => false,
-                        (None, None) => break,
-                    };
-                    let (time, hash) = if take_received {
-                        let entry = next_received.expect("checked above");
-                        next_received = received.next()?;
-                        entry
-                    } else {
-                        let entry = next_sent.expect("checked above");
-                        next_sent = sent.next()?;
-                        entry
-                    };
-                    let message = load_delivered(db, &hash, time)?;
-                    let direction = if take_received {
-                        MailboxDirection::In
-                    } else {
-                        MailboxDirection::Out
-                    };
-                    let party = match direction {
-                        MailboxDirection::In => message.policy.recipient(),
-                        MailboxDirection::Out => message.policy.sender(),
-                    };
-                    if party != Ok(address) {
-                        return Err(CanonicalError::Unavailable);
-                    }
-                    result.push((message, direction));
-                }
-                Ok(result)
+                Ok((message, direction))
             })
-            .map(|rows| rows.unwrap_or_default())
+            .collect()
+    }
+
+    /// The message a mailbox entry points at, which must have been delivered at the entry's
+    /// time. Rows never change once written, so each is read in a transaction of its own and a
+    /// long page never holds one transaction open.
+    fn load_delivered(&self, hash: &[u8; 32], time: i64) -> Result<Claim> {
+        let message = self.get(hash)?.ok_or(CanonicalError::Unavailable)?;
+        if message.delivered_at != time {
+            return Err(CanonicalError::Unavailable);
+        }
+        Ok(message)
     }
 
     /// Read a mailbox's notification policy, returning [`MailboxNotificationPolicy::default`]
@@ -468,21 +713,25 @@ impl Owner {
         &self,
         address: Address,
     ) -> Result<crate::store::notification_policy::MailboxNotificationPolicy> {
-        let Some(raw) = self.storage.notification_policy(&policy_key(address))? else {
+        let raw = self.read(|| None, |tx| Ok(tx.get(&policy_key(address))?))?;
+        let Some(raw) = raw else {
             return Ok(crate::store::notification_policy::MailboxNotificationPolicy::default());
         };
         serde_json::from_slice(&raw).map_err(|_| CanonicalError::Unavailable)
     }
 
-    /// Persist a mailbox's notification policy in a synced write.
+    /// Persist a mailbox's notification policy.
     pub(crate) fn put_notification_policy(
         &self,
         address: Address,
         policy: &crate::store::notification_policy::MailboxNotificationPolicy,
     ) -> Result<()> {
         let encoded = serde_json::to_vec(policy).map_err(|_| CanonicalError::Invalid)?;
-        self.storage
-            .replace_notification_policy(&policy_key(address), &encoded)
+        if encoded.len() > MAX_VALUE_BYTES {
+            return Err(CanonicalError::TooLarge);
+        }
+        let store = self.writable()?;
+        Ok(store.transact(|tx| -> Body<()> { Ok(tx.set(&policy_key(address), &encoded)?) })?)
     }
 
     /// Emit a content-free blind wakeup event (`{"type":"sync"}`) for `recipient`, coalescing
@@ -510,14 +759,15 @@ impl Owner {
             subscriptions: policy.push_subscriptions.clone(),
             triggered_at_ms: now_ms,
         };
+        #[cfg(test)]
         if let Ok(mut wakeups) = self.wakeups.lock() {
             wakeups.push(event.clone());
         }
         Some(event)
     }
 
-    /// Drain recorded blind wakeup events for `recipient` (used by tests and push dispatchers).
-    #[allow(dead_code)]
+    /// Drain recorded blind wakeup events for `recipient`.
+    #[cfg(test)]
     pub(crate) fn drain_wakeups(
         &self,
         recipient: Address,
@@ -536,175 +786,126 @@ impl Owner {
         });
         drained
     }
-
-    /// Return the relay's cluster-safe or persisted VAPID P-256 keypair.
-    ///
-    /// Priority:
-    /// 0. The operator-provisioned key file (`registry.vapid_private_key_file`), required in
-    ///    cluster mode so every replica signs with the same key.
-    /// 1. `FRANK_VAPID_PRIVATE_KEY` environment variable (hex or base64url 32-byte P-256 scalar),
-    ///    enabling stateless horizontal scaling across multi-pod relay clusters.
-    /// 2. Persisted 32-byte key under `b"M_vapid_privkey"` in the canonical DM RocksDB store,
-    ///    so single-node relays retain their VAPID identity across restarts without breaking
-    ///    existing browser WebPush subscriptions.
-    /// 3. Freshly generated P-256 keypair persisted atomically to `b"M_vapid_privkey"`.
-    pub(crate) fn get_or_init_vapid_keypair(
-        &self,
-    ) -> Result<crate::store::notification_policy::VapidKeyPair> {
-        if let Some(provisioned) = &self.provisioned_vapid {
-            return Ok(provisioned.clone());
-        }
-        if let Ok(raw_env) = std::env::var("FRANK_VAPID_PRIVATE_KEY") {
-            let trimmed = raw_env.trim();
-            if !trimmed.is_empty() {
-                if let Ok(kp) =
-                    crate::store::notification_policy::VapidKeyPair::from_private_key_str(trimmed)
-                {
-                    return Ok(kp);
-                }
-            }
-        }
-        self.storage.initialize_vapid(|initialization| {
-            if let Some(existing) = initialization.stored_key(VAPID_PRIVATE_KEY_STORAGE_KEY)? {
-                if let Ok(bytes) = <[u8; 32]>::try_from(existing.as_slice()) {
-                    return Ok(
-                        crate::store::notification_policy::VapidKeyPair::from_private_key_bytes(
-                            &bytes,
-                        ),
-                    );
-                }
-            }
-            let generated = crate::store::notification_policy::VapidKeyPair::generate();
-            initialization.store_generated_key(
-                VAPID_PRIVATE_KEY_STORAGE_KEY,
-                generated.private_key_bytes(),
-            )?;
-            Ok(generated)
-        })
-    }
 }
 
-use crate::store::notification_policy::VAPID_PRIVATE_KEY_STORAGE_KEY;
-
-/// One address's `I` or `O` entries from a starting position onward, in delivery order.
-struct Entries<'a> {
-    rows: rocks::Rows<'a>,
-    prefix: Vec<u8>,
+/// Up to `limit` of one address's `I` or `O` entries at or after `since` and strictly after
+/// `after`, in delivery order.
+fn entries(
+    tx: &mut dyn KvTransaction,
+    kind: u8,
+    address: Address,
     since: i64,
     after: Option<(i64, [u8; 32])>,
-}
-impl<'a> Entries<'a> {
-    fn new(
-        db: &'a MessageRead<'_>,
-        kind: u8,
-        address: Address,
-        since: i64,
-        after: Option<(i64, [u8; 32])>,
-    ) -> Self {
-        let mut prefix = vec![kind];
-        prefix.extend_from_slice(&address.0);
-        // Delivery times are never negative, so their big-endian bytes sort in time order and
-        // the scan can start at the first key that could qualify.
-        let start = match after {
-            Some((time, hash)) if time >= since => mailbox_key(kind, address, time.max(0), &hash),
-            _ => mailbox_key(kind, address, since.max(0), &[0; 32]),
-        };
-        let mut upper = prefix.clone();
-        upper.push(u8::MAX);
-        upper.extend_from_slice(&[u8::MAX; 8]);
-        Self {
-            rows: db.mailbox_rows(&start, upper),
-            prefix,
-            since,
-            after,
+    limit: usize,
+) -> Body<Vec<(i64, [u8; 32])>> {
+    let prefix = mailbox_prefix(kind, address);
+    // Delivery times are never negative, so their big-endian bytes sort in time order and the
+    // scan can start at the first key that could qualify.
+    let start = match after {
+        Some((time, hash)) if time >= since => key_after(&mailbox_key(kind, address, time, &hash)),
+        _ => mailbox_key(kind, address, since.max(0), &[0; 32]),
+    };
+    let mut result = Vec::new();
+    for (key, value) in tx.get_range(&start, &prefix_end(&prefix), limit)? {
+        if key.len() != prefix.len() + 40 {
+            return Err(Stop::Refused(CanonicalError::Unavailable));
         }
-    }
-    fn next(&mut self) -> Result<Option<(i64, [u8; 32])>> {
-        for item in self.rows.by_ref() {
-            let (key, value) = item?;
-            if !key.starts_with(&self.prefix) {
-                return Ok(None);
-            }
-            if key.len() != 61 {
-                return Err(CanonicalError::Unavailable);
-            }
-            let time = i64::from_be_bytes(key[21..29].try_into().expect("8 bytes"));
-            let hash: [u8; 32] = key[29..].try_into().expect("32 bytes");
-            if time < self.since || self.after.is_some_and(|cursor| (time, hash) <= cursor) {
-                continue;
-            }
-            if value.as_ref() != hash {
-                return Err(CanonicalError::Unavailable);
-            }
-            return Ok(Some((time, hash)));
+        let time = i64::from_be_bytes(key[prefix.len()..prefix.len() + 8].try_into().expect("8"));
+        let hash: [u8; 32] = key[prefix.len() + 8..].try_into().expect("32 bytes");
+        if value != hash || time < since {
+            return Err(Stop::Refused(CanonicalError::Unavailable));
         }
-        Ok(None)
+        result.push((time, hash));
     }
+    Ok(result)
 }
 
-fn row_key(hash: &[u8; 32]) -> Vec<u8> {
-    let mut key = b"R".to_vec();
-    key.extend_from_slice(hash);
+const KEY_SPACE: &[u8] = b"dm/";
+
+fn key(kind: u8, parts: &[&[u8]]) -> Vec<u8> {
+    let mut key = KEY_SPACE.to_vec();
+    key.push(kind);
+    for part in parts {
+        key.extend_from_slice(part);
+    }
     key
+}
+fn row_key(hash: &[u8; 32]) -> Vec<u8> {
+    key(b'R', &[hash])
+}
+fn row_part_prefix(hash: &[u8; 32]) -> Vec<u8> {
+    key(b'r', &[hash])
 }
 /// Used-payment index: signed transaction hash to the one message it paid for.
 fn payment_key(tx_hash: &Hash32) -> Vec<u8> {
-    let mut key = b"T".to_vec();
-    key.extend_from_slice(&tx_hash.0);
-    key
+    key(b'T', &[&tx_hash.0])
+}
+fn mailbox_prefix(kind: u8, address: Address) -> Vec<u8> {
+    key(kind, &[&address.0])
 }
 /// A delivered message's place in a mailbox: `I` for the recipient's inbox, `O` for the
 /// sender's own copies, ordered by delivery time.
 fn mailbox_key(kind: u8, address: Address, time: i64, hash: &[u8; 32]) -> Vec<u8> {
-    let mut key = vec![kind];
-    key.extend_from_slice(&address.0);
-    key.extend_from_slice(&time.to_be_bytes());
-    key.extend_from_slice(hash);
-    key
+    key(kind, &[&address.0, &time.to_be_bytes(), hash])
 }
-/// Per-mailbox notification policy key (`P` + 20-byte recipient address).
+/// Per-mailbox notification policy key.
 fn policy_key(address: Address) -> Vec<u8> {
-    let mut key = b"P".to_vec();
-    key.extend_from_slice(&address.0);
-    key
+    key(b'P', &[&address.0])
 }
-/// Bound an iterator to the keys starting with `prefix`.
-fn prefix_bounds(prefix: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let mut upper = prefix.to_vec();
-    let last = upper
-        .iter()
-        .rposition(|byte| *byte != u8::MAX)
-        .ok_or(CanonicalError::Unavailable)?;
-    upper[last] += 1;
-    upper.truncate(last + 1);
-    Ok((prefix.to_vec(), upper))
+/// Where the last delivery time issued in `address`'s mailbox is kept.
+fn last_delivery_key(address: Address) -> Vec<u8> {
+    key(b'L', &[&address.0])
+}
+/// One recipient's used challenges, or every recipient's.
+fn challenge_prefix(recipient: Option<Address>) -> Vec<u8> {
+    match recipient {
+        Some(recipient) => key(b'N', &[&recipient.0]),
+        None => key(b'N', &[]),
+    }
+}
+fn challenge_expiry(row: &[u8], value: &[u8]) -> Body<i64> {
+    if row.len() != KEY_SPACE.len() + 1 + 20 + 32 + 32 {
+        return Err(Stop::Refused(CanonicalError::Unavailable));
+    }
+    Ok(i64::from_be_bytes(
+        value
+            .try_into()
+            .map_err(|_| Stop::Refused(CanonicalError::Unavailable))?,
+    ))
 }
 
-/// Where the last delivery time issued by this store is kept.
-const LAST_DELIVERY_KEY: &[u8] = b"L";
-
-/// The time to deliver the next message at.
+/// The time to deliver the next message to and from `parties` at.
 ///
-/// A reader asks for "everything after the last time I saw", so a delivery time must never
-/// be equal to or earlier than one already issued, or a reader who has moved past it would
-/// never be given the message. The time is therefore taken under the store's lock at commit,
-/// and is the clock or one millisecond after the last time issued, whichever is later: two
-/// messages in the same millisecond, or a clock that steps back, still get increasing times.
-/// The caller writes the result under [`LAST_DELIVERY_KEY`] in the same batch as the message,
-/// so this holds across restarts.
-fn next_delivery_time(admission: &Admission<'_>, now: i64) -> Result<i64> {
-    let last = match admission.last_delivery(LAST_DELIVERY_KEY)? {
-        Some(raw) => i64::from_be_bytes(
-            raw.as_slice()
-                .try_into()
-                .map_err(|_| CanonicalError::Unavailable)?,
-        ),
-        None => -1,
-    };
-    Ok(now.max(last.checked_add(1).ok_or(CanonicalError::Unavailable)?))
+/// A reader asks for "everything after the last time I saw" in one mailbox, so a delivery
+/// time must never be equal to or earlier than one already issued in that mailbox, or a
+/// reader who has moved past it would never be given the message. The time is therefore the
+/// clock or one millisecond after the last time issued in any party's mailbox, whichever is
+/// later: two messages in the same millisecond, or a clock that steps back, still get
+/// increasing times. The caller writes the result under each party's [`last_delivery_key`] in
+/// the same transaction, which read those keys: two messages sharing a party conflict, and the
+/// later commit takes a later time, so a mailbox never gains a message behind what a reader
+/// has already read. Messages with no party in common share no key and never wait for each
+/// other.
+fn next_delivery_time(tx: &mut dyn KvTransaction, parties: &[Address], now: i64) -> Body<i64> {
+    let mut last = -1i64;
+    for party in parties {
+        if let Some(raw) = tx.get(&last_delivery_key(*party))? {
+            let time = i64::from_be_bytes(
+                raw.as_slice()
+                    .try_into()
+                    .map_err(|_| Stop::Refused(CanonicalError::Unavailable))?,
+            );
+            last = last.max(time);
+        }
+    }
+    Ok(now.max(
+        last.checked_add(1)
+            .ok_or(Stop::Refused(CanonicalError::Unavailable))?,
+    ))
 }
 
-fn find_request_locked(db: &MessageRead<'_>, request: &ExactRequest) -> Result<Option<Claim>> {
+/// The payload hash a request is stored under.
+fn request_hash(request: &ExactRequest) -> Result<[u8; 32]> {
     use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
     let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &relay_context())
         .map_err(|_| CanonicalError::Invalid)?
@@ -714,17 +915,58 @@ fn find_request_locked(db: &MessageRead<'_>, request: &ExactRequest) -> Result<O
     let Some(TypedPayload::DirectMessage { payload_digest, .. }) = frame.typed.as_deref() else {
         return Err(CanonicalError::Invalid);
     };
-    let hash: [u8; 32] = payload_digest
+    payload_digest
         .as_slice()
         .try_into()
-        .map_err(|_| CanonicalError::Invalid)?;
-    let Some(existing) = load(db, &hash)? else {
+        .map_err(|_| CanonicalError::Invalid)
+}
+
+/// Write a message row, split into parts when it is longer than one value may be. A row is
+/// CBOR and never starts with `0x00`; a split row is `0x00 || part count (u32 BE)`.
+///
+/// Interim: once the large-value store lands (HA plan step 4), a request over 64 KiB goes to S3
+/// and the row holds its reference instead of parts.
+fn put_split(tx: &mut dyn KvTransaction, hash: &[u8; 32], row: &[u8]) -> Body<()> {
+    if row.len() <= MAX_VALUE_BYTES && row.first() != Some(&0) {
+        return Ok(tx.set(&row_key(hash), row)?);
+    }
+    let parts: Vec<&[u8]> = row.chunks(MAX_VALUE_BYTES).collect();
+    let count = u32::try_from(parts.len()).map_err(|_| Stop::Refused(CanonicalError::TooLarge))?;
+    tx.set(
+        &row_key(hash),
+        &[[0u8].as_slice(), &count.to_be_bytes()].concat(),
+    )?;
+    let prefix = row_part_prefix(hash);
+    for (index, part) in (0u32..).zip(parts) {
+        tx.set(&[prefix.as_slice(), &index.to_be_bytes()].concat(), part)?;
+    }
+    Ok(())
+}
+
+/// Read a row written by [`put_split`].
+fn get_split(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Vec<u8>>> {
+    let Some(stored) = tx.get(&row_key(hash))? else {
         return Ok(None);
     };
-    if !existing.request.exact_equal(request) {
-        return Err(CanonicalError::Conflict);
+    if stored.first() != Some(&0) {
+        return Ok(Some(stored));
     }
-    Ok(Some(existing))
+    let count = u32::from_be_bytes(
+        stored[1..]
+            .try_into()
+            .map_err(|_| Stop::Refused(CanonicalError::Unavailable))?,
+    ) as usize;
+    let prefix = row_part_prefix(hash);
+    let parts = tx.scan_prefix(&prefix, None, count + 1)?;
+    if parts.len() != count
+        || parts
+            .iter()
+            .enumerate()
+            .any(|(index, (k, _))| k[prefix.len()..] != (index as u32).to_be_bytes())
+    {
+        return Err(Stop::Refused(CanonicalError::Unavailable));
+    }
+    Ok(Some(parts.into_iter().flat_map(|(_, part)| part).collect()))
 }
 
 fn int(n: impl Into<i128>) -> CborValue {
@@ -801,13 +1043,17 @@ thread_local! {
 
 /// Read one stored message. It was checked in full when it was admitted and has not changed
 /// since, so reading it only decodes it: no signature or proof is verified again.
-fn load(db: &MessageRead<'_>, hash: &[u8; 32]) -> Result<Option<Claim>> {
-    let Some(raw) = db.message_row(&row_key(hash))? else {
+fn load(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Claim>> {
+    let Some(raw) = get_split(tx, hash)? else {
         return Ok(None);
     };
     #[cfg(test)]
     ROWS_READ.with(|count| count.set(count.get() + 1));
-    let value = decode_canonical(&raw).map_err(|_| CanonicalError::Unavailable)?;
+    Ok(Some(decode_row(&raw, hash)?))
+}
+
+fn decode_row(raw: &[u8], hash: &[u8; 32]) -> Result<Claim> {
+    let value = decode_canonical(raw).map_err(|_| CanonicalError::Unavailable)?;
     let CborValue::Map(rows) = &value else {
         return Err(CanonicalError::Unavailable);
     };
@@ -837,20 +1083,11 @@ fn load(db: &MessageRead<'_>, hash: &[u8; 32]) -> Result<Option<Claim>> {
     if policy.payload_hash != *hash {
         return Err(CanonicalError::Unavailable);
     }
-    Ok(Some(Claim {
+    Ok(Claim {
         request,
         policy,
         delivered_at: convert(delivered_at)?,
-    }))
-}
-
-/// The message a mailbox entry points at, which must have been delivered at the entry's time.
-fn load_delivered(db: &MessageRead<'_>, hash: &[u8; 32], time: i64) -> Result<Claim> {
-    let message = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
-    if message.delivered_at != time {
-        return Err(CanonicalError::Unavailable);
-    }
-    Ok(message)
+    })
 }
 
 #[cfg(test)]
@@ -864,10 +1101,10 @@ mod challenge_tests {
         (dir, owner)
     }
     fn stored(dir: &tempdir::TempDir) -> usize {
-        let path = dir.path().join("db.messages-v2");
+        let path = dir.path().join("db.messages-v3");
         let db = rocksdb::DB::open_for_read_only(&Options::default(), path, false).unwrap();
         db.iterator(IteratorMode::Start)
-            .filter(|row| row.as_ref().unwrap().0.starts_with(b"N"))
+            .filter(|row| row.as_ref().unwrap().0.starts_with(b"dm/N"))
             .count()
     }
     const EPOCH: [u8; 32] = [7; 32];
@@ -1194,23 +1431,31 @@ mod persistence_tests {
     fn canonical_row_and_delivery_indexes_keep_exact_v2_bytes_across_reopen() {
         let dir = tempdir::TempDir::new("canonical-layout").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v2");
+        let path = registry_path.with_extension("messages-v3");
         let (input, payment_hash) = paid_input();
         let owner = Owner::new(registry_path.clone());
-        let claim = owner.claim(input, 1234).unwrap();
+        let claim = owner.claim(input, 1234).unwrap().claim;
         let (retry, _) = paid_input();
-        assert_eq!(owner.claim(retry, 9999).unwrap().delivered_at, 1234);
+        assert_eq!(owner.claim(retry, 9999).unwrap().claim.delivered_at, 1234);
         let hash = claim.policy.payload_hash;
         let sender = claim.policy.sender().unwrap();
         let recipient = claim.policy.recipient().unwrap();
         assert_ne!(sender, recipient);
         let mut expected = vec![
-            ([b"R".as_slice(), &hash].concat(), persisted_row(&claim)),
-            ([b"T".as_slice(), &payment_hash].concat(), hash.to_vec()),
-            (b"L".to_vec(), 1234i64.to_be_bytes().to_vec()),
+            ([b"dm/R".as_slice(), &hash].concat(), persisted_row(&claim)),
+            ([b"dm/T".as_slice(), &payment_hash].concat(), hash.to_vec()),
         ];
+        // Each party's mailbox remembers the last time issued in it. There is no key every
+        // message writes.
+        for party in [recipient, sender] {
+            expected.push((
+                [b"dm/L".as_slice(), &party.0].concat(),
+                1234i64.to_be_bytes().to_vec(),
+            ));
+        }
         for (kind, party) in [(b'I', recipient), (b'O', sender)] {
             let key = [
+                b"dm/".as_slice(),
                 [kind].as_slice(),
                 party.0.as_slice(),
                 1234i64.to_be_bytes().as_slice(),
@@ -1232,7 +1477,10 @@ mod persistence_tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].1, MailboxDirection::Out);
         let (retry, _) = paid_input();
-        assert_eq!(reopened.claim(retry, 9999).unwrap().delivered_at, 1234);
+        assert_eq!(
+            reopened.claim(retry, 9999).unwrap().claim.delivered_at,
+            1234
+        );
         drop(reopened);
         assert_eq!(raw_rows(&path), expected);
     }
@@ -1241,7 +1489,7 @@ mod persistence_tests {
     fn canonical_reads_are_lazy_and_open_failures_retry_without_reset() {
         let dir = tempdir::TempDir::new("canonical-open").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v2");
+        let path = registry_path.with_extension("messages-v3");
         let owner = Owner::new(registry_path.clone());
         let address = Address([3; 20]);
         let invalid = ExactRequest::parse(vec![0], "application/cbor".into()).unwrap();
@@ -1302,14 +1550,14 @@ mod persistence_tests {
     }
 
     fn stored_nonce(recipient: Address, epoch: [u8; 32], nonce: [u8; 32]) -> Vec<u8> {
-        [b"N".as_slice(), &recipient.0, &epoch, &nonce].concat()
+        [b"dm/N".as_slice(), &recipient.0, &epoch, &nonce].concat()
     }
 
     #[test]
     fn canonical_challenge_is_consumed_once_under_race_and_after_reopen() {
         let dir = tempdir::TempDir::new("canonical-nonce-race").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v2");
+        let path = registry_path.with_extension("messages-v3");
         let owner = Arc::new(Owner::new(registry_path.clone()));
         let barrier = Arc::new(std::sync::Barrier::new(8));
         let recipient = Address([3; 20]);
@@ -1365,7 +1613,7 @@ mod persistence_tests {
         for bad_key in [false, true] {
             let dir = tempdir::TempDir::new("canonical-nonce-malformed").unwrap();
             let registry_path = dir.path().join("registry.rocksdb");
-            let path = registry_path.with_extension("messages-v2");
+            let path = registry_path.with_extension("messages-v3");
             let recipient = Address([3; 20]);
             let expired = stored_nonce(recipient, [4; 32], [0; 32]);
             let mut malformed = stored_nonce(recipient, [4; 32], [1; 32]);
@@ -1389,6 +1637,97 @@ mod persistence_tests {
             drop(owner);
             assert_eq!(raw_rows(&path), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod fence_tests {
+    use super::*;
+    use crate::store::kv_store::{Outcome, RocksDbKvStore};
+
+    #[test]
+    fn a_fence_stops_an_admission_that_has_not_committed_yet() {
+        let store: Arc<dyn RelayKvStore> = Arc::new(RocksDbKvStore::open_temporary().unwrap());
+        let owner = Owner::with_store(Arc::clone(&store));
+        let recipient = Address([7; 20]);
+        let hash = [9u8; 32];
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            // An admission that has read the recipient's time and written its row, and whose
+            // commit is still on its way when the fence runs.
+            let late_store = Arc::clone(&store);
+            let late = scope.spawn(move || {
+                let mut attempts = 0;
+                let outcome = late_store
+                    .run_transaction(&mut |tx| {
+                        attempts += 1;
+                        if attempts > 1 {
+                            return Outcome::Abort;
+                        }
+                        tx.get(&last_delivery_key(recipient)).unwrap();
+                        tx.set(&row_key(&hash), &[0xa0]).unwrap();
+                        ready_tx.send(()).unwrap();
+                        go_rx.recv().unwrap();
+                        Outcome::Commit
+                    })
+                    .unwrap();
+                (outcome, attempts)
+            });
+            ready_rx.recv().unwrap();
+            let fenced = owner
+                .fence(&store, &hash, recipient, Instant::now())
+                .unwrap();
+            assert!(fenced.is_none(), "the row was not there when the fence ran");
+            go_tx.send(()).unwrap();
+            let (outcome, attempts) = late.join().unwrap();
+            assert_eq!(attempts, 2, "the late commit conflicted with the fence");
+            assert!(outcome == Outcome::Abort);
+        });
+        let row = store
+            .transact(|tx| tx.get(&row_key(&hash)))
+            .map_err(|_: KvError| "get")
+            .unwrap();
+        assert_eq!(row, None, "a fenced attempt never lands");
+    }
+}
+
+#[cfg(test)]
+mod split_row_tests {
+    use super::*;
+    use crate::store::kv_store::RocksDbKvStore;
+
+    #[test]
+    fn rows_of_every_size_up_to_the_request_limit_read_back_unchanged() {
+        let store = RocksDbKvStore::open_temporary().unwrap();
+        let limit = crate::http::monad_message_cbor::MAX_REQUEST_BYTES;
+        let cases: Vec<Vec<u8>> = vec![
+            vec![0xa1],
+            vec![0xa1; MAX_VALUE_BYTES],
+            vec![0xa1; MAX_VALUE_BYTES + 1],
+            // A row starting with the split marker is always split, so it is never misread.
+            vec![0; 10],
+            (0..limit).map(|i| (i % 251) as u8 | 1).collect(),
+        ];
+        for (n, row) in cases.iter().enumerate() {
+            let hash = [n as u8 + 1; 32];
+            store
+                .transact(|tx| put_split(tx, &hash, row))
+                .map_err(|_| "put")
+                .unwrap();
+            let read = store
+                .transact(|tx| get_split(tx, &hash))
+                .map_err(|_| "get")
+                .unwrap();
+            assert_eq!(read.as_deref(), Some(row.as_slice()), "row {n}");
+        }
+        assert_eq!(
+            store
+                .transact(|tx| get_split(tx, &[0xee; 32]))
+                .map_err(|_| "get")
+                .unwrap(),
+            None
+        );
     }
 }
 

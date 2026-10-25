@@ -1215,8 +1215,11 @@ max_get_logs_range = 10\n\n\
                 "@SOLONET_CHECKPOINT_HASH@",
                 &format!("0x{}", "ab".repeat(32)),
             );
+        // The mailbox and the forum need solonet's upstream, which compose always passes.
+        let solonet = full_env_with("MONAD_REGTEST_HTTP_RPC_URL", Some("http://127.0.0.1:6"));
         let (conf, _, _) =
-            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), owned_env(solonet))
+                .unwrap();
         assert!(conf.registry.directory.is_some());
         let owners = conf.registry.replica_local_owners();
         assert!(owners.contains(&cashweb_config::ReplicaLocalOwner::DirectoryEnrollmentQuotas));

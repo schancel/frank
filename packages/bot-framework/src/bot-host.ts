@@ -516,6 +516,7 @@ export class FrankBotHost {
         label: definition.id,
         profile,
         network: directory.network,
+        statementNetwork: directory.network,
       });
 
       // 6. Fund the bot from the shared funding wallet, if there is one. The same top-up runs
@@ -1977,6 +1978,7 @@ export class FrankBotHost {
         profile: instance.definition.getProfile(),
         force: true,
         network: instance.directory.network,
+        statementNetwork: instance.directory.network,
       });
       console.info(
         `[bot-host] Successfully re-registered profile on relay for bot "${id}"`

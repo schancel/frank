@@ -120,7 +120,7 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      through step 2's driver selection under `<fdb_subspace_prefix>messages-v3/`; an ambiguous
      commit is settled by a fence on the recipient's delivery-time key.
      `packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` checks every item above except S3
-     on three real relays in cluster mode (`backend/labs/compose.dm-owner.yml`). Until step 4,
+     on the three relays of the cluster lab (`backend/labs/compose.cluster.yml`). Until step 4,
      rows over 100 kB are split across FDB values. Clients seal at most 512 KiB of ciphertext per
      message, so the livecheck sends a 400 kB message and a unit test covers an 8 MiB row.
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.

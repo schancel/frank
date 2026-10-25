@@ -4,8 +4,12 @@
  * quasar.conf > pwa > workboxPluginMode is set to "InjectManifest"
  */
 
-export const BLIND_WAKEUP_MESSAGE_TYPE = 'FRANK_BLIND_WAKEUP_SYNC'
-export const BLIND_WAKEUP_HANDLED_TYPE = 'FRANK_BLIND_WAKEUP_HANDLED'
+import {
+  BLIND_WAKEUP_HANDLED_TYPE,
+  BLIND_WAKEUP_MESSAGE_TYPE,
+} from './blind-wakeup-messages'
+
+export { BLIND_WAKEUP_HANDLED_TYPE, BLIND_WAKEUP_MESSAGE_TYPE }
 export const BLIND_WAKEUP_NOTIFICATION_TITLE = 'Frank'
 export const BLIND_WAKEUP_NOTIFICATION_BODY =
   'New encrypted activity — open Frank to sync your inbox.'

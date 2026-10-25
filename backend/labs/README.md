@@ -184,11 +184,11 @@ Core NATS server, and MinIO, with an nginx round-robin proxy on
 on your machine (the file's fallback, 18080, is often already taken by another local
 service).
 
-**What it is for today:** groups and the HTTP contract below. It is not yet a cluster the
-app can use. Message routes are off, the directory is off and still replica-local, and
-group writes need solonet (below). Profiles, usernames, metadata and topics are in the
-shared registry database (HA step 7). Direct messages and the directory move to the shared
-store in HA steps 6 and 8; until they land, an app cannot message through the proxy.
+**What it is for today:** the app and the bots through the proxy (see "The app and the bots
+on the cluster" below), the HTTP contract, and the direct-message livecheck. Groups, direct
+messages (the solonet mailbox, paid with stamps), profiles, usernames, metadata, topics and
+the directory are shared through FoundationDB. The forum, the hourly RPC proxy quotas and the
+directory's per-source enrollment quota are still replica-local (HA steps 9 and 10).
 
 Overrides, all optional:
 
@@ -200,10 +200,10 @@ Overrides, all optional:
   `down` before changing it on an existing project: Compose does not move a running
   network, and FoundationDB's cluster file keeps the old coordinator address, so with
   kept volumes also run `down --volumes`.
-- `FRANK_LAB_SOLONET_RPC_URL`: solonet's JSON-RPC as the containers reach it. Every group
-  write pays its relay on solonet, so the contract needs it; see "Paid group writes"
-  below. Unset, the relays start but serve no chain and answer every group write 503
-  `group_payment_check_unavailable`.
+- `FRANK_LAB_SOLONET_RPC_URL`: solonet's JSON-RPC as the containers reach it, default
+  `http://host.docker.internal:48080`. Every message stamp and group write pays on solonet
+  (see "Paid group writes" below), so lab-init stops with an error, and the relays don't
+  start, when solonet doesn't answer there.
 
 Services:
 
@@ -231,12 +231,13 @@ Services:
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), network
   `monad-regtest` with solonet as its upstream, group writes paid to the burn address at
-  10^12 wei each, large values in the MinIO bucket above, the open directory with a
-  synthetic relay tuple, and no mailbox or forum. Each keeps its own RocksDB volume.
-  Groups, the registry database and the directory are shared through FoundationDB, and
-  large values through MinIO. The other owners, and the directory's per-source hourly
-  enrollment quota, are still replica-local, so the preview flag is set, and each relay's
-  startup log names them:
+  10^12 wei each, the solonet mailbox (message stamps of at least 10^12 wei to the burn
+  address), large values in the MinIO bucket above, the open directory with the proxy origin
+  as its endpoint, and the forum with the burn address. Each keeps its own RocksDB volume.
+  Groups, direct messages, the registry database and the directory are shared through
+  FoundationDB, and large group values through MinIO. The forum, the hourly quotas and the
+  directory's per-source hourly enrollment quota are still replica-local, so the preview
+  flag is set, and each relay's startup log names exactly those three:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'
@@ -346,6 +347,33 @@ a checkpoint falls out of solonet's history after a few thousand blocks, so rest
 cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet or before a run on
 a lab that has been up for a while.
 
+### The app and the bots on the cluster
+
+`scripts/lab-cluster-app.sh` runs the cluster for the app and the bots on solonet. It uses its
+own Compose project (`frank-lab-app`), proxy port (18180) and subnet (`10.89.180`), and keeps
+the bot state and a solonet-only bot funding key under `~/.frank-lab-cluster/frank-lab-app`
+(never `~/.frank-bots`, `~/.frank-demo` or a production identity):
+
+```sh
+scripts/lab-cluster-app.sh up                 # solonet if absent, the cluster, a fresh checkpoint;
+                                              # prints the app, funding and bot commands
+scripts/lab-cluster-app.sh fund <0x address> 20   # the solonet faucet pays an app account
+scripts/lab-cluster-app.sh bots               # qwen (stub), lobby and faucet through the cluster
+scripts/lab-cluster-app.sh refresh-checkpoint # a fresh checkpoint, relays restarted
+scripts/lab-cluster-app.sh sweep              # the bot funding wallet pays back to the faucet
+scripts/lab-cluster-app.sh down
+```
+
+The relays verify solonet against a checkpoint block that `lab-init` takes 16 blocks behind the
+head. Solonet keeps only a few thousand blocks (under an hour), so a relay that restarts later
+cannot verify it. `up` therefore always reruns `lab-init` and restarts the relays; **if paid
+sends or chain reads fail, run `refresh-checkpoint`**.
+
+In the app, set "Advanced options" → relay server to the cluster origin
+(`http://127.0.0.1:18180`) when creating each account. Without it the dev server's own origin
+(`http://localhost:8080`) becomes the group's home relay, and group writes fail because their
+payments must commit to the relays' public origin. Direct messages work either way.
+
 ## Large-value store: FoundationDB + MinIO acceptance
 
 `compose.large-values.yml` runs FDB 7.3.63 and MinIO (pinned by digest) with a
@@ -379,29 +407,35 @@ Phases, in order:
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.
 
-## Three relays sharing direct messages (HA plan step 6)
+## Direct messages across replicas (HA plan step 6)
 
-`compose.dm-owner.yml` layers three real relays (`relay-a`, `relay-b`, `relay-c` on
-127.0.0.1:18301-18303) over the FoundationDB + NATS lab above, in cluster mode on the
-FoundationDB driver. Their direct messages and groups live in one FoundationDB subspace, and
-their hints go over the lab's NATS (`frank.dm-owner-lab.…`); the registry, directory and forum
-stay on each relay's own RocksDB under the preview flag until steps 7 to 9. It runs the mailbox
-against the local Monad network, which the cluster lab above does not yet do; it will be retired
-once direct messages are wired into `compose.cluster.yml`.
+`packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` brings up the relays of the cluster
+lab above under its own Compose project (`FRANK_DM_LAB_PROJECT`, default `frank-ha-dm`, subnet
+`FRANK_DM_LAB_SUBNET`, default `10.89.183`), with `compose.cluster-replicas.yml` publishing
+each relay on 127.0.0.1:18301-18303 so the check can choose which replica answers each request.
+It runs its checks with real wallets on solonet and removes the project with its volumes:
 
-The livecheck writes the configurations and the provisioned session secret and VAPID key (0400),
-starts the lab under its own Compose project (`FRANK_DM_LAB_PROJECT`, default `frank-ha-dm`),
-runs the checks with real wallets on the local Monad network (monad-solonet), and removes the
-project with its volumes:
+- a paid direct message sent through A arrives over the websocket on B;
+- concurrent messages to one recipient through A, B and C (`FRANK_DM_LAB_BURST`, default 60)
+  get strictly increasing delivery times, and paging skips nothing;
+- one request sent to A and B at once is kept once;
+- a mailbox challenge issued on A is accepted once on B and refused on replay;
+- after A is killed mid-admission, the retry to B gives one message and one payment;
+- with NATS down, a message is still kept and the reader catches up from its cursor;
+- a 400 kB message reads back unchanged from another replica. Direct messages do not use S3
+  yet: rows over 100 kB are split across FoundationDB values.
+
+These checks need the TypeScript wallet to seal messages and pay stamps, so they live in the
+livecheck rather than in `cluster_contract.rs`.
 
 ```sh
-docker build -f backend/labs/Dockerfile.relay-foundationdb -t frank-ha-dm-relay:latest .
+yarn --cwd packages/bot regtest:monad-status    # solonet must be making blocks
 yarn --cwd packages/bot regtest:monad-dm-cluster
 ```
 
 `FRANK_DM_LAB_KEEP=1` leaves the lab running; remove it later with
-`docker compose -p frank-ha-dm -f compose.foundationdb-nats.yml -f compose.dm-owner.yml down --volumes`
-(with `FRANK_DM_LAB_STATE` set to any directory). `FRANK_DM_LAB_LOGS=1` saves the relays' logs.
+`docker compose -p frank-ha-dm -f backend/labs/compose.cluster.yml -f backend/labs/compose.cluster-replicas.yml down --volumes`.
+`FRANK_DM_LAB_LOGS=1` saves the relays' logs.
 
 ## References
 

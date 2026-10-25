@@ -3,20 +3,21 @@
  * plan step 6, docs/plans/relay-ha-cluster.md), with real wallets paying real stamps on the local
  * Monad network (monad-solonet). Not part of CI.
  *
- *   docker build -f backend/labs/Dockerfile.relay-foundationdb -t frank-ha-dm-relay:latest .
  *   yarn --cwd packages/bot regtest:monad-dm-cluster
  *
- * The relays run in the lab of backend/labs/compose.dm-owner.yml under their own Compose project
- * (FRANK_DM_LAB_PROJECT, default frank-ha-dm), which this check starts and removes with its
- * volumes. Wallets reach the relays through a small routing proxy on 127.0.0.1:18300, the
- * endpoint every relay advertises, so each step can choose which replica answers which request.
- * The relays run in cluster mode on FoundationDB; the registry and directory stay per replica
- * until steps 7 to 9 (the preview flag), so the proxy copies every other write (the
- * directory entry, the profile) to all three replicas.
+ * The relays are the cluster lab of backend/labs/compose.cluster.yml (FoundationDB, NATS, MinIO
+ * and three relays, configured by its lab-init from cluster/relay.toml.in) under their own Compose
+ * project (FRANK_DM_LAB_PROJECT, default frank-ha-dm) and subnet (FRANK_DM_LAB_SUBNET, default
+ * 10.89.183), which this check starts, built from this checkout, and removes with its volumes.
+ * compose.cluster-replicas.yml publishes each relay on 127.0.0.1 (18301 to 18303). The lab's
+ * nginx proxy is not started: wallets reach the relays through this check's own routing proxy on
+ * 127.0.0.1:18300, the origin every relay advertises, so each step can choose which replica
+ * answers which request. Everything the wallets publish (directory entries, profiles) is in the
+ * shared store, so any replica may take it.
  *
  * Checked, each against the shared store:
  *   1. a paid message sent through A arrives on the recipient's websocket held on B;
- *   2. 300 concurrent messages to one recipient through A, B and C get strictly increasing times,
+ *   2. concurrent messages (FRANK_DM_LAB_BURST) to one recipient through A, B and C get strictly increasing times,
  *      and reading them back page by page, each page from another replica, skips nothing;
  *   3. one request sent to A and B at once is kept once;
  *   4. a mailbox challenge issued by A is accepted once on B and refused when replayed;
@@ -24,11 +25,15 @@
  *      kept once with its payment made once (twice, killed before and after A answers);
  *   6. with NATS stopped, a message is still kept and the reader catches up from its cursor;
  *   7. a message near the largest a client can seal (512 KiB of ciphertext) reads back unchanged from another
- *      replica (split rows in FoundationDB until step 4's S3 store; FRANK_DM_LAB_LARGE=0 skips it).
+ *      replica (split rows in FoundationDB: direct messages do not use the S3 store yet;
+ *      FRANK_DM_LAB_LARGE=0 skips it).
+ *
+ * FRANK_DM_LAB_BURST (default 60) sets step 2's burst; keep it moderate, every message there is
+ * checked against solonet.
  */
 import assert from 'assert'
 import { execFile } from 'child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import http from 'http'
 import net from 'net'
 import { tmpdir } from 'os'
@@ -37,7 +42,6 @@ import { randomBytes } from 'crypto'
 
 import { parseEther } from 'ethers'
 
-import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import type { RealWallet } from '../real-stack'
 import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest, startMonadRegtest } from './monad-regtest'
 import { openMonadWallet } from './monad-wallets'
@@ -47,13 +51,14 @@ import { sleep } from './regtest-chain'
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const LABS = join(REPO_ROOT, 'backend', 'labs')
 const PROJECT = process.env.FRANK_DM_LAB_PROJECT ?? 'frank-ha-dm'
+const SUBNET = process.env.FRANK_DM_LAB_SUBNET ?? '10.89.183'
 const PROXY_PORT = 18300
 const ENDPOINT = `http://127.0.0.1:${PROXY_PORT}`
 const RELAYS = { a: 18301, b: 18302, c: 18303 } as const
 type Relay = keyof typeof RELAYS
 const ALL: Relay[] = ['a', 'b', 'c']
 const FUND_WEI = parseEther('50')
-const BURST = Number(process.env.FRANK_DM_LAB_BURST ?? 300)
+const BURST = Number(process.env.FRANK_DM_LAB_BURST ?? 60)
 /** Near the most a client seals into one direct message: the codec bounds its ciphertext at
  * 512 KiB (MAX_CIPHERTEXT_BYTES), padding included. Four times one stored value, so it is split.
  * The relay's own 8 MiB request bound is checked in its unit tests. */
@@ -69,52 +74,37 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv = process.e
 }
 
 // ---------------------------------------------------------------------------------------------
-// The lab: FDB, NATS and three relays in their own Compose project.
+// The lab: the cluster lab's FDB, NATS, MinIO and three relays in their own Compose project.
 
 class Lab {
   constructor(readonly stateDir: string) {}
 
   private env(): NodeJS.ProcessEnv {
-    return { ...process.env, FRANK_DM_LAB_STATE: this.stateDir }
+    return {
+      ...process.env,
+      // The relays advertise this check's proxy as their origin (and directory endpoint).
+      FRANK_LAB_CLUSTER_PORT: String(PROXY_PORT),
+      FRANK_LAB_CLUSTER_SUBNET: SUBNET,
+      FRANK_LAB_RELAY_A_PORT: String(RELAYS.a),
+      FRANK_LAB_RELAY_B_PORT: String(RELAYS.b),
+      FRANK_LAB_RELAY_C_PORT: String(RELAYS.c),
+      FRANK_LAB_SOLONET_RPC_URL: process.env.FRANK_DM_LAB_MONAD_RPC ?? 'http://host.docker.internal:48080',
+    }
   }
 
   compose(...args: string[]): Promise<string> {
     return run(
       'docker',
-      ['compose', '-p', PROJECT, '-f', 'compose.foundationdb-nats.yml', '-f', 'compose.dm-owner.yml', ...args],
+      ['compose', '-p', PROJECT, '-f', 'compose.cluster.yml', '-f', 'compose.cluster-replicas.yml', ...args],
       this.env(),
     )
   }
 
-  async up(monad: MonadRegtest) {
-    // One session secret and one VAPID key for the whole cluster: a challenge or cursor one
-    // replica issues is honoured by the others, and push subscriptions survive any replica.
-    // Provisioned as cluster mode requires: read, never created, owner-only (0400).
-    const secret = randomBytes(32)
-    const vapid = randomBytes(32)
-    vapid[0] &= 0x7f // below the P-256 group order, which a provisioned key must be
-    writeFileSync(join(this.stateDir, 'session-secret'), secret, { mode: 0o400 })
-    writeFileSync(join(this.stateDir, 'vapid-key'), `${vapid.toString('hex')}\n`, { mode: 0o400 })
-    for (const relay of ALL) {
-      const dir = join(this.stateDir, `relay-${relay}`)
-      mkdirSync(dir, { recursive: true })
-      writeFileSync(join(dir, 'relay.toml'), relayConfig(`/state/relay-${relay}/relay-db`, monad), { mode: 0o600 })
-    }
-    await this.compose('up', '-d', 'nats', 'fdb')
-    // A new FDB cluster needs a configuration before it can serve anything.
-    const deadline = Date.now() + 120_000
-    for (;;) {
-      try {
-        await this.compose('exec', '-T', 'fdb', 'fdbcli', '-C', '/cluster/fdb.cluster', '--timeout', '10', '--exec', 'configure new single ssd')
-        break
-      } catch (err) {
-        if (String(err).includes('Database already exists')) break
-        if (Date.now() > deadline) throw err
-        await sleep(2000)
-      }
-    }
-    await this.compose('up', '-d', '--wait', 'nats', 'fdb')
-    await this.compose('up', '-d', 'relay-a', 'relay-b', 'relay-c')
+  async up() {
+    // lab-init provisions one session secret and one VAPID key for the whole cluster (a challenge
+    // or cursor one replica issues is honoured by the others) and the relays' configuration, with
+    // a checkpoint a few blocks behind solonet's head; fdb-init creates the database.
+    await this.compose('up', '-d', '--build', '--wait', 'relay-a', 'relay-b', 'relay-c')
     await Promise.all(ALL.map(relay => waitForRelay(relay)))
   }
 
@@ -136,71 +126,6 @@ class Lab {
   down() {
     return this.compose('down', '--volumes', '--remove-orphans')
   }
-}
-
-function relayConfig(dbPath: string, monad: MonadRegtest): string {
-  return [
-    'host = "0.0.0.0:8080"',
-    `url = "${ENDPOINT}"`,
-    '',
-    '[registry]',
-    'group_writes = { price_wei = "1000000000000", payee = "burn" }',
-    `db_path = "${dbPath}"`,
-    'session_secret_file = "/state/session-secret"',
-    'vapid_private_key_file = "/state/vapid-key"',
-    `network = "${monad.chainIdentifier}"`,
-    'net = "regtest"',
-    'peers = []',
-    'public_relay_urls = []',
-    '',
-    // Cluster mode with FoundationDB: direct messages and groups are shared; the registry,
-    // directory and forum are still per replica, which the preview flag accepts by name.
-    '[registry.cluster]',
-    'enabled = true',
-    'driver = "foundationdb"',
-    'cluster_name = "dm-owner-lab"',
-    'fdb_cluster_file = "/cluster/fdb.cluster"',
-    `fdb_subspace_prefix = "${PROJECT}/"`,
-    'preview_replica_local_owners = true',
-    '',
-    '[registry.cluster.nats]',
-    'enabled = true',
-    'url = "nats://nats:4222"',
-    '',
-    // One relay, as far as the directory and the wallets can tell: the same id, identity and
-    // endpoint on every replica (the public test identity of backend/cashweb/cashwebd.local.toml).
-    '[registry.directory]',
-    'relay_id = "0102030405060708090a0b0c0d0e0f10"',
-    'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
-    `endpoint = "${ENDPOINT}"`,
-    'binding_expiry_ns = "1893456000000000000"',
-    'enrollments_per_source_per_hour = 100000',
-    '',
-    '[registry.monad_mailbox]',
-    'enabled = true',
-    `min_value_wei = "${MONAD_REGTEST_MIN_STAMP_WEI}"`,
-    '',
-    '[registry.forum]',
-    `burn_address = "${DEMO_DEFAULT_BURN_ADDRESS}"`,
-    '',
-    '[registry.evm_rpc]',
-    'enabled = true',
-    'capability_ttl_ms = 3600000',
-    'anonymous_units_per_hour = 1000000',
-    '',
-    monad.relay.row,
-    '',
-    '[registry.pop]',
-    'enabled = false',
-    'monad_rpc_url = "http://unused.invalid"',
-    'hmac_secret = "unused-because-pop-is-disabled"',
-    'payment_recipient = "0x0000000000000000000000000000000000000000"',
-    'min_value_wei = "0"',
-    '',
-    '[registry.oracle]',
-    'collect = false',
-    '',
-  ].join('\n')
 }
 
 async function waitForRelay(relay: Relay) {
@@ -257,7 +182,7 @@ function forward(relay: Relay, request: Captured, onSent?: () => void): Promise<
 
 const isDm = (url: string) => (url === '/message' || url.startsWith('/message/') || url.startsWith('/message?')) && !url.startsWith('/message/monad/topics')
 
-/** Which replica answers: `route` picks for direct-message requests; other writes go to all. */
+/** Which replica answers: `route` picks for direct-message requests; the others take turns. */
 class Proxy {
   private server: http.Server
   private sockets = new Set<net.Socket>()
@@ -266,13 +191,12 @@ class Proxy {
   route: (request: Captured) => Relay = () => ALL[this.turn++ % ALL.length]
   /** Websocket upgrades. */
   wsRoute: Relay = 'a'
-  /** Replicas that are up: the only ones chain reads and replica-local writes go to. */
+  /** Replicas that are up: the only ones requests other than direct messages go to. */
   readonly alive = new Set<Relay>(ALL)
   /** Lets a step take over one direct-message request (send it twice, kill a relay ...). */
   intercept?: (request: Captured) => Promise<Answer | undefined>
-  /** Replica-local writes the replicas answered differently; the check fails on any. */
-  readonly disagreements: string[] = []
-  readonly served: Array<{ relay: Relay | 'all'; method: string; url: string; status: number }> = []
+  private otherTurn = 0
+  readonly served: Array<{ relay: Relay; method: string; url: string; status: number }> = []
 
   constructor() {
     this.server = http.createServer((req, res) => {
@@ -335,20 +259,13 @@ class Proxy {
       return answer
     }
     // Chain reads and their capabilities belong to one replica's RPC gateway, not to the store.
+    // Everything else the wallets publish (directory entries, profiles) is in the shared store,
+    // so the replicas that are up take it in turn.
     const up = ALL.filter(relay => this.alive.has(relay))
-    if (request.method === 'GET' || request.method === 'HEAD' || request.url.startsWith('/chain-rpc/')) {
-      return forward(up[0], request)
-    }
-    // Replica-local owners (directory, profiles): every replica must hold the same publication.
-    const answers = await Promise.all(up.map(relay => forward(relay, request)))
-    this.served.push({ relay: 'all', method: request.method, url: request.url, status: answers[0].status })
-    // Every replica must take the publication the same way, or the wallets would see a
-    // directory that depends on which replica answers.
-    const statuses = answers.map(answer => answer.status)
-    if (statuses.some(status => status !== statuses[0])) {
-      this.disagreements.push(`${request.method} ${request.url}: ${up.map((relay, i) => `${relay}:${statuses[i]}`).join(', ')}`)
-    }
-    return answers[0]
+    const relay = request.url.startsWith('/chain-rpc/') ? up[0] : up[this.otherTurn++ % up.length]
+    const answer = await forward(relay, request)
+    this.served.push({ relay, method: request.method, url: request.url, status: answer.status })
+    return answer
   }
 
   listen(): Promise<void> {
@@ -408,7 +325,7 @@ async function main() {
   })
   try {
     await proxy.listen()
-    await lab.up(monad)
+    await lab.up()
     // One provisioned VAPID key: every replica serves the same push identity.
     const vapidKeys = await Promise.all(
       ALL.map(async relay => {
@@ -650,8 +567,7 @@ async function main() {
       proxy.reset()
     }
 
-    assert.deepEqual(proxy.disagreements, [], 'every replica answered each copied write alike')
-    console.log(`   every copied directory/profile write answered alike by all replicas; one VAPID key: ${vapidKeys[0].slice(0, 60)}`)
+    console.log(`   one VAPID key on every replica: ${vapidKeys[0].slice(0, 60)}`)
     console.log(`Monad DM cluster: OK (${Math.round((Date.now() - startedAt) / 1000)} s)`)
   } catch (err) {
     failed = true

@@ -646,7 +646,7 @@ export async function tokenSendCommand(
             `  Change Created:   ${result.changeCreated.amountFormatted} -> ${result.changeCreated.address}`,
           )
         }
-        console.log(`  Type 12 Frame:     ${result.type6FrameLength} bytes`)
+        console.log(`  Content Frame:    ${result.type6FrameLength} bytes`)
         console.log(`  Encrypted Size:   ${result.envelopeLength} bytes`)
       },
       options.json,

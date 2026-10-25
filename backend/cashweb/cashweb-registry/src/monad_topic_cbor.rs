@@ -8,9 +8,10 @@
 //! anything, and its validation and burn checks run before the route mutates storage:
 //!
 //! - [`parse_topic_event`] validates a frame with the `frank-cbor` codec (typed stage 9, a 1 MiB
-//!   route limit, only types 9, 10, and 11 supported, no protobuf or JSON fallback, F5) and derives
-//!   everything the relay must never take from the client: the post identity (the T1 hash of the
-//!   embedded type-40 frame) and the T7 burn commitment.
+//!   route limit, only the topic post, post submission and vote submission types (40, 41, 42)
+//!   supported, no protobuf or JSON fallback, F5) and derives everything the relay must never
+//!   take from the client: the post identity (the T1 hash of the embedded type-40 frame) and the
+//!   T7 burn commitment.
 //! - [`check_topic_burn_before_broadcast`] decodes the signed burn transaction and rejects, before
 //!   anything is broadcast, one that pays the wrong address, on the wrong chain, with no value,
 //!   or whose calldata does not carry exactly the derived commitment under the CBOR version byte.

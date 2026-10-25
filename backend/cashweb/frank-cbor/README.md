@@ -13,7 +13,7 @@ it.
 
 This crate owns canonical CBOR encoding and decoding, FRNK frame bytes, schema
 checks through section 9 stage 9, type-2 directory signature validation at
-stage 10.6, and the pure hashes T1, T1a, T3, T4, and T7. Type-1 stages
+stage 10.6, and the pure hashes T1, T1a, T3, T4, and T7. Type-10 stages
 10.1–10.5 are absent. Callers pass typed values or payload bytes. They do not
 hand-roll CBOR maps.
 
@@ -23,12 +23,12 @@ hand-roll CBOR maps.
 `encode_canonical`, `decode_canonical`, `is_valid_canonical`, and `cbor_map`,
 re-exported from `src/lib.rs`. Explicit CBOR account registration and opt-in
 topics are production consumers. Direct-message and mailbox paths are not
-wired. Type-1 decryption, T3/DLEQ/payment observation and the rest of stages
+wired. Type-10 decryption, T3/DLEQ/payment observation and the rest of stages
 10.1–10.5 remain out of scope.
 
 ## Encryption suites
 
-Type-5 schema 2 allocates production suite 1 to crypto-box authenticated
+Type-11 schema 2 allocates production suite 1 to crypto-box authenticated
 XChaCha20-Poly1305. Suite 65535 remains reserved for schema-1 opaque proof-vector
 ciphertext and must not be emitted by a production writer. Private crypto-box
 registry ids `0xFE01`, `0xFE02`, and `0xFE03` are not Frank-CBOR
@@ -44,7 +44,7 @@ From `backend/cashweb`: `cargo test -p frank-cbor`.
 
 ## Structured Forum codec
 
-The public facade validates type9 schema2/min2 structured bodies and types12–15 read/status
+The public facade validates type40 schema2/min2 structured bodies and types43–46 read/status
 frames through the existing shared traversal budgets. `ForumPostContent` distinguishes opaque
 schema1 from structured content, and `ForumOperationEvidence` distinguishes unverified request
 echoes from relay observations. Original frames and body bytes remain authoritative.
@@ -55,7 +55,7 @@ finality nor wallet authority. Active TS/Rust conformance uses
 normal-client switching and predecessor removal remain under #675: server successor #769
 and whole normal-path cutover/removal successor #770.
 
-## Universal State Channels (Type 24)
+## Universal State Channels (Type 25)
 
-Universal state channels (`channel-update-item`, Type 24) support multi-network balance allocations and arbitrary peer-to-peer interactive turns (gaming, swaps, raffles) with off-chain execution, signed state transitions, and deterministic client-side folding.
+Universal state channels (`channel-update-item`, Type 25) support multi-network balance allocations and arbitrary peer-to-peer interactive turns (gaming, swaps, raffles) with off-chain execution, signed state transitions, and deterministic client-side folding.
 

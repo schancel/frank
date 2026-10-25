@@ -1,4 +1,4 @@
-# Store-and-Forward Forwarding Delivery Envelope (Type 25)
+# Store-and-Forward Forwarding Delivery Envelope (Type 13)
 
 - **Status**: Standard (Track C, Issue #986, PR #996, Commit `fc3fcb5a`)
 - **Implementations**:
@@ -10,7 +10,7 @@
 
 ## 1. Overview & Architectural Objective
 
-The **Type 25 Forwarding Delivery Envelope** provides hop-by-hop store-and-forward relaying across federated Cashweb nodes. It enforces a strict **Content-Oblivious Boundary**: intermediary and destination relays verify storage stamps, delivery TTLs, and routing identities without inspecting or decrypting the encapsulated message payload.
+The **Type 13 Forwarding Delivery Envelope** provides hop-by-hop store-and-forward relaying across federated Cashweb nodes. It enforces a strict **Content-Oblivious Boundary**: intermediary and destination relays verify storage stamps, delivery TTLs, and routing identities without inspecting or decrypting the encapsulated message payload.
 
 ---
 
@@ -19,11 +19,11 @@ The **Type 25 Forwarding Delivery Envelope** provides hop-by-hop store-and-forwa
 From `docs/protocol/cbor/direct-message.cddl`:
 
 ```cddl
-; Active type 25 / schema 1 / min-reader 1: relay forwarding delivery envelope.
+; Active type 13 / schema 1 / min-reader 1: relay forwarding delivery envelope.
 forwarding-delivery-envelope = {
   0: network-tag,                       ; destination relay network, e.g. "monad-testnet"
   1: account-ref,                       ; destination relay routing identity (key type 1)
-  2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
+  2: framed-object,                     ; inner direct-message-delivery (Type 10) frame
   3: digest-32,                         ; forwarding payload digest of field 2
   4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
   ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
@@ -40,39 +40,39 @@ Frank achieves defense-in-depth through concentric deterministic CBOR frames:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ 1. TYPE 25: FORWARDING DELIVERY ENVELOPE (Hop-by-Hop Relay Envelope)                  │
+│ 1. TYPE 13: FORWARDING DELIVERY ENVELOPE (Hop-by-Hop Relay Envelope)                  │
 │    • Network Tag (Field 0)                                                             │
 │    • Destination Relay Identity P_relay (Field 1, Key Type 1, 33-byte secp256k1)       │
 │    • Forwarding Payload Digest T_fwd (Field 3, 32-byte SHA-256)                        │
 │    • Storage Payment Stamps (Field 4, [1*64 payment-member] with contiguous indices)   │
 │    • Optional Endpoint URI & TTL Timestamp (Fields 5, 6)                              │
 │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
-│ │ 2. TYPE 1: DIRECT MESSAGE DELIVERY (Destination Relay Delivery Frame)              │ │
+│ │ 2. TYPE 10: DIRECT MESSAGE DELIVERY (Destination Relay Delivery Frame)             │ │
 │ │    • Network Tag (Field 0)                                                         │ │
 │ │    • Recipient Stamp Key P' (Field 1, Key Type 1)                                  │ │
 │ │    • Frame Digest T3 of Field 2 (Field 3)                                          │ │
 │ │    • Recipient Storage Payment Stamps (Field 4)                                    │ │
 │ │ ┌────────────────────────────────────────────────────────────────────────────────┐ │ │
-│ │ │ 3. TYPE 5: RECIPIENT ENCRYPTED PAYLOAD (XChaCha20-Poly1305 Crypto-Box v2)      │ │ │
+│ │ │ 3. TYPE 11: RECIPIENT ENCRYPTED PAYLOAD (XChaCha20-Poly1305 Crypto-Box v2)     │ │ │
 │ │ │    • Routing Sender & Recipient Identities (Fields 1, 2)                       │ │ │
 │ │ │    • Ephemeral Stamp Point E (Field 5, 33 bytes)                               │ │ │
 │ │ │    • Ephemeral Stamp Point X (Field 6, 33 bytes)                               │ │ │
 │ │ │    • Chaum-Pedersen DLEQ Proof c || s (Field 7, 64 bytes)                      │ │ │
 │ │ │    • Ciphertext (Field 4, AEAD authenticated with dm-crypto-context-v1)        │ │ │
 │ │ │ ┌────────────────────────────────────────────────────────────────────────────┐ │ │ │
-│ │ │ │ 4. TYPE 6: DECRYPTED MESSAGE CONTENT (End-to-End Plaintext Context)        │ │ │ │
+│ │ │ │ 4. TYPE 12: DECRYPTED MESSAGE CONTENT (End-to-End Plaintext Context)       │ │ │ │
 │ │ │ │    • Stable Logical Message ID (UUID-16, Field 1)                          │ │ │ │
 │ │ │ │    • Content Digest T1a of Field 2 (Field 3)                               │ │ │ │
 │ │ │ │    • Conversation ID (UUID-16, Field 4) & Optional Name                    │ │ │ │
 │ │ │ │ ┌────────────────────────────────────────────────────────────────────────┐ │ │ │ │
-│ │ │ │ │ 5. TYPE 8: MESSAGE CONTENT REVISION                                    │ │ │ │ │
+│ │ │ │ │ 5. TYPE 20: MESSAGE CONTENT REVISION                                   │ │ │ │ │
 │ │ │ │ │    • Transcript Network Domain: "frank" (Field 0)                      │ │ │ │ │
 │ │ │ │ │    • Ordered Semantic Message-Item Frames (Field 1, [1*256])           │ │ │ │ │
 │ │ │ │ │ ┌────────────────────────────────────────────────────────────────────┐ │ │ │ │ │
 │ │ │ │ │ │ 6. SEMANTIC ITEMS:                                                 │ │ │ │ │ │
-│ │ │ │ │ │    • Type 17: UTF-8 Text Item                                      │ │ │ │ │ │
-│ │ │ │ │ │    • Type 19: Stealth Payment Item                                 │ │ │ │ │ │
-│ │ │ │ │ │    • Type 24: Universal State Channel Update                       │ │ │ │ │ │
+│ │ │ │ │ │    • Type 22: UTF-8 Text Item                                      │ │ │ │ │ │
+│ │ │ │ │ │    • Type 24: Stealth Payment Item                                 │ │ │ │ │ │
+│ │ │ │ │ │    • Type 25: Universal State Channel Update                       │ │ │ │ │ │
 │ │ │ │ │ │               (Interactive Turns, Gaming, Swaps, State Execution)  │ │ │ │ │ │
 │ │ │ │ │ └────────────────────────────────────────────────────────────────────┘ │ │ │ │ │
 │ │ │ │ └────────────────────────────────────────────────────────────────────────┘ │ │ │ │
@@ -94,23 +94,23 @@ sequenceDiagram
     participant RelayB as Destination Relay (Relay B)
     actor Bob as Bob (Recipient)
 
-    Note over Alice: 1. Encapsulates inner Type 1 DM Frame<br/>2. Sets destination relay identity P_relay<br/>3. Attaches storage payment stamps for Relay B
-    Alice->>RelayA: HTTP PUT /forward (Type 25 Frame)
+    Note over Alice: 1. Encapsulates inner Type 10 DM Frame<br/>2. Sets destination relay identity P_relay<br/>3. Attaches storage payment stamps for Relay B
+    Alice->>RelayA: HTTP PUT /forward (Type 13 Frame)
 
     Note over RelayA: Relay A inspects Outer Envelope ONLY:<br/>• Reads Field 1: Destination Relay Identity P_relay<br/>• Reads Field 5: Destination URI (relay-b.internal)<br/>• Inner payload (Field 2) remains OPAQUE bytes<br/>• Content-oblivious store-and-forward
 
-    RelayA->>RelayB: HTTP PUT /mailbox/delivery (Type 25 Frame)
+    RelayA->>RelayB: HTTP PUT /mailbox/delivery (Type 13 Frame)
 
-    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(network, Field 2) == Field 3<br/>3. Verifies contiguous storage payment stamps (Field 4)<br/>4. Extracts Field 2 as inner Type 1 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
+    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(network, Field 2) == Field 3<br/>3. Verifies contiguous storage payment stamps (Field 4)<br/>4. Extracts Field 2 as inner Type 10 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
 
     RelayB-->>RelayA: 200 OK (Accepted & Committed)
     RelayA-->>Alice: 200 OK (Delivery Queued)
 
     Note over RelayB,Bob: Bob connects and synchronizes mailbox
     Bob->>RelayB: HTTP GET /mailbox/updates?since=seq_100
-    RelayB-->>Bob: Streams Type 1 DM Delivery Frame
+    RelayB-->>Bob: Streams Type 10 DM Delivery Frame
 
-    Note over Bob: Bob decrypts Type 5 payload using message private key m<br/>Verifies Chaum-Pedersen DLEQ proof<br/>Inspects Type 6 / Type 8 message items
+    Note over Bob: Bob decrypts Type 11 payload using message private key m<br/>Verifies Chaum-Pedersen DLEQ proof<br/>Inspects Type 12 / Type 20 message items
 ```
 
 ---

@@ -114,7 +114,7 @@ pub enum OpenMode {
 /// Verification checks that the wrapper embeds exactly `statement`; projections are not inputs.
 #[derive(Clone, Copy, Debug)]
 pub struct Candidate<'a> {
-    /// Exact complete type-4 bytes.
+    /// Exact complete directory statement (type 1) bytes.
     pub statement: &'a [u8],
     /// Exact complete type-2 bytes.
     pub attestation: &'a [u8],

@@ -4,7 +4,7 @@ Versioned deniable encryption. This package owns suite ids, the KEM, the KDF, th
 
 The CashWeb semantics, allocation boundaries, and deployment status are indexed by
 [`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). Suite 1 is the Frank-CBOR
-type-5 schema-2 production allocation; the remaining registry IDs are private library suites.
+type-11 schema-2 production allocation; the remaining registry IDs are private library suites.
 
 Callers pass byte arrays in and get byte arrays out. This package does not read or write CashWeb CBOR. These envelopes are not the live relay protobuf or a Frank direct-message frame. The live relay path is still protobuf. `@frank/codec` and `frank-cbor` marshal frames and hand this package those bytes.
 

@@ -42,17 +42,17 @@ sequenceDiagram
     participant Relay as Destination Relay
     participant Bob as Recipient (Bob)
 
-    Alice->>Dir: Query Bob's active directory statement (Type 4)
+    Alice->>Dir: Query Bob's active directory statement (Type 1)
     Dir-->>Alice: Return Bob's statement: P, M, P', and relay endpoints
     Alice->>Alice: Verify statement signature by Bob's P
     Alice->>Alice: Generate ephemeral keypair E and compute DH shared secret with Bob's M
     Alice->>Alice: Compute stealth stamp address from Bob's P'
     Alice->>Alice: Construct DLEQ proof binding E and P'
-    Alice->>Alice: Encrypt message content into Type 5 frame
-    Alice->>Alice: Wrap into Type 1 DM Delivery frame with payment stamp txid
-    Alice->>Alice: Wrap into Type 25 Forwarding Envelope with relay storage stamp
-    Alice->>Relay: PUT /monad/mailbox/outbox (Type 25 Envelope)
-    Relay->>Relay: Verify relay storage stamp & inner Type 1 structure
+    Alice->>Alice: Encrypt message content into Type 11 frame
+    Alice->>Alice: Wrap into Type 10 DM Delivery frame with payment stamp txid
+    Alice->>Alice: Wrap into Type 13 Forwarding Envelope with relay storage stamp
+    Alice->>Relay: PUT /monad/mailbox/outbox (Type 13 Envelope)
+    Relay->>Relay: Verify relay storage stamp & inner Type 10 structure
     Relay->>Relay: Index envelope under Bob's mailbox journal cursor
     Relay-->>Bob: WebSocket / SSE wake-up event
     Bob->>Relay: GET /monad/mailbox/sync?cursor=...

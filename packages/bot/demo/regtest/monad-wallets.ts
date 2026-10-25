@@ -101,17 +101,23 @@ export async function returnToFaucet(
         leftWei += held
         continue
       }
-      const signer = new Wallet(account.privateKey, monad.provider)
-      const tx = await signer.sendTransaction({
-        type: 0,
-        to: monad.faucetAddress,
-        value: held - fee,
-        gasLimit: TRANSFER_GAS,
-        gasPrice,
-      })
-      const receipt = await tx.wait(1, 120_000)
-      if (receipt?.status === 1) returnedWei += held - fee
-      else leftWei += held
+      // One account that cannot be swept (a payment still in flight, a timeout) leaves the rest
+      // to be swept.
+      try {
+        const signer = new Wallet(account.privateKey, monad.provider)
+        const tx = await signer.sendTransaction({
+          type: 0,
+          to: monad.faucetAddress,
+          value: held - fee,
+          gasLimit: TRANSFER_GAS,
+          gasPrice,
+        })
+        const receipt = await tx.wait(1, 120_000)
+        if (receipt?.status === 1) returnedWei += held - fee
+        else leftWei += held
+      } catch {
+        leftWei += held
+      }
     }
   return { returnedWei, leftWei }
 }

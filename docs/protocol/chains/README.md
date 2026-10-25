@@ -166,8 +166,9 @@ kind and a testnet-or-mainnet setting, and has no setting that supplies a checkp
 `monad-regtest` is a local Monad network run by
 [monad-solonet](https://github.com/monad-crypto/monad-solonet): the real consensus and execution
 client as a single validator. Chain ID 20143 (Monad's devnet ID), network tag `MONR`, unit `MONR`.
-Its checkpoint is block 1 of the running chain, read when a stack starts and written into that
-run's relay config; the wallet reaches the chain only through the relay's proxy, which has
+Its checkpoint is a block 16 below the head when a stack starts, written into that run's relay
+config (solonet keeps only its last few thousand blocks, about half an hour, so a relay restarted
+later needs a fresh checkpoint); the wallet reaches the chain only through the relay's proxy, which has
 verified it. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
 record is never committed) and a wallet is given their addresses in its chain config
 (`EvmChainConfig.contracts`). How to install, start and stop solonet on a Mac is at the top of

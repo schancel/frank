@@ -20,6 +20,7 @@ import type {
   OutgoingFailureReason,
   SwapRecordItem,
   ConversationStateItem,
+  ContactStateItem,
   OutboxMessageItem,
   MessageTombstoneItem,
   JournalCheckpointItem,
@@ -68,6 +69,24 @@ export function ownConversationStates(
   return wrapper.message.items.filter(
     (item): item is ConversationStateItem =>
       !!item && item.type === 'conversation-state',
+  )
+}
+
+/** The contact notes of a row the account sent to itself: a contact its user added or removed on
+ * another device. Anyone else's row carries none. */
+export function ownContactStates(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): ContactStateItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is ContactStateItem => !!item && item.type === 'contact-state',
   )
 }
 

@@ -150,6 +150,9 @@ export interface ProfileInfo {
   accountType?: AccountType;
   /** Specialized bot or service role (ticket #1120). */
   botRole?: BotRole;
+  /** When the account signed this registration (ms): which of two publishes of one account's
+   * profile is the newer. */
+  publishedAtMs?: number;
   spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>;
   curveKeys?: {
     secp256k1?: Uint8Array;

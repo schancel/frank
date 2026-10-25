@@ -581,6 +581,52 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     return { chats, group: chats.conversations[group.id] }
   }
 
+  it('a group the relay refuses to read (403) is not asked again on every poll, and is again later', async () => {
+    const relayClient = createSharedMockGroupRelay()
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', relayClient)
+    const group = await chats.createGroupConversation({
+      groupName: 'Stale Group',
+      memberAddresses: [BOB],
+      relayUrl: 'https://relay.frank.test',
+      relayClient,
+      creatorAddress: ALICE,
+    })
+    const refused = Object.assign(new Error('forbidden'), {
+      response: { status: 403 },
+    })
+    const sync = jest
+      .spyOn(chats, 'syncGroupConversation')
+      .mockRejectedValue(refused)
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      const options = { relayClient, ownAddress: ALICE }
+      await chats.syncAllJoinedGroups(options)
+      await chats.syncAllJoinedGroups(options)
+      await chats.syncAllJoinedGroups(options)
+      const asked = () =>
+        sync.mock.calls.filter(([id]) => id === group.id).length
+      expect(asked()).toBe(1)
+      // After the wait it is asked once more, then left for twice as long.
+      now.mockReturnValue(1_000_000 + 60_001)
+      await chats.syncAllJoinedGroups(options)
+      await chats.syncAllJoinedGroups(options)
+      expect(asked()).toBe(2)
+      now.mockReturnValue(1_000_000 + 60_001 + 60_001)
+      await chats.syncAllJoinedGroups(options)
+      expect(asked()).toBe(2)
+      // A read that succeeds again ends the wait.
+      sync.mockResolvedValue(0)
+      now.mockReturnValue(1_000_000 + 60_001 + 120_002)
+      await chats.syncAllJoinedGroups(options)
+      await chats.syncAllJoinedGroups(options)
+      expect(asked()).toBe(4)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it('live wakeups persist each authenticated receipt once and stop after leaving', async () => {
     const alice = await makeGroup()
     const bob = await inviteBob(alice.group, alice.client)
@@ -1484,9 +1530,8 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       ],
       ALICE,
     )
-    expect(laptop.messages['winner-control'].items[0].type).toBe(
-      'group-control',
-    )
+    // A note to self: applied to the group, never a message in a conversation with oneself.
+    expect(laptop.messages['winner-control']).toBeUndefined()
     expect(
       laptop.conversations[group.id].groupState.epochFrame.epoch_hash,
     ).toBe(winner.epochFrame.epoch_hash)
@@ -1930,6 +1975,190 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(restoredGroup.groupState.epoch).toBe(1)
     expect(restoredGroup.groupState.memberIndex).toBe(0)
     expect(restoredGroup.groupMemberIndex).toBe(0)
+  })
+
+  describe('an invitation, on every device of the inviter and the invitee (F7)', () => {
+    const OTHER_THREAD = '33333333-3333-4333-8333-333333333333'
+    function walletOf(address: string) {
+      return {
+        identity: { displayAddress: address, address: { raw: address } },
+      } as unknown as WalletHandle
+    }
+    /** Alice's group, its deliveries sent: the note to self is taken at the wallet's send
+     * call, the invitations to members at the chat store's. */
+    async function deliveredGroup() {
+      const { chats, group, client } = await makeGroup()
+      const { activeChain } = require('@frank/wallet/chain')
+      const selfNotes: any[] = []
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async (params: any) => {
+          selfNotes.push(params)
+          return {
+            payloadDigest: 'ab'.repeat(32),
+            stampValueWei: 0n,
+            stampPayments: [],
+            preparationTxHashes: [],
+          }
+        })
+      const invited: any[] = []
+      jest
+        .spyOn(chats, 'sendMessage')
+        .mockImplementation(async (params: any) => {
+          invited.push(params)
+          return { state: 'sent', payloadDigest: 'cd'.repeat(32) } as any
+        })
+      await chats.retryGroupMemberDeliveries(group.id, walletOf(ALICE))
+      return { chats, group, client, selfNotes, invited }
+    }
+    function selfRow(items: unknown[], index = 'self-welcome') {
+      return {
+        index,
+        outbound: false,
+        senderAddress: ALICE,
+        copartyAddress: ALICE,
+        copartyPubKey: { toBuffer: () => GROUP_TEST_ACCOUNTS[0].publicKey },
+        stampValue: 0,
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          senderAddress: ALICE,
+          destinationAddress: ALICE,
+          items,
+          serverTime: 2000,
+          receivedTime: 2000,
+          outpoints: [],
+        },
+      }
+    }
+    function sentInvitationRow(item: unknown, conversationId: string) {
+      return {
+        index: 'sent-invitation',
+        conversationId,
+        outbound: true,
+        senderAddress: ALICE,
+        copartyAddress: BOB,
+        copartyPubKey: { toBuffer: () => GROUP_TEST_ACCOUNTS[1].publicKey },
+        stampValue: 0,
+        message: {
+          conversationId,
+          outbound: true,
+          status: 'confirmed',
+          senderAddress: ALICE,
+          destinationAddress: BOB,
+          items: [item],
+          serverTime: 2100,
+          receivedTime: 2100,
+          outpoints: [],
+        },
+      }
+    }
+
+    it('tells the inviter’s own devices in a free note to self, never in a conversation with oneself', async () => {
+      const { chats, group, selfNotes, invited } = await deliveredGroup()
+      expect(selfNotes).toHaveLength(1)
+      expect(selfNotes[0].recipient).toEqual({ raw: ALICE })
+      expect(selfNotes[0].stampValue).toBe(0n)
+      expect(selfNotes[0].items[0].type).toBe('group-welcome')
+      expect(selfNotes[0].items[0].adminSecretKeyHex).toBeDefined()
+      // Only the member is sent an invitation through the conversation.
+      expect(invited.map(params => params.address)).toEqual([BOB])
+      expect(group.groupState.pendingMemberDeliveries).toEqual({})
+      const own = Object.values(chats.conversations).filter(
+        (conv: any) =>
+          conv.kind !== 'group' && conv.address.toLowerCase() === ALICE,
+      )
+      expect(own).toEqual([])
+      expect(useContactStore().isContact(ALICE)).toBe(false)
+    })
+
+    it('the inviter’s other device joins the group from the note and shows no conversation with itself', async () => {
+      const { group, selfNotes } = await deliveredGroup()
+      currentOwnAddress = ALICE
+      setActivePinia(createPinia())
+      const laptop = useChatStore()
+      jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+      const note = JSON.parse(JSON.stringify(selfNotes[0].items))
+      // Read once, then again with the whole mailbox: the same end.
+      await laptop.receiveMessages([selfRow(note)], ALICE)
+      await laptop.receiveMessages([selfRow(note)], ALICE)
+      const joined = laptop.conversations[group.id]
+      expect(joined.kind).toBe('group')
+      expect(joined.membershipStatus).toBe('joined')
+      expect(joined.groupState.groupSecretKeyHex).toBe(
+        group.groupState.groupSecretKeyHex,
+      )
+      expect(
+        Object.values(laptop.conversations).filter(
+          (conv: any) => conv.kind !== 'group',
+        ),
+      ).toEqual([])
+      expect(laptop.messages['self-welcome']).toBeUndefined()
+      expect(useContactStore().isContact(ALICE)).toBe(false)
+    })
+
+    it('shows the invitation sent to the member as one, on the sending device after a reload and on the other device', async () => {
+      const { invited, group } = await deliveredGroup()
+      const invitation = JSON.parse(JSON.stringify(invited[0].items[0]))
+      expect(invitation.type).toBe('group-welcome')
+      // The other device reads the sent invitation back from the account's mailbox.
+      currentOwnAddress = ALICE
+      setActivePinia(createPinia())
+      const laptop = useChatStore()
+      jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+      await laptop.receiveMessages(
+        [sentInvitationRow(invitation, OTHER_THREAD)],
+        ALICE,
+      )
+      const thread = laptop.conversations[OTHER_THREAD]
+      expect(thread.address.toLowerCase()).toBe(BOB)
+      expect(thread.messages.map((m: any) => m.items[0].type)).toEqual([
+        'group-welcome',
+      ])
+      // An invitation for someone else never makes this account a member of a group.
+      expect(laptop.conversations[group.id]).toBeUndefined()
+      // A reload rebuilds the same view from the saved row.
+      const store = await messageStorePromise
+      store.getIterator.mockResolvedValueOnce([
+        {
+          ...sentInvitationRow(invitation, OTHER_THREAD),
+        },
+      ])
+      const restored = await rehydrateChat(
+        JSON.parse(JSON.stringify(laptop.$state)),
+      )
+      expect(
+        restored.conversations[OTHER_THREAD].messages.map(
+          (m: any) => m.items[0].type,
+        ),
+      ).toEqual(['group-welcome'])
+    })
+
+    it('a conversation started without a subject is the peer’s default thread, where the invitation goes', async () => {
+      const { chats } = await makeGroup()
+      const started = chats.createConversation({
+        kind: 'direct',
+        participants: [BOB],
+        address: BOB,
+      })
+      // Started twice, or on another device: the same thread.
+      expect(
+        chats.createConversation({
+          kind: 'direct',
+          participants: [BOB],
+          address: BOB,
+        }).id,
+      ).toBe(started.id)
+      expect(chats.openDirectConversation(BOB).id).toBe(started.id)
+      // A conversation the user gives a subject is a new one.
+      const named = chats.createConversation({
+        kind: 'direct',
+        name: 'Plans',
+        participants: [BOB],
+        address: BOB,
+      })
+      expect(named.id).not.toBe(started.id)
+    })
   })
 })
 

@@ -65,6 +65,7 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
+import { useContactStore } from '../stores/contacts'
 import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import type { MonadIdentity } from '@frank/wallet/evm-identity'
@@ -330,6 +331,9 @@ export function startDirectMessagePolling({
       // The relay answers: what this device has to note to the account's other devices about
       // its conversations (a deletion or a read mark not sent yet) goes out now. Free, and not waited for.
       void chats.noteConversationStates(wallet).catch(() => undefined)
+      void useContactStore()
+        .noteContactStates(wallet)
+        .catch(() => undefined)
       void chats
         .syncAllJoinedGroups({ ownAddress: wallet.identity.displayAddress })
         .catch(() => undefined)

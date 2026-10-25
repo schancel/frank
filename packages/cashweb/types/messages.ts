@@ -362,6 +362,22 @@ export interface ConversationStateItem {
 }
 
 /**
+ * What one frontend of an account notes to the account's other frontends about one contact: the
+ * user added it (`present: true`) or removed it (`present: false`) at `setAt` (ms). Carried in a
+ * note the account sends itself, so every frontend, and one restored later from the seed, ends
+ * with the same contacts. The later `setAt` wins; at the same time a removal wins. A note may be
+ * applied twice and notes may be applied in any order. It carries no profile: each frontend reads
+ * that from the directory.
+ */
+export interface ContactStateItem {
+  type: 'contact-state'
+  /** Canonical EVM address of the contact (`0x` + 40 hex). */
+  address: string
+  present: boolean
+  setAt: number
+}
+
+/**
  * Self-addressed journal entry recording an outbound direct message sent by this account to a
  * peer, so every device of the account (and any seed restore) reconstructs sent messages from its
  * own encrypted inbox without relying on a relay-indexed cleartext-sender outbox table.
@@ -859,6 +875,7 @@ export type MessageItem =
   | SwapRecordItem
   | ReceivedCoinItem
   | ConversationStateItem
+  | ContactStateItem
   | OutboxMessageItem
   | MessageTombstoneItem
   | JournalCheckpointItem

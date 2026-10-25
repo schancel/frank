@@ -37,6 +37,29 @@ jest.mock('@frank/wallet/evm-identity', () => {
   }
 })
 
+// The page saves the edit to the store and hands publishing to the account's one profile rule
+// (`own-profile.ts`, tested on its own). Here that rule publishes what the page saved.
+jest.mock('src/utils/own-profile', () => {
+  const actual = jest.requireActual('src/utils/own-profile')
+  return {
+    ...actual,
+    syncOwnProfileWithRelay: jest.fn(
+      async (options: {
+        relayBaseUrl: string
+        identity: unknown
+        network?: string
+      }) => {
+        const saved = mockSetRelayData.mock.calls.at(-1)?.[0]
+        const { registerMonadIdentityCbor: publish } = jest.requireMock(
+          '@frank/wallet/evm-identity',
+        )
+        await publish({ ...options, profile: saved?.profile })
+        return 'published'
+      },
+    ),
+  }
+})
+
 jest.mock('@frank/cashweb/relay/username-client', () => ({
   ...jest.requireActual('@frank/cashweb/relay/username-client'),
   claimUsername: jest.fn(),
@@ -143,9 +166,10 @@ describe('Profile.vue', () => {
     expect(wrapper.find('[data-test="profile-back"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="profile-menu"]').exists()).toBe(true)
     const source = readFileSync(join(__dirname, 'Profile.vue'), 'utf8')
-    // Must NOT use legacy protobuf registerMonadIdentity, must use registerMonadIdentityCbor
+    // Never the legacy protobuf registerMonadIdentity: publishing goes through the account's
+    // profile rule, which signs CBOR.
     expect(source).not.toMatch(/registerMonadIdentity\(/)
-    expect(source).toMatch(/registerMonadIdentityCbor/)
+    expect(source).toMatch(/syncOwnProfileWithRelay/)
   })
 
   it('saves updated profile locally and publishes CBOR identity when wallet active', async () => {
@@ -867,6 +891,36 @@ describe('Profile.vue', () => {
         }),
       }),
     )
+  })
+
+  it('an open form shows a newer profile another device published, keeping what the user is typing', async () => {
+    const { reactive } = await import('vue')
+    const store = reactive({
+      owner: '0x1234567890123456789012345678901234567890',
+      profile: { name: 'Alice', location: 'Paris', bio: 'old bio' },
+      inbox: { acceptancePrice: 100 },
+      setRelayData: mockSetRelayData,
+    })
+    jest.mocked(useProfileStore).mockReturnValue(store as never)
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    const vm = wrapper.vm as unknown as Record<string, unknown>
+    // The user is editing the bio when this device adopts the profile another device published.
+    vm.bio = 'typing a new bio'
+    store.profile = { name: 'Alice', location: 'Lisbon', bio: 'their bio' }
+    await wrapper.vm.$nextTick()
+    expect(vm.location).toBe('Lisbon')
+    expect(vm.bio).toBe('typing a new bio')
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })
 

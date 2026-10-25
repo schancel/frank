@@ -34,6 +34,10 @@ import { markRaw, toRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
 import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
 import { requestRelayNotificationPolicySync } from '../utils/webpush-sync'
+import { messagingWallet } from '../utils/identity-session'
+import { uuidv5Bytes } from '@frank/cashweb/relay/conversation-id'
+import type { ContactStateItem } from '@frank/cashweb/types/messages'
+import type { WalletHandle } from '@frank/wallet/chain'
 import {
   CONTACT_KEY_ROTATION_DOMAIN,
   createContactKeyRotationStatement,
@@ -209,6 +213,17 @@ export type ContactState = {
   unverifiedHandleResolution?: UnverifiedHandleResolution | null
 }
 
+/**
+ * The user's last decision about one contact (added or removed, and when), the fact the account's
+ * other devices are told of in a `contact-state` note. `toNote`: this device made the decision
+ * and the account's mailbox does not say it yet.
+ */
+export interface ContactDecision {
+  present: boolean
+  setAt: number
+  toNote?: boolean
+}
+
 export interface CuratedDefaultProvenance {
   address: string
   name: string
@@ -222,6 +237,10 @@ export interface State {
   /** Canonical addresses of contacts the user deleted: curated defaults are not re-added for
    * them on later launches. */
   dismissedDefaults: string[]
+  /** The user's last decision about each contact, by canonical address: what every device of the
+   * account agrees on. Contacts added by the app itself (curated defaults) have none until the
+   * user acts on them. */
+  contactDecisions: Record<string, ContactDecision>
   /** Relay curated defaults for this session only. Not persisted: a profile refresh cannot
    * recreate it, and a failed fetch leaves it empty (#425). */
   curatedDefaults: CuratedDefaultProvenance[]
@@ -241,6 +260,7 @@ function freshContactsState(): State {
     peerProfiles: {},
     updateInterval: defaultUpdateInterval,
     dismissedDefaults: [],
+    contactDecisions: {},
     curatedDefaults: [],
   }
 }
@@ -294,6 +314,7 @@ export type RestorableState = {
   contacts: Record<string, RestorableContactState>
   updateInterval: number
   dismissedDefaults?: string[]
+  contactDecisions?: Record<string, ContactDecision>
 }
 
 export async function rehydrateContacts(
@@ -341,6 +362,7 @@ export async function rehydrateContacts(
     ...contactState,
     contacts: contacts,
     dismissedDefaults: contactState.dismissedDefaults ?? [],
+    contactDecisions: { ...(contactState.contactDecisions ?? {}) },
     // Never trust a saved blob for this. Only a completed fetch in this session sets it.
     curatedDefaults: [],
     peerProfiles: {},
@@ -360,6 +382,35 @@ const peerRefreshQueues = new WeakMap<
   }
 >()
 const inFlightRefreshAll = new WeakMap<object, Promise<void>>()
+
+/** Set while the app itself adds a contact (a curated default, or one a note from another device
+ * names): such an add is not a decision of this device's user and is not noted. */
+let addingWithoutDecision = false
+
+/** Whether `next` replaces `current` as the user's decision about a contact: the later one, and
+ * at the same time a removal. Every device applies the same rule, so all end with the same. */
+function decisionReplaces(
+  current: ContactDecision | undefined,
+  next: { present: boolean; setAt: number },
+): boolean {
+  if (!current) return true
+  if (next.setAt !== current.setAt) return next.setAt > current.setAt
+  return current.present && !next.present
+}
+
+/** The ID of the note stating exactly this decision: the same on every device. */
+function contactNoteId(note: ContactStateItem): Uint8Array {
+  return uuidv5Bytes(
+    new Uint8Array(16),
+    `frank-contact-state:${note.address.toLowerCase()}:${note.present}:${
+      note.setAt
+    }`,
+  )
+}
+
+/** One pass of `noteContactStates` at a time; a decision made during it starts another. */
+let notingContacts: Promise<void> | undefined
+let noteContactsAgain = false
 
 export const useContactStore = defineStore('contacts', {
   state: (): State => freshContactsState(),
@@ -597,7 +648,141 @@ export const useContactStore = defineStore('contacts', {
       }
 
       this.contacts[apiAddress] = fixedContact
+      // A contact the user adds is the account's: its other devices are told (`noteContactStates`).
+      if (!existing && !addingWithoutDecision) {
+        this.contactDecisions[apiAddress] = {
+          present: true,
+          setAt: Math.max(
+            Date.now(),
+            (this.contactDecisions[apiAddress]?.setAt ?? 0) + 1,
+          ),
+          toNote: true,
+        }
+        void this.noteContactStates()
+      }
       void requestRelayNotificationPolicySync()
+    },
+    /**
+     * Applies what a note this account wrote to itself says about one contact: the user added or
+     * removed it on another device. The later decision wins, and at the same time a removal, so
+     * a note may be applied twice and notes in any order. A contact added this way is looked up
+     * in the directory like any other; one removed is removed here too, without its
+     * conversations (their deletion is noted on its own).
+     */
+    async applyContactState(
+      note: ContactStateItem,
+      ownAddress: string | null,
+    ): Promise<void> {
+      let apiAddress: string
+      try {
+        apiAddress = toChainDisplayAddress(note.address)
+      } catch {
+        console.warn('contact note: not an address; ignored', note.address)
+        return
+      }
+      if (ownAddress && sameCanonicalAddress(apiAddress, ownAddress)) return
+      const current = this.contactDecisions[apiAddress]
+      if (!decisionReplaces(current, note)) {
+        // The mailbox now says what this device decided: nothing is left to note.
+        if (
+          current &&
+          current.toNote &&
+          current.setAt === note.setAt &&
+          current.present === note.present
+        )
+          current.toNote = undefined
+        return
+      }
+      this.contactDecisions[apiAddress] = {
+        present: note.present,
+        setAt: note.setAt,
+      }
+      if (note.present) {
+        this.dismissedDefaults = this.dismissedDefaults.filter(
+          address => address !== apiAddress,
+        )
+        if (!this.isContact(apiAddress)) {
+          addingWithoutDecision = true
+          try {
+            this.addContact({
+              address: apiAddress,
+              contact: {
+                ...pendingRelayData,
+                profile: { ...pendingRelayData.profile, pubKey: null },
+              },
+            })
+          } finally {
+            addingWithoutDecision = false
+          }
+          void this.refresh(apiAddress)
+        }
+        return
+      }
+      if (apiAddress in this.contacts) {
+        delete this.contacts[apiAddress]
+        pendingOutboundWakeupTokens.delete(apiAddress)
+        void requestRelayNotificationPolicySync()
+      }
+      if (!this.dismissedDefaults.includes(apiAddress))
+        this.dismissedDefaults.push(apiAddress)
+    },
+    /**
+     * Notes to the account's own mailbox each contact decision of this device's user the mailbox
+     * does not say yet: a free message to self per decision, read by the account's other devices
+     * and by one restored later from the seed. A note that could not be sent is sent by a later
+     * pass (the mailbox poll starts one every time the relay answers).
+     */
+    noteContactStates(
+      wallet: WalletHandle | undefined = messagingWallet(),
+    ): Promise<void> {
+      if (!wallet) return Promise.resolve()
+      if (notingContacts) {
+        noteContactsAgain = true
+        return notingContacts
+      }
+      const decisions = this.contactDecisions
+      const pass = async (): Promise<void> => {
+        const failed = new Set<string>()
+        do {
+          noteContactsAgain = false
+          for (const [address, decision] of Object.entries(decisions)) {
+            if (!decision?.toNote || failed.has(address)) continue
+            const note: ContactStateItem = {
+              type: 'contact-state',
+              address: address.toLowerCase(),
+              present: decision.present,
+              setAt: decision.setAt,
+            }
+            try {
+              await activeChain.directMessages.send({
+                wallet,
+                recipient: wallet.identity.address,
+                items: [note],
+                stampValue: 0n,
+                messageId: contactNoteId(note),
+              })
+            } catch (error) {
+              failed.add(address)
+              console.warn(
+                `contact note for ${address} not sent; will retry:`,
+                error,
+              )
+              continue
+            }
+            const current = decisions[address]
+            if (
+              current &&
+              current.setAt === note.setAt &&
+              current.present === note.present
+            )
+              current.toNote = undefined
+          }
+        } while (noteContactsAgain)
+      }
+      notingContacts = pass().finally(() => {
+        notingContacts = undefined
+      })
+      return notingContacts
     },
     /**
      * Adds a contact resolved by username/handle and pins it to `address` (and optionally
@@ -1066,6 +1251,18 @@ export const useContactStore = defineStore('contacts', {
       if (apiAddress && !this.dismissedDefaults.includes(apiAddress)) {
         this.dismissedDefaults.push(apiAddress)
       }
+      // The account's other devices remove it too (`noteContactStates`).
+      if (apiAddress) {
+        this.contactDecisions[apiAddress] = {
+          present: false,
+          setAt: Math.max(
+            Date.now(),
+            (this.contactDecisions[apiAddress]?.setAt ?? 0) + 1,
+          ),
+          toNote: true,
+        }
+        void this.noteContactStates()
+      }
       // Deleting a contact immediately revokes its wakeup capability token hash on the relay.
       void requestRelayNotificationPolicySync()
     },
@@ -1167,7 +1364,12 @@ export const useContactStore = defineStore('contacts', {
           botRole: inferred.botRole,
         },
       }
-      this.addContact({ address: apiAddress, contact })
+      addingWithoutDecision = true
+      try {
+        this.addContact({ address: apiAddress, contact })
+      } finally {
+        addingWithoutDecision = false
+      }
     },
     /** Replaces session provenance with one completed relay response. Invalid addresses are
      * dropped. Does not persist. */
@@ -1353,6 +1555,9 @@ export const useContactStore = defineStore('contacts', {
       if (!isChainAddress(address)) {
         return
       }
+      // Looking someone up never makes them a contact: only the user does that. A peer who is
+      // not one is shown from the peer-profile cache.
+      if (!this.isContact(address)) return this.refreshPeerProfiles([address])
       const canonical = safeToChainDisplayAddress(address) ?? address
       const state = toRaw(this.$state)
       let inFlight = inFlightRefreshes.get(state)

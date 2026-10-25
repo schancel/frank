@@ -36,7 +36,7 @@ jest.mock('../utils/contact-username', () => ({
   relayHandleOf: (...args: unknown[]) => mockRelayHandleOf(...args),
 }))
 
-import { useChatStore } from './chats'
+import { setConversationIdSalt, useChatStore } from './chats'
 import {
   createContactKeyRotationStatement,
   deriveAddressFromPublicKeyHex,
@@ -482,7 +482,7 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(contacts.getContactProfile(ADDRESS).name).toBe('Alice')
     })
 
-    it('creates contact entry with (Unregistered) fallback if contact was not yet in store', async () => {
+    it('never makes someone a contact: looking up a peer who is not one leaves them out', async () => {
       const contacts = useContactStore()
       contacts.setUpdateInterval(0)
       jest
@@ -491,9 +491,7 @@ describe('stores/contacts.ts (ticket #42)', () => {
 
       await contacts.refresh(ADDRESS)
 
-      expect(contacts.getContactProfile(ADDRESS).name).toBe(
-        '0x3e3e\u20263E3e (Unregistered)',
-      )
+      expect(contacts.isContact(ADDRESS)).toBe(false)
     })
 
     it('replaces (Unregistered) label with short address once registered without display name', async () => {
@@ -1142,6 +1140,8 @@ describe('stores/contacts.ts (ticket #42)', () => {
       const chats = useChatStore()
       await addAll(contacts)
       jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
+      // A chat is opened only once the account is active, its conversation-ID salt installed.
+      setConversationIdSalt(new Uint8Array(16).fill(0x11))
       const selected = chats.createConversation({
         address: DEFAULTS[1].address,
         participants: [DEFAULTS[1].address],
@@ -1154,6 +1154,7 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(chats.activeChatAddr).toBe(DEFAULTS[1].address)
       expect(chats.activeConversationId).toBe(selected.id)
       expect(Object.keys(contacts.getContacts)).toHaveLength(5)
+      setConversationIdSalt(null)
     })
 
     it('does not bring back a default the user deleted, across a save/restore', async () => {

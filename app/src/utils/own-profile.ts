@@ -20,8 +20,11 @@
  *   being retried, and the profile form does not save (an edit made over an unknown profile
  *   would replace the published one).
  *
- * Two devices that edit at the same time: the relay keeps the later publish, and the other
- * device adopts it on its next mailbox poll.
+ * Two devices that edit: the newer edit wins, by the time each was made (the relay's copy is
+ * timed by the signature it was published with). An edit older than what the relay holds is
+ * dropped for the relay's; a newer one is published, but only the fields its user changed, over
+ * whatever the relay holds now, so it never undoes another device's later change to another
+ * field. The other device adopts the result on its next mailbox poll.
  */
 import { reactive } from 'vue'
 import type { ProfileInfo } from '@frank/wallet/chain'
@@ -85,6 +88,53 @@ function hasContent(profile: StoredProfile): boolean {
   )
 }
 
+const PROFILE_FIELDS = [
+  'name',
+  'username',
+  'bio',
+  'location',
+  'avatar',
+  'links',
+  'accountType',
+  'botRole',
+] as const
+
+function sameField(
+  field: (typeof PROFILE_FIELDS)[number],
+  a: StoredProfile,
+  b: StoredProfile,
+): boolean {
+  switch (field) {
+    case 'links':
+      return JSON.stringify(a.links ?? []) === JSON.stringify(b.links ?? [])
+    case 'accountType':
+      return (a.accountType ?? 0) === (b.accountType ?? 0)
+    case 'botRole':
+      return a.botRole === b.botRole
+    default:
+      return (a[field] ?? '') === (b[field] ?? '')
+  }
+}
+
+/** `edited` made over `base`, carried onto `latest`: the fields the user changed, and the rest
+ * as `latest` has them. */
+export function rebaseProfileEdit(
+  base: StoredProfile,
+  edited: StoredProfile,
+  latest: StoredProfile,
+): StoredProfile {
+  const result: StoredProfile = {}
+  for (const field of PROFILE_FIELDS) {
+    const from = sameField(field, base, edited) ? latest : edited
+    const value = from[field]
+    if (value !== undefined)
+      (result as Record<string, unknown>)[field] = Array.isArray(value)
+        ? value.map(link => ({ ...link }))
+        : value
+  }
+  return result
+}
+
 function sameProfile(a: StoredProfile, b: StoredProfile): boolean {
   return (
     (a.name ?? '') === (b.name ?? '') &&
@@ -112,6 +162,8 @@ export function claimProfileStore(
   store.inbox = {}
   store.emailBridgeGatewayAddress = undefined
   store.unpublished = false
+  store.editedAt = undefined
+  store.base = undefined
   store.restoredAccountId = undefined
   store.owner = address.toLowerCase()
 }
@@ -146,16 +198,42 @@ export async function syncOwnProfile(options: {
 
   if (!relayHasProfile && !hasContent(store.profile)) return 'missing'
 
-  if (relayHasProfile && !store.unpublished) {
+  const publishedAt = published?.publishedAtMs
+  const adopt = (): OwnProfileOutcome => {
+    store.base = { ...relayProfile }
     if (sameProfile(store.profile, relayProfile)) return 'unchanged'
     store.profile = relayProfile
     return 'adopted'
   }
 
+  if (relayHasProfile && !store.unpublished) return adopt()
+
+  // An edit made here before the profile the relay holds was published (on another device) is
+  // the older one: the relay's replaces it.
+  if (
+    relayHasProfile &&
+    publishedAt !== undefined &&
+    store.editedAt !== undefined &&
+    publishedAt > store.editedAt
+  ) {
+    store.unpublished = false
+    store.editedAt = undefined
+    return adopt()
+  }
+
   // From here this device publishes: its user's edit, or the first profile the relay is given
-  // for this account.
+  // for this account. Only what the user changed is theirs to publish; the other fields are
+  // what the relay holds now.
+  // (The relay holding something other than what the edit was made over means another device
+  // published since.)
+  if (relayHasProfile && store.base && !sameProfile(store.base, relayProfile)) {
+    store.profile = rebaseProfileEdit(store.base, store.profile, relayProfile)
+    store.base = { ...relayProfile }
+  }
   if (published && sameProfile(store.profile, relayProfile)) {
     store.unpublished = false
+    store.editedAt = undefined
+    store.base = { ...relayProfile }
     return 'unchanged'
   }
   const sent = { ...store.profile }
@@ -163,7 +241,11 @@ export async function syncOwnProfile(options: {
   if (options.isCancelled?.() || !sameAddress(store.owner, address))
     return 'unreachable'
   // An edit made while this one was on its way is still unpublished.
-  if (sameProfile(store.profile, sent)) store.unpublished = false
+  if (sameProfile(store.profile, sent)) {
+    store.unpublished = false
+    store.editedAt = undefined
+    store.base = { ...sent }
+  }
   return 'published'
 }
 
@@ -207,10 +289,13 @@ export async function restoreOwnProfileWithRelay(options: {
   if (!published) {
     store.profile = {}
     store.unpublished = false
+    store.base = undefined
     return 'missing'
   }
   store.profile = storedProfileOf(published)
   store.unpublished = false
+  store.editedAt = undefined
+  store.base = { ...store.profile }
   return hasContent(store.profile) ? 'adopted' : 'missing'
 }
 

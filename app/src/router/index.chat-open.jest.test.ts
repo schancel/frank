@@ -39,7 +39,10 @@ jest.mock('src/stores/chats', () => ({
   }),
 }))
 jest.mock('src/stores/contacts', () => ({
-  useContactStore: () => ({ fetchAndAddContact: jest.fn() }),
+  useContactStore: () => ({
+    fetchAndAddContact: jest.fn(),
+    refreshPeerProfiles: jest.fn(async () => undefined),
+  }),
 }))
 
 const page = (name: string) =>

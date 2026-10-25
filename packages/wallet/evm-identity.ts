@@ -1302,6 +1302,8 @@ export async function fetchMonadProfile(params: {
       address: params.address,
       pubKey: decoded.pubKey,
     }
+    if (Number.isFinite(decoded.timestampMs) && decoded.timestampMs > 0)
+      result.publishedAtMs = decoded.timestampMs
     if (decoded.name !== undefined) result.name = decoded.name
     if (decoded.username !== undefined) result.username = decoded.username
     if (decoded.bio !== undefined) result.bio = decoded.bio

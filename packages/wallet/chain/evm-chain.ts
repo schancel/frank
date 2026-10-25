@@ -2458,6 +2458,43 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             checkMessagePayment: coinAndContactManager.checkMessagePayment,
             sweepReceivedCoins: coinAndContactManager.sweepReceivedCoins,
             recordReceivedCoin: coinAndContactManager.recordReceivedCoin,
+            // A spend another device of this account reported in a note to self. The coin list
+            // learns it the way it learns any spend from outside the list: the account is
+            // marked dirty, so it is not selected until the chain is read again (and a read
+            // that finds the transaction still in the mempool keeps it so). That read lists
+            // the account's successor coin. Nothing is signed or broadcast here.
+            async recordSyncedSpend(item) {
+              requireOpenWallet(wallet);
+              if (item.direction !== "out" || typeof item.rawTx !== "string")
+                return false;
+              let spend: Transaction;
+              try {
+                spend = Transaction.from(item.rawTx);
+              } catch {
+                return false;
+              }
+              if (
+                spend.from === null ||
+                spend.hash === null ||
+                spend.hash.toLowerCase() !== item.txHash.toLowerCase() ||
+                spend.chainId !== BigInt(config.chainId)
+              )
+                return false;
+              const account = spend.from.toLowerCase();
+              const sync = transactionSetRuntime.coinListSync;
+              if (sync.keyOf(account) === undefined) return false;
+              const coin = coinList.get(account, spend.nonce);
+              // This device's own spend: its coin already carries the transaction, or the
+              // chain has settled it.
+              if (
+                coin !== undefined &&
+                (coin.state === "spent" || coin.spendingTx === item.rawTx)
+              )
+                return true;
+              sync.markDirty(account);
+              void sync.refreshAccounts([account]).catch(() => undefined);
+              return true;
+            },
             noteReceivedCoins: coinAndContactManager.noteCoins,
             getContactPayments: coinAndContactManager.getContactPayments,
             sendToContact: coinAndContactManager.sendToContact,

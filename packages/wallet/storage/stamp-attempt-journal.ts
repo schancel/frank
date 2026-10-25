@@ -780,6 +780,9 @@ function assertPrepared(
   boundedBytes(prepared.economicBinding, 16384)
   inspectCanonicalPreparedEnvelope(prepared.payload, prepared.context)
   const parsed = parseFrame(prepared.payload)
+  // This journal cannot hold a sealed-sender attempt: it is keyed by the sender subject and
+  // sender T1 that only an unsealed type 11 payload and context carry in the clear. Sealed paid
+  // messages are journaled by the shared transaction-set construction instead.
   if (
     parsed.kind !== 'parsed' ||
     parsed.schemaVersion !== 2 ||

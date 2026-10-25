@@ -66,6 +66,7 @@ import {
   openOwnDirectMessage,
   peekSealedDirectMessageSender,
   prepareDirectMessage,
+  type OpenedDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
   canonicalNetworkDescriptor,
@@ -90,6 +91,7 @@ import {
 import type {
   MessageItem,
   OutboxMessageItem,
+  WalletSyncItem,
 } from '@frank/cashweb/types/messages'
 import type { MessageItemRegistry } from '@frank/cashweb/message-items/registry'
 import {
@@ -359,6 +361,8 @@ const isPending = (payment: StoredPayment) => payment.state === 'pending'
 /** Delivery or payment is not known to be finished: the resend pass still has work on it. */
 const isUnresolved = (row: StoredMessage) =>
   row.outcome === undefined ||
+  // Delivered sealed: the note to self that stands in for the relay's outbox row is still owed.
+  (row.outcome === 'delivered' && row.selfCopyOwed === true) ||
   row.payments.some(isPending) ||
   row.otherTransactions.some(isPending) ||
   sharedConstructionPending(row) ||
@@ -510,6 +514,29 @@ export class UnpaidDirectMessageNotDeliveredError extends Error {
     super(`The relay did not deliver this unpaid message (${answer}).`)
     this.name = 'UnpaidDirectMessageNotDeliveredError'
   }
+}
+
+/** A free sealed message reached the relay, but the note to self that tells the account's other
+ * devices of it did not. Nothing was paid. A named message sent again submits the same bytes. */
+export class SealedSelfCopyNotDeliveredError extends UnpaidDirectMessageNotDeliveredError {
+  constructor(
+    readonly payloadDigest: string,
+    readonly cause?: unknown,
+  ) {
+    super('self-copy-pending')
+    this.name = 'SealedSelfCopyNotDeliveredError'
+  }
+}
+
+/** The type 11 payload of a delivery frame when it is sealed-sender (names no sender). */
+function sealedOriginalPayload(delivery: Uint8Array): Uint8Array | undefined {
+  const parsed = parseFrame(delivery)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
+    return undefined
+  const payload = parsed.typed.payloadFrame.typed
+  return payload?.type === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD && payload.sender === undefined
+    ? parsed.typed.payloadFrame.frame
+    : undefined
 }
 
 /** Seals one message and frames it as an unpaid delivery: type 10 at schema 2 with an empty
@@ -1000,6 +1027,30 @@ async function finishSharedConstruction(
       toHex(inspected.payload.recipient.keyBytes) !== row.recipientSubject ||
       toHex(recipientPayloadDigest(intent.network, sealed.payload)) !== row.digest)
     throw new Error('Stored stamp construction identity mismatch')
+  // A sealed payload names its sender only inside the ciphertext. Before anything is signed for
+  // it, the original must self-open with this wallet's own key and name this wallet as its
+  // sender, as `validateOriginalEnvelope` requires of a free original. A restore at open only
+  // rebuilds a stage that this check already passed when it was signed (and has no directory yet).
+  if (inspected.payload.sender === undefined && mode === 'construct') {
+    const directory = requireDirectory(owner)
+    const roles = owner.roles.create(directory.network, await directory.selfCurrent())
+    let sealedSender: Uint8Array
+    try {
+      sealedSender = peekSealedDirectMessageSender({
+        mode: 'sender',
+        network: directory.network,
+        payload: sealed.payload,
+        context: sealed.context,
+        roles,
+      }).sender.keyBytes
+    } catch {
+      throw new Error('Stored stamp construction identity mismatch')
+    } finally {
+      roles.dispose()
+    }
+    if (toHex(sealedSender) !== owner.subject)
+      throw new Error('Stored stamp construction identity mismatch')
+  }
   if (mode === 'restore') {
     // Opening validates the intent, but must not make its funding availability a condition
     // of opening the wallet. Only finish the envelope when this exact signed stage exists.
@@ -1299,39 +1350,65 @@ async function validateOriginalEnvelope(
   const delivery = parseFrame(fromHex(envelope.delivery))
   if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
     throw new Error('Invalid original delivery')
-  const payload = delivery.typed.payloadFrame.typed
+  if (toHex(delivery.typed.payloadDigest) !== envelope.digest)
+    throw new Error('Original envelope affinity mismatch')
+  await openOwnOriginal(owner, directory, {
+    payload: delivery.typed.payloadFrame.frame,
+    context: fromHex(envelope.context),
+    digest: envelope.digest,
+    recipientSubject: envelope.recipientSubject,
+    messageId: envelope.messageId,
+  })
+}
+
+/**
+ * Opens this wallet's own original message (sealed or not) with its own keys, after checking it
+ * is addressed as stored: its network, recipient, digest and, for a sealed one, the sender inside
+ * its ciphertext. Returns what it carries. Nothing is stored or sent.
+ */
+async function openOwnOriginal(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  original: {
+    payload: Uint8Array
+    context: Uint8Array
+    digest: string
+    recipientSubject: string
+    messageId: string
+  },
+): Promise<OpenedDirectMessage> {
+  const parsed = parseFrame(original.payload)
+  const payload = parsed.kind === 'parsed' ? parsed.typed : undefined
   if (
     payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     payload.network !== directory.network ||
     (payload.sender !== undefined &&
       toHex(payload.sender.keyBytes) !== owner.subject) ||
-    toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
-    toHex(delivery.typed.payloadDigest) !== envelope.digest ||
-    toHex(
-      recipientPayloadDigest(
-        directory.network,
-        delivery.typed.payloadFrame.frame,
-      ),
-    ) !== envelope.digest
+    toHex(payload.recipient.keyBytes) !== original.recipientSubject ||
+    toHex(recipientPayloadDigest(directory.network, original.payload)) !==
+      original.digest
   )
     throw new Error('Original envelope affinity mismatch')
   const self = await directory.selfCurrent()
   const peer = await directory.peerCurrent({
-    subject: envelope.recipientSubject,
+    subject: original.recipientSubject,
   })
   if (!peer) throw new Error('Original recipient unavailable')
-  const context = fromHex(envelope.context)
+  const context = original.context
   let sealedSenderT1: Uint8Array | undefined
   if (payload.sender === undefined) {
     const roles = owner.roles.create(directory.network, self)
     try {
-      sealedSenderT1 = peekSealedDirectMessageSender({
+      const peeked = peekSealedDirectMessageSender({
         mode: 'sender',
         network: directory.network,
-        payload: delivery.typed.payloadFrame.frame,
+        payload: original.payload,
         context,
         roles,
-      }).senderT1
+      })
+      if (toHex(peeked.sender.keyBytes) !== owner.subject)
+        throw new Error('Original envelope affinity mismatch')
+      sealedSenderT1 = peeked.senderT1
     } finally {
       roles.dispose()
     }
@@ -1345,18 +1422,127 @@ async function validateOriginalEnvelope(
     peer,
     sealedSenderT1,
   )
-  const opened = openOwnDirectMessage({
-    mode: 'send',
-    network: directory.network,
-    payload: delivery.typed.payloadFrame.frame,
-    context,
-    roles: owner.roles.create(directory.network, self),
-    senderCurrent: self,
-    recipientCurrent: peer.current,
-    ...evidence,
-  })
-  if (toHex(opened.messageId) !== envelope.messageId)
+  const roles = owner.roles.create(directory.network, self)
+  let opened: OpenedDirectMessage
+  try {
+    opened = openOwnDirectMessage({
+      mode: 'send',
+      network: directory.network,
+      payload: original.payload,
+      context,
+      roles,
+      senderCurrent: self,
+      recipientCurrent: peer.current,
+      ...evidence,
+    })
+  } finally {
+    roles.dispose()
+  }
+  if (toHex(opened.messageId) !== original.messageId)
     throw new Error('Original stable identity mismatch')
+  return opened
+}
+
+/**
+ * A sealed message leaves no outbox row at the relay (the relay is not told who sent it), so
+ * the account's other devices, and a restore that reads the mailbox, would never see it or the
+ * coins its payment spent. Every sealed send therefore also writes this note to self, free like
+ * every note to self: the sent message (`outbox-message`) and one `wallet-sync` item per signed
+ * transaction of its bundle (the stamp payments and the wallet's own change/self-sends). The
+ * other devices apply the spends through `applyWalletSyncItem` and show the message as sent.
+ *
+ * Its message ID is derived from the original's payload digest, so a repeat is the same note:
+ * named free sends keep their sealed envelope until delivered, and applying a note twice changes
+ * nothing. The original is opened again with this wallet's keys to recover what it carries, so a
+ * resend after a restart builds exactly the same items without the plaintext ever being stored.
+ */
+async function deliverSealedSelfCopy(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  original: {
+    payload: Uint8Array
+    context: Uint8Array
+    digest: string
+    recipientSubject: string
+    messageId: string
+    sentAt: number
+    stampValueWei?: bigint
+    transactions: readonly string[]
+  },
+): Promise<void> {
+  const opened = await openOwnOriginal(owner, directory, original)
+  const items: MessageItem[] = [
+    buildOutboxMessageItem({
+      payloadDigest: original.digest,
+      recipientAddress: computeAddress('0x' + original.recipientSubject),
+      recipientPublicKey: original.recipientSubject,
+      sentAt: original.sentAt,
+      ...(opened.conversationId === undefined
+        ? {}
+        : { conversationId: opened.conversationId }),
+      ...(opened.conversationName === undefined
+        ? {}
+        : { conversationName: opened.conversationName }),
+      messageId: opened.messageId,
+      ...(original.stampValueWei === undefined
+        ? {}
+        : { stampValueWei: original.stampValueWei }),
+      itemFrames: opened.items.map(item => item.frame),
+    }),
+    ...original.transactions.map(rawTx => spentBySelfCopy(directory.network, rawTx)),
+  ]
+  await send(
+    owner,
+    {
+      recipient: { raw: owner.identityAddress },
+      items,
+      stampValue: 0n,
+      messageId: formatUuid(outboxNoteMessageId(original.digest)),
+    },
+    async () => {
+      throw new Error('A note to self carries no stamp')
+    },
+  )
+}
+
+/** The spend fact one signed transaction of a sealed send carries to the account's other devices. */
+function spentBySelfCopy(network: string, rawTx: string): WalletSyncItem {
+  const tx = Transaction.from(rawTx)
+  if (tx.from === null || tx.hash === null)
+    throw new Error('A self copy names only signed transactions')
+  return {
+    type: 'wallet-sync',
+    direction: 'out',
+    chainIdentifier: network,
+    txHash: tx.hash,
+    rawTx: tx.serialized,
+    spentInputs: [{ address: tx.from.toLowerCase(), nonce: tx.nonce }],
+  }
+}
+
+/** A delivered sealed paid message whose self copy is owed: sends it, then records it as sent. */
+async function deliverOwedSelfCopy(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  if (!row.selfCopyOwed || row.outcome !== 'delivered' || !row.construction)
+    return row
+  await deliverSealedSelfCopy(owner, directory, {
+    payload: fromHex(row.construction.payload),
+    context: fromHex(row.construction.context),
+    digest: row.digest,
+    recipientSubject: row.recipientSubject,
+    messageId: row.consumerId.slice('frank-dm:'.length),
+    sentAt: row.createdAt,
+    stampValueWei: BigInt(row.construction.amountWei),
+    transactions: [...row.payments, ...row.otherTransactions]
+      .map(payment => payment.rawTx)
+      .filter(rawTx => rawTx !== ''),
+  })
+  const { selfCopyOwed: _owed, ...copied } = owner.messages.get(row.consumerId)!
+  await owner.lifetime(() => owner.messages.put(copied))
+  return copied
 }
 
 /**
@@ -1427,6 +1613,21 @@ async function resend(
           ),
           fetch: directory.fetch,
         })
+        // A delivered sealed original is finished only once its note to self is delivered too;
+        // until then it stays live, and the next reconcile submits both again.
+        if (accepted.phase === 'delivered') {
+          const sealedOriginal = sealedOriginalPayload(fromHex(envelope.delivery))
+          if (sealedOriginal)
+            await deliverSealedSelfCopy(owner, directory, {
+              payload: sealedOriginal,
+              context: fromHex(envelope.context),
+              digest,
+              recipientSubject: envelope.recipientSubject,
+              messageId: found.messageId,
+              sentAt: accepted.mailbox_committed_at_ms,
+              transactions: [],
+            })
+        }
         if (accepted.phase === 'delivered' || accepted.phase === 'dead')
           await owner.lifetime(() =>
             owner.messages.setUnpaid(found.messageId, {
@@ -1502,6 +1703,22 @@ async function resend(
               row.outcome === 'delivered',
             )
             if (settled !== row) work.chain = { passes: 0, next: 1, gap: 0 }
+          }
+          // A delivered sealed message whose note to self is still owed: sent now, paced like a
+          // submission. Its failure leaves it owed for a later pass.
+          {
+            const current = owner.messages.get(stored.consumerId)!
+            if (
+              current.outcome === 'delivered' &&
+              current.selfCopyOwed &&
+              due(work.submit, SUBMIT_EVERY, now)
+            )
+              await deliverOwedSelfCopy(owner, directory, current).catch(error =>
+                console.warn(
+                  '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+                  error,
+                ),
+              )
           }
           // A delivered message whose payment the chain reverted is still owed that payment.
           // (Once nothing of it is pending: its claims are then all settled.)
@@ -1600,7 +1817,8 @@ function throwUnpaidTerminal(reason?: string): never {
 
 async function send(
   owner: CanonicalMessagingOwner,
-  params: Parameters<DirectMessageClient['send']>[0],
+  // The wallet handle is the client's routing concern; the owner is this wallet.
+  params: Omit<Parameters<DirectMessageClient['send']>[0], 'wallet'>,
   resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ): Promise<DirectMessageSendResult> {
   if (params.onEnvelopeDurable && params.messageId === undefined)
@@ -1772,8 +1990,13 @@ async function send(
         throw new DirectMessageArgumentError('messageId')
       let request: ReturnType<typeof freezeCanonicalRequest>
       let digest: string
+      /** The original's delivery and context bytes, to reopen it for a sealed self copy. */
+      let originalDelivery: Uint8Array
+      let originalContext: Uint8Array
       if (kept) {
         digest = kept.digest
+        originalDelivery = fromHex(kept.delivery)
+        originalContext = fromHex(kept.context)
         request = freezeCanonicalRequest(
           {
             delivery: fromHex(kept.delivery),
@@ -1798,6 +2021,8 @@ async function send(
         })
         digest = unpaid.digest
         request = unpaid.request
+        originalDelivery = unpaid.delivery
+        originalContext = unpaid.context
         if (name)
           await owner.messages.setUnpaid(name, {
             digest,
@@ -1848,6 +2073,27 @@ async function send(
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
+      // A sealed message is not finished until the account's other devices are told of it. If
+      // that note does not get through, the send reports so and a named envelope is kept, so a
+      // repeat submits the same original (which the relay answers as delivered) and the same note.
+      if (!selfAddressed) {
+        const sealedOriginal = sealedOriginalPayload(originalDelivery)
+        if (sealedOriginal) {
+          try {
+            await deliverSealedSelfCopy(owner, directory, {
+              payload: sealedOriginal,
+              context: originalContext,
+              digest,
+              recipientSubject: peer.subject,
+              messageId: toHex(messageId),
+              sentAt: accepted.mailbox_committed_at_ms ?? Date.now(),
+              transactions: [],
+            })
+          } catch (error) {
+            throw new SealedSelfCopyNotDeliveredError(digest, error)
+          }
+        }
+      }
       if (name) {
         const envelope = owner.messages.unpaid(name)!
         await owner.messages.setUnpaid(name, envelope.hostBound
@@ -1942,6 +2188,7 @@ async function send(
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
       ...(elsewhere ? {} : { unexposed: true as const }),
+      ...(sealedSender && !selfAddressed ? { selfCopyOwed: true as const } : {}),
     }
     try {
       await owner.lifetime(() => owner.messages.put(row))
@@ -1976,6 +2223,16 @@ async function send(
       if (row.outcome !== 'delivered')
         throw new MonadStampPendingAttemptError([digest])
       row = await owner.lifetime(() => settleSharedPayments(owner, row))
+      // The message and its payment are out; telling the account's other devices is not a
+      // condition of that. A note that does not get through now is sent by the resend pass.
+      try {
+        row = await owner.lifetime(() => deliverOwedSelfCopy(owner, directory, row))
+      } catch (error) {
+        console.warn(
+          '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+          error,
+        )
+      }
     } finally {
       work.busy = undefined
       ended()
@@ -2359,6 +2616,28 @@ export function paymentsToSelf<
   })
 }
 
+/** A sealed sender's identity can never be read from this record, by any later read. */
+function sealedPeekIsTerminal(error: unknown): boolean {
+  return (
+    error instanceof DirectMessageError &&
+    (error.code === 'crypto' ||
+      error.code === 'context' ||
+      error.code === 'network')
+  )
+}
+
+/** The record opened (its sender, recipient, entries and keys matched) and still failed: no later
+ * read can open it. Shared by the polled read and the live stream. */
+function openFailureIsTerminal(error: unknown): boolean {
+  return (
+    error instanceof MessageItemBudgetExceededError ||
+    (error instanceof DirectMessageError &&
+      (error.code === 'crypto' ||
+        error.code === 'network' ||
+        error.code === 'digest'))
+  )
+}
+
 async function readMailbox(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -2538,14 +2817,12 @@ async function readMailbox(
           peerSubjectKeyBytes = peeked.sender.keyBytes
           sealedSenderT1 = peeked.senderT1
         } catch (error) {
-          if (
-            error instanceof DirectMessageError &&
-            (error.code === 'crypto' ||
-              error.code === 'context' ||
-              error.code === 'network')
-          ) {
+          // Ciphertext this wallet's key cannot open, or content that is not a sealed sender's,
+          // never becomes openable: the record is passed for good. Anything else (a role
+          // session this wallet could not make yet) is left for a later read.
+          if (sealedPeekIsTerminal(error))
             params.onQuarantinedTimestamp?.(record.timestampMs, digest)
-          }
+          else incomplete(record.timestampMs)
           continue
         } finally {
           peekRoles.dispose()
@@ -2640,13 +2917,7 @@ async function readMailbox(
         // all matched what this wallet holds, so no later read can open it. A forged message,
         // also one addressed from this wallet to itself, ends here. Failures before decryption
         // (an entry or key this wallet could not look up yet) are left for a later read.
-        if (
-          error instanceof MessageItemBudgetExceededError ||
-          (error instanceof DirectMessageError &&
-            (error.code === 'crypto' ||
-              error.code === 'network' ||
-              error.code === 'digest'))
-        )
+        if (openFailureIsTerminal(error))
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         else incomplete(record.timestampMs)
         continue
@@ -2941,6 +3212,7 @@ export function canonicalDirectMessages(
       wallet: WalletHandle
       onRecord: (record: DirectMessageReceived) => void
       onError?: (error: Error) => void
+      onQuarantinedTimestamp?: (timestampMs: number, payloadDigest: string) => void
     }) => {
       const directory = requireDirectory(owner)
       const registry = requireMessageItems(owner)
@@ -3012,6 +3284,13 @@ export function canonicalDirectMessages(
                     })
                     peerSubjectKeyBytes = peeked.sender.keyBytes
                     sealedSenderT1 = peeked.senderT1
+                  } catch (error) {
+                    // As in the polled read: a record that can never be opened is dropped,
+                    // reported as quarantined and not as a stream error. The poll, which owns
+                    // the read position, passes it the same way.
+                    if (!sealedPeekIsTerminal(error)) throw error
+                    params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+                    return
                   } finally {
                     peekRoles.dispose()
                   }
@@ -3077,6 +3356,10 @@ export function canonicalDirectMessages(
                     record.timestampMs,
                     isOwnSubject(owner, peerSubjectHex, peer.subject),
                   )
+                } catch (error) {
+                  if (!openFailureIsTerminal(error)) throw error
+                  params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+                  return
                 } finally {
                   roles.dispose()
                 }

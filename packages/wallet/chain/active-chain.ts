@@ -612,6 +612,9 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     onRecord: (record: DirectMessageReceived) => void;
     onError?: (error: Error) => void;
+    /** A streamed record that can never be opened (as `fetchSince` reports it): it is dropped,
+     * not reported through `onError`. The stream moves no read position. */
+    onQuarantinedTimestamp?: (timestampMs: number, payloadDigest: string) => void;
   }): () => void;
   listRecoveredStampPayments(params: {
     wallet: WalletHandle;

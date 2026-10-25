@@ -45,6 +45,7 @@ import {
   PreparedDirectMessage,
 } from './canonical-dm'
 import { inspectCanonicalPair } from './canonical-dm-transport'
+import { secp256k1 } from '@noble/curves/secp256k1'
 let location: string
 let store: DirectoryStore
 let current: Current
@@ -132,6 +133,12 @@ function roles(
         senderPublicKey: input.senderPublicKey,
       })
     },
+    openSealedMessage: input =>
+      openSealed({
+        envelope: input.envelope,
+        context: input.context,
+        recipientPrivateKey: fromHex(v.message_secret_test_only),
+      }),
     dispose: jest.fn(),
   }
 }
@@ -1318,4 +1325,85 @@ test('sealed-sender omits sender from outer payload and context, folds sender in
   expect(toHex(selfOpened.items[0].frame)).toBe(
     toHex(directMessageText('sealed sender hello')),
   )
+})
+
+test('a sealed sender whose content names a message key the envelope did not authenticate is refused by the peek', () => {
+  // Sealed and authenticated under another key, while the content's field 9 still names the
+  // directory message key of `current`: the envelope's unmasked sender and the claim differ.
+  const impostorSecret = new Uint8Array(32).fill(0x42)
+  const impostorPublic = secp256k1.getPublicKey(impostorSecret, true)
+  expect(toHex(impostorPublic)).not.toBe(toHex(current.messageKey.keyBytes))
+  const role = roles()
+  role.sealMessage = input =>
+    seal({
+      ...input,
+      suiteId: 1,
+      senderPrivateKey: impostorSecret,
+      senderPublicKey: impostorPublic,
+    })
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(0x56),
+    items: [directMessageText('claims another sender key')],
+    roles: role,
+    sealedSender: true,
+  })
+  // The envelope opens: it is a well-formed message sealed by the impostor key.
+  const opened = openSealed({
+    envelope: (() => {
+      const outer = parseFrame(prepared.payload)
+      if (
+        outer.kind !== 'parsed' ||
+        outer.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+      )
+        throw new Error('expected type 11 payload')
+      return outer.typed.cryptoBoxEnvelope
+    })(),
+    context: prepared.context,
+    recipientPrivateKey: fromHex(v.message_secret_test_only),
+  })
+  if (!opened.ok) throw new Error('expected the impostor envelope to open')
+  expect(toHex(opened.value.senderPublicKey)).toBe(toHex(impostorPublic))
+  // The peek compares field 9 with that key and refuses the claim.
+  expect(() =>
+    peekSealedDirectMessageSender({
+      network: corpus.network,
+      payload: prepared.payload,
+      context: prepared.context,
+      roles: roles(),
+    }),
+  ).toThrow('canonical-dm:crypto')
+  // And the full open refuses it as well: the directory key does not open it.
+  expect(() =>
+    openDirectMessage({
+      ...receive(roles()),
+      payload: prepared.payload,
+      context: prepared.context,
+    }),
+  ).toThrow('canonical-dm:crypto')
+})
+
+test('a sealed peek without the sealed-open capability is refused, not guessed', () => {
+  const role = selfOpenRoles()
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(0x57),
+    items: [directMessageText('needs the sealed open')],
+    roles: role,
+    sealedSender: true,
+  })
+  const withoutCapability = roles()
+  delete (withoutCapability as { openSealedMessage?: unknown }).openSealedMessage
+  expect(() =>
+    peekSealedDirectMessageSender({
+      network: corpus.network,
+      payload: prepared.payload,
+      context: prepared.context,
+      roles: withoutCapability,
+    }),
+  ).toThrow('canonical-dm:roles')
 })

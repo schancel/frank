@@ -89,6 +89,10 @@ export interface StoredMessage {
    * during one leaves the bytes possibly out), and set again only by such a refusal. Never set
    * for a recipient reached through forwarding. */
   unexposed?: true
+  /** A sealed-sender message: the relay keeps no outbox row for it, so once it is delivered a
+   * note to self carrying the message and its spends is sent to the account's other devices.
+   * Set when the record is created; removed, durably, once that note is delivered. */
+  selfCopyOwed?: true
   createdAt: number
 }
 

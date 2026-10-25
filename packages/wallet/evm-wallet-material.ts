@@ -59,6 +59,7 @@ import {
 import {
   seal,
   open,
+  openSealed,
   openAsSender,
   randomBytes,
   selfOpenEphemeral,
@@ -98,6 +99,11 @@ export interface MonadCanonicalRoles {
     senderPublicKey?: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
+  /** A sealed-sender envelope's plaintext and the sender message key it authenticated. */
+  openSealedMessage(input: {
+    envelope: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<{ plaintext: Uint8Array; senderPublicKey: Uint8Array }>
   openOwnMessage(input: {
     envelope: Uint8Array
     recipientPublicKey: Uint8Array
@@ -637,6 +643,38 @@ function roleOwner(
               envelope: ownedEnvelope,
               recipientPrivateKey: secret,
               ...sender,
+              context,
+            }),
+          )
+        },
+        openSealedMessage(
+          input: Parameters<MonadCanonicalRoles['openSealedMessage']>[0],
+        ) {
+          if (closed) throw new Error('canonical-roles:disposed')
+          const ownedEnvelope = new Uint8Array(input.envelope)
+          const context = new Uint8Array(input.context)
+          // Suite 1 only, and only the 7-entry form that carries a masked sender.
+          try {
+            const envelope = decodeCanonical(ownedEnvelope)
+            if (
+              !(envelope instanceof Map) ||
+              envelope.get(BigInt(ENVELOPE_FIELDS.version)) !==
+                BigInt(ENVELOPE_VERSION) ||
+              envelope.get(BigInt(ENVELOPE_FIELDS.suite)) !==
+                BigInt(SUITE_AUTH_XCHACHA) ||
+              !envelope.has(BigInt(ENVELOPE_FIELDS.maskedSender))
+            )
+              return {
+                ok: false as const,
+                error: { code: 'envelope' as const },
+              }
+          } catch {
+            return { ok: false as const, error: { code: 'envelope' as const } }
+          }
+          return leaves.message.useSecret(secret =>
+            openSealed({
+              envelope: ownedEnvelope,
+              recipientPrivateKey: secret,
               context,
             }),
           )

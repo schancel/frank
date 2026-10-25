@@ -12,6 +12,8 @@ import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoi
 import { evmWalletInternals } from '../evm-wallet'
 import { installCanonicalDirectory } from './evm-chain'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { directMessageText, prepareDirectMessage } from '@frank/cashweb/relay/canonical-dm'
+import { recipientPayloadDigest, toHex } from '@frank/codec'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { EvmTransactionSetPolicy } from '../evm-transaction-set-types'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
@@ -447,6 +449,69 @@ test('RPC throttling keeps the original unsigned message intent and restart fund
     read.mockRestore()
     capture.mockRestore()
     await active.close()
+    await f.close()
+  }
+})
+
+test('a stored sealed intent another key sealed is refused before anything is signed for it', async () => {
+  const f = await setup()
+  let messages: LevelOutgoingMessageStore | undefined
+  const put = LevelOutgoingMessageStore.prototype.put
+  jest.spyOn(LevelOutgoingMessageStore.prototype, 'put')
+    .mockImplementation(async function (row) {
+      messages = this
+      return put.call(this, row)
+    })
+  try {
+    // A sealed send that cannot be funded leaves its encrypted intent stored, unsigned.
+    await expect(f.chain.directMessages.send({
+      wallet: f.alice, recipient: f.bob.identity.address, messageId: id,
+      stampValue: 10000000n, items: [{ type: 'text', text: 'unfunded sealed' }],
+      sealedSender: true,
+    })).rejects.toThrow('No funds cover a stamp')
+    const original = messages!.all()[0]!
+    expect(original.request).toBeUndefined()
+    // The stored intent is swapped for a sealed message Bob wrote to Alice. Every identity a
+    // sealed payload shows outside its ciphertext (recipient, digest) is made to agree; only the
+    // sender inside the ciphertext is not Alice.
+    const bobDirectory = await f.directoryFor('bob', f.bob, f.alice)
+    const bobCurrent = await bobDirectory.selfCurrent()
+    const aliceSubject = toHex(f.alice.identity.compressedPubKey)
+    const alicePeer = (await bobDirectory.peerCurrent({ subject: aliceSubject }))!
+    const roles = evmWalletInternals(f.bob).material!.canonicalRoles!.create(
+      bobDirectory.network, bobCurrent,
+    )
+    const forged = prepareDirectMessage({
+      network: bobDirectory.network,
+      senderCurrent: bobCurrent,
+      recipientCurrent: alicePeer.current,
+      messageId: getBytes('0x' + id.replace(/-/g, '')),
+      items: [directMessageText('not from alice')],
+      roles,
+      sealedSender: true,
+    })
+    roles.dispose()
+    await messages!.put({
+      ...original,
+      recipientSubject: aliceSubject,
+      digest: toHex(recipientPayloadDigest(bobDirectory.network, forged.payload)),
+      construction: {
+        ...original.construction!,
+        payload: toHex(forged.payload),
+        context: toHex(forged.context),
+      },
+    })
+    // Funds arrive, so construction could now sign; it must refuse first.
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 100000000n)
+    const construct = jest.spyOn(EvmTransactionSetPreparer.prototype, 'constructTransactionSet')
+    await expect(f.chain.directMessages.reconcileAttempts({
+      wallet: f.alice, payloadDigests: [], maxPutAttempts: 2,
+    })).rejects.toThrow(
+      'Stored stamp construction identity mismatch',
+    )
+    expect(construct).not.toHaveBeenCalled()
+    expect(f.requests).toEqual([])
+  } finally {
     await f.close()
   }
 })

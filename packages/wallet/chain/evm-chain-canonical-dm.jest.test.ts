@@ -3398,6 +3398,65 @@ describe('two typed wallets on the open directory', () => {
         expect(scan.truncated).toHaveLength(1)
       },
     )
+    it('passes an undecryptable sealed record for good, on the poll and on the stream alike', async () => {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      const sent = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('sealed, then damaged'),
+        stampValue: 0n,
+        sealedSender: true,
+      })
+      const good = inboxRecordForMessage(sent.payloadDigest, 30)
+      // The context is authenticated by the envelope: one changed byte and no key opens it.
+      const context = new Uint8Array(good.context)
+      context[context.length - 1] ^= 0x01
+      const damaged = { ...good, context }
+      mailboxPage.mockResolvedValueOnce({ records: [damaged] })
+      const scan = read()
+      expect(await scan.result).toEqual([])
+      expect(scan.quarantined).toEqual([30])
+      expect(scan.incomplete).toEqual([])
+
+      const streamed: unknown[] = []
+      const errors: Error[] = []
+      const passed: [number, string][] = []
+      mockStreamRecordHandler = undefined
+      const close = f.chain.directMessages.subscribeMailboxStream!({
+        wallet: f.bob,
+        onRecord: record => void streamed.push(record),
+        onError: error => void errors.push(error),
+        onQuarantinedTimestamp: (time, digest) => void passed.push([time, digest]),
+      })
+      try {
+        for (
+          const deadline = Date.now() + 2_000;
+          !mockStreamRecordHandler && Date.now() < deadline;
+
+        )
+          await new Promise(resolve => setImmediate(resolve))
+        expect(mockStreamRecordHandler).toBeDefined()
+        await mockStreamRecordHandler!(damaged)
+        expect(passed).toEqual([[30, sent.payloadDigest]])
+        expect(errors).toEqual([])
+        expect(streamed).toEqual([])
+        // The undamaged record still streams.
+        await mockStreamRecordHandler!(good)
+        for (
+          const deadline = Date.now() + 2_000;
+          streamed.length === 0 && Date.now() < deadline;
+
+        )
+          await new Promise(resolve => setImmediate(resolve))
+        expect(streamed).toEqual([
+          expect.objectContaining({ items: text('sealed, then damaged') }),
+        ])
+        expect(errors).toEqual([])
+      } finally {
+        close()
+      }
+    })
     it('uses all-unreadable raw groups to establish a complete prefix', async () => {
       await sentRecord()
       mailboxPage.mockResolvedValueOnce({

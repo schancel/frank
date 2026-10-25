@@ -66,6 +66,13 @@ export interface DirectMessageRoles {
     senderPublicKey?: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
+  /** Opens a sealed-sender envelope and returns, with the plaintext, the sender message key the
+   * envelope unmasked. Decryption authenticates exactly that key: only its holder can have sealed
+   * the envelope. Needed to read a sealed sender's claimed identity before the directory is asked. */
+  openSealedMessage?(input: {
+    envelope: Uint8Array
+    context: Uint8Array
+  }): SuiteResult<{ plaintext: Uint8Array; senderPublicKey: Uint8Array }>
   openOwnMessage?(input: {
     envelope: Uint8Array
     recipientPublicKey: Uint8Array
@@ -432,8 +439,16 @@ export interface SealedDirectMessageSenderIdentity {
 }
 
 /**
- * Recovers the authenticated sender identity (subject P_S, directory hash T1, and message key M_S)
- * from a sealed-sender type 11 payload without disposing the supplied role session on success.
+ * Reads the sender identity a sealed-sender type 11 payload carries inside its ciphertext: the
+ * subject P_S (field 7), the directory statement hash T1 (field 8) and the message key M_S
+ * (field 9). It does not dispose the supplied role session on success.
+ *
+ * What is checked here: the envelope opens, and M_S is the key the envelope itself authenticates
+ * (the key it unmasked and decrypted under; for the sender's own original, this wallet's message
+ * key). A content whose field 9 names any other key is refused (`crypto`). What is NOT checked:
+ * that P_S's directory statement T1 publishes M_S. P_S and T1 are therefore a routing hint for
+ * looking the sender up; only `openDirectMessage` / `openOwnDirectMessage` against that
+ * directory evidence authenticate the sender, and nothing may be shown or credited before they do.
  */
 export function peekSealedDirectMessageSender(input: {
   /** Sender mode authenticates the retained original with its self-open capability. */
@@ -445,6 +460,7 @@ export function peekSealedDirectMessageSender(input: {
 }): SealedDirectMessageSenderIdentity {
   let session: ReturnType<typeof beginDirectMessageValidation> | undefined
   let plaintext: Uint8Array | undefined
+  let envelopeSender: Uint8Array | undefined
   try {
     const payload = copy(input.payload)
     const suppliedContext = copy(input.context)
@@ -462,27 +478,35 @@ export function peekSealedDirectMessageSender(input: {
     ) {
       throw new DirectMessageError('context')
     }
-    const openOwn =
-      input.roles.openOwnMessage ?? input.roles.openOwnDirectMessage
-    if (input.mode === 'sender' && !openOwn)
-      throw new DirectMessageError('roles')
-    const opened =
-      input.mode === 'sender'
-        ? openOwn!.call(input.roles, {
-            envelope: copy(encrypted.cryptoBoxEnvelope),
-            recipientPublicKey: copy(
-              decodeDirectMessageCryptoContext(suppliedContext)
-                .recipientMessageKey.keyBytes,
-            ),
-            context: suppliedContext,
-          })
-        : input.roles.openMessage({
-            envelope: copy(encrypted.cryptoBoxEnvelope),
-            context: suppliedContext,
-          })
-    if (!opened.ok) throw new DirectMessageError('crypto')
-    plaintext = copy(opened.value)
-    opened.value.fill(0)
+    if (input.mode === 'sender') {
+      const openOwn =
+        input.roles.openOwnMessage ?? input.roles.openOwnDirectMessage
+      if (!openOwn) throw new DirectMessageError('roles')
+      // Self-open succeeds only for an envelope this wallet's own message key sealed and whose
+      // masked sender unmasks to that key.
+      const opened = openOwn.call(input.roles, {
+        envelope: copy(encrypted.cryptoBoxEnvelope),
+        recipientPublicKey: copy(
+          decodeDirectMessageCryptoContext(suppliedContext)
+            .recipientMessageKey.keyBytes,
+        ),
+        context: suppliedContext,
+      })
+      if (!opened.ok) throw new DirectMessageError('crypto')
+      plaintext = copy(opened.value)
+      opened.value.fill(0)
+      envelopeSender = copy(input.roles.message.compressedPoint)
+    } else {
+      if (!input.roles.openSealedMessage) throw new DirectMessageError('roles')
+      const opened = input.roles.openSealedMessage({
+        envelope: copy(encrypted.cryptoBoxEnvelope),
+        context: suppliedContext,
+      })
+      if (!opened.ok) throw new DirectMessageError('crypto')
+      plaintext = copy(opened.value.plaintext)
+      opened.value.plaintext.fill(0)
+      envelopeSender = copy(opened.value.senderPublicKey)
+    }
     const continuation = session
     session = undefined
     const completed = continuation.completeAuthenticatedContent(plaintext)
@@ -496,6 +520,9 @@ export function peekSealedDirectMessageSender(input: {
     ) {
       throw new DirectMessageError('context')
     }
+    // Field 9 must be the key the envelope authenticated, not merely a key the content names.
+    if (!equal(content.senderMessageKey.keyBytes, envelopeSender))
+      throw new DirectMessageError('crypto')
     return Object.freeze({
       sender: Object.freeze({
         keyType: content.sender.keyType,
@@ -512,6 +539,7 @@ export function peekSealedDirectMessageSender(input: {
     throw error
   } finally {
     plaintext?.fill(0)
+    envelopeSender?.fill(0)
   }
 }
 

@@ -167,6 +167,48 @@ describe("applyWalletSyncItem (Issue #1118)", () => {
     expect(wallet.putUtxo).not.toHaveBeenCalled();
   });
 
+  it("hands an outgoing item's signed transaction to the wallet's coin list after the pool, and only that", async () => {
+    const order: string[] = [];
+    const wallet = {
+      chainIdentifier: "monad-testnet",
+      pool: {
+        processSyncTransaction: jest.fn(async () => {
+          order.push("pool");
+          return { affectedIndices: [] };
+        }),
+      },
+      recordSyncedSpend: jest.fn(async () => {
+        order.push("coins");
+        return true;
+      }),
+    };
+    const out: WalletSyncItem = {
+      type: "wallet-sync",
+      direction: "out",
+      chainIdentifier: "monad-testnet",
+      txHash: "0x" + "ab".repeat(32),
+      rawTx: "0x02ab",
+      spentInputs: [{ address: "0x" + "0a".repeat(20), nonce: 3 }],
+    };
+    await applyWalletSyncItem(wallet, out);
+    expect(order).toEqual(["pool", "coins"]);
+    expect(wallet.recordSyncedSpend).toHaveBeenCalledWith(out);
+    // Without signed bytes, or incoming, there is no spend of this wallet's to record.
+    const { rawTx: _rawTx, ...unsigned } = out;
+    await applyWalletSyncItem(wallet, unsigned);
+    await applyWalletSyncItem(wallet, { ...out, direction: "in" });
+    expect(wallet.recordSyncedSpend).toHaveBeenCalledTimes(1);
+    // A pool refusal stops the dispatch before the coin list is asked.
+    wallet.pool.processSyncTransaction.mockRejectedValueOnce(new Error("refused"));
+    await expect(applyWalletSyncItem(wallet, out)).rejects.toThrow("refused");
+    expect(wallet.recordSyncedSpend).toHaveBeenCalledTimes(1);
+    // Another chain's item reaches neither.
+    await expect(
+      applyWalletSyncItem(wallet, { ...out, chainIdentifier: "ethereum-sepolia" }),
+    ).rejects.toBeInstanceOf(WalletSyncItemRejectedError);
+    expect(wallet.recordSyncedSpend).toHaveBeenCalledTimes(1);
+  });
+
   it("dispatches to wallet.deleteUtxo for spentInputs with outpoints", async () => {
     const mockDelete = jest.fn();
     const wallet = { deleteUtxo: mockDelete };

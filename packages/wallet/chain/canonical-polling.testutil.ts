@@ -97,6 +97,7 @@ export async function canonicalPollingFixture() {
             ...input,
             recipientPrivateKey: fromHex(v.message_secret_test_only),
           }),
+        openSealedMessage: unavailable,
         openOwnMessage: unavailable,
         openOwnDirectMessage: unavailable,
         dispose: () => undefined,

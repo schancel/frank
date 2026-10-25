@@ -373,12 +373,14 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
 /// timeout bounds the wait, so an unreachable cluster fails here with a typed error.
 async fn probe_shared_groups(
     groups: &GroupBackend,
+    objects: &Arc<dyn cashweb_registry::store::large_values::ObjectStore>,
     policy: cashweb_config::GroupAppendPolicy,
 ) -> Result<()> {
     let GroupBackend::Shared(_) = groups else {
         return Ok(());
     };
-    let owner = cashweb_registry::store::groups::Owner::new(groups.clone(), policy);
+    let owner =
+        cashweb_registry::store::groups::Owner::new(groups.clone(), Arc::clone(objects), policy);
     tokio::task::spawn_blocking(move || owner.get().map(drop))
         .await
         .wrap_err("FoundationDB probe task failed")?
@@ -435,7 +437,8 @@ async fn run(
     let db = Db::open(&conf.registry.db_path)?;
     let groups = group_backend(&driver, &conf.registry.db_path)?;
     // Fail the start (and `--check-db`), not the first request, when the cluster cannot be read.
-    probe_shared_groups(&groups, conf.registry.groups).await?;
+    let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
+    probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
     if check_db {
         return Ok(());
     }
@@ -487,7 +490,6 @@ async fn run(
             Arc::new(cashweb_registry::events::StandaloneEventBus::new())
         };
 
-    let objects = large_value_objects(&conf.registry, |name| std::env::var(name).ok())?;
     let registry = Arc::new(Registry::new_with_event_bus(
         db,
         chain_adapter,

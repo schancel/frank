@@ -3242,7 +3242,7 @@ continuity_file = "/var/lib/frank/continuity"
             preview_replica_local_owners: true,
             ..ClusterConf::default()
         });
-        conf.large_values = Some(LargeValuesConf::S3 {
+        conf.large_values = Some(super::LargeValuesConf::S3 {
             endpoint: "http://minio:9000".parse().unwrap(),
             region: "us-east-1".into(),
             bucket: "frank-large-values".into(),
@@ -3360,7 +3360,7 @@ continuity_file = "/var/lib/frank/continuity"
         // replica-local and refused without the preview flag.
         for large_values in [
             None,
-            Some(LargeValuesConf::Local {
+            Some(super::LargeValuesConf::Local {
                 path: "/var/lib/frank/large-values".into(),
             }),
         ] {

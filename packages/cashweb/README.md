@@ -27,7 +27,13 @@ imports are issue #257. Topic CBOR that the registry verifies is decoded with
 - `types/` — shared client types
 - `pop.ts` — proof-of-payment helper
 
-`@frank/wallet` is the usual caller.
+`@frank/wallet` is the usual caller. The dependency runs one way: production
+modules here never import the wallet, including type-only imports, re-exports
+and dynamic loads. Tests may use the wallet as a devDependency. Check with:
+
+```sh
+yarn workspace @frank/cashweb test --ci --runInBand wallet-dependency-boundary.jest.test.ts
+```
 
 The normative human semantics and status index is
 [`docs/CASHWEB-PROTOCOL-SPEC.md`](../../docs/CASHWEB-PROTOCOL-SPEC.md). This package's protobuf

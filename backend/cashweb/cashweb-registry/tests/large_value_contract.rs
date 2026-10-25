@@ -268,11 +268,12 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
 
         let report = store.sweep_large_values([1; 16]).unwrap();
         assert!(report.held_lease);
-        // Kept: the 1 MiB message, and phase 3's upload that failed during the outage, whose
-        // content phase 4 then committed. Deleted: only the orphan.
+        // Kept: the 1 MiB message. Deleted: only the orphan. (Phase 3's append left no intent:
+        // with MinIO stopped its process could not check the namespace claim, so it stopped
+        // before committing one.)
         assert_eq!(
             (report.deleted, report.kept_referenced),
-            (1, 2),
+            (1, 1),
             "{report:?}"
         );
         assert!(!objects.contains(&object_key(&orphan)).unwrap());

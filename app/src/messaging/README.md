@@ -26,9 +26,7 @@ exposure callbacks stay in the caller.
 Wallet facts come from `describeWalletFailure` in
 [`wallet-failure.ts`](../../../packages/wallet/wallet-failure.ts). Authoritative
 vetoes defeat transient facts and messaging fallback. Actual setup classes retain
-readiness retry; actual directory errors retry only with an explicit producer
-transient fact. Authentication, provenance and malformed-response refusals cannot
-gain retry from the legacy `unreachable` code.
+readiness retry; actual `OpenDirectoryError('unreachable')` retains transport retry.
 Unknown names, vendor shapes and strings grant no permission. Recognition catches
 hostile prototype traps; it never formats arbitrary errors. Separate `isCurrent()`
 calls remain intentional. The helper does not choose a wallet or read app state.

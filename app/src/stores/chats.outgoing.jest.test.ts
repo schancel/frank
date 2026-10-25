@@ -4254,12 +4254,7 @@ describe('persisted application message handoff', () => {
 
     const chats = useChatStore()
     jest.spyOn(activeChain.directMessages, 'send').mockImplementation(() => {
-      const err = new OpenDirectoryError(
-        'unreachable',
-        undefined,
-        undefined,
-        'transient',
-      )
+      const err = new OpenDirectoryError('unreachable')
       return Promise.reject(err)
     })
     const outcome = await chats.sendMessage({

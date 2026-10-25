@@ -43,11 +43,8 @@ export function decideOutgoingRetry(
     isPendingMessaging =
       error instanceof CanonicalMessagingPendingError ||
       error instanceof CanonicalMessageItemsNotInstalledError
-    if (error instanceof OpenDirectoryError) {
-      if (error.code !== 'unreachable' || error.retry !== 'transient')
-        return { kind: 'fail' }
-      isDirectoryUnreachable = true
-    }
+    isDirectoryUnreachable =
+      error instanceof OpenDirectoryError && error.code === 'unreachable'
   } catch {
     return { kind: 'fail' }
   }

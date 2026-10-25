@@ -45,10 +45,7 @@ it.each([
   },
 )
 
-it.each([
-  transient(),
-  new OpenDirectoryError('unreachable', undefined, undefined, 'transient'),
-])(
+it.each([transient(), new OpenDirectoryError('unreachable')])(
   'retries normalized transport or actual directory unavailability with unchanged timing',
   error => {
     expect(decideOutgoingRetry(error, context())).toEqual({
@@ -78,7 +75,6 @@ it.each([
   new MonadMailboxRetryableError('no normalized wallet transport fact'),
   new MonadMailboxAuthError('unauthorized', 'request'),
   new OpenDirectoryError('not-published'),
-  new OpenDirectoryError('unreachable'),
   null,
 ])(
   'never grants retry from unknown shapes, wording or unrelated producer classes: %s',
@@ -150,7 +146,7 @@ it.each([
   retryVeto => {
     for (const error of [
       transient(),
-      new OpenDirectoryError('unreachable', undefined, undefined, 'transient'),
+      new OpenDirectoryError('unreachable'),
       new CanonicalMessagingPendingError(),
     ]) {
       recordWalletFailure(error, {

@@ -201,13 +201,12 @@ export function blockingMessage<
 
 export function isNoResponseError(error: unknown): boolean {
   const failure = describeWalletFailure(error)
+  if (failure.observationUnavailable || failure.retry === 'transient')
+    return true
   try {
-    if (error instanceof OpenDirectoryError)
-      return error.code === 'unreachable' && error.retry === 'transient'
     return (
-      failure.observationUnavailable ||
-      failure.retry === 'transient' ||
-      error instanceof MonadMailboxRetryableError
+      error instanceof MonadMailboxRetryableError ||
+      (error instanceof OpenDirectoryError && error.code === 'unreachable')
     )
   } catch {
     return false

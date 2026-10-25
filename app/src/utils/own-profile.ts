@@ -15,10 +15,15 @@
  *   what restores the profile on a relay with a fresh database).
  * - If the relay cannot be asked, nothing is published. A device that does not know what the
  *   account's profile is must not replace it.
+ * - The profile is presentation, not required restoration: an account opens whether or not the
+ *   relay answers. Until it does, {@link ownProfileCheck} names the account, the lookup keeps
+ *   being retried, and the profile form does not save (an edit made over an unknown profile
+ *   would replace the published one).
  *
  * Two devices that edit at the same time: the relay keeps the later publish, and the other
  * device adopts it on its next mailbox poll.
  */
+import { reactive } from 'vue'
 import type { ProfileInfo } from '@frank/wallet/chain'
 import {
   fetchMonadProfile,
@@ -162,6 +167,16 @@ export async function syncOwnProfile(options: {
   return 'published'
 }
 
+/**
+ * The account whose published profile the relay has not answered for yet (lowercase address),
+ * or `null`. Set when a restore lookup could not reach the relay; cleared when one is answered.
+ * Shown to the user as a non-blocking notice; the profile form does not save while it names
+ * the form's account.
+ */
+export const ownProfileCheck = reactive<{ unchecked: string | null }>({
+  unchecked: null,
+})
+
 /** Recover presentation after custody activation. This read never publishes a local copy. */
 export async function restoreOwnProfileWithRelay(options: {
   relayBaseUrl: string
@@ -181,10 +196,14 @@ export async function restoreOwnProfileWithRelay(options: {
       signal: AbortSignal.timeout(PROFILE_RELAY_TIMEOUT_MS),
     })
   } catch {
+    if (!options.isCancelled?.() && sameAddress(store.owner, address))
+      ownProfileCheck.unchecked = address.toLowerCase()
     return 'unreachable'
   }
   if (options.isCancelled?.() || !sameAddress(store.owner, address))
     return 'unreachable'
+  if (sameAddress(ownProfileCheck.unchecked ?? undefined, address))
+    ownProfileCheck.unchecked = null
   if (!published) {
     store.profile = {}
     store.unpublished = false
@@ -193,6 +212,88 @@ export async function restoreOwnProfileWithRelay(options: {
   store.profile = storedProfileOf(published)
   store.unpublished = false
   return hasContent(store.profile) ? 'adopted' : 'missing'
+}
+
+/** The wait before retry `attempt` (0-based) of an unanswered profile lookup: doubling, capped. */
+export function profileRetryDelayMs(attempt: number): number {
+  return Math.min(2_000 * 2 ** attempt, 60_000)
+}
+
+/**
+ * Retries {@link restoreOwnProfileWithRelay} until the relay answers or `isCancelled` (the
+ * account was switched or closed). Resolves to the answer, or `undefined` when cancelled.
+ */
+export async function keepRestoringOwnProfile(options: {
+  relayBaseUrl: string
+  identity: MonadIdentity
+  isCancelled: () => boolean
+  onAnswered?: (outcome: 'adopted' | 'missing') => void
+  retryDelayMs?: (attempt: number) => number
+}): Promise<'adopted' | 'missing' | undefined> {
+  const delay = options.retryDelayMs ?? profileRetryDelayMs
+  for (let attempt = 0; ; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, delay(attempt)))
+    if (options.isCancelled()) return undefined
+    const outcome = await restoreOwnProfileWithRelay(options)
+    if (options.isCancelled()) return undefined
+    if (outcome !== 'unreachable') {
+      options.onAnswered?.(outcome)
+      return outcome
+    }
+  }
+}
+
+/**
+ * Restores a recovered account's profile while the account opens. Never fails the opening: a
+ * lookup the relay does not answer is retried in the background (and the account is named in
+ * {@link ownProfileCheck} meanwhile). `background` does not wait for the first lookup.
+ */
+export async function restoreOwnProfileAtStartup(options: {
+  relayBaseUrl: string
+  identity: MonadIdentity
+  accountId: string
+  isCancelled: () => boolean
+  background?: boolean
+  retryDelayMs?: (attempt: number) => number
+}): Promise<void> {
+  let store: ReturnType<typeof useProfileStore>
+  try {
+    store = useProfileStore()
+    await store.restored
+  } catch {
+    // A host without the profile store has no profile to restore.
+    return
+  }
+  const address = options.identity.address.raw
+  if (
+    store.restoredAccountId === options.accountId &&
+    sameAddress(store.owner, address)
+  )
+    return
+  const markRestored = () => {
+    if (sameAddress(store.owner, address))
+      store.restoredAccountId = options.accountId
+  }
+  const keepTrying = () =>
+    void keepRestoringOwnProfile({
+      ...options,
+      onAnswered: options.background ? undefined : markRestored,
+    }).catch(() => undefined)
+  if (options.background) {
+    claimProfileStore(store, address)
+    markRestored()
+    void restoreOwnProfileWithRelay(options).then(
+      outcome => {
+        if (outcome === 'unreachable' && !options.isCancelled()) keepTrying()
+      },
+      () => undefined,
+    )
+    return
+  }
+  const outcome = await restoreOwnProfileWithRelay(options)
+  if (options.isCancelled()) return
+  if (outcome === 'unreachable') keepTrying()
+  else markRestored()
 }
 
 // Serialise publishes for one account only. A stalled old account must not hold up the new

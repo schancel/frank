@@ -494,23 +494,14 @@ describe('Setup page advanced relay configuration', () => {
       await view.get('[data-test="activate-account"]').trigger('click')
       await flushPromises()
       expect(read).toHaveBeenCalledTimes(1)
-      if (outcome === 'unreachable') {
-        expect(mockPush).not.toHaveBeenCalled()
-        expect(view.get('[data-test="account-error"]').text()).toBe(
-          en.accountRecovery.profile_restore_unreachable,
-        )
-        expect(view.emitted('setupCompleted')).toBeUndefined()
-        read.mockResolvedValueOnce('adopted')
-        await view.get('[data-test="retry-profile-recovery"]').trigger('click')
-        await flushPromises()
-        expect(mockPush).toHaveBeenCalledWith('/wallet')
-        expect(accountSession.activatePending).toHaveBeenCalledTimes(1)
-      } else {
-        expect(mockPush).toHaveBeenCalledWith(
-          outcome === 'missing' ? '/profile' : '/wallet',
-        )
-        expect(view.emitted('setupCompleted')).toHaveLength(1)
-      }
+      // A relay that did not answer does not hold the account back: it opens, and the
+      // profile is adopted in the background once the relay answers.
+      expect(mockPush).toHaveBeenCalledWith(
+        outcome === 'missing' ? '/profile' : '/wallet',
+      )
+      expect(view.emitted('setupCompleted')).toHaveLength(1)
+      expect(view.find('[data-test="account-error"]').exists()).toBe(false)
+      expect(accountSession.activatePending).toHaveBeenCalledTimes(1)
       expect(mockAccount.status).toBe('ready')
       view.unmount()
     },

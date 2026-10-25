@@ -20,8 +20,10 @@ export const en = {
     'The passkey request could not finish. No account was activated. Retry with the same passkey. A passkey may have been created before this failure; use existing-passkey login to retry it.',
   wallet_chain_mismatch:
     'This saved wallet does not match the network or account configuration the app is using. Restore the previous network configuration and retry opening the existing account. Its saved data has not been changed.',
-  profile_restore_unreachable:
-    'Your account was recovered, but its profile could not be fetched. Check the relay connection and retry.',
+  profile_relay_unchecked:
+    'Your published profile could not be checked yet: the relay did not answer. Frank keeps trying and shows your profile once it does.',
+  profile_relay_unchecked_save_waits:
+    'Saving is available once your published profile has been checked, so an edit does not replace it by mistake.',
   profile_restore_retry: 'Retry profile lookup',
   pending_outdated_cancel_and_redo:
     'This attempt was saved by an earlier version of Frank and cannot be activated. Cancel it, then create or restore the account again. The shares you wrote down still restore the account.',
@@ -238,8 +240,10 @@ export const fr = {
     'La demande de clé d’accès n’a pas abouti. Aucun compte n’a été activé. Réessayez avec la même clé. Une clé a peut-être été créée avant cet échec ; réessayez avec la connexion par clé existante.',
   wallet_chain_mismatch:
     'Ce portefeuille enregistré ne correspond pas au réseau ou à la configuration de compte utilisé par l’application. Rétablissez la configuration réseau précédente puis réessayez d’ouvrir le compte existant. Les données enregistrées n’ont pas été modifiées.',
-  profile_restore_unreachable:
-    'Votre compte a été récupéré, mais son profil n’a pas pu être chargé. Vérifiez la connexion au relais et réessayez.',
+  profile_relay_unchecked:
+    'Votre profil publié n’a pas encore pu être vérifié : le relais n’a pas répondu. Frank continue d’essayer et affichera votre profil dès qu’il répondra.',
+  profile_relay_unchecked_save_waits:
+    'L’enregistrement sera possible une fois votre profil publié vérifié, afin qu’une modification ne le remplace pas par erreur.',
   profile_restore_retry: 'Réessayer de charger le profil',
   pending_outdated_cancel_and_redo:
     'Cette tentative a été enregistrée par une version antérieure de Frank et ne peut pas être activée. Annulez-la, puis créez ou restaurez le compte à nouveau. Les parts que vous avez notées restaurent toujours le compte.',

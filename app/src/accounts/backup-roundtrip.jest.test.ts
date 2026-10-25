@@ -17,8 +17,16 @@ import {
 import { historicalBip39WalletMaterial } from '@frank/wallet/evm-wallet-material'
 import { mnemonicToSeedSync } from 'bip39'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
-import { AccountBackupUnavailableError, stageBip39Recovery } from './session'
+import {
+  AccountBackupUnavailableError,
+  restoreRecoveredProfile,
+  stageBip39Recovery,
+} from './session'
+import * as identityApi from '@frank/wallet/evm-identity'
 import { MonadIdentity } from '@frank/wallet/evm-identity'
+import { createPinia, setActivePinia } from 'pinia'
+import { useProfileStore } from '../stores/my-profile'
+import { ownProfileCheck } from '../utils/own-profile'
 import { CustodyError } from './custody'
 import {
   closeDevices,
@@ -212,7 +220,7 @@ test('historical recovery derives every existing family address locally from its
   }
 })
 
-test('recovered custody stays durable while required profile restoration gates activation and retry', async () => {
+test('recovered custody stays durable while required application restoration gates activation and retry', async () => {
   const originalDevice = freshDevice()
   const shares = await signUp(originalDevice)
   const original = await describeAccount(originalDevice)
@@ -230,7 +238,7 @@ test('recovered custody stays durable while required profile restoration gates a
         resolveProfile = resolve
         beginProfile()
       })
-      if (!online) throw new CustodyError('profile-unreachable')
+      if (!online) throw new CustodyError('unavailable')
     },
   })
   await restoring.initialize()
@@ -247,7 +255,7 @@ test('recovered custody stays durable while required profile restoration gates a
     profileStarted,
     activating.then(() => {
       throw new Error(
-        'Account activation finished before required profile restoration',
+        'Account activation finished before required application restoration',
       )
     }),
   ])
@@ -256,7 +264,8 @@ test('recovered custody stays durable while required profile restoration gates a
   resolveProfile()
   await activating
   expect(restoring.state.status).toBe('unavailable')
-  expect(restoring.state.error).toBe('profile-unreachable')
+  expect(restoring.state.error).toBe('unavailable')
+  expect(restoring.state.failureStage).toBe('application-restore')
   expect(restoring.state.pending).toBeNull()
   expect(restoring.state.account?.fingerprint).toBe(original.fingerprint)
   online = true
@@ -270,6 +279,52 @@ test('recovered custody stays durable while required profile restoration gates a
   await retrying
   expect(restoring.state.status).toBe('ready')
   expect(await describeAccount(restoring)).toEqual(original)
+})
+
+test('a recovered account opens while the relay does not answer its profile lookup, and adopts the profile once it does', async () => {
+  setActivePinia(createPinia())
+  ownProfileCheck.unchecked = null
+  const originalDevice = freshDevice()
+  const shares = await signUp(originalDevice)
+  const original = await describeAccount(originalDevice)
+  await originalDevice.close()
+  let online = false
+  const fetch = jest
+    .spyOn(identityApi, 'fetchMonadProfile')
+    .mockImplementation(async ({ address }) => {
+      if (!online) throw new Error('relay did not answer')
+      return { address, pubKey: new Uint8Array(33), name: 'Published name' }
+    })
+  const publish = jest.spyOn(identityApi, 'registerMonadIdentityCbor')
+  try {
+    // The app's own application restoration, with only the relay's answers stood in for.
+    const recovered = freshDevice({
+      restoreApplicationState: restoreRecoveredProfile,
+    })
+    await recovered.initialize()
+    const ceremony = createAccountCeremony()
+    await ceremony.beginRestore()
+    await ceremony.confirm(shares.slice(0, 2), '')
+    await activate(recovered)
+    expect(recovered.state.error).toBeNull()
+    expect(await describeAccount(recovered)).toEqual(original)
+    const store = useProfileStore()
+    expect(ownProfileCheck.unchecked).toBe(
+      original.identityAddress.toLowerCase(),
+    )
+    expect(store.profile).toEqual({})
+    online = true
+    // The background retry (first one after 2 s) adopts what the relay holds.
+    for (let i = 0; i < 100 && store.profile.name !== 'Published name'; i++)
+      await new Promise(resolve => setTimeout(resolve, 50))
+    expect(store.profile.name).toBe('Published name')
+    expect(ownProfileCheck.unchecked).toBeNull()
+    expect(fetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(publish).not.toHaveBeenCalled()
+  } finally {
+    fetch.mockRestore()
+    publish.mockRestore()
+  }
 })
 
 test('restore activates and reopens the same custody account without a display name', async () => {

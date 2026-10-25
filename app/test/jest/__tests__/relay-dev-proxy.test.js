@@ -19,6 +19,21 @@ describe('the dev server forwards relay routes to the relay the app is configure
     })
   })
 
+  it('forwards group chat, its live socket, usernames and topics', () => {
+    // 2026-10-25: /groups, /usernames and /topics were missing; group chat through the dev
+    // server got 404 for every epoch, message and live-socket request.
+    const proxy = relayDevProxy({
+      QCLI_MONAD_RELAY_BASE_URL: 'http://127.0.0.1:28198',
+    })
+    expect(proxy['/groups']).toEqual({
+      target: 'http://127.0.0.1:28198',
+      changeOrigin: true,
+      ws: true,
+    })
+    expect(proxy['/usernames'].target).toBe('http://127.0.0.1:28198')
+    expect(proxy['/topics'].target).toBe('http://127.0.0.1:28198')
+  })
+
   it('follows the app relay variable alone: no second variable is needed', () => {
     // 2026-10-10: the launcher's printed command set QCLI_MONAD_RELAY_BASE_URL only; the
     // proxy read FRANK_DEMO_RELAY_PORT only, stayed on 8098, and every relay route was 502.

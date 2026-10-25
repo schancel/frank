@@ -1121,7 +1121,8 @@ const LAB_RELAY_ID: &str = "000102030405060708090a0b0c0d0e0f";
 const LAB_RELAY_IDENTITY: &str =
     "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13";
 const LAB_BINDING_EXPIRY_S: i64 = 1_830_297_600;
-const DIRECTORY_NETWORK: &str = "monad-testnet";
+/// The relays' `[registry] network`: the directory serves only that network.
+const DIRECTORY_NETWORK: &str = "monad-regtest";
 const DIRECTORY_MEDIA: &str = "application/vnd.frank.cbor";
 
 /// One account's key and the entries it signs.

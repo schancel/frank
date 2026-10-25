@@ -21,6 +21,11 @@ const demoEntries = new Map([
   ['packages/cashweb/relay/open-directory.ts', null],
   ['packages/cashweb/relay/open-directory-node.ts', '/node'],
   ['app/src/utils/identity-session.ts', '/browser'],
+  // Startup characterization opens the real browser directory store, as the app session does.
+  [
+    'app/src/components/chat/ChatList.startup-integration.jest.test.ts',
+    '/browser',
+  ],
   ['app/src/utils/identity-session.jest.test.ts', '/browser'],
   // The Qwen bot uses the same open directory through the Node storage helper and only names
   // the public Current type. Its host test admits a fixture through a Node store.

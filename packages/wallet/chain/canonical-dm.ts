@@ -702,8 +702,10 @@ async function submitStored(
   if (row.transactionSetOperationId) {
     const shared = owner.transactionSets
     if (!shared || !row.transactionSetOperationId) throw new Error('Shared stamp operation unavailable')
+    // This message's own payments still wait on their funding transactions: nothing failed
+    // and no other attempt competes. It is handed to the relay on a later pass.
     if (!await shared.lifecycle.readCanSubmitPayments(row.transactionSetOperationId, row.transactionSetStageId))
-      return { row, error: new MonadStampPendingAttemptError([row.digest]) }
+      return { row }
   }
   if (row.transactionSetOperationId && owner.transactionSets) {
     const operation = await owner.transactionSets.preparer.readOperation(row.transactionSetOperationId)

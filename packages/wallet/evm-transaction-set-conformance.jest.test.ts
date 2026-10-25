@@ -295,21 +295,23 @@ describe("durable shared EVM transaction-set conformance", () => {
     assertSigned(next);
   });
 
-  it("gifts sub-dust residue to the intended recipient and signs an exact full-balance drain", async () => {
+  it("pays exactly the intended amount and keeps a sub-dust residue on the sender's next nonce", async () => {
     const intended = parseEther("2.4578");
-    const gift = fixturePolicy.dustWei - 1n;
-    await seed(1, intended + FEE + gift, 9);
+    const residue = fixturePolicy.dustWei - 1n;
+    await seed(1, intended + FEE + residue, 9);
     const set = await preparer().constructTransactionSet({
-      operationId: "dust-gift",
+      operationId: "dust-residue",
       amountWei: intended,
       kdf: () => address(100),
     });
     expect(set.bundle).toHaveLength(1);
     expect(set.otherTransactions).toEqual([]);
-    expect(Transaction.from(set.bundle[0]!.rawTransaction).value).toBe(
-      intended + gift
-    );
+    expect(Transaction.from(set.bundle[0]!.rawTransaction).value).toBe(intended);
     expect(set.bundle[0]!.nonce).toBe(9);
-    assertSourceConserved(set, 1, intended + FEE + gift);
+    expect(coins.get(address(1), 10)).toMatchObject({
+      state: "unspent",
+      valueWei: residue,
+      after: { account: address(1), nonce: 9 },
+    });
   });
 });

@@ -704,16 +704,22 @@ test.each([
       expect(prepared.members).toHaveLength(quote.sources!.length)
       expect(received).toBe(payment.amountAtomic)
     } else {
-      // A gift may absorb uneconomic residue; all source value still has an owner.
-      expect(received).toBeGreaterThanOrEqual(payment.amountAtomic)
+      // The recipient gets exactly the amount; uneconomic residue stays with the
+      // sender at the source's next nonce, so all source value still has an owner.
+      expect(received).toBe(payment.amountAtomic)
       const operation = wallet.transactionSetPreparer!.getOperation(
         evmStealthTransactionSetOperationId(payment.operationId),
       )!
       for (const source of new Set(
         operation.members.map(member => member.source.address),
       )) {
-        const spent = operation.members
-          .filter(member => member.source.address === source)
+        const members = operation.members.filter(
+          member => member.source.address === source,
+        )
+        const residual = BigInt(
+          members.at(-1)!.transactionSet!.balanceAfterWei,
+        )
+        const spent = members
           .map(member => Transaction.from(member.signed!.rawTransaction))
           .reduce(
             (sum, tx) =>
@@ -722,7 +728,7 @@ test.each([
               tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!),
             0n,
           )
-        expect(spent).toBe(state.balances.get(source))
+        expect(spent + residual).toBe(state.balances.get(source))
       }
     }
     expect(state.broadcast).not.toHaveBeenCalled()

@@ -42,7 +42,7 @@ import { MemoryRecordStore } from './storage/evm-coin-store'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 
 it.each(['monad', 'ethereum'])(
-  'applies the production %s fee policy to subdust residue at a fresh recipient',
+  'keeps subdust residue with the sender under the production %s fee policy',
   async kind => {
     const source = new Wallet('0x' + '11'.repeat(32))
     const recipient = new Wallet('0x' + '22'.repeat(32))
@@ -108,9 +108,13 @@ it.each(['monad', 'ethereum'])(
     const eoa = await prepare(recipient.address)
     const knownBurn = await prepare(burn)
     // The source has already satisfied its quiet window. Its 123 wei remainder
-    // cannot fund change, so it is gifted and the source is exhausted.
-    expect(knownBurn.result.bundle[0]!.valueWei).toBe(300123n)
-    expect(eoa.result.bundle[0]!.valueWei).toBe(300123n)
+    // cannot fund change; the recipient still gets exactly the intended amount and
+    // the remainder stays with the sender at the next nonce.
+    expect(knownBurn.result.bundle[0]!.valueWei).toBe(300000n)
+    expect(eoa.result.bundle[0]!.valueWei).toBe(300000n)
+    expect(
+      eoa.row.members.at(-1)!.transactionSet!.balanceAfterWei,
+    ).toBe('123')
     expect(eoa.result.otherTransactions).toEqual([])
     expect(
       eoa.row.members.some(member => member.transactionSet?.refundPending),

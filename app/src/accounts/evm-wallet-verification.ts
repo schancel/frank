@@ -5,6 +5,14 @@ import {
   type EvmChainWalletHandle,
 } from '@frank/wallet/chain'
 
+/** The RPC route did not prove it is the configured network, or the proof was unavailable. */
+export class EvmRpcIdentityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'EvmRpcIdentityError'
+  }
+}
+
 interface OperatorCheckpoint {
   readonly blockNumber: number
   readonly blockHash: string
@@ -35,7 +43,7 @@ export function validateEvmWalletConfiguration(
       checkpoint.blockNumber < 0 ||
       !/^0x[0-9a-fA-F]{64}$/.test(checkpoint.blockHash))
   )
-    throw new Error('EVM operator checkpoint is required')
+    throw new EvmRpcIdentityError('EVM operator checkpoint is required')
   return entry
 }
 
@@ -109,24 +117,24 @@ export async function verifyEvmWalletRpcIdentity(
     entry.nativeChainId === undefined ||
     BigInt(chainId) !== BigInt(entry.nativeChainId)
   )
-    throw new Error('EVM RPC chain identity mismatch')
+    throw new EvmRpcIdentityError('EVM RPC chain identity mismatch')
   for (const probe of entry.identityProbes) {
     if (probe.capability !== 'json-rpc') continue
     if (probe.kind === 'evm-chain-id') {
       if (BigInt(probe.expected) !== BigInt(chainId))
-        throw new Error('EVM RPC chain identity mismatch')
+        throw new EvmRpcIdentityError('EVM RPC chain identity mismatch')
     } else if (
       probe.kind === 'block-hash' ||
       probe.kind === 'operator-block-checkpoint'
     ) {
       if (probe.kind === 'operator-block-checkpoint' && !checkpoint)
-        throw new Error('EVM operator checkpoint is required')
+        throw new EvmRpcIdentityError('EVM operator checkpoint is required')
       const expectedCheckpoint =
         probe.kind === 'block-hash'
           ? { blockNumber: probe.height, blockHash: probe.expected }
           : checkpoint
       if (!expectedCheckpoint)
-        throw new Error('EVM operator checkpoint is required')
+        throw new EvmRpcIdentityError('EVM operator checkpoint is required')
       const block = await provider.getBlock(expectedCheckpoint.blockNumber)
       requireCurrent()
       if (
@@ -134,7 +142,7 @@ export async function verifyEvmWalletRpcIdentity(
         block.number !== expectedCheckpoint.blockNumber ||
         block.hash?.toLowerCase() !== expectedCheckpoint.blockHash.toLowerCase()
       )
-        throw new Error('EVM RPC checkpoint mismatch')
+        throw new EvmRpcIdentityError('EVM RPC checkpoint mismatch')
     } else throw new Error('Unsupported EVM identity probe')
   }
 }

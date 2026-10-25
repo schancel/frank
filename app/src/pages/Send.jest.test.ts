@@ -19,6 +19,7 @@ import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
 import { navigateBack } from 'src/utils/navigate-back'
 import type { WalletHandle } from '@frank/wallet/chain'
 import enUS from '../i18n/en-us'
+import { RelayOperatorCheckpointUnavailableError } from 'src/accounts/relay-wallet-route'
 import frFR from '../i18n/fr-fr'
 
 import { getAddress } from 'ethers'
@@ -37,6 +38,7 @@ const mockGetTransactionStatus = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
   onActiveChainChange: () => jest.fn(),
+  isChainUnreachableError: () => false,
   ...jest.requireActual('@frank/wallet/chain/evm-native-operation-status'),
   NativeTransactionSubmissionError: jest.requireActual(
     '@frank/wallet/chain/chain-wallet',
@@ -1237,6 +1239,37 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
       await flushPromises()
       expect(mockSend).toHaveBeenCalledTimes(2)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  // Seen on monad-regtest: the wallet could not open (no operator checkpoint), and the page
+  // said "Enter a valid Monad address and MON amount." The page now says why.
+  it('says why the wallet could not open on this network instead of blaming the input', async () => {
+    const { createNativeTransferContext } = jest.requireMock(
+      'src/accounts/native-transfer',
+    )
+    jest
+      .mocked(createNativeTransferContext)
+      .mockRejectedValueOnce(
+        new RelayOperatorCheckpointUnavailableError('monad-testnet'),
+      )
+    const wrapper = mountSend()
+    try {
+      await flushPromises()
+      const banner = wrapper.get('[data-test="send-wallet-unavailable"]')
+      expect(banner.text()).toBe(
+        enUS.sendAddressDialog.walletCheckpointUnavailable,
+      )
+      expect(errorNotify).toHaveBeenCalledWith(
+        expect.any(RelayOperatorCheckpointUnavailableError),
+        { fallbackKey: 'sendAddressDialog.walletCheckpointUnavailable' },
+      )
+      expect(errorNotify).not.toHaveBeenCalledWith(expect.anything(), {
+        fallbackKey: 'sendAddressDialog.invalidTransfer',
+      })
+      expect(mockCaptureWallet).not.toHaveBeenCalled()
     } finally {
       wrapper.unmount()
     }

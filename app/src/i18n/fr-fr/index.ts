@@ -1587,6 +1587,16 @@ export const rawFrFR = {
       'La transaction a été signée ({txHash}) et a peut-être été diffusée. Vérifiez votre solde ou le statut de la transaction avant de réessayer.',
     invalidTransfer:
       'Saisissez une adresse Monad et un montant de MON valides.',
+    walletCheckpointUnavailable:
+      "Le portefeuille ne peut pas s'ouvrir sur ce réseau : le relais n'indique pas le bloc de référence dont ce réseau a besoin. Rien n'a été envoyé.",
+    walletIdentityUnverified:
+      "Le portefeuille ne peut pas s'ouvrir sur ce réseau : la chaîne du relais ne correspond pas au bloc de référence du réseau. Une chaîne locale peut avoir besoin d'un nouveau bloc de référence. Rien n'a été envoyé.",
+    walletRouteUnavailable:
+      "Le portefeuille ne peut pas s'ouvrir sur ce réseau : votre relais ne le dessert pas. Rien n'a été envoyé.",
+    walletUnreachable:
+      "Le portefeuille ne peut pas joindre ce réseau pour l'instant. Réessayez dans un moment. Rien n'a été envoyé.",
+    walletOpenFailed:
+      "Le portefeuille n'a pas pu s'ouvrir sur ce réseau. Rien n'a été envoyé.",
     failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
   },
   sendContactDialog: {

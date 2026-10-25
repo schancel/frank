@@ -18,7 +18,13 @@ on, and none otherwise). An upstream carries traffic only after its probe passes
 
 - EVM: `eth_chainId`, plus the registry-pinned block checkpoint. A regtest row
   (`monad-regtest`) has an operator checkpoint instead: the relay's config row must name a block
-  above genesis and its hash, and the relay checks it on the upstream like a pinned one.
+  above genesis and its hash, and the relay checks it on the upstream like a pinned one. Because
+  that block is operator data, `GET /chains` names it on the route as
+  `operator_checkpoint: { "block_number": <n>, "block_hash": "0x…" }` (only on an EVM row whose
+  registry probe is `operator-block-checkpoint`; a registry-pinned checkpoint is never restated
+  by a relay). Before opening a wallet on such a network the app reads it there
+  (`requireRelayOperatorCheckpoint` in `app/src/accounts/relay-wallet-route.ts`) and checks the
+  RPC route has that block, as it checks a pinned block on a public network.
 - Bitcoin-family JSON-RPC: `getblockhash` at the registry-pinned post-fork checkpoint (operator
   checkpoints remain available only for regtest rows).
 - Chronik: `GET /block/<height>` at the same registry-pinned checkpoint.
@@ -169,7 +175,8 @@ client as a single validator. Chain ID 20143 (Monad's devnet ID), network tag `M
 Its checkpoint is a block 16 below the head when a stack starts, written into that run's relay
 config (solonet keeps only its last few thousand blocks, under an hour, so a relay restarted
 later needs a fresh checkpoint); the wallet reaches the chain only through the relay's proxy, which has
-verified it. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
+verified it. The app takes the checkpoint from that relay's `GET /chains` route (above) and checks
+the route against it whenever it opens the wallet. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
 record is never committed) and a wallet is given their addresses in its chain config
 (`EvmChainConfig.contracts`). How to install, start and stop solonet on a Mac is at the top of
 `packages/bot/demo/regtest/monad-regtest.ts`.

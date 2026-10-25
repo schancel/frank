@@ -62,6 +62,16 @@ struct AdvertisedChain {
     caip2: String,
     native_chain_id: Option<String>,
     capabilities: Vec<cashweb_config::ProtocolProxyCapability>,
+    /// The block this relay verified its upstreams against, on a chain whose registry row makes
+    /// the checkpoint operator data. Clients check the route against it before opening a wallet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operator_checkpoint: Option<AdvertisedCheckpoint>,
+}
+
+#[derive(Serialize)]
+struct AdvertisedCheckpoint {
+    block_number: u64,
+    block_hash: String,
 }
 
 async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json<ChainDiscovery> {
@@ -76,6 +86,14 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
             caip2: row.caip2.clone(),
             native_chain_id: row.native_chain_id.clone(),
             capabilities,
+            operator_checkpoint: server
+                .chains
+                .evm(&row.id)
+                .and_then(|chain| chain.operator_checkpoint())
+                .map(|(block_number, block_hash)| AdvertisedCheckpoint {
+                    block_number,
+                    block_hash: block_hash.to_string(),
+                }),
         })
         .collect();
     // Stamps and forum burns are accepted on the relay network only, and only while a service
@@ -1279,6 +1297,70 @@ mod spa_tests {
             .await
             .unwrap()
             .to_vec()
+    }
+
+    #[tokio::test]
+    async fn discovery_names_the_operator_checkpoint_only_where_the_registry_leaves_it_to_the_operator(
+    ) {
+        fn row(
+            id: &str,
+            chain_id: u64,
+            number: u64,
+            hash: &str,
+        ) -> cashweb_config::EvmRpcChainConf {
+            cashweb_config::EvmRpcChainConf {
+                id: id.to_string(),
+                expected_chain_id: chain_id,
+                upstream_env: "UPSTREAM".to_string(),
+                upstream_envs: vec![],
+                upstream_ws_env: None,
+                checkpoint_block_number: Some(number),
+                checkpoint_block_hash: Some(hash.to_string()),
+                max_get_logs_range: 10,
+            }
+        }
+        let regtest_hash = format!("0x{}", "ab".repeat(32));
+        let evm = cashweb_config::EvmRpcConf {
+            enabled: true,
+            chains: vec![
+                row("monad-regtest", 20_143, 42, &regtest_hash),
+                row(
+                    "monad-testnet",
+                    10_143,
+                    0,
+                    "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                ),
+            ],
+            ..Default::default()
+        };
+        let (_db_dir, mut server) = test_server(None);
+        server.chains = Arc::new(
+            crate::chains::RelayChains::from_families(
+                "monad-regtest",
+                &evm,
+                &Default::default(),
+                &Default::default(),
+                |_| Some("http://127.0.0.1:1".to_string()),
+            )
+            .unwrap(),
+        );
+        let response = server
+            .into_router()
+            .oneshot(Request::get("/chains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let document: serde_json::Value =
+            serde_json::from_slice(&response_bytes(response).await).unwrap();
+        let chains = document["chains"].as_array().unwrap();
+        let regtest = chains.iter().find(|c| c["id"] == "monad-regtest").unwrap();
+        assert_eq!(
+            regtest["operator_checkpoint"],
+            serde_json::json!({ "block_number": 42, "block_hash": regtest_hash })
+        );
+        // A protocol-pinned checkpoint is protocol data: the relay never restates it.
+        let testnet = chains.iter().find(|c| c["id"] == "monad-testnet").unwrap();
+        assert!(testnet.get("operator_checkpoint").is_none());
     }
 
     #[tokio::test]

@@ -1,0 +1,14 @@
+# MinIO no longer publishes images (minio/minio and quay.io/minio are gone), so the lab builds
+# the server from its upstream source at a pinned release tag. Lab use only.
+FROM golang:1.24-bookworm AS build
+ARG MINIO_RELEASE=RELEASE.2025-09-07T16-13-09Z
+RUN git clone --depth 1 --branch "$MINIO_RELEASE" https://github.com/minio/minio /src
+WORKDIR /src
+RUN --mount=type=cache,id=frank-labs-minio-go,target=/root/go/pkg/mod \
+    --mount=type=cache,id=frank-labs-minio-build,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -o /minio .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /minio /usr/local/bin/minio
+ENTRYPOINT ["minio"]

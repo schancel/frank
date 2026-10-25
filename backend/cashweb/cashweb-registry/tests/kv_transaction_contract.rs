@@ -18,7 +18,7 @@ use std::{
 };
 
 use cashweb_registry::store::kv_store::{
-    KvError, RelayKvStore, RocksDbKvStore, Transact, MAX_TRANSACTION_BYTES,
+    KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact, MAX_TRANSACTION_BYTES,
     MAX_TRANSACTION_DURATION, MAX_VALUE_BYTES,
 };
 
@@ -159,6 +159,28 @@ fn range_read_conflicts_with_insert(a: &dyn RelayKvStore, b: &dyn RelayKvStore) 
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
+/// `a` reads a key, `b` clears it or adds to it, then `a` writes elsewhere: `a` must re-run.
+fn point_read_conflicts_with_clear_and_add(a: &dyn RelayKvStore, b: &dyn RelayKvStore) {
+    let attempts =
+        |key: &'static [u8],
+         concurrent: fn(&mut dyn KvTransaction, &[u8]) -> Result<(), KvError>| {
+            a.transact(|tx| tx.set(key, &1u64.to_le_bytes())).unwrap();
+            let count = AtomicU32::new(0);
+            a.transact(|tx| {
+                let attempt = count.fetch_add(1, Ordering::SeqCst) + 1;
+                tx.get(key)?;
+                if attempt == 1 {
+                    b.transact(|other| concurrent(other, key))?;
+                }
+                tx.set(b"point/z-summary", b"seen")
+            })
+            .unwrap();
+            count.load(Ordering::SeqCst)
+        };
+    assert_eq!(attempts(b"point/cleared", |tx, key| tx.clear(key)), 2);
+    assert_eq!(attempts(b"point/added", |tx, key| tx.atomic_add(key, 1)), 2);
+}
+
 fn limits_return_typed_errors(store: &dyn RelayKvStore) {
     store
         .transact(|tx| tx.set(b"limits/max", &vec![1; MAX_VALUE_BYTES]))
@@ -282,6 +304,7 @@ fn rocksdb_transaction_contract() {
     first_thread.join().unwrap();
     second_thread.join().unwrap();
     range_read_conflicts_with_insert(store.as_ref(), store.as_ref());
+    point_read_conflicts_with_clear_and_add(store.as_ref(), store.as_ref());
     limits_return_typed_errors(store.as_ref());
     atomic_adds_commute(store.clone(), store);
 }
@@ -384,6 +407,7 @@ mod live_fdb {
             assert!(peer.child.wait().unwrap().success());
         }
         range_read_conflicts_with_insert(a.as_ref(), b.as_ref());
+        point_read_conflicts_with_clear_and_add(a.as_ref(), b.as_ref());
         limits_return_typed_errors(a.as_ref());
         atomic_adds_commute(a.clone(), b.clone());
 

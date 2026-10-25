@@ -341,8 +341,8 @@ impl RocksDbKvStore {
     }
 
     fn resolver(&self) -> MutexGuard<'_, Resolver> {
-        // Every resolver update is completed before the guard is released, except a panic
-        // inside the synced write, after which the recorded writes are a superset: safe.
+        // Every resolver update is completed before the guard is released. A commit records its
+        // writes before the synced write, so a panic or error there leaves a safe superset.
         self.resolver.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -441,6 +441,13 @@ impl RocksTransaction<'_> {
                 }
             }
         }
+        // Record the writes before attempting them: if the write fails or panics, the history
+        // holds a superset of what committed, which only causes extra conflicts.
+        resolver.version += 1;
+        let version = resolver.version;
+        let keys = self.writes.keys().cloned().collect();
+        resolver.recent.push_back((version, keys));
+        resolver.prune();
         let mut options = WriteOptions::default();
         options.set_sync(true);
         // A failed synced write may still have reached the WAL, so its outcome is unknown.
@@ -448,11 +455,6 @@ impl RocksTransaction<'_> {
             .db
             .write_opt(batch, &options)
             .map_err(|e| CommitError::Failed(KvError::CommitUnknownResult(e.to_string())))?;
-        resolver.version += 1;
-        let version = resolver.version;
-        let keys = self.writes.keys().cloned().collect();
-        resolver.recent.push_back((version, keys));
-        resolver.prune();
         Ok(())
     }
 }

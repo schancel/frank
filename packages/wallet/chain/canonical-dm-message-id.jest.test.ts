@@ -1609,11 +1609,42 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       uninstall()
       uninstall = installCanonicalDirectory(alice, directory)
       const toBob = () => relayBodies.filter(request => !toAlice(request))
-      const selfCopies = () => relayBodies.filter(toAlice)
+      let digest: string | undefined
+      // Alice opens each of her own notes and keeps those that copy this message: they carry
+      // an `outbox-message` item (read back as the outbound message itself). A paid send's
+      // consolidator also notes its settled payments to self; those carry no copy.
+      const copiesMessage = async (request: { body: Uint8Array; contentType: string }) => {
+        const restored = restoreCanonicalRequest(request)
+        mailboxes.set(aliceSubject, [
+          {
+            delivery: restored.parts.delivery,
+            context: restored.parts.context,
+            submissionIdentity: restored.identity.submission_identity,
+            timestampMs: 1,
+          },
+        ])
+        try {
+          const { records } = await f.chain.directMessages
+            .scanAuthenticatedMailbox!({ wallet: alice, sinceMs: 0 })
+          return records.some(
+            record =>
+              record.payloadDigest === digest ||
+              record.items.some(item => item.type === 'outbox-message'),
+          )
+        } finally {
+          mailboxes.delete(aliceSubject)
+        }
+      }
+      const selfCopies = async () => {
+        // One at a time: each read is served from Alice's single-note mailbox.
+        const copies: { body: Uint8Array; contentType: string }[] = []
+        for (const note of relayBodies.filter(toAlice))
+          if (await copiesMessage(note)) copies.push(note)
+        return copies
+      }
       try {
         await history.enroll([originalCurrent.evidence], context)
         f.setPhase('retained')
-        let digest: string | undefined
         await attempt({
           messageId: ID_A,
           stampValue,
@@ -1629,9 +1660,8 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         expect(digest).toMatch(/^[0-9a-f]{64}$/)
         const beforeRequests = recovery === 'resend' ? 0 : 1
         expect(toBob()).toHaveLength(beforeRequests)
-        // Nothing is delivered yet, so no copy of the message is owed yet. (A paid one's
-        // consolidator may already note its settled payments to self.)
-        if (stampValue === 0n) expect(selfCopies()).toEqual([])
+        // Nothing is delivered yet, so no copy of the message is owed yet.
+        expect(await selfCopies()).toEqual([])
         let exact: { body: Uint8Array; contentType: string }
         if (recovery === 'resend') {
           const address = (await alice.getReceiveAddress()).raw.toLowerCase()
@@ -1715,18 +1745,15 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
           body: exactBody,
           contentType: exactType,
         })
-        // Unpaid notes to Alice herself: the sealed message's copy, and for a paid one also the
-        // consolidator's per-transaction notes, which go out as its payments settle. An unpaid
-        // message has only its copy, sent after the original was delivered.
-        const copies = selfCopies()
-        for (const copy of copies)
-          expect(restoreCanonicalRequest(copy).parts.transactions).toEqual([])
-        if (stampValue === 0n) {
-          expect(copies).toHaveLength(1)
-          expect(relayBodies.indexOf(copies[0])).toBeGreaterThan(
-            relayBodies.indexOf(toBob()[beforeRequests]),
-          )
-        } else expect(copies.length).toBeGreaterThan(0)
+        // Every note to Alice herself is unpaid. Exactly one copies the sealed message, sent after
+        // the original was delivered; a paid one's consolidator notes copy nothing.
+        for (const note of relayBodies.filter(toAlice))
+          expect(restoreCanonicalRequest(note).parts.transactions).toEqual([])
+        const copies = await selfCopies()
+        expect(copies).toHaveLength(1)
+        expect(relayBodies.indexOf(copies[0])).toBeGreaterThan(
+          relayBodies.indexOf(toBob()[beforeRequests]),
+        )
         expect(sign).toHaveBeenCalledTimes(stampValue === 0n ? 0 : 1)
         // One payment set ever went to Bob.
         expect(

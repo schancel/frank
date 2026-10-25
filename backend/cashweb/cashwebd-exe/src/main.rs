@@ -352,6 +352,31 @@ fn group_backend(
     }
 }
 
+/// The directory backend selected by `registry.cluster.driver`: FoundationDB keys under
+/// `<fdb_subspace_prefix>directory-v1/`, or a RocksDB store inside the registry path.
+fn directory_backend(
+    driver: &RelayStorageDriver,
+    registry_db: &std::path::Path,
+) -> Result<cashweb_registry::store::directory_store::DirectoryBackend> {
+    use cashweb_registry::store::directory_store::DirectoryBackend;
+    match driver {
+        RelayStorageDriver::RocksDb => {
+            Ok(DirectoryBackend::RocksDbInside(registry_db.to_path_buf()))
+        }
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => Ok(DirectoryBackend::Shared(foundationdb_store(
+            cluster_file,
+            subspace_prefix,
+            "directory-v1",
+        )?)),
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by boot_fdb_network"),
+    }
+}
+
 /// The registry `Db` selected by `registry.cluster.driver`: RocksDB at `db_path`, or the
 /// FoundationDB subspace `<fdb_subspace_prefix>registry-v1/` with `db_path` as this replica's
 /// directory for the owners that are still local.
@@ -418,6 +443,12 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
             "The registry (profiles, usernames, metadata, topics) is stored in FoundationDB \
              under {subspace_prefix}registry-v1/"
         );
+        if registry.directory.is_some() {
+            info!(
+                subspace_prefix = %subspace_prefix,
+                "The directory is stored in FoundationDB under {subspace_prefix}directory-v1/"
+            );
+        }
     }
     if !registry.is_cluster_mode() {
         return;
@@ -472,6 +503,30 @@ fn probe_shared_registry(db: &Db, driver: &RelayStorageDriver) -> Result<()> {
         bitcoinsuite_error::Report::msg(format!("Reading the FoundationDB registry store: {error}"))
     })?;
     info!("FoundationDB registry store is readable");
+    Ok(())
+}
+
+/// Open the shared directory store once at startup (see [`probe_shared_groups`]).
+async fn probe_shared_directory(
+    directory: &cashweb_registry::store::directory_store::DirectoryBackend,
+    objects: &Arc<dyn cashweb_registry::store::large_values::ObjectStore>,
+) -> Result<()> {
+    if matches!(
+        directory,
+        cashweb_registry::store::directory_store::DirectoryBackend::RocksDbInside(_)
+    ) {
+        return Ok(());
+    }
+    let (directory, objects) = (directory.clone(), Arc::clone(objects));
+    tokio::task::spawn_blocking(move || directory.probe_shared(objects))
+        .await
+        .wrap_err("FoundationDB probe task failed")?
+        .map_err(|error| {
+            bitcoinsuite_error::Report::msg(format!(
+                "Reading the FoundationDB directory store: {error}"
+            ))
+        })?;
+    info!("FoundationDB directory store is readable");
     Ok(())
 }
 
@@ -549,6 +604,10 @@ async fn run(
     probe_shared_groups(&groups, &objects, conf.registry.groups).await?;
     probe_shared_registry(&db, &driver)?;
     probe_shared_messages(messages.as_ref()).await?;
+    let directory = directory_backend(&driver, &conf.registry.db_path)?;
+    if conf.registry.directory.is_some() {
+        probe_shared_directory(&directory, &objects).await?;
+    }
     if check_db {
         return Ok(());
     }
@@ -603,6 +662,7 @@ async fn run(
         conf.registry.net,
         Arc::clone(&event_bus),
         RegistryBackends {
+            directory,
             groups,
             objects,
             group_policy: conf.registry.groups,
@@ -618,14 +678,31 @@ async fn run(
             loop {
                 interval.tick().await;
                 let registry = Arc::clone(&registry);
-                let sweep =
-                    tokio::task::spawn_blocking(move || registry.sweep_large_values(holder));
+                let sweep = tokio::task::spawn_blocking(move || {
+                    (
+                        registry
+                            .sweep_large_values(holder)
+                            .map_err(|e| e.to_string()),
+                        registry.sweep_directory_large_values(holder),
+                    )
+                });
                 match sweep.await {
-                    Ok(Ok(report)) if report.deleted > 0 => {
-                        info!("Large-value sweep deleted {} objects", report.deleted)
+                    Ok(results) => {
+                        for (owner, result) in [("group", results.0), ("directory", results.1)] {
+                            match result {
+                                Ok(report) if report.deleted > 0 => info!(
+                                    "Large-value sweep deleted {} {owner} objects",
+                                    report.deleted
+                                ),
+                                Ok(_) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        "Large-value sweep of {owner} objects failed: {error}"
+                                    )
+                                }
+                            }
+                        }
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(error)) => tracing::warn!("Large-value sweep failed: {error}"),
                     Err(error) => tracing::warn!("Large-value sweep panicked: {error}"),
                 }
             }
@@ -1089,6 +1166,23 @@ max_get_logs_range = 10\n\n\
             format!("{error:#}").contains("requires an enabled [registry.cluster.nats] bus"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn the_cluster_lab_relay_configuration_is_valid_and_shares_the_directory() {
+        // The template lab-init fills in, with the proxy origin it substitutes.
+        let config = include_str!("../../../labs/cluster/relay.toml.in")
+            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18080");
+        let (conf, _, _) =
+            read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV)).unwrap();
+        assert!(conf.registry.directory.is_some());
+        let owners = conf.registry.replica_local_owners();
+        assert!(owners.contains(&cashweb_config::ReplicaLocalOwner::DirectoryEnrollmentQuotas));
+        assert!(!owners.contains(&cashweb_config::ReplicaLocalOwner::Directory));
+        assert!(matches!(
+            conf.registry.large_values,
+            Some(cashweb_config::LargeValuesConf::S3 { .. })
+        ));
     }
 
     #[test]

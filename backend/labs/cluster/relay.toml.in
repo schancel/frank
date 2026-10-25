@@ -34,13 +34,26 @@ driver = "foundationdb"
 fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
-# Every owner but groups, large values and the registry database still keeps its state on
-# each replica; the startup log names them.
+# Groups, large values, the registry database and the directory are shared; the other owners
+# still keep their state on each replica, and the startup log names them.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]
 enabled = true
 url = "nats://nats:4222"
+
+# The open directory, shared by all three replicas through FoundationDB, with evidence over
+# 64 KiB in the MinIO above. A synthetic relay tuple (the reviewed vectors' relay); the cluster
+# contract signs entries naming it.
+[registry.directory]
+relay_id = "000102030405060708090a0b0c0d0e0f"
+relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
+endpoint = "https://relay.example.invalid"
+# 2028-01-01T00:00:00Z
+binding_expiry_ns = "1830297600000000000"
+# The contract publishes hundreds of accounts from one container; the per-source hourly
+# quota is still counted by each replica (HA step 10).
+enrollments_per_source_per_hour = 100000
 
 # Optional chain upstream. The URL is read from MONAD_TESTNET_HTTP_RPC_URL, which compose passes
 # through from the host environment and which is never written to a file. Unset, the row is

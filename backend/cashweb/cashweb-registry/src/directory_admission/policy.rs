@@ -71,6 +71,20 @@ pub(crate) fn clock(
     Ok(now)
 }
 
+/// Trusted time for a relay's replicated routing table: the later of `now` and the stored
+/// checked-time floor `prior`, so replicas with slightly different clocks agree. A missing or
+/// invalid `now` still fails closed.
+pub(crate) fn clock_floor(
+    now: Option<Timestamp>,
+    prior: Option<Timestamp>,
+) -> Result<Timestamp, AdmissionError> {
+    let now = clock(now, None)?;
+    Ok(match prior {
+        Some(prior) if nanos(prior) > nanos(now) => prior,
+        _ => now,
+    })
+}
+
 pub(crate) fn validate_anchor(anchor: &Anchor) -> Result<(), AdmissionError> {
     let n = &anchor.network;
     if n.is_empty()

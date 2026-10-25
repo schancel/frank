@@ -1,6 +1,7 @@
 # Builds the cashweb-registry FoundationDB transaction contract and NATS lab tests, the
-# cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`), and the
-# two-relay registry test (usernames raced across relays, profiles replaced across relays).
+# cluster-mode daemon test (the real cashwebd-exe built with `--features foundationdb`), the
+# two-relay registry test (usernames raced across relays, profiles replaced across relays), and
+# the directory's cross-process forward-claim test (from the same library test executable).
 # Keep server/client release versions identical. FDB's image supplies native libfdb_c.
 FROM foundationdb/foundationdb:7.3.63 AS fdb-client
 FROM rust:1-bookworm
@@ -36,4 +37,5 @@ RUN --mount=type=cache,sharing=locked,id=frank-labs-registry,target=/usr/local/c
     cp target/debug/cashwebd-exe /cashwebd-exe
 ENV FRANK_CASHWEBD_EXE=/cashwebd-exe
 # The transaction contract starts its two FDB worker processes from its own executable.
-ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture && /registry-cluster --exact store::registry_fdb_tests::registry_is_shared_by_two_relays_through_foundationdb --ignored --nocapture"]
+# The directory's forward-claim test starts and SIGKILLs worker processes of its own executable.
+ENTRYPOINT ["/bin/sh", "-c", "/kv-transaction-contract --exact live_fdb::foundationdb_transaction_contract --ignored --nocapture && /backend-contract --nocapture && /foundationdb-daemon --ignored --nocapture && /registry-cluster --exact store::registry_fdb_tests::registry_is_shared_by_two_relays_through_foundationdb --ignored --nocapture && /registry-cluster --exact store::directory_subjects::fdb::forward_claims_and_counters_across_processes --ignored --nocapture"]

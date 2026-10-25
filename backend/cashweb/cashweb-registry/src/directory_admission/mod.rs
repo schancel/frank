@@ -190,6 +190,9 @@ pub enum AdmissionError {
     /// Missing/corrupt/unknown local format, storage error, or unusable handle.
     #[error("unavailable")]
     Unavailable,
+    /// Concurrent writers kept changing this subject; nothing was written. Retry.
+    #[error("contended")]
+    Contended,
 }
 
 /// Exact authenticated historical bytes. This type grants no fresh routing authority.

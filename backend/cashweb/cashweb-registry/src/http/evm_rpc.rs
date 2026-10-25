@@ -1023,7 +1023,7 @@ async fn admitted_customer(
                 .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?
                 .to_owned(),
         ),
-        None => directory.subject_for_address(network, &customer.0),
+        None => directory.subject_for_address(network, &customer.0).await,
     };
     let Some(point) = presented.and_then(|point| hex::decode(point).ok()) else {
         return Ok(None);

@@ -14,9 +14,15 @@
 //! durably, and re-sent to that relay until it gives a final answer. Re-sending the same bytes is
 //! idempotent on the receiving relay, so the recipient gets one message however often either
 //! relay restarts.
+//!
+//! Replicas of one relay share the directory store. A forward is claimed by compare-and-set
+//! before each attempt and its outcome is written only by its claimer, so no two replicas
+//! attempt one forward at once; a claim left by a replica that died expires and another
+//! replica takes the forward over. Comparing entries with peers and retrying forwards on a
+//! timer runs on one replica at a time, the holder of the store's federation lease.
 use crate::{
     directory_runtime::{DirectoryRuntime, Operation, RuntimeError},
-    store::directory_subjects::ForwardRow,
+    store::directory_subjects::{DbDirectorySubjects, ForwardClaimed, ForwardRow},
 };
 use std::{
     collections::HashMap,
@@ -38,6 +44,13 @@ pub(crate) const MAX_PENDING_FORWARDS: usize = 1024;
 /// A forward the recipient's relay never accepted is given up after this long.
 const FORWARD_LIFETIME_MS: i64 = 24 * 3600 * 1000;
 const MAX_BACKOFF_MS: i64 = 300_000;
+/// How long one replica's attempt at a forward excludes the others: longer than an attempt
+/// (offering the sender's chain and sending the message, each request bounded by
+/// [`REQUEST_TIMEOUT`]) normally takes. A replica that dies mid-attempt delays the forward by
+/// at most this long.
+pub(crate) const FORWARD_CLAIM_MS: u64 = 120_000;
+/// The timer work's lease name in the directory store.
+pub(crate) const FEDERATION_LEASE: &[u8] = b"federation";
 
 /// Peers and outgoing HTTP of one relay.
 #[derive(Debug)]
@@ -51,6 +64,20 @@ pub struct Federation {
     unknown: Mutex<HashMap<String, Instant>>,
     announcements: Arc<tokio::sync::Semaphore>,
     coordinator: Option<Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>>,
+    /// This process's identity for forward claims and the federation lease.
+    holder: [u8; 16],
+}
+
+/// Run a directory store call on a blocking worker. `None` when the store cannot be used.
+async fn blocking<T: Send + 'static>(
+    runtime: &DirectoryRuntime,
+    call: impl FnOnce(DbDirectorySubjects) -> bitcoinsuite_error::Result<T> + Send + 'static,
+) -> Option<T> {
+    let registry = runtime.registry().clone();
+    tokio::task::spawn_blocking(move || registry.directory_subjects().and_then(call).ok())
+        .await
+        .ok()
+        .flatten()
 }
 
 fn now_ms() -> i64 {
@@ -131,6 +158,7 @@ impl Federation {
             unknown: Mutex::new(HashMap::new()),
             announcements: Arc::new(tokio::sync::Semaphore::new(8)),
             coordinator,
+            holder: rand::random(),
         }
     }
 
@@ -249,7 +277,7 @@ impl Federation {
         network: &str,
         subject: &str,
     ) -> bool {
-        if runtime.is_published(network, subject) {
+        if runtime.is_published(network, subject).await {
             return true;
         }
         let key = format!("s:{network}:{subject}");
@@ -258,7 +286,7 @@ impl Federation {
         }
         for peer in &self.peers {
             self.pull(runtime, peer, network, subject).await;
-            if runtime.is_published(network, subject) {
+            if runtime.is_published(network, subject).await {
                 return true;
             }
         }
@@ -301,7 +329,7 @@ impl Federation {
                 continue;
             }
             self.pull(runtime, peer, network, &subject).await;
-            if runtime.is_published(network, &subject) {
+            if runtime.is_published(network, &subject).await {
                 return Some(subject);
             }
         }
@@ -411,7 +439,7 @@ impl Federation {
                         item["retained"].as_u64().unwrap_or(0),
                         item["forked"].as_bool().unwrap_or(false),
                     );
-                    let ours = runtime.listed(&network, subject);
+                    let ours = runtime.listed(&network, subject).await;
                     if ours.as_ref() == Some(&theirs) {
                         continue;
                     }
@@ -439,27 +467,35 @@ impl Federation {
         public_endpoint(endpoint)
     }
     /// Try once to hand a retained message to the recipient's relay. Returns what the sender
-    /// should be told now: the recipient relay's own answer, or "retained".
+    /// should be told now: the recipient relay's own answer, or "retained". While another
+    /// replica attempts the same forward this one sends nothing and answers "retained".
     pub(crate) async fn forward(
         self: &Arc<Self>,
         runtime: &DirectoryRuntime,
         identity: &[u8; 32],
     ) -> Option<(u16, String)> {
-        let registry = runtime.registry().clone();
-        let save = |row: &ForwardRow| {
-            registry
-                .directory_subjects()
-                .and_then(|rows| rows.put_forward(identity, row, None))
-                .ok()
+        let (id, holder) = (*identity, self.holder);
+        let claimed = blocking(runtime, move |rows| {
+            rows.claim_forward(&id, &holder, FORWARD_CLAIM_MS)
+        })
+        .await?;
+        let mut row = match claimed {
+            ForwardClaimed::Missing => return None,
+            ForwardClaimed::Done(row) => return Some((row.status, row.response)),
+            ForwardClaimed::Held(row) => {
+                let retained =
+                    serde_json::json!({"version":1,"phase":"retained","identity":row.echo});
+                return Some((202, retained.to_string()));
+            }
+            ForwardClaimed::Claimed(row) => row,
         };
-        let mut row = registry
-            .directory_subjects()
-            .ok()?
-            .forward(identity)
-            .ok()??;
-        if row.done {
-            return Some((row.status, row.response));
-        }
+        // Records this attempt's outcome and releases the claim. Nothing is written when the
+        // claim expired and another replica took the forward over; its outcome stands.
+        let save = |row: ForwardRow| async move {
+            blocking(runtime, move |rows| rows.finish_forward(&id, &holder, &row))
+                .await
+                .filter(|finished| *finished)
+        };
         let retained =
             serde_json::json!({"version":1,"phase":"retained","identity":row.echo}).to_string();
         let give_up = |row: &mut ForwardRow| {
@@ -471,18 +507,14 @@ impl Federation {
         };
         let now = now_ms();
         let target = self.target(&row.endpoint);
-        let body = registry
-            .directory_subjects()
-            .ok()?
-            .forward_body(identity)
-            .ok()?;
+        let body = blocking(runtime, move |rows| rows.forward_body(&id)).await?;
         let (Some(target), Some(body), true) = (
             target,
             body,
             now.saturating_sub(row.created_ms) < FORWARD_LIFETIME_MS,
         ) else {
             give_up(&mut row);
-            save(&row)?;
+            save(row.clone()).await?;
             return Some((row.status, row.response));
         };
         // The recipient's relay must know the sender's entry to verify the message. Offer it
@@ -544,33 +576,39 @@ impl Federation {
                 (202, retained)
             }
         };
-        save(&row)?;
+        save(row).await?;
         Some(reply)
     }
     /// Retry every forward that is due and drop finished ones after a day.
     pub async fn retry_forwards(self: &Arc<Self>, runtime: &DirectoryRuntime) {
-        let registry = runtime.registry().clone();
-        let Ok(forwards) = registry
-            .directory_subjects()
-            .and_then(|rows| rows.forwards())
-        else {
+        let Some(forwards) = blocking(runtime, |rows| rows.forwards()).await else {
             return;
         };
         let now = now_ms();
         for (identity, row) in forwards {
             if row.done {
                 if now.saturating_sub(row.created_ms) > 2 * FORWARD_LIFETIME_MS {
-                    if let Ok(rows) = registry.directory_subjects() {
-                        let _ = rows.delete_forward(&identity);
-                    }
+                    blocking(runtime, move |rows| rows.delete_forward(&identity)).await;
                 }
             } else if row.next_ms <= now {
                 self.forward(runtime, &identity).await;
             }
         }
     }
-    /// One round of everything this relay does on a timer.
+    /// One round of everything this relay does on a timer, on the replica holding the
+    /// federation lease; the others skip the round. The lease outlives a few rounds so a
+    /// holder that stops is replaced within that time.
     pub async fn tick(self: &Arc<Self>, runtime: &DirectoryRuntime) {
+        let holder = self.holder;
+        let ttl = (runtime.sync_interval() * 3).max(Duration::from_secs(60));
+        let ttl_ms = ttl.as_millis().min(u64::MAX as u128) as u64;
+        let leading = blocking(runtime, move |rows| {
+            rows.hold_lease(FEDERATION_LEASE, &holder, ttl_ms)
+        })
+        .await;
+        if leading != Some(true) {
+            return;
+        }
         self.sync(runtime).await;
         if self.forwarding {
             self.retry_forwards(runtime).await;

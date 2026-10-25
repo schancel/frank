@@ -105,6 +105,19 @@ errors without committing, and that concurrent atomic adds commute. The same
 contract runs against RocksDB in every `cargo test` (`rocksdb_transaction_contract`).
 It uses a fresh random subspace and clears only that subspace on success.
 
+Next, the directory's cross-process test
+(`cashweb-registry/src/store/directory_subjects_fdb_tests.rs`, in the library's test
+binary) claims a forward in one worker process and SIGKILLs it before it sends; a second
+worker is refused while that claim lives, then takes the forward over and sends it once.
+Four processes racing to claim one forward give one winner, and three processes enrolling
+20 subjects each against a cap of 25 enroll exactly 25:
+
+```sh
+FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster cargo test -p cashweb-registry \
+  --features foundationdb --lib -- --ignored --exact --nocapture \
+  store::directory_subjects::fdb::forward_claims_and_counters_across_processes
+```
+
 `FRANK_FDB_CLUSTER_FILE=/cluster/fdb.cluster` points at the cluster file shared
 with the FDB container. A second process runs the same real NATS/offline cursor
 contract as the Rocks lab, with `FoundationDbKvStore` selected at compile time by
@@ -212,9 +225,11 @@ Services:
   (`[registry.large_values]`, HA step 4).
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), the free group
-  policy, no mailbox, forum or directory, and the optional chain row above. Each keeps
-  its own RocksDB volume. Groups and the registry database are shared through
-  FoundationDB, and large values through MinIO; the other owners are still replica-local, so the preview flag is set,
+  policy, large values in the MinIO bucket above, the open directory with a synthetic
+  relay tuple, no mailbox or forum, and the optional chain row above. Each keeps its own
+  RocksDB volume. Groups, the registry database and the directory are shared through
+  FoundationDB, and large values through MinIO. The other owners, and the directory's
+  per-source hourly enrollment quota, are still replica-local, so the preview flag is set,
   and each relay's startup log names them:
 
 ```sh
@@ -271,6 +286,15 @@ to all three relays and to the proxy:
   is still woken (by A's own tick) and readers on C and A catch up
   from their cursors with nothing lost; after NATS starts again, wakeups cross replicas
   again on that same socket and on a new one;
+- directory: an entry published on A resolves on B, C and the proxy, by key and by
+  address, and a renewal on C is what A and B serve next;
+- directory: over 20 rounds, two conflicting renewals of one revision sent to A and B at
+  once give exactly one 200 and one 409, every relay serves the winner, the subject is not
+  quarantined and renews again on C, and one first entry sent to A and B at once enrolls
+  once with both answering 200;
+- directory: relay-a killed mid-load while three writers publish 40 accounts each (revision
+  0 and one renewal, retried on the next relay): every acknowledged account resolves at its
+  acknowledged head on every relay;
 - FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
   three writers append 150 messages each and retry a failed append, with the same
   envelope, on the next relay. The test checks that the container really restarted

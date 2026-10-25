@@ -976,7 +976,8 @@ describe("FrankBotHost Reliability Features", () => {
       }
     });
 
-    it("are not passed while the read is incomplete", async () => {
+    it("hold the cursor at a record the wallet cannot translate yet, while later messages are handled", async () => {
+      const handled: string[] = [];
       const host = new FrankBotHost({
         relayBaseUrl: "http://127.0.0.1:8098",
         stateDir: `${stateDir}/own-sends-incomplete`,
@@ -984,25 +985,51 @@ describe("FrankBotHost Reliability Features", () => {
       await host.register({
         id: "own-sends-incomplete",
         getProfile: () => ({ name: "OwnSendsIncomplete", bot: true }),
-        onMessage: async () => [],
+        onMessage: async (context) => {
+          handled.push(context.payloadDigest);
+          return [];
+        },
       });
       const instance = (host as any).instances.get("own-sends-incomplete");
       const initial = instance.lastPollTimestamp;
-      const persisted = await instance.state.get("cursor:lastPollTimestamp");
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       try {
-        // A wallet that reports one record it cannot translate yet, then returns the rest.
+        // The wallet reports one record it cannot translate yet and returns the others.
         mockDirectMessagesFetchSince.mockImplementationOnce(async (params) => {
           params.onIncompleteTimestamp(initial + 10);
-          return [sent("6", initial + 20)];
+          return [
+            {
+              senderAddress: { raw: mockPeer.address.toLowerCase() },
+              senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+              recipientPublicKey: getBytes("0x" + mockLocalSubject),
+              recipientAddress: { raw: mockLocalAddress },
+              messageId: "02020202-0202-0202-0202-020202020202",
+              conversationId: "01010101-0101-0101-0101-010101010101",
+              items: [{ type: "text", text: "Later" }],
+              payloadDigest: "44".repeat(32),
+              receivedTime: initial + 20,
+            },
+            sent("6", initial + 30),
+          ];
         });
         await (host as any).pollAllBots();
-        expect(instance.lastPollTimestamp).toBe(initial);
+        await instance.peerQueue.enqueue(
+          mockPeer.address.toLowerCase(),
+          async () => {}
+        );
+        expect(handled).toEqual(["44".repeat(32)]);
+        // Neither the read nor the finished message moves the cursor past the record.
+        expect(instance.lastPollTimestamp).toBe(initial + 10);
         expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
-          persisted
+          String(initial + 10)
         );
         expect(warn.mock.calls.flat().join(" ")).toContain(
-          `incomplete at timestamp ${initial + 10}`
+          `record at ${initial + 10} cannot be read yet`
+        );
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([]);
+        await (host as any).pollAllBots();
+        expect(mockDirectMessagesFetchSince.mock.calls.at(-1)[0].sinceMs).toBe(
+          initial + 10
         );
       } finally {
         warn.mockRestore();
@@ -1044,6 +1071,8 @@ describe("FrankBotHost Reliability Features", () => {
         await (host as any).pollAllBots();
         expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(2);
       } finally {
+        // stop() waits for a read still running; this one would never end on its own.
+        finishRead?.();
         warn.mockRestore();
         mockDirectMessagesFetchSince.mockReset().mockResolvedValue([]);
         await host.stop();

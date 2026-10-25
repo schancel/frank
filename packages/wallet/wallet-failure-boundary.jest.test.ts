@@ -21,6 +21,9 @@ function dependencies(source: string): string[] {
 it('keeps generic failure facts independent of every runtime owner', () => {
   expect(dependencies(readFileSync(join(__dirname, 'wallet-failure.ts'), 'utf8'))).toEqual([])
 })
+it('keeps the EVM vendor adapter dependent only on the failure facts it records', () => {
+  expect(dependencies(readFileSync(join(__dirname, 'evm-rpc-failure.ts'), 'utf8'))).toEqual(["'./wallet-failure'"])
+})
 it.each([
   "import type { WalletHandle } from './chain'",
   "export { activeChain } from './chain'",

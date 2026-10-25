@@ -91,3 +91,5 @@ jobs:
       - run: yarn install
       - name: Cashweb message-store regressions
         run: yarn workspace @frank/cashweb test --ci --runInBand relay/storage/level-storage.jest.test.ts
+      - name: Cashweb has no wallet dependency
+        run: yarn workspace @frank/cashweb test --ci --runInBand wallet-dependency-boundary.jest.test.ts

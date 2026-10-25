@@ -44,8 +44,11 @@ export const MONAD_REGTEST_MIN_STAMP_WEI = 1_000_000_000_000n
  */
 const FAUCET_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const UPSTREAM_ENV = 'MONAD_REGTEST_HTTP_RPC_URL'
-/** The first block after genesis: every solonet starts from the same genesis allocation. */
-const CHECKPOINT_HEIGHT = 1
+/**
+ * How far below the head the relay's checkpoint sits. Solonet keeps only its last few thousand
+ * blocks, so a long-lived chain no longer has block 1; a recent block is always there.
+ */
+const CHECKPOINT_DEPTH = 16
 
 const PROFILE = 'frank-solonet'
 const CONTAINER = 'frank-solonet'
@@ -242,10 +245,14 @@ export async function startMonadRegtest(
     provider.destroy()
     throw new Error(`${rpcUrl} reports chain id ${reported}, not a Monad solonet (${MONAD_REGTEST_CHAIN_ID})`)
   }
-  const checkpoint = await provider.getBlock(CHECKPOINT_HEIGHT)
+  const checkpointHeight = Math.max(
+    1,
+    (await provider.getBlockNumber()) - CHECKPOINT_DEPTH,
+  )
+  const checkpoint = await provider.getBlock(checkpointHeight)
   if (!checkpoint?.hash) {
     provider.destroy()
-    throw new Error(`solonet has no block ${CHECKPOINT_HEIGHT} yet`)
+    throw new Error(`solonet has no block ${checkpointHeight}`)
   }
   const faucet = new Wallet(FAUCET_PRIVATE_KEY, provider)
 
@@ -263,7 +270,7 @@ export async function startMonadRegtest(
 
   return {
     chainIdentifier: MONAD_REGTEST_CHAIN,
-    checkpoint: { height: CHECKPOINT_HEIGHT, hash: checkpoint.hash },
+    checkpoint: { height: checkpointHeight, hash: checkpoint.hash },
     relay: {
       section: 'evm_rpc',
       row: [
@@ -271,7 +278,7 @@ export async function startMonadRegtest(
         `id = "${MONAD_REGTEST_CHAIN}"`,
         `expected_chain_id = ${MONAD_REGTEST_CHAIN_ID}`,
         `upstream_env = "${UPSTREAM_ENV}"`,
-        `checkpoint_block_number = ${CHECKPOINT_HEIGHT}`,
+        `checkpoint_block_number = ${checkpointHeight}`,
         `checkpoint_block_hash = "${checkpoint.hash}"`,
         ...(wsUrl ? ['upstream_ws_env = "MONAD_REGTEST_WS_RPC_URL"'] : []),
         'max_get_logs_range = 10',

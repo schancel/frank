@@ -13,6 +13,9 @@
  */
 import { join, resolve } from 'path'
 
+import { Wallet } from 'ethers'
+
+import { findWallets, TRANSFER_GAS } from '../funds'
 import { openRealWallet, RealWallet } from '../real-stack'
 import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_NETWORK_TAG, MonadRegtest } from './monad-regtest'
 import type { RegtestStack } from './regtest-stack'
@@ -68,4 +71,53 @@ export async function deployMonadContracts(stack: RegtestStack): Promise<Deploym
     chainIdentifier: MONAD_REGTEST_CHAIN,
     outDir: resolve(join(stack.stateDir, 'deployments')),
   })
+}
+
+/**
+ * Sends everything the stack's wallets hold back to the faucet, so a check leaves nothing in
+ * accounts whose keys go with the stack's directory: each wallet's main, identity and change
+ * accounts, found and derived the way `funds:sweep` finds them. It first lets the wallets' last
+ * transactions settle (Monad refuses to empty an account within a few blocks of its last one),
+ * then moves one account at a time. Returns what came back and what stayed (dust or a failure).
+ */
+export async function returnToFaucet(
+  stack: RegtestStack,
+): Promise<{ returnedWei: bigint; leftWei: bigint }> {
+  const monad = monadOf(stack)
+  await monad.mine(4)
+  const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
+  const fee = TRANSFER_GAS * gasPrice
+  let returnedWei = 0n
+  let leftWei = 0n
+  const seen = new Set<string>()
+  for (const wallet of await findWallets(stack.stateDir))
+    for (const account of wallet.accounts) {
+      const address = account.address.toLowerCase()
+      if (!account.privateKey || seen.has(address)) continue
+      seen.add(address)
+      const held = await monad.provider.getBalance(address)
+      // Not worth a transfer that costs about what it returns.
+      if (held <= fee * 2n) {
+        leftWei += held
+        continue
+      }
+      // One account that cannot be swept (a payment still in flight, a timeout) leaves the rest
+      // to be swept.
+      try {
+        const signer = new Wallet(account.privateKey, monad.provider)
+        const tx = await signer.sendTransaction({
+          type: 0,
+          to: monad.faucetAddress,
+          value: held - fee,
+          gasLimit: TRANSFER_GAS,
+          gasPrice,
+        })
+        const receipt = await tx.wait(1, 120_000)
+        if (receipt?.status === 1) returnedWei += held - fee
+        else leftWei += held
+      } catch {
+        leftWei += held
+      }
+    }
+  return { returnedWei, leftWei }
 }

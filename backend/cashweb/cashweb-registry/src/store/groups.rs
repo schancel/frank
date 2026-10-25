@@ -839,7 +839,7 @@ fn put_value(tx: &mut dyn KvTransaction, key: &[u8], value: &[u8]) -> Result<(),
 fn check_baseline(tx: &mut dyn KvTransaction) -> Result<(), GroupError> {
     match tx.get(GROUP_FORMAT_KEY)? {
         Some(version) if version == GROUP_FORMAT => Ok(()),
-        Some(_) => Err(GroupError::Storage("unsupported group store format; preserve/export group receipts and explicitly reset only disposable dedicated group relay state".into())),
+        Some(_) => Err(GroupError::Storage("unsupported group store format; preserve/export group receipts and explicitly reset only disposable dedicated group relay state: the group store and the groups/ prefix of the large-value object store, whose namespace claim names it".into())),
         None => {
             for prefix in GROUP_OWNED_PREFIXES {
                 if !tx.scan_prefix(prefix, None, 1)?.is_empty() {

@@ -2,7 +2,7 @@
 // registry database, directory runtime and clock, and all of them share the directory's
 // transaction store and object store, as replicas on FoundationDB and S3 do. The store here is
 // the RocksDB driver of the same transaction contract; the FoundationDB driver is exercised by
-// `tests/directory_replicas_foundationdb.rs` and the cluster lab.
+// `store/directory_subjects_fdb_tests.rs` (in the FDB lab) and the cluster lab.
 use super::*;
 use crate::store::{
     directory_store::DirectoryBackend,

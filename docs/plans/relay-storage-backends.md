@@ -77,6 +77,15 @@ keys, no funds). A shared store holding rows of another format, or rows without 
 subspace. Profile and topic values longer than 100 KB are split into parts in the same
 transaction until large values move to the object store.
 
+Large values over 64 KiB live in `[registry.large_values]`, one object namespace per owner:
+`groups/` and `directory/`. Each namespace holds a `claim` object tying it to that owner's
+transaction store. A development reset of an owner therefore deletes both its transaction
+store (RocksDB path or FoundationDB subspace) and its object prefix (`<bucket
+prefix>/groups/` or `<bucket prefix>/directory/`), or the next start refuses the namespace
+as claimed by another index. A single-node relay without `[registry.large_values]` keeps its
+objects in `<registry db_path>.large-values`, for example `registry.rocksdb.large-values`. A
+relay built before #1858 kept local large values at `<stem>.large-values`; delete it.
+
 ## Required predecessor stack
 
 1. Pin the existing owners' externally observable behavior: atomic message admission,

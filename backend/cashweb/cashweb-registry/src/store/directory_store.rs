@@ -275,8 +275,10 @@ impl Owner {
                 let reset = format!(
                     "The directory store at {} was written by an earlier development build and \
                      this build has no reader for it. Development reset: stop the relay and delete \
-                     {}. It holds public directory entries and forward state only: no keys and no \
-                     funds. Accounts publish their entries again.",
+                     {} and the directory/ prefix of the large-value object store (its \
+                     namespace claim names this store). They hold public directory entries and \
+                     forward state only: no keys and no funds. Accounts publish their entries \
+                     again.",
                     path.display(),
                     path.display()
                 );
@@ -315,8 +317,10 @@ impl Owner {
                 Arc::clone(kv),
                 "The shared directory store holds a format this build has no reader for. \
                  Development reset: stop every relay of the cluster and clear the FoundationDB \
-                 keys under <fdb_subspace_prefix>directory-v1/. They hold public directory \
-                 entries and forward state only: no keys and no funds."
+                 keys under <fdb_subspace_prefix>directory-v1/ and the objects under \
+                 <bucket prefix>/directory/ in [registry.large_values] (its namespace claim \
+                 names this store). They hold public directory entries and forward state only: \
+                 no keys and no funds."
                     .to_owned(),
             ),
         };
@@ -379,6 +383,11 @@ mod tests {
         let owner = Owner::new(DirectoryBackend::Shared(other), objects);
         let error = owner.open(true).unwrap_err();
         assert!(error.to_string().contains("directory-v1/"), "{error}");
+        // The namespace claim object outlives a cleared subspace; the reset names it too.
+        assert!(
+            error.to_string().contains("<bucket prefix>/directory/"),
+            "{error}"
+        );
     }
 
     #[test]

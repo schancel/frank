@@ -131,10 +131,17 @@ export function installEvmWalletCoinList(params: {
           privateKey: () => pool.privateKeyOf(record.index),
         })
       }
+      // A received coin is an input only once the wallet has verified on chain that its
+      // transfer landed (`unspent`, or `spent` after that). A pending or failed one is a
+      // sender's claim: its account is not watched, so whatever money sits there is never
+      // listed, spent or swept, and the balance (which counts only verified coins) is what Send
+      // can spend. Once verified, its account is read like any other.
+      const unverified = new Set<string>()
       for (const coin of coinStore.all()) {
-        // Legacy receipt rows are key ownership evidence even while their old state is
-        // pending/spent/failed. The current nonce and balance come from chain observation;
-        // the old state must not hide a still-funded account from migration.
+        if (coin.state !== 'unspent' && coin.state !== 'spent') {
+          unverified.add(coin.address.toLowerCase())
+          continue
+        }
         add({
           account: coin.address,
           origin: coin.origin,
@@ -162,13 +169,15 @@ export function installEvmWalletCoinList(params: {
           })
       // New-format destinations are owned by the list/journal before legacy pool audit records
       // exist. Reopen must keep watching them, including successors at a later nonce.
-      for (const coin of coinList.all())
+      for (const coin of coinList.all()) {
+        if (unverified.has(coin.account)) continue
         add({
           account: coin.account,
           origin: coin.origin,
           changeIndex: coin.changeIndex,
           privateKey: () => coin.privateKey,
         })
+      }
       return [...sources.values()]
     },
   })

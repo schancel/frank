@@ -4758,8 +4758,37 @@ describe('stamp quote and send share chain-authoritative legacy inventory', () =
     jest.restoreAllMocks()
   })
 
+  // A received coin the wallet has not verified on chain (pending or failed) is a sender's claim,
+  // never an input: money at its address is not listed, quoted or spent.
+  it.each(['failed', 'pending'] as const)('never lists, quotes or spends money at the address of a received %s coin', async status => {
+    const key = new Wallet('0x' + '47'.repeat(32))
+    let seeded = false
+    const open = LevelRecordStore.open
+    jest.spyOn(LevelRecordStore, 'open').mockImplementation(async (location, namespace) => {
+      const store = await open(location, namespace)
+      if (namespace === EVM_COIN_NAMESPACE && !seeded) {
+        seeded = true
+        await store.put(key.address.toLowerCase(), {
+          address: key.address.toLowerCase(), privateKey: key.privateKey,
+          origin: 'stealth', state: status, amountWei: '0', claimedAmountWei: '0',
+          transactions: [], discoveredAtMs: 1,
+        })
+        mockBalances.set(key.address.toLowerCase(), 1_000_000n)
+      }
+      return store
+    })
+    f = await fixture(false)
+    const account = key.address.toLowerCase()
+    await f.alice.refreshTransactionSetInventory!()
+    expect(evmWalletInternals(f.alice).coinList!.all().filter(coin => coin.account === account)).toEqual([])
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    expect(quote.status).toBe('insufficient')
+    expect(mockWalletBroadcasts).toHaveLength(0)
+    expect(mockBalances.get(account)).toBe(1_000_000n)
+  })
+
   it.each([
-    ['received', 'failed'], ['received', 'spent'], ['received', 'pending'],
+    ['received', 'spent'],
     ['pool', 'spent'], ['pool', 'retired'], ['pool', 'unfunded'],
   ] as const)('quotes and spends confirmed %s %s funds without rewriting legacy status', async (kind, status) => {
     const key = new Wallet('0x' + '47'.repeat(32))

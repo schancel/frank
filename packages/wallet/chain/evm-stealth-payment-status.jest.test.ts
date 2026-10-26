@@ -255,7 +255,9 @@ async function stealthSend(values: readonly bigint[]) {
 }
 
 
-/** Two received stealth coins of 100000 wei each, landed and recorded: what the payment draws on. */
+/** Two received stealth coins of 100000 wei each, landed, recorded and verified on chain by the
+ * wallet: what the payment draws on. (A received coin the wallet has not verified is never an
+ * input.) */
 async function twoCoins() {
   for (const digest of ["a1", "b2"]) {
     // Each one-time account is fresh, so the two coins are separate accounts.
@@ -265,6 +267,8 @@ async function twoCoins() {
       received([payment.item()], digest.repeat(32)),
     ]);
   }
+  const coins = await wallet.refreshReceivedPayments!();
+  expect(coins.filter((coin) => coin.spendable)).toHaveLength(2);
 }
 
 const OPERATION = "sent-stealth-1";

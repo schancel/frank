@@ -1442,11 +1442,10 @@ describe('a payment to a contact', () => {
     expect(node.broadcasts.some(tx => tx.value === 0n)).toBe(false)
   })
 
-  // Known gap, also on main since the coin-list Send landed: the coin list watches every
-  // received-coin row, verified or not (evm-wallet-coin-list.ts), so a Send spends a claimed,
-  // unverified coin that the balance does not count. Whether such a coin may be spent is an open
-  // owner question; `it.failing` keeps the expectation and turns red once the gap is closed.
-  it.failing('an unverified coin is never an input: not of a native send, not of a sweep', async () => {
+  // The wallet takes funds from the chain: a received coin it has not verified is not watched by
+  // the coin list (evm-wallet-coin-list.ts), so it is never an input, and the balance (which does
+  // not count it) is what Send can spend.
+  it('an unverified coin is never an input: not of a native send, not of a sweep', async () => {
     const digest = 'ab'.repeat(32)
     // A claim with no transfer behind it, and real money parked at its address by someone else.
     await bob.recordStealthPayment(

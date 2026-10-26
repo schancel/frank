@@ -430,6 +430,12 @@ export class EvmCoinListSync {
     if (this.stopped || (this.generations.get(account) ?? 0) !== generation)
       return
     this.failedObservations.delete(account)
+    // The chain is past these nonces: a free coin at one of them can never be spent, whatever
+    // consumed it, so it leaves the list (what the account holds now is listed below). A coin an
+    // operation holds is left to that operation's settlement.
+    for (const coin of list.all())
+      if (coin.account === account && coin.state === 'unspent' && coin.nonce < latest)
+        await this.mutate(() => list.recordGone(coin))
     // Something of this account is in the mempool: no coin until it is mined.
     if (pending > latest) {
       this.markDirty(account)

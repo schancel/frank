@@ -31,6 +31,21 @@ interface MemberMetadata {
   }
 }
 
+/**
+ * The block by which the chain shows a same-account predecessor's nonce consumed, which is what
+ * the member at the next nonce waits for: the block that included it, or, when the node no
+ * longer knows the predecessor and the account's nonce is already past it
+ * (`nativeMemberSuperseded`: mined on a node that has since dropped it from its history, or
+ * replaced), the block of that look (the nonce was consumed at or before it). Undefined while the
+ * chain shows neither.
+ */
+export function predecessorConsumedAt(prior: EvmNativeMember): number | undefined {
+  const observation = prior.observation
+  if (observation.state === 'included-success' || observation.state === 'included-revert')
+    return observation.blockNumber
+  return nativeMemberSuperseded(prior) ? prior.account!.blockNumber : undefined
+}
+
 export class EvmTransactionSetLifecycle {
   constructor(
     private readonly options: {
@@ -59,8 +74,10 @@ export class EvmTransactionSetLifecycle {
       const prior = row.members[dependency]!, observation = prior.observation
       const funding = prior.source.address !== member.source.address
       if (funding) return observation.state === 'included-success' && this.options.head() >= observation.blockNumber + (meta.fundingWaitBlocks ?? 0)
-      if (meta.predecessorWaitBlocks !== undefined)
-        return (observation.state === 'included-success' || observation.state === 'included-revert') && this.options.head() >= observation.blockNumber + meta.predecessorWaitBlocks
+      if (meta.predecessorWaitBlocks !== undefined) {
+        const consumed = predecessorConsumedAt(prior)
+        return consumed !== undefined && this.options.head() >= consumed + meta.predecessorWaitBlocks
+      }
       return prior.exposed || observation.state === 'included-success' || observation.state === 'included-revert'
     })
   }
@@ -178,6 +195,16 @@ export class EvmTransactionSetLifecycle {
         !receipt &&
         !member.exposed &&
         nonce <= Transaction.from(signed.rawTransaction).nonce
+      )
+        continue
+      // Already recorded superseded and still no receipt: keep the first look that showed the
+      // nonce consumed. Its block bounds when the nonce was taken, which is what the member at
+      // the next nonce waits on (`predecessorConsumedAt`); a fresh look each pass would move
+      // that bound forward with the head, and the member after it would wait for ever.
+      if (
+        !receipt &&
+        nativeMemberSuperseded(member) &&
+        nonce > Transaction.from(signed.rawTransaction).nonce
       )
         continue
       const observation: EvmNativeObservation = receipt

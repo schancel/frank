@@ -1545,6 +1545,7 @@ export const rawEnUS = {
       partial: 'Partly processed',
       pending: 'Pending',
       missing: 'Awaiting network',
+      superseded: 'Nonce used',
       unknown: 'Checking payment',
       cancelled: 'Cancelled',
     },
@@ -1553,6 +1554,7 @@ export const rawEnUS = {
       'included-revert': 'Reverted',
       'pending': 'Pending',
       'missing': 'Not yet on network',
+      'superseded': 'Nonce used',
       'unknown': 'Not confirmed',
     },
   },
@@ -1569,6 +1571,8 @@ export const rawEnUS = {
     pending: 'In the mempool on {network}: sent, waiting for a block.',
     missing:
       '{network} does not have this transfer yet. It is being offered again.',
+    superseded:
+      '{network} no longer has this transfer, and its account has moved past it: it was included earlier or another transaction took its place. It is not offered again.',
     watching:
       'Watching the network. This updates by itself when the transfer is in a block.',
     unknown:

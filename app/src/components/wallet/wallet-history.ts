@@ -161,7 +161,9 @@ function operationTime(
 function finished(row: WalletHistoryRow): boolean {
   if (row.kind === 'swap') return row.swap.status !== 'pending'
   if (row.kind === 'received') return row.payment.status !== 'pending'
-  return ['included', 'reverted', 'cancelled'].includes(row.operation.payment)
+  return ['included', 'reverted', 'cancelled', 'superseded'].includes(
+    row.operation.payment,
+  )
 }
 
 /**

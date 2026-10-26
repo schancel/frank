@@ -128,6 +128,34 @@ it.each([
   }
 );
 
+it("a transfer the node no longer knows, its account's nonce past it, is final: superseded, not offered again", async () => {
+  const fixture = await retained();
+  try {
+    // The look that finds no transfer and the account's nonce already past the transfer's own.
+    await fixture.journal.recordObservation(
+      fixture.journal.beginCapture(fixture.row.operationId, 0),
+      { state: "missing" },
+      { blockHash: hash, blockNumber: 9, nonce: 1, balanceWei: "0" }
+    );
+    const status = summarizeEvmNativeOperation(
+      fixture.journal.get(fixture.row.operationId)
+    );
+    expect(status.payment).toBe("superseded");
+    expect(status.members[0]!.state).toBe("superseded");
+    // Missing with the nonce still free stays "missing": the same bytes are offered again.
+    await fixture.journal.recordObservation(
+      fixture.journal.beginCapture(fixture.row.operationId, 0),
+      { state: "missing" },
+      { blockHash: hash, blockNumber: 10, nonce: 0, balanceWei: "0" }
+    );
+    expect(
+      summarizeEvmNativeOperation(fixture.journal.get(fixture.row.operationId)).payment
+    ).toBe("missing");
+  } finally {
+    await fixture.journal.Close();
+  }
+});
+
 it("keeps partial fan-in separate from recipient inclusion and incomplete total fees", async () => {
   const fixture = await retained(true);
   try {

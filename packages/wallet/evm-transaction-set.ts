@@ -996,7 +996,7 @@ export class EvmTransactionSetPreparer {
    * kept back for a continuation (`reserveForContinuationWei`) is authorized and quoted by
    * that continuation, so it is not part of this fee.
    */
-  async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts'>): Promise<EvmTransactionSetQuote> {
+  async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts' | 'minimumPaymentWei'>): Promise<EvmTransactionSetQuote> {
     const { journal, coins } = this.options
     const quoteRequest: ConstructEvmTransactionSetRequest = { ...request, operationId: 'quote' }
     this.validateRequest(quoteRequest)

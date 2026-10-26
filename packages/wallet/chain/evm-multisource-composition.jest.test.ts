@@ -262,14 +262,14 @@ async function reopenWallet() {
       (state[field] as Map<string, unknown>).set(key, value)
 }
 test('public native estimate survives reopen, then construction reserves fragments and recovers original signed members', async () => {
-  const first = await importOwned(24000n),
-    second = await importOwned(24000n)
-  const payment = intent('fragmented-native', 6000n)
+  const first = await importOwned(321000n),
+    second = await importOwned(321000n)
+  const payment = intent('fragmented-native', 600000n)
   const { maxNativeFeeAtomic: _, ...unsigned } = payment
   const quote = await wallet.stealthPayments!.quote!(unsigned)
   expect(quote.sources).toEqual([])
   expect(quote.sourceAddress).toBeUndefined()
-  expect(quote.nativeBalanceAtomic).toBe(48000n)
+  expect(quote.nativeBalanceAtomic).toBe(642000n)
   // Only construction fixes sources and fees; the estimate includes possible change.
   expect(quote.estimatedNativeFeeAtomic).toBeGreaterThanOrEqual(42000n)
   expect(wallet.getNativeOperations!()).toHaveLength(0)
@@ -304,7 +304,7 @@ test('public native estimate survives reopen, then construction reserves fragmen
       (sum, member) => sum + member.recipientAmountAtomic,
       0n,
     ),
-  ).toBe(6000n)
+  ).toBe(600000n)
   expect(
     new Set(
       prepared.members.map(member =>
@@ -322,7 +322,7 @@ test('public native estimate survives reopen, then construction reserves fragmen
     await wallet.stealthPayments!.reconcile(approved.operationId),
   ).toMatchObject({
     status: 'partial',
-    intendedAmountAtomic: 6000n,
+    intendedAmountAtomic: 600000n,
     verifiedReceivedAmountAtomic:
       prepared.members[0]!.recipientAmountAtomic,
   })
@@ -338,7 +338,7 @@ test('public native estimate survives reopen, then construction reserves fragmen
     await wallet.stealthPayments!.reconcile(approved.operationId),
   ).toMatchObject({
     status: 'succeeded',
-    verifiedReceivedAmountAtomic: 6000n,
+    verifiedReceivedAmountAtomic: 600000n,
     nativeFeeAtomic: 42000n,
   })
   expect(state.broadcast.mock.calls.map(call => call[0])).toEqual([
@@ -460,9 +460,9 @@ test('recipient records the complete native set, retries every original, and kee
 })
 
 test('mutating a public estimate cannot redirect construction and caller-selected native sources are rejected', async () => {
-  const first = await importOwned(24000n),
-    second = await importOwned(24000n)
-  const payment = intent('frozen-allocation', 6000n),
+  const first = await importOwned(321000n),
+    second = await importOwned(321000n)
+  const payment = intent('frozen-allocation', 600000n),
     { maxNativeFeeAtomic: _, ...unsigned } = payment
   const quote = await wallet.stealthPayments!.quote!(unsigned)
   Object.assign(quote, {
@@ -497,12 +497,12 @@ test('mutating a public estimate cannot redirect construction and caller-selecte
       (sum, member) => sum + member.recipientAmountAtomic,
       0n,
     ),
-  ).toBe(6000n)
+  ).toBe(600000n)
 })
 test('a current fee increase leaves no durable operation or held funds when it exceeds the total ceiling', async () => {
-  await importOwned(50000n)
-  await importOwned(50000n)
-  const payment = intent('fee-change', 10000n),
+  await importOwned(530000n)
+  await importOwned(530000n)
+  const payment = intent('fee-change', 500000n),
     { maxNativeFeeAtomic: _, ...unsigned } = payment
   const quote = await wallet.stealthPayments!.quote!(unsigned)
   expect(quote.sources).toEqual([])
@@ -518,17 +518,17 @@ test('a current fee increase leaves no durable operation or held funds when it e
   const refreshed = await wallet.stealthPayments!.quote!(unsigned)
   expect(refreshed.recipientAddress).toBe(quote.recipientAddress)
   expect(refreshed.nativeBalanceAtomic).toBe(quote.nativeBalanceAtomic)
-  // The quote is the fee of the inputs this amount needs. At gas price 1 one 50000 coin pays
-  // 10000 with one transfer (21000); at price 2 a transfer costs 42000, so no single coin
-  // covers 10000 and both coins each pay a share: two transfers.
+  // The quote is the fee of the inputs this amount needs. At gas price 1 one 530000 coin pays
+  // 500000 with one transfer (21000); at price 2 a transfer costs 42000, so no single coin
+  // covers 500000 and both coins each pay a share: two transfers.
   expect(quote.estimatedNativeFeeAtomic).toBe(21000n)
   expect(refreshed.estimatedNativeFeeAtomic).toBe(2n * 42000n)
   expect(state.broadcast).not.toHaveBeenCalled()
 })
 test('the native fee authorization bounds private change as well as the recipient payment', async () => {
-  const source = await importOwned(1000000n)
+  const source = await importOwned(10000000n)
   const payment = {
-    ...intent('change-fee-bound', 100000n),
+    ...intent('change-fee-bound', 1000000n),
     maxNativeFeeAtomic: 21000n,
   }
   const { maxNativeFeeAtomic: _, ...unsigned } = payment
@@ -619,8 +619,9 @@ test('an ERC20 quote does not read the balances of received coins that hold no s
   ).resolves.toBe(12n * 22000n + 50000n)
 })
 test('honestly rejects more than sixteen required members and gasless-only token funds without funding them', async () => {
-  for (let i = 0; i < 17; i++) await importOwned(22000n)
-  const tooMany = intent('over-member-cap', 17000n),
+  // Each coin carries one part at the payment floor (210,000 at gas price 1) after its fee.
+  for (let i = 0; i < 17; i++) await importOwned(231000n)
+  const tooMany = intent('over-member-cap', 17n * 210000n),
     { maxNativeFeeAtomic: _, ...unsigned } = tooMany
   // Seventeen sources would be needed: the quote makes the payment's own selection, so it
   // already says so, and preparation with any fee ceiling refuses the same way.
@@ -667,23 +668,23 @@ test.each([
         : { kind: 'erc20' as const, contractAddress: token }
     for (let i = 0; i < 16; i++)
       await importOwned(
-        kind === 'native' ? 22000n : 1n,
+        kind === 'native' ? 231000n : 1n,
         asset,
         kind === 'native' ? 0n : 50000n,
       )
     let larger = MAIN
     if (destination === 'owned')
       larger = (
-        await importOwned(kind === 'native' ? 100000n : 100n, asset, 50000n)
+        await importOwned(kind === 'native' ? 16611000n : 100n, asset, 50000n)
       ).address
     else {
-      state.balances.set(MAIN, 100000n)
+      state.balances.set(MAIN, kind === 'native' ? 16611000n : 100000n)
       if (kind === 'erc20') state.tokens.set(MAIN, 100n)
     }
     const payment = {
       ...intent(
         `cap-${kind}-${destination}`,
-        kind === 'native' ? 17000n : 17n,
+        kind === 'native' ? 17n * 210000n : 17n,
         asset,
       ),
       maxNativeFeeAtomic: 1000000n,
@@ -807,12 +808,12 @@ test('recipient sums independent ERC20 members across reopen and rolls back one 
 
 test('concurrent complete preparations have one reservation winner while an unrelated owned source remains usable', async () => {
   const accounts = await Promise.all([
-    importOwned(25000n),
-    importOwned(25000n),
-    importOwned(25000n),
+    importOwned(421000n),
+    importOwned(421000n),
+    importOwned(421000n),
   ])
-  const a = intent('competing-a', 6000n),
-    b = intent('competing-b', 6000n)
+  const a = intent('competing-a', 600000n),
+    b = intent('competing-b', 600000n)
   const { maxNativeFeeAtomic: _, ...qa } = a,
     { maxNativeFeeAtomic: __, ...qb } = b
   const quotes = await Promise.all([
@@ -839,7 +840,7 @@ test('concurrent complete preparations have one reservation winner while an unre
   expect(held.size).toBe(2)
   const free = accounts.find(account => !held.has(account.address))!
   const independent = await wallet.stealthPayments!.prepare({
-    ...intent('unrelated-during-pending', 1000n),
+    ...intent('unrelated-during-pending', 300000n),
   })
   expect(independent.members).toHaveLength(1)
   expect(
@@ -852,8 +853,8 @@ test('concurrent complete preparations have one reservation winner while an unre
 })
 
 test('an obsolete preparation format fails reopen without deleting its records or funded source profile', async () => {
-  const source = await importOwned(25000n)
-  const payment = intent('obsolete-format', 1000n),
+  const source = await importOwned(525000n)
+  const payment = intent('obsolete-format', 300000n),
     { maxNativeFeeAtomic: _, ...unsigned } = payment
   await wallet.stealthPayments!.quote!(unsigned)
   await wallet.close()
@@ -884,21 +885,21 @@ test('an obsolete preparation format fails reopen without deleting its records o
     location,
     EVM_COIN_NAMESPACE,
   )
-  expect(coins.get(source.address)?.amountWei).toBe('25000')
+  expect(coins.get(source.address)?.amountWei).toBe('525000')
   expect(coins.get(source.address)?.privateKey).toBeDefined()
   await coins.close()
 })
 
 test('an exposed singleton waiting for RPC does not serialize another fixed payment submission', async () => {
   const accounts = await Promise.all([
-    importOwned(25000n),
-    importOwned(25000n),
+    importOwned(525000n),
+    importOwned(525000n),
   ])
   const first = await wallet.stealthPayments!.prepare({
-    ...intent('singleton-wait', 1000n),
+    ...intent('singleton-wait', 300000n),
   })
   const second = await wallet.stealthPayments!.prepare({
-    ...intent('singleton-independent', 1000n),
+    ...intent('singleton-independent', 300000n),
   })
   expect(
     new Set(

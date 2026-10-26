@@ -133,6 +133,7 @@ it("retains the authorized stamp reserve despite caller mutation during persiste
       stealthAddress: signer(50).address,
       ephemeralPubKey: getBytes(signer(50).signingKey.compressedPublicKey),
     }),
+    paymentFloorWei: async () => f.preparer.transactionSetPolicy().dustWei,
     constructNativePayment: construct,
   } as unknown as EvmStealthPaymentDriver;
   const result = await createEvmStealthPayments(driver).prepare({

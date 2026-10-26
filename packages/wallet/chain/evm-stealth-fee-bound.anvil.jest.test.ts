@@ -68,8 +68,10 @@ const freePort = () =>
 const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const GAS_PRICE = 10n ** 9n
 const TRANSFER_FEE = 21_000n * GAS_PRICE
-/** Like received stamps: ten transfers' fee each, the payment floor. */
-const SMALL = 10n * TRANSFER_FEE
+/** Small coins, each twice the payment floor (ten transfers' fee): after its own transfer's fee
+ * each can still carry a part of the payment at or above the floor, the least part a payment pays
+ * (a coin of exactly the floor cannot: its part would be nine transfers' fee). */
+const SMALL = 20n * TRANSFER_FEE
 const SMALL_COINS = 12
 const ROOT = 20n * 10n ** 18n
 const AMOUNT = 10n ** 18n

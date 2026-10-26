@@ -1935,7 +1935,14 @@ export function createEvmReceivedCoinAndContactManager(
       assertActive: assertFinancialActive,
       derive: (recipientSpendPubKey) =>
         deriveEvmStealthAddress({ recipientSpendPubKey }),
-      quoteNative: async (amountWei, recipientAddress) => {
+      paymentFloorWei: async () => {
+        await wallet.refreshTransactionSetInventory?.();
+        assertFinancialActive();
+        const preparer = wallet.transactionSetPreparer;
+        if (!preparer) throw new Error("Shared native transaction preparation is unavailable");
+        return preparer.transactionSetPolicy().dustWei;
+      },
+      quoteNative: async (amountWei, recipientAddress, minimumPaymentWei) => {
         await wallet.refreshTransactionSetInventory?.();
         assertFinancialActive();
         const preparer = wallet.transactionSetPreparer;
@@ -1948,7 +1955,8 @@ export function createEvmReceivedCoinAndContactManager(
           return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: 0n };
         // The fee of the inputs this amount needs, from the selection the payment itself makes
         // (the same arguments `constructNativePayment` receives from the stealth owner).
-        const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS });
+        const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
+          ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei }) });
         assertFinancialActive();
         return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: quote.feeWei };
       },

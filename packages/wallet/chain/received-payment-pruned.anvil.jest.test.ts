@@ -71,7 +71,9 @@ const freePort = () =>
 
 const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const GAS_PRICE = 10n ** 9n
-const SMALL = 10n * 21_000n * GAS_PRICE
+/** Twice the payment floor: after its own transfer's fee each small coin still carries a part of
+ * the payment at or above the floor, the least part a payment pays. */
+const SMALL = 20n * 21_000n * GAS_PRICE
 const SMALL_COINS = 6
 const ROOT = 20n * 10n ** 18n
 const AMOUNT = 10n ** 18n

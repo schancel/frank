@@ -255,13 +255,14 @@ async function stealthSend(values: readonly bigint[]) {
 }
 
 
-/** Two received stealth coins of 100000 wei each, landed, recorded and verified on chain by the
+/** Two received stealth coins of 1000000 wei each, landed, recorded and verified on chain by the
  * wallet: what the payment draws on. (A received coin the wallet has not verified is never an
- * input.) */
+ * input.) Each is above the payment floor (ten moves of 21,000 gas at the node's price of 1,
+ * 210,000), and so is each part of the payment below drawn from them. */
 async function twoCoins() {
   for (const digest of ["a1", "b2"]) {
     // Each one-time account is fresh, so the two coins are separate accounts.
-    const payment = await stealthSend([100000n]);
+    const payment = await stealthSend([1000000n]);
     for (const raw of payment.raws) state.mine(raw);
     await recordEvmReceivedCoins(wallet, [
       received([payment.item()], digest.repeat(32)),
@@ -293,7 +294,7 @@ const status = () => wallet.stealthPayments!.status!(OPERATION);
 
 test("a sent stealth payment reads not sent, then pending, then partly landed, then paid, through reloads", async () => {
   await twoCoins();
-  const prepared = await prepareSend(150000n);
+  const prepared = await prepareSend(1779000n);
   expect(prepared.members.length).toBe(2);
   const hashes = prepared.members.map((member) => member.txHash);
 
@@ -301,7 +302,7 @@ test("a sent stealth payment reads not sent, then pending, then partly landed, t
   expect(await status()).toMatchObject({
     status: "pending",
     submitted: false,
-    intendedAmountAtomic: 150000n,
+    intendedAmountAtomic: 1779000n,
     members: hashes.map((txHash) => ({ txHash, state: "unsent" })),
   });
   await wallet.stealthPayments!.expose({
@@ -351,20 +352,20 @@ test("a sent stealth payment reads not sent, then pending, then partly landed, t
   const paid = (await status())!;
   expect(paid).toMatchObject({
     status: "succeeded",
-    verifiedReceivedAmountAtomic: 150000n,
+    verifiedReceivedAmountAtomic: 1779000n,
     members: hashes.map((txHash) => ({ txHash, state: "landed" })),
   });
   expect(paid.nativeFeeAtomic).toBeGreaterThan(0n);
   await reopenWallet();
   expect(await status()).toMatchObject({
     status: "succeeded",
-    verifiedReceivedAmountAtomic: 150000n,
+    verifiedReceivedAmountAtomic: 1779000n,
   });
 });
 
 test("a transfer that reverts reads failed with its reason, and the rest still counts", async () => {
   await twoCoins();
-  const prepared = await prepareSend(150000n);
+  const prepared = await prepareSend(1779000n);
   await wallet.stealthPayments!.expose({
     operationId: OPERATION,
     payloadDigest: DIGEST,

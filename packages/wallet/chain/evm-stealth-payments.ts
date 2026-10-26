@@ -1,5 +1,8 @@
 /** Wallet-owned financial preparation. No message encoding, encryption or transport. */
-import { runNativeTransactionExclusive } from './chain-wallet'
+import {
+  ContactPaymentBelowFloorError,
+  runNativeTransactionExclusive,
+} from './chain-wallet'
 import {
   getAddress,
   getBytes,
@@ -66,6 +69,10 @@ export interface EvmStealthPreparation {
   journalOperationId?: string
   payloadDigest?: string
   messageStamp?: { amountAtomic: string; maxNativeFeeAtomic: string }
+  /** A shared native payment's payment floor, read when its intent was first recorded: the
+   * whole amount and every part it is split into are at least this (`chain/payment-floor.ts`).
+   * Captured once, so a retried construction makes the same split as the first. */
+  minimumPaymentWei?: string
   released?: true
 }
 export interface EvmStealthPaymentDriver {
@@ -93,9 +100,13 @@ export interface EvmStealthPaymentDriver {
     stealthAddress: string
     ephemeralPubKey: Uint8Array
   }
+  /** The payment floor a native payment's coins are held to now: the transaction-set policy's
+   * `dustWei`, `evmPaymentFloorWei` at its gas price, the floor received coins and change are
+   * classified by (`chain/payment-floor.ts`). */
+  paymentFloorWei(): Promise<bigint>
   /** Balance, and the fee of paying `amountWei` to `recipientAddress` (0 when no amount is
-   * given: the balance alone is asked for). */
-  quoteNative(amountWei: bigint, recipientAddress?: string): Promise<{
+   * given: the balance alone is asked for), each part at least `minimumPaymentWei`. */
+  quoteNative(amountWei: bigint, recipientAddress?: string, minimumPaymentWei?: bigint): Promise<{
     nativeBalanceAtomic: bigint
     assetBalanceAtomic: bigint
     estimatedNativeFeeAtomic: bigint
@@ -154,6 +165,10 @@ function validateFeeAuthorization(row: EvmStealthPreparation): void {
       BigInt(row.messageStamp.amountAtomic) >= 1n << 256n ||
       BigInt(row.messageStamp.maxNativeFeeAtomic) >= 1n << 256n))
     throw new Error('Invalid combined message stamp authorization')
+  if (row.minimumPaymentWei !== undefined && (!sharedNativePreparation(row) ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(row.minimumPaymentWei) ||
+      BigInt(row.minimumPaymentWei) > BigInt(row.amountAtomic)))
+    throw new Error('Invalid stealth payment floor')
   if (row.allocation) validateAllocation(row)
   const authorization = row.feeAuthorization
   if (
@@ -536,12 +551,22 @@ export function createEvmStealthPayments(
           }),
     }
     if (row === undefined) {
+      // A shared native payment pays coins its recipient must move again: refused below the
+      // payment floor before anything is recorded, and every part held to the same floor.
+      let minimumPaymentWei: bigint | undefined
+      if (asset.kind === 'native') {
+        minimumPaymentWei = await driver.paymentFloorWei()
+        driver.assertActive()
+        if (intent.amountAtomic < minimumPaymentWei)
+          throw new ContactPaymentBelowFloorError(intent.amountAtomic, minimumPaymentWei)
+      }
       const derived = driver.derive(intent.recipientSpendPublicKey)
       driver.assertActive()
       const created = {
         ...immutable,
         version: 3 as const,
         feeAuthorization: { status: 'unapproved' as const },
+        ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei: minimumPaymentWei.toString() }),
         recipientAddress: getAddress(derived.stealthAddress).toLowerCase(),
         ephemeralPublicKey: hexlify(derived.ephemeralPubKey),
       }
@@ -626,7 +651,8 @@ export function createEvmStealthPayments(
             recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
             ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
             sources: [],
-            ...await driver.quoteNative(BigInt(row.amountAtomic), row.recipientAddress),
+            ...await driver.quoteNative(BigInt(row.amountAtomic), row.recipientAddress,
+              row.minimumPaymentWei === undefined ? undefined : BigInt(row.minimumPaymentWei)),
           } satisfies StealthPaymentQuote
         const sources = row.allocation!.sources.map((source) => ({
           sourceAddress: source.sourceAddress,
@@ -737,6 +763,8 @@ export function createEvmStealthPayments(
                   ),
                   amountWei: BigInt(row.amountAtomic),
                   maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
+                  ...(row.minimumPaymentWei === undefined ? {} : {
+                    minimumPaymentWei: BigInt(row.minimumPaymentWei) }),
                   kdf: () => row.recipientAddress,
                   maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
                   ...(intent.messageStamp ? { reserveForContinuationWei:

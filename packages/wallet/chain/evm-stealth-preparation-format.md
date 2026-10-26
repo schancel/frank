@@ -17,3 +17,10 @@ One payment supports at most 16 independent native or configured ERC20 transfers
 recipient destination. Source amounts sum to the intended amount; native transaction fees are
 one separately approved total ceiling. ERC20 sources each supply their own native gas.
 No consolidation, gas funding, new wire schema, or production feature enable is included.
+
+A shared native (version 3) preparation records `minimumPaymentWei`, the payment floor
+(`chain/payment-floor.ts`, the transaction-set policy's `dustWei`) read when its intent is first
+recorded. An amount below it is refused before any record is written. Construction passes it as
+the transaction set's `minimumPaymentWei`, so no part of the split pays less; it is never re-read,
+so a retried construction makes the same split. A preparation recorded without it keeps
+constructing without a per-part minimum (no migration).

@@ -31,6 +31,7 @@ import {
   loadSeed,
   saveSeed,
 } from '../../../utils/blackjack-hand'
+import { PAYMENT_FLOOR_INJECTION } from '../../../utils/game-stakes'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 
 const ME = '0xMe'
@@ -44,13 +45,14 @@ const store: { activeConversation: { messages: any[] } } = reactive({
 }) as any
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 const mockBalance = ref<bigint | null>(null)
+/** The wallet's payment floor as Chat.vue provides it; the smallest bet is twice it. */
+const mockFloor = ref(5n)
 jest.mock('../../../composables/useBalance', () => ({
   useBalance: () => ({ balance: mockBalance }),
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
-    minimumWagerValue: 10n,
     toDisplayAmount: (n: bigint) => n.toString(),
     fromDisplayAmount: (s: string) => BigInt(s),
   },
@@ -255,7 +257,11 @@ async function mountLast(
       address: PEER,
       payloadDigest: messages[index].payloadDigest,
     },
-    global: { components: stubs, mocks: { $t: t } },
+    global: {
+      components: stubs,
+      mocks: { $t: t },
+      provide: { [PAYMENT_FLOOR_INJECTION]: () => mockFloor.value },
+    },
   })
   await flushPromises()
   return wrapper
@@ -268,6 +274,7 @@ const button = (wrapper: Awaited<ReturnType<typeof mountLast>>, id: string) =>
 beforeEach(() => {
   store.activeConversation = { messages: [] }
   mockBalance.value = RESERVE + 100_000n
+  mockFloor.value = 5n
 })
 
 describe('the player', () => {
@@ -279,15 +286,15 @@ describe('the player', () => {
     expect(wrapper.find('[data-testid="blackjack-bet-amount"]').exists()).toBe(
       false,
     )
+    // Suggested: the smallest bet (twice the payment floor), never the hand's max of 1000.
     expect(
       wrapper.find('[data-testid="blackjack-bet-summary"]').text(),
-    ).toContain('1000 MON')
-    expect(button(wrapper, 'bet').text()).toContain('1000 MON')
+    ).toContain('10 MON')
+    expect(button(wrapper, 'bet').text()).toContain('10 MON')
     expect(followUp(wrapper)).toEqual([])
     await button(wrapper, 'change-bet').trigger('click')
     const input = wrapper.find('[data-testid="blackjack-bet-amount"]')
-    // Suggested: the most this user may bet, here the hand's max.
-    expect((input.element as HTMLInputElement).value).toBe('1000')
+    expect((input.element as HTMLInputElement).value).toBe('10')
     await input.setValue('400')
     await button(wrapper, 'bet').trigger('click')
     // The bet carries the commitment to a fresh seed of the player's own, kept on this device
@@ -386,7 +393,12 @@ describe('the player', () => {
       RESERVE + 500n,
       'more than you can cover',
     ],
-    ['below the minimum stamp', '9', RESERVE + 100_000n, 'minimum stamp'],
+    [
+      'below the smallest bet',
+      '9',
+      RESERVE + 100_000n,
+      'smallest bet of 10 MON',
+    ],
     ['not a number', 'lots', RESERVE + 100_000n, 'greater than zero'],
   ])('cannot bet %s', async (_n, amount, balance, message) => {
     mockBalance.value = balance
@@ -399,6 +411,27 @@ describe('the player', () => {
     expect(button(wrapper, 'bet').attributes('disabled')).toBeDefined()
     await button(wrapper, 'bet').trigger('click')
     expect(followUp(wrapper)).toEqual([])
+  })
+
+  it('refuses a bet below the smallest bet, calling it a bet and naming the minimum the dealer bot uses', async () => {
+    // The dealer bot's smallest bet is twice the floor (0.04284 at a floor of 0.02142). The app
+    // used a chain default of 0.05 instead and refused bets the dealer takes.
+    mockFloor.value = 200n
+    const wrapper = await mountLast(hand(false, WIN, 0n, []))
+    await button(wrapper, 'change-bet').trigger('click')
+    const input = wrapper.find('[data-testid="blackjack-bet-amount"]')
+    expect((input.element as HTMLInputElement).value).toBe('400')
+    await input.setValue('399')
+    const error = wrapper.find('[data-testid="blackjack-amount-error"]').text()
+    expect(error).toBe('A bet cannot be below the smallest bet of 400 MON.')
+    expect(error).not.toMatch(/stamp/i)
+    expect(button(wrapper, 'bet').attributes('disabled')).toBeDefined()
+    await input.setValue('400')
+    expect(
+      wrapper.find('[data-testid="blackjack-amount-error"]').exists(),
+    ).toBe(false)
+    await button(wrapper, 'bet').trigger('click')
+    expect(followUp(wrapper)[0].stampValueWei).toBe(400n)
   })
 
   it('cannot bet while the balance is unknown', async () => {

@@ -531,12 +531,11 @@ export default defineComponent({
     return { own: '', sending: false, amount: '', editingBet: false }
   },
   computed: {
-    /** The smallest bet: the chain's configured minimum wager, and never less than twice the
-     * payment floor (`stakeMinimumWei`, the rule every game shares). */
+    /** The smallest bet: twice the payment floor (`stakeMinimumWei`, the rule every game
+     * shares; the dealer bot applies the same rule and returns a smaller bet undealt). */
     minimumStake(): bigint {
       return stakeMinimumWei(
         (this.paymentFloorWei as unknown as () => bigint)(),
-        activeChain.minimumWagerValue,
       )
     },
     unit(): string {
@@ -731,7 +730,7 @@ export default defineComponent({
       if (this.amount.trim() === '' || this.amountWei === null)
         return this.$t('blackjackP2p.enterAmount')
       if (this.amountWei < this.minimumStake)
-        return this.$t('blackjackP2p.belowStamp', {
+        return this.$t('blackjackP2p.belowMinimumBet', {
           amount: this.display(this.minimumStake),
         })
       let error: HandMoneyError | undefined
@@ -898,10 +897,12 @@ export default defineComponent({
     },
   },
   watch: {
-    // Suggest the largest amount this user may name, once, when the form appears.
+    // Suggest an amount once, when the form appears: a dealer's largest max bet, a player's
+    // smallest bet.
     canAccept: { immediate: true, handler: 'suggestAmount' },
     canBet: { immediate: true, handler: 'suggestAmount' },
     balance: 'suggestAmount',
+    minimumStake: 'suggestAmount',
   },
   async created() {
     this.own = (await getOwnCanonicalAddress()) ?? ''
@@ -921,6 +922,13 @@ export default defineComponent({
       const state = this.state
       if (!state || this.amount !== '' || this.balance === null) return
       if (!this.canAccept && !this.canBet) return
+      if (this.canBet) {
+        // A bet starts at the table's smallest, never at the most the player could lose. Not
+        // known until the payment floor is: nothing is suggested before then.
+        if (this.minimumStake > 0n)
+          this.amount = activeChain.toDisplayAmount(this.minimumStake)
+        return
+      }
       const own = this.canAccept
         ? maxDealerBetWei(this.balance, HAND_FEE_RESERVE_WEI)
         : this.balance > HAND_FEE_RESERVE_WEI

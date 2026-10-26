@@ -27,8 +27,6 @@ export interface EvmChainConfig {
   stampBurnAddress: string;
   /** Host-owned default stamp pricing. Omitted when only explicit/free amounts are used. */
   resolveDefaultStamp?: StampDefaultResolver;
-  /** Existing EVM wager minimum, independent of attention-stamp pricing. */
-  minimumWagerValueWei?: bigint;
   /** Existing background funding sizing, independent of attention-stamp pricing. */
   /**
    * How many blocks must pass after an account's last transaction before a value transfer from

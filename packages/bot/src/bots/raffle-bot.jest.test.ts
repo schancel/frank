@@ -366,4 +366,73 @@ describe("RaffleBot", () => {
     expect(h.sent[0].valueWei).toBe(PRICE);
     expect(h.item("raffle", h.sent[0]).action).toBe("left");
   });
+  // F3: an empty round whose price the payment floor rose above could never be entered (the
+  // wallet refuses a payment below the floor) and never rolled over.
+  const FLOOR = 21_420_000_000_000_000n; // 0.02142 MON: 10x the gas to move a coin at 102 gwei
+  const emptyRound = {
+    raffleId: "cf4ce671" + "00".repeat(12),
+    entryPriceWei: PRICE.toString(),
+    maxEntries: 5,
+    serverSeed: "11".repeat(32),
+    serverSeedHash: "22".repeat(32),
+    entrants: [] as string[],
+    entryTxHashes: [] as string[],
+    conversations: [] as (string | null)[],
+    leftAddresses: [] as string[],
+    status: "open",
+  };
+
+  test("an empty round an earlier version left below today's smallest price is replaced at startup, at the new price", async () => {
+    const h = harness();
+    h.feeFloor(FLOOR);
+    h.data.set("current_round", JSON.stringify(emptyRound));
+    const restarted = new RaffleBot();
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    const round = JSON.parse(h.data.get("current_round")!);
+    expect(round.entryPriceWei).toBe((2n * FLOOR).toString());
+    expect(round.raffleId).not.toBe(emptyRound.raffleId);
+    expect(round.serverSeedHash).not.toBe(emptyRound.serverSeedHash);
+    expect(round.entrants).toEqual([]);
+    // And the round it offers is one a player can enter at that price.
+    await restarted.onMessage(h.message([{ type: "text", text: "hello" }], [], ALICE), h.ctx);
+    const announce = h.item("raffle");
+    expect(announce).toMatchObject({ raffleId: round.raffleId, entryPriceWei: (2n * FLOOR).toString() });
+    h.sent.length = 0;
+    await enter(h, restarted, round.raffleId, ALICE, 2n * FLOOR);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
+    expect(h.paidOut()).toBe(0n);
+  });
+
+  test("an empty round is replaced when the floor rises past its price, on the next message", async () => {
+    const h = harness();
+    const bot = new RaffleBot();
+    const first = await open(h, bot);
+    expect(first.entryPriceWei).toBe(PRICE.toString());
+    h.feeFloor(FLOOR);
+    await bot.onMessage(h.message([{ type: "text", text: "hello" }], [], BOB), h.ctx);
+    const next = h.item("raffle");
+    expect(next.raffleId).not.toBe(first.raffleId);
+    expect(next.entryPriceWei).toBe((2n * FLOOR).toString());
+    // An entry for the replaced round is refused and what it paid returned.
+    h.sent.length = 0;
+    await enter(h, bot, first.raffleId, ALICE, PRICE);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([PRICE]);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
+  });
+
+  test("a round that has entries is never repriced or replaced, however far the floor rises", async () => {
+    const h = harness();
+    const bot = new RaffleBot();
+    const { raffleId } = await open(h, bot);
+    await enter(h, bot, raffleId, ALICE);
+    h.feeFloor(FLOOR);
+    for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    await bot.onMessage(h.message([{ type: "text", text: "hello" }], [], BOB), h.ctx);
+    const round = JSON.parse(h.data.get("current_round")!);
+    expect(round).toMatchObject({ raffleId, entryPriceWei: PRICE.toString(), entrants: [ALICE] });
+    // Restarted from that state: still the same round.
+    const restarted = new RaffleBot();
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    expect(JSON.parse(h.data.get("current_round")!)).toMatchObject({ raffleId, entrants: [ALICE] });
+  });
 });

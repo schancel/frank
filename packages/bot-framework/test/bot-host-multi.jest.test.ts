@@ -430,7 +430,15 @@ describe("several bots on one host", () => {
         { address: peer.address, registeredAtMs: 1 },
         instance.context
       );
-      expect(mockSend).not.toHaveBeenCalled();
+      // Too low to grant: nothing is paid, and the new account is told so with a free
+      // message (never silence); the grant waits for the top-up.
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toMatchObject({
+        recipient: { raw: peer.address },
+        stampValue: 0n,
+        items: [{ type: "text", text: expect.stringContaining("low right now") }],
+      });
+      mockSend.mockClear();
       expect(
         await instance.state.get(`funded:${peer.address.toLowerCase()}`)
       ).toBeUndefined();

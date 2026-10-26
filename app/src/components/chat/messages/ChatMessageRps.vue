@@ -77,6 +77,14 @@
                 })
               }}
             </div>
+            <div
+              v-if="stakeError"
+              role="alert"
+              class="text-negative q-mt-xs"
+              data-testid="rps-stake-error"
+            >
+              {{ stakeError }}
+            </div>
             <div class="text-grey-8 q-my-xs">
               Your stake is paid with your move. A win pays twice the stake, a
               tie returns it.
@@ -92,7 +100,7 @@
               outline
               :label="moveLabel(move)"
               :data-testid="`rps-${move}`"
-              :disable="submitting"
+              :disable="submitting || !!stakeError"
               @click="chooseMove(move)"
             />
           </div>
@@ -206,13 +214,18 @@
       <div
         v-if="payout"
         class="q-mb-xs"
-        :class="{ 'text-negative': payout.short }"
+        :class="{
+          'text-negative': payout.short,
+          'text-positive': !payout.short && payout.verified,
+        }"
         data-testid="rps-payout"
       >
         {{
           $t(
             payout.short
               ? 'gameFairness.payoutMissing'
+              : payout.verified
+              ? 'gameFairness.payoutVerified'
               : isP2pMatch
               ? 'gameFairness.payoutClaimedPeer'
               : 'gameFairness.payoutClaimed',
@@ -223,7 +236,9 @@
       <div v-if="check.ok" class="text-positive" data-testid="rps-verified">
         {{
           $t(
-            isP2pMatch
+            outbound
+              ? 'gameFairness.rpsVerifiedOwn'
+              : isP2pMatch
               ? 'gameFairness.rpsVerifiedPeer'
               : 'gameFairness.rpsVerified',
           )
@@ -274,12 +289,13 @@ import {
 } from '../../../utils/chat-game-items'
 import {
   PAYMENT_FLOOR_INJECTION,
+  payoutView,
   stakeChipsWei,
+  stakeProblem,
+  type PayoutView,
 } from '../../../utils/game-stakes'
-import {
-  stakeAllowed,
-  stakeMinimumWei,
-} from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import { useStampReceipt } from '../../../composables/useStampReceipt'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 import { errorNotify } from '../../../utils/notifications'
 import {
   dealerRpsStepForMatch,
@@ -305,6 +321,21 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  setup(props) {
+    // The resolve message carries the payout as its stamp: verified by the same wallet evidence
+    // the message footer shows (`useStampReceipt`), not by what the message says.
+    const payoutReceipt = useStampReceipt(() => {
+      if (props.item.action !== 'resolve' || props.outbound) return undefined
+      const entry = chatGameItems('rps', props.address).find(
+        other =>
+          !other.outbound &&
+          other.item.action === 'resolve' &&
+          other.item.matchId === props.item.matchId,
+      )
+      return entry && { ...entry, outbound: false }
+    })
+    return { payoutReceipt }
+  },
   inject: {
     /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
     paymentFloorWei: {
@@ -398,6 +429,23 @@ export default defineComponent({
       } catch {
         return undefined
       }
+    },
+    /** The stake a move sends: the one the opponent locked, or the one typed here. */
+    chosenWagerWei(): bigint | undefined {
+      return this.fixedWagerWei !== undefined
+        ? this.fixedWagerWei
+        : parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a))
+    },
+    /** Why the typed stake cannot be sent, as the player is told it; '' when it can. A stake the
+     * opponent already locked is theirs to have chosen and is not checked here. */
+    stakeError(): string {
+      if (this.fixedWagerWei !== undefined) return ''
+      return stakeProblem(
+        this.chosenWagerWei,
+        this.minimumStake,
+        (key, params) => this.$t(key, params ?? {}),
+        wei => this.displayWager(wei.toString()),
+      )
     },
     fixedStakeLabel(): string {
       if (this.fixedWagerWei === undefined || this.fixedWagerWei === 0n) {
@@ -538,9 +586,9 @@ export default defineComponent({
       )?.item
       return verifyRpsTypedResult(this.item, start)
     },
-    /** What the result pays, and what the wallet reports its message carried: never shown as
-     * verified, since the wallet's figure is not a chain check. */
-    payout(): { amount: string; carried: string; short: boolean } | null {
+    /** What the result pays, and what its message carried: verified once the wallet saw the
+     * stamp land on chain (the evidence the footer uses), claimed until then. */
+    payout(): PayoutView | null {
       if (this.item.action !== 'resolve' || !this.item.outcome || this.outbound)
         return null
       const owed = rpsPayoutWei(
@@ -555,11 +603,7 @@ export default defineComponent({
             entry.item.action === 'resolve' &&
             entry.item.matchId === this.item.matchId,
         )?.stampValueWei ?? 0n
-      return {
-        amount: formatDisplayAmount(activeChain, owed),
-        carried: formatDisplayAmount(activeChain, carried),
-        short: carried < owed,
-      }
+      return payoutView(owed, carried, this.payoutReceipt)
     },
     /** The player's own move, while the bot has not answered it: how long it has waited. */
     waiting(): { seconds: number; late: boolean } | null {
@@ -601,26 +645,11 @@ export default defineComponent({
     },
     chooseMove(move: RpsMove) {
       if (this.submitting || !this.item.matchId || !this.item.commitHash) return
-      const wager =
-        this.fixedWagerWei !== undefined
-          ? this.fixedWagerWei
-          : parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a))
-      if (wager === undefined) {
-        errorNotify(new Error('Enter the stake as a number.'))
-        return
-      }
-      // A stake the opponent already locked is theirs to have chosen; one typed here is checked.
-      if (
-        this.fixedWagerWei === undefined &&
-        !stakeAllowed(wager, this.minimumStake)
-      ) {
-        errorNotify(
-          new Error(
-            this.$t('gameFairness.stakeBelowMinimum', {
-              amount: this.displayWager(this.minimumStake.toString()),
-            }),
-          ),
-        )
+      const wager = this.chosenWagerWei
+      if (this.stakeError || wager === undefined) {
+        errorNotify(new Error(this.stakeError), {
+          safeMessage: this.stakeError,
+        })
         return
       }
       this.submitting = true

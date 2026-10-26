@@ -130,6 +130,37 @@ describe("BlackjackDealerBot", () => {
     expect(h.paidOut()).toBe(BET * 2n);
   });
 
+  // F2: the dealer said "bet between 0.04284 and 0.12" and the app agreed, but the dealer itself
+  // dealt any bet; the bet minimum is the shared stake rule (twice the payment floor) on both sides.
+  test("a bet below the table's smallest bet is returned in full with the minimum named, not dealt", async () => {
+    const h = harness();
+    const FLOOR = 21_420_000_000_000_000n; // 0.02142 MON
+    h.feeFloor(FLOOR);
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    expect(h.item("text").text).toContain(`bet between 0.04284 MONT and`);
+    await t.bet(2n * FLOOR - 1n);
+    const refund = h.sent[h.sent.length - 1];
+    expect((h.item("blackjack-hand", refund) as HandItem).action).toBe("refund");
+    expect(refund.valueWei).toBe(2n * FLOOR - 1n);
+    expect(h.item("text", refund).text).toContain("below this table's smallest bet of 0.04284 MONT");
+    expect(t.state()?.phase).toBe("refunded");
+    expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+  });
+
+  test("a bet at the table's smallest bet is dealt", async () => {
+    const h = harness();
+    const FLOOR = 21_420_000_000_000_000n;
+    h.feeFloor(FLOOR);
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(2n * FLOOR);
+    expect(t.state()?.phase).toBe("player_turn");
+    expect(t.state()?.wagerWei).toBe(2n * FLOOR);
+  });
+
   test("money sent with a message of no hand at this table is returned", async () => {
     const h = harness();
     const bot = new BlackjackDealerBot();

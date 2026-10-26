@@ -42,6 +42,7 @@ const fields = cborItemCodec<SatoshiDiceItem>('dice', {
       'payment-not-confirmed',
     ),
   ),
+  maxPayoutWei: opt(14, amount),
 })
 
 function refusal(item: SatoshiDiceItem): string | undefined {
@@ -56,6 +57,7 @@ function refusal(item: SatoshiDiceItem): string | undefined {
         item.payoutWei,
         item.nextRollId,
         item.nextCommitment,
+        item.maxPayoutWei,
       ].some(value => value !== undefined)
     )
       return 'item: a rejected roll cannot state a result or next offer'

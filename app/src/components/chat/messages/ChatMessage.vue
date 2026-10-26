@@ -264,8 +264,11 @@
 
 <script lang="ts">
 import { isWakeupCapabilitySidecar } from '@frank/wallet/message-item-plugins/contact-card/plugin'
-import { defineComponent, onBeforeUnmount, PropType, ref } from 'vue'
-import { RECEIVED_PAYMENT_RECHECK_MS } from '../../../composables/useReceivedPayment'
+import { computed, defineComponent, PropType } from 'vue'
+import {
+  STAMP_NONE_PATIENCE_MS,
+  useStampReceipt,
+} from '../../../composables/useStampReceipt'
 
 import { useChatStore } from '../../../stores/chats'
 import {
@@ -335,39 +338,8 @@ import {
 } from '../../../utils/chat-attachments'
 import type { PostAttachment } from '../../../utils/post-editor'
 
-/**
- * Received stamps still waiting to settle, across every mounted bubble. One wallet read per
- * tick serves them all: `refreshReceivedPayments` is the wallet's own pass, which keeps its
- * backoff for coins long overdue, instead of a chain check per message. Each waiter then reads
- * its message from memory and says whether it is done.
- */
-const stampWaiters = new Set<() => boolean>()
-/** How long a bubble keeps reading a stamp the wallet holds no coin for yet. */
-export const STAMP_NONE_PATIENCE_MS = 5 * 60_000
-let stampTick: ReturnType<typeof setTimeout> | undefined
-function scheduleStampTick(): void {
-  if (stampTick !== undefined || stampWaiters.size === 0) return
-  stampTick = setTimeout(() => {
-    void (async () => {
-      try {
-        // Every bubble that waited may have gone meanwhile: then nothing is read.
-        if (stampWaiters.size > 0)
-          await useMonadWallet().refreshReceivedPayments?.()
-      } catch {
-        // No wallet or node now: read again on the next tick.
-      }
-      stampTick = undefined
-      for (const waiter of Array.from(stampWaiters))
-        if (waiter()) stampWaiters.delete(waiter)
-      scheduleStampTick()
-    })()
-  }, RECEIVED_PAYMENT_RECHECK_MS)
-  ;(stampTick as { unref?: () => void }).unref?.()
-}
-function waitForStamp(read: () => boolean): void {
-  stampWaiters.add(read)
-  scheduleStampTick()
-}
+/** Re-exported for the bubble's own tests: how long it keeps reading a stamp it holds no coin for. */
+export { STAMP_NONE_PATIENCE_MS }
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -415,40 +387,16 @@ export default defineComponent({
     )
     const chats = useChatStore()
     // A received stamp is the payer's signed transfer; it is shown as claimed until the
-    // messaging wallet saw it arrive on chain. Read from memory now, then on the shared tick.
-    const stampSettled = ref(false)
-    // `none` (no coin for the message) is also what the wallet answers before it has recorded
-    // the message's coin, or right after a reload before it has read its coins again. Taken as
-    // final, a payout already on chain stayed "claimed" until the bubble was drawn again; so it
-    // is read again for a while before it is believed.
-    const noneUntilMs = Date.now() + STAMP_NONE_PATIENCE_MS
-    const readStamp = (): boolean => {
-      const message = props.message
-      if (
-        message.outbound ||
-        !props.payloadDigest ||
-        !((message.stampValueWei ?? 0n) > 0n)
-      )
-        return true
-      let status: string | undefined
-      try {
-        status = useMonadWallet().getMessagePayment?.(
-          props.payloadDigest,
-        )?.stampStatus
-      } catch {
-        // No wallet now: the stamp stays claimed and is read again.
-      }
-      stampSettled.value = status === 'received'
-      // Settled, never landing, or (after a while) no coin for it in this wallet: nothing more
-      // to wait for.
-      return (
-        status === 'received' ||
-        status === 'failed' ||
-        (status === 'none' && Date.now() >= noneUntilMs)
-      )
-    }
-    if (!readStamp()) waitForStamp(readStamp)
-    onBeforeUnmount(() => stampWaiters.delete(readStamp))
+    // messaging wallet saw it arrive on chain (`useStampReceipt`, the same evidence a game
+    // card's payout is verified by).
+    const stampReceipt = useStampReceipt(() => ({
+      payloadDigest: props.payloadDigest,
+      stampValueWei: props.message.stampValueWei,
+      outbound: props.message.outbound,
+    }))
+    const stampSettled = computed(
+      () => stampReceipt.value?.status === 'received',
+    )
     return {
       stampSettled,
       chats,

@@ -341,14 +341,15 @@ accept an object exceeding the global limits.
 
 | Constant                |                                 Value | Applies to                                              |
 | ----------------------- | ------------------------------------: | ------------------------------------------------------- |
-| `MAX_FRAME_BYTES`       | 8,388,617 (8 MiB body + 9-byte frame) | Complete frame                                          |
-| `MAX_BODY_BYTES`        |                     8,388,608 (8 MiB) | Envelope CBOR body                                      |
+| `MAX_FRAME_BYTES`       | 10,485,769 (10 MiB body + 9-byte frame) | Complete frame (stage 1)                              |
+| `MAX_BODY_BYTES`        |                   10,485,760 (10 MiB) | Envelope CBOR body                                      |
+| `MAX_GENERAL_FRAME_BYTES` | 8,388,617 (8 MiB body + 9-byte frame) | Root frame of a known type with no limit of its own (stage 8.1), and a decrypted frame |
 | `MAX_DEPTH`             |                                    32 | Nested CBOR arrays/maps, including envelope and payload |
 | `MAX_CONTAINERS`        |                                16,384 | Arrays plus maps in one validation operation            |
 | `MAX_ITEMS`             |                               131,072 | Scalars plus containers in one validation operation     |
 | `MAX_MAP_ENTRIES`       |                                   256 | Entries in any one map                                  |
 | `MAX_ARRAY_ELEMENTS`    |                                 8,192 | Elements in any one array                               |
-| `MAX_BYTE_STRING_BYTES` |                             8,388,608 | Any byte string before type-specific limits             |
+| `MAX_BYTE_STRING_BYTES` |                            10,485,760 | Any byte string before type-specific limits             |
 | `MAX_TEXT_STRING_BYTES` |                     262,144 (256 KiB) | Any UTF-8 text string                                   |
 
 R1. One validation operation begins at one externally supplied root frame.
@@ -373,8 +374,10 @@ nesting adds 3. A child parser inherits these
 counters and MUST NOT reset them. Implementations MUST fail without partially
 returning a typed object when any limit is exceeded.
 
-Rationale for the limits: 8 MiB bounds a single frame that a phone can buffer
-while leaving room for chunked media beyond R2's 1 MiB message. Depth 32 permits
+Rationale for the limits: 8 MiB bounds a single frame of any type that a phone
+can buffer. Only a direct message (R2) is larger: the 10 MiB frame ceiling is
+its limit, so it can carry 8 MiB of ciphertext with its payments; every other
+known type is bounded by its own limit or by `MAX_GENERAL_FRAME_BYTES`. Depth 32 permits
 a type-21 root with nine further nested type-21 levels and a text leaf (ten
 container levels at three depth each, with no headroom), and only seven type-21
 levels plus a leaf under a type-10 message, whose own nesting uses the first
@@ -385,21 +388,28 @@ Containers 16,384 and items 131,072 (keys counted) let a large
 R4 checkpoint of 4,096 minimal facts (13 items each) plus 4,096 minimal
 sections (7 items each), about 82,000 items, fit under one counter. Map
 entries 256 and array elements 8,192 exceed every allocated schema bound by a
-factor of at least 2. The 8 MiB byte-string bound is deliberately the body
+factor of at least 2. The 10 MiB byte-string bound is deliberately the body
 limit, so a long string is limited by frame size first, and 256 KiB text is the
 largest single message text a client should render without chunking.
 
-R2. The direct-message frame limit is 1 MiB, with at most 256 message items
-total across the recursively opened item graph of one validation operation,
-whatever its root type (a bare type 12, 20, or 21 root is bounded the same way), 64 payment members, and 512 KiB
-in one encrypted payload. This deliberately permits messages larger than 64
-KiB while requiring large media to be chunked or referenced rather than
-embedded without bound.
+R2. The direct-message frame limit is 10 MiB (10,485,760 bytes) for a type-10
+delivery and for its type-11 payload, with at most 256 message items total
+across the recursively opened item graph of one validation operation, whatever
+its root type (a bare type 12, 20, or 21 root is bounded the same way), 64
+payment members, and 8,388,696 bytes (8 MiB of ciphertext plus at most 88
+bytes of envelope) in one schema-2 crypto-box envelope. The type-11 schema-1
+ciphertext of the reserved proof fixture stays at 512 KiB (524,288 bytes). The
+2 MiB between the envelope and the frame limit holds the type-11 fields and 64
+payment members at their CDDL maxima (about 17 KB each). A decrypted type-12
+frame is at most `MAX_GENERAL_FRAME_BYTES`, which 8 MiB of ciphertext cannot
+exceed. This permits a direct message of 8 MiB, sent as one request, while
+larger media is still chunked or referenced rather than embedded without
+bound.
 
 R3. The directory-attestation frame limit is 256 KiB, with at most 32 relay
 bindings and 16 signatures.
 
-R4. The checkpoint frame may use the global 8 MiB limit, with at most 4,096
+R4. The checkpoint frame may use the general 8 MiB limit (`MAX_GENERAL_FRAME_BYTES`), with at most 4,096
 journal facts and, separately, at most 4,096 opaque sections. Larger state exports MUST be chunked into
 independently framed checkpoints.
 
@@ -410,9 +420,9 @@ schema errors as defined by the vector manifest.
 R6. The topic-event frame limits are 1 MiB (1,048,576 bytes) for a type-40 post
 and for a type-41 post submission, 64 KiB (65,536 bytes) for a type-42 vote
 submission, and 512 KiB (524,288 bytes) in one type-40 body. The body bound is
-`resource` at stage 8.1, like the type-11 ciphertext. The 1 MiB limit is
-deliberately the direct-message limit (R2): a post is public content that a
-phone can buffer, and larger media is chunked or referenced. Topic text
+`resource` at stage 8.1, like the type-11 ciphertext. The 1 MiB limit was
+the direct-message limit (R2) when it was allocated; raising R2 did not change
+it: a post is public content that a phone can buffer, and larger media is chunked or referenced. Topic text
 (1 through 512 bytes) and burn transactions (1 through 16,384 bytes) are plain
 CDDL bounds, so exceeding them is `schema`.
 
@@ -839,8 +849,8 @@ lowercase ASCII letters and digits in groups separated by single hyphens
 opaque to this profile: a plugin may write deterministic CBOR, protobuf, or any
 other encoding, and E3 is satisfied by the container, whose payload is one
 restricted-CBOR map. A new application item type therefore needs no type
-identifier allocation. Field 1 is at most 524,288 bytes (R2's encrypted-payload
-bound; exceeding it is a `resource` error at 8.1), and its length is already
+identifier allocation. Field 1 is at most 524,288 bytes (its own bound, unchanged
+when R2 was raised; exceeding it is a `resource` error at 8.1), and its length is already
 charged to the enclosing frame. A reader that decodes field 1 as CBOR, or opens
 it as a nested frame, MUST charge that work to the same operation's counters
 and depth (R1) and MUST NOT start a fresh budget per item. A reader with no
@@ -1417,10 +1427,10 @@ category, and an implementation MUST NOT continue to report a later failure.
    `route_byte_limit` applies here.
 2. **Header.** Fewer than nine bytes or bad magic: `frame`. A child carried in a
    `framed-object` field and shorter than nine bytes never reaches this check:
-   the parent's CDDL bound (`bstr .size (9..8388617)`) rejects it first as a
+   the parent's CDDL bound (`bstr .size (9..10485769)`) rejects it first as a
    stage 8.2 `schema` error. The check therefore applies to a root, to such a
    child of at least nine bytes, and to the stage 10.1 decrypted frame, which is
-   supplied out of band and bounded only by `MAX_FRAME_BYTES`, so a decrypted
+   supplied out of band and bounded only by `MAX_GENERAL_FRAME_BYTES`, so a decrypted
    frame under nine bytes fails here as `frame`.
 3. **Version.** An unsupported frame version is `unsupported`. Where the
    containing contract permits retention (F2), the outcome is instead a
@@ -1443,14 +1453,15 @@ category, and an implementation MUST NOT continue to report a later failure.
    schema (V6.2) or, for a newer compatible schema, its highest-supported
    projection ignoring wildcard fields (V6.3).
 8. **Typed structure**, for a known type only, in this order:
-   1. type-specific limits: the root frame length against R2's 1 MiB for type 10
-      and R3's 256 KiB for type 2 (type 14 uses the global limit; R6 gives 1 MiB
-      for types 40 and 41 and 64 KiB for type 42), and the counts
+   1. type-specific limits: the root frame length against R2's 10 MiB for types
+      10 and 11 and R3's 256 KiB for type 2 (R6 gives 1 MiB for types 40 and 41
+      and 64 KiB for type 42; every other known type, type 14 included, uses
+      `MAX_GENERAL_FRAME_BYTES`), and the counts
       named by R2 through R4 and R6 read from the decoded fields before typed
       conversion: `resource`. R2's cumulative 256-item total is not an 8.1 check; it is
       charged in 8.4. The CDDL bounds that restate these limits, and so are
       `resource` when exceeded, are exactly: 64 payment members, 256 message
-      items per array, the 524,288-byte ciphertext, the 524,288-byte topic body, 32 relay bindings, 16
+      items per array, the 524,288-byte schema-1 ciphertext, the 8,388,696-byte schema-2 crypto-box envelope, the 524,288-byte topic body, 32 relay bindings, 16
       signatures, 4,096 journal facts, and 4,096 opaque sections. Every other
       CDDL bound, including a lower bound such as `[1*64]` given no items and
       the upper bounds of `[1*16 key-transition]` and `[1*8 account-ref]`, is `schema`;
@@ -1512,7 +1523,7 @@ category, and an implementation MUST NOT continue to report a later failure.
     `prior_directory_statement_frame_hex` MUST be null:
     1. Decrypted content: the supplied decrypted frame is an embedded child of
        the type-11 payload sharing its counters and not charged against
-       `route_byte_limit`, but its length is checked against `MAX_FRAME_BYTES`
+       `route_byte_limit`, but its length is checked against `MAX_GENERAL_FRAME_BYTES`
        (`resource`). It runs as a required-type child (8.4) of type 12. Only after the child
        passes stage 9, for suite 65535, its bytes MUST equal the ciphertext
        field, otherwise `cryptographic`.

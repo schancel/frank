@@ -11,7 +11,6 @@ import {
   ACCOUNT_TYPE_BOT,
   BOT_ROLE_ASSISTANT,
   MAX_TEXT_STRING_BYTES,
-  MAX_DIRECT_MESSAGE_FRAME_BYTES,
 } from "@frank/codec";
 import { computeAddress, getAddress } from "ethers";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
@@ -36,8 +35,8 @@ const DEFAULT_THREAD = "default";
 
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CONTENT_BYTES = MAX_TEXT_STRING_BYTES;
-// A local storage/prompt budget; history itself is not a direct-message frame.
-const MAX_HISTORY_RECORD_BYTES = MAX_DIRECT_MESSAGE_FRAME_BYTES;
+// A local storage/prompt budget (1 MiB); history itself is not a direct-message frame.
+export const MAX_HISTORY_RECORD_BYTES = 1_048_576;
 type HistoryScope = readonly [string, string, string, string];
 type HistoryMessage = { role: "user" | "assistant"; content: string };
 interface HistoryRecord {

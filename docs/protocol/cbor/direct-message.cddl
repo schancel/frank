@@ -88,7 +88,7 @@ recipient-encrypted-payload-v2 = {
   ? 1: account-ref, ; routing sender identity (omitted in sealed-sender deliveries)
   2: account-ref, ; routing recipient identity
   3: 1, ; Frank-CBOR authenticated XChaCha20-Poly1305 suite
-  4: bstr .size (1..524376), ; complete deterministic-CBOR crypto-box v2 envelope
+  4: bstr .size (1..8388696), ; complete deterministic-CBOR crypto-box v2 envelope (8 MiB of ciphertext + 88, R2)
   5: stamp-point, ; E (README T3a)
   6: stamp-point, ; X (README T3a)
   7: dleq-proof, ; DLEQ proof (README T3b)

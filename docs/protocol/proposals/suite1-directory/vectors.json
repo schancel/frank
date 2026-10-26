@@ -10,15 +10,15 @@
     },
     {
       "path": "docs/protocol/cbor/common.cddl",
-      "sha256": "a354f2574363f9a4fbaa90396f135ab6fef2dde640c526744a34e3b1a470f0b3"
+      "sha256": "b19e408131b40314ddeb47f012af3b76348fc0bf63c3898489e7ec192465cdf7"
     },
     {
       "path": "docs/protocol/cbor/README.md",
-      "sha256": "4e7288a2eea65cd81122d3d5587968760ea021cf88efcd25e3471a90eb42d53f"
+      "sha256": "89a08bae4cb3cf9112439e93dce13f79715b3de5f5f70bbedcf840c9521e1776"
     },
     {
       "path": "docs/protocol/cbor/vectors/manifest.json",
-      "sha256": "455e6c10147040c6eadcf489abf76391a76f851b0058b99de6cf4c223807f7ff"
+      "sha256": "3a20c09bced82542036b7c65b81ed6c101bbab454217230fc9570b04cd12d4ec"
     },
     {
       "path": "docs/protocol/cbor/vectors/account-registration.json",

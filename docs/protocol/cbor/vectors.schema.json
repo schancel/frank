@@ -597,7 +597,7 @@
         "route_byte_limit": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 8388617
+          "maximum": 10485769
         },
         "recipient_directory_state": {
           "oneOf": [

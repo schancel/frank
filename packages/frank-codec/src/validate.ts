@@ -26,6 +26,7 @@ import {
   FRANK_ENVELOPE_SHAPE,
   KEY_TRANSITION,
   MAX_FRAME_BYTES,
+  MAX_GENERAL_FRAME_BYTES,
   MAX_MESSAGE_ITEMS_TOTAL,
   MESSAGE_CONTENT_REVISION,
   OPEN_ITEM_FIELD_FORBIDDEN_TYPES,
@@ -1143,11 +1144,11 @@ export function beginDirectMessageValidation(
     completeAuthenticatedContent(bytes) {
       const state = take()
       // Plaintext is an embedded required child, not a second route request.
-      if (bytes.length > MAX_FRAME_BYTES)
+      if (bytes.length > MAX_GENERAL_FRAME_BYTES)
         throw fail(
           'resource',
           '1',
-          'decrypted frame exceeds MAX_FRAME_BYTES',
+          'decrypted frame exceeds MAX_GENERAL_FRAME_BYTES',
           state.location,
         )
       const content = required(

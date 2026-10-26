@@ -632,8 +632,8 @@ rej(
 )
 rej(
   'env-byte-declared-oversize',
-  'A byte string in the envelope declaring 8,388,609 bytes while truncated: resource wins because the header is checked first.',
-  withHeader('a4 0011 0101 0201 03 5a00800001'),
+  'A byte string in the envelope declaring 10,485,761 bytes while truncated: resource wins because the header is checked first.',
+  withHeader('a4 0011 0101 0201 03 5a00a00001'),
   'resource',
   '5',
   ['R1', 'R5'],
@@ -1136,8 +1136,8 @@ rej(
 )
 rej(
   'limit-byte-string-declared-oversize',
-  'Payload byte string declaring 8,388,609 bytes, truncated: resource, not malformed.',
-  P('5a 00800001'),
+  'Payload byte string declaring 10,485,761 bytes, truncated: resource, not malformed.',
+  P('5a 00a00001'),
   'resource',
   '7',
   ['R1', 'R5'],

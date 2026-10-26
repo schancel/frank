@@ -1,8 +1,5 @@
 import { Wallet } from "ethers";
-import {
-  MAX_TEXT_STRING_BYTES,
-  MAX_DIRECT_MESSAGE_FRAME_BYTES,
-} from "@frank/codec";
+import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
 import type {
   BotContext,
   BotMessageContext,
@@ -10,7 +7,7 @@ import type {
   PreparedReply,
 } from "@frank/bot-framework";
 import type { QwenChatMessage } from "../../qwen-client";
-import { MODEL_FAILED_TEXT, QwenBot } from "./qwen-bot";
+import { MAX_HISTORY_RECORD_BYTES, MODEL_FAILED_TEXT, QwenBot } from "./qwen-bot";
 
 const local = new Wallet("0x" + "11".repeat(32));
 const peer = new Wallet("0x" + "12".repeat(32));
@@ -356,7 +353,7 @@ it.each([
   ["not JSON", () => "{"],
   ["another conversation's record", () => JSON.stringify({ ...record(), scope: ["x", "y", "z", "w"] })],
   ["an odd number of turns", () => JSON.stringify(record(pair().slice(0, 1)))],
-  ["larger than a history record may be", () => "x".repeat(MAX_DIRECT_MESSAGE_FRAME_BYTES + 1)],
+  ["larger than a history record may be", () => "x".repeat(MAX_HISTORY_RECORD_BYTES + 1)],
 ])(
   "refuses stored history that is %s, leaving it as it is",
   async (_label, raw) => {

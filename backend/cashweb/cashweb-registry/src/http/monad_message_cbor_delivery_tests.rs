@@ -83,6 +83,17 @@ fn build(
     payments: u32,
     pay: impl Fn(&Payment) -> Vec<u8>,
 ) -> ExactRequest {
+    build_sized(tag, parties, payments, pay, None)
+}
+/// [`build`], with the sealed body (the type-11 crypto-box envelope) made exactly `envelope`
+/// bytes long when given: filler the relay cannot tell from ciphertext, since it never opens it.
+fn build_sized(
+    tag: u32,
+    parties: Parties,
+    payments: u32,
+    pay: impl Fn(&Payment) -> Vec<u8>,
+    envelope: Option<usize>,
+) -> ExactRequest {
     let genuine = genuine_fixture();
     let outer = parsed(genuine.delivery());
     let Some(frank_cbor::TypedPayload::DirectMessage {
@@ -104,6 +115,9 @@ fn build(
     let CborValue::Bytes(body) = entry(&mut sealed, 4) else {
         panic!("sealed body");
     };
+    if let Some(length) = envelope {
+        body.resize(length, 0x5a);
+    }
     let end = body.len();
     for (byte, mix) in body[end - 4..].iter_mut().zip(tag.to_be_bytes()) {
         *byte ^= mix;
@@ -1412,7 +1426,7 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
     let client = reqwest::Client::new();
     let (url, point) = (&relay.url, &relay.fixture.accounts[1].subject);
     let recipient = relay.recipient().to_hex();
-    let page = "since=0&limit=50&max_bytes=8388608";
+    let page = format!("since=0&limit=50&max_bytes={MAX_REQUEST_BYTES}");
     assert_eq!(
         client
             .get(format!(
@@ -2053,5 +2067,69 @@ async fn an_unknown_commit_outcome_is_settled_by_a_fence_and_admits_the_message_
         .all(|pair| pair[0].delivered_at < pair[1].delivered_at));
     // Each is a repeat now, wherever it is presented.
     assert!(!owner.claim(input(700_001), now).unwrap().new);
+    relay.stop().await;
+}
+
+/// The largest direct message the codec admits, with the most payments a message may carry, is
+/// a request of more than 8 MiB that fits the request limit: the relay admits it over HTTP and
+/// stores it whole. One more byte of envelope is not a valid message, and a request one byte
+/// over the request limit is refused before it is read; neither stores anything.
+#[tokio::test]
+async fn the_largest_message_is_admitted_and_one_byte_more_is_refused_with_nothing_stored() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let largest = build_sized(
+        40,
+        Parties::Captured,
+        crate::monad_dm_payment::MAX_STAMP_PAYMENTS as u32,
+        Payment::signed,
+        Some(frank_cbor::MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES),
+    );
+    let length = largest.body().len();
+    eprintln!("largest direct-message request with 64 payments: {length} bytes");
+    assert!(length >= 8 * 1024 * 1024 && length <= MAX_REQUEST_BYTES);
+    assert!(largest.delivery().len() <= frank_cbor::MAX_DIRECT_MESSAGE_FRAME_BYTES);
+    delivered(&relay.put(&largest).await, &largest);
+    relay.assert_delivered_to_both(&largest);
+    let stored = relay.owner().get(&payload_hash(&largest)).unwrap().unwrap();
+    assert!(stored.request.body() == largest.body());
+    assert_eq!(relay.broadcasts().len(), 64);
+
+    let over = build_sized(
+        41,
+        Parties::Captured,
+        1,
+        Payment::signed,
+        Some(frank_cbor::MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES + 1),
+    );
+    let answer = relay.put(&over).await;
+    assert_eq!(answer.0, 400, "{}", answer.1);
+    assert_eq!(answer.1["error"], "invalid_canonical_submission");
+    assert_eq!(relay.inbox(), [payload_hash(&largest)]);
+
+    // At the request limit the body is read and judged on its bytes; one byte more is not read.
+    for (size, status, error) in [
+        (MAX_REQUEST_BYTES, 400, "invalid_canonical_submission"),
+        (
+            MAX_REQUEST_BYTES + 1,
+            413,
+            "mailbox_record_exceeds_page_budget",
+        ),
+    ] {
+        let response = reqwest::Client::new()
+            .put(format!("{}/message", relay.url))
+            .header(
+                "content-type",
+                "multipart/form-data; boundary=frank-oversized",
+            )
+            .body(vec![b'-'; size])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), status, "{size} bytes");
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"], error, "{size} bytes");
+    }
+    assert_eq!(relay.inbox(), [payload_hash(&largest)]);
     relay.stop().await;
 }

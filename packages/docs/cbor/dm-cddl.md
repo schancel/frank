@@ -63,7 +63,7 @@ recipient-encrypted-payload-v2 = {
   1: account-ref,          ; routing sender identity
   2: account-ref,          ; routing recipient identity
   3: 1,                    ; Frank-CBOR authenticated XChaCha20-Poly1305 suite
-  4: bstr .size (1..524376), ; complete crypto-box v2 envelope
+  4: bstr .size (1..8388696), ; complete crypto-box v2 envelope
   5: stamp-point,          ; ephemeral point E
   6: stamp-point,          ; blinded stamp point X
   7: dleq-proof,           ; DLEQ proof

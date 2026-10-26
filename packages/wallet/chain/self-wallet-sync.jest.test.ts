@@ -17,7 +17,15 @@ import type {
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
 import { restoreCanonicalRequest, type CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
-import { encodePluginMessageItem, parseFrame, toHex, TYPE_DIRECT_MESSAGE_DELIVERY } from '@frank/codec'
+import {
+  FrankCodecError,
+  MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  encodePluginMessageItem,
+  parseFrame,
+  toHex,
+} from '@frank/codec'
 import {
   Transaction,
   type TransactionReceipt,
@@ -623,11 +631,12 @@ describe("a wallet's sync note to itself", () => {
 
     it('refuses, before anything is paid or sent, a sealed message too large for its note to self', async () => {
       routeByRecipient = true
-      // Within a few hundred bytes of the largest direct message: the message alone fits, the
-      // note to self, which holds it and its own fields, does not.
+      // Within a few hundred bytes of the largest plugin item (512 KiB), which carries the whole
+      // note to self: the message alone fits, the note, which holds it and its own fields, does
+      // not.
       const items = [
-        { type: 'text' as const, text: 'c'.repeat(261_900) },
-        { type: 'text' as const, text: 'd'.repeat(261_900) },
+        { type: 'text' as const, text: 'c'.repeat(262_144) },
+        { type: 'text' as const, text: 'd'.repeat(262_144) },
       ]
       for (const stampValue of [0n, STAMP]) {
         const error = await one.chain.directMessages
@@ -658,6 +667,65 @@ describe("a wallet's sync note to itself", () => {
         stampValue: 0n,
       })
       expect(bobMailbox).toHaveLength(1)
+    })
+
+    it('seals and sends a free and a paid direct message of the largest size, more than 8 MiB, and refuses one byte more before anything is sent', async () => {
+      routeByRecipient = true
+      const envelopeOf = (record: InboxRecord): number => {
+        const parsed = parseFrame(record.delivery)
+        if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
+          throw new Error('expected a delivery frame')
+        const payload = parsed.typed.payloadFrame.typed
+        if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD || payload.schemaVersion !== 2)
+          throw new Error('expected a schema-2 payload')
+        return payload.cryptoBoxEnvelope.length
+      }
+      // 33 text items (each at most 256 KiB); the envelope grows byte for byte with the text.
+      const texts = (last: number) =>
+        Array.from({ length: 33 }, (_, i) => ({
+          type: 'text' as const,
+          text: String.fromCharCode(97 + (i % 26)).repeat(i === 32 ? last : 254_000),
+        }))
+      const send = (items: MessageItem[], sealedSender = false, stampValue = 0n) =>
+        one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items,
+          stampValue,
+          ...(sealedSender ? { sealedSender: true } : {}),
+        })
+      await send(texts(200_000))
+      expect(bobMailbox).toHaveLength(1)
+      const last = 200_000 + MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - envelopeOf(bobMailbox[0])
+      expect(last).toBeLessThanOrEqual(262_144)
+      // The largest: its envelope is exactly the codec's limit and its delivery is over 8 MiB.
+      await send(texts(last))
+      expect(bobMailbox).toHaveLength(2)
+      expect(envelopeOf(bobMailbox[1])).toBe(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES)
+      expect(bobMailbox[1].delivery.length).toBeGreaterThan(8 * 1024 * 1024)
+      // Paid, the same message goes through the stamp path and its journal too.
+      await send(texts(last), false, STAMP)
+      expect(bobMailbox).toHaveLength(3)
+      expect(envelopeOf(bobMailbox[2])).toBe(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES)
+      // One byte more is refused before anything is handed to the relay.
+      const funded = mockFunded.length
+      const over = await send(texts(last + 1)).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(over).toBeInstanceOf(FrankCodecError)
+      expect(over).toMatchObject({ category: 'resource' })
+      expect(isDirectMessageNotAttempted(over)).toBe(true)
+      // Sealed, the same message cannot have a note to self (one plugin item of at most 512 KiB
+      // carries the note's copy of every item), so it is refused before anything is sent.
+      const sealed = await send(texts(last), true).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(sealed).toBeInstanceOf(SealedSelfCopyTooLargeError)
+      expect(isDirectMessageNotAttempted(sealed)).toBe(true)
+      expect(bobMailbox).toHaveLength(3)
+      expect(mockFunded).toHaveLength(funded)
     })
 
     it.each([

@@ -231,7 +231,7 @@ pub fn mutated_type5_frame() -> Vec<u8> {
     fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, &CborValue::Map(fields))
 }
 
-fn payment(t3: &[u8], index: u32) -> CborValue {
+pub fn payment(t3: &[u8], index: u32) -> CborValue {
     let mut value = vec![0u8; 32];
     value[31] = 1 + (index % 200) as u8;
     value[30] = 0x0f;
@@ -423,7 +423,7 @@ pub fn rust_origin_directory_attestation_frame() -> Vec<u8> {
     )
 }
 
-fn fact(seconds: i64, nanos: u32, id_seed: u32, payload: Vec<u8>) -> CborValue {
+pub fn fact(seconds: i64, nanos: u32, id_seed: u32, payload: Vec<u8>) -> CborValue {
     cbor_map(vec![
         (journal_fact::TIMESTAMP, ts(seconds, nanos)),
         (
@@ -435,7 +435,7 @@ fn fact(seconds: i64, nanos: u32, id_seed: u32, payload: Vec<u8>) -> CborValue {
     ])
 }
 
-fn section(section_type: u32, schema: u32, value: Vec<u8>) -> CborValue {
+pub fn section(section_type: u32, schema: u32, value: Vec<u8>) -> CborValue {
     cbor_map(vec![
         (opaque_section::SECTION_TYPE, int(i128::from(section_type))),
         (

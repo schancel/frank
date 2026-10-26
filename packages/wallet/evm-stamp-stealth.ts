@@ -200,6 +200,7 @@ import {
   recipientPayloadDigest,
   type AccountRef,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  MAX_DIRECT_MESSAGE_FRAME_BYTES,
 } from '@frank/codec'
 import { verifyCanonicalStampProof } from '@frank/cashweb/relay/canonical-dm-stamp'
 
@@ -211,7 +212,7 @@ export function inspectCanonicalPreparedEnvelope(
   if (
     !(payload instanceof Uint8Array) ||
     payload.length < 1 ||
-    payload.length > 8 * 1024 * 1024 ||
+    payload.length > MAX_DIRECT_MESSAGE_FRAME_BYTES ||
     !(context instanceof Uint8Array) ||
     context.length < 1 ||
     context.length > 4096

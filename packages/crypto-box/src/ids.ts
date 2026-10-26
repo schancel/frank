@@ -49,7 +49,10 @@ export const ENVELOPE_FIELDS = {
   maskedSender: 6,
 } as const
 
-export const MAX_MESSAGE = 1_048_576
+/** Largest plaintext this library seals or opens (16 MiB): a library bound above any message Frank
+ * seals, so the codec's limits (a direct message holds at most 8 MiB of ciphertext) always bind
+ * first. */
+export const MAX_MESSAGE = 16_777_216
 export const MAX_PADDING = 65535
 
 export type AeadName = 'aes-256-gcm' | 'xchacha20-poly1305'

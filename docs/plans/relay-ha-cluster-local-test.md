@@ -144,11 +144,12 @@ display and the wallet's fee summary.
     and C each read back the exact delivery frame through an authenticated mailbox scan, and the
     object under `lab/messages/sha256/<sha256 of the request>/` in MinIO hashes to that request;
     all funds went back to the faucet.
-  - **An 8 MiB DM cannot round-trip.** The HTTP limit is 8 MiB, but the codec admits one
-    crypto-box envelope of at most 524,376 bytes (512 KiB of ciphertext) per DM, so the largest
-    admissible request is about 0.53 MB. An 8,388,315-byte request gets 400 from the codec. The
-    step 6 acceptance line in `relay-ha-cluster.md` cannot be met as written; no limit was
-    raised (owner question 14).
+  - **An 8 MiB DM could not round-trip** on #1924: the codec admitted one crypto-box envelope
+    of at most 524,376 bytes per DM. The owner raised the limit (question 14); see the next
+    bullet.
+- **Direct messages up to 8 MiB** (branch `fix/dm-8mib`): a DM holds up to 8 MiB of
+  ciphertext (an envelope of at most 8,388,696 bytes), a DM frame up to 10 MiB, and a request up
+  to 12 MiB. EVIDENCE_PLACEHOLDER
 
 ## Shared across replicas, and replica-local
 
@@ -225,9 +226,10 @@ Still replica-local; each relay's startup log names them:
     - run only when idle, and never touch claimed coins;
     - start above about 8 spendable coins, merging into one fresh account;
     - skip coins that cost more to move than they're worth.
-14. **DM size versus the 8 MiB acceptance line.** A DM holds at most 512 KiB of ciphertext, so
-    no 8 MiB DM exists. Keep that limit and change the acceptance line to "the largest DM a
-    client seals round-trips through S3" (recommended; met), or raise the codec limit?
+14. **DM size versus the 8 MiB acceptance line.** Resolved: the owner chose to raise the limit
+    (2026-10-26). A DM holds up to 8 MiB of ciphertext and a relay reads requests up to 12 MiB.
+    A sealed message is still capped at about 512 KiB by its note to self, a plugin item whose
+    limit was not raised.
 
 ## Before deploying this main
 

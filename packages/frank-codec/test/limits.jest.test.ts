@@ -1,7 +1,11 @@
 // At-limit accepts and one-over rejects for the limits too large for the committed manifest.
 import {
   FrankCodecError,
+  MAX_BODY_BYTES,
+  MAX_DIRECT_MESSAGE_FRAME_BYTES,
+  MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
   MAX_FRAME_BYTES,
+  MAX_GENERAL_FRAME_BYTES,
   contentHash,
   defaultContext,
   validateFrame,
@@ -15,6 +19,7 @@ import {
   acct2,
   attestationFrame,
   bytesOf,
+  checkpointFrame,
   concatBytes,
   deliveryPayload,
   fact,
@@ -55,8 +60,8 @@ const generic = { operation: 'generic' as const, opaqueRetentionAllowed: true }
 
 describe('global limits', () => {
   it('accepts a frame of exactly MAX_FRAME_BYTES and rejects one byte more at stage 1', () => {
-    // envelope (17 bytes) + payload byte-string item (5-byte head) filling 8 MiB exactly.
-    const dataLen = 8_388_608 - 22
+    // envelope (17 bytes) + payload byte-string item (5-byte head) filling the body exactly.
+    const dataLen = MAX_BODY_BYTES - 22
     const payload = concatBytes(
       hex('5a'),
       Uint8Array.of(0, 0, 0, 0),
@@ -235,22 +240,70 @@ describe('type-specific limits (R2-R4)', () => {
       'schema@8.2',
     )
 
-    const production = new Map<number, Encodable>([
+    expect(
+      outcome(
+        fr(
+          TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+          production(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES + 1),
+          2,
+          2,
+        ),
+      ),
+    ).toBe('resource@8.1')
+  })
+
+  /** A type-11 schema-2 payload whose crypto-box envelope is `envelope` bytes. */
+  const production = (envelope: number) =>
+    new Map<number, Encodable>([
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.network, NET],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender, acct2(9)],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient, acct1(3)],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite, ENCRYPTION_SUITE.dmAuthXchacha],
       [
         RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope,
-        new Uint8Array(524_377),
+        new Uint8Array(envelope),
       ],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.ephemeralPoint, T3C.ephemeral],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint, T3C.shared],
       [RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof, T3C.proof],
     ])
-    expect(
-      outcome(fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, production, 2, 2)),
-    ).toBe('resource@8.1')
+
+  it('bounds the crypto-box envelope at 8 MiB + 88 bytes (R2), also inside a delivery', () => {
+    expect(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES).toBe(8_388_696)
+    const payload = (envelope: number) =>
+      fr(TYPE_RECIPIENT_ENCRYPTED_PAYLOAD, production(envelope), 2, 2)
+    // The largest payload is more than a frame of any other type may be.
+    expect(payload(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES).length).toBeGreaterThan(
+      MAX_GENERAL_FRAME_BYTES,
+    )
+    expect(outcome(payload(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES))).toBe('parsed')
+    expect(outcome(payload(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES + 1))).toBe(
+      'resource@8.1',
+    )
+    // The same payload as the type-10 delivery a relay is sent, with 64 payment members.
+    const delivery = (envelope: number) => {
+      const p = payload(envelope)
+      const d = deliveryPayload({ payments: 64, payloadFrame: p })
+      return fr(TYPE_DIRECT_MESSAGE_DELIVERY, d, 2, 1)
+    }
+    const largest = delivery(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES)
+    expect(largest.length).toBeGreaterThan(8 * 1024 * 1024)
+    expect(outcome(largest)).toBe('parsed')
+    expect(outcome(delivery(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES + 1))).toBe(
+      'resource@8.1',
+    )
+  })
+
+  it('keeps every other type at 8 MiB + 9 bytes: a type-14 checkpoint one byte over is resource', () => {
+    const cp = (pad: number) =>
+      checkpointFrame({ sections: [section(1, 1, new Uint8Array(pad))] })
+    let pad = 8_380_000
+    pad += MAX_GENERAL_FRAME_BYTES - cp(pad).length
+    const opts = { priorDirectoryStatementFrame: null }
+    expect(cp(pad).length).toBe(MAX_GENERAL_FRAME_BYTES)
+    expect(outcome(cp(pad), opts)).toBe('parsed')
+    expect(cp(pad + 1).length).toBe(MAX_GENERAL_FRAME_BYTES + 1)
+    expect(outcome(cp(pad + 1), opts)).toBe('resource@8.1')
   })
 
   /** A newer type-10 root (schema 3) projected through the reader's schema 2 with one padding field. */
@@ -260,15 +313,16 @@ describe('type-specific limits (R2-R4)', () => {
     return fr(TYPE_DIRECT_MESSAGE_DELIVERY, payload, 3, 1)
   }
 
-  it('bounds a type-10 frame at 1 MiB (R2) using the root frame length', () => {
-    // Find the pad making the delivery exactly 1,048,576 bytes; length grows 1:1 with the pad.
-    let pad = 1_040_000
-    pad += 1_048_576 - paddedDelivery(pad).length
+  it('bounds a type-10 frame at 10 MiB (R2) using the root frame length', () => {
+    // Find the pad making the delivery exactly 10 MiB; length grows 1:1 with the pad.
+    expect(MAX_DIRECT_MESSAGE_FRAME_BYTES).toBe(10_485_760)
+    let pad = 10_480_000
+    pad += MAX_DIRECT_MESSAGE_FRAME_BYTES - paddedDelivery(pad).length
     const exact = paddedDelivery(pad)
-    expect(exact.length).toBe(1_048_576)
+    expect(exact.length).toBe(MAX_DIRECT_MESSAGE_FRAME_BYTES)
     expect(outcome(exact)).toBe('parsed')
     const over = paddedDelivery(pad + 1)
-    expect(over.length).toBe(1_048_577)
+    expect(over.length).toBe(MAX_DIRECT_MESSAGE_FRAME_BYTES + 1)
     expect(outcome(over)).toBe('resource@8.1')
   })
 

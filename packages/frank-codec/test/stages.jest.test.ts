@@ -3,6 +3,7 @@
 import {
   FrankCodecError,
   FrankContextError,
+  MAX_BODY_BYTES,
   MAX_FRAME_BYTES,
   defaultContext,
   encodeFrame,
@@ -379,7 +380,7 @@ describe('frame encoder', () => {
     expect(e({ minReaderVersion: 0 })).toThrow(RangeError)
     expect(e({ schemaVersion: 1, minReaderVersion: 2 })).toThrow(RangeError)
     expect(e({ typeId: 1.5 })).toThrow(RangeError) // raw-cbor-key: deliberately invalid or undeclared
-    expect(() => wrapFrame(new Uint8Array(8_388_609))).toThrow(RangeError)
+    expect(() => wrapFrame(new Uint8Array(MAX_BODY_BYTES + 1))).toThrow(RangeError)
     expect(() => wrapFrame(new Uint8Array(1), 256)).toThrow(RangeError)
   })
 

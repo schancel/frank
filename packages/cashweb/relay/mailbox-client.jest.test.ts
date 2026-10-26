@@ -206,6 +206,7 @@ import {
 import { openNodeDirectoryStore } from "@frank/directory-admission/node";
 import type { Context, DirectoryStore } from "@frank/directory-admission";
 import {
+  CANONICAL_DM_MAX_BYTES,
   freezeCanonicalRequest,
   inspectCanonicalPair,
   type CanonicalFetch,
@@ -522,7 +523,9 @@ describe("canonical private mailbox", () => {
       )
     ).toBe(true);
     expect(challenge.limit).toBe(50);
-    expect(challenge.max_bytes).toBe(8 * 1024 * 1024);
+    // The default page budget is one request's limit (12 MiB), the relay's MAX_REQUEST_BYTES.
+    expect(challenge.max_bytes).toBe(CANONICAL_DM_MAX_BYTES);
+    expect(CANONICAL_DM_MAX_BYTES).toBe(12 * 1024 * 1024);
   });
   // The outer and inner framing matches record_multipart in
   // backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs, including the

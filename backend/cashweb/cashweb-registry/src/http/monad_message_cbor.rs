@@ -14,7 +14,11 @@ use frank_cbor::{encode_canonical, CborValue};
 use serde::Serialize;
 use sha3::{Digest, Keccak256};
 
-pub(crate) const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// One direct-message request, and one mailbox page or record (12 MiB): the largest delivery frame
+/// (`frank_cbor::MAX_DIRECT_MESSAGE_FRAME_BYTES`, 10 MiB, whose crypto-box envelope is at most
+/// 8 MiB + 88) and 2 MiB for its context (at most [`MAX_CONTEXT_BYTES`]), up to 64 raw stamp
+/// transactions and the multipart framing. The client's `CANONICAL_DM_MAX_BYTES` is the same.
+pub(crate) const MAX_REQUEST_BYTES: usize = 12 * 1024 * 1024;
 pub(crate) const MAX_CONTEXT_BYTES: usize = 4096;
 pub(crate) const MAX_RAW_TRANSACTION_BYTES: usize = 128 * 1024;
 

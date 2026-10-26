@@ -138,14 +138,13 @@ display and the wallet's fee summary.
 
 Shared through FoundationDB (and MinIO for large values): groups, direct messages, the registry
 database (profiles, usernames), the directory, the forum (posts, votes, burn records, cursors),
-and values over 64 KiB.
+and values over 64 KiB, including direct-message requests over 64 KiB (objects under
+`lab/messages/` in the `frank-lab-blobs` bucket).
 
 Still replica-local; each relay's startup log names them:
 
 - **The hourly RPC proxy quotas and the directory enrollment quotas:** each replica counts its own
   (HA step 10).
-
-Not stored in S3: direct messages over 100 kB are split across FoundationDB values instead.
 
 ## Not working, and known bugs
 

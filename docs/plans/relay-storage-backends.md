@@ -25,7 +25,7 @@ be restarted in-process.
 `/` (for example `frank-prod/`), so `frank/` and `frank2/` never share keys. Two relays must
 not use a prefix that is a leading run of the other's segments. The driver currently backs
 these owners: groups under `<fdb_subspace_prefix>groups-v1/`, the registry `Db` under
-`<fdb_subspace_prefix>registry-v1/`, direct messages under `<fdb_subspace_prefix>messages-v3/`,
+`<fdb_subspace_prefix>registry-v1/`, direct messages under `<fdb_subspace_prefix>messages-v4/`,
 the directory under `<fdb_subspace_prefix>directory-v1/`, and the forum under
 `<fdb_subspace_prefix>forum-v1/` (probed at startup only when `[registry.forum]` is set). Group and directory store calls run on blocking
 workers; registry calls on a shared store hand their async worker over with

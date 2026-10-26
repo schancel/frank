@@ -410,7 +410,7 @@ fn registry_db(driver: &RelayStorageDriver, db_path: &std::path::Path) -> Result
 
 /// Where direct messages keep their state, selected by `registry.cluster.driver`: `None` for
 /// this replica's RocksDB beside the registry database, or the shared FoundationDB store under
-/// `<fdb_subspace_prefix>messages-v3/` (the format version is part of the key space).
+/// `<fdb_subspace_prefix>messages-v4/` (the format version is part of the key space).
 fn message_backend(
     driver: &RelayStorageDriver,
 ) -> Result<Option<Arc<dyn cashweb_registry::store::kv_store::RelayKvStore>>> {
@@ -426,7 +426,7 @@ fn message_backend(
             })?;
             let store = cashweb_registry::store::foundationdb_driver::FoundationDbKvStore::open(
                 cluster_file,
-                format!("{subspace_prefix}messages-v3/"),
+                format!("{subspace_prefix}messages-v4/"),
             )
             .map_err(|error| {
                 bitcoinsuite_error::Report::msg(format!("Opening FoundationDB: {error}"))
@@ -470,7 +470,7 @@ fn log_cluster_shape(registry: &cashweb_config::RegistryConf, driver: &RelayStor
         info!(
             subspace_prefix = %subspace_prefix,
             "Groups are stored in FoundationDB under {subspace_prefix}groups-v1/ and direct \
-             messages under {subspace_prefix}messages-v3/"
+             messages under {subspace_prefix}messages-v4/"
         );
         info!(
             subspace_prefix = %subspace_prefix,
@@ -748,6 +748,7 @@ async fn run(
                             .map_err(|e| e.to_string()),
                         registry.sweep_directory_large_values(holder),
                         registry.sweep_forum_large_values(holder),
+                        registry.sweep_message_large_values(holder),
                     )
                 });
                 match sweep.await {
@@ -756,6 +757,7 @@ async fn run(
                             ("group", results.0),
                             ("directory", results.1),
                             ("forum", results.2),
+                            ("direct-message", results.3),
                         ] {
                             match result {
                                 Ok(report) if report.deleted > 0 => info!(

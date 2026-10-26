@@ -458,8 +458,9 @@ It runs its checks with real wallets on solonet and removes the project with its
 - a mailbox challenge issued on A is accepted once on B and refused on replay;
 - after A is killed mid-admission, the retry to B gives one message and one payment;
 - with NATS down, a message is still kept and the reader catches up from its cursor;
-- a 400 kB message reads back unchanged from another replica. Direct messages do not use S3
-  yet: rows over 100 kB are split across FoundationDB values.
+- a message near the largest a client can seal (400 kB of text) reads back unchanged on B and C,
+  and its request is an object under `lab/messages/` in MinIO: direct-message requests over
+  64 KiB are stored in S3.
 
 These checks need the TypeScript wallet to seal messages and pay stamps, so they live in the
 livecheck rather than in `cluster_contract.rs`.

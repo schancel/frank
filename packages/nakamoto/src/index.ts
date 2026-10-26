@@ -261,6 +261,8 @@ export {
   messageDigest,
   pointAdd,
   pointMultiply,
+  publicPointMultiply,
+  publicPointMultiplyAdd,
   signEcdsa,
   signMessage,
   signSchnorr,

@@ -12,6 +12,7 @@ import {
   type EvmNativeMember,
 } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
+import { signedTransactionSender } from './evm-signed-sender'
 
 function assertMember(
   actual: PreparedEvmTransaction,
@@ -34,7 +35,7 @@ function assertMember(
     actual.gasLimit !== expected.gasLimit ||
     actual.predecessor?.account !== expected.predecessor?.account ||
     actual.predecessor?.nonce !== expected.predecessor?.nonce ||
-    transaction.from!.toLowerCase() !== actual.sourceAccount.toLowerCase() ||
+    signedTransactionSender(actual.rawTransaction, transaction)?.toLowerCase() !== actual.sourceAccount.toLowerCase() ||
     transaction.to?.toLowerCase() !== actual.destination.toLowerCase() ||
     transaction.nonce !== actual.nonce ||
     transaction.value !== actual.valueWei ||

@@ -7,6 +7,7 @@ import type {
   SubAccountLeaseManager,
 } from './evm-account-lease'
 import { PROTOCOL_CHAINS } from './chain/chains-registry'
+import { signedTransactionSender } from './evm-signed-sender'
 import {
   EvmNativeJournalError,
   nativeMemberSuperseded,
@@ -257,7 +258,7 @@ class AdmissionOwner implements EvmInputAdmission {
       tx.nonce < 0
     )
       invalid()
-    const from = tx.from ?? sender
+    const from = signedTransactionSender(bytes, tx) ?? sender
     if (!from || (sender && address(from) !== address(sender))) invalid()
     const result = Object.freeze({
       unsignedSerialized: tx.unsignedSerialized,

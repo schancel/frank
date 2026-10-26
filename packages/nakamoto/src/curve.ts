@@ -19,6 +19,7 @@ import {
   type SchnorrSignature,
 } from './constructors.js'
 import { bigintToBytes, bytesToBigint, mod } from './integer.js'
+import { multiplicand } from './point-tables.js'
 import { SECP256K1_N, isValidScalar } from './secp256k1.js'
 import { encodeVarint } from './varint.js'
 
@@ -346,7 +347,10 @@ export function ecdh(
   if (!scalar.ok) return scalar
   const secret = copyBytes(key.bytes)
   try {
-    return { ok: true, value: { point: cryptoBackend.ecdh(secret, publicKey) } }
+    return {
+      ok: true,
+      value: { point: cryptoBackend.ecdh(secret, publicKey) },
+    }
   } catch (error) {
     return fail(backendFailure(error))
   } finally {
@@ -426,6 +430,56 @@ export function pointMultiply(
   } catch (error) {
     return fail(backendFailure(error))
   }
+}
+
+/** Variable-time `point·scalar` for public inputs. A point with precomputed tables (the
+ * generator, or one multiplied before) takes the constant-time path, which those tables make
+ * faster still; @noble/curves 1.9.1's variable-time multiplication over tables returns wrong
+ * points (its own verify avoids it too). */
+function publicScale(point: Projective, scalar: bigint): Projective {
+  const known = multiplicand(point)
+  return known.tabled
+    ? known.point.multiply(scalar)
+    : known.point.multiplyUnsafe(scalar)
+}
+
+/**
+ * Public point times a public scalar in [1, n), in variable time: verification and public
+ * derivation arithmetic, where every input is already known to anyone watching. Never pass a
+ * secret scalar; `pointMultiply` is the constant-time form.
+ */
+export function publicPointMultiply(
+  publicPoint: Uint8Array,
+  publicScalar: Uint8Array,
+): CurveResult<Uint8Array> {
+  const point = parsePoint(publicPoint)
+  if (!point.ok) return point
+  const factor = scalar32(publicScalar)
+  if (!factor.ok) return factor
+  return compressed(publicScale(point.value, factor.value))
+}
+
+/**
+ * `a·A + b·B` for public points and public scalars in [1, n), in variable time (a DLEQ or
+ * signature check's linear combination). Never pass a secret scalar. Infinity is an error.
+ */
+export function publicPointMultiplyAdd(
+  left: Uint8Array,
+  leftScalar: Uint8Array,
+  right: Uint8Array,
+  rightScalar: Uint8Array,
+): CurveResult<Uint8Array> {
+  const a = parsePoint(left)
+  if (!a.ok) return a
+  const b = parsePoint(right)
+  if (!b.ok) return b
+  const x = scalar32(leftScalar)
+  if (!x.ok) return x
+  const y = scalar32(rightScalar)
+  if (!y.ok) return y
+  return compressed(
+    publicScale(a.value, x.value).add(publicScale(b.value, y.value)),
+  )
 }
 
 function dleqChallenge(

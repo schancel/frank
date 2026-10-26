@@ -1266,8 +1266,9 @@ it.each([false, true])('retains uncertain durable stage writes until reopen and 
     if (append) {
       const original = journal.appendTransactionSet.bind(journal)
       jest.spyOn(journal, 'appendTransactionSet').mockImplementationOnce(async (...args) => { signed = args[3]; return original(...args) })
-      const put = durability.durablePut
-      jest.spyOn(durability, 'durablePut').mockImplementationOnce(async (...args) => { await put(...args); throw new Error('write result uncertain') })
+      // The journal commits a mutation's row and manifest in one batch.
+      const batch = durability.durableBatch
+      jest.spyOn(durability, 'durableBatch').mockImplementationOnce(async (...args) => { await batch(...args); throw new Error('write result uncertain') })
     } else {
       const original = journal.prepare.bind(journal)
       jest.spyOn(journal, 'prepare').mockImplementationOnce(async (...args) => { signed = args[1]!; return original(...args) })

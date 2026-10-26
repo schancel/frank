@@ -6,6 +6,7 @@ import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './evm-transaction-set-graph'
+import { recordSignedTransactionSender } from '../evm-signed-sender'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
@@ -713,6 +714,7 @@ async function validateRow(
           parsed.hash !== signed.transactionHash
         )
           fail('invalid', 'signature')
+        recordSignedTransactionSender(rawTransaction, parsed.from!)
       })
     } else if (member.exposed || member.syncApplied) fail()
     const observation = checked('observation', () =>
@@ -834,6 +836,16 @@ export class EvmNativeOperationJournal {
   private validatedTexts = new Map<string, { text: string; row: EvmNativeOperation }>()
   private nextSequence = 1
   private archivedCount = 0
+  /** Every write commits a new manifest `revision` in the same batch as the rows it changes, so
+   * an unchanged manifest means no journal instance has written a row since. `loadedManifest` is
+   * the exact manifest text the rows held here correspond to (the last one this instance read in
+   * full or wrote); a lookup that finds exactly that text has nothing to read. A manifest without
+   * a revision (written before revisions existed) is never matched, so every lookup reads all
+   * rows until this instance's first write adds one. */
+  private revision = 0
+  private loadedManifest?: string
+  /** The JSON text of each row held here, so a reader's copy is one parse. */
+  private readonly rowTexts = new WeakMap<EvmNativeOperation, string>()
   /** Test-only backing storage. Production history stays on disk, never in a hot map. */
   private readonly ephemeralHistory = new Map<string, { row: EvmNativeOperation; receipt: EvmNativeCompletionReceipt }>()
   private readonly ephemeralPreparations = new Map<string, string>()
@@ -895,12 +907,18 @@ export class EvmNativeOperationJournal {
       task,
     )
   }
-  private async reloadRows(initialize: boolean): Promise<void> {
+  /** `open` reads and validates every active row. `write` re-reads every row before a mutation
+   * (it must not write over bytes it has not seen). `read` (looking an operation up) trusts the
+   * rows held here while the manifest is exactly the one they came with: any journal instance,
+   * in this realm or another tab, that wrote a row wrote a new manifest in the same batch. */
+  private async reloadRows(mode: 'open' | 'write' | 'read'): Promise<void> {
     if (!this.database) return
+    const initialize = mode === 'open'
+    const manifestText = await this.stored('manifest')
+    if (mode === 'read' && manifestText !== undefined && manifestText === this.loadedManifest) return
     const rows = new Map<string, EvmNativeOperation>()
     const validated = new Map<string, { text: string; row: EvmNativeOperation }>()
     const yielder = validationYielder()
-    const manifestText = await this.stored('manifest')
     const manifest: unknown = manifestText === undefined ? undefined : JSON.parse(manifestText)
     // Only active rows participate in recovery scans. Completed history is read through
     // bounded indexed lookups; opening never materializes lifetime history.
@@ -916,8 +934,11 @@ export class EvmNativeOperationJournal {
       validated.set(name, { text, row })
     }
     let nextSequence = 1
+    let revision: number | undefined
     if (manifest !== undefined) {
-      const m = object(manifest, ['version', 'binding', 'nextSequence', ...('archivedCount' in (manifest as object) ? ['archivedCount'] : [])])
+      const m = object(manifest, ['version', 'binding', 'nextSequence',
+        ...('archivedCount' in (manifest as object) ? ['archivedCount'] : []),
+        ...('revision' in (manifest as object) ? ['revision'] : [])])
       if (m.version !== 1) fail()
       if (
         JSON.stringify(validateBinding(m.binding)) !==
@@ -929,6 +950,10 @@ export class EvmNativeOperationJournal {
       nextSequence = m.nextSequence
       if (m.archivedCount !== undefined) integer(m.archivedCount)
       this.archivedCount = m.archivedCount === undefined ? 0 : m.archivedCount as number
+      if (m.revision !== undefined) {
+        integer(m.revision)
+        revision = m.revision
+      }
     } else if (rows.size || !initialize) fail()
     if (rows.size + this.archivedCount !== nextSequence - 1) fail()
     const pairs = new Set<string>(),
@@ -955,15 +980,18 @@ export class EvmNativeOperationJournal {
       activeRows.reduce((n, r) => n + r.reservedBytes, 0) > this.maxBytes
     )
       fail('capacity')
+    for (const row of rows.values())
+      if (!this.rowTexts.has(row)) this.rowTexts.set(row, JSON.stringify(row))
     this.rows = rows
     this.validatedTexts = validated
     this.nextSequence = nextSequence
-    if (manifest === undefined)
-      await durablePut(
-        this.database,
-        'manifest',
-        JSON.stringify(this.manifest()),
-      )
+    this.revision = revision ?? 0
+    this.loadedManifest = revision === undefined ? undefined : manifestText
+    if (manifest === undefined) {
+      const text = JSON.stringify(this.manifest())
+      await durablePut(this.database, 'manifest', text)
+      this.loadedManifest = text
+    }
   }
   async Open(): Promise<void> {
     if (this.lifecycle !== 'closed') fail('conflict')
@@ -973,7 +1001,7 @@ export class EvmNativeOperationJournal {
         const database: LevelDB = level(join(this.options.location, COMPONENT))
         this.database = database
         await openDurableLevel(database, this.options.location, COMPONENT)
-        await this.coordinated(() => this.reloadRows(true))
+        await this.coordinated(() => this.reloadRows('open'))
       }
       this.lifecycle = 'open'
     } catch (error) {
@@ -989,7 +1017,7 @@ export class EvmNativeOperationJournal {
   ): Promise<EvmNativeOperation | undefined> {
     return this.exclusive(() =>
       this.coordinated(async () => {
-        await this.reloadRows(false)
+        await this.reloadRows('read')
         this.assertOpen()
         return this.findPreparation(preparationId)
       }),
@@ -1054,7 +1082,7 @@ export class EvmNativeOperationJournal {
     const id = this.database ? await this.stored(`preparation:${preparationId}`) : this.ephemeralPreparations.get(preparationId)
     if (active) {
       if (id !== undefined) fail('conflict')
-      return clone(active)
+      return this.copy(active)
     }
     if (id === undefined) return undefined
     this.operationId(id)
@@ -1067,9 +1095,9 @@ export class EvmNativeOperationJournal {
   readOperation(id: string): Promise<EvmNativeOperation | undefined> {
     this.operationId(id)
     return this.exclusive(() => this.coordinated(async () => {
-      await this.reloadRows(false)
+      await this.reloadRows('read')
       const active = this.rows.get(id)
-      if (active) return clone(active)
+      if (active) return this.copy(active)
       const archived = await this.readArchived(id)
       if (!archived && parseInt(id.split(':')[1]!, 16) < this.nextSequence) fail()
       return archived
@@ -1120,7 +1148,7 @@ export class EvmNativeOperationJournal {
     this.operationId(id)
     const receipt = validateCompletionReceipt(input)
     return this.exclusive(() => this.coordinated(async () => {
-      await this.reloadRows(false)
+      await this.reloadRows('write')
       const row = this.rows.get(id)
       if (!row) {
         const archived = await this.readArchived(id)
@@ -1137,8 +1165,9 @@ export class EvmNativeOperationJournal {
         { type: 'put', key: `history:${id}`, value: JSON.stringify(row) },
         { type: 'put', key: `completion:${id}`, value: JSON.stringify(receipt) },
         { type: 'del', key: `operation:${id}` },
-        { type: 'put', key: 'manifest', value: JSON.stringify({ ...this.manifest(), archivedCount: this.archivedCount + 1 }) },
       ]
+      const manifest = JSON.stringify({ ...this.manifest(), archivedCount: this.archivedCount + 1, revision: this.revision + 1 })
+      operations.push({ type: 'put', key: 'manifest', value: manifest })
       if (row.preparationId !== undefined) {
         const previous = this.database ? await this.stored(`preparation:${row.preparationId}`) : this.ephemeralPreparations.get(row.preparationId)
         if (previous !== undefined) fail('conflict')
@@ -1164,6 +1193,9 @@ export class EvmNativeOperationJournal {
         throw error
       }
       this.rows.delete(id)
+      this.validatedTexts.delete(`operation:${id}`)
+      this.revision++
+      if (this.database) this.loadedManifest = manifest
       // Successful retirement ends only this operation's observation fences. Keep all
       // tokens on uncertain writes, and preserve captures belonging to active operations.
       row.members.forEach((_, index) => this.captures.delete(`${id}:${index}`))
@@ -1171,25 +1203,40 @@ export class EvmNativeOperationJournal {
     }))
   }
 
+  /** A row this instance validated and durably wrote, with the manifest written beside it: the
+   * rows held here are what that manifest names, and those exact bytes need no validation again. */
+  private committed(id: string, text: string, row: EvmNativeOperation, manifest: string): void {
+    this.rows.set(id, row)
+    this.rowTexts.set(row, text)
+    this.revision++
+    if (!this.database) return
+    this.validatedTexts.set(`operation:${id}`, { text, row })
+    this.loadedManifest = manifest
+  }
+  /** A reader's own copy of a row held here; held rows are never mutated. */
+  private copy(row: EvmNativeOperation): EvmNativeOperation {
+    return JSON.parse(this.rowTexts.get(row) ?? JSON.stringify(row)) as EvmNativeOperation
+  }
   private manifest() {
     return {
       version: 1,
       binding: this.binding,
       nextSequence: this.nextSequence,
       archivedCount: this.archivedCount,
+      revision: this.revision,
     }
   }
   /** Active journal records only. Use indexed async reads for completed history. */
   list(): EvmNativeOperation[] {
     this.assertOpen()
-    return [...this.rows.values()].map(clone)
+    return [...this.rows.values()].map(row => this.copy(row))
   }
   /** Active record only; absence must not be interpreted as a never-created operation. */
   get(operationId: string): EvmNativeOperation {
     this.assertOpen()
     const row = this.rows.get(operationId)
     if (!row) fail('conflict')
-    return clone(row)
+    return this.copy(row)
   }
   /** Retained custody references for legacy stores and their source resolvers.
    * Transaction-set signing material and private change belong to CoinList; its `coin`
@@ -1252,7 +1299,7 @@ export class EvmNativeOperationJournal {
     const frozen = clone(plan)
     return this.exclusive(() =>
       this.coordinated(async () => {
-        await this.reloadRows(false)
+        await this.reloadRows('write')
         if (frozen.preparationId !== undefined) {
           const existing = await this.findPreparation(frozen.preparationId)
           if (existing) {
@@ -1378,25 +1425,19 @@ export class EvmNativeOperationJournal {
           )
             fail('conflict')
         const nextSequence = this.nextSequence + 1
+        const text = JSON.stringify(validated)
+        const manifest = JSON.stringify({ ...this.manifest(), nextSequence, revision: this.revision + 1 })
         try {
           if (this.database)
             await durableBatch(this.database, [
-              {
-                type: 'put',
-                key: `operation:${row.operationId}`,
-                value: JSON.stringify(validated),
-              },
-              {
-                type: 'put',
-                key: 'manifest',
-                value: JSON.stringify({ ...this.manifest(), nextSequence }),
-              },
+              { type: 'put', key: `operation:${row.operationId}`, value: text },
+              { type: 'put', key: 'manifest', value: manifest },
             ])
         } catch (error) {
           this.lifecycle = 'uncertain'
           throw error
         }
-        this.rows.set(row.operationId, validated)
+        this.committed(row.operationId, text, validated, manifest)
         this.nextSequence = nextSequence
         return clone(validated)
       }),
@@ -1459,22 +1500,23 @@ export class EvmNativeOperationJournal {
     return this.exclusive(() =>
       this.coordinated(async () => {
         // Mutation owns only its changed fields; the current durable row owns all other facts.
-        await this.reloadRows(false)
+        await this.reloadRows('write')
         const row = this.get(id)
         if (await change(row) === false) return row
         const validated = await validateRow(row, this.binding, this.signatures)
+        const text = JSON.stringify(validated)
+        const manifest = JSON.stringify({ ...this.manifest(), revision: this.revision + 1 })
         try {
           if (this.database)
-            await durablePut(
-              this.database,
-              `operation:${id}`,
-              JSON.stringify(validated),
-            )
+            await durableBatch(this.database, [
+              { type: 'put', key: `operation:${id}`, value: text },
+              { type: 'put', key: 'manifest', value: manifest },
+            ])
         } catch (error) {
           this.lifecycle = 'uncertain'
           throw error
         }
-        this.rows.set(id, validated)
+        this.committed(id, text, validated, manifest)
         return clone(validated)
       }),
     )
@@ -1648,6 +1690,7 @@ export class EvmNativeOperationJournal {
     this.signatures.clear()
     // A reopen validates every stored row again, as it does every signature.
     this.validatedTexts.clear()
+    this.loadedManifest = undefined
     await this.database?.close()
     this.database = undefined
   }

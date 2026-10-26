@@ -590,8 +590,9 @@ async function main() {
       // A text item holds at most 256 KiB, so the message is many of them.
       const tag = randomBytes(8).toString('hex')
       const texts = Array.from({ length: Math.ceil(LARGE_TEXT_BYTES / 200_000) }, (_, i) => `${tag} ${i} ` + 'x'.repeat(200_000))
-      // Every request A answered with success; the wallet may resend (a fresh quote reseals the
-      // message), so the stored one is whichever the replicas read back.
+      // Every request A answered. A send is two requests: the message to Bob and Alice's sealed
+      // note to self (`deliverSealedSelfCopy`), which for a message this size is also an object in
+      // MinIO. A resend reseals, so the stored message is whichever request the replicas read back.
       const puts: Array<{ request: Captured; status: number }> = []
       let readFrom: Relay = 'b'
       const reads: Array<{ relay: Relay; body: Buffer }> = []

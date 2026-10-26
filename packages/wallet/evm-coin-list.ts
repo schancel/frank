@@ -246,10 +246,11 @@ export class EvmCoinList {
     )
   }
 
-  /** What the unspent coins hold. */
+  /** What the unspent coins hold (a coin behind a later coin of its account holds nothing). */
   unspentTotal(filter?: (coin: EvmListCoin) => boolean): bigint {
+    const behind = this.behind()
     return this.all()
-      .filter(coin => coin.state === 'unspent' && (filter?.(coin) ?? true))
+      .filter(coin => coin.state === 'unspent' && !behind(coin) && (filter?.(coin) ?? true))
       .reduce((sum, coin) => sum + coin.valueWei, 0n)
   }
 
@@ -457,17 +458,34 @@ export class EvmCoinList {
     return coin
   }
 
-  /** The coins selection would consider once the chain is at `head`, read only: unspent, of an
-   * account no mutation holds, of a listed origin, spendable by then and accepted by `canSelect`. */
+  /**
+   * An account has at most one live coin: an unspent coin is behind when the list holds a coin of
+   * the same account at a later nonce (other than one planned on top of it, `after`). Its nonce
+   * is past (the later coin exists only because it was, or will be, consumed), so it can never
+   * be spent and is never offered. Settlement or the next chain read takes it out of the list.
+   */
+  private behind(): (coin: EvmListCoin) => boolean {
+    const latest = new Map<string, number>()
+    for (const coin of this.coinsByKey.values())
+      if (coin.after === undefined && coin.nonce > (latest.get(coin.account) ?? -1))
+        latest.set(coin.account, coin.nonce)
+    return coin => coin.nonce < (latest.get(coin.account) ?? -1)
+  }
+
+  /** The coins selection would consider once the chain is at `head`, read only: unspent and not
+   * behind a later coin of its account, of an account no mutation holds, of a listed origin,
+   * spendable by then and accepted by `canSelect`. */
   selectableAt(params: {
     head: number
     sourceOrder: readonly EvmCoinListOrigin[]
     canSelect?: (coin: EvmListCoin) => boolean
   }): EvmListCoin[] {
     const origins = new Set(params.sourceOrder)
+    const behind = this.behind()
     return this.all().filter(
       coin =>
         coin.state === 'unspent' &&
+        !behind(coin) &&
         this.accountSelectable(coin.account) &&
         origins.has(coin.origin) &&
         (coin.spendableFromBlock === undefined ||
@@ -761,9 +779,11 @@ export class EvmCoinList {
   }): CoinPart[] | undefined {
     if (params.amountWei <= 0n)
       throw new EvmCoinListError('A payment amount is positive')
+    const behind = this.behind()
     const free = this.all().filter(
       coin =>
         coin.state === 'unspent' &&
+        !behind(coin) &&
         coin.origin !== 'legacy-subaccount' &&
         this.accountSelectable(coin.account) &&
         coin.valueWei > params.feeReserveWei &&

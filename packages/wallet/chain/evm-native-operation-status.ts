@@ -1,5 +1,8 @@
 import { Transaction } from "ethers";
-import type { EvmNativeOperation } from "../storage/evm-native-operation-journal";
+import {
+  nativeMemberSuperseded,
+  type EvmNativeOperation,
+} from "../storage/evm-native-operation-journal";
 
 /** Public evidence only. The native journal remains the sole financial authority. */
 export interface EvmNativeOperationStatus {
@@ -17,6 +20,10 @@ export interface EvmNativeOperationStatus {
     /** The node answers and knows neither the transfer nor a receipt for it: it has not
      * arrived yet, or was dropped. The same bytes are offered again. */
     | "missing"
+    /** The node knows neither the transfer nor a receipt for it, and its account's nonce is
+     * already past it: it was included earlier (on a node that no longer keeps it) or another
+     * transaction took its nonce. Final: it is never offered again. */
+    | "superseded"
     /** The chain could not be read, so nothing is known. Never a state of the transfer. */
     | "unknown"
     | "cancelled";
@@ -30,6 +37,8 @@ export interface EvmNativeOperationStatus {
     readonly state:
       | "unknown"
       | "missing"
+      /** Unknown to the node, its account's nonce past it (`nativeMemberSuperseded`). */
+      | "superseded"
       | "pending"
       | "included-success"
       | "included-revert";
@@ -78,6 +87,8 @@ export function summarizeEvmNativeOperation(
   }
   if (value.toString() !== row.intendedValueWei)
     throw new Error("Native operation recipient evidence does not match");
+  const stateOf = (member: EvmNativeOperation["members"][number]) =>
+    nativeMemberSuperseded(member) ? ("superseded" as const) : member.observation.state;
   const members = row.members.map((member) => {
     const observation = member.observation;
     const included = "transactionHash" in observation;
@@ -91,7 +102,7 @@ export function summarizeEvmNativeOperation(
     return {
       role: member.transactionSet?.role ?? "payment",
       transactionHash: member.signed?.transactionHash,
-      state: observation.state,
+      state: stateOf(member),
       ...(included
         ? {
             blockNumber: observation.blockNumber,
@@ -102,7 +113,7 @@ export function summarizeEvmNativeOperation(
     };
   });
   const observed = members.filter((member) => member.feeWei !== undefined);
-  const paymentMembers = shared ? recipients.map(member => member.observation) : members;
+  const paymentMembers = shared ? recipients.map(member => ({ state: stateOf(member) })) : members;
   const payment = row.cancelled
     ? "cancelled"
     : (
@@ -123,6 +134,9 @@ export function summarizeEvmNativeOperation(
     ? "pending"
     : paymentMembers.some((member) => member.state === "missing")
     ? "missing"
+    : paymentMembers.length > 0 &&
+      paymentMembers.every((member) => member.state === "superseded")
+    ? "superseded"
     : "unknown";
   return {
     operationId: row.operationId,

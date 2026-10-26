@@ -1578,6 +1578,7 @@ export const rawFrFR = {
       partial: 'Partiellement traité',
       pending: 'En attente',
       missing: 'En attente du réseau',
+      superseded: 'Nonce utilisé',
       unknown: 'Vérification du paiement',
       cancelled: 'Annulé',
     },
@@ -1586,6 +1587,7 @@ export const rawFrFR = {
       'included-revert': 'Annulée par le réseau',
       'pending': 'En attente',
       'missing': 'Pas encore sur le réseau',
+      'superseded': 'Nonce utilisé',
       'unknown': 'Non confirmée',
     },
   },
@@ -1602,6 +1604,8 @@ export const rawFrFR = {
     pending: 'Dans le mempool sur {network} : envoyé, en attente d’un bloc.',
     missing:
       '{network} n’a pas encore ce transfert. Il lui est proposé de nouveau.',
+    superseded:
+      '{network} n’a plus ce transfert, et son compte l’a dépassé : il a été inclus plus tôt ou une autre transaction a pris sa place. Il n’est plus proposé.',
     watching:
       'Surveillance du réseau en cours. Ceci se met à jour dès que le transfert est dans un bloc.',
     unknown:

@@ -1552,7 +1552,8 @@ export class EvmNativeOperationJournal {
           row.kind === 'transaction-set'
             ? !row.members[d]!.exposed &&
               row.members[d]!.observation.state !== 'included-success' &&
-              row.members[d]!.observation.state !== 'included-revert'
+              row.members[d]!.observation.state !== 'included-revert' &&
+              !nativeMemberSuperseded(row.members[d]!)
             : row.members[d]!.observation.state !== 'included-success',
         )
       )
@@ -1562,8 +1563,13 @@ export class EvmNativeOperationJournal {
       if (
         row.kind === 'transaction-set' &&
         m.transactionSet?.predecessorWaitBlocks !== undefined &&
+        // The chain shows the predecessor's nonce consumed: its receipt, or (a node that no
+        // longer has it, or another transaction took the nonce) the look that found the nonce
+        // past it (`nativeMemberSuperseded`).
         m.dependencies.some(
-          index => !('blockNumber' in row.members[index]!.observation),
+          index =>
+            !('blockNumber' in row.members[index]!.observation) &&
+            !nativeMemberSuperseded(row.members[index]!),
         )
       )
         fail('conflict')

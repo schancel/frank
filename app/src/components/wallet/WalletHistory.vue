@@ -415,7 +415,12 @@ function statusColor(entry: WalletHistoryRow) {
   if (status === 'confirmed' || status === 'included' || status === 'received')
     return 'positive'
   if (status === 'failed' || status === 'reverted') return 'negative'
-  if (status === 'cancelled' || status === 'not-received') return 'grey-7'
+  if (
+    status === 'cancelled' ||
+    status === 'not-received' ||
+    status === 'superseded'
+  )
+    return 'grey-7'
   return 'warning'
 }
 </script>

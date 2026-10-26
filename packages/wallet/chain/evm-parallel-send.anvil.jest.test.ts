@@ -33,7 +33,15 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
-import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
+import {
+  LegacyTransactionSetFailedError,
+  LegacyTransactionSetPendingError,
+} from './evm-legacy-transaction-set'
+import { summarizeEvmNativeOperation } from './evm-native-operation-status'
+import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
+import { EVM_COIN_LIST_NAMESPACE, type StoredEvmListCoin } from '../evm-coin-list'
+import { LevelRecordStore } from '../storage/evm-coin-store'
+import { walletStateLocation, evmWalletStateOwner } from '../storage/wallet-state-location'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -896,5 +904,167 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     expect(await chain.getBalance(bobMain)).toBe(
       mainBefore + heldBefore - BigInt(stamps.length) * 21_000n * gasPrice,
     )
+  })
+  // A free coin the lab wallets were left with: the consolidation account's nonce-0 coin listed
+  // `unspent` beside the coins after it, although the Send that spent it is mined and retired.
+  // The quote counted it (Send max offered more than the wallet held) and Confirm signed it
+  // again, which the journal refused (its nonce is recorded consumed). An account has one live
+  // coin, and the chain is past that nonce: it is never offered, and the next read drops it.
+  it('a free coin left at a nonce the chain has passed is never quoted or spent; Send max sends what the chain holds', async () => {
+    // Completed operations leave the active journal once their self-sync note is written.
+    await alice.close()
+    await f.close()
+    f = await fixture({ transactionSetPolicy: undefined, emitWalletSync: async () => undefined })
+    alice = f.alice
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 5n * 10n ** 16n })).wait()
+    await (await dev.sendTransaction({ to: alice.identity.address.raw, value: 5n * 10n ** 16n })).wait()
+    // More than either account holds: both are gathered into a fresh account, which pays.
+    const transfer = await finished(
+      alice.sendLegacy!({ recipient: { raw: Wallet.createRandom().address }, value: 6n * 10n ** 16n }),
+    )
+    for (let pass = 0; pass < 20 && alice.getNativeOperations!().length; pass++) {
+      await alice.flushNativeSync!()
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    expect(alice.getNativeOperations!()).toEqual([])
+    // The account the coins were gathered into, and its first coin, spent by the transfer.
+    const payer = (await chain.getTransaction(transfer.txHash))!.from.toLowerCase()
+    const first = evmWalletInternals(alice).coinList!.get(payer, 0)!
+    expect(first.state).toBe('spent')
+    expect(await chain.getTransactionCount(payer)).toBeGreaterThan(0)
+    // The record as the lab wallets had it: the same coin, free, no holder and no transaction.
+    await alice.close()
+    const location = walletStateLocation({
+      base: join(f.root, 'wallet'),
+      chainIdentifier: 'monad-testnet',
+      owner: evmWalletStateOwner(main),
+    })
+    const store = await LevelRecordStore.open<StoredEvmListCoin>(location, EVM_COIN_LIST_NAMESPACE)
+    await store.put(`${payer}:0`, {
+      account: payer,
+      nonce: 0,
+      privateKey: first.privateKey,
+      valueWei: first.valueWei.toString(),
+      origin: first.origin,
+      ...(first.changeIndex === undefined ? {} : { changeIndex: first.changeIndex }),
+      state: 'unspent',
+    })
+    await store.close()
+    alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    const recipient = Wallet.createRandom().address
+    const held = await balances(coinAccounts())
+    const max = await alice.estimateLegacyMax!({ recipient: { raw: recipient } })
+    // What the quote offers is what the chain holds, less the fees: not the stale coin too.
+    expect(max.value + max.totalFee).toBe(held)
+    expect(evmWalletInternals(alice).coinList!.get(payer, 0)?.state).not.toBe('unspent')
+    const result = await finished(
+      alice.sendLegacy!({ recipient: { raw: recipient }, value: max.value, maxFee: max.totalFee }),
+    )
+    expect((await chain.getTransactionReceipt(result.txHash))!.status).toBe(1)
+    expect(await chain.getBalance(recipient)).toBe(max.value)
+  })
+
+  // The lab wallets' stuck Send: transactions the node no longer knows, every account's
+  // nonce past them, and two change transfers from the paying account never sent because each
+  // waited for its predecessor's receipt. "Being offered again" for ever, its change held. The
+  // chain showing the predecessor's nonce consumed is what the next nonce needs: the original
+  // change transfers are sent, and the operation ends.
+  describe('under Monad spend spacing', () => {
+    beforeEach(async () => {
+      await alice.close()
+      await f.close()
+      f = await fixture({
+        transactionSetPolicy: undefined,
+        spendSpacingBlocks: 3,
+        reserveBalanceWei: 10n ** 18n,
+      })
+      alice = f.alice
+    })
+
+    it('a Send whose payment nonce the chain shows consumed sends its waiting change and ends; nothing stays held', async () => {
+      const main = (await alice.getReceiveAddress()).raw
+      const identity = alice.identity.address.raw
+      await (await dev.sendTransaction({ to: main, value: 5n * 10n ** 16n })).wait()
+      await (await dev.sendTransaction({ to: identity, value: 5n * 10n ** 16n })).wait()
+      for (let i = 0; i < 5; i++) await mine()
+      const recipient = Wallet.createRandom().address
+      const value = 6n * 10n ** 16n
+      // More than either coin holds: both are gathered into a fresh account, which pays, then
+      // sends its residual to change accounts, each change transfer after the one before it.
+      const started = await alice
+        .sendLegacy!({ recipient: { raw: recipient }, value })
+        .catch((error: unknown) => error)
+      expect(started).toBeInstanceOf(LegacyTransactionSetPendingError)
+      const operationId = (started as LegacyTransactionSetPendingError).operation.operationId
+      const row = async () => (await alice.readNativeOperation!(operationId))!
+      const first = await row()
+      const payment = first.members.find(m => m.transactionSet?.role === 'payment')!
+      const payer = payment.source.address.toLowerCase()
+      const changes = first.members.filter(
+        m => m.transactionSet?.role === 'change' && m.source.address.toLowerCase() === payer,
+      )
+      expect(changes.length).toBeGreaterThan(0)
+      expect(changes.every(m => m.transactionSet?.predecessorWaitBlocks !== undefined)).toBe(true)
+      // The payment goes out once its funding has matured. The node then loses it and the
+      // account's nonce 0 is taken anyway: what a node that has pruned the mined payment shows
+      // (the nonce consumed, the wallet's transaction unknown). Here the same transfer signed
+      // again at one wei more per gas, its value lowered by that much: the account ends where
+      // the payment would have left it, which is what the change after it was signed against.
+      const key = evmWalletInternals(alice).coinList!.get(payer, 0)!.privateKey
+      await automine(false)
+      for (let pass = 0; pass < 40 && !(await row()).members.find(m => m.transactionSet?.role === 'payment')!.exposed; pass++) {
+        await mine()
+        await alice.resumeLegacySend!(operationId).catch(() => undefined)
+      }
+      expect((await row()).members.find(m => m.transactionSet?.role === 'payment')!.exposed).toBe(true)
+      await chain.send('anvil_dropTransaction', [payment.signed!.transactionHash])
+      const planned = Transaction.from(payment.signed!.rawTransaction)
+      const price = (planned.gasPrice ?? planned.maxFeePerGas)!
+      const foreign = await new Wallet(key, chain).sendTransaction({
+        type: 0,
+        to: planned.to!,
+        value: planned.value - planned.gasLimit,
+        nonce: 0,
+        gasLimit: planned.gasLimit,
+        gasPrice: price + 1n,
+      })
+      await mine()
+      await automine(true)
+      expect((await chain.getTransactionReceipt(foreign.hash))?.status).toBe(1)
+      expect(await chain.getTransaction(payment.signed!.transactionHash)).toBeNull()
+      let outcome: unknown
+      let final = await row()
+      for (let pass = 0; pass < 60; pass++) {
+        await mine()
+        outcome = await alice.resumeLegacySend!(operationId).catch((error: unknown) => error)
+        final = await row()
+        if (
+          final.members.every(
+            m => m.observation.state === 'included-success' || nativeMemberSuperseded(m),
+          ) &&
+          !alice.getNativeOperations!().some(r => r.operationId === operationId && r.members.some(m => !m.transactionSet?.inventoryApplied))
+        )
+          break
+      }
+      // The payment is final (its nonce taken), and its change went out with the original bytes.
+      expect(outcome).toBeInstanceOf(LegacyTransactionSetFailedError)
+      expect(nativeMemberSuperseded(final.members.find(m => m.transactionSet?.role === 'payment')!)).toBe(true)
+      for (const change of changes) {
+        const receipt = await chain.getTransactionReceipt(change.signed!.transactionHash)
+        expect(receipt?.status).toBe(1)
+      }
+      expect(summarizeEvmNativeOperation(final).payment).toBe('superseded')
+      // Nothing the operation reserved is held any more.
+      expect(
+        evmWalletInternals(alice)
+          .coinList!.all()
+          .filter(c => c.state === 'pending_receipt' || c.state === 'spend_pending'),
+      ).toEqual([])
+      // What the paying account had left is in the wallet's change accounts, spendable.
+      for (let i = 0; i < 5; i++) await mine()
+      const max = await alice.estimateLegacyMax!({ recipient: { raw: recipient } })
+      expect(max.value + max.totalFee).toBe(await balances(coinAccounts()))
+    })
   })
 })

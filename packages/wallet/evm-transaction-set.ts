@@ -16,6 +16,7 @@ import type {
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
 import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import type {
   ConstructEvmTransactionSetRequest,
   ConstructLegacySubAccountRequest,
@@ -224,10 +225,10 @@ export class EvmTransactionSetPreparer {
     if (!member) throw new Error('Unknown transaction-set member')
     const wait = member.transactionSet?.predecessorWaitBlocks
     if (wait !== undefined) {
-      const predecessor = row.members[member.dependencies[0]!]!.observation
+      const consumed = predecessorConsumedAt(row.members[member.dependencies[0]!]!)
       if (
-        !('blockNumber' in predecessor) ||
-        this.options.policy().head < predecessor.blockNumber + wait
+        consumed === undefined ||
+        this.options.policy().head < consumed + wait
       )
         throw new Error(
           'Transaction-set predecessor quiet window is not satisfied',

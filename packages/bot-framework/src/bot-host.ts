@@ -67,6 +67,7 @@ import {
   inboundOrder,
   conversationIdentity,
   replyMessageId,
+  writtenBySelf,
   type InboundIdentity,
 } from "./inbound-operation-store";
 import { admitBotProfile } from "./bot-profile-admission";
@@ -80,6 +81,8 @@ import { BotScheduler } from "./scheduler";
 // A retained message that fetches stop returning is never dropped on a guess; it waits. Twenty
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
 const UNMATCHED_WARN_MS = 60_000;
+// Refused records remembered so each is logged once; the oldest is forgotten past this.
+const REFUSED_WARNED_LIMIT = 1024;
 
 // A reply a handler sends itself and the wallet refused without attempting is sent again on later
 // polls: this many sends in all, then the handler is told it failed. A waiting reply keeps its
@@ -206,6 +209,9 @@ interface ActiveBotInstance {
   botPeers: Map<string, boolean>;
   /** Stored replies whose failed send was already logged. */
   sendWarned: Set<string>;
+  /** Inbound records refused as malformed and already logged: the read that covers the cursor's
+   * own position returns its newest record again, and a refusal is logged once, not every poll. */
+  refusedWarned: Set<string>;
   /** A retry pass over unsent stored replies is running. */
   retrying: boolean;
   /** The row the last retry pass ended on; the next pass starts after it. */
@@ -906,6 +912,7 @@ export class FrankBotHost {
         unmatched: new Map(),
         botPeers: new Map(),
         sendWarned: new Set<string>(),
+        refusedWarned: new Set<string>(),
         retrying: false,
         fundingTargets,
         confirmedPaid: new Map(),
@@ -1330,8 +1337,9 @@ export class FrankBotHost {
           stampPayments: readonly StampPaymentInfo[];
         }[] = [];
         for (const msg of messages) {
-          // The scan also returns what this bot sent; that is not inbound work.
-          if (msg.outbound) continue;
+          // The scan also returns what this bot wrote: what it sent, and its notes to self (a
+          // sealed reply's copy and its spends, addressed to its own key). Not inbound work.
+          if (writtenBySelf(msg, instance.operations.owner)) continue;
           try {
             accepted.push({
               identity: inboundIdentity(msg, instance.operations.owner),
@@ -1348,9 +1356,20 @@ export class FrankBotHost {
               stampPayments: structuredClone(msg.stampPayments ?? []),
             });
           } catch {
-            console.warn(
-              `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
-            );
+            const refused =
+              typeof msg.payloadDigest === "string"
+                ? msg.payloadDigest
+                : `at ${String(msg.receivedTime)}`;
+            if (!instance.refusedWarned.has(refused)) {
+              if (instance.refusedWarned.size >= REFUSED_WARNED_LIMIT)
+                instance.refusedWarned.delete(
+                  instance.refusedWarned.values().next().value as string
+                );
+              instance.refusedWarned.add(refused);
+              console.warn(
+                `[bot-host] [${id}] Unsupported inbound identity for message ${refused}; no handler admitted`
+              );
+            }
           }
         }
         // Retain every identity, in handling order, before any handler of this batch can run:

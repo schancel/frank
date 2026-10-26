@@ -139,6 +139,19 @@ function validateOwner(owner: InboundOwner): void {
   )
     hold();
 }
+/** Whether this mailbox record is one this bot wrote itself: a message it sent, or a note to
+ * self (a sealed send's copy of the message, or of its spends), whose sender is the bot's own
+ * key. Neither is inbound work; the host passes it without a handler and without a warning. */
+export function writtenBySelf(
+  message: DirectMessageReceived,
+  owner: InboundOwner
+): boolean {
+  return (
+    message.outbound === true ||
+    (message.senderPublicKey !== undefined &&
+      Buffer.from(message.senderPublicKey).toString("hex") === owner.subject)
+  );
+}
 export function inboundIdentity(
   message: DirectMessageReceived,
   owner: InboundOwner

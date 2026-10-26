@@ -388,6 +388,82 @@ describe("FrankBotHost replies", () => {
     });
   });
 
+  // A sealed reply leaves notes to self in the bot's own mailbox (since #1916 two per paid reply:
+  // the reply's copy and its spends). The read is inclusive of the cursor, so the newest record,
+  // often such a note, comes back on every poll. On d3e88dce each read of it was warned as an
+  // "Unsupported inbound identity", about once per poll per bot.
+  describe("a record the bot wrote itself, and a malformed one", () => {
+    // After the host's starting cursor (a day back from now), so the cursor's moves are seen.
+    const recent = <T extends { receivedTime: number }>(message: T): T => ({
+      ...message,
+      receivedTime: Date.now() + message.receivedTime - 1_700_000_000_000,
+    });
+    const noteToSelf = () => {
+      const message = recent(inbound("note to self"));
+      return {
+        ...message,
+        senderAddress: { raw: mockLocalAddress },
+        senderPublicKey: getBytes("0x" + mockLocalSubject),
+        items: [{ type: "wallet-sync", frame: "" }],
+      };
+    };
+
+    it("passes a note to self quietly on every read, and the cursor moves past it", async () => {
+      const seen: BotMessageContext[] = [];
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(
+        bot("self-note-bot", async (message) => {
+          seen.push(message);
+        })
+      );
+      const first = recent(inbound("first"));
+      const note = noteToSelf();
+      await poll(host, [first, note]);
+      await poll(host, [note]);
+      await poll(host, [note]);
+      await drain(instance);
+      expect(instance.lastPollTimestamp).toBe(note.receivedTime);
+      const later = recent(inbound("later"));
+      await poll(host, [note, later]);
+      await drain(instance);
+      expect(seen.map((message) => message.items)).toEqual([
+        [{ type: "text", text: "first" }],
+        [{ type: "text", text: "later" }],
+      ]);
+      expect(instance.lastPollTimestamp).toBe(later.receivedTime);
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("Unsupported inbound identity")
+      );
+    });
+
+    it("refuses a malformed inbound record and logs it once, however often it is read", async () => {
+      const seen: BotMessageContext[] = [];
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(
+        bot("malformed-bot", async (message) => {
+          seen.push(message);
+        })
+      );
+      // Its sender key is not the key of its sender address.
+      const malformed = {
+        ...recent(inbound("forged")),
+        senderPublicKey: getBytes(otherPeer.signingKey.compressedPublicKey),
+      };
+      await poll(host, [malformed]);
+      await poll(host, [malformed]);
+      await poll(host, [malformed]);
+      await drain(instance);
+      expect(seen).toEqual([]);
+      const refusals = warn.mock.calls.filter(([line]) =>
+        String(line).includes("Unsupported inbound identity")
+      );
+      expect(refusals).toEqual([
+        [expect.stringContaining(malformed.payloadDigest)],
+      ]);
+      expect(instance.lastPollTimestamp).toBe(malformed.receivedTime);
+    });
+  });
+
   // On 16218e9f every reply carried the bot's default stamp (0.01 MON) whatever the sender had
   // paid, so each message, paid or not, drew 0.01 MON out of the bot, refilled from the shared
   // funding wallet.

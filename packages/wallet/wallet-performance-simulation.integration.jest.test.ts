@@ -11,6 +11,7 @@ import {
   mockFunded,
   offlineChain,
   providerRequests,
+  roots,
   STAMP,
   type Fixture,
   type InboxRecord,
@@ -18,6 +19,8 @@ import {
 import { installCanonicalDirectory } from './chain/evm-chain'
 import { toHex } from '@frank/codec'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import { SEED_DISCOVERY_GAP } from './evm-seed-discovery'
+import type { EvmChainWalletHandle } from './evm-wallet-handle'
 
 jest.mock('./evm-provider', () =>
   require('./chain/canonical-two-wallets.testutil').offlineProviderModule(),
@@ -69,24 +72,54 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     f = await fixture({ subAccountPoolSize: 4 })
     const openElapsedMs = performance.now() - openStart
     expect(openElapsedMs).toBeLessThan(1500)
-
-    providerRequests.length = 0
-    const balanceStart = performance.now()
-    // Fire 12 concurrent getBalance() calls on Alice's wallet (12 * 7 accounts = 84 naive reads)
-    const balances = await Promise.all(
-      Array.from({ length: 12 }, () => f!.alice.getBalance()),
-    )
-    const balanceElapsedMs = performance.now() - balanceStart
-
-    for (const bal of balances) {
-      expect(bal).toBeGreaterThan(0n)
+    const reads = () => {
+      const balance = providerRequests.filter(r => r === 'getBalance').length
+      const nonce = providerRequests.filter(r => r === 'getTransactionCount').length
+      providerRequests.length = 0
+      return { balance, nonce }
     }
-    // Coalescing must collapse 12 concurrent calls into 1 wave of 7 account reads (<= 8)
-    const getBalanceCount = providerRequests.filter(
-      r => r === 'getBalance',
-    ).length
-    expect(getBalanceCount).toBeLessThanOrEqual(8)
+    const twelveReads = async (wallet: EvmChainWalletHandle) => {
+      const start = performance.now()
+      const balances = await Promise.all(
+        Array.from({ length: 12 }, () => wallet.getBalance()),
+      )
+      for (const bal of balances) expect(bal).toBeGreaterThan(0n)
+      return performance.now() - start
+    }
+
+    // A store never walked (a new or restored device): before its first balance is shown the
+    // seed's two branches are walked once for the accounts they control, BIP-44 style, which
+    // costs one nonce and one balance read per index up to the gap. Twelve concurrent first
+    // reads share that one walk and one balance wave.
+    providerRequests.length = 0
+    await twelveReads(f.alice)
+    const first = reads()
+    expect(first.nonce).toBe(2 * SEED_DISCOVERY_GAP)
+    expect(first.balance - 2 * SEED_DISCOVERY_GAP).toBeLessThanOrEqual(8)
+
+    // Coalescing: 12 concurrent calls on a walked wallet collapse into one wave of at most 8
+    // account reads, and the seed is not walked again.
+    f.alice.invalidateBalanceCache!()
+    providerRequests.length = 0
+    const balanceElapsedMs = await twelveReads(f.alice)
+    const steady = reads()
+    expect(steady.nonce).toBe(0)
+    expect(steady.balance).toBeLessThanOrEqual(8)
     expect(balanceElapsedMs).toBeLessThan(200)
+
+    // The store keeps what the walk found: a reopened wallet's first balance needs no walk.
+    await f.alice.close()
+    const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    try {
+      providerRequests.length = 0
+      const reopenElapsedMs = await twelveReads(reopened)
+      const again = reads()
+      expect(again.nonce).toBe(0)
+      expect(again.balance).toBeLessThanOrEqual(8)
+      expect(reopenElapsedMs).toBeLessThan(200)
+    } finally {
+      await reopened.close()
+    }
   })
 
   it('sends paid direct messages without prefunding sender accounts', async () => {

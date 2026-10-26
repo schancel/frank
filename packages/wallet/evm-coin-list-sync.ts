@@ -38,6 +38,10 @@ import {
 /** Failure key of the seed walk among the per-account observation failures. */
 const SEED_DISCOVERY = 'seed-discovery'
 
+/** Another device's new change accounts are found by walking the change branch again, in the
+ * background, at most this often. */
+export const SEED_REWALK_MS = 60_000
+
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
   private readonly dirty = new Set<string>()
@@ -75,7 +79,16 @@ export class EvmCoinListSync {
       readonly discover?: (
         stopped: () => boolean,
         scope: 'all' | 'change',
-      ) => Promise<void>
+      ) => Promise<readonly string[]>
+      /** When this wallet's store last completed a walk (epoch ms), or undefined when it never
+       * has. A store that has been walked is not walked again before its first balance read or
+       * on each full pass: only the change branch, in the background, once it is older than
+       * `SEED_REWALK_MS`. */
+      readonly lastDiscoveredAtMs?: () => number | undefined
+      /** Records a completed walk once what it found is durable: the walk records change
+       * accounts itself and returns the other accounts it found, which are read into the list
+       * first. */
+      readonly recordDiscovered?: (atMs: number) => Promise<void>
     },
   ) {}
 
@@ -145,10 +158,11 @@ export class EvmCoinListSync {
     if (!walk) return Promise.resolve()
     return (this.discovering ??= (async () => {
       try {
-        await walk(() => this.stopped, scope)
+        const found = await walk(() => this.stopped, scope)
         this.failedObservations.delete(SEED_DISCOVERY)
         this.discoveredOnce = true
         this.discoveredAt = Date.now()
+        await this.recordWalk(found, this.discoveredAt)
       } catch (error) {
         // Accounts the walk did not reach may hold funds: never report the list as complete.
         if (!this.stopped) this.failedObservations.set(SEED_DISCOVERY, error)
@@ -159,11 +173,46 @@ export class EvmCoinListSync {
     })())
   }
 
-  /** Until the seed has been walked once, the walk to wait for (it rejects if it fails);
-   * afterwards, or with no walk configured, undefined: every account the seed controls is
-   * known (not necessarily read). */
+  /** Reads the accounts a walk found into the list, then records the walk, so a reopened store
+   * finds them as coins without walking again. A read that fails leaves the walk unrecorded:
+   * the next session walks again. */
+  private async recordWalk(found: readonly string[], atMs: number): Promise<void> {
+    if (!this.config.recordDiscovered) return
+    const accounts = new Set(found.map(account => account.toLowerCase()))
+    if (accounts.size > 0)
+      try {
+        await this.read(
+          this.config
+            .sources()
+            .filter(source => accounts.has(source.account.toLowerCase())),
+        )
+      } catch {
+        return
+      }
+    if (
+      this.stopped ||
+      [...accounts].some(
+        account =>
+          this.failedObservations.has(account) ||
+          this.config.list.latestOf(account) === undefined,
+      )
+    )
+      return
+    await this.config.recordDiscovered(atMs)
+  }
+
+  /** When the seed was last walked: by this session, else as the store recorded it. */
+  private walkedAt(): number | undefined {
+    return this.discoveredOnce
+      ? this.discoveredAt
+      : this.config.lastDiscoveredAtMs?.()
+  }
+
+  /** Until the seed has been walked once (by this store, in any session), the walk to wait for
+   * (it rejects if it fails); afterwards, or with no walk configured, undefined: every account
+   * the seed controls is known (not necessarily read). */
   seedDiscovered(): Promise<void> | undefined {
-    if (this.discoveredOnce || !this.config.discover) return undefined
+    if (!this.config.discover || this.walkedAt() !== undefined) return undefined
     return this.discover()
   }
 
@@ -171,12 +220,13 @@ export class EvmCoinListSync {
    * chain: when the last walk is older than `maxAgeMs`, walk the change branch again in the
    * background. A failure is kept as an observation failure, like any other read. */
   rediscoverIfOlderThan(maxAgeMs: number): void {
+    const walkedAt = this.walkedAt()
     if (
       !this.config.discover ||
       this.stopped ||
       this.discovering ||
-      !this.discoveredOnce ||
-      Date.now() - this.discoveredAt < maxAgeMs
+      walkedAt === undefined ||
+      Date.now() - walkedAt < maxAgeMs
     )
       return
     this.discover('change').catch(() => undefined)
@@ -266,21 +316,28 @@ export class EvmCoinListSync {
     all: boolean,
     accounts?: ReadonlySet<string>,
   ): Promise<void> {
-    if (all && accounts === undefined && this.config.discover) {
+    // The first full pass of a store never walked waits for the walk; later ones only start the
+    // periodic change-branch walk in the background. The seed is not walked again per pass.
+    const walk = all && accounts === undefined ? this.seedDiscovered() : undefined
+    if (walk) {
       try {
-        await this.discover()
+        await walk
       } catch (error) {
         if (isRateLimited(error)) throw error
         console.warn('[evm-coin-list] seed discovery failed:', error)
       }
-    }
+    } else if (all && accounts === undefined)
+      this.rediscoverIfOlderThan(SEED_REWALK_MS)
     const due =
       accounts === undefined
         ? this.dueSources(all)
         : this.config
             .sources()
             .filter(source => accounts.has(source.account.toLowerCase()))
-    if (due.length === 0) return
+    if (due.length > 0) await this.read(due)
+  }
+
+  private async read(due: readonly CoinListSource[]): Promise<void> {
     const head = await this.config.watcher.current()
     let cursor = 0
     let limited: { error: unknown } | undefined

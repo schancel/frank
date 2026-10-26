@@ -80,7 +80,7 @@ export function installEvmWalletCoinList(params: {
     }
     // Deterministic branch: nothing allocates here any more, but accounts an older wallet used
     // still belong to the seed. Only full walks look here; the periodic one is for change.
-    if (scope !== 'all') return
+    if (scope !== 'all') return []
     const knownDeterministic = new Set<number>(
       pool.records().map(record => record.index),
     )
@@ -95,12 +95,25 @@ export function installEvmWalletCoinList(params: {
       gap,
       stopped,
     })
-    for (const found of deterministic)
-      if (found.balanceWei > 0n)
-        discoveredDeterministic.set(found.index, found.account)
+    const funded = deterministic.filter(found => found.balanceWei > 0n)
+    for (const found of funded)
+      discoveredDeterministic.set(found.index, found.account)
+    // Not yet coins of the list: read before the walk is recorded as done.
+    return funded.map(found => found.account)
   })
   const sync = new EvmCoinListSync({
     discover,
+    // The change pool keeps the time of the last completed walk with what it found, so a
+    // reopened store is not walked again before its first balance read.
+    ...(params.seedDiscovery
+      ? {
+          lastDiscoveredAtMs: () => changePool.seedWalkedAtMs(),
+          recordDiscovered: async (atMs: number) => {
+            changePool.recordSeedWalk(atMs)
+            await changePool.flush()
+          },
+        }
+      : {}),
     list: coinList,
     provider: params.provider,
     watcher: params.watcher,

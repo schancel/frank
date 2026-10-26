@@ -2602,6 +2602,26 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       );
     });
 
+    // One coin list: a spent pool account keeps paying from its next nonces (a set stacks a
+    // payment and its change on one account). Another device's note for that later nonce
+    // changes nothing on the row; a different spend of the recorded nonce is still refused.
+    it("a later nonce of an already spent pool account is already applied and writes nothing", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const first = await signSpend(keyring, 0, { nonce: 0 });
+      expect(pool.commitSpend(0, first.rawTx)).toBe("committed");
+      const recorded = pool.getRecord(0);
+      const written = writes();
+      const later = await signSpend(keyring, 0, { nonce: 1, value: 7n });
+      expect(pool.classifySpendOutcome(0, later.rawTx)).toBe("already-applied");
+      expect(pool.commitSpend(0, later.rawTx)).toBe("already-applied");
+      expect(pool.getRecord(0)).toEqual(recorded);
+      expect(writes()).toBe(written);
+      const rival = await signSpend(keyring, 0, { nonce: 0, value: 6n });
+      expect(() => pool.classifySpendOutcome(0, rival.rawTx)).toThrow(
+        SubAccountSpendRefusedError
+      );
+    });
+
     // Pin: the applier is handed the item's own chain identifier, verbatim. The pool cannot judge
     // it; the applier (the admission's chain binding) does.
     it("pin: hands the applier the item's chain identifier exactly as the item states it", async () => {

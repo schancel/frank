@@ -170,12 +170,49 @@ describe('contract calls through the native operation journal', () => {
         journal,
         provider: state.provider,
         transactionBuilder: new NativeEvmTransactionBuilder(),
-        getSources: async () => available,
+        mainSource: sources[0]!,
+        ownedSource: address =>
+          available.find(source => source.address === address.toLowerCase()),
         sign,
       }),
     }
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
+  /** An explicitly prepared call: signed and journaled, handed to nobody until it is resumed. */
+  let preparations = 0
+  const prepareCall = async (
+    executor: EvmLegacyConsolidator,
+    params: {
+      to: { raw: string }
+      data: string
+      gasLimit?: bigint
+      sourceAddress?: string
+    },
+  ) =>
+    executor.signIndependentPayment({
+      kind: 'contract',
+      recipient: params.to,
+      members: [
+        {
+          sourceAddress: params.sourceAddress ?? main.address,
+          value: 0n,
+          data: params.data,
+          ...(params.gasLimit !== undefined ? { gasLimit: params.gasLimit } : {}),
+        },
+      ],
+      preparationId: `stealth-payment:call-${++preparations}`,
+      maxNativeFeeWei: 10n ** 18n,
+    })
+  /** What a swap reads before it calls: the main account's balance, and whether it is held. */
+  const funds = async (
+    state: ReturnType<typeof node>,
+    executor: EvmLegacyConsolidator,
+  ) => ({
+    mainAddress: main.address.toLowerCase(),
+    mainBalance: await state.provider.getBalance(main.address),
+    otherBalance: 0n,
+    mainBusy: executor.holdsSource(main.address),
+  })
 
   it('swaps from the main account when the legacy identity uses the same address', async () => {
     const state = node({ main: 10_000_000n })
@@ -212,10 +249,9 @@ describe('contract calls through the native operation journal', () => {
       { kind: 'coin', address: spend.address.toLowerCase() },
     ]
     const { executor } = owner(state, owned)
-    const prepared = await executor.signContractCall({
+    const prepared = await prepareCall(executor, {
       to: { raw: token.address! },
       data,
-      value: 0n,
       sourceAddress: spend.address,
     })
     const raw = prepared.members[0]!.signed!.rawTransaction
@@ -246,14 +282,14 @@ describe('contract calls through the native operation journal', () => {
     const state = node({ main: 10_000_000n, spend: 0n })
     const { executor, sign } = owner(state)
     await expect(
-      executor.signContractCall({
+      prepareCall(executor, {
         ...call,
         sourceAddress: Wallet.createRandom().address,
       }),
     ).rejects.toThrow(/not owned/)
     await expect(
-      executor.signContractCall({ ...call, sourceAddress: spend.address }),
-    ).rejects.toThrow(/Insufficient unreserved native funds/)
+      prepareCall(executor, { ...call, sourceAddress: spend.address }),
+    ).rejects.toThrow(/Insufficient independent native funds/)
     expect(sign).not.toHaveBeenCalled()
     expect(journal.list()).toEqual([])
     expect(state.raws).toEqual([])
@@ -273,10 +309,9 @@ describe('contract calls through the native operation journal', () => {
     ])
     const results = await Promise.allSettled(
       tokens.slice(0, 2).map(token =>
-        executor.signContractCall({
+        prepareCall(executor, {
           to: { raw: token.address! },
           sourceAddress: spend.address,
-          value: 0n,
           data: abi.encodeFunctionData('transfer', [main.address, 123n]),
         }),
       ),
@@ -295,9 +330,8 @@ describe('contract calls through the native operation journal', () => {
   it('prepares a durable unexposed call and holds its nonce without broadcasting', async () => {
     const state = node({ main: 10_000_000n })
     const { executor, sign } = owner(state)
-    const prepared = await executor.signContractCall({
+    const prepared = await prepareCall(executor, {
       ...call,
-      value: 0n,
       gasLimit: 250_000n,
     })
     expect(prepared).toEqual(journal.get(prepared.operationId))
@@ -318,7 +352,7 @@ describe('contract calls through the native operation journal', () => {
     })
     expect(sign).toHaveBeenCalledTimes(1)
     expect(state.raws).toEqual([])
-    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(true)
     await expect(executor.sendContractCall(call)).rejects.toThrow(
       /Insufficient unreserved native funds/,
     )
@@ -328,7 +362,7 @@ describe('contract calls through the native operation journal', () => {
   it('reopens a prepared call without broadcasting and explicitly resumes its identical bytes', async () => {
     const state = node({ main: 10_000_000n })
     const first = owner(state)
-    const prepared = await first.executor.signContractCall(call)
+    const prepared = await prepareCall(first.executor, call)
     const raw = prepared.members[0]!.signed!.rawTransaction
     await journal.Close()
     await open()
@@ -341,7 +375,7 @@ describe('contract calls through the native operation journal', () => {
     expect(
       journal.get(prepared.operationId).members[0]!.signed!.rawTransaction,
     ).toBe(raw)
-    expect((await second.executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(second.executor.holdsSource(main.address)).toBe(true)
     expect(second.executor.holdsSource(main.address)).toBe(true)
     expect(state.raws).toEqual([])
     await second.executor.resumeOperation(prepared.operationId)
@@ -356,7 +390,7 @@ describe('contract calls through the native operation journal', () => {
   it('releases only an unexposed prepared call and permits a new claim of its nonce', async () => {
     const state = node({ main: 10_000_000n })
     const { executor } = owner(state)
-    const prepared = await executor.signContractCall(call)
+    const prepared = await prepareCall(executor, call)
     expect(executor.holdsSource(main.address)).toBe(true)
     await executor.lookAtSource(main.address)
     await executor.lookAtSource(main.address)
@@ -365,14 +399,14 @@ describe('contract calls through the native operation journal', () => {
     expect(state.raws).toEqual([])
     await executor.releaseUnexposed(prepared.operationId)
     expect(journal.get(prepared.operationId).cancelled).toBe(true)
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
     expect(executor.holdsSource(main.address)).toBe(false)
     expect(state.raws).toEqual([])
     await expect(
       executor.resumeOperation(prepared.operationId),
     ).rejects.toThrow(/cancelled/)
 
-    const replacement = await executor.signContractCall(call)
+    const replacement = await prepareCall(executor, call)
     expect(
       Transaction.from(replacement.members[0]!.signed!.rawTransaction).nonce,
     ).toBe(0)
@@ -383,27 +417,53 @@ describe('contract calls through the native operation journal', () => {
     await expect(
       executor.releaseUnexposed(replacement.operationId),
     ).rejects.toBeInstanceOf(EvmNativeJournalError)
-    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(true)
   })
 
-  it('refuses invalid preparation before signing and releases an unsigned failed plan', async () => {
+  it('refuses invalid preparation before signing; an interrupted signature leaves the plan for its own retry or for open to cancel', async () => {
     const state = node({ main: 400_000n })
     const { executor, sign } = owner(state)
     await expect(
-      executor.signContractCall({ ...call, data: '0x' }),
-    ).rejects.toThrow(/calldata/)
+      prepareCall(executor, { ...call, data: '0x' }),
+    ).rejects.toThrow(/Invalid independent payment terms/)
     await expect(
-      executor.signContractCall({ ...call, gasLimit: 250_000n }),
+      prepareCall(executor, { ...call, gasLimit: 250_000n }),
     ).rejects.toThrow(RangeError)
     expect(journal.list()).toEqual([])
     expect(sign).not.toHaveBeenCalled()
     state.balances.set(main.address.toLowerCase(), 10_000_000n)
     sign.mockRejectedValueOnce(new Error('signing interrupted'))
-    await expect(executor.signContractCall(call)).rejects.toThrow(
+    const authorization = {
+      kind: 'contract' as const,
+      recipient: call.to,
+      members: [{ sourceAddress: main.address, value: 0n, data: calldata }],
+      preparationId: 'stealth-payment:interrupted',
+      maxNativeFeeWei: 10n ** 18n,
+    }
+    await expect(executor.signIndependentPayment(authorization)).rejects.toThrow(
       'signing interrupted',
     )
-    expect(journal.list()[0]!.cancelled).toBe(true)
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    const [plan] = journal.list()
+    expect(plan!.cancelled).toBe(false)
+    expect(plan!.members[0]!.signed).toBeNull()
+    expect(journal.canSelect(main.address.toLowerCase(), 0)).toBe(false)
+    // The same authorization signs the same plan; it does not plan a second one.
+    const signed = await executor.signIndependentPayment(authorization)
+    expect(signed.operationId).toBe(plan!.operationId)
+    expect(journal.list()).toHaveLength(1)
+    // Another interrupted plan is ended at the next open.
+    await executor.releaseUnexposed(signed.operationId)
+    sign.mockRejectedValueOnce(new Error('signing interrupted'))
+    await expect(
+      executor.signIndependentPayment({
+        ...authorization,
+        preparationId: 'stealth-payment:interrupted-again',
+      }),
+    ).rejects.toThrow('signing interrupted')
+    expect(journal.list().filter(row => !row.cancelled)).toHaveLength(1)
+    await executor.cancelUnsignedOperations()
+    expect(journal.list().every(row => row.cancelled)).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(false)
     expect(state.raws).toEqual([])
   })
 
@@ -483,7 +543,7 @@ describe('contract calls through the native operation journal', () => {
       executor.sendContractCall({ ...call, gasLimit: 250_000n }),
     ).rejects.toThrow(/Insufficient unreserved native funds/)
     expect(state.raws).toHaveLength(1)
-    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(true)
 
     state.setMode('mine')
     await executor.resumeOperation(operationId)
@@ -526,7 +586,7 @@ describe('contract calls through the native operation journal', () => {
     expect(
       journal.get(reverted.operationId).members[0]!.observation.state,
     ).toBe('included-revert')
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
     state.setMode('mine')
     await executor.sendContractCall({ ...call, gasLimit: 250_000n })
     expect(Transaction.from(state.raws[1]!).nonce).toBe(1)
@@ -545,42 +605,6 @@ describe('contract calls through the native operation journal', () => {
     ).rejects.toThrow(RangeError)
     expect(journal.list()).toEqual([])
     expect(state.raws).toEqual([])
-  })
-
-  it('reports what the main account holds and what could be moved into it', async () => {
-    const state = node({ main: 400_000n, spend: 9_000_000n })
-    const { executor } = owner(state)
-    expect(await executor.contractCallFunds()).toEqual({
-      mainAddress: main.address.toLowerCase(),
-      mainBalance: 400_000n,
-      otherBalance: 9_000_000n,
-      mainBusy: false,
-    })
-  })
-
-  it('funds the main account from the wallet’s other accounts, never from itself', async () => {
-    const state = node({ main: 5_000_000n, spend: 9_000_000n })
-    const { executor } = owner(state)
-    const funded = await executor.fundMainAccount({ value: 3_000_000n })
-    const row = journal.list()[0]!
-    expect(row).toMatchObject({
-      kind: 'legacy',
-      recipient: main.address.toLowerCase(),
-      intendedValueWei: '3000000',
-    })
-    expect(row.members.map(member => member.source.kind)).toEqual(['spend'])
-    expect(funded.txHash).toBe(row.members[0]!.signed!.transactionHash)
-    expect(state.balances.get(main.address.toLowerCase())).toBe(8_000_000n)
-
-    const alone = node({ main: 5_000_000n })
-    await journal.Close()
-    await rm(location, { recursive: true, force: true })
-    location = await mkdtemp(join(tmpdir(), 'frank-contract-call-'))
-    await open()
-    await expect(
-      owner(alone).executor.fundMainAccount({ value: 1_000n }),
-    ).rejects.toThrow(RangeError)
-    expect(alone.raws).toEqual([])
   })
 
   it('the journal accepts a contract call only from the main account and only with calldata', async () => {
@@ -639,7 +663,7 @@ describe('contract calls through the native operation journal', () => {
     expect(journal.get(sent.operationId).members[0]).toEqual(included)
     // So the account is still free: an exhausted RPC quota cannot freeze it.
     state.setDown(false)
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
 
     state.setMode('lost')
     const lost = await executor
@@ -661,7 +685,9 @@ describe('contract calls through the native operation journal', () => {
       journal,
       provider: state.provider,
       transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => sources,
+      mainSource: sources[0]!,
+      ownedSource: address =>
+        sources.find(source => source.address === address.toLowerCase()),
       sign,
       now: () => clock,
     })
@@ -720,7 +746,7 @@ describe('contract calls through the native operation journal', () => {
     const before = journal.get(id)
     expect(before.members[0]!.exposed).toBe(true)
     state.balances.set(main.address.toLowerCase(), -1n)
-    await expect(executor.contractCallFunds()).rejects.toMatchObject({
+    await expect(executor.sendContractCall(call)).rejects.toMatchObject({
       code: 'invalid',
       validation: 'account',
     })
@@ -763,7 +789,7 @@ describe('contract calls through the native operation journal', () => {
     const dex = new UniswapV4Dex('monad-testnet', deployment, {
       reader,
       sendContractCall: params => executor.sendContractCall(params),
-      getContractCallFunds: () => executor.contractCallFunds(),
+      getContractCallFunds: () => funds(state, executor),
     })
     const quote = await dex.quote({
       tokenIn: native,
@@ -829,7 +855,7 @@ describe('contract calls through the native operation journal', () => {
       reader,
       wallet: {
         sendContractCall: params => executor.sendContractCall(params),
-        getContractCallFunds: () => executor.contractCallFunds(),
+        getContractCallFunds: () => funds(state, executor),
         resumeNativeOperation: id => executor.resumeOperation(id),
         getUnresolvedContractCalls: () => executor.unresolvedContractCalls(),
       },
@@ -853,14 +879,11 @@ describe('contract calls through the native operation journal', () => {
     ])
     expect(Transaction.from(state.raws[3]!).data).toBe(plan.swap.data)
     // Once the wallet has looked at the chain, every call is recorded as included.
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
     expect(executor.unresolvedContractCalls()).toEqual([])
 
-    // Nothing is left holding the main account: an ordinary send goes out from it.
-    const transfer = await executor.sendNative({
-      recipient: { raw: spend.address },
-      value: 1_000n,
-    })
+    // Nothing is left holding the main account: its next call goes out from it.
+    const transfer = await executor.sendContractCall(call)
     const sent = Transaction.from(state.raws[4]!)
     expect(sent.hash).toBe(transfer.txHash)
     expect(sent.from).toBe(main.address)
@@ -890,7 +913,7 @@ describe('contract calls through the native operation journal', () => {
     expect(state.raws).toEqual([])
 
     // The user tries again at once: one swap goes out, at the nonce the first never used.
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
     const second = await executor.sendContractCall({
       ...call,
       gasLimit: 250_000n,
@@ -935,11 +958,13 @@ describe('contract calls through the native operation journal', () => {
         Transaction.from(row.members[0]!.unsignedTransaction),
       ),
     )
-    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    const main0 = () => journal.canSelect(main.address.toLowerCase(), 0)
+    expect(main0()).toBe(false)
     await executor.cancelUnsignedOperations()
     expect(journal.get(row.operationId)).toMatchObject({ cancelled: true })
     expect(journal.get(row.operationId).members[0]!.signed).toBeNull()
-    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(main0()).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(false)
     expect(state.raws).toEqual([])
   })
 
@@ -964,7 +989,9 @@ describe('contract calls through the native operation journal', () => {
       journal,
       provider: state.provider,
       transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => sources,
+      mainSource: sources[0]!,
+      ownedSource: address =>
+        sources.find(source => source.address === address.toLowerCase()),
       sign: async (_source, raw) => main.signTransaction(Transaction.from(raw)),
       now: () => clock,
     })

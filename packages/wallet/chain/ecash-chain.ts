@@ -176,6 +176,8 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         if (canonicalRecipient === undefined) {
           throw new Error("Invalid eCash recipient for the configured network");
         }
+        if (!wallet.sendNative)
+          throw new Error("This eCash wallet cannot send a native transfer");
         return wallet.sendNative({
           recipient: canonicalRecipient,
           value,

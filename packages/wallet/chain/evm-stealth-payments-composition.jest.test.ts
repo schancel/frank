@@ -156,8 +156,6 @@ const config: EvmChainConfig = {
   resolveDefaultStamp: fixedStampDefault(1n),
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
-  // The stub node never mines on its own: a native send looks once and returns.
-  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
 /** The main account the frozen domain-root vector 0 derives (see monad-domain-wallet tests). */

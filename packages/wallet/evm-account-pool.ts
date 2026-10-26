@@ -900,6 +900,17 @@ export class EvmSubAccountPool {
     ) {
       return { outcome: "already-applied", txHash: hash };
     }
+    // The account was spent and keeps paying from its next nonces (the coin list stacks one
+    // set's payment and change on one account). The row is already retired by the earlier
+    // spend; a later nonce of the same account changes nothing here.
+    if (
+      row.status === "spent" &&
+      existing !== undefined &&
+      row.lifecycle?.legacyTerminal === undefined &&
+      transaction.nonce > Transaction.from(existing.rawTx).nonce
+    ) {
+      return { outcome: "already-applied", txHash: hash };
+    }
     return refuse(
       "held",
       `row is ${row.status}${

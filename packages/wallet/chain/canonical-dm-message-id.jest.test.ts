@@ -1282,22 +1282,30 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
             journal,
             provider: provider as unknown as Provider,
             transactionBuilder: new NativeEvmTransactionBuilder(),
-            getSources: async () =>
-              keys.map(key => ({
-                kind: 'main' as const,
-                address: key.address.toLowerCase(),
-              })),
+            mainSource: {
+              kind: 'main' as const,
+              address: keys[0]!.address.toLowerCase(),
+            },
+            ownedSource: (address: string) =>
+              keys.some(key => key.address.toLowerCase() === address)
+                ? { kind: 'main' as const, address }
+                : undefined,
             sign: nativeSign,
           })
         let nativeOwner = makeOwner()
-        const prepare = jest.spyOn(nativeOwner, 'signNative')
-        const params = {
-          recipient: { raw: f.bob.identity.address.raw },
-          value: 1000n,
-          maxFee: 100000n,
-        }
-        const first = await nativeOwner.signNative(params)
-        const second = await nativeOwner.signNative(params)
+        // Two signed, unexposed native operations, one from each owned account: the envelope's
+        // financial references, which recovery must expose and submit unchanged.
+        const prepare = jest.spyOn(nativeOwner, 'signIndependentPayment')
+        const signedFrom = (key: Wallet, id: string) =>
+          nativeOwner.signIndependentPayment({
+            kind: 'native',
+            recipient: { raw: f.bob.identity.address.raw },
+            members: [{ sourceAddress: key.address, value: 1000n }],
+            preparationId: `stealth-payment:${id}`,
+            maxNativeFeeWei: 100000n,
+          })
+        const first = await signedFrom(keys[0]!, 'first')
+        const second = await signedFrom(keys[1]!, 'second')
         const refs = [first, second].map(p => ({
           chainIdentifier: 'monad-testnet',
           operationId: p.operationId,

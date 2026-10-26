@@ -104,6 +104,8 @@ import {
   type RecordStore,
 } from "./storage/evm-coin-store";
 import type { EvmNativeSource } from "./storage/evm-native-operation-journal";
+import { EvmTransactionSetInsufficientFundsError } from "./evm-transaction-set-types";
+import type { TransactionSetSubmission } from "./transaction-set";
 import type {
   EvmWalletOperationAdmission,
   EvmWalletPersistenceBundle,
@@ -330,8 +332,19 @@ export interface EvmReceivedCoinAndContactManagerParams {
   readonly preparations: RecordStore<EvmStealthPreparation>;
   readonly getWallet: () => EvmChainWalletHandle;
   readonly getTopicOwner: () => EvmWalletPersistenceBundle;
-  readonly getSources: () => Promise<EvmNativeSource[]>;
-  readonly coinSource: (coin: EvmCoin) => EvmNativeSource;
+  /** The accounts that can hold a token this wallet pays from: the main and identity
+   * accounts and every received coin. Read-only; the chain decides what each holds. */
+  readonly tokenSources: () => readonly EvmNativeSource[];
+  /** Moves the named coins whole to an account of this wallet through the coin list (the same
+   * selection, reservation, journal and submission every payment uses). */
+  readonly sweepToOwnAccount: (params: {
+    sourceAccounts: readonly string[];
+    destination: string;
+  }) => Promise<{
+    operationId: string;
+    moved: readonly string[];
+    submission: TransactionSetSubmission;
+  }>;
   /** Invalidate display reads and, for an observed/imported account, its spendable inventory read.
    * The inventory owner must reread chain balance/nonce; receipt amounts are not spend authority. */
   readonly invalidateBalanceRead: (affectedAddress?: string) => void;
@@ -377,8 +390,8 @@ export function createEvmReceivedCoinAndContactManager(
     preparations,
     getWallet,
     getTopicOwner,
-    getSources,
-    coinSource,
+    tokenSources,
+    sweepToOwnAccount,
     invalidateBalanceRead,
     requireOpenWallet,
     canonicalMessagingFor,
@@ -1546,7 +1559,20 @@ export function createEvmReceivedCoinAndContactManager(
           only: new Set(live().map((coin) => coin.address)),
           strict: true,
         });
-        const owner = nativeOwner();
+        const internals = evmWalletInternals(wallet);
+        const coinList = internals.coinList;
+        const preparer = wallet.transactionSetPreparer;
+        const submission = wallet.transactionSetSubmission;
+        if (!coinList || !preparer || !submission)
+          throw new Error("Wallet has no coin list to sweep from");
+        // Not moved by a sweep: free in the coin list means it is not worth its transfer;
+        // anything else means another operation (or the chain's spend rule) holds it now.
+        const classify = (address: string): void => {
+          const coin = coinList.latestOf(address);
+          if (coin?.state === "unspent" && !coinList.isAccountReserved(address))
+            left.add(address);
+          else heldByOthers.add(address);
+        };
         const until = Date.now() + SWEEP_INCLUSION_WAIT_MS;
         for (;;) {
           const unspent = spendableCoins(live()).filter(
@@ -1556,54 +1582,60 @@ export function createEvmReceivedCoinAndContactManager(
               !sweptAlready(coin.address)
           );
           if (unspent.length === 0) break;
-          const carried = new Set(
+          const carried = new Map(
             unspent.flatMap((coin) => {
               const row = sweepOf(coin.address);
-              return row === undefined ? [] : [row.operationId];
+              return row === undefined ? [] : [[row.operationId, row] as const];
             })
           );
           const fresh = unspent.filter(
             (coin) => sweepOf(coin.address) === undefined
           );
           let waiting = false;
-          for (const operationId of carried) {
-            await runWalletExclusive(wallet, (admission) =>
-              runMainAccountExclusive(wallet, () =>
-                owner.resumeOperation(operationId, admission)
-              )
-            ).catch((error) => {
-              if (!(error instanceof NativeTransactionSubmissionError)) {
-                throw error;
-              }
-              waiting = true;
-            });
-          }
-          if (fresh.length > 0) {
-            await runWalletExclusive(wallet, (admission) =>
-              runMainAccountExclusive(wallet, () =>
-                owner.sweepSources(
-                  {
-                    sources: fresh.map(coinSource),
-                    recipient: { raw: mainAddress },
-                  },
-                  admission
+          for (const row of carried.values()) {
+            // The same signed set again; never a second sweep of its coins.
+            if (row.kind !== "transaction-set" || !row.preparationId) {
+              for (const member of row.members) heldByOthers.add(member.source.address);
+              continue;
+            }
+            await getTopicOwner()
+              .runLifetime(async () =>
+                submission.sendTransaction(
+                  await preparer.readTransactionSet(
+                    row.preparationId!.slice("evm-transaction-set:".length)
+                  )
                 )
               )
-            ).then(
-              (swept) => {
-                for (const address of swept.left) left.add(address);
-                for (const address of swept.held) heldByOthers.add(address);
-                if (swept.pending) waiting = true;
-              },
-              (error) => {
-                if (!(error instanceof NativeTransactionSubmissionError)) {
-                  throw error;
+              .then(
+                (result) => {
+                  if (result.status === "pending") waiting = true;
+                },
+                (error) => {
+                  if (!(error instanceof NativeTransactionSubmissionError))
+                    throw error;
+                  waiting = true;
                 }
-                waiting = true;
-              }
-            );
+              );
           }
-          invalidateBalanceRead();
+          if (fresh.length > 0) {
+            try {
+              const swept = await sweepToOwnAccount({
+                sourceAccounts: fresh.map((coin) => coin.address),
+                destination: mainAddress,
+              });
+              const moved = new Set(swept.moved);
+              for (const coin of fresh)
+                if (!moved.has(coin.address)) classify(coin.address);
+              if (swept.submission.status === "pending") waiting = true;
+            } catch (error) {
+              if (error instanceof EvmTransactionSetInsufficientFundsError)
+                for (const coin of fresh) classify(coin.address);
+              else if (error instanceof NativeTransactionSubmissionError)
+                waiting = true;
+              else throw error;
+            }
+          }
+          invalidateBalanceRead(mainAddress);
           await readCoinsPass({
             only: new Set(unspent.map((coin) => coin.address)),
             strict: true,
@@ -1667,7 +1699,7 @@ export function createEvmReceivedCoinAndContactManager(
     /** The owned, unreserved accounts holding this token with some native gas: what a token
      * payment can draw on. Read-only. */
     const fundedTokenSources = async (contractAddress: string, requested?: string) => {
-      const owned = [...new Map((await getSources()).map(source => [source.address, source])).values()];
+      const owned = [...new Map(tokenSources().map(source => [source.address, source])).values()];
       if (requested !== undefined && !owned.some(source => source.address === requested)) throw new Error("Requested financial source is not owned");
       // A received coin's own record says whether it holds this token. Every message stamp is
       // such a coin, so reading each one's balances put a burst of reads on the chain's RPC

@@ -954,7 +954,8 @@ describe('canonical durable consumer barriers', () => {
               inputAdmission: f.state.inputAdmission,
               provider: f.provider,
               transactionBuilder: new NativeEvmTransactionBuilder(),
-              getSources: async () => [],
+              mainSource: { kind: 'main', address: '0x' + '00'.repeat(20) },
+              ownedSource: () => undefined,
               sign: nativeSign,
             })
             await expect(

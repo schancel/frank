@@ -11,12 +11,11 @@ import {
   nativeMemberSuperseded,
   type EvmNativeOperation,
 } from '../storage/evm-native-operation-journal'
-import {
-  EvmNativeOperationPendingError,
-  type SendLegacyParams,
-} from './evm-legacy-consolidator'
+import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
 import {
   NativeFeeExceededError,
+  type ChainAddress,
+  type LegacySendProgress,
   type ChainTransaction,
   type LegacyFeeEstimate,
   type LegacyMaxEstimate,
@@ -24,6 +23,20 @@ import {
 } from './chain-wallet'
 
 const preparationPrefix = 'evm-transaction-set:legacy-'
+
+/** One transfer of `value` to `recipient`, built from the wallet's coin list. */
+export interface SendLegacyParams {
+  recipient: ChainAddress
+  value: bigint
+  operationId?: string
+  /** The fee the user reviewed, as a ceiling: construction refuses rather than pay more. */
+  maxFee?: bigint
+  onProgress?: (progress: LegacySendProgress) => void
+  onSigned?: (signed: ChainTransaction) => Promise<void>
+  /** Accepted for the shared transfer contract; a coin-list transfer never waits on the main
+   * account, so it is ignored. */
+  mainAccountWaitMs?: number
+}
 
 export class LegacyTransactionSetFailedError extends Error {
   constructor(readonly operation: EvmNativeOperation) {
@@ -188,13 +201,56 @@ export function createLegacyTransactionSetPayments(options: {
     /** The most one transfer can send now (every coin selection can draw on, less the fees of
      * moving it) and the exact fee it pays. */
     async estimateLegacyMax(
-      params: Pick<SendLegacyParams, 'recipient'>,
+      params: Pick<SendLegacyParams, 'recipient'> & {
+        excludedSourceAccounts?: readonly string[]
+      },
     ): Promise<LegacyMaxEstimate> {
       await options.refresh()
       const quote = await options.preparer.quoteLegacyTransactionSet({
         destination: params.recipient.raw,
+        ...(params.excludedSourceAccounts
+          ? { excludedSourceAccounts: params.excludedSourceAccounts }
+          : {}),
       })
       return { value: quote.amountWei, ...feeEstimate(quote) }
+    },
+    /**
+     * Moves everything the coins of `sourceAccounts` hold, less each transfer's fee, to
+     * `destination`, an account of this wallet: one transaction set through the same coin list,
+     * reservation, journal and submission as every payment, one transfer per coin and no
+     * change (`EvmTransactionSetPreparer.quoteSweepTransactionSet`). A coin that would cost as
+     * much to move as it holds, or that is held by another operation or by the chain's spend
+     * rule, is not moved; `moved` names the accounts that are. Nothing is signed when no coin
+     * can be moved. A coin already in a sweep is `pending_receipt` and never selected again, so
+     * asking again never signs a second sweep of it.
+     */
+    async sweepToOwnAccount(params: {
+      sourceAccounts: readonly string[]
+      destination: string
+    }): Promise<{
+      operationId: string
+      moved: readonly string[]
+      submission: TransactionSetSubmission
+    }> {
+      await options.refresh()
+      const quote = await options.preparer.quoteSweepTransactionSet({
+        destination: params.destination,
+        sourceAccounts: params.sourceAccounts,
+      })
+      const operationId = `sweep-${hexlify(randomBytes(16)).slice(2)}`
+      const prepared = await options.preparer.constructTransactionSet({
+        operationId,
+        amountWei: quote.amountWei,
+        kdf: () => params.destination,
+        sourceAccounts: quote.sourceAccounts,
+        maxPaymentParts: quote.sourceAccounts.length,
+        maxFeeWei: quote.feeWei,
+      })
+      return {
+        operationId,
+        moved: quote.sourceAccounts,
+        submission: await options.sendTransaction(prepared),
+      }
     },
     async sendLegacy(
       params: Pick<
@@ -206,7 +262,11 @@ export function createLegacyTransactionSetPayments(options: {
         | 'onProgress'
         | 'onSigned'
         | 'mainAccountWaitMs'
-      >,
+      > & {
+        /** Accounts whose coins this transfer must not spend: funding the main account never
+         * pays out of the main account. */
+        excludedSourceAccounts?: readonly string[]
+      },
     ): Promise<LegacySendResult> {
       const request = { ...params, recipient: { ...params.recipient } }
       request.onProgress?.({ status: { stage: 'planning' } })
@@ -221,6 +281,9 @@ export function createLegacyTransactionSetPayments(options: {
           amountWei: request.value,
           kdf: () => request.recipient.raw,
           maxFeeWei: request.maxFee,
+          ...(request.excludedSourceAccounts
+            ? { excludedSourceAccounts: request.excludedSourceAccounts }
+            : {}),
         })
       } catch (error) {
         const retained = await options.preparer.readOperation(operationId)

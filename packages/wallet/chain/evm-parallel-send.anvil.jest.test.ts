@@ -435,7 +435,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     }
   })
 
-  it('native transfer admission rejects reserved shared inputs without signing or waiting for a wallet-wide turn', async () => {
+  it('a transfer refuses reserved coin-list inputs without signing or waiting for a wallet-wide turn', async () => {
     const main = (await alice.getReceiveAddress()).raw
     await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     await automine(false)
@@ -445,13 +445,13 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       const nonce = await chain.getTransactionCount(main, 'pending')
       const onSigned = jest.fn()
       await expect(
-        alice.sendNative({
+        alice.sendLegacy!({
           recipient: { raw: Wallet.createRandom().address },
           value: 1n,
           mainAccountWaitMs: 1_500,
           onSigned,
         }),
-      ).rejects.toThrow(/Insufficient unreserved native funds/)
+      ).rejects.toThrow(/Insufficient available EVM coins/)
       expect(onSigned).not.toHaveBeenCalled()
       expect(alice.getNativeOperations!()).toEqual(before)
       expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
@@ -757,5 +757,144 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     } finally {
       await automine(true)
     }
+  })
+
+  // Swap funding (#1884 follow-up): what a contract call from the main account needs is moved
+  // into it over the one coin list, by the same transaction-set path a Send takes. monad-regtest
+  // has no swap configured, so this node is where the funding is exercised on real chain software.
+  it('swap funding moves the other coins into the main account on the real node; the main account signs nothing', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    // Paid messages spend the root and leave the money in change coins on other accounts.
+    for (const n of [0, 1]) {
+      const message = await send(9, n)
+      await settle([message.payloadDigest])
+    }
+    const before = await alice.getContractCallFunds!()
+    expect(before.otherBalance).toBeGreaterThan(0n)
+    const mainBefore = await chain.getBalance(main)
+    const mainNonce = await chain.getTransactionCount(main, 'latest')
+    const value = before.otherBalance
+    const result = await finished(alice.fundMainAccount!({ value }))
+    expect(result.totalValueSent).toBe(value)
+    expect(await chain.getBalance(main)).toBe(mainBefore + value)
+    // The main account's own coin was never an input.
+    expect(await chain.getTransactionCount(main, 'latest')).toBe(mainNonce)
+    const operation = alice
+      .getNativeOperations!()
+      .find(row => row.members.some(member => member.signed?.transactionHash === result.txHash))!
+    expect(operation.kind).toBe('transaction-set')
+    expect(operation.members.every(member => member.source.address !== main.toLowerCase())).toBe(true)
+    for (const member of operation.members)
+      expect((await chain.getTransactionReceipt(member.signed!.transactionHash))!.status).toBe(1)
+    // What the wallet now reports agrees with the node: main holds it, nothing else can move.
+    const after = await alice.getContractCallFunds!()
+    expect(after.mainBalance).toBe(await chain.getBalance(main))
+    expect(after.otherBalance).toBe(0n)
+    await expect(alice.fundMainAccount!({ value: 1n })).rejects.toThrow(/Insufficient available EVM coins/)
+    expect(await chain.getBalance(main)).toBe(mainBefore + value)
+  })
+
+  it('swap funding interrupted after signing is finished by the same operation after a restart, and pays main once', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    const message = await send(10, 0)
+    await settle([message.payloadDigest])
+    const { otherBalance } = await alice.getContractCallFunds!()
+    const value = otherBalance / 2n
+    const mainBefore = await chain.getBalance(main)
+    await automine(false)
+    try {
+      const interrupted = await alice
+        .fundMainAccount!({
+          value,
+          onSigned: async () => {
+            throw new Error('the app stopped here')
+          },
+        })
+        .catch((error: unknown) => error)
+      expect(interrupted).toBeInstanceOf(LegacyTransactionSetPendingError)
+      const [pending] = alice.getUnresolvedLegacySend!()
+      const originalBytes = signedMembers(pending!.operationId)
+      await alice.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      expect(alice.getUnresolvedLegacySend!().map(row => row.operationId)).toEqual([
+        pending!.operationId,
+      ])
+      await automine(true)
+      const result = await finished(alice.resumeLegacySend!(pending!.operationId))
+      expect(result.totalValueSent).toBe(value)
+      expect(await chain.getBalance(main)).toBe(mainBefore + value)
+      expect(
+        (await alice.readNativeOperation!(pending!.operationId))!.members.map(
+          member => member.signed!.rawTransaction,
+        ),
+      ).toEqual(originalBytes)
+      // Resuming again pays nothing more.
+      await alice.resumeLegacySend!(pending!.operationId)
+      expect(await chain.getBalance(main)).toBe(mainBefore + value)
+    } finally {
+      await automine(true)
+    }
+  })
+
+  // A received-coin sweep is a transaction set over the coin list too: each stamp coin moves
+  // whole to the main account, and asking again moves nothing more.
+  it('received stamps are swept whole to the main account on the real node, and a second sweep moves nothing', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    const bob = f.bob
+    installCanonicalDirectory(bob, await f.directoryFor('bob', bob, alice))
+    const digests: string[] = []
+    for (const n of [0, 1]) {
+      const message = await send(12, n)
+      await settle([message.payloadDigest])
+      digests.push(message.payloadDigest)
+    }
+    await f.chain.directMessages.fetchSince({ wallet: bob, sinceMs: 0 })
+    let stamps = bob.getReceivedPayments!().filter(coin => coin.origin === 'stamp')
+    for (let pass = 0; pass < 200; pass++) {
+      stamps = (await bob.refreshReceivedPayments!()).filter(coin => coin.origin === 'stamp')
+      if (stamps.length > 0 && stamps.every(coin => coin.status !== 'pending')) break
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    expect(new Set(stamps.map(coin => coin.payloadDigest?.replace(/^0x/, '')))).toEqual(
+      new Set(digests.map(digest => digest.replace(/^0x/, '').toLowerCase())),
+    )
+    const bobMain = (await bob.getReceiveAddress()).raw
+    const held = async () => {
+      let total = 0n
+      for (const coin of stamps) total += await chain.getBalance(coin.address)
+      return total
+    }
+    const heldBefore = await held()
+    expect(heldBefore).toBe(2n * STAMP)
+    const mainBefore = await chain.getBalance(bobMain)
+    const answers = await bob.sweepReceivedCoins!({ payloadDigests: digests })
+    for (const digest of digests) expect(answers[digest]!.outcome).toBe('swept')
+    const operation = bob
+      .getNativeOperations!()
+      .find(row => row.kind === 'transaction-set' && row.recipient === bobMain.toLowerCase())!
+    expect(operation.members).toHaveLength(stamps.length)
+    const gasPrice = 10n ** 9n
+    for (const member of operation.members) {
+      const receipt = (await chain.getTransactionReceipt(member.signed!.transactionHash))!
+      expect(receipt.status).toBe(1)
+      expect(receipt.to!.toLowerCase()).toBe(bobMain.toLowerCase())
+    }
+    // Whole coins: every stamp account is empty, and main gained all of it less one fee each.
+    expect(await held()).toBe(0n)
+    expect(await chain.getBalance(bobMain)).toBe(
+      mainBefore + heldBefore - BigInt(stamps.length) * 21_000n * gasPrice,
+    )
+    // Asked again: the coins are already swept, nothing is signed and nothing moves.
+    const again = await bob.sweepReceivedCoins!({ payloadDigests: digests })
+    for (const digest of digests) expect(['swept', 'none']).toContain(again[digest]!.outcome)
+    expect(
+      bob.getNativeOperations!().filter(row => row.kind === 'transaction-set' && row.recipient === bobMain.toLowerCase()),
+    ).toHaveLength(1)
+    expect(await chain.getBalance(bobMain)).toBe(
+      mainBefore + heldBefore - BigInt(stamps.length) * 21_000n * gasPrice,
+    )
   })
 })

@@ -115,10 +115,29 @@ function nativeExecutor(
     inputAdmission: f.admission,
     provider: provider as unknown as Provider,
     transactionBuilder: new NativeEvmTransactionBuilder(),
-    getSources: async () => [source],
+    mainSource: source,
+    ownedSource: address =>
+      address.toLowerCase() === source.address ? source : undefined,
     sign,
   })
-  return { executor, provider, sign }
+  let payments = 0
+  /** One native payment from the fixture's source account: planned at the account's current
+   * nonce through the real admission, then signed (`signIndependentPayment`). */
+  const pay = (
+    params: { recipient: { raw: string }; value: bigint },
+    lifetime: WalletOperationLifetime,
+  ) =>
+    executor.signIndependentPayment(
+      {
+        kind: 'native',
+        recipient: params.recipient,
+        members: [{ sourceAddress: source.address, value: params.value }],
+        preparationId: `stealth-payment:fixture-${++payments}`,
+        maxNativeFeeWei: 10n ** 18n,
+      },
+      lifetime,
+    )
+  return { executor, provider, sign, pay }
 }
 async function fixture(
   location: string,
@@ -675,7 +694,7 @@ describe('derived EVM input admission', () => {
       const lease = f.leases.acquireForIndex(0)
       const executor = nativeExecutor(f, ['success'])
       await expect(
-        executor.executor.sendNative(
+        executor.pay(
           { recipient: { raw: f.plan().recipient }, value: 32n },
           f.lifetime,
         ),
@@ -692,7 +711,7 @@ describe('derived EVM input admission', () => {
       await expect(
         f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(0, 0)),
       ).rejects.toThrow('conflicting-authorization')
-      await executor.executor.sendNative(
+      await executor.pay(
         { recipient: { raw: f.plan().recipient }, value: 32n },
         f.lifetime,
       )
@@ -763,7 +782,7 @@ describe('derived EVM input admission', () => {
       // Use the actual executor to refresh exact inclusion and the current nonce/balance;
       // the projection itself cannot grant next-nonce financial eligibility.
       const execution = nativeExecutor(reopened, ['success', 'missing'])
-      await execution.executor.sendNative(
+      await execution.pay(
         { recipient: { raw: reopened.plan().recipient }, value: 32n },
         reopened.lifetime,
       )
@@ -830,7 +849,7 @@ describe('derived EVM input admission', () => {
           kind === 'dependent' ? ['success', outcome] : [outcome],
         )
         await expect(
-          execution.executor.sendNative(
+          execution.pay(
             { recipient: { raw: plan.recipient }, value: 32n },
             f.lifetime,
           ),
@@ -995,6 +1014,17 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     return { id, raw }
   }
   const spend = (f: Fixture) => poolSpendAdmission(f.admission, f.lifetime)
+  /** Caller B with this device's own journal member: the member's signed bytes, for its row. */
+  const applyOwn = (f: Fixture, operationId: string, memberIndex = 0) => {
+    const member = f.journal.get(operationId).members[memberIndex]!
+    if (member.source.kind !== 'spend' || !member.signed)
+      throw new Error('Fixture member is not a signed pool spend')
+    return spend(f).applySpend(
+      member.signed.rawTransaction,
+      f.binding.chainIdentifier,
+      { index: member.source.index, address: member.source.address },
+    )
+  }
   const obligations = (f: Fixture) => {
     const snapshot = f.admission.inspect(f.lifetime)
     if (snapshot.status !== 'ready') throw new Error(snapshot.reason)
@@ -1018,12 +1048,11 @@ describe('pool spend admission (#1235 Stage 1)', () => {
 
   // Contract test 11. Unlike the Stage A test above ("a native journal-derived pool checkpoint
   // remains one authorization"), nothing here hand-writes the row.
-  it('applyMember writes the member checkpoint and spent through the real writer; after a real reopen it is one authorization and the next send signs once at the next nonce', async () => {
+  it('an included member\'s own bytes are written as the row checkpoint and spent by the real writer; after a real reopen it is one authorization and the next payment signs once at the next nonce', async () => {
     const f = await start(location)
     const { id, raw } = await member(f)
     const putMany = writes()
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('needs-apply')
-    expect(await spend(f).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(f, id)).toEqual({
       kind: 'committed',
       poolIndex: 0,
     })
@@ -1043,11 +1072,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(reopened.journal.get(id).members[0]!.signed?.rawTransaction).toBe(
       raw,
     )
-    expect(spend(reopened).classifyMember(reopened.journal.get(id), 0)).toBe(
-      'applied',
-    )
     const execution = nativeExecutor(reopened, ['success', 'missing'])
-    await execution.executor.sendNative(
+    await execution.pay(
       { recipient: { raw: reopened.plan().recipient }, value: 32n },
       reopened.lifetime,
     )
@@ -1056,13 +1082,13 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   })
 
   // Contract test 21.
-  it('repeating applyMember, also across a real reopen, writes once in total and leaves the obligations identical', async () => {
+  it('repeating the apply, also across a real reopen, writes once in total and leaves the obligations identical', async () => {
     const f = await start(location)
     const { id } = await member(f)
     const putMany = writes()
-    expect((await spend(f).applyMember(id, 0)).kind).toBe('committed')
+    expect((await applyOwn(f, id)).kind).toBe('committed')
     const first = obligations(f)
-    expect(await spend(f).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(f, id)).toEqual({
       kind: 'already-applied',
       poolIndex: 0,
     })
@@ -1070,7 +1096,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const committed = putMany.mock.calls.length
     const reopened = await reopen(f)
     putMany.mockClear()
-    expect((await spend(reopened).applyMember(id, 0)).kind).toBe(
+    expect((await applyOwn(reopened, id)).kind).toBe(
       'already-applied',
     )
     expect(obligations(reopened)).toEqual(first)
@@ -1087,7 +1113,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     ).rejects.toThrow('conflicting-authorization')
     await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(1))
     const sign = jest.spyOn(SigningKey.prototype, 'sign')
-    expect((await spend(f).applyMember(id, 0)).kind).toBe('committed')
+    expect((await applyOwn(f, id)).kind).toBe('committed')
     expect(sign).not.toHaveBeenCalled()
     await expect(
       f.admission.prepareNative(f.lifetime, f.epoch(), f.plan()),
@@ -1096,74 +1122,10 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(f.journal.list()).toHaveLength(3)
   })
 
-  // Contract test 16.
-  it.each([
-    'unknown operation',
-    'member out of range',
-    'cancelled',
-    'unsigned',
-    'signed, never observed',
-    'pending',
-    'missing',
-    'included-revert',
-    'regressed after the snapshot',
-    'projection already conflicting',
-  ])('applyMember refuses, writing nothing: %s', async kind => {
-    const f = await start(location)
-    const state: State =
-      kind === 'cancelled' || kind === 'unsigned'
-        ? 'unsigned'
-        : kind === 'signed, never observed'
-        ? 'signed'
-        : kind === 'pending' || kind === 'missing' || kind === 'included-revert'
-        ? kind
-        : 'included-success'
-    const { id } = await member(f, 0, 0, state)
-    let target = id,
-      memberIndex = 0
-    if (kind === 'unknown operation') target = 'evm-native-v1:00000000000000ff'
-    if (kind === 'member out of range') memberIndex = 1
-    if (kind === 'cancelled')
-      await nativeAdmissionJournal(f.admission, f.lifetime).cancelUnsigned(id)
-    if (kind === 'regressed after the snapshot') {
-      const snapshot = f.journal.get(id)
-      await observe(f, id, 'pending')
-      // The stale snapshot still classifies as worth applying; the call reads the member again.
-      expect(spend(f).classifyMember(snapshot, 0)).toBe('needs-apply')
-    } else if (kind !== 'unknown operation' && kind !== 'member out of range')
-      expect(spend(f).classifyMember(f.journal.get(id), memberIndex)).toBe(
-        kind === 'projection already conflicting'
-          ? 'needs-apply'
-          : 'not-eligible',
-      )
-    if (kind === 'projection already conflicting') {
-      // Hand-built: row 1 is terminal with no checkpoint while an unsigned plan spends from it.
-      await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(1))
-      f.pool.setStatus(1, 'in-use')
-      f.pool.setStatus(1, 'spent')
-      await f.pool.flush()
-      expect(f.admission.inspect(f.lifetime)).toMatchObject({
-        reason: 'conflicting-authorization',
-      })
-    }
-    const before = f.pool.records()
-    const journalBefore = f.journal.list()
-    const putMany = writes()
-    const error = await refusal(spend(f).applyMember(target, memberIndex))
-    expect(error).toBeInstanceOf(Error)
-    if (kind !== 'unknown operation')
-      expect(error).toBeInstanceOf(EvmInputAdmissionError)
-    expect(putMany).not.toHaveBeenCalled()
-    expect(f.pool.records()).toEqual(before)
-    expect(f.journal.list()).toEqual(journalBefore)
-    // A refused candidate does not fault the admission.
-    if (kind !== 'projection already conflicting')
-      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
-  })
 
-  it('a stale or foreign lifetime cannot apply, and an uncertain admission applies and classifies nothing', async () => {
+  it('a stale or foreign lifetime cannot apply, and an uncertain admission applies nothing', async () => {
     const f = await start(location)
-    const { id } = await member(f)
+    const { raw } = await member(f)
     const putMany = writes()
     expect(() =>
       poolSpendAdmission(
@@ -1173,7 +1135,9 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     ).toThrow('foreign lifetime')
     const held = spend(f)
     f.active.delete(f.lifetime)
-    await expect(held.applyMember(id, 0)).rejects.toThrow('foreign lifetime')
+    await expect(held.applySpend(raw, 'monad-testnet')).rejects.toThrow(
+      'foreign lifetime',
+    )
     f.active.add(f.lifetime)
     // An earlier pool write of another owner fails: the session is uncertain.
     jest.spyOn(f.pool, 'flush').mockRejectedValueOnce(new Error('write lost'))
@@ -1181,91 +1145,14 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       canonicalAdmissionPool(f.admission, f.lifetime).setStatus(2, 'in-use'),
     ).rejects.toThrow('write lost')
     putMany.mockClear()
-    await expect(held.applyMember(id, 0)).rejects.toThrow('uncertain-owner')
-    expect(held.classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
+    await expect(held.applySpend(raw, 'monad-testnet')).rejects.toThrow(
+      'uncertain-owner',
+    )
     expect(putMany).not.toHaveBeenCalled()
     expect(f.pool.getRecord(0)?.status).not.toBe('spent')
   })
 
-  // Contract test 19.
-  it('classifyMember reads only the snapshot it is given: no journal read, no write', async () => {
-    const f = await start(location)
-    const { id } = await member(f)
-    const snapshot = f.journal.get(id)
-    const get = jest.spyOn(f.journal, 'get')
-    const list = jest.spyOn(f.journal, 'list')
-    const putMany = writes()
-    expect(spend(f).classifyMember(snapshot, 5)).toBe('not-eligible')
-    expect(list).not.toHaveBeenCalled()
-    expect(spend(f).classifyMember(snapshot, 0)).toBe('needs-apply')
-    expect(get).not.toHaveBeenCalled()
-    // #1235 Stage C changed this assertion on purpose: it was `list` not called at all. The
-    // member itself is still read only from the snapshot (`get` is never called), but an answer
-    // of `needs-apply` now first asks whether the projection is ready, and the projection reads
-    // the journal once. Every other answer still reads nothing (see the not-ready test below).
-    expect(list).toHaveBeenCalledTimes(1)
-    expect(putMany).not.toHaveBeenCalled()
-  })
 
-  // Contract test 20.
-  it('sources that are not a live pool row are no-pool-row and create nothing; a retired row is held for good', async () => {
-    const f = await start(location)
-    const outside = new Wallet('0x' + '21'.repeat(32))
-    const point = outside.signingKey.compressedPublicKey
-    const sources: EvmNativeSource[] = [
-      { kind: 'main', address: outside.address.toLowerCase() },
-      {
-        kind: 'identity',
-        address: new Wallet('0x' + '22'.repeat(32)).address.toLowerCase(),
-        identityPublicKey: point,
-      },
-      {
-        kind: 'change',
-        address: new Wallet('0x' + '23'.repeat(32)).address.toLowerCase(),
-        index: 0,
-      },
-      {
-        kind: 'identity-stealth-v1',
-        address: new Wallet('0x' + '24'.repeat(32)).address.toLowerCase(),
-        identityPublicKey: point,
-        ephemeralPublicKey: point,
-      },
-    ]
-    const ids: string[] = []
-    for (const [offset, source] of sources.entries()) {
-      const plan = f.plan()
-      plan.members[0]!.source = source
-      ids.push(
-        (
-          await member(
-            f,
-            0,
-            0,
-            'included-success',
-            plan,
-            '0x' + (0x21 + offset).toString(16).repeat(32),
-          )
-        ).id,
-      )
-    }
-    // A spend source the pool has no row for: the pool is smaller than the accounts registered.
-    ids.push((await member(f, 7)).id)
-    const putMany = writes()
-    for (const id of ids) {
-      expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('no-pool-row')
-      expect(await spend(f).applyMember(id, 0)).toEqual({ kind: 'no-pool-row' })
-    }
-    expect(f.pool.getRecord(7)).toBeUndefined()
-    const retired = await member(f, 2)
-    f.pool.setStatus(2, 'in-use')
-    f.pool.setStatus(2, 'retired')
-    putMany.mockClear()
-    expect(spend(f).classifyMember(f.journal.get(retired.id), 0)).toBe(
-      'held-terminal',
-    )
-    expect(putMany).not.toHaveBeenCalled()
-    expect(f.pool.records()).toHaveLength(3)
-  })
 
   // Contract test 13, with the item's canonical identifier.
   it.each([
@@ -1304,30 +1191,6 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(f.admission.inspect(f.lifetime).status).toBe('ready')
   })
 
-  // Contract test 13, caller A. Hand-built: the journal validates a member's chain when it is
-  // written, so a member holding another chain's bytes can only be simulated at the read.
-  it.each([{ chainId: 1n }, { type: 0, chainId: 0n }])(
-    'hand-built: applyMember refuses a journal member whose bytes are for another chain (%p)',
-    async fields => {
-      const f = await start(location)
-      const { id } = await member(f)
-      const foreign = signFrom(f, 0, fields)
-      const real = f.journal.get.bind(f.journal)
-      jest.spyOn(f.journal, 'get').mockImplementation(operationId => {
-        const row = real(operationId)
-        row.members[0]!.signed = {
-          rawTransaction: foreign,
-          transactionHash: Transaction.from(foreign).hash!,
-        }
-        return row
-      })
-      const putMany = writes()
-      const error = await refusal(spend(f).applyMember(id, 0))
-      expect(error).toMatchObject({ reason: 'invalid-provenance' })
-      expect(putMany).not.toHaveBeenCalled()
-      expect(f.pool.getRecord(0)?.status).not.toBe('spent')
-    },
-  )
 
   // Contract test 14.
   it.each([
@@ -1422,10 +1285,18 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       kind: 'already-applied',
       poolIndex: 1,
     })
-    // Another transaction for the same row is the writer's `held`.
+    // Other bytes for the same nonce are the writer's `held`.
     await expect(
-      spend(f).applySpend(signFrom(f, 1, { nonce: 5 }), 'monad-testnet'),
+      spend(f).applySpend(
+        signFrom(f, 1, { nonce: 4, value: 33n }),
+        'monad-testnet',
+      ),
     ).rejects.toMatchObject({ code: 'held', index: 1 })
+    // A later nonce of the spent account (its change paying on, through the coin list) changes
+    // nothing on the row: the row records the spend that retired it.
+    expect(
+      await spend(f).applySpend(signFrom(f, 1, { nonce: 5 }), 'monad-testnet'),
+    ).toEqual({ kind: 'already-applied', poolIndex: 1 })
     expect(putMany).toHaveBeenCalledTimes(1)
     const reopened = await reopen(f)
     expect(kinds(reopened)).toEqual(['pool-retained'])
@@ -1451,38 +1322,6 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     },
   )
 
-  // Contract tests 27 and 29: every order of the two callers on one member.
-  it('caller A then caller B, and caller B then caller A, on one included member: one write each, the second a no-op, the same obligations', async () => {
-    const results: unknown[] = []
-    for (const order of ['A then B', 'B then A'] as const) {
-      const dir = join(location, order.replace(/ /g, '-'))
-      const f = await start(dir)
-      const { id, raw } = await member(f)
-      const putMany = writes()
-      // Other bytes for the pair the journal owns stay refused even once it is included.
-      await expect(
-        spend(f).applySpend(signFrom(f, 0, { value: 33n }), 'monad-testnet'),
-      ).rejects.toMatchObject({ reason: 'conflicting-authorization' })
-      const calls = [
-        () => spend(f).applyMember(id, 0),
-        () => spend(f).applySpend(raw, 'monad-testnet'),
-      ]
-      if (order === 'B then A') calls.reverse()
-      expect(await calls[0]!()).toEqual({ kind: 'committed', poolIndex: 0 })
-      expect(await calls[1]!()).toEqual({
-        kind: 'already-applied',
-        poolIndex: 0,
-      })
-      expect(putMany).toHaveBeenCalledTimes(1)
-      expect(kinds(f)).toEqual(['native', 'pool-retained'])
-      results.push(obligations(f))
-      results.push(obligations(await reopen(f, dir)))
-      putMany.mockRestore()
-    }
-    expect(results[1]).toEqual(results[0])
-    expect(results[2]).toEqual(results[0])
-    expect(results[3]).toEqual(results[0])
-  })
 
   // Contract test 12. HAND-BUILT, every case: the canonical owners are test doubles handed to the
   // admission, and for `live-lease` and `pool-funding` the writer's classification is forced,
@@ -1632,29 +1471,27 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   )
 
   // Contract test 17: the candidate check is stricter than the projection, in the safe direction.
-  it('an included member is held while a later pending member holds the same address, applies once that member resolves, and the later member is then held for good', async () => {
+  it('an included member is held while a later pending member holds the same address, applies once that member resolves, and the later member then changes nothing', async () => {
     const f = await start(location)
     const first = await member(f, 0, 0)
     const second = await member(f, 0, 1, 'pending')
     // The projection itself accepts this state.
     expect(kinds(f)).toEqual(['native', 'native'])
     const putMany = writes()
-    await expect(spend(f).applyMember(first.id, 0)).rejects.toMatchObject({
+    await expect(applyOwn(f, first.id)).rejects.toMatchObject({
       reason: 'conflicting-authorization',
     })
     expect(putMany).not.toHaveBeenCalled()
     expect(f.pool.getRecord(0)?.status).not.toBe('spent')
     expect(kinds(f)).toEqual(['native', 'native'])
     await observe(f, second.id, 'included-success')
-    expect(await spend(f).applyMember(first.id, 0)).toEqual({
+    expect(await applyOwn(f, first.id)).toEqual({
       kind: 'committed',
       poolIndex: 0,
     })
-    expect(spend(f).classifyMember(f.journal.get(second.id), 0)).toBe(
-      'held-terminal',
-    )
-    await expect(spend(f).applyMember(second.id, 0)).rejects.toMatchObject({
-      code: 'held',
+    expect(await applyOwn(f, second.id)).toEqual({
+      kind: 'already-applied',
+      poolIndex: 0,
     })
     expect(putMany).toHaveBeenCalledTimes(1)
     expect(f.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(first.raw)
@@ -1663,16 +1500,16 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   })
 
   // Contract test 18: the residual variant.
-  it('native then native from one row: the second prepare is admitted and included, classifies held-terminal, and the first checkpoint is kept across reopen', async () => {
+  it('native then native from one row: the second prepare is admitted and included, its apply writes nothing, and the first checkpoint is kept across reopen', async () => {
     const f = await start(location)
     const first = await member(f, 0, 0)
-    expect((await spend(f).applyMember(first.id, 0)).kind).toBe('committed')
+    expect((await applyOwn(f, first.id)).kind).toBe('committed')
     const second = await member(f, 0, 1)
     const putMany = writes()
-    expect(spend(f).classifyMember(f.journal.get(second.id), 0)).toBe(
-      'held-terminal',
-    )
-    expect(spend(f).classifyMember(f.journal.get(first.id), 0)).toBe('applied')
+    expect(await applyOwn(f, second.id)).toEqual({
+      kind: 'already-applied',
+      poolIndex: 0,
+    })
     expect(putMany).not.toHaveBeenCalled()
     expect(f.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(first.raw)
     const reopened = await reopen(f)
@@ -1687,13 +1524,12 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const batch = jest
       .spyOn(database(f), 'batch')
       .mockRejectedValue(new Error('pool write lost'))
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow('pool write lost')
+    await expect(applyOwn(f, id)).rejects.toThrow('pool write lost')
     expect(batch).toHaveBeenCalledTimes(1)
     expect(f.admission.inspect(f.lifetime)).toMatchObject({
       status: 'unavailable',
       reason: 'uncertain-owner',
     })
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
     await expect(
       f.admission.authorizeNativeSigning(f.lifetime, id),
     ).rejects.toThrow('uncertain-owner')
@@ -1704,7 +1540,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(reopened.pool.getRecord(0)?.status).not.toBe('spent')
     expect(reopened.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
     expect(kinds(reopened)).toEqual(['native'])
-    expect((await spend(reopened).applyMember(id, 0)).kind).toBe('committed')
+    expect((await applyOwn(reopened, id)).kind).toBe('committed')
     expect(reopened.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(raw)
   })
 
@@ -1713,7 +1549,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const { id, raw } = await member(f)
     const batch = jest.spyOn(database(f), 'batch')
       .mockRejectedValueOnce(new Error('pool write lost'))
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow('pool write lost')
+    await expect(applyOwn(f, id)).rejects.toThrow('pool write lost')
     expect(f.admission.inspect(f.lifetime)).toMatchObject({
       status: 'unavailable', reason: 'uncertain-owner',
     })
@@ -1725,7 +1561,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     })
     expect(reopened.journal.get(id).members[0]!.signed?.rawTransaction).toBe(raw)
     const putMany = writes()
-    expect(await spend(reopened).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(reopened, id)).toEqual({
       kind: 'already-applied', poolIndex: 0,
     })
     expect(putMany).not.toHaveBeenCalled()
@@ -1741,7 +1577,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       await original(...args)
       throw new Error('lost local commit response')
     })
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
+    await expect(applyOwn(f, id)).rejects.toThrow(
       'lost local commit response',
     )
     expect(f.admission.inspect(f.lifetime)).toMatchObject({
@@ -1751,10 +1587,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const reopened = await reopen(f)
     const putMany = writes()
     expect(kinds(reopened)).toEqual(['native', 'pool-retained'])
-    expect(spend(reopened).classifyMember(reopened.journal.get(id), 0)).toBe(
-      'applied',
-    )
-    expect(await spend(reopened).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(reopened, id)).toEqual({
       kind: 'already-applied',
       poolIndex: 0,
     })
@@ -1774,7 +1607,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       if (f.pool.getRecord(0)?.status === 'spent')
         throw new Error('hand-built projection fault')
     }
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
+    await expect(applyOwn(f, id)).rejects.toThrow(
       'hand-built projection fault',
     )
     f.faults.validate = undefined
@@ -1794,7 +1627,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       status: 'spent',
       lifecycle: { spend: { rawTx: raw } },
     })
-    expect((await spend(reopened).applyMember(id, 0)).kind).toBe(
+    expect((await applyOwn(reopened, id)).kind).toBe(
       'already-applied',
     )
   })
@@ -1813,8 +1646,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       return original(...args)
     })
     let settled = false
-    const applying = spend(f)
-      .applyMember(id, 0)
+    const applying = applyOwn(f, id)
       .finally(() => {
         settled = true
       })
@@ -1840,8 +1672,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const { id } = await member(f)
     const putMany = writes()
     const both = await Promise.all([
-      spend(f).applyMember(id, 0),
-      spend(f).applyMember(id, 0),
+      applyOwn(f, id),
+      applyOwn(f, id),
     ])
     expect(both.map(result => result.kind)).toEqual([
       'committed',
@@ -1852,7 +1684,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       const index = offset + 1
       const other = await member(f, index)
       f.pool.setStatus(index, 'available')
-      const apply = () => spend(f).applyMember(other.id, 0)
+      const apply = () => applyOwn(f, other.id)
       const lease = () =>
         canonicalAdmissionPool(f.admission, f.lifetime).acquire(index)
       const raced = await Promise.allSettled(
@@ -1887,8 +1719,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     expect(f.pool.getRecord(3)).toEqual(unfunded)
     const { id, raw } = await member(f, 3)
     const putMany = writes()
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('needs-apply')
-    expect(await spend(f).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(f, id)).toEqual({
       kind: 'committed',
       poolIndex: 3,
     })
@@ -1901,79 +1732,15 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       },
     }
     expect(putMany.mock.calls[0]![0]).toEqual([spent])
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('applied')
     const reopened = await reopen(f)
     expect(kinds(reopened)).toEqual(['native', 'pool-retained'])
     expect(reopened.pool.getRecord(3)).toEqual(spent)
-    expect(await spend(reopened).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(reopened, id)).toEqual({
       kind: 'already-applied',
       poolIndex: 3,
     })
   })
 
-  // On main e8d87c2d classification answers `needs-apply` under a conflicting or invalid
-  // projection (it looks only at the uncertain flag), so the pass enters the admission for every
-  // such member, every time.
-  it.each(['conflicting', 'invalid'] as const)(
-    'classifyMember answers not-eligible while the projection is %s, and needs-apply again once it is ready; only that answer costs a projection',
-    async kind => {
-      const f = await start(location)
-      let projected = 0
-      f.faults.validate = () => {
-        projected++
-      }
-      const wanted = await member(f, 0)
-      const applied = await member(f, 1)
-      await spend(f).applyMember(applied.id, 0)
-      const other = await member(f, 2, 0, 'unsigned')
-      const classify = (id: string) => {
-        const before = projected
-        const answer = spend(f).classifyMember(f.journal.get(id), 0)
-        return [answer, projected - before]
-      }
-      expect(classify(wanted.id)).toEqual(['needs-apply', 1])
-      let clear: () => Promise<void>
-      if (kind === 'conflicting') {
-        // Hand-built: row 2 goes terminal with no checkpoint while a never-signed plan spends
-        // from it. Cancelling that plan (what Stage C does) ends the conflict.
-        f.pool.setStatus(2, 'in-use')
-        f.pool.setStatus(2, 'spent')
-        clear = async () => {
-          await nativeAdmissionJournal(f.admission, f.lifetime).cancelUnsigned(
-            other.id,
-          )
-        }
-      } else {
-        f.faults.validate = () => {
-          projected++
-          throw new Error('hand-built: wallet state invalid')
-        }
-        clear = async () => {
-          f.faults.validate = () => {
-            projected++
-          }
-        }
-      }
-      expect(f.admission.inspect(f.lifetime)).toMatchObject({
-        status: 'unavailable',
-        reason:
-          kind === 'conflicting'
-            ? 'conflicting-authorization'
-            : 'invalid-provenance',
-      })
-      const putMany = writes()
-      expect(classify(wanted.id)).toEqual(['not-eligible', 1])
-      // Answers that need no apply are read from the snapshot and the row alone, as before.
-      expect(classify(applied.id)).toEqual(['applied', 0])
-      expect(classify(other.id)).toEqual(['not-eligible', 0])
-      // Classification writes nothing and does not fault the admission.
-      expect(putMany).not.toHaveBeenCalled()
-      await clear()
-      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
-      expect(classify(wanted.id)).toEqual(['needs-apply', 1])
-      expect((await spend(f).applyMember(wanted.id, 0)).kind).toBe('committed')
-    },
-  )
 
   // On main e8d87c2d the throw skips the flush and the fault: the call rejects, the admission
   // stays `ready`, and the session goes on signing over a put nobody flushed.
@@ -1988,7 +1755,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         throw new Error('fixture: account view failed after the put')
       return false
     })
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
+    await expect(applyOwn(f, id)).rejects.toThrow(
       'fixture: account view failed after the put',
     )
     // What was put is exactly what a successful apply puts.
@@ -2006,14 +1773,13 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       status: 'unavailable',
       reason: 'uncertain-owner',
     })
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
     await expect(
       f.admission.authorizeNativeSigning(f.lifetime, other.id),
     ).rejects.toThrow('uncertain-owner')
-    await expect(spend(f).applyMember(id, 0)).rejects.toThrow('uncertain-owner')
+    await expect(applyOwn(f, id)).rejects.toThrow('uncertain-owner')
     const reopened = await reopen(f)
     expect(reopened.admission.inspect(reopened.lifetime).status).toBe('ready')
-    const result = await spend(reopened).applyMember(id, 0)
+    const result = await applyOwn(reopened, id)
     expect(['committed', 'already-applied']).toContain(result.kind)
     expect(reopened.pool.getRecord(0)).toMatchObject({
       status: 'spent',
@@ -2026,8 +1792,9 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   it('pin: a refusal before the put (the row is held by another transaction) does not fault the session', async () => {
     const f = await start(location)
     const first = await member(f, 0, 0)
-    await spend(f).applyMember(first.id, 0)
-    const rawTx = signFrom(f, 0, { nonce: 5 })
+    await applyOwn(f, first.id)
+    // The same nonce with other bytes: the row is held by the transaction that spent it.
+    const rawTx = signFrom(f, 0, { value: 33n })
     const putMany = writes()
     await expect(
       spend(f).applySpend(rawTx, 'monad-testnet'),
@@ -2040,7 +1807,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   it('pin: a member that regresses after its commit keeps its row spent and the admission ready, in the session and after a real reopen', async () => {
     const f = await start(location)
     const { id, raw } = await member(f)
-    expect((await spend(f).applyMember(id, 0)).kind).toBe('committed')
+    expect((await applyOwn(f, id)).kind).toBe('committed')
     const putMany = writes()
     await observe(f, id, 'pending')
     expect(f.journal.get(id).members[0]!.observation.state).toBe('pending')
@@ -2051,13 +1818,11 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         status: 'spent',
         lifecycle: { spend: { rawTx: raw } },
       })
-      // Not included as read now: nothing to apply, and an apply is refused without a write.
-      expect(spend(current).classifyMember(current.journal.get(id), 0)).toBe(
-        'not-eligible',
-      )
-      await expect(spend(current).applyMember(id, 0)).rejects.toThrow(
-        'conflicting-authorization',
-      )
+      // The row already records these bytes: applying them again writes nothing.
+      expect(await applyOwn(current, id)).toEqual({
+        kind: 'already-applied',
+        poolIndex: 0,
+      })
       // The pair is still claimed: the same pair cannot be planned again.
       await expect(
         current.admission.prepareNative(
@@ -2087,8 +1852,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
       reason: 'conflicting-authorization',
     })
     const putMany = writes()
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
-    const error = await refusal(spend(f).applyMember(id, 0))
+    const error = await refusal(applyOwn(f, id))
     // The pool's own decision comes first: the row is held.
     expect(error).toBeInstanceOf(SubAccountSpendRefusedError)
     expect(error).toMatchObject({ code: 'held', index: 0 })
@@ -2097,8 +1861,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     await leases.release(lease, 'unused')
     expect(f.pool.getRecord(0)?.status).toBe('available')
     expect(f.admission.inspect(f.lifetime).status).toBe('ready')
-    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('needs-apply')
-    expect(await spend(f).applyMember(id, 0)).toEqual({
+    expect(await applyOwn(f, id)).toEqual({
       kind: 'committed',
       poolIndex: 0,
     })

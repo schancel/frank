@@ -69,7 +69,6 @@ jest.mock('../accounts/session', () => ({
     getWallet: async () => ({
       sweepReceivedCoins: mockUnreachable('sweepReceivedCoins'),
       settleContactPayment: mockUnreachable('settleContactPayment'),
-      sendNative: mockUnreachable('sendNative'),
       getBalance: mockUnreachable('getBalance'),
       refreshReceivedPayments: mockUnreachable('refreshReceivedPayments'),
     }),

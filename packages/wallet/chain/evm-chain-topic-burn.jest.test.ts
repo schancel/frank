@@ -58,6 +58,8 @@ const CHAIN_ID = 10143
 const WEIGHT = 1_000_000_000_000n
 const GAS_PRICE = 2_000_000_000n
 const GAS_LIMIT = 60_000n
+/** Calldata of the contract call the native journal tests record. */
+const CALL_DATA = '0x12345678'
 
 const CONFIG: EvmChainConfig = {
   networkId: 'monad-testnet',
@@ -69,8 +71,6 @@ const CONFIG: EvmChainConfig = {
   resolveDefaultStamp: fixedStampDefault(10n * WEIGHT),
   defaultTopicVoteValueWei: WEIGHT,
   subAccountPoolSize: 3,
-  // The stub node never mines on its own: a native send looks once and returns.
-  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
 
@@ -881,8 +881,15 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
       staleNonce: () => {
         nonce = 0
       },
+      // The native journal's own operation: one contract call from the main account. (A plain
+      // transfer is built from the coin list, through the transaction-set preparer.)
       send: () =>
-        wallet.sendNative({ recipient, value: WEIGHT }),
+        wallet.sendContractCall!({
+          to: recipient,
+          data: CALL_DATA,
+          value: WEIGHT,
+          gasLimit: GAS_LIMIT,
+        }),
     }
   }
 
@@ -895,7 +902,7 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
     expect(rows).toHaveLength(1)
     const row = rows[0]!
     expect(row).toMatchObject({
-      kind: 'native',
+      kind: 'contract',
       cancelled: false,
       recipient: recipient.raw,
       intendedValueWei: WEIGHT.toString(),
@@ -966,21 +973,16 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
     },
   )
 
-  // A second chain facade no longer reaches this owner: its `nativeTransfers.send` is the
-  // wallet's coin-list transaction set. What stays to pin is the owner itself.
-  it('a second native send cannot replace the creator wallet native-operation owner', async () => {
+  // A chain facade's `nativeTransfers.send` is the wallet's coin-list transaction set and never
+  // reaches this owner. What stays to pin is the owner itself.
+  it('a second contract call cannot replace the creator wallet native-operation owner', async () => {
     const f = await open()
     await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
     const original = f.wallet.getNativeOperations!()[0]!
     const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
-    await expect(
-      f.wallet.sendNative({
-        recipient,
-        value: WEIGHT,
-      }),
-    ).rejects.toThrow('Insufficient unreserved native funds')
+    await expect(f.send()).rejects.toThrow('Insufficient unreserved native funds')
     expect(sign).not.toHaveBeenCalled()
     expect(f.rawAttempts).toHaveLength(1)
     expect(f.wallet.getNativeOperations!()[0]!.operationId).toBe(
@@ -1247,11 +1249,11 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
     wallet.pool.setStatus(x.index, 'available')
     const xAddress = x.address.toLowerCase()
     fake.balances.set(xAddress, WEIGHT + 2n * GAS_LIMIT * GAS_PRICE)
-    // Main cannot pay, so the native send spends from X, leaving a residual.
+    // Main cannot pay, so the Send spends from X, leaving a residual.
     for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
       fake.balances.set(address, 0n)
     replyLost = window === 'pending'
-    const send = wallet.sendNative({
+    const send = wallet.sendLegacy!({
       recipient,
       value: WEIGHT / 2n,
     })
@@ -1264,18 +1266,16 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
     if (window === 'included')
       await wallet.reobserveNativeOperations!()
     const member = wallet.getNativeOperations!()[0]!.members[0]!
-    expect(member.source).toEqual({
-      kind: 'spend',
-      address: xAddress,
-      index: x.index,
-    })
+    // A coin of the one coin list: X's deterministic account at nonce 0.
+    expect(member.source).toEqual({ kind: 'coin', address: xAddress })
     expect(member.observation.state).toBe(
       window === 'pending' ? 'missing' : 'included-success',
     )
     expect(nativeBroadcasts.map(tx => tx.from!.toLowerCase())).toEqual([
       xAddress,
     ])
-    expect(wallet.pool.getRecord(x.index)!.status).toBe(window === 'pending' ? 'available' : 'spent')
+    // The coin list is the authority for X's nonce 0, not the subaccount pool row.
+    expect(evmWalletInternals(wallet).coinList!.get(xAddress, 0)?.state).not.toBe('unspent')
     const signers = jest.spyOn(SigningKey.prototype, 'sign')
     return {
       act,
@@ -1333,7 +1333,7 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
       if (window === 'pending') expect(f.signedBy()).not.toContain(f.xAddress)
       expect(f.nativeBroadcasts.filter(tx => tx.from!.toLowerCase() === f.xAddress && tx.nonce === 0)).toHaveLength(1)
       // The reserved row is left to the native operation that spends from it.
-      expect(f.wallet.pool.getRecord(f.x.index)!.status).toBe(window === 'pending' ? 'available' : 'spent')
+      expect(evmWalletInternals(f.wallet).coinList!.get(f.xAddress, 0)?.state).not.toBe('unspent')
       expect(await f.admission()).toMatchObject({ status: 'ready' })
     },
   )

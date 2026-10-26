@@ -105,13 +105,23 @@ async function main(): Promise<void> {
     provider,
     journal,
     transactionBuilder: new NativeEvmTransactionBuilder(),
-    getSources: async () => [{ kind: 'main', address: account.toLowerCase() }],
+    // One account, nothing to gather: every call is the account's own.
+    mainSource: { kind: 'main', address: account.toLowerCase() },
+    ownedSource: address =>
+      address.toLowerCase() === account.toLowerCase()
+        ? { kind: 'main', address: account.toLowerCase() }
+        : undefined,
     sign: async (_source, unsigned) =>
       signer.signTransaction(Transaction.from(unsigned)),
   })
   const wallet: SwapWallet = {
     sendContractCall: params => consolidator.sendContractCall(params),
-    getContractCallFunds: () => consolidator.contractCallFunds(),
+    getContractCallFunds: async () => ({
+      mainAddress: account,
+      mainBalance: await provider.getBalance(account),
+      otherBalance: 0n,
+      mainBusy: consolidator.holdsSource(account.toLowerCase()),
+    }),
     resumeNativeOperation: id => consolidator.resumeOperation(id),
     getUnresolvedContractCalls: () => consolidator.unresolvedContractCalls(),
     reobserveNativeOperations: () => consolidator.reobservePending(),

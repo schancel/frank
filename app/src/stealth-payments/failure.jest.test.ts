@@ -76,16 +76,20 @@ describe('stealth payment failure messages', () => {
     expect(expected).toContain('0.021 MON')
     // Refused at review or released before messaging adopted it: either way the same message.
     expect(
-      notSentFailureMessage(new StealthPaymentNotSentError(refused), mon, english),
+      notSentFailureMessage(
+        new StealthPaymentNotSentError(refused),
+        mon,
+        english,
+      ),
     ).toBe(expected)
     // Without the asset to name the minimum in, the generic message; never a raw `{amount}`.
     expect(notSentFailureMessage(refused, () => undefined, english)).toBe(
       english('sendStealthDialog.notSent'),
     )
     // Any other failure keeps its own message.
-    expect(notSentFailureMessage(new Error('quote mismatch'), mon, english)).toBe(
-      english('sendStealthDialog.notSent'),
-    )
+    expect(
+      notSentFailureMessage(new Error('quote mismatch'), mon, english),
+    ).toBe(english('sendStealthDialog.notSent'))
   })
 
   it('gives anything else the generic message, even a RangeError', () => {

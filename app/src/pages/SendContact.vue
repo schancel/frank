@@ -599,6 +599,10 @@ export default defineComponent({
             value: parsedValue.value!,
             memo: memo.value.trim() || undefined,
             stampValue,
+            // The fee the review showed bounds what the payment and its stamp pay.
+            ...(reviewed.state === 'known'
+              ? { maxFeeWei: reviewed.quote.networkFeeWei }
+              : {}),
           })
           const outcome = await chatStore.sendMessage({
             wallet: messaging,

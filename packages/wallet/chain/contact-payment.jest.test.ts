@@ -7,6 +7,7 @@
  * anything about a real chain or a real relay. The same behaviour against a real EVM node is
  * `contact-payment.anvil.integration.ts`.
  */
+import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
 import { toHex } from '@frank/codec'
 import {
   Transaction,
@@ -994,7 +995,7 @@ describe('a payment to a contact', () => {
       await alice.close()
       // What such a stop leaves on disk: the record says released, the journal still holds
       // the signed transfer and with it the account.
-      const location = `${f.config.walletStorageLocation}-evm-${aliceMain}`
+      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(aliceMain) })
       const store = await LevelRecordStore.open<ContactPayment>(
         location,
         CONTACT_PAYMENT_NAMESPACE,
@@ -1038,7 +1039,7 @@ describe('a payment to a contact', () => {
       await alice.close()
       // What a stop between the signature and the record's update leaves: a planned record
       // that never learned of the signed row.
-      const location = `${f.config.walletStorageLocation}-evm-${aliceMain}`
+      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(aliceMain) })
       const store = await LevelRecordStore.open<ContactPayment>(
         location,
         CONTACT_PAYMENT_NAMESPACE,

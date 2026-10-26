@@ -4,6 +4,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { getAddress } from 'ethers';
 import { createEvmChain } from '@frank/wallet/chain/evm-chain';
 import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material';
+import { evmWalletStateOwner, walletStateLocation } from '@frank/wallet/storage/wallet-state-location';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal } from '../ledger/mail-journal';
 import { loadGatewayWalletRoots, provisionGatewayWalletAdmission } from './gateway-wallet';
@@ -33,7 +34,11 @@ export async function provisionNewMailGateway(config: GatewayProvisionConfig): P
     try {
       if (getAddress(material.identity.displayAddress) !== getAddress(config.expectedIdentityAddress))
         throw new Error('Gateway root identity differs from expected public address');
-      walletLocation = `${config.chain.walletStorageLocation}-evm-${material.mainAccount.address.toLowerCase()}`;
+      walletLocation = walletStateLocation({
+        base: config.chain.walletStorageLocation,
+        chainIdentifier: config.chain.chainIdentifier,
+        owner: evmWalletStateOwner(material.mainAccount.address),
+      });
     } finally {
       material.dispose();
     }

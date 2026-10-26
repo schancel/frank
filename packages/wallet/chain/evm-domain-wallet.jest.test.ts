@@ -1237,7 +1237,7 @@ test.each(['main', 'identity'] as const)(
 
 test('reopens existing EVM inventory after close even when authentication changes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-716-'))
-  await mkdir(join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`))
+  await mkdir(join(dir, `wallet-${config.networkId}-evm-${expected[0].main.toLowerCase()}`))
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
     const first = (await createEvmChain(cfg).createWallet(
@@ -1357,7 +1357,7 @@ async function retainedCanonicalAttempt() {
 
 test('a canonical journal bound to another identity keeps EVM inventory open, refuses canonical messaging and is left untouched', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-825-foreign-'))
-  const storage = join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`)
+  const storage = join(dir, `wallet-${config.networkId}-evm-${expected[0].main.toLowerCase()}`)
   await mkdir(storage)
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
@@ -1419,7 +1419,7 @@ test('a canonical journal bound to another identity keeps EVM inventory open, re
 
 test('a mismatched open leaves a retained canonical attempt and its pinned pool account intact for the original identity', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-825-retained-'))
-  const storage = join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`)
+  const storage = join(dir, `wallet-${config.networkId}-evm-${expected[0].main.toLowerCase()}`)
   await mkdir(storage)
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
@@ -1472,7 +1472,7 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
 
 test('construction failure closes opened stores and wipes owned messaging root', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-716-failure-'))
-  await mkdir(join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`))
+  await mkdir(join(dir, `wallet-${config.networkId}-evm-${expected[0].main.toLowerCase()}`))
   const original = materialModule.createMonadWalletMaterial
   let material: materialModule.MonadWalletMaterial | undefined
   jest

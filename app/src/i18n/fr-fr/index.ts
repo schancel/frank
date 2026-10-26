@@ -1988,6 +1988,37 @@ export const rawFrFR = {
     localChainNotice: 'Pile locale / shim de chaîne',
     txHashCopied: 'Hash de transaction copié dans le presse-papiers',
   },
+  walletMaintenance: {
+    developerTitle: 'Développeur',
+    developerRevealed: 'Les options développeur sont affichées.',
+    developerIntro:
+      'Outils de vérification du portefeuille. Ils lisent et enregistrent ; ils ne signent, n’envoient ni ne déplacent jamais de fonds.',
+    reconcileTitle: 'Rapprocher le portefeuille',
+    reconcileDescription:
+      'Relit toute votre boîte de réception, parcourt votre graine à la recherche des comptes utilisés et relit sur la chaîne chaque opération signée. Ce que le portefeuille avait manqué est enregistré.',
+    reconcileStart: 'Rapprocher le portefeuille',
+    reconcileRunning: 'Rapprochement…',
+    reconcileStepMailbox: 'Lecture de la boîte de réception : {count} messages',
+    reconcileStepSeed: 'Parcours de la graine et lecture des comptes',
+    reconcileStepOperations: 'Lecture des opérations : {done} sur {total}',
+    reconcileDone: 'Rapprochement terminé',
+    reconcileUnavailable:
+      'Le rapprochement n’est pas disponible pour ce portefeuille : {reason}',
+    summaryNetwork: 'Réseau : {network}',
+    summaryMessages: 'Messages lus : {count}',
+    summaryMailboxIncomplete:
+      'La lecture de la boîte s’est arrêtée avant la fin ; relancez-la pour lire la suite.',
+    summaryCoinsAdded: 'Paiements reçus trouvés : {count}',
+    summaryCoinsChanged: 'Paiements reçus mis à jour : {count}',
+    summaryAccountsAdded: 'Comptes ajoutés à la liste des pièces : {count}',
+    summaryOperations: 'Opérations lues : {count}, modifiées : {changed}',
+    summaryNothingNew: 'Rien de nouveau : le portefeuille avait déjà tout.',
+    summaryFailure: 'Inachevé ({step}) : {message}',
+    earlierStateTitle:
+      'Les données d’une version précédente du portefeuille ne sont pas lues',
+    earlierStateBody:
+      'Ce compte a des données de portefeuille enregistrées sous un ancien nom, que cette version ne lit plus. Vos fonds sont toujours sur la chaîne. Pour les retrouver, ouvrez Paramètres → À propos, touchez sept fois la version, puis lancez Développeur → Rapprocher le portefeuille. Ensuite, les anciennes données peuvent être supprimées dans les outils de développement du navigateur (IndexedDB) :',
+  },
   about: {
     appName: 'Frank',
     title: 'À propos',

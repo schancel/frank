@@ -121,7 +121,8 @@ function configured(
     name: entry.name,
     unit: entry.unit,
     relayBaseUrl: normalizedRelay(host.relayBaseUrl),
-    walletStorageLocation: `${host.walletStorageLocation}-${entry.id}`,
+    // The base only: the wallet names its location by network and owner, once.
+    walletStorageLocation: host.walletStorageLocation,
     subAccountPoolSize: host.subAccountPoolSize,
     stampBurnAddress: host.stampBurnAddress,
     defaultTopicVoteValueWei: host.defaultTopicVoteValueWei,

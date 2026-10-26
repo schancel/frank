@@ -1,3 +1,4 @@
+import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -848,7 +849,7 @@ test('an obsolete preparation format fails reopen without deleting its records o
   await wallet.stealthPayments!.quote!(unsigned)
   await wallet.close()
   jest.restoreAllMocks()
-  const location = `${cfg.walletStorageLocation}-evm-${MAIN}`
+  const location = walletStateLocation({ base: cfg.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(MAIN) })
   const store = await LevelRecordStore.open<EvmStealthPreparation>(
     location,
     EVM_STEALTH_PREPARATION_NAMESPACE,

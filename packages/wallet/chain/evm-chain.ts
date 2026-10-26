@@ -221,6 +221,19 @@ import {
   type OutgoingMessageStore,
 } from '../storage/outgoing-message-store'
 import { waitForSpendSpacing } from "../evm-stamp-payer";
+import {
+  earlierWalletStateLocations,
+  evmWalletStateOwner,
+  findEarlierWalletState,
+  walletStateLocation,
+  DEFAULT_WALLET_STATE_BASE,
+  type EarlierWalletState,
+} from "../storage/wallet-state-location";
+import {
+  runWalletReconcile,
+  type WalletReconcileProgress,
+  type WalletReconcileSummary,
+} from "../evm-wallet-reconcile";
 export {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
@@ -483,8 +496,10 @@ export function loadMonadChainConfigFromEnv(overrides?: {
         "1000000000000"
     ),
     subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
+    // The base only: each wallet's location adds its canonical network and owner
+    // (`walletStateLocation`).
     walletStorageLocation:
-      readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "frank-monad-wallet-state",
+      readEnv("FRANK_WALLET_STORAGE_LOCATION") ?? DEFAULT_WALLET_STATE_BASE,
   };
 }
 
@@ -535,6 +550,37 @@ export function prepareMonadNextRevisionExport(
     );
   return material.canonicalRoles.prepareNextRevision(input);
 }
+/** State an earlier build wrote for this wallet under another name, still present and not read
+ * (see `storage/wallet-state-location.ts`). Undefined for a wallet with no durable storage. */
+export function earlierEvmWalletState(
+  wallet: NativeWalletHandle
+): EarlierWalletState | undefined {
+  if (wallet.family !== "evm") return undefined;
+  return evmWalletInternals(wallet).earlierWalletState;
+}
+
+/**
+ * The user's own "Reconcile wallet" pass (`evm-wallet-reconcile.ts`): reads the whole mailbox
+ * again, walks the seed, reads every signed journal operation from the chain, and records what
+ * it finds. Signs, sends and moves nothing; safe beside normal use. Concurrent calls share a run.
+ */
+export function reconcileEvmWallet(
+  wallet: NativeWalletHandle,
+  onProgress?: (progress: WalletReconcileProgress) => void
+): Promise<WalletReconcileSummary> {
+  if (wallet.family !== "evm")
+    return Promise.reject(new Error("Wallet reconcile is unsupported on this network"));
+  const internals = evmWalletInternals(wallet);
+  if (internals.closed) return Promise.reject(new Error("Wallet is closed"));
+  const reconcile = internals.reconcile;
+  if (!reconcile)
+    return Promise.reject(
+      new Error("Wallet reconcile requires typed persistent wallet custody")
+    );
+  return reconcile(onProgress);
+}
+export type { WalletReconcileProgress, WalletReconcileSummary, EarlierWalletState };
+
 /** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
 export function canonicalMonadStampClient(
   wallet: NativeWalletHandle
@@ -1801,18 +1847,36 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         openTypedEvmAccounts.add(economicOwnerKey);
 
       const pending = (async (): Promise<EvmChainWalletHandle> => {
-        const storageKey =
+        // One location per canonical network and owner; every store of this wallet is a
+        // namespace under it.
+        const storageOwner =
           material.canonicalRoles === undefined
             ? identityKey
-            : `evm-${mainAccount.address.toLowerCase()}`;
-        const storageScope =
-          chainEntry.kind === "monad"
-            ? storageKey
-            : `${chainIdentifier}-${storageKey}`;
+            : evmWalletStateOwner(mainAccount.address);
         const storageLocation =
           config.walletStorageLocation === false
             ? undefined
-            : `${config.walletStorageLocation}-${storageScope}`;
+            : walletStateLocation({
+                base: config.walletStorageLocation,
+                chainIdentifier,
+                owner: storageOwner,
+              });
+        // State an earlier build wrote under another name is not read: found here (by name,
+        // never opened) so the host can say so rather than present an empty wallet as whole.
+        const earlierWalletState: EarlierWalletState | undefined =
+          config.walletStorageLocation === false || storageLocation === undefined
+            ? undefined
+            : {
+                chainIdentifier,
+                location: storageLocation,
+                earlierLocations: await findEarlierWalletState(
+                  earlierWalletStateLocations({
+                    base: config.walletStorageLocation,
+                    chainIdentifier,
+                    owner: storageOwner,
+                  })
+                ),
+              };
         // Typed roots own a durable public state tuple. A previously opened state path must
         // retain both spend-pool bindings: recreating either empty pool could reuse an account.
         // Only an entirely absent path is eligible for first-time binding. Existing pre-baseline
@@ -2989,6 +3053,45 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           evmWalletInternals(wallet).coinList = coinList;
           evmWalletInternals(wallet).transactionSetPreparer = transactionSetPreparer;
           evmWalletInternals(wallet).transactionSetLifecycle = transactionSetLifecycle;
+          evmWalletInternals(wallet).coinListSync = transactionSetRuntime.coinListSync;
+          evmWalletInternals(wallet).earlierWalletState = earlierWalletState;
+          // The user's own reconcile pass (`reconcileEvmWallet`): reads and records only.
+          let reconciling: Promise<WalletReconcileSummary> | undefined;
+          evmWalletInternals(wallet).reconcile = (onProgress) =>
+            (reconciling ??= runWalletReconcile(
+              {
+                chainIdentifier,
+                readMailbox: (sinceMs, onTruncated) => {
+                  const canonical = canonicalMessagingFor(wallet);
+                  if (!canonical) throw new CanonicalMessagingPendingError();
+                  return canonical.fetchSince({ wallet, sinceMs, onTruncated });
+                },
+                recordReceivedCoins: (messages) =>
+                  recordReceivedCoins(wallet, messages),
+                receivedCoins: () => coinStore.all(),
+                coinListAccounts: () => coinList.all().map((coin) => coin.account),
+                walkSeed: async () => {
+                  await transactionSetRuntime.coinListSync.refresh({ all: true });
+                  transactionSetRuntime.coinListSync.assertFundingObserved();
+                },
+                operations: () => topicOwner!.nativeJournal!.list(),
+                // The lifecycle knows a set by its logical id, the journal row by its own.
+                observeOperation: async (operation) => {
+                  const prefix = "evm-transaction-set:";
+                  if (!operation.preparationId?.startsWith(prefix))
+                    throw new Error("Operation has no transaction-set identity");
+                  await transactionSetLifecycle.observe(
+                    operation.preparationId.slice(prefix.length),
+                    provider
+                  );
+                },
+                assertOpen: () => requireOpenWallet(wallet),
+              },
+              onProgress
+            ).finally(() => {
+              reconciling = undefined;
+              invalidateBalanceRead();
+            }));
           // Construction reservations hold before signing yields; durable journal references
           // retain those holds after persistence and across restart.
           pool.attachSpendReservation((index) => {

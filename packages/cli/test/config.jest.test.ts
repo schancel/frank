@@ -49,29 +49,29 @@ describe('CLI State Storage and Configuration', () => {
 
     it('uses SIGNET_HOME if set', () => {
       delete process.env.SIGNET_DATA_DIR
-      delete process.env.MONAD_WALLET_STORAGE_LOCATION
+      delete process.env.FRANK_WALLET_STORAGE_LOCATION
       process.env.SIGNET_HOME = '/env/signet/home'
       expect(resolveDataDir()).toContain('signet/home')
     })
 
     it('uses SIGNET_DATA_DIR if set', () => {
       delete process.env.SIGNET_HOME
-      delete process.env.MONAD_WALLET_STORAGE_LOCATION
+      delete process.env.FRANK_WALLET_STORAGE_LOCATION
       process.env.SIGNET_DATA_DIR = '/env/signet/data'
       expect(resolveDataDir()).toContain('signet/data')
     })
 
-    it('falls back to MONAD_WALLET_STORAGE_LOCATION', () => {
+    it('falls back to FRANK_WALLET_STORAGE_LOCATION', () => {
       delete process.env.SIGNET_HOME
       delete process.env.SIGNET_DATA_DIR
-      process.env.MONAD_WALLET_STORAGE_LOCATION = '/legacy/location'
+      process.env.FRANK_WALLET_STORAGE_LOCATION = '/legacy/location'
       expect(resolveDataDir()).toContain('legacy/location')
     })
 
     it('defaults to ~/.signet', () => {
       delete process.env.SIGNET_HOME
       delete process.env.SIGNET_DATA_DIR
-      delete process.env.MONAD_WALLET_STORAGE_LOCATION
+      delete process.env.FRANK_WALLET_STORAGE_LOCATION
       expect(resolveDataDir()).toContain('.signet')
     })
   })

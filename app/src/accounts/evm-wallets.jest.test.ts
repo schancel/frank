@@ -173,13 +173,14 @@ it('opens once per configured canonical peer and keeps independent stores withou
     rpcChain: 'monad-mainnet',
     chainId: 143n,
     networkTag: 'MON1',
-    walletStorageLocation: 'configured-host-store-monad-mainnet',
+    // The base only: the wallet adds the canonical network and owner itself, once.
+    walletStorageLocation: 'configured-host-store',
   })
   expect(testConfig).toMatchObject({
     chainIdentifier: 'monad-testnet',
     chainId: 10143n,
     networkTag: 'MONT',
-    walletStorageLocation: 'configured-host-store-monad-testnet',
+    walletStorageLocation: 'configured-host-store',
   })
   expect(peekOpenedEvmWallets()).toEqual([main, test])
   expect(createNativeOnlyEvmChain).toHaveBeenCalledTimes(2)

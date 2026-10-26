@@ -1,3 +1,4 @@
+import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
 import { LevelRecordStore, EVM_COIN_NAMESPACE } from '../storage/evm-coin-store'
 import { NegotiationRecovery, type NegotiationScan } from '../../swap-protocol/src/runtime'
 import { createNativeNegotiationJournalStore } from '../../swap-protocol/src/storage/negotiation-native'
@@ -2066,7 +2067,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
 
     it('an unpaid envelope kept by earlier code, without its boundary, is not used: the message is sealed again', async () => {
       const address = (await f.alice.getReceiveAddress()).raw.toLowerCase()
-      const storageLocation = `${join(f.root, 'wallet')}-evm-${address}`
+      const storageLocation = walletStateLocation({ base: join(f.root, 'wallet'), chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(address) })
       const directory = await f.directoryFor('alice', f.alice, f.bob)
       installCanonicalDirectory(f.alice, directory)
       const messageId = '00000000-0000-4000-8000-0000000000ad'

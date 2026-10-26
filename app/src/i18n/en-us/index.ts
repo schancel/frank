@@ -1942,6 +1942,36 @@ export const rawEnUS = {
     localChainNotice: 'Local stack / chain shim',
     txHashCopied: 'Transaction hash copied to clipboard',
   },
+  walletMaintenance: {
+    developerTitle: 'Developer',
+    developerRevealed: 'Developer options are shown.',
+    developerIntro:
+      'Tools for checking this wallet. They read and record; they never sign, send or move funds.',
+    reconcileTitle: 'Reconcile wallet',
+    reconcileDescription:
+      'Reads your whole mailbox again, walks your seed for accounts in use, and reads every signed operation from the chain. Anything the wallet missed is recorded.',
+    reconcileStart: 'Reconcile wallet',
+    reconcileRunning: 'Reconciling…',
+    reconcileStepMailbox: 'Reading the mailbox: {count} messages',
+    reconcileStepSeed: 'Walking the seed and reading accounts',
+    reconcileStepOperations: 'Reading operations: {done} of {total}',
+    reconcileDone: 'Reconcile finished',
+    reconcileUnavailable:
+      'Reconcile is not available for this wallet: {reason}',
+    summaryNetwork: 'Network: {network}',
+    summaryMessages: 'Messages read: {count}',
+    summaryMailboxIncomplete:
+      'The mailbox read stopped early; run it again to read the rest.',
+    summaryCoinsAdded: 'Received payments found: {count}',
+    summaryCoinsChanged: 'Received payments updated: {count}',
+    summaryAccountsAdded: 'Accounts added to the coin list: {count}',
+    summaryOperations: 'Operations read: {count}, changed: {changed}',
+    summaryNothingNew: 'Nothing new: the wallet already had everything.',
+    summaryFailure: 'Not finished ({step}): {message}',
+    earlierStateTitle: 'Wallet data from an earlier version is not read',
+    earlierStateBody:
+      'This account has wallet data saved under an older name, which this version no longer reads. Your funds are still on the chain. To find them again, open Settings → About, tap the version seven times, and run Developer → Reconcile wallet. Afterwards the old data can be deleted in the browser’s developer tools (IndexedDB):',
+  },
   about: {
     appName: 'Frank',
     title: 'About',

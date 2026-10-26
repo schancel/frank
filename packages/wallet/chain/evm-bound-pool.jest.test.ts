@@ -1,3 +1,4 @@
+import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -44,7 +45,7 @@ it.each(['sub-account-pool', 'change-pool'] as const)(
       const reopened = await createEvmChain(config).createWallet(roots);
       await reopened.close();
       const material = createMonadWalletMaterial(roots);
-      const statePath = `${config.walletStorageLocation}-evm-${material.mainAccount.address.toLowerCase()}`;
+      const statePath = walletStateLocation({ base: config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(material.mainAccount.address) });
       material.dispose();
       const namespacePath = join(statePath, namespace);
       rmSync(namespacePath, { recursive: true });

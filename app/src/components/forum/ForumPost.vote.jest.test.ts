@@ -295,12 +295,11 @@ describe('ForumPost vote handler', () => {
     expect(
       wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
     ).toBe('true')
-    expect(
-      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
-    ).toBe('true')
-    expect(
-      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
-    ).toBe('false')
+    // The arrows stay arrows: a spinner inside these 10px buttons shows as a stray tick.
+    for (const arrow of ['forum-vote-up', 'forum-vote-down'])
+      expect(
+        wrapper.find(`[data-test="${arrow}"]`).attributes('loading'),
+      ).toBeUndefined()
 
     // Resolve in-flight operation
     resolveOffering()
@@ -308,12 +307,6 @@ describe('ForumPost vote handler', () => {
     await wrapper.vm.$nextTick()
 
     expect(vm.isVoting).toBe(false)
-    expect(
-      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
-    ).toBe('false')
-    expect(
-      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
-    ).toBe('false')
     expect(vm.voteStatus).toBeNull()
     expect(mockSetStampPreparationStatus).toHaveBeenLastCalledWith(null)
 

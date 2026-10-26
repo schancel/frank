@@ -330,3 +330,62 @@ test.each([true, false])('Send to Contact from one large coin pays exactly the n
     expect(sent + fee).toBe(quote.totalWei)
   } finally { await f.close() }
 })
+
+test.each([0, 0.5, 0.99])('under a reserve rule a payment that goes first on its account never forces itself out before the relay stores its message (draw %s)', async draw => {
+  // The reserve rule puts the payment first on an account whose balance is below the reserve,
+  // so all of that account's change comes after it. The stamp the message also carries is then
+  // funded from elsewhere, never from behind the payment: before, the wallet broadcast the
+  // payment ahead of the relay to let that funding land.
+  jest.spyOn(Math, 'random').mockReturnValue(draw)
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  offlineChain.relayBroadcasts = false
+  let head = 100
+  const reserved: EvmTransactionSetPolicy = { ...policy, get head() { return head }, spendRule: { belowWei: 10_000_000n, waitBlocks: 3 } }
+  const f = await fixture({ transactionSetPolicy: () => reserved, spendSpacingBlocks: 3, reserveBalanceWei: 10_000_000n })
+  try {
+    // How many transactions the wallet had broadcast when the relay first stored the message.
+    // (A contact transfer travels inside the encrypted item, so the relay never sees its hash.)
+    let broadcastAtStore: number | undefined
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, { ...directory, fetch: async (url, init) => {
+      const answer = await directory.fetch!(url, init)
+      broadcastAtStore ??= offlineChain.walletBroadcasts.length
+      return answer
+    } })
+    // The main account and one more coin the stamp can be funded from.
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    mockBalances.set(f.alice.identity.address.raw.toLowerCase(), 900000n)
+    await f.alice.refreshTransactionSetInventory!()
+    const prepared = await f.alice.prepareContactPayment!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
+    let digest: string | undefined
+    await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address,
+      messageId, stampValue: stamp, items: [prepared.item],
+      onAttemptCreated: async value => { digest = value },
+    }).catch(error => { expect(error).toBeInstanceOf(MonadStampPendingAttemptError) })
+    expect(digest).toBeDefined()
+    const operation = () => f.alice.transactionSetPreparer!.getOperation(evmStealthTransactionSetOperationId(prepared.paymentId ?? '')) ??
+      f.alice.getNativeOperations!().find(row => row.members.some(member => member.signed?.rawTransaction === '0x' + prepared.item.transactions![0]))!
+    const early = () => {
+      const payments = new Set(operation().members.filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed!.rawTransaction))
+      return offlineChain.walletBroadcasts.slice(0, broadcastAtStore ?? offlineChain.walletBroadcasts.length)
+        .filter(raw => payments.has(raw))
+    }
+    for (let i = 0; i < 12 && operation().members.some(member => member.observation.state !== 'included-success'); i++) {
+      expect(early()).toEqual([])
+      head += 2
+      await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [digest!], maxPutAttempts: 1 })
+    }
+    expect(broadcastAtStore).toBeDefined()
+    expect(early()).toEqual([])
+    // Nothing behind the payment on its account funds the stamp.
+    const members = operation().members
+    for (const member of members.filter(item => item.transactionSet?.stageId !== undefined && item.transactionSet.role === 'payment'))
+      for (const dependency of member.dependencies) {
+        const funding = members[dependency]!
+        expect(members.some(other => other.transactionSet?.role === 'payment' && other.source.address === funding.source.address &&
+          Transaction.from(other.unsignedTransaction).nonce < Transaction.from(funding.unsignedTransaction).nonce)).toBe(false)
+      }
+    expect(members.every(member => member.observation.state === 'included-success')).toBe(true)
+  } finally { await f.close() }
+})

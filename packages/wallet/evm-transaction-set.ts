@@ -78,6 +78,18 @@ export class EvmTransactionSetSourceHeldError extends Error {
 
 /** One family adapter: inventory owns reservations; the journal owns signed attempt bytes.
  * No provider is accepted here. Fee/gas observations and inclusion evidence arrive from outside. */
+/** Whether `member` comes after a payment of its set on its own account (a higher nonce). */
+function behindPayment(
+  members: readonly Pick<EvmNativeOperation['members'][number], 'source' | 'unsignedTransaction' | 'transactionSet'>[],
+  member: Pick<EvmNativeOperation['members'][number], 'source' | 'unsignedTransaction'>,
+): boolean {
+  const nonce = Transaction.from(member.unsignedTransaction).nonce
+  return members.some(other =>
+    other.transactionSet?.role === 'payment' &&
+    other.source.address === member.source.address &&
+    Transaction.from(other.unsignedTransaction).nonce < nonce)
+}
+
 export class EvmTransactionSetPreparer {
   private readonly recoverySpendRule: EvmTransactionSetPolicy['spendRule']
   constructor(private readonly options: EvmTransactionSetPreparerOptions) {
@@ -615,11 +627,16 @@ export class EvmTransactionSetPreparer {
       throw new Error('Transaction-set operation ID conflicts with original intent')
   }
 
+  /** The set's own change a later stage may be paid from. A move that comes after a payment of
+   * the set on the same account is left out: a message's payments reach the chain only after
+   * the relay stores it, and the relay stores it only once a stage's funding is on the chain,
+   * so funding behind a payment could never land first. */
   private privateOutputs(row: EvmNativeOperation): EvmListCoin[] {
     const sources = new Set(row.members.map(member => member.source.address))
     return row.members.flatMap(member => {
       const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
       if (meta.role !== 'change' || sources.has(tx.to!.toLowerCase())) return []
+      if (behindPayment(row.members, member)) return []
       const key = this.options.deriveChange(meta.changeIndex!)
       if (key.account.toLowerCase() !== tx.to!.toLowerCase()) throw new Error('Private change ownership mismatch')
       return [{ account: key.account.toLowerCase(), privateKey: key.privateKey, origin: 'change' as const,
@@ -735,8 +752,10 @@ export class EvmTransactionSetPreparer {
       // actual fees, so a nominal continuation balance is not yet a usable reserve.
       // Keep the completed source plans and add change-only sources for any shortfall;
       // never replace their destinations or expose a partly constructed operation.
+      // Only change a later stage can be paid from counts (see `privateOutputs`).
       const privateValue = () => members.reduce((sum, member) =>
-        member.plan.transactionSet!.role === 'change'
+        member.plan.transactionSet!.role === 'change' &&
+        !behindPayment(members.map(item => item.plan), member.plan)
           ? sum + Transaction.from(member.raw).value : sum, 0n)
       if (carve && !carved.member) {
         // No payment source had the reserve left over: one other coin that holds it moves it
@@ -801,7 +820,7 @@ export class EvmTransactionSetPreparer {
       const authorizedFee = totalFee + (carve?.feeWei ?? 0n)
       if ((request.maxFeeWei !== undefined && authorizedFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && authorizedFee > BigInt(stage.maxFeeWei))) throw new EvmTransactionSetFeeExceededError(authorizedFee)
       if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
-      if (members.filter(member => member.plan.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.raw).value, 0n) < reserve) throw new Error('Insufficient private change for continuation')
+      if (privateValue() < reserve) throw new Error('Insufficient private change for continuation')
     } catch (error) {
       coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
       throw error

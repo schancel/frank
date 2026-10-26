@@ -696,10 +696,9 @@ const MAX_REFUSAL_REPLANS = 2
  * (change and the funding of this message's payments), observed until the payments may be handed
  * over or nothing more moves. Recipient payments, the stamps and any contact transfer, are
  * broadcast only once the relay has stored the message (`settleSharedPayments`): a relay that
- * cannot be reached leaves none of them on the chain. One exception: when the funding of this
- * message's payments comes after another payment of the set on the same account, that payment
- * must land first, and only it is sent ahead (the message is then owed and is delivered by the
- * resend pass). Returns whether the stage's payments may be handed to the relay now.
+ * cannot be reached leaves none of them on the chain. There is no exception: the preparer never
+ * funds a stage from a move that comes after a payment of the set on the same account.
+ * Returns whether the stage's payments may be handed to the relay now.
  */
 async function fundStagePayments(
   shared: NonNullable<CanonicalMessagingOwner['transactionSets']>,
@@ -733,54 +732,20 @@ async function fundStagePayments(
       console.warn('[monad-canonical-dm] funding of a message payment did not go out yet:', error)
     }
   }
-  let throughPayments = false
   for (;;) {
     if (await ready()) return true
     const before = await progress()
-    await attempt(() =>
-      throughPayments
-        ? shared.lifecycle.replayDependencies(operationId, stageId)
-        : shared.lifecycle.replay(operationId, { payments: false }),
-    )
+    await attempt(() => shared.lifecycle.replay(operationId, { payments: false }))
     // A payment standing only on moves of its own account is ready once they left the wallet:
     // reading the chain is then left to the pass after the relay stored the message.
     if (await shared.lifecycle.readCanSubmitPayments(operationId, stageId).catch(() => false))
       return true
     await attempt(() => shared.lifecycle.observe(operationId, shared.provider))
     // A self-send included now may make the next one on its account ready. A pass that
-    // changes nothing waits for blocks or the node, or for a payment the funding stands behind.
-    if ((await progress()) !== before) continue
-    if (throughPayments || !(await fundingWaitsOnPayment(shared, operationId, stageId)))
-      return await ready()
-    throughPayments = true
+    // changes nothing waits for blocks or the node. (No stage is funded from behind a payment
+    // of its set: the preparer never builds that, so no payment goes out before the relay.)
+    if ((await progress()) === before) return await ready()
   }
-}
-
-/** Whether a funding dependency of this stage's payments stands behind (on the same account, at
- * a lower nonce) a payment of the set that is not on the chain yet. */
-async function fundingWaitsOnPayment(
-  shared: NonNullable<CanonicalMessagingOwner['transactionSets']>,
-  operationId: string,
-  stageId: string | undefined,
-): Promise<boolean> {
-  const operation = await shared.preparer.readOperation(operationId)
-  if (!operation) return false
-  const members = operation.members
-  const seen = new Set<number>()
-  const visit = (index: number): boolean => {
-    if (seen.has(index)) return false
-    seen.add(index)
-    const member = members[index]!
-    const settled = member.observation.state === 'included-success' ||
-      member.observation.state === 'included-revert'
-    if (!settled && !member.exposed && member.transactionSet?.role === 'payment' &&
-      member.transactionSet.stageId !== stageId)
-      return true
-    return member.dependencies.some(visit)
-  }
-  return members.some((member, index) =>
-    member.transactionSet?.role === 'payment' && member.transactionSet.stageId === stageId &&
-    member.dependencies.some(visit))
 }
 
 /**

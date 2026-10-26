@@ -26,7 +26,16 @@
       <image-dialog :image="openedImage" />
     </q-dialog>
 
-    <template v-if="payloadDigest">
+    <!-- A record of a group invitation or membership change, not something said: one line. -->
+    <div
+      v-if="payloadDigest && systemLine"
+      class="chat-system-line text-caption text-center full-width q-my-xs"
+      data-testid="chat-system-line"
+      role="note"
+    >
+      {{ systemLine }}
+    </div>
+    <template v-else-if="payloadDigest">
       <q-chat-message
         :sent="message.outbound"
         :size="bubbleSize"
@@ -309,7 +318,11 @@ import {
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
-import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
+import {
+  getMessageItemRenderer,
+  messageSystemLine,
+} from '../../../utils/message-item-renderers'
+import { groupConversationUuid } from '@frank/cashweb/groups/group-crypto'
 import { messageItems } from '../../../utils/message-items'
 import { profileAvatar } from '../../../utils/avatar'
 import {
@@ -438,6 +451,7 @@ export default defineComponent({
     onBeforeUnmount(() => stampWaiters.delete(readStamp))
     return {
       stampSettled,
+      chats,
       applicationRenderer,
       stealthAssetCard,
       sentContactPayments,
@@ -616,6 +630,24 @@ export default defineComponent({
     },
   },
   computed: {
+    systemLine(): string | undefined {
+      const conversations = this.chats.conversations
+      const line = messageSystemLine(this.message.items ?? [], {
+        outbound: this.message.outbound,
+        groupName: groupIdHex => {
+          try {
+            return conversations[groupConversationUuid(groupIdHex)]?.name
+          } catch {
+            return undefined
+          }
+        },
+      })
+      if (!line) return undefined
+      return this.$t(line.key, {
+        ...line.params,
+        group: line.params?.group || this.$t('groupChat.unnamedGroup'),
+      })
+    },
     /** Not the last bubble of its sender's run: it sits closer to the next one. Nothing at
      * all in a two-person chat, so that markup stays as it was. */
     runAttrs(): { class?: string } {

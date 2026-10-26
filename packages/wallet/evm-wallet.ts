@@ -260,6 +260,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   getContactPayments!: EvmChainWalletHandle["getContactPayments"];
   sendToContact!: EvmChainWalletHandle["sendToContact"];
   prepareContactPayment!: EvmChainWalletHandle["prepareContactPayment"];
+  quoteContactPayment!: EvmChainWalletHandle["quoteContactPayment"];
   resumeContactPayments!: EvmChainWalletHandle["resumeContactPayments"];
   settleContactPayment!: EvmChainWalletHandle["settleContactPayment"];
   retryContactPayment!: EvmChainWalletHandle["retryContactPayment"];

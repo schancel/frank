@@ -969,9 +969,8 @@ export default defineComponent({
       if (this.stampWei === 0n) return this.$t('chatInput.stampFree')
       if (this.stampWei === undefined)
         return this.$t('chatInput.stampQuoteUnavailable')
-      const amount = `${activeChain.toDisplayAmount(this.stampWei)} ${
-        this.chainUnit
-      }`
+      // Shortened for reading, as every amount the app shows (`formatDisplayAmount`).
+      const amount = formatDisplayAmount(activeChain, this.stampWei)
       // A typed amount need not equal a preset. The label always describes what will be sent.
       return this.stampMultiplier
         ? this.$t('chatInput.stampMultiplierValue', {

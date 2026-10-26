@@ -29,6 +29,22 @@ export interface MessageItemRenderer<TRaw extends MessageItem = MessageItem> {
    * opinion. */
   wantsLargeBubble?(item: TRaw, params: { textLen: number }): boolean
   wantsSmallBubble?(item: TRaw): boolean
+  /** An item that is a record of something that happened rather than something said (a group
+   * invitation or membership change carried in a direct message): the line to show for it, as
+   * a translation key and its parameters. A message made only of such items is shown as a
+   * system line, not a bubble with an amount. */
+  systemLine?(item: TRaw, context: SystemLineContext): SystemLine | undefined
+}
+
+export interface SystemLineContext {
+  outbound: boolean
+  /** The name of the group with this ID, if this account knows it. */
+  groupName(groupIdHex: string): string | undefined
+}
+
+export interface SystemLine {
+  key: string
+  params?: Record<string, string>
 }
 
 const registry = new Map<string, MessageItemRenderer>()
@@ -63,3 +79,52 @@ registerMessageItemRenderer({
   type: 'reply',
   wantsSmallBubble: item => item.type === 'reply' && !!item.payloadDigest,
 })
+
+registerMessageItemRenderer({
+  type: 'group-welcome',
+  systemLine: (item, { outbound }) =>
+    item.type === 'group-welcome'
+      ? {
+          key: outbound
+            ? 'groupChat.systemInviteSent'
+            : 'groupChat.systemInviteReceived',
+          params: { group: item.groupName },
+        }
+      : undefined,
+})
+
+registerMessageItemRenderer({
+  type: 'group-control',
+  systemLine: (item, { outbound, groupName }) => {
+    if (item.type !== 'group-control') return undefined
+    const name = groupName(item.groupId)
+    const params = name === undefined ? undefined : { group: name }
+    // A removal notice carries no epoch secret: it goes to the member removed.
+    if (item.action === 'remove-member' && !item.epochSecretHex)
+      return {
+        key: outbound
+          ? 'groupChat.systemRemovalSent'
+          : 'groupChat.systemRemovalReceived',
+        params,
+      }
+    return { key: 'groupChat.systemMembershipUpdate', params }
+  },
+})
+
+/** The system line for a message made only of record items, or undefined for any other. */
+export function messageSystemLine(
+  items: readonly MessageItem[],
+  context: SystemLineContext,
+): SystemLine | undefined {
+  if (items.length === 0) return undefined
+  let line: SystemLine | undefined
+  for (const item of items) {
+    const itemLine = getMessageItemRenderer(item.type)?.systemLine?.(
+      item,
+      context,
+    )
+    if (!itemLine) return undefined
+    line ??= itemLine
+  }
+  return line
+}

@@ -24,6 +24,7 @@ import {
   EVM_COIN_NAMESPACE,
   LevelRecordStore,
   MemoryRecordStore,
+  belowPaymentFloor,
   spendableCoinTotal,
   spendableCoins,
   type ContactPayment,
@@ -249,6 +250,7 @@ export {
 } from "./canonical-dm";
 import {
   ChainFamily,
+  balanceOfParts,
   type ReceivedCoinSweep,
   ContactPaymentFailedError,
   ContactPaymentPendingError,
@@ -2365,7 +2367,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
               : undefined;
           let lastBalanceObservation:
-            | { balance: bigint; observedAt: number }
+            | { balance: bigint; observedAt: number; parts?: BalanceParts }
             | undefined = (() => {
             if (!balanceObsStorageKey) return undefined;
             try {
@@ -2405,6 +2407,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             pool.invalidateDisplayBalanceCache();
           };
 
+          // The payment floor received coins are classified by (`belowPaymentFloor`), for the
+          // balance and for each received payment alike: the transaction-set policy's, the same
+          // floor no change output goes below. Zero while no gas price has been read.
+          const receivedCoinFloorWei = (): bigint => {
+            try {
+              return transactionSetRuntime.transactionSetPolicy.snapshot().dustWei;
+            } catch {
+              return 0n;
+            }
+          };
           const coinAndContactManager = createEvmReceivedCoinAndContactManager({
             chainIdentifier,
             chainId: config.chainId,
@@ -2434,6 +2446,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             requireOpenWallet,
             canonicalMessagingFor,
             directMessages,
+            receivedCoinFloorWei,
             runWalletExclusive,
             runMainAccountExclusive,
           });
@@ -2530,15 +2543,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ]);
               // A received coin below the payment floor (ten moves of it, at the gas price the
               // wallet last read) is held, not spendable: it is shown apart and not counted.
-              let floorWei = 0n;
-              try {
-                floorWei = transactionSetRuntime.transactionSetPolicy.snapshot().dustWei;
-              } catch {
-                // No fee read yet: every received coin is counted, as before.
+              // The gas price is read first when none is known yet: otherwise a device that
+              // just opened counted every received coin, and disagreed with one that had read it.
+              let floorWei = receivedCoinFloorWei();
+              if (floorWei === 0n) {
+                await transactionSetRuntime.transactionSetPolicy
+                  .refresh()
+                  .catch(() => undefined);
+                // Still unknown (no fee quote from the node): every received coin is counted.
+                floorWei = receivedCoinFloorWei();
               }
               const funded = spendableCoins(coinStore.all());
               const received = funded.filter(
-                (coin) => BigInt(coin.amountWei) >= floorWei
+                (coin) => !belowPaymentFloor(coin, floorWei)
               );
               const receivedTotal = received.reduce(
                 (sum, coin) => sum + BigInt(coin.amountWei),
@@ -2548,11 +2565,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 spendableCoinTotal(coinStore.all()) - receivedTotal;
               const sending = poolSending + changeBalance;
               const observedAt = Date.now();
-              const totalBalance =
-                mainBalance + identityBalance + receivedTotal + sending;
+              const parts: BalanceParts = {
+                main: mainBalance,
+                profile: identityBalance,
+                received: receivedTotal,
+                receivedCount: received.length,
+                sending,
+                tooSmall: tooSmallTotal,
+                tooSmallCount: funded.length - received.length,
+              };
+              const totalBalance = balanceOfParts(parts);
+              // The balance and the parts it is the sum of, from this one read.
               lastBalanceObservation = {
                 balance: totalBalance,
                 observedAt,
+                parts,
               };
               if (balanceObsStorageKey) {
                 try {
@@ -2567,15 +2594,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // Ignore localStorage quota/access errors
                 }
               }
-              return {
-                main: mainBalance,
-                profile: identityBalance,
-                received: receivedTotal,
-                receivedCount: received.length,
-                sending,
-                tooSmall: tooSmallTotal,
-                tooSmallCount: funded.length - received.length,
-              };
+              return parts;
             } catch (error) {
               if (isChainUnreachableError(error)) {
                 throw error instanceof ChainUnreachableError
@@ -2624,10 +2643,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { raw: mainAccount.address };
             },
             async getBalance() {
-              const parts = await wallet.getBalanceParts!();
-              return (
-                parts.main + parts.profile + parts.received + parts.sending
-              );
+              return balanceOfParts(await wallet.getBalanceParts!());
             },
             getBalanceObservation() {
               return lastBalanceObservation;
@@ -2702,6 +2718,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             getContactPayments: coinAndContactManager.getContactPayments,
             sendToContact: coinAndContactManager.sendToContact,
             prepareContactPayment: coinAndContactManager.prepareContactPayment,
+            quoteContactPayment: coinAndContactManager.quoteContactPayment,
             resumeContactPayments: coinAndContactManager.resumeContactPayments,
             settleContactPayment: coinAndContactManager.settleContactPayment,
             retryContactPayment: coinAndContactManager.retryContactPayment,

@@ -203,7 +203,13 @@ export type ChatMessage = {
  */
 export type ConversationKind = 'direct' | 'group' | 'email'
 export type ConversationRole = 'owner' | 'admin' | 'member'
-export type GroupMembershipStatus = 'invited' | 'joined' | 'declined' | 'left'
+/** `removed`: the administrator removed this account from the group (a removal notice). */
+export type GroupMembershipStatus =
+  | 'invited'
+  | 'joined'
+  | 'declined'
+  | 'left'
+  | 'removed'
 
 export interface PendingParticipantRequest {
   senderAddress: string
@@ -838,6 +844,35 @@ function earliestMessage(conversation: Conversation): ChatMessage | undefined {
   return first
 }
 
+type ThreadStart = Pick<
+  ChatMessage,
+  'serverTime' | 'receivedTime' | 'payloadDigest'
+>
+
+/**
+ * Where a conversation starts, for choosing the peer's thread. A conversation that was deleted
+ * or cleared (a Screener Dismiss deletes it) had messages up to its cleared time, which every
+ * device of the account learns from the account's note: it started no later than that, before
+ * every message it may hold now, and it stays the peer's thread while hidden. Time 1 is what
+ * deleting a conversation that never held a message records; that is no history. Otherwise
+ * it is the earliest message, when the peer or this account sent it.
+ */
+function threadStartOf(conversation: Conversation): ThreadStart | undefined {
+  const cleared = clearedUpTo(conversation)
+  if (cleared !== undefined && cleared > 1)
+    return { serverTime: cleared, receivedTime: cleared, payloadDigest: '' }
+  const start = earliestMessage(conversation)
+  if (
+    !start ||
+    !(
+      start.outbound ||
+      sameCanonicalAddress(start.senderAddress, conversation.address)
+    )
+  )
+    return undefined
+  return start
+}
+
 /**
  * The peer's thread: the one conversation Contacts opens for `peer`.
  *
@@ -846,7 +881,9 @@ function earliestMessage(conversation: Conversation): ChatMessage | undefined {
  * account allocates when it opens a chat; an explicitly created further conversation is a
  * UUIDv4 and never becomes the peer's thread) and that the peer or this account started (their
  * earliest message is from one of the two, not from a third party), the one whose earliest
- * message is the earliest, by relay time and then payload hash. With no such message yet it is
+ * message is the earliest, by relay time and then payload hash. A deleted or dismissed one
+ * still counts, by its cleared time (`threadStartOf`): hidden, it is still the peer's thread,
+ * and opening the peer again brings it back rather than starting another. With no such message yet it is
  * the conversation this account opens with the peer, the ID allocated from its private salt, if
  * that exists. A thread opened here and still empty therefore yields to the peer's own
  * conversation when the peer's first message arrives, on every device alike, and a reload
@@ -857,7 +894,7 @@ export function peerThread(
   peer: string,
 ): Conversation | undefined {
   let thread: Conversation | undefined
-  let threadStart: ChatMessage | undefined
+  let threadStart: ThreadStart | undefined
   for (const conversation of Object.values(conversations)) {
     if (
       !conversation ||
@@ -869,15 +906,8 @@ export function peerThread(
       !sameCanonicalAddress(conversation.address, peer)
     )
       continue
-    const start = earliestMessage(conversation)
-    if (
-      !start ||
-      !(
-        start.outbound ||
-        sameCanonicalAddress(start.senderAddress, conversation.address)
-      )
-    )
-      continue
+    const start = threadStartOf(conversation)
+    if (!start) continue
     if (!threadStart || byRelayTime(start, threadStart) < 0) {
       thread = conversation
       threadStart = start
@@ -1378,7 +1408,7 @@ function validateStoredGroupConversation(conv: Conversation): void {
     state.prevEpochHashHex !== state.epochFrame.epoch_hash ||
     !Number.isSafeInteger(state.lastSyncedSeq) ||
     state.lastSyncedSeq < 0 ||
-    !['invited', 'joined', 'declined', 'left'].includes(
+    !['invited', 'joined', 'declined', 'left', 'removed'].includes(
       conv.membershipStatus ?? '',
     )
   )
@@ -1692,6 +1722,10 @@ function applyGroupControlItem(
   const admin = conv.groupState.roster.find(member => member.role === 'admin')
   if (!admin || !sameCanonicalAddress(admin.address, message.senderAddress))
     throw new Error('Unauthorized group control')
+  if (control.action === 'remove-member' && !control.epochSecretHex) {
+    applyGroupRemovalNotice(conv, control, message, ownAddress)
+    return
+  }
   if (
     !control.epochSecretHex ||
     control.epochFrame.epoch !== control.epoch ||
@@ -1744,6 +1778,59 @@ function applyGroupControlItem(
       conv.groupState!.syncFailed = true
     }
   }
+}
+
+/**
+ * The administrator's notice to a member it removed: the signed certificate of the epoch that
+ * left the member out, without that epoch's secret. The member cannot read the new roster, but
+ * the notice comes from the group's administrator in an authenticated message, and the
+ * certificate is signed by the group's key and follows the epoch the member holds. The group
+ * is then shown as one the member was removed from and is no longer polled; its history stays.
+ * This account's own copy of a notice it sent someone else changes nothing.
+ */
+function applyGroupRemovalNotice(
+  conv: Conversation,
+  control: GroupControlItem,
+  message: { senderAddress: string; destinationAddress?: string },
+  ownAddress: string | null,
+): void {
+  const state = conv.groupState!
+  if (
+    !ownAddress ||
+    !control.targetAddress ||
+    !sameCanonicalAddress(control.targetAddress, ownAddress)
+  )
+    return
+  if (
+    message.destinationAddress &&
+    !sameCanonicalAddress(message.destinationAddress, ownAddress)
+  )
+    return
+  if (
+    control.epochFrame.epoch !== control.epoch ||
+    control.authoritySigHex !== control.epochFrame.authority_sig ||
+    !verifyEpochFrame(
+      control.epochFrame,
+      state.groupIdHex,
+      state.groupPubKeyHex,
+    ) ||
+    (control.epoch === state.epoch + 1 &&
+      (control.prevEpochHash !== state.epochFrame.epoch_hash ||
+        control.epochFrame.prev_epoch_hash !== state.epochFrame.epoch_hash))
+  )
+    throw new Error('Invalid group removal notice')
+  conv.membershipStatus = 'removed'
+  state.syncFailed = false
+  state.pendingControls = undefined
+  const remaining = conv.participants.filter(
+    member => !sameCanonicalAddress(member, ownAddress),
+  )
+  conv.participants = remaining
+  conv.members = Object.fromEntries(
+    Object.entries(conv.members ?? {}).filter(
+      ([address]) => !sameCanonicalAddress(address, ownAddress),
+    ),
+  )
 }
 
 /** The user's membership change lost to a different change from another device of the same
@@ -7326,10 +7413,19 @@ export const useChatStore = defineStore('chats', {
         throw new Error(GROUP_EPOCH_SUPERSEDED)
       const certificate = groupEpochCertificate(rotated.epochFrame)
       const memberDeliveries: GroupMemberDeliveries = {}
-      for (const member of rotated.roster.members)
-        memberDeliveries[member.address] = [
+      // The members of the new epoch, and a member it removes: that one is told.
+      const recipients = rotated.roster.members.map(member => member.address)
+      const removed =
+        memberChange.action === 'remove-member'
+          ? state.roster.find(member =>
+              sameCanonicalAddress(member.address, memberChange.address),
+            )
+          : undefined
+      if (removed) recipients.push(removed.address)
+      for (const address of recipients)
+        memberDeliveries[address] = [
           {
-            items: [itemFor(member.address)],
+            items: [itemFor(address)],
             operationId: nextPendingMessageId(Date.now()),
           },
         ]
@@ -7430,6 +7526,16 @@ export const useChatStore = defineStore('chats', {
         targetAddress: removedAddress,
         authoritySigHex: rotated.epochFrame.authority_sig,
       }
+      const removalNotice: GroupControlItem = {
+        type: 'group-control',
+        epochFrame: controlItem.epochFrame,
+        groupId: controlItem.groupId,
+        action: 'remove-member',
+        epoch: controlItem.epoch,
+        prevEpochHash: controlItem.prevEpochHash,
+        targetAddress: removedAddress,
+        authoritySigHex: controlItem.authoritySigHex,
+      }
       return this.publishGroupRotation({
         conv,
         state,
@@ -7437,7 +7543,11 @@ export const useChatStore = defineStore('chats', {
         checkGroup,
         rotated,
         wallet: wallet || messagingWallet(),
-        itemFor: () => controlItem,
+        // The removed member is told it was removed, without the new epoch's secret.
+        itemFor: address =>
+          sameCanonicalAddress(address, removedAddress)
+            ? removalNotice
+            : controlItem,
         memberChange: { action: 'remove-member', address: removedAddress },
       })
     },

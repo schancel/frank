@@ -1291,6 +1291,8 @@ export const rawFrFR = {
     pendingHint:
       'En attente que la chaîne montre ce paiement. Il n’est pas encore dans votre solde.',
     spendableHint: 'Dans votre solde disponible',
+    tooSmallHint:
+      'Trop petit pour être déplacé : vaut moins de dix fois les frais de réseau pour le déplacer. Non compris dans votre solde.',
     spentHint: 'Reçu, puis dépensé',
     unverifiedHint:
       'Votre portefeuille n’a pas vérifié ce paiement sur la chaîne.',
@@ -1721,6 +1723,12 @@ export const rawFrFR = {
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:
       'Ce paiement dépasse ce qu’un seul paiement à un contact peut transporter (environ {max} {unit}) ; envoyez-le en plusieurs fois.',
+    stamp: 'Timbre du message',
+    total: 'Total (paiement, timbre et frais de réseau)',
+    minimum:
+      'Le plus petit paiement est de {amount} : dix fois les frais de réseau pour le déplacer, afin que votre contact puisse toujours le dépenser.',
+    belowMinimum:
+      'C’est moins que le plus petit paiement de {amount}. Votre contact ne pourrait pas le déplacer pour moins d’un dixième de sa valeur : payez au moins {amount}.',
   },
   contactBookDialog: {
     close: 'Fermer',
@@ -2584,6 +2592,19 @@ export const rawFrFR = {
     removeMemberBtn: 'Retirer',
     leaveGroupBtn: 'Ne plus suivre le groupe',
     syncGroupBtn: 'Synchroniser le groupe',
+    removedBanner:
+      'Vous avez été retiré de ce groupe. Ses messages précédents restent ici.',
+    removedHeader: 'Vous avez été retiré',
+    removeMemberConfirmTitle: 'Retirer ce membre ?',
+    removeMemberConfirmBody:
+      'Retirer {member} de « {group} » ? Ce membre ne pourra plus lire ni envoyer de messages dans ce groupe.',
+    removeMemberConfirmBtn: 'Retirer',
+    unnamedGroup: 'Groupe',
+    systemInviteSent: 'Invitation au groupe « {group} » envoyée',
+    systemInviteReceived: 'Invitation au groupe « {group} »',
+    systemMembershipUpdate: 'Groupe « {group} » : membres modifiés',
+    systemRemovalSent: 'Retrait du groupe « {group} » notifié',
+    systemRemovalReceived: 'Vous avez été retiré du groupe « {group} »',
   },
   close: 'Fermer',
 }

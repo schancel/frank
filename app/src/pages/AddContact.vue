@@ -990,6 +990,10 @@ export default defineComponent({
               address: resolvedAddress,
             })
           : chatStore.openDirectConversation(resolvedAddress)
+        // The peer's thread the user dismissed from the Screener: starting a conversation
+        // with the peer takes it back.
+        if (conversation.screenerStatus === 'dismissed')
+          chatStore.setScreenerStatus(conversation.id, 'approved')
         chatStore.setActiveConversation(conversation.id)
         openChat(this.$router, conversation.id)
         return

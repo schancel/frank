@@ -100,6 +100,7 @@ jest.mock('../components/dialogs/IdentityQrDialog.vue', () => ({
 /* eslint-disable @typescript-eslint/no-var-requires */
 const { useChatStore, rehydrateState } = require('../stores/chats')
 const { useContactStore } = require('../stores/contacts')
+const { dismissScreenerConversation } = require('../utils/screener-triage')
 const { setStartupRestoration } = require('../boot/startup-state')
 const createAppRouter = require('../router').default
 const ChatList = require('../components/chat/ChatList.vue').default
@@ -886,4 +887,77 @@ it('a link to a conversation this account does not have shows not-found, never a
   expect(root.find('[data-testid="conversation-not-found"]').exists()).toBe(
     false,
   )
+})
+
+it("Start Conversation without a subject reopens the peer's thread dismissed from the Screener, not a new one", async () => {
+  const app = await mountedConversations()
+  try {
+    // The peer's first message, in the conversation it opened (its own ID).
+    const theirs = '77777777-7777-5777-8777-777777777777'
+    await app.chats.receiveMessages([
+      {
+        index: 'their-first',
+        conversationId: theirs,
+        outbound: false,
+        senderAddress: PEER,
+        copartyAddress: PEER,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        stampValue: 0,
+        message: {
+          conversationId: theirs,
+          outbound: false,
+          senderAddress: PEER,
+          status: 'confirmed',
+          receivedTime: 100,
+          serverTime: 100,
+          outpoints: [],
+          items: [{ type: 'text', text: 'hello from a stranger' }],
+        },
+      },
+    ] as never)
+    await settle()
+    await dismissScreenerConversation(
+      app.chats.conversations[theirs],
+      app.chats,
+    )
+    await settle()
+    expect(
+      app.root
+        .findAllComponents(ChatListItem)
+        .some(item => item.props('conversationId') === theirs),
+    ).toBe(false)
+
+    const opened = await app.create(PEER, '')
+    expect(opened).toBe(theirs)
+    expect(app.chats.conversations[theirs].deletedAt).toBeUndefined()
+    expect(app.chats.conversations[theirs].screenerStatus).toBe('approved')
+    expect(
+      Object.values(app.chats.conversations).filter(
+        (c: any) => c.address === PEER && !c.deletedAt,
+      ),
+    ).toHaveLength(1)
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('a group menu offers no mute it cannot honor; a direct chat offers Mute', async () => {
+  const app = await mountedConversations()
+  try {
+    const group = admittedGroup(app.chats, 'a', 'Protocol Team')
+    await settle()
+    await app.select(group.id)
+    const menuItem = () =>
+      app.root.getComponent(ChatLayout).find('[data-testid="chat-menu-notify"]')
+    expect(menuItem().exists()).toBe(false)
+    expect(app.root.getComponent(ChatLayout).text()).not.toContain(
+      translate('chatLayout.unmute'),
+    )
+
+    await app.create(PEER, '', false)
+    expect(menuItem().exists()).toBe(true)
+    expect(menuItem().text()).toBe(translate('chatLayout.mute'))
+  } finally {
+    app.root.unmount()
+  }
 })

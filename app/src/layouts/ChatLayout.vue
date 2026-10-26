@@ -123,9 +123,20 @@
               v-if="subject || isGroup"
               class="text-caption ellipsis chat-header-subject"
             >
-              <span v-if="isGroup" data-testid="chat-header-participants">{{
-                $t('chatLayout.participantCount', { count: participantCount })
-              }}</span>
+              <span
+                v-if="
+                  isGroup && activeConversation?.membershipStatus === 'removed'
+                "
+                data-testid="chat-header-removed"
+                >{{ $t('groupChat.removedHeader') }}</span
+              >
+              <span
+                v-else-if="isGroup"
+                data-testid="chat-header-participants"
+                >{{
+                  $t('chatLayout.participantCount', { count: participantCount })
+                }}</span
+              >
               <span v-if="isGroup && subject"> · </span>
               <span v-if="subject" data-testid="chat-header-subject">{{
                 subject
@@ -179,9 +190,12 @@
                   <q-item-section avatar><q-icon name="info" /></q-item-section>
                   <q-item-section>{{ $t('chatLayout.info') }}</q-item-section>
                 </q-item>
+                <!-- Muting is per contact: a group or a note to self has nothing to mute. -->
                 <q-item
+                  v-if="hasNotifyToggle"
                   clickable
                   v-close-popup
+                  data-testid="chat-menu-notify"
                   @click="notifications = !notifications"
                 >
                   <q-item-section avatar
@@ -743,6 +757,13 @@ export default defineComponent({
             this.contactProfile?.avatar ||
             undefined
         : this.contactProfile?.avatar || undefined
+    },
+    hasNotifyToggle(): boolean {
+      return Boolean(
+        this.effectiveAddress &&
+          isChainAddress(this.effectiveAddress) &&
+          !sameCanonicalAddress(this.effectiveAddress, this.ownAddress),
+      )
     },
     notifications: {
       get(): boolean {

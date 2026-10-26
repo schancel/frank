@@ -29,7 +29,7 @@ import { InMemoryNativeTransactionAttemptStore } from '@frank/wallet/chain/chain
 import { createEvmChain } from '@frank/wallet/chain/evm-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
-import { createRelayUsernameLookup } from '../mail-gateway/src/smtp/inbound-server'
+import { createIssuedMailboxLookup } from '../mail-gateway/src/smtp/issued-mailbox-lookup'
 import { reservedUsernamesTomlLine } from '../bot-framework/src/reserved-usernames'
 import { openBotDirectory } from './bot-open-directory'
 
@@ -291,14 +291,16 @@ min_value_wei = "0"
       ).map(user => user.username),
     ).toEqual([bobName, name])
 
-    // The mail gateway's own inbound lookup resolves the name to Alice's address.
-    const gateway = await createRelayUsernameLookup(relayBaseUrl)(name)
-    expect(gateway?.accountAddress).toBe(alice.address)
-    expect(gateway?.isTombstoned).toBe(false)
-    expect(gateway?.isMoved).toBe(false)
-    expect(
-      await createRelayUsernameLookup(relayBaseUrl)(`nobody-${tag}`),
-    ).toBeUndefined()
+    // The mail gateway's own inbound lookup, with no mailbox issued for the name, resolves it
+    // through the relay to Alice's address.
+    const gatewayLookup = createIssuedMailboxLookup(
+      { issuedMailbox: () => undefined },
+      { relayBaseUrl },
+    )
+    expect(await gatewayLookup(name)).toEqual({
+      accountAddress: alice.address.toLowerCase(),
+    })
+    expect(await gatewayLookup(`nobody-${tag}`)).toBeUndefined()
 
     // Bob renames to the name reserved for him; Alice still cannot have it.
     expect((await bob.claim(reservedName)).address).toBe(bob.address)

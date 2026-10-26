@@ -829,6 +829,7 @@ impl ExactRequest {
     pub(crate) fn submission_identity(&self) -> [u8; 32] {
         self.submission_identity
     }
+    #[cfg(test)]
     pub(crate) fn exact_equal(&self, other: &Self) -> bool {
         self.content_type == other.content_type
             && self.body == other.body

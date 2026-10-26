@@ -166,6 +166,17 @@ function protocolFacts(value: unknown): ProtocolChainFacts {
   };
 }
 
+/**
+ * The registry's `payment_floor_multiple`: every payment made to someone who must move it again
+ * carries at least this many times the fee of one plain transfer (README, "Payment floor").
+ */
+export function projectPaymentFloorMultiple(document: unknown): bigint {
+  const value = object(document).payment_floor_multiple;
+  if (!Number.isSafeInteger(value) || (value as number) <= 0)
+    invalid("payment_floor_multiple must be a positive integer");
+  return BigInt(value as number);
+}
+
 /** Extensions select an explicit supported subset and may never supply protocol facts. */
 export function projectProtocolChains<T extends object>(
   document: unknown,

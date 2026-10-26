@@ -346,10 +346,10 @@ async function fixture(funded = true) {
   const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,
     bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
-  // Each covers its own fee reserve plus 600 wei, so a 1000 wei stamp needs both.
+  // Each covers its own fee reserve plus 600,000 wei: one carries a stamp at the payment floor.
   if (funded) {
     for (const record of alice.pool.ensureSize(2))
-      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 600_000n)
     await alice.pool.flush()
   }
   await alice.refreshTransactionSetInventory?.()
@@ -522,9 +522,9 @@ async function fixture(funded = true) {
 }
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
-/** What the offline chain charges to move one payment: 21,000 gas at its gas price of 2 wei. A
+/** The payment floor on the offline chain: ten moves of 21,000 gas at its gas price of 2 wei. A
  * stamp is never smaller, so the configured default of 1,000 wei is raised to it. */
-const DEFAULT_STAMP = 21_000n * 2n
+const DEFAULT_STAMP = 10n * 21_000n * 2n
 
 type ServedRecord = {
   delivery: Uint8Array
@@ -702,7 +702,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('after root restore'),
-      stampValue: 100000n,
+      stampValue: 500_000n,
     })
     const request = restoreCanonicalRequest(f.requests[0])
     const payment = Transaction.from(
@@ -721,16 +721,16 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(nonces).toContain(payment.nonce)
     expect(payment.hash).not.toBe(burn.txHash)
     expect(mockMined.has(payment.hash!)).toBe(true)
-    expect(sent.stampValueWei).toBe(100000n)
+    expect(sent.stampValueWei).toBe(500_000n)
   })
 
   it('shares the host quote with new implicit sends, while free and explicit sends need no oracle', async () => {
     installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
-    const resolver = jest.fn(fixedStampDefault(50_000n))
+    const resolver = jest.fn(fixedStampDefault(500_000n))
     f.config.resolveDefaultStamp = resolver
-    expect(await f.chain.directMessages.defaultStampQuote!({ wallet: f.alice })).toMatchObject({ status: 'available', amount: 50_000n, minimumStamp: DEFAULT_STAMP })
+    expect(await f.chain.directMessages.defaultStampQuote!({ wallet: f.alice })).toMatchObject({ status: 'available', amount: 500_000n, minimumStamp: DEFAULT_STAMP })
     const sent = await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('quoted default') })
-    expect(sent.stampValueWei).toBe(50_000n)
+    expect(sent.stampValueWei).toBe(500_000n)
     expect(resolver).toHaveBeenLastCalledWith({ chainIdentifier: 'monad-testnet', minimumStamp: DEFAULT_STAMP })
     const offline = jest.fn(async () => ({ status: 'unavailable' as const, chainIdentifier: 'monad-testnet', reason: 'missing-rate' as const }))
     f.config.resolveDefaultStamp = offline
@@ -1356,7 +1356,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const peer = (await directory.peerCurrent({
       address: f.bob.identity.address.raw,
     }))!
-    await depositStampAccounts(f.alice, 400_000n)
+    // Two deposits (750,000 and 1,250,000 wei) pay it as two payments,
+    // each above the payment floor.
+    await depositStampAccounts(f.alice, 2_000_000n)
     await f.alice.refreshTransactionSetInventory?.()
     f.setPhase('lost')
     const prepare = jest.spyOn(f.alice.transactionSetPreparer!, 'constructTransactionSet')
@@ -1366,7 +1368,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         f.chain.directMessages.send({
           wallet: f.alice,
           recipient: f.bob.identity.address,
-          stampValue: 400_000n,
+          stampValue: 2_000_000n,
           items: text('original authorized operation'),
           onAttemptCreated: value => void (digest = value),
         }),
@@ -1490,7 +1492,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       f.broadcast(0)
       f.broadcast(0)
       expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
-        400_000n,
+        2_000_000n,
       )
       // The node now includes retries of the original owned-change transactions too.
       mockMineWalletBroadcasts = true
@@ -1698,10 +1700,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const result = await f.chain.directMessages.send({
       wallet: f.alice,
       recipient: f.bob.identity.address,
-      stampValue: 100_000n,
+      stampValue: 500_000n,
       items: text('spend existing inventory'),
     })
-    expect(result.stampValueWei).toBe(100_000n)
+    expect(result.stampValueWei).toBe(500_000n)
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(mockFunded).toEqual([])
     expect(f.alice.pool.records()).toEqual(inventory)
@@ -2548,7 +2550,7 @@ describe('two typed wallets on the open directory', () => {
   })
   const fund = async (wallet: EvmChainWalletHandle) => {
     for (const record of wallet.pool.ensureSize(2))
-      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 600_000n)
     await wallet.pool.flush()
   }
 
@@ -4782,7 +4784,7 @@ describe('stamp quote and send share chain-authoritative legacy inventory', () =
     const account = key.address.toLowerCase()
     await f.alice.refreshTransactionSetInventory!()
     expect(evmWalletInternals(f.alice).coinList!.all().filter(coin => coin.account === account)).toEqual([])
-    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 500_000n })
     expect(quote.status).toBe('insufficient')
     expect(mockWalletBroadcasts).toHaveLength(0)
     expect(mockBalances.get(account)).toBe(1_000_000n)
@@ -4840,14 +4842,14 @@ describe('stamp quote and send share chain-authoritative legacy inventory', () =
     await f.alice.refreshTransactionSetInventory!()
     list = evmWalletInternals(f.alice).coinList!
     expect(list.all().filter(coin => coin.account === account)).toEqual(before)
-    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 500_000n })
     expect(quote.status).toBe('available')
     if (kind === 'pool') expect(f.alice.pool.getRecord(0)!.status).toBe(status)
     expect(mockWalletBroadcasts).toHaveLength(0)
     installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
     await f.chain.directMessages.send({
       wallet: f.alice, recipient: f.bob.identity.address,
-      stampValue: 100_000n, items: text('chain-confirmed inventory'),
+      stampValue: 500_000n, items: text('chain-confirmed inventory'),
     })
     const payments = restoreCanonicalRequest(f.requests[0]!).parts.transactions
     expect(payments.length).toBeGreaterThan(0)
@@ -4861,7 +4863,7 @@ describe('stamp quote and send share chain-authoritative legacy inventory', () =
     await f.alice.pool.flush()
     await f.alice.refreshTransactionSetInventory!()
     expect(f.alice.pool.claim('other-operation', () => [record.index])).toEqual([record.index])
-    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 500_000n })
     expect(quote.status).toBe('insufficient')
     expect(f.alice.pool.claimedBy(record.index)).toBe('other-operation')
     expect(mockWalletBroadcasts).toHaveLength(0)

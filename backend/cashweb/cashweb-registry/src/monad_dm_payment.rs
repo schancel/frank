@@ -60,6 +60,7 @@ pub(crate) fn validate_canonical_payment_set(
     network: &str,
     chain_id: u64,
     minimum: u128,
+    payment_floor: u128,
 ) -> crate::http::monad_message_cbor::Result<CanonicalPaymentInput> {
     use crate::{
         http::monad_message_cbor::CanonicalError as Error,
@@ -126,6 +127,16 @@ pub(crate) fn validate_canonical_payment_set(
         return Err(Error::Invalid);
     }
     let payments = canonical_signed_set(&request, &policy)?;
+    // Each payment is a coin its recipient must move again: none may be below the network's
+    // payment floor (`payment_floor_multiple` x one transfer at the minimum gas price,
+    // `cashweb_config::protocol_payment_floor_wei`), so a received stamp is always worth ten
+    // moves of it. Decided from the bytes, before anything is stored or broadcast.
+    if payments
+        .iter()
+        .any(|payment| payment.value_wei < payment_floor)
+    {
+        return Err(Error::Invalid);
+    }
     Ok(CanonicalPaymentInput {
         request,
         policy,

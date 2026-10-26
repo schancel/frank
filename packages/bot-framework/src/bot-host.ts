@@ -2239,9 +2239,9 @@ export class FrankBotHost {
   }
 
   /**
-   * A bot never sends a nonzero stamp smaller than what the chain charges to move it (the
-   * wallet's `minimumStamp`, read from the node's gas price): such an amount is sent as no stamp
-   * at all. An unreadable floor changes nothing here; the wallet still refuses a dust stamp.
+   * A bot never sends a nonzero stamp below the payment floor (the wallet's `minimumStamp`: ten
+   * times what the chain charges to move it, read from the node's gas price): such an amount is
+   * sent as no stamp at all. An unreadable floor changes nothing here; the wallet still refuses a dust stamp.
    */
   private async atLeastTheFloor(
     wallet: EvmChainWalletHandle,

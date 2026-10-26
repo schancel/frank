@@ -51,9 +51,12 @@ endpoint = "http://localhost:8080"
 binding_expiry_ns = "1893456000000000000"
 enrollments_per_source_per_hour = 100000
 
+# The least a paid message carries, in wei: at or above the network's payment floor, which the
+# relay enforces on every payment and refuses to start below (docs/protocol/chains/README.md,
+# "Payment floor"). On Monad: 10 x 21000 gas x 100 gwei = 21000000000000000 wei = 0.021 MON.
 [registry.monad_mailbox]
 enabled = true
-min_value_wei = "1000000000000"
+min_value_wei = "21000000000000000"
 
 # Every forum post and vote burns its payment to this address on `registry.network`.
 [registry.forum]

@@ -1,5 +1,6 @@
 /** Cached network observations. No construction call performs network I/O. */
 import type { Provider } from 'ethers'
+import { evmPaymentFloorWei } from './chain/payment-floor'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type EvmTransactionSetPolicy,
@@ -82,10 +83,14 @@ export class EvmTransactionSetPolicyCache {
         destination.toLowerCase() ===
           this.options.knownNoCodeAddress.toLowerCase(),
       changeGasLimit: 21_000n,
-      dustWei: 10n * 21_000n * price,
+      // No change output below the payment floor: its owner could not move it for less
+      // than a tenth of its value.
+      dustWei: evmPaymentFloorWei(price),
       radix: 2,
       jitterBps: 1_500,
-      maxChangeOutputs: 20,
+      // A small cap on change per payment: repeated sends add spendable coins a few at a
+      // time, rather than one large residual splitting into many transactions at once.
+      maxChangeOutputs: 4,
       head: this.head,
       ...(this.options.spendSpacingBlocks === undefined
         ? {}

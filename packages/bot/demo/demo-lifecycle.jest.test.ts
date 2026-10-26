@@ -446,7 +446,8 @@ process.stdin.on('end', () => {
       expect(text).toContain('QCLI_MONAD_RPC_CHAIN=monad-testnet')
       expect(text).not.toContain('QCLI_MONAD_TESTNET_HTTP_RPC_URL')
       expect(text).toContain(`QCLI_MONAD_STAMP_BURN_ADDRESS=${c.stampBurnAddress}`)
-      expect(text).toContain(`QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${c.minStampWei}`)
+      // The app reads no relay minimum: its wallet's own payment floor decides a stamp.
+      expect(text).not.toContain('QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI')
       expect(text).toContain('yarn dev:browser')
       expect(text).toContain(`launcher pid ${process.pid}`)
       expect(text).toContain('Chain:   Monad testnet')

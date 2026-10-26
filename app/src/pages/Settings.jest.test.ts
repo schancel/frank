@@ -321,7 +321,8 @@ describe('Settings list and section navigation', () => {
     expect(
       (wrapper.vm as unknown as { emailGatewayFee: unknown }).emailGatewayFee,
     ).toEqual({
-      amount: '0.01',
+      // Above the payment floor (10 x 21000 gas x ~102 gwei = 0.02142 MON).
+      amount: '0.05',
       unit: getChainRegistryEntry(activeChain.chainIdentifier)!.unit,
     })
   })

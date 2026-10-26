@@ -81,7 +81,6 @@ services:
         # supplies its own coherent relay and frontend deployment configuration.
         QCLI_MONAD_RPC_CHAIN: monad-testnet
         QCLI_MONAD_STAMP_BURN_ADDRESS: ${MONAD_STAMP_BURN_ADDRESS:-0x000000000000000000000000000000000000dEaD}
-        QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: ${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}
     ports:
       - '${FRONTEND_PORT:-8081}:80'
     depends_on:

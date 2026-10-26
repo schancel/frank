@@ -21,7 +21,9 @@ rpc_url="${MONAD_TESTNET_HTTP_RPC_URL:-}"
 # address only when the environment asks for something else. The RPC URL is never in the config:
 # it is a secret, and the daemon reads MONAD_TESTNET_HTTP_RPC_URL (the network's evm_rpc
 # upstream_env) from its environment and refuses to start without it.
-min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-1000000000000}"
+# Default: the Monad payment floor, 10 x 21000 gas x 100 gwei (docs/protocol/chains/README.md);
+# the relay refuses to start below it.
+min_value_wei="${CASHWEB_STAMP_MIN_BURN_VALUE_WEI:-21000000000000000}"
 relay_network="${FRANK_RELAY_NETWORK:-monad-testnet}"
 cargo_command="${CARGO:-cargo}"
 chronik_url="${XEC_TESTNET_CHRONIK_URL:-https://chronik-testnet.fabien.cash}"

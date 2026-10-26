@@ -604,8 +604,9 @@ export default defineComponent({
       type: String,
       default: () => '',
     },
-    /** The smallest stamp the wallet sends right now (`directMessages.minimumStamp`): what the
-     * chain charges to move it. The page reads it; until it has, the configured default. */
+    /** The smallest stamp the wallet sends right now (`directMessages.minimumStamp`): the payment
+     * floor, ten times what the chain charges to move it. The page reads it; until it has, the
+     * configured default. */
     minimumStampWei: {
       type: BigInt as unknown as PropType<bigint>,
       default: () => 0n,

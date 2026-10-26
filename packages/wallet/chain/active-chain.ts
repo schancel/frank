@@ -361,13 +361,13 @@ export class DirectMessageArgumentError extends Error {
   }
 }
 
-/** `send` was asked, explicitly, for a paid stamp smaller than what the chain charges to move it
- * (`floorWei`: one transfer's fee right now). Nothing was paid or sent. Pay at least the floor,
- * or send the message with no stamp. */
+/** `send` was asked, explicitly, for a paid stamp below the payment floor (`floorWei`: ten times
+ * what the chain charges right now to move it, so its recipient can spend it). Nothing was paid or
+ * sent. Pay at least the floor, or send the message with no stamp. */
 export class DirectMessageStampBelowFeeError extends Error {
   constructor(readonly stampValueWei: bigint, readonly floorWei: bigint) {
     super(
-      `A stamp of ${stampValueWei} wei is less than the ${floorWei} wei the chain charges to move it. Nothing was paid or sent: pay at least ${floorWei} wei, or send without a stamp.`
+      `A stamp of ${stampValueWei} wei is below the payment floor of ${floorWei} wei (ten times what the chain charges to move it). Nothing was paid or sent: pay at least ${floorWei} wei, or send without a stamp.`
     );
     this.name = "DirectMessageStampBelowFeeError";
   }
@@ -558,8 +558,9 @@ export interface DirectMessageClient {
     payloadDigest: string;
   }): DirectMessagePaymentSummary | undefined;
   /**
-   * The smallest paid stamp this wallet sends right now: what the chain charges for the one
-   * transfer that moves it, from the node's current gas price (cached for a few seconds). A
+   * The smallest paid stamp this wallet sends right now: the payment floor, ten times what the
+   * chain charges for the one transfer that moves it (`payment_floor_multiple` in the protocol
+   * registry), from the node's current gas price (cached for a few seconds). A
    * default or suggested stamp should be at least this; `send` raises its own default to it and
    * refuses an explicit smaller `stampValue` with {@link DirectMessageStampBelowFeeError}.
    */

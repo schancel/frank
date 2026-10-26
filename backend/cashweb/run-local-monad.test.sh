@@ -187,11 +187,11 @@ diff -u <(printf '%s\n' -) "$args_file"
 [[ "$(grep -Fxc 'network = "monad-testnet"' "$config_file")" -eq 1 ]] || exit 1
 # The effective values are printed, but the secret path of the URL is not.
 grep -Fq 'network:                monad-testnet (chain id 10143)' "$fixture_root/effective.err" || exit 1
-grep -Fq 'min_value_wei:          1000000000000' "$fixture_root/effective.err" || exit 1
+grep -Fq 'min_value_wei:          21000000000000000' "$fixture_root/effective.err" || exit 1
 grep -Fq 'origin https://rpc.invalid.example' "$fixture_root/effective.err" || exit 1
 ! grep -Fq 'test-only' "$fixture_root/effective.err" || exit 1
 # Enabled mode requires an explicit minimum; the Monad row stays on Monad testnet's chain.
-[[ "$(grep -Fxc 'min_value_wei = "1000000000000"' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -Fxc 'min_value_wei = "21000000000000000"' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -Fxc 'expected_chain_id = 10143' "$config_file")" -eq 1 ]] || exit 1
 # Retargeting Monad must leave the other EVM rows on their own chain ids.
 grep -Fxq 'id = "base-sepolia"' "$config_file"

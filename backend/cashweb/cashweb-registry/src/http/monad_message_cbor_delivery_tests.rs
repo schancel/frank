@@ -330,6 +330,33 @@ impl Relay {
         rpc_timeout: Duration,
         answer: Option<Arc<dyn Fn(&str) -> Answer + Send + Sync>>,
     ) -> Self {
+        Self::on_with_floor(
+            fixture,
+            min_value_wei,
+            rpc_timeout,
+            answer,
+            FIXTURE_PAYMENT_FLOOR_WEI,
+        )
+        .await
+    }
+    /// A relay whose per-payment floor is the network's protocol floor, as `cashwebd` builds it.
+    async fn with_protocol_floor(min_value_wei: u128) -> Self {
+        Self::on_with_floor(
+            NativeDirectoryFixture::new().await,
+            min_value_wei,
+            Duration::from_secs(10),
+            Some(Arc::new(|_: &str| Answer::Accepted)),
+            None,
+        )
+        .await
+    }
+    async fn on_with_floor(
+        fixture: NativeDirectoryFixture,
+        min_value_wei: u128,
+        rpc_timeout: Duration,
+        answer: Option<Arc<dyn Fn(&str) -> Answer + Send + Sync>>,
+        payment_floor_wei: Option<u128>,
+    ) -> Self {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let chain = Arc::new(Mutex::new(Chain::default()));
         let (mut stops, mut tasks) = (Vec::new(), Vec::new());
@@ -376,7 +403,13 @@ impl Relay {
                 url
             }
         };
-        let server = server_with(&fixture, &rpc_url, min_value_wei, rpc_timeout);
+        let server = server_with_floor(
+            &fixture,
+            &rpc_url,
+            min_value_wei,
+            rpc_timeout,
+            payment_floor_wei,
+        );
         let (url, stop, task) = serve_http(
             server
                 .clone()
@@ -932,6 +965,67 @@ async fn a_message_that_fails_a_check_is_refused_with_nothing_stored_and_nothing
 }
 
 #[tokio::test]
+async fn a_payment_below_the_network_payment_floor_is_refused_before_anything_is_stored_or_broadcast(
+) {
+    // The floor of monad-testnet: 10 x 21000 gas x 100 gwei (docs/protocol/chains/v1.json). A
+    // stamp payment below it would cost its recipient more than a tenth of itself to move.
+    let floor = cashweb_config::protocol_payment_floor_wei(NETWORK).unwrap();
+    assert_eq!(floor, 21_000_000_000_000_000);
+    let relay = Relay::with_protocol_floor(floor).await;
+    let paying = |values: &'static [u128]| {
+        move |payment: &Payment| payment.transfer(payment.address, values[payment.index as usize])
+    };
+    let cases: Vec<(&str, ExactRequest)> = vec![
+        // 0.0021 MON: the stamp that could never be moved (less than one transfer's gas).
+        (
+            "one payment of 0.0021 MON",
+            build(60, Parties::Captured, 1, paying(&[2_100_000_000_000_000])),
+        ),
+        (
+            "one payment one wei below the floor",
+            build(
+                61,
+                Parties::Captured,
+                1,
+                paying(&[21_000_000_000_000_000 - 1]),
+            ),
+        ),
+        // The total covers the message minimum, but one coin of it would be dust.
+        (
+            "a payment at the floor beside one below it",
+            build(
+                62,
+                Parties::Captured,
+                2,
+                paying(&[42_000_000_000_000_000, 1_000_000_000_000_000]),
+            ),
+        ),
+    ];
+    for (case, request) in &cases {
+        let answer = relay.put(request).await;
+        assert_eq!(answer.0, 400, "{case}: {}", answer.1);
+        assert_eq!(answer.1["error"], "invalid_canonical_submission", "{case}");
+        relay.assert_nothing_stored(request);
+        assert!(relay.calls.lock().unwrap().is_empty(), "{case}");
+    }
+    // At the floor, in one payment or in several, the message is delivered and paid.
+    let one = build(63, Parties::Captured, 1, paying(&[21_000_000_000_000_000]));
+    delivered(&relay.put(&one).await, &one);
+    relay.assert_delivered_to_both(&one);
+    let several = build(
+        64,
+        Parties::Captured,
+        2,
+        paying(&[21_000_000_000_000_000, 21_420_000_000_000_000]),
+    );
+    delivered(&relay.put(&several).await, &several);
+    let mut paid = raws(&one);
+    paid.extend(raws(&several));
+    assert_eq!(sorted(relay.broadcasts()), sorted(paid));
+    relay.stop().await;
+}
+
+#[tokio::test]
 async fn a_repeated_submit_stores_once_and_broadcasts_again() {
     let relay = Relay::start(|_| Answer::Accepted).await;
     let request = message(20, 2);
@@ -1025,6 +1119,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
         NETWORK,
         CHAIN_ID,
         1,
+        FIXTURE_PAYMENT_FLOOR_WEI.unwrap(),
     )
     .unwrap();
     let stored = relay.owner().claim(input, now_ms()).unwrap().claim;

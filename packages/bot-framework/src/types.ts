@@ -190,8 +190,8 @@ export interface BotContext {
   attemptStatus(
     payloadDigest: string
   ): Promise<"live" | "delivered" | "dead" | "unknown">;
-  /** The smallest amount worth sending as a stamp right now: what the chain charges to move it
-   * (the wallet's `minimumStamp`). A stake, payout or refund below it is not sent as money. A
+  /** The smallest amount worth sending as a stamp right now: the payment floor, ten times what
+   * the chain charges to move it (the wallet's `minimumStamp`). A stake, payout or refund below it is not sent as money. A
    * table's minimum stake must be at least this. Zero when it cannot be read. */
   minimumStampWei?(): Promise<bigint>;
 

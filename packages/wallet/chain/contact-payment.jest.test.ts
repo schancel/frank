@@ -50,6 +50,7 @@ import {
 import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '../evm-transaction-set-types'
+import { evmPaymentFloorWei } from './payment-floor'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -153,8 +154,10 @@ const subjectOf = (wallet: EvmChainWalletHandle) =>
   toHex(wallet.identity.compressedPubKey)
 const VALUE = 5_000_000n
 /** What a message carries here when no stamp is named: the configured default (1,000) raised to
- * this node's fee floor, 21,000 gas at its price of 1. */
-const STAMP = 21_000n
+ * the payment floor, ten moves of 21,000 gas at this node's price of 1. */
+const STAMP = 210_000n
+/** The gas price the sweep's transaction-set policy prices moves at; one test raises it. */
+let policyGasPriceWei = 1n
 
 describe('a payment to a contact', () => {
   let f: Fixture
@@ -248,17 +251,19 @@ describe('a payment to a contact', () => {
     node.holdValue = undefined
     node.held.clear()
     extraRoots = []
+    policyGasPriceWei = 1n
     useProviderStandIns()
     // Match the provider's fee quote and keep this payment/recovery suite's graphs small.
     // Transaction-set distribution itself has separate coverage.
     f = await fixture({
       transactionSetPolicy: () => ({
         sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
-        gasPriceWei: 1n,
+        gasPriceWei: policyGasPriceWei,
         paymentGasLimit: () => 21000n,
         changeGasLimit: 21000n,
         paymentFeeIsExact: true,
-        dustWei: 21000n,
+        // As in production: change is never smaller than the payment floor.
+        dustWei: evmPaymentFloorWei(policyGasPriceWei),
         radix: 2,
         jitterBps: 0,
         maxChangeOutputs: 2,
@@ -1728,18 +1733,28 @@ describe('a payment to a contact', () => {
     })
 
     it('a stamp worth less than its own move is left where it is and stays recorded', async () => {
-      // 30,000 in all against a move that costs 21,000: moving it would cost more than it moves.
-      const sent = await paid('tiny', 30_000n)
+      // Paid at the floor (ten moves at price 1); then the price rises to 11, so one move costs
+      // 231,000 against the 210,000 held: moving it would cost more than it moves.
+      const sent = await paid('tiny', STAMP)
       await poll(bob)
       await settle(bob)
+      policyGasPriceWei = 11n
       const stamps = stampsFor(bob, sent.payloadDigest)
       const answer = await bob.sweepReceivedCoins!({
         payloadDigests: [sent.payloadDigest],
       })
       expect(answer).toEqual({ [sent.payloadDigest]: { outcome: 'none' } })
-      expect(held(stamps)).toBe(30_000n)
+      expect(held(stamps)).toBe(STAMP)
       expect(await sweepsOf(bob)).toEqual([])
       expect(stampsFor(bob, sent.payloadDigest)).toEqual(stamps)
+    })
+
+    it('a sender never pays a stamp below the payment floor', async () => {
+      await expect(paid('tiny', STAMP - 1n)).rejects.toThrow(
+        'below the payment floor of 210000 wei',
+      )
+      expect(node.broadcasts).toEqual([])
+      expect(bobMailbox).toEqual([])
     })
   })
 })

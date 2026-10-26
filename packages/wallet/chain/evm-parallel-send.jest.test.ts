@@ -476,6 +476,8 @@ describe('parallel paid messages', () => {
       profile: 300_000n,
       received: 0n,
       receivedCount: 0,
+      tooSmall: 0n,
+      tooSmallCount: 0,
       sending: funded,
     })
     expect(await alice.getBalance()).toBe(800_000n + funded)
@@ -560,9 +562,9 @@ describe('parallel paid messages', () => {
     expect(mockFunded).toHaveLength(0)
   })
 
-  describe('a paid stamp is never smaller than what the chain charges to move it', () => {
-    /** 21,000 gas at the offline chain's gas price of 2. */
-    const FLOOR = 42_000n
+  describe('a paid stamp is never below the payment floor: ten times what the chain charges to move it', () => {
+    /** Ten transfers of 21,000 gas at the offline chain's gas price of 2. */
+    const FLOOR = 420_000n
     beforeEach(async () => {
       offlineChain.gasPrice = 2n
       mockBalances.set(
@@ -575,6 +577,17 @@ describe('parallel paid messages', () => {
       expect(await f.chain.directMessages.minimumStamp!({ wallet: alice })).toBe(
         FLOOR,
       )
+      expect(FLOOR).toBe(10n * 21_000n * offlineChain.gasPrice)
+    })
+
+    it('refuses a stamp worth more than one move but less than ten', async () => {
+      const refused = await f.chain.directMessages.send({
+        wallet: alice, recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'two moves' }], stampValue: 2n * 42_000n,
+      }).catch(error => error)
+      expect(refused).toBeInstanceOf(DirectMessageStampBelowFeeError)
+      expect(refused).toMatchObject({ floorWei: FLOOR })
+      expect(relay.bodies).toHaveLength(0)
     })
 
     it('refuses an explicit smaller stamp, naming the floor, having done nothing', async () => {
@@ -608,18 +621,18 @@ describe('parallel paid messages', () => {
     })
 
     it('does not split a stamp into payments smaller than the floor: it is paid in one piece', async () => {
-      // Two funded accounts that would pay 50,000 as 30,000 + 20,000.
-      await fundAccounts(2, 30_000n + FEE_RESERVE)
+      // Two funded accounts that would pay 500,000 as 300,000 + 200,000.
+      await fundAccounts(2, 300_000n + FEE_RESERVE)
       const sent = await f.chain.directMessages.send({
         wallet: alice,
         recipient: f.bob.identity.address,
         items: [{ type: 'text', text: 'one piece' }],
-        stampValue: 50_000n,
+        stampValue: 500_000n,
       })
       // Keep assertion failures serializable when Jest reports from a worker process.
       expect(sent.stampPayments).toHaveLength(1)
       expect(sent.stampPayments.every(p => p.valueWei >= FLOOR)).toBe(true)
-      expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n) >= 50_000n).toBe(true)
+      expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n) >= 500_000n).toBe(true)
       expect(sent.stampPayments.map(p => p.valueWei.toString())).toEqual(relayPayments().map(tx => tx.value.toString()))
       expect(relayPayments()[0].from!.toLowerCase()).toBe(
         (await alice.getReceiveAddress()).raw.toLowerCase(),

@@ -114,7 +114,7 @@ fn check_config_cli_rejects_an_enabled_mailbox_without_a_decimal_minimum() {
         ("non-decimal minimum", "min_value_wei = \"1e12\"\n"),
     ] {
         let invalid = include_str!("../../cashwebd.local.toml").replace(
-            "[registry.monad_mailbox]\nenabled = true\nmin_value_wei = \"1000000000000\"\n",
+            "[registry.monad_mailbox]\nenabled = true\nmin_value_wei = \"21000000000000000\"\n",
             &format!("[registry.monad_mailbox]\nenabled = true\n{extra}"),
         );
         let output = check_stdin(invalid.as_bytes());
@@ -515,7 +515,20 @@ fn group_writes_are_always_priced_and_paid_to_an_explicit_payee() {
         "payee = { address = \"0x00000000000000000000000000000000000000aA\" }",
         "payee = { xpub = \"xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8\" }",
     ] {
-        let valid = base.replace("payee = \"burn\"", payee);
+        // A payee other than the burn address must move what it is paid: its price is at least
+        // the network's payment floor (0.021 MON on Monad).
+        let below_floor = base.replace("payee = \"burn\"", payee);
+        let below = check_stdin(below_floor.as_bytes());
+        assert!(!below.status.success(), "{payee}: price below the floor accepted");
+        assert!(
+            String::from_utf8_lossy(&below.stderr).contains("payment floor"),
+            "{payee}: {}",
+            String::from_utf8_lossy(&below.stderr)
+        );
+        let valid = below_floor.replace(
+            "price_wei = \"1000000000000\"",
+            "price_wei = \"21000000000000000\"",
+        );
         assert!(check_stdin(valid.as_bytes()).status.success(), "{payee}");
     }
 }

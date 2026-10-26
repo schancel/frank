@@ -363,10 +363,9 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     const { gameId, dealer, player } = await challenge(alice, 'player', 400_000n)
     const accepted = dealer.hand(gameId)!
     expect(accepted.phase).toBe('open')
-    // Bob's cover counts the challenge's own stamp, which he received and can spend.
-    expect(accepted.maxBetWei).toBe(
-      maxDealerBetWei(RESERVE + 1_200_000n + STAMP, RESERVE),
-    )
+    // Bob's cover does not count the challenge's own stamp: at 1,000 wei it is below this
+    // fixture's payment floor (its 21,000 wei change floor), too small to move, so not spendable.
+    expect(accepted.maxBetWei).toBe(maxDealerBetWei(RESERVE + 1_200_000n, RESERVE))
     expect(player.hand(gameId)).toEqual(accepted)
     // The player's own check refuses more than the dealer's figure...
     expect(

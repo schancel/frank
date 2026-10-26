@@ -607,11 +607,13 @@ describe('modernized chat input interface (#1003)', () => {
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
     await wrapper.setProps({ defaultStampWei: undefined, stampAmount: '777' })
     expect(vm.sliderLabelValue).toContain('777 MON')
-    expect(vm.stampMultiplier).toBe('77.7')
+    // Against the static fallback default (0.05 of the unit, 50 here).
+    expect(vm.stampMultiplier).toBe('15.54')
     vm.decadeIndex = 5
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['900'])
     vm.decadeIndex = 11
-    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['1000'])
+    // 100 times the fallback.
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['5000'])
     vm.innerStampAmount = '0'
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
   })

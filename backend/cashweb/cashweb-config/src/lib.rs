@@ -27,6 +27,11 @@ const PROTOCOL_CHAIN_REGISTRY_V1: &str = include_str!("../../../../docs/protocol
 pub struct ProtocolChainRegistry {
     /// Registry schema version.
     pub schema_version: u32,
+    /// The protocol's value floor, as a multiple of what moving the value costs: every payment
+    /// made to someone who must move it again (a direct-message stamp payment, a priced write's
+    /// payment to an operator) carries at least this many times the fee of one plain transfer.
+    /// The one place this factor is written; see the registry README.
+    pub payment_floor_multiple: u32,
     /// Canonical chain rows.
     pub chains: Vec<ProtocolChainDescriptor>,
 }
@@ -45,6 +50,12 @@ pub struct ProtocolChainDescriptor {
     pub caip2: String,
     /// Optional native chain ID, represented as decimal text to avoid JSON integer limits.
     pub native_chain_id: Option<String>,
+    /// EVM only: the least gas price the network charges (its minimum base fee), in wei, as
+    /// decimal text. With [`ProtocolChainRegistry::payment_floor_multiple`] it fixes the
+    /// network's deterministic payment floor ([`protocol_payment_floor_wei`]). Absent: the
+    /// network has no protocol floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_gas_price_wei: Option<String>,
     /// Proxy capabilities this chain is permitted to expose.
     pub allowed_proxy_capabilities: Vec<ProtocolProxyCapability>,
     /// Required probes that bind an upstream to this exact protocol chain.
@@ -130,6 +141,10 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
             registry.schema_version, 1,
             "unsupported chain registry schema"
         );
+        assert!(
+            registry.payment_floor_multiple > 0,
+            "payment floor multiple must be positive"
+        );
         let mut ids = HashSet::new();
         let mut aliases = HashSet::new();
         for chain in &registry.chains {
@@ -179,6 +194,19 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
             assert!(chain.identity_probes.iter().all(|probe| chain
                 .allowed_proxy_capabilities
                 .contains(&probe.capability())));
+            if let Some(price) = &chain.min_gas_price_wei {
+                assert_eq!(
+                    chain.family,
+                    ProtocolChainFamily::Evm,
+                    "min_gas_price_wei is an EVM fact"
+                );
+                assert!(
+                    !price.is_empty()
+                        && price.bytes().all(|byte| byte.is_ascii_digit())
+                        && price.parse::<u128>().is_ok_and(|price| price > 0),
+                    "min_gas_price_wei must be a positive decimal wei amount"
+                );
+            }
             match chain.family {
                 ProtocolChainFamily::Evm => {
                     let native_chain_id = chain
@@ -253,6 +281,26 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
         }
         registry
     })
+}
+
+/// Gas of one plain EVM value transfer: what moving a received payment costs.
+pub const EVM_TRANSFER_GAS: u128 = 21_000;
+
+/// The least value one payment on `network` may carry to someone who must move it: the
+/// registry's `payment_floor_multiple` times one plain transfer at the network's minimum gas
+/// price. Deterministic: it reads no chain. A sender's live floor (the same multiple at the
+/// node's current price, never below the minimum) is at least this, so a relay that refuses
+/// below it never refuses an honest sender. `None` for a network the registry gives no minimum
+/// gas price.
+pub fn protocol_payment_floor_wei(network: &str) -> Option<u128> {
+    let price: u128 = protocol_chain(network)?
+        .min_gas_price_wei
+        .as_deref()?
+        .parse()
+        .ok()?;
+    u128::from(protocol_chain_registry().payment_floor_multiple)
+        .checked_mul(EVM_TRANSFER_GAS)?
+        .checked_mul(price)
 }
 
 /// Look up one stable protocol chain identifier.
@@ -1196,6 +1244,14 @@ pub enum RegistryConfigError {
     RemovedGroupsSection,
     /// The top-level `url` is not a bare http(s) origin.
     InvalidPublicUrl(String),
+    /// A configured amount someone must later move is below the network's protocol payment
+    /// floor ([`protocol_payment_floor_wei`]).
+    BelowPaymentFloor {
+        /// The configuration key.
+        field: &'static str,
+        /// The network's floor, in wei.
+        floor: u128,
+    },
     /// `[registry.directory] endpoint` names another origin than the top-level `url`.
     PublicOriginMismatch {
         /// The top-level `url`.
@@ -1240,6 +1296,13 @@ impl fmt::Display for RegistryConfigError {
                 "url {url:?} must be this relay's public http(s) origin, with no path, query or \
                  credentials: group write payments commit to it"
             ),
+            Self::BelowPaymentFloor { field, floor } => write!(
+                formatter,
+                "{field} is below this network's payment floor of {floor} wei \
+                 (docs/protocol/chains/v1.json: payment_floor_multiple x 21000 gas x \
+                 min_gas_price_wei): a payment that small costs its recipient more than a tenth \
+                 of itself to move"
+            ),
             Self::PublicOriginMismatch { url, endpoint } => write!(
                 formatter,
                 "[registry.directory] endpoint {endpoint:?} is not the relay's public origin \
@@ -1270,6 +1333,26 @@ impl RegistryConf {
             return Err(RegistryConfigError::RemovedGroupsSection);
         }
         self.group_writes.validate()?;
+        // What a recipient (the mailbox owner, a paid operator) must move again is never below
+        // the network's protocol floor. A burn is never moved, so it has none.
+        if let Some(floor) = protocol_payment_floor_wei(&chain.id) {
+            if let Ok(MonadMailboxMode::Enabled { min_value_wei }) = self.monad_mailbox.mode() {
+                if min_value_wei < floor {
+                    return Err(RegistryConfigError::BelowPaymentFloor {
+                        field: "registry.monad_mailbox.min_value_wei",
+                        floor,
+                    });
+                }
+            }
+            if self.group_writes.payee != GroupWritePayeeConf::Burn
+                && self.group_writes.price_wei()? < floor
+            {
+                return Err(RegistryConfigError::BelowPaymentFloor {
+                    field: "registry.group_writes.price_wei",
+                    floor,
+                });
+            }
+        }
         if self.monad_mailbox.enabled || self.forum.is_some() {
             let proxied =
                 self.evm_rpc.enabled && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
@@ -2247,12 +2330,12 @@ mod tests {
     use bitcoinsuite_error::Result;
 
     use crate::{
-        parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
-        ClusterConf, ClusterNatsConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
-        EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf, MonadMailboxConf,
-        MonadMailboxConfigError, MonadMailboxMode, PopConf, ProtocolChainFamily,
-        ProtocolProxyCapability, RegistryConf, RegistryConfigError, SolanaProxyChainConf,
-        SolanaProxyConf, SolanaProxyConfigError,
+        parse_conf, protocol_chain_registry, protocol_payment_floor_wei, BitcoinProxyChainConf,
+        BitcoinProxyConf, CashwebdConf, ClusterConf, ClusterNatsConf, CuratedContactConf,
+        EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError, ForumConf, GroupWritePayeeConf,
+        InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
+        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
+        SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -3151,14 +3234,15 @@ continuity_file = "/var/lib/frank/continuity"
                 conf.registry.monad_mailbox,
                 MonadMailboxConf {
                     enabled: true,
-                    min_value_wei: Some("1000000000000".to_string()),
+                    min_value_wei: Some("21000000000000000".to_string()),
                 },
                 "{name}"
             );
+            // At the network's payment floor: 10 x 21000 gas x 100 gwei.
             assert_eq!(
                 conf.registry.monad_mailbox.mode(),
                 Ok(MonadMailboxMode::Enabled {
-                    min_value_wei: 1_000_000_000_000,
+                    min_value_wei: protocol_payment_floor_wei(&conf.registry.network).unwrap(),
                 }),
                 "{name}"
             );
@@ -3280,6 +3364,72 @@ continuity_file = "/var/lib/frank/continuity"
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn the_payment_floor_is_ten_transfers_at_the_minimum_gas_price() {
+        // 10 x 21000 gas x 100 gwei on every Monad network: one source, the registry.
+        assert_eq!(protocol_chain_registry().payment_floor_multiple, 10);
+        for network in ["monad-mainnet", "monad-testnet", "monad-regtest"] {
+            assert_eq!(
+                protocol_payment_floor_wei(network),
+                Some(21_000_000_000_000_000),
+                "{network}"
+            );
+        }
+        // A network the registry gives no minimum gas price has no protocol floor.
+        assert_eq!(protocol_payment_floor_wei("ethereum-sepolia"), None);
+        assert_eq!(protocol_payment_floor_wei("btc-mainnet"), None);
+        assert_eq!(protocol_payment_floor_wei("not-a-chain"), None);
+    }
+
+    #[test]
+    fn a_relay_refuses_to_start_with_a_minimum_below_the_payment_floor() {
+        let floor = protocol_payment_floor_wei("monad-testnet").unwrap();
+        let mut conf = parse_conf(include_str!("../../cashwebd.local.toml")).unwrap();
+        assert_eq!(conf.registry.network, "monad-testnet");
+        // The shipped minimum is the floor itself.
+        assert_eq!(
+            conf.registry.monad_mailbox.mode(),
+            Ok(MonadMailboxMode::Enabled {
+                min_value_wei: floor
+            })
+        );
+        assert!(conf.registry.validate_network().is_ok());
+
+        conf.registry.monad_mailbox.min_value_wei = Some((floor - 1).to_string());
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::BelowPaymentFloor {
+                field: "registry.monad_mailbox.min_value_wei",
+                floor,
+            })
+        );
+        // The old default (0.000001 MON) is refused.
+        conf.registry.monad_mailbox.min_value_wei = Some("1000000000000".into());
+        assert!(conf.registry.validate_network().is_err());
+        conf.registry.monad_mailbox.min_value_wei = Some(floor.to_string());
+
+        // A burned group write is never moved: any positive price. A paid operator moves it.
+        conf.registry.group_writes.price_wei = "1".into();
+        conf.registry.group_writes.payee = GroupWritePayeeConf::Burn;
+        assert!(conf.registry.validate_network().is_ok());
+        conf.registry.group_writes.payee =
+            GroupWritePayeeConf::Address(format!("0x{}", "11".repeat(20)));
+        assert_eq!(
+            conf.registry.validate_network(),
+            Err(RegistryConfigError::BelowPaymentFloor {
+                field: "registry.group_writes.price_wei",
+                floor,
+            })
+        );
+        conf.registry.group_writes.price_wei = floor.to_string();
+        assert!(conf.registry.validate_network().is_ok());
+
+        // Disabled, the mailbox minimum is not checked.
+        conf.registry.monad_mailbox.enabled = false;
+        conf.registry.monad_mailbox.min_value_wei = None;
+        assert!(conf.registry.validate_network().is_ok());
     }
 
     #[test]

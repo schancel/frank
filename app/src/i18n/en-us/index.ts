@@ -1175,6 +1175,9 @@ export const rawEnUS = {
     other: 'Sending accounts',
     otherNote:
       'Set aside by the wallet in its own accounts to pay for your next messages. Part of the balance above.',
+    tooSmall: 'Too small to move ({count})',
+    tooSmallNote:
+      'Received payments worth less than ten times the network fee to move them. Not part of the balance above.',
     total: 'Balance',
     yours:
       'Your main account, profile address and sending accounts all come back from your recovery phrase.',

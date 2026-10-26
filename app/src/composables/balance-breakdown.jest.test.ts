@@ -147,4 +147,30 @@ describe('a wallet that gives its balance in parts', () => {
     expect(bare.rows.map(row => row.id)).toEqual(['main'])
     expect(bare.total).toBe(7n)
   })
+
+  it('lists received coins below the payment floor apart, never in the balance', async () => {
+    // Two received stamps of 0.0021 MON: below ten moves of them, so not spendable money.
+    const dust = 2_100_000_000_000_000n
+    const wallet = {
+      getReceiveAddress: async () => ({ raw: '0x' + 'aa'.repeat(20) }),
+      getBalance: async () => 12n + 50n,
+      getBalanceParts: async () => ({
+        main: 12n,
+        profile: 0n,
+        received: 50n,
+        receivedCount: 1,
+        sending: 0n,
+        tooSmall: 2n * dust,
+        tooSmallCount: 2,
+      }),
+    }
+    const breakdown = await readBalanceBreakdown(wallet)
+    expect(breakdown.rows).toEqual([
+      { id: 'main', amount: 12n, address: '0x' + 'aa'.repeat(20) },
+      { id: 'received', amount: 50n, count: 1 },
+      { id: 'tooSmall', amount: 2n * dust, count: 2 },
+    ])
+    expect(breakdown.total).toBe(62n)
+    expect(breakdown.total).toBe(await wallet.getBalance())
+  })
 })

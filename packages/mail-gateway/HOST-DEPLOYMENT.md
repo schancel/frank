@@ -33,7 +33,7 @@ The host reads the following nonsecret environment variables:
 | `FRANK_MAIL_RESEND_API_KEY_FILE` | Absolute 0400/0600 regular file containing the Resend API key. |
 | `FRANK_MAIL_RESEND_WEBHOOK_SECRET_FILE` | Absolute 0400/0600 regular file containing the Resend webhook signing secret. |
 | `FRANK_MAIL_RESEND_RAW_ORIGINS` | Comma-separated exact HTTPS origins allowed for raw MIME retrieval. |
-| `FRANK_MAIL_STAMP_WEI` | Explicit unsigned base-unit stamp intent for newly admitted inbound mail. |
+| `FRANK_MAIL_STAMP_WEI` | Explicit unsigned base-unit stamp intent for newly admitted inbound mail. It must be at least the wallet's payment floor, ten times the fee of moving the stamp (0.02142 MON at Monad's 102 gwei; `docs/protocol/chains/README.md`, "Payment floor"): the wallet refuses a smaller stamp and the mail is not delivered. 50000000000000000 (0.05 MON) leaves room for the gas price to double. |
 | `FRANK_MAIL_WEBHOOK_HOST` | Local HTTP bind address. |
 | `FRANK_MAIL_WEBHOOK_PORT` | Local HTTP port. |
 | `FRANK_MAIL_POLL_MS` | Positive recovery interval in milliseconds. |

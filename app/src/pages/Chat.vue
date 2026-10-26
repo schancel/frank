@@ -512,7 +512,7 @@ import {
 } from '../stealth-payments/review-payment'
 import { stealthAvailableBalance } from '../stealth-payments/available'
 import {
-  notSentFailureKey,
+  notSentFailureMessage,
   sendFailureKey,
   StealthPaymentNotSentError,
 } from '../stealth-payments/failure'
@@ -1743,7 +1743,14 @@ export default defineComponent({
         if (sequence === this.stealthReviewSequence)
           this.stealthQuote = {
             status: 'error',
-            message: this.$t(notSentFailureKey(error)),
+            message: notSentFailureMessage(
+              error,
+              () =>
+                this.stealthAssets.find(
+                  option => option.key === request.assetKey,
+                ),
+              (key, params) => this.$t(key, params ?? {}),
+            ),
           }
       }
     },

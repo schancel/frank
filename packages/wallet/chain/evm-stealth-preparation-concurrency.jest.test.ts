@@ -112,6 +112,7 @@ function runtime(
     journal.get(id).preparationId!.slice('evm-transaction-set:'.length)
   return {
     preparer,
+    paymentFloorWei: async () => preparer.transactionSetPolicy().dustWei,
     constructNativePayment: async (
       request: Parameters<typeof preparer.constructTransactionSet>[0]
     ) => {

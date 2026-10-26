@@ -250,7 +250,8 @@ test('a funded persona does not inflate ordinary stealth payment capacity', asyn
       chainIdentifier: 'monad-testnet',
       asset: { kind: 'native' },
       recipientSpendPublicKey: wallet.identity!.compressedPubKey,
-      amountAtomic: 1_000n,
+      // Above the payment floor (210,000 at gas price 1), and well within the persona's funds.
+      amountAtomic: 300_000n,
     })).rejects.toThrow(/Insufficient available EVM coins/)
     await expect(wallet.stealthPayments!.available!({ kind: 'native' })).resolves.toBe(0n)
   } finally {

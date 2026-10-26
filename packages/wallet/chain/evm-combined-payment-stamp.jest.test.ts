@@ -10,6 +10,7 @@ import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/steal
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { EvmTransactionSetPolicy } from '../evm-transaction-set-types'
+import { ContactPaymentBelowFloorError } from './chain-wallet'
 
 jest.mock('../evm-provider', () => require('./canonical-two-wallets.testutil').offlineProviderModule())
 jest.mock('../evm-http', () => require('./canonical-two-wallets.testutil').offlineHttpModule())
@@ -190,6 +191,28 @@ test('refused financial cancellation leaves the contact payment and its signed b
     jest.spyOn(f.alice.transactionSetPreparer!, 'releaseUnexposed').mockResolvedValue(false)
     await f.alice.settleContactPayment!(prepared.item.ephemeralPubKey.replace(/^0x/, ''))
     expect(f.alice.getContactPayments!()[0]).toEqual(original)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+  } finally { await f.close() }
+})
+
+test('the composed wallet refuses a stealth payment below the payment floor before it records or signs anything', async () => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 1000000n)
+    await f.alice.refreshTransactionSetInventory!()
+    const below = { operationId: 'below-floor', chainIdentifier: 'monad-testnet', asset: { kind: 'native' as const },
+      recipientSpendPublicKey: f.bob.identity.compressedPubKey, amountAtomic: policy.dustWei - 1n }
+    for (const attempt of [
+      () => f.alice.stealthPayments!.quote!(below),
+      () => f.alice.stealthPayments!.prepare({ ...below, maxNativeFeeAtomic: 400000n }),
+    ]) {
+      const refused = await attempt().catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(ContactPaymentBelowFloorError)
+      expect(refused).toMatchObject({ valueWei: policy.dustWei - 1n, floorWei: policy.dustWei })
+    }
+    expect(await f.alice.stealthPayments!.get('below-floor')).toBeUndefined()
+    expect(f.alice.getNativeOperations!()).toEqual([])
     expect(offlineChain.walletBroadcasts).toHaveLength(0)
   } finally { await f.close() }
 })

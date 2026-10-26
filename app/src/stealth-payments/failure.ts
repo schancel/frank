@@ -1,5 +1,7 @@
 import { describeWalletFailure } from '@frank/wallet/wallet-failure'
 import { StealthPaymentMemberLimitError } from '@frank/wallet/stealth-payment'
+import { ContactPaymentBelowFloorError } from '@frank/wallet/chain/chain-wallet'
+import { formatStealthAmount, type StealthAssetOption } from './options'
 
 /** The financial owner proved the prepared payment was never handed to anyone who could
  * broadcast it, and released it. Only then may the user be told that nothing was sent. */
@@ -21,8 +23,45 @@ export function notSentFailureKey(error: unknown): string {
     return 'sendStealthDialog.insufficientFunds'
   if (error instanceof StealthPaymentMemberLimitError)
     return 'sendStealthDialog.tooManyCoins'
+  // Below the payment floor: named with the minimum (`notSentFailureFloorWei`), as Send to
+  // Contact names it.
+  if (error instanceof ContactPaymentBelowFloorError)
+    return 'sendContactDialog.belowMinimum'
   // Anything else: the generic message; the caller logs the detail to the console.
   return 'sendStealthDialog.notSent'
+}
+
+/** The payment floor a payment was refused below, which `notSentFailureKey`'s message names
+ * as `{amount}`; undefined for any other failure. */
+export function notSentFailureFloorWei(error: unknown): bigint | undefined {
+  const failure =
+    error instanceof StealthPaymentNotSentError ? error.failure : error
+  return failure instanceof ContactPaymentBelowFloorError
+    ? failure.floorWei
+    : undefined
+}
+
+/** `notSentFailureKey`'s message, translated by `t`. A payment refused below the payment floor
+ * names the minimum in the native unit of the payment's asset (`assetOf`, asked only then), as
+ * Send to Contact does; without the asset to name it in, the generic message. */
+export function notSentFailureMessage(
+  error: unknown,
+  assetOf: () =>
+    | Pick<StealthAssetOption, 'nativeUnit' | 'nativeDecimals'>
+    | undefined,
+  t: (key: string, params?: Record<string, unknown>) => string,
+): string {
+  const failure =
+    error instanceof StealthPaymentNotSentError ? error.failure : error
+  const floorWei = notSentFailureFloorWei(failure)
+  if (floorWei === undefined) return t(notSentFailureKey(failure))
+  const option = assetOf()
+  if (!option) return t('sendStealthDialog.notSent')
+  return t(notSentFailureKey(failure), {
+    amount: `${formatStealthAmount(floorWei, option.nativeDecimals)} ${
+      option.nativeUnit
+    }`,
+  })
 }
 
 /** The message for a failed send. Once the prepared payment was adopted by messaging (or its

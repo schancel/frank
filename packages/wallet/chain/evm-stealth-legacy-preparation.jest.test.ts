@@ -117,6 +117,9 @@ async function fixture(row = retained()) {
     quote: jest.fn(async () => {
       throw new Error("must retain old allocation");
     }),
+    paymentFloorWei: jest.fn(async () => {
+      throw new Error("must retain the v2 intent as recorded");
+    }),
     quoteNative: jest.fn(async () => ({
       nativeBalanceAtomic: 22000n,
       assetBalanceAtomic: 22000n,

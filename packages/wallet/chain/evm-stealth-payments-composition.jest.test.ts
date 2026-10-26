@@ -285,13 +285,13 @@ test('production native preparation retains exact bytes and claims until bound e
       chainIdentifier: 'monad-testnet',
       asset: { kind: 'native' as const },
       recipientSpendPublicKey: wallet.identity!.compressedPubKey,
-      amountAtomic: 1_000n,
+      amountAtomic: 21_000n,
       maxNativeFeeAtomic: 100_000n,
     }
     const { maxNativeFeeAtomic: _ceiling, ...unsignedIntent } = intent
     const quote = await wallet.stealthPayments!.quote!(unsignedIntent)
     expect(quote).toMatchObject({
-      amountAtomic: 1000n,
+      amountAtomic: 21000n,
       sources: [],
       nativeBalanceAtomic: 1000000n,
       assetBalanceAtomic: 1000000n,
@@ -344,7 +344,7 @@ test('production native preparation retains exact bytes and claims until bound e
       ]),
     ).toEqual([prepared, prepared])
     await expect(
-      wallet.stealthPayments!.prepare({ ...intent, amountAtomic: 1_001n }),
+      wallet.stealthPayments!.prepare({ ...intent, amountAtomic: 21_001n }),
     ).rejects.toThrow(/conflict/)
     await expect(
       wallet.stealthPayments!.submit(intent.operationId),
@@ -397,8 +397,8 @@ test('production native preparation retains exact bytes and claims until bound e
       await wallet.stealthPayments!.reconcile(intent.operationId),
     ).toMatchObject({
       status: 'succeeded',
-      intendedAmountAtomic: 1_000n,
-      verifiedReceivedAmountAtomic: 1_000n,
+      intendedAmountAtomic: 21_000n,
+      verifiedReceivedAmountAtomic: 21_000n,
     })
     expect(state.broadcast).toHaveBeenCalledWith(
       prepared.members[0]!.rawTransaction,
@@ -430,7 +430,7 @@ test('production native preparation retains exact bytes and claims until bound e
     await applyWalletSyncItem(wallet, accountNote)
     expect(await wallet.stealthReceipts!.observe(receiptClaim)).toMatchObject({
       status: 'succeeded',
-      verifiedReceivedAmountAtomic: 1_000n,
+      verifiedReceivedAmountAtomic: 21_000n,
     })
     await expect(
       wallet.stealthReceipts!.record({
@@ -455,7 +455,7 @@ test('production native preparation retains exact bytes and claims until bound e
     await wallet.stealthReceipts!.record(receiptClaim)
     expect(await wallet.stealthReceipts!.observe(receiptClaim)).toMatchObject({
       status: 'succeeded',
-      verifiedReceivedAmountAtomic: 1_000n,
+      verifiedReceivedAmountAtomic: 21_000n,
     })
     await rejectMalformedReceiptBytes(wallet, receiptClaim)
     expect(state.broadcast).not.toHaveBeenCalled()
@@ -771,7 +771,7 @@ test('a crash after signing before the manifest journal link recovers the origin
       chainIdentifier: 'monad-testnet',
       asset: { kind: 'native' as const },
       recipientSpendPublicKey: wallet.identity!.compressedPubKey,
-      amountAtomic: 1_000n,
+      amountAtomic: 21_000n,
       maxNativeFeeAtomic: 100_000n,
     }
     const { maxNativeFeeAtomic: _initialFee, ...unsignedIntent } = intent
@@ -868,7 +868,7 @@ test('native quote reads the authoritative inventory without selecting a single 
       chainIdentifier: 'monad-testnet',
       asset: { kind: 'native' as const },
       recipientSpendPublicKey: wallet.identity!.compressedPubKey,
-      amountAtomic: 10_000n,
+      amountAtomic: 21_000n,
     }
 
     const start = performance.now()
@@ -876,7 +876,7 @@ test('native quote reads the authoritative inventory without selecting a single 
     const elapsed = performance.now() - start
 
     expect(quote).toMatchObject({
-      amountAtomic: 10_000n,
+      amountAtomic: 21_000n,
       nativeBalanceAtomic: 5_000_000n,
       assetBalanceAtomic: 5_000_000n,
       // One transfer and the change split of the rest: eight transfers at gas price 1.

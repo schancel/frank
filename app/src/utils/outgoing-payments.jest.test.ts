@@ -80,11 +80,19 @@ describe('what the bubbles show of sent payments', () => {
     expect(refreshOutgoingPaymentSummaries(wallet, [message], NOW)).toBe(1)
     expect(outgoingPaymentSummaries.has('aa')).toBe(false)
     says = { aa: 'paid' }
-    refreshOutgoingPaymentSummaries(wallet, [{ ...message, status: 'confirmed' }], NOW)
+    refreshOutgoingPaymentSummaries(
+      wallet,
+      [{ ...message, status: 'confirmed' }],
+      NOW,
+    )
     expect(outgoingPaymentSummaries.get('aa')).toBe('paid')
     // Delivered and final: no longer asked.
     asked = []
-    refreshOutgoingPaymentSummaries(wallet, [{ ...message, status: 'confirmed' }], NOW)
+    refreshOutgoingPaymentSummaries(
+      wallet,
+      [{ ...message, status: 'confirmed' }],
+      NOW,
+    )
     expect(asked).toEqual([])
   })
 

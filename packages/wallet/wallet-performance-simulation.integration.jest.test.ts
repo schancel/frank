@@ -182,6 +182,10 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     const sorted = [...sendLatenciesMs].sort((a, b) => a - b)
     const p50 = percentile(sorted, 50)
     const p95 = percentile(sorted, 95)
+    // The measured numbers stay in the CI log, so a margin can be read from a passing run.
+    console.log(
+      `steady paid DM sends: ${sendLatenciesMs.map(ms => ms.toFixed(1)).join(', ')} ms; p50 ${p50.toFixed(1)}, p95 ${p95.toFixed(1)}`,
+    )
     expect(p50).toBeLessThan(110)
     expect(p95).toBeLessThan(180)
     expect(bobMailbox).toHaveLength(distributing + 1 + messageCount)

@@ -489,6 +489,23 @@ describe('SendContact.vue (dual-send model)', () => {
     mockStampWei = 0n
   })
 
+  it('Confirm bounds the payment and its stamp by the network fee the review showed', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      ...mockWallet,
+      quoteContactPayment: jest.fn().mockResolvedValue({
+        valueWei: 1_500_000_000_000_000_000n,
+        stampWei: 0n,
+        networkFeeWei: 12_852_000_000_000_000n,
+        totalWei: 1_512_852_000_000_000_000n,
+        floorWei: 1n,
+      }),
+    })
+    mockPrepare.mockResolvedValueOnce(PREPARED)
+    mockSendMessage.mockResolvedValueOnce({ state: 'sent', payloadDigest: 'dd' })
+    await confirm()
+    expect(mockPrepare.mock.calls[0][0].maxFeeWei).toBe(12_852_000_000_000_000n)
+  })
+
   it('Confirm sends the stamp the review showed', async () => {
     // No stamp chosen for the chat: the wallet's quote names its default, and that is sent.
     mockStampWei = undefined

@@ -1267,6 +1267,8 @@ export const rawEnUS = {
     pendingHint:
       'Waiting for the chain to show this payment. It is not in your balance yet.',
     spendableHint: 'In your spendable balance',
+    tooSmallHint:
+      'Too small to move: worth less than ten times the network fee to move it. Not part of your balance.',
     spentHint: 'Received, and spent since',
     unverifiedHint:
       'Your wallet has not checked this payment against the chain.',
@@ -1677,6 +1679,12 @@ export const rawEnUS = {
       'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
     tooLarge:
       'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
+    stamp: 'Message stamp',
+    total: 'Total (payment, stamp and network fee)',
+    minimum:
+      'The smallest payment is {amount}: ten times the network fee to move it, so your contact can always spend it.',
+    belowMinimum:
+      'That is below the smallest payment of {amount}. Your contact could not move it for less than a tenth of its value: pay at least {amount}.',
   },
   contactBookDialog: {
     contacts: 'Contacts',

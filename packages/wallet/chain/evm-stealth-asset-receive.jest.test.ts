@@ -250,10 +250,12 @@ async function stealthSend(values: readonly bigint[]) {
   };
 }
 
+// Every received payment here is above the payment floor (ten moves of 21,000 gas at the node's
+// price of 1, 210,000): a smaller one would be held as too small to move, not counted.
 const receivedPart = async () => (await wallet.getBalanceParts!()).received;
 
 test("a received multi-transfer stealth payment is counted, survives a reload, and a repeated read does not double it", async () => {
-  const payment = await stealthSend([500n, 500n, 500n, 500n]);
+  const payment = await stealthSend([500_000n, 500_000n, 500_000n, 500_000n]);
   for (const raw of payment.raws) state.mine(raw);
   const message = received(
     [{ type: "text", text: "for you" } as MessageItem, payment.item()],
@@ -261,7 +263,7 @@ test("a received multi-transfer stealth payment is counted, survives a reload, a
   );
 
   await recordEvmReceivedCoins(wallet, [message]);
-  expect(await receivedPart()).toBe(2000n);
+  expect(await receivedPart()).toBe(2_000_000n);
   const coin = () =>
     wallet.getReceivedPayments!().find((p) => p.address === payment.address);
   expect(coin()).toMatchObject({ status: "received", origin: "stealth" });
@@ -272,21 +274,21 @@ test("a received multi-transfer stealth payment is counted, survives a reload, a
   // The same message read again (a repeated mailbox read, the stream and the poll both): no-op.
   await recordEvmReceivedCoins(wallet, [message, message]);
   wallet.invalidateBalanceCache?.();
-  expect(await receivedPart()).toBe(2000n);
+  expect(await receivedPart()).toBe(2_000_000n);
   expect(
     wallet.getReceivedPayments!().filter((p) => p.address === payment.address)
   ).toHaveLength(1);
 
   await reopenWallet();
   expect(coin()).toMatchObject({ status: "received" });
-  expect(await receivedPart()).toBe(2000n);
+  expect(await receivedPart()).toBe(2_000_000n);
   await recordEvmReceivedCoins(wallet, [message]);
   wallet.invalidateBalanceCache?.();
-  expect(await receivedPart()).toBe(2000n);
+  expect(await receivedPart()).toBe(2_000_000n);
 });
 
 test("the coin is recorded before the chain shows it, counted only once it lands, and its transfers are rebroadcast", async () => {
-  const payment = await stealthSend([700n, 300n]);
+  const payment = await stealthSend([700_000n, 300_000n]);
   await recordEvmReceivedCoins(wallet, [
     received([payment.item()], "b2".repeat(32)),
   ]);
@@ -302,24 +304,25 @@ test("the coin is recorded before the chain shows it, counted only once it lands
     [...payment.raws].sort()
   );
   wallet.invalidateBalanceCache?.();
-  expect(await receivedPart()).toBe(1000n);
+  expect(await receivedPart()).toBe(1_000_000n);
 });
 
 test("a received stealth payment can be spent", async () => {
-  const payment = await stealthSend([30000n, 30000n]);
+  const payment = await stealthSend([30_000_000n, 30_000_000n]);
   for (const raw of payment.raws) state.mine(raw);
   await recordEvmReceivedCoins(wallet, [
     received([payment.item()], "c3".repeat(32)),
   ]);
-  expect(await receivedPart()).toBe(60000n);
+  expect(await receivedPart()).toBe(60_000_000n);
 
   const prepared = await wallet.stealthPayments!.prepare({
     operationId: "spend-received",
     chainIdentifier: "monad-testnet",
     asset: { kind: "native" },
     recipientSpendPublicKey: getBytes(contact.signingKey.compressedPublicKey),
-    amountAtomic: 5000n,
-    maxNativeFeeAtomic: 42000n,
+    amountAtomic: 5_000_000n,
+    // The payment and up to four change outputs (`maxChangeOutputs`), 21,000 gas each at 1.
+    maxNativeFeeAtomic: 105_000n,
   });
   expect(
     prepared.members.map((member) =>
@@ -329,7 +332,7 @@ test("a received stealth payment can be spent", async () => {
 });
 
 test("transfers this wallet cannot use are ignored and the rest of the item is kept", async () => {
-  const payment = await stealthSend([400n, 600n]);
+  const payment = await stealthSend([400_000n, 600_000n]);
   for (const raw of payment.raws) state.mine(raw);
   // A transfer to someone else's one-time account, and one on another chain.
   const other = deriveEvmStealthAddress({
@@ -363,7 +366,7 @@ test("transfers this wallet cannot use are ignored and the rest of the item is k
     ),
   ]);
   await recordEvmReceivedCoins(wallet, [received([item], "d4".repeat(32))]);
-  expect(await receivedPart()).toBe(1000n);
+  expect(await receivedPart()).toBe(1_000_000n);
   expect(wallet.getReceivedPayments!().map((p) => p.address)).toEqual([
     payment.address,
   ]);
@@ -394,5 +397,26 @@ test("transfers this wallet cannot use are ignored and the rest of the item is k
     recordEvmReceivedCoins(wallet, [received([conflicting], "e5".repeat(32))])
   ).resolves.toBeUndefined();
   wallet.invalidateBalanceCache?.();
-  expect(await receivedPart()).toBe(1000n);
+  expect(await receivedPart()).toBe(1_000_000n);
+});
+
+test("a device that has not read the gas price yet still holds back a payment below the floor", async () => {
+  // A wallet just opened: no fee has been read. Its first balance read reads the gas price
+  // before it classifies, so it agrees with a device that read it long ago.
+  const payment = await stealthSend([400n, 600n]);
+  for (const raw of payment.raws) state.mine(raw);
+  await recordEvmReceivedCoins(wallet, [
+    received([payment.item()], "f1".repeat(32)),
+  ]);
+  const parts = await wallet.getBalanceParts!();
+  expect(parts).toMatchObject({
+    received: 0n,
+    receivedCount: 0,
+    tooSmall: 1000n,
+    tooSmallCount: 1,
+  });
+  // The payment itself says the same (what its chat card shows).
+  expect(
+    wallet.getReceivedPayments!().find((p) => p.address === payment.address)
+  ).toMatchObject({ status: "received", spendable: true, tooSmall: true });
 });

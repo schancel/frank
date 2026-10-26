@@ -128,6 +128,25 @@ describe('ChatMessageStealth', () => {
     ).toBe(false)
   })
 
+  it('a received coin the wallet holds as too small to move is never said to be spendable', () => {
+    // 0.01 received while the payment floor is about 0.0214: the balance breakdown lists it as
+    // too small to move, and the card says the same.
+    mockPayment.value = coin({
+      status: 'received',
+      amountWei: ONE / 100n,
+      receivedAmountWei: ONE / 100n,
+      claimedAmountWei: ONE / 100n,
+      spendable: true,
+      tooSmall: true,
+    })
+    const wrapper = mountComponent({ amount: Number(ONE / 100n) })
+    expect(text(wrapper, 'stealth-status-badge')).toBe('Received')
+    expect(text(wrapper, 'stealth-status-hint')).toBe(
+      'Too small to move: worth less than ten times the network fee to move it. Not part of your balance.',
+    )
+    expect(wrapper.text()).not.toMatch(/spendable balance/i)
+  })
+
   it('never shows a green Received without an amount the chain showed arriving', () => {
     // What a forged item used to produce: "received", nothing arrived, the sender's figure.
     mockPayment.value = coin({

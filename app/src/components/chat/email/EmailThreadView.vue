@@ -1483,9 +1483,8 @@ export default defineComponent({
       if (this.stampWei === 0n) return this.$t('chatInput.stampFree', 'Free')
       if (this.stampWei === undefined)
         return this.$t('chatInput.stampQuoteUnavailable', 'Quote unavailable')
-      const amount = `${activeChain.toDisplayAmount(this.stampWei)} ${
-        this.chainUnit
-      }`
+      // Shortened for reading, as every amount the app shows (`formatDisplayAmount`).
+      const amount = formatDisplayAmount(activeChain, this.stampWei)
       return this.stampMultiplier
         ? this.$t('chatInput.stampMultiplierValue', {
             multiplier: this.stampMultiplier,

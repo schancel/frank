@@ -21,13 +21,18 @@
 import {
   computed,
   getCurrentInstance,
+  shallowRef,
   onMounted,
   onUnmounted,
   readonly,
   ref,
   watch,
 } from 'vue'
-import { activeChain, isChainUnreachableError } from '@frank/wallet/chain'
+import {
+  activeChain,
+  isChainUnreachableError,
+  type WalletBalanceParts,
+} from '@frank/wallet/chain'
 import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -51,6 +56,10 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 // active wallet (so consumers can tell "not loaded" from a real zero); cleared when the wallet
 // changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
+// Where that balance is (`getBalanceParts`), from the same read: the Wallet page's breakdown shows
+// these, so the balance and its breakdown are one view and never disagree. null while unknown or
+// for a wallet that does not report its parts.
+const parts = shallowRef<WalletBalanceParts | null>(null)
 const stale = ref(false)
 const observedAt = ref<number | undefined>(undefined)
 const hasError = ref(false)
@@ -161,6 +170,7 @@ async function fetchBalance(force: boolean) {
     // Wallet changed: drop the old value and invalidate anything still in flight for it.
     walletKey = key
     balance.value = null
+    parts.value = null
     stale.value = false
     observedAt.value = undefined
     cordoned.value = 0n
@@ -182,7 +192,7 @@ async function fetchBalance(force: boolean) {
     if (typeof activeChain?.nativeTransfers?.getBalance !== 'function') return
     const walletWithObs = wallet as {
       getBalanceObservation?: () =>
-        | { balance: bigint; observedAt: number }
+        | { balance: bigint; observedAt: number; parts?: WalletBalanceParts }
         | undefined
     }
     if (balance.value === null) {
@@ -201,6 +211,11 @@ async function fetchBalance(force: boolean) {
     if (latestObs !== undefined) {
       observedAt.value = latestObs.observedAt
     }
+    // The parts of exactly this balance: the observation the wallet made with it.
+    parts.value =
+      latestObs?.parts !== undefined && latestObs.balance === next
+        ? latestObs.parts
+        : null
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
     // Throttled (`CORDONED_POLL_MS`); a failed read also waits out the interval.
     const now = Date.now()
@@ -313,6 +328,7 @@ function acquire() {
         const [oldRev, oldAccStatus, oldMsgStatus] = oldValue ?? []
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
+          parts.value = null
           stale.value = false
           observedAt.value = undefined
           cordoned.value = 0n
@@ -343,6 +359,7 @@ function release() {
   window.removeEventListener(APP_STATE_EVENT, onAppState)
   backgrounded = false
   balance.value = null
+  parts.value = null
   stale.value = false
   observedAt.value = undefined
   cordoned.value = 0n
@@ -362,6 +379,8 @@ export function useBalance() {
   }
   return {
     balance: readonly(balance),
+    /** Where `balance` is, from the same read (`getBalanceParts`); null when not reported. */
+    parts: computed(() => parts.value),
     stale: readonly(stale),
     observedAt: readonly(observedAt),
     formattedBalance,

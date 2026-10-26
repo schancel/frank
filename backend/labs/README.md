@@ -312,11 +312,14 @@ to all three relays and to the proxy:
 - directory: relay-a killed mid-load while three writers publish 40 accounts each (revision
   0 and one renewal, retried on the next relay): every acknowledged account resolves at its
   acknowledged head on every relay;
-- FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
-  three writers append 150 messages each and retry a failed append, with the same
-  envelope and payment, on the next relay. The test checks that the container really restarted
-  (`State.StartedAt` changed) and that the writers felt it: an attempt overlapping the
-  fault window failed or took at least 1 s. Relay-b's kill must cause a failed attempt.
+- FoundationDB stopped mid-load, held down for 3 s and started again, and separately relay-b
+  killed mid-load and started again: three writers append 150 messages each and retry a
+  failed append, with the same envelope and payment, on the next relay. The test checks that
+  the container really restarted (`State.StartedAt` changed). For FoundationDB the fault
+  window runs from the stop to the first append acknowledged after the start, and the writers
+  must have felt it: an attempt overlapping that window failed or took at least 2 s (an
+  attempt in flight at the stop cannot commit for 3 s). Relay-b's kill must cause a failed
+  attempt.
   The pre-fault baseline, measured after each writer's first 10 attempts, is only
   reported. Afterwards every acknowledged append is readable on
   every relay at its acknowledged sequence number, and no retried append was stored

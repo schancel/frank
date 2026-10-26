@@ -530,8 +530,12 @@ struct LoadOutcome {
     slowest_baseline: Duration,
 }
 
-/// Attempts at least this long that overlap the fault window show the writers felt it.
-const FELT_LATENCY: Duration = Duration::from_secs(1);
+/// How long FoundationDB is held down mid-load: long enough that every writer must cross it.
+const FDB_OUTAGE: Duration = Duration::from_secs(3);
+/// Attempts at least this long that overlap the fault window show the writers felt it. An
+/// attempt in flight when FoundationDB stops cannot commit until it is back, at least
+/// [`FDB_OUTAGE`] later, so one that neither failed nor took this long did not cross it.
+const FELT_LATENCY: Duration = Duration::from_secs(2);
 /// Each writer's first attempts (connection setup, first transactions) are not baseline.
 const WARMUP_ATTEMPTS: usize = 10;
 
@@ -549,12 +553,16 @@ const LOAD_DEADLINE: Duration = Duration::from_secs(300);
 /// Three writers, one per relay, each appending `per_writer` distinct paid envelopes. A failed
 /// or unanswered append is retried, with the same envelope and payment, on the next relay until one
 /// acknowledges it, as a client would. After `fault_after` acknowledgements `fault` runs once.
-/// Fails, rather than hangs, if the load does not finish within [`LOAD_DEADLINE`].
+/// The fault window runs from the start of `fault` until it returns or, with
+/// `until_next_ack`, until the first append acknowledged after it returns (the store is back
+/// only when a write commits again). Fails, rather than hangs, if the load does not finish
+/// within [`LOAD_DEADLINE`].
 async fn load_with_fault<F, Fut>(
     group: &Arc<Group>,
     payments: &Arc<Payments>,
     per_writer: usize,
     fault_after: usize,
+    until_next_ack: bool,
     fault: F,
 ) -> LoadOutcome
 where
@@ -623,6 +631,16 @@ where
     tokio::time::timeout(LOAD_DEADLINE.saturating_sub(started.elapsed()), fault())
         .await
         .expect("the fault did not finish before the deadline");
+    if until_next_ack {
+        let after = acked.load(Ordering::SeqCst);
+        while acked.load(Ordering::SeqCst) == after {
+            assert!(
+                started.elapsed() < LOAD_DEADLINE,
+                "no append was acknowledged after the fault before the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
     let fault_end = Instant::now();
     println!(
         "load: fault injected after {before} acknowledgements; {} when it finished",
@@ -1117,8 +1135,12 @@ async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
     let restarted_before = started_at("fdb");
-    let outcome = load_with_fault(&group, &payments, 150, 60, || async {
-        container_action("fdb", "restart?t=0");
+    // Stopped, held down while the load runs, and started again: the writers must cross a
+    // real outage, which lasts until the first append commits after the start.
+    let outcome = load_with_fault(&group, &payments, 150, 60, true, || async {
+        container_action("fdb", "stop?t=0");
+        tokio::time::sleep(FDB_OUTAGE).await;
+        container_action("fdb", "start");
     })
     .await;
     assert_ne!(
@@ -1128,13 +1150,15 @@ async fn every_acknowledged_append_survives_a_foundationdb_restart_mid_load() {
     );
     assert!(
         outcome.fault_was_felt(),
-        "the writers never felt the FoundationDB restart: no attempt overlapping it failed \
-         or took {FELT_LATENCY:?} (slowest {:?}, baseline {:?})",
+        "the writers never felt FoundationDB held down for {FDB_OUTAGE:?}: no attempt \
+         overlapping the outage failed or took {FELT_LATENCY:?} (slowest {:?}, baseline {:?})",
         outcome.slowest_in_fault,
         outcome.slowest_baseline
     );
     assert_every_acknowledged_append_readable(&group, &outcome.acknowledged).await;
-    println!("PASS FoundationDB restarted mid-load: every acknowledged append is readable");
+    println!(
+        "PASS FoundationDB held down {FDB_OUTAGE:?} mid-load: every acknowledged append is readable"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1144,7 +1168,7 @@ async fn every_acknowledged_append_survives_a_relay_killed_mid_load() {
     let group = Arc::new(Group::new());
     create(&client, &relays()[0], &group).await;
     let restarted_before = started_at("relay-b");
-    let outcome = load_with_fault(&group, &payments, 150, 60, || async {
+    let outcome = load_with_fault(&group, &payments, 150, 60, false, || async {
         container_action("relay-b", "kill");
         tokio::time::sleep(Duration::from_secs(3)).await;
         container_action("relay-b", "start");

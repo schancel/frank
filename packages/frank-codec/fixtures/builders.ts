@@ -398,12 +398,12 @@ export const burnTx = (seed = 31, length = 110): Uint8Array =>
   bytesOf(length, seed)
 
 export function topicSubmissionPayload(
-  o: Partial<{ net: string; post: Uint8Array; burnTx: Uint8Array }> = {},
+  o: Partial<{ net: string; post: Uint8Array; burnTxs: Uint8Array[] }> = {},
 ): Fields {
   return M([
     [TOPIC_POST_SUBMISSION.network, o.net ?? NET],
     [TOPIC_POST_SUBMISSION.postFrame, o.post ?? topicPostFrame()],
-    [TOPIC_POST_SUBMISSION.burnTx, o.burnTx ?? burnTx()],
+    [TOPIC_POST_SUBMISSION.burnTxs, o.burnTxs ?? [burnTx()]],
   ])
 }
 
@@ -412,12 +412,12 @@ export const topicSubmissionFrame = (
 ): Uint8Array => fr(TYPE_TOPIC_POST_SUBMISSION, topicSubmissionPayload(o))
 
 export function topicVotePayload(
-  o: Partial<{ net: string; target: Uint8Array; burnTx: Uint8Array }> = {},
+  o: Partial<{ net: string; target: Uint8Array; burnTxs: Uint8Array[] }> = {},
 ): Fields {
   return M([
     [TOPIC_VOTE_SUBMISSION.network, o.net ?? NET],
     [TOPIC_VOTE_SUBMISSION.targetHash, o.target ?? bytesOf(32, 41)],
-    [TOPIC_VOTE_SUBMISSION.burnTx, o.burnTx ?? burnTx(32)],
+    [TOPIC_VOTE_SUBMISSION.burnTxs, o.burnTxs ?? [burnTx(32)]],
   ])
 }
 

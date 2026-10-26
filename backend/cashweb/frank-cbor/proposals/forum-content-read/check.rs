@@ -74,6 +74,15 @@ fn array(v: &V) -> Check<&Vec<V>> {
         Err("array".into())
     }
 }
+/// A topic event's burn set: 1..16 raw transactions; the first is the lead.
+fn lead_burn(v: &V) -> Check<&[u8]> {
+    let burns = array(v)?;
+    need(!burns.is_empty() && burns.len() <= 16, "burn set size")?;
+    for burn in burns {
+        bytes(burn, 1, 16384)?;
+    }
+    bytes(&burns[0], 1, 16384)
+}
 fn timestamp(v: &V) -> Check<()> {
     keys(v, &[0, 1], false)?;
     if let V::Int(s) = get(v, 0)? {
@@ -233,7 +242,7 @@ fn validate(raw: &[u8]) -> Check<Frame> {
                     },
                 "submission limit",
             )?;
-            bytes(get(p, 2)?, 1, 16384)?;
+            lead_burn(get(p, 2)?)?;
             if f.kind == TYPE_TOPIC_POST_SUBMISSION {
                 let post = validate(bytes(get(p, 1)?, 9, 1048576)?)?;
                 need(
@@ -382,7 +391,7 @@ fn bind_status(raw: &[u8], request: &V, observation: Option<&V>) -> Check<&'stat
     let observed = observation.ok_or("missing observation")?;
     let sub = open(bytes(get(&f.p, 1)?, 9, 1048576)?)?;
     need(
-        bytes(get(&f.p, 3)?, 32, 32)? == keccak256(bytes(get(&sub.p, 2)?, 1, 16384)?),
+        bytes(get(&f.p, 3)?, 32, 32)? == keccak256(lead_burn(get(&sub.p, 2)?)?),
         "raw transaction hash",
     )?;
     for k in 0..=6 {
@@ -593,7 +602,7 @@ fn observations(frames: &[J], facts: &J) {
             .try_into()
             .unwrap();
         let fact = find(
-            bytes(get(&sub.p, 2).unwrap(), 1, 16384).unwrap(),
+            lead_burn(get(&sub.p, 2).unwrap()).unwrap(),
             &target,
             NET,
         )

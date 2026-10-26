@@ -40,6 +40,24 @@ fn observation_fields(
     topic: &str,
     title: &str,
 ) -> Observation {
+    observation_of(&event_frame(
+        &[(3, nonce, amount)],
+        target,
+        down,
+        topic,
+        title,
+    ))
+}
+
+/// A post (no `target`) or a vote on `target` paid by a burn set: one signed burn per
+/// `(key byte, nonce, amount)`, lead first, each with real commitments.
+pub(crate) fn event_frame(
+    burns: &[(u8, u64, u128)],
+    target: Option<[u8; 32]>,
+    down: bool,
+    topic: &str,
+    title: &str,
+) -> Vec<u8> {
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use frank_cbor::{encode_forum_post, encode_frame, EnvelopeFields, ForumEntry, FramePayload};
@@ -59,7 +77,7 @@ fn observation_fields(
         }],
     )
     .unwrap();
-    let make = |raw: Vec<u8>| {
+    let make = |raws: Vec<Vec<u8>>| {
         let (kind, item) = match target {
             Some(hash) => (
                 frank_cbor::message_types::TYPE_TOPIC_VOTE_SUBMISSION,
@@ -79,25 +97,41 @@ fn observation_fields(
             FramePayload::Value(&cbor_map(vec![
                 (0, CborValue::Text("monad-testnet".into())),
                 (1, item),
-                (2, CborValue::Bytes(raw)),
+                (
+                    2,
+                    CborValue::Array(raws.into_iter().map(CborValue::Bytes).collect()),
+                ),
             ])),
         )
         .unwrap()
     };
-    let preliminary = parse_topic_event(&make(vec![1]), "monad-testnet").unwrap();
+    let preliminary = parse_topic_event(&make(vec![vec![1]]), "monad-testnet").unwrap();
     let mut calldata = b"TPIC".to_vec();
     calldata.extend([2, if down { 0 } else { 1 }]);
     calldata.extend(preliminary.commitment());
-    let secret = EccSecp256k1::default().seckey_from_array([3; 32]).unwrap();
-    let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
-        &secret,
-        10143,
-        nonce,
-        policy().burn_address,
-        amount,
-        &calldata,
-    );
-    let event = parse_topic_event(&make(raw), "monad-testnet").unwrap();
+    let raws = burns
+        .iter()
+        .map(|&(key, nonce, amount)| {
+            let secret = EccSecp256k1::default()
+                .seckey_from_array([key; 32])
+                .unwrap();
+            crate::monad_evm_tx::test_support::signed_eip1559_tx(
+                &secret,
+                10143,
+                nonce,
+                policy().burn_address,
+                amount,
+                &calldata,
+            )
+            .0
+        })
+        .collect();
+    make(raws)
+}
+
+/// The admitted-request form of a valid `frame`.
+pub(crate) fn observation_of(frame: &[u8]) -> Observation {
+    let event = parse_topic_event(frame, "monad-testnet").unwrap();
     let checked = check_topic_burn_before_broadcast(&event, &policy()).unwrap();
     Observation {
         event,
@@ -110,15 +144,22 @@ fn observation_fields(
     }
 }
 
-pub(crate) fn facts(op: &Observation, block: u64, index: u64) -> VerifiedTopicBurn {
-    VerifiedTopicBurn {
-        sender: op.checked.decoded.sender,
-        tx_hash: op.checked.decoded.tx_hash,
-        value_wei: op.checked.decoded.value_wei,
-        direction: op.checked.direction,
-        block_number: block,
-        transaction_index: index,
-    }
+/// The chain facts of every burn of `op`'s set, the lead at `block`/`index` and each later
+/// burn one position after the previous.
+pub(crate) fn facts(op: &Observation, block: u64, index: u64) -> Vec<VerifiedTopicBurn> {
+    op.checked
+        .members
+        .iter()
+        .enumerate()
+        .map(|(i, member)| VerifiedTopicBurn {
+            sender: member.sender,
+            tx_hash: member.tx_hash,
+            value_wei: member.value_wei,
+            direction: op.checked.direction,
+            block_number: block,
+            transaction_index: index.saturating_add(i as u64),
+        })
+        .collect()
 }
 
 /// A compatible newer-schema post and event, with real commitments and a signed burn.
@@ -158,7 +199,7 @@ pub(crate) fn optional_observation(nonce: u64) -> Observation {
             FramePayload::Value(&cbor_map(vec![
                 (0, CborValue::Text("monad-testnet".into())),
                 (1, CborValue::Bytes(post.clone())),
-                (2, CborValue::Bytes(raw)),
+                (2, CborValue::Array(vec![CborValue::Bytes(raw)])),
                 (99, CborValue::Bytes(vec![0xfe, 0, 0x7f])),
             ])),
         )
@@ -353,7 +394,16 @@ fn exact_retry_at_capacity_and_conflicting_wrapper_preserve_authority() {
         frank_cbor::FramePayload::Value(&cbor_map(vec![
             (0, CborValue::Text("monad-testnet".into())),
             (1, CborValue::Bytes(post.post_frame.clone())),
-            (2, CborValue::Bytes(post.burn_tx.clone())),
+            (
+                2,
+                CborValue::Array(
+                    post.burn_txs
+                        .iter()
+                        .cloned()
+                        .map(CborValue::Bytes)
+                        .collect(),
+                ),
+            ),
             (99, CborValue::Bytes(vec![42])),
         ])),
     )
@@ -722,4 +772,86 @@ pub(crate) fn open_beside(registry_db: &std::path::Path) -> (Arc<dyn RelayKvStor
 
 pub(crate) fn state_key(hash: &[u8; 32]) -> Vec<u8> {
     key(STATES, hash)
+}
+
+#[test]
+fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
+    let backend = Backend::new();
+    let store = backend.open();
+    let post = observation(0, None, false);
+    let target = *post.event.target_hash();
+    publish(&store, &post, 1, at(100));
+    // A vote paid by three burns from two accounts, one stacking a nonce.
+    let vote = observation_of(&event_frame(
+        &[(4, 0, 10), (5, 0, 20), (4, 1, 30)],
+        Some(target),
+        false,
+        "test.topic",
+        "title",
+    ));
+    assert_eq!(vote.checked.value_wei, 60);
+    store.admit(vote.clone()).unwrap();
+    assert_eq!(
+        post_of(&store, &target).unwrap().reserved_up,
+        Magnitude::from_u64(60)
+    );
+    // A set confirmed only in part stays pending: nothing is counted and nothing is refused.
+    let all = facts(&vote, 2, 0);
+    assert!(matches!(
+        store.confirm(&vote, &all[..1], at(200)),
+        Err(ForumError::Unavailable)
+    ));
+    let retained = store
+        .read(|tx| Store::retained(tx, &vote))
+        .unwrap()
+        .unwrap();
+    assert!(retained.confirmed.is_none());
+    assert_eq!(
+        post_of(&store, &target).unwrap().aggregate.magnitude,
+        Magnitude::from_u64(7)
+    );
+    // Every burn confirmed: the set's total is counted once, at the lead's position.
+    let confirmed = store.confirm(&vote, &all, at(300)).unwrap();
+    assert_eq!(
+        confirmed.confirmed.map(|(block, index, _)| (block, index)),
+        Some((2, 0))
+    );
+    store.confirm(&vote, &all, at(400)).unwrap();
+    assert_eq!(
+        store.admit(vote.clone()).unwrap().confirmed,
+        confirmed.confirmed
+    );
+    let counted = post_of(&store, &target).unwrap();
+    assert_eq!(counted.aggregate.magnitude, Magnitude::from_u64(67));
+    assert_eq!(counted.reserved_up, Magnitude::default());
+    assert_eq!(store.pending_accounting().unwrap(), (0, 0));
+    // A burn of that set inside another event's set, as lead or as a later member, pays for
+    // nothing more: refused before anything is broadcast.
+    for reuse in [
+        event_frame(
+            &[(6, 0, 1), (5, 0, 20)],
+            Some(target),
+            false,
+            "test.topic",
+            "title",
+        ),
+        event_frame(
+            &[(5, 0, 20), (6, 0, 1)],
+            Some(target),
+            false,
+            "test.topic",
+            "title",
+        ),
+        event_frame(&[(4, 0, 10)], Some(target), false, "test.topic", "title"),
+    ] {
+        assert!(matches!(
+            store.admit(observation_of(&reuse)),
+            Err(ForumError::Conflict)
+        ));
+    }
+    assert_eq!(
+        post_of(&store, &target).unwrap().aggregate.magnitude,
+        Magnitude::from_u64(67)
+    );
+    assert_eq!(store.pending_accounting().unwrap(), (0, 0));
 }

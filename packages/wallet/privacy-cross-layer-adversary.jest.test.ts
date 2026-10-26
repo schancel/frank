@@ -137,7 +137,7 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
     const targetHash = new Uint8Array(32).fill(0xaa)
     const dummyBurnTx = new Uint8Array(64).fill(0xbb)
 
-    const frameBytes = encodeTopicVote(network, targetHash, dummyBurnTx)
+    const frameBytes = encodeTopicVote(network, targetHash, [dummyBurnTx])
     const parsed = validateFrame(frameBytes, defaultContext())
 
     expect(parsed.kind).toBe('parsed')
@@ -151,12 +151,14 @@ describe('Cross-Layer (On-Chain + Relay) Surveillance Analysis', () => {
       type: typeof TYPE_TOPIC_VOTE_SUBMISSION
       network: string
       targetHash: Uint8Array
-      burnTx: Uint8Array
+      burnTxs: Uint8Array[]
     }
 
     expect(voteSubmission.network).toBe(network)
     expect(hexlify(voteSubmission.targetHash)).toBe(hexlify(targetHash))
-    expect(hexlify(voteSubmission.burnTx)).toBe(hexlify(dummyBurnTx))
+    expect(voteSubmission.burnTxs.map(burn => hexlify(burn))).toEqual([
+      hexlify(dummyBurnTx),
+    ])
 
     // Ensure NO identity pubkey or author signature properties exist on the submission frame
     expect((voteSubmission as any).identityPubKey).toBeUndefined()

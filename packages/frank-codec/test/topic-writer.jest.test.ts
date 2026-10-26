@@ -45,11 +45,11 @@ describe('topic writers', () => {
   it('emit byte-for-byte the fixtures the manifest pins', () => {
     const post = encodeTopicPost({ network: NET, topic: 'frank.demo', body })
     expect(post).toEqual(topicPostFrame())
-    expect(encodeTopicPostSubmission(post, burnTx())).toEqual(
+    expect(encodeTopicPostSubmission(post, [burnTx()])).toEqual(
       topicSubmissionFrame(),
     )
     const target = topicPostHash(post)
-    expect(encodeTopicVote(NET, target, burnTx(32))).toEqual(
+    expect(encodeTopicVote(NET, target, [burnTx(32)])).toEqual(
       topicVoteFrame({ target }),
     )
   })
@@ -76,8 +76,8 @@ describe('topic writers', () => {
     expect(toHex(hash)).toBe(toHex(contentHash(parsed)))
     expect(toHex(commitment)).toBe(toHex(topicVoteCommitment(NET, hash)))
     // A submission does not change the post's identity or commitment: the burn is outside it.
-    const a = encodeTopicPostSubmission(post, burnTx(1))
-    const b = encodeTopicPostSubmission(post, burnTx(2))
+    const a = encodeTopicPostSubmission(post, [burnTx(1)])
+    const b = encodeTopicPostSubmission(post, [burnTx(2)])
     expect(a).not.toEqual(b)
     expect(toHex(topicBurnCommitment(post).commitment)).toBe(toHex(commitment))
   })
@@ -117,14 +117,14 @@ describe('topic writers', () => {
     )
     const post = encodeTopicPost(ok)
     expect(
-      category(() => encodeTopicPostSubmission(post, new Uint8Array(0))),
+      category(() => encodeTopicPostSubmission(post, [new Uint8Array(0)])),
     ).toBe('schema@8.2')
-    expect(category(() => encodeTopicVote(NET, bytesOf(31, 1), burnTx()))).toBe(
-      'schema@8.2',
-    )
-    expect(category(() => encodeTopicVote(NET, bytesOf(32, 1), burnTx()))).toBe(
-      'no error',
-    )
+    expect(
+      category(() => encodeTopicVote(NET, bytesOf(31, 1), [burnTx()])),
+    ).toBe('schema@8.2')
+    expect(
+      category(() => encodeTopicVote(NET, bytesOf(32, 1), [burnTx()])),
+    ).toBe('no error')
   })
 
   it('reject an invalid direction, including inherited keys, with a typed error', () => {
@@ -171,7 +171,7 @@ describe('topic writers', () => {
 
   it('refuse to wrap or hash a frame that is not a valid type-40 post', () => {
     const vote = topicVoteFrame()
-    expect(() => encodeTopicPostSubmission(vote, burnTx())).toThrow()
+    expect(() => encodeTopicPostSubmission(vote, [burnTx()])).toThrow()
     expect(() => topicPostHash(vote)).toThrow()
     expect(() => topicBurnCommitment(new Uint8Array(3))).toThrow(
       FrankCodecError,
@@ -218,19 +218,16 @@ describe('topic writers', () => {
     const vote = byId('topic-vote')
     expect(
       toHex(
-        encodeTopicVote(
-          vote.network,
-          fromHex(vote.target_hash_hex),
+        encodeTopicVote(vote.network, fromHex(vote.target_hash_hex), [
           burnTx(32),
-        ),
+        ]),
       ),
     ).toBe(vote.frame_hex)
     expect(
       toHex(
-        encodeTopicPostSubmission(
-          fromHex(byId('topic-post').frame_hex),
+        encodeTopicPostSubmission(fromHex(byId('topic-post').frame_hex), [
           burnTx(),
-        ),
+        ]),
       ),
     ).toBe(sub.frame_hex)
   })
@@ -249,13 +246,13 @@ describe('topic writers', () => {
     parent.fill(0)
     expect(toHex(post)).toBe(snapshot)
     const tx = burnTx()
-    const sub = encodeTopicPostSubmission(post, tx)
+    const sub = encodeTopicPostSubmission(post, [tx])
     const subSnapshot = toHex(sub)
     tx.fill(0)
     post.fill(0)
     expect(toHex(sub)).toBe(subSnapshot)
     const target = bytesOf(32, 3)
-    const vote = encodeTopicVote(NET, target, burnTx())
+    const vote = encodeTopicVote(NET, target, [burnTx()])
     const voteSnapshot = toHex(vote)
     target.fill(0)
     expect(toHex(vote)).toBe(voteSnapshot)
@@ -267,7 +264,7 @@ describe('topic writers', () => {
 
   it('report a lone surrogate in a vote network as a typed error', () => {
     expect(
-      category(() => encodeTopicVote('ec\ud800', bytesOf(32, 1), burnTx())),
+      category(() => encodeTopicVote('ec\ud800', bytesOf(32, 1), [burnTx()])),
     ).toBe('malformed@7')
   })
 
@@ -324,11 +321,12 @@ describe('topic writers', () => {
         ['burn commitment', () => topicBurnCommitment(v as never)],
         [
           'submission post',
-          () => encodeTopicPostSubmission(v as never, burnTx()),
+          () => encodeTopicPostSubmission(v as never, [burnTx()]),
         ],
         ['submission burn', () => encodeTopicPostSubmission(post, v as never)],
-        ['vote target', () => encodeTopicVote(NET, v as never, burnTx())],
+        ['vote target', () => encodeTopicVote(NET, v as never, [burnTx()])],
         ['vote burn', () => encodeTopicVote(NET, good32, v as never)],
+        ['vote burn member', () => encodeTopicVote(NET, good32, [v as never])],
       )
     }
     for (const v of notText) {
@@ -341,7 +339,7 @@ describe('topic writers', () => {
           'post topic',
           () => encodeTopicPost({ network: NET, topic: v as never, body }),
         ],
-        ['vote network', () => encodeTopicVote(v as never, good32, burnTx())],
+        ['vote network', () => encodeTopicVote(v as never, good32, [burnTx()])],
         ['direction', () => topicBurnCalldata(v as never, good32)],
       )
     }
@@ -393,7 +391,7 @@ describe('topic writers', () => {
       const probes: Array<() => unknown> = [
         () => topicPostHash(detached()),
         () => topicBurnCommitment(detached()),
-        () => encodeTopicPostSubmission(detached(), burnTx()),
+        () => encodeTopicPostSubmission(detached(), [burnTx()]),
         () => encodeTopicPostSubmission(post, detached()),
         () => encodeTopicPost({ network: NET, topic: 't', body: detached() }),
         () =>
@@ -403,7 +401,7 @@ describe('topic writers', () => {
             body,
             parentHash: detached(),
           }),
-        () => encodeTopicVote(NET, detached(), burnTx()),
+        () => encodeTopicVote(NET, detached(), [burnTx()]),
         () => encodeTopicVote(NET, bytesOf(32, 1), detached()),
         () => topicBurnCalldata('up', detached()),
       ]
@@ -426,12 +424,17 @@ describe('topic writers', () => {
         toHex(topicBurnCommitment(post).commitment),
       )
       const tx = crossRealm(110)
-      expect(toHex(encodeTopicPostSubmission(foreignPost, tx))).toBe(
-        toHex(encodeTopicPostSubmission(post, Uint8Array.from(tx))),
+      // A burn set built in another realm is an array too.
+      const foreignSet = vm.runInNewContext(
+        '(a) => [a]',
+        {},
+      )(tx) as Uint8Array[]
+      expect(toHex(encodeTopicPostSubmission(foreignPost, foreignSet))).toBe(
+        toHex(encodeTopicPostSubmission(post, [Uint8Array.from(tx)])),
       )
       const t = crossRealm(32)
-      expect(toHex(encodeTopicVote(NET, t, tx))).toBe(
-        toHex(encodeTopicVote(NET, Uint8Array.from(t), Uint8Array.from(tx))),
+      expect(toHex(encodeTopicVote(NET, t, [tx]))).toBe(
+        toHex(encodeTopicVote(NET, Uint8Array.from(t), [Uint8Array.from(tx)])),
       )
       expect(toHex(topicBurnCalldata('down', t))).toBe(
         toHex(topicBurnCalldata('down', Uint8Array.from(t))),
@@ -452,7 +455,7 @@ describe('topic writers', () => {
 
     it('copy their inputs, so a later change to a foreign array cannot reach the output', () => {
       const tx = crossRealm(110)
-      const sub = encodeTopicPostSubmission(topicPostFrame(), tx)
+      const sub = encodeTopicPostSubmission(topicPostFrame(), [tx])
       const snapshot = toHex(sub)
       tx.fill(0)
       expect(toHex(sub)).toBe(snapshot)

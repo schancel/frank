@@ -189,7 +189,7 @@ async function fixture(valueWei = 1700000n) {
     )
       throw new Error('Bad fixture request')
     const typed = parsed.typed
-    const rawTransactions = [hexlify(typed.burnTx)]
+    const rawTransactions = typed.burnTxs.map(burn => hexlify(burn))
     const operation = bundle.topicOperationJournal
       .getAll()
       .find(

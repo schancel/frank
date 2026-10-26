@@ -996,3 +996,36 @@ describe('useForumStore: setEntries snapshot diffing', () => {
     }
   })
 })
+
+describe('useForumStore: kept votes and posts are sent again', () => {
+  const mockedReconcile = activeChain.topics.reconcileOperations as jest.Mock
+
+  it('a refresh with a wallet resends kept operations once at a time, without waiting for them', async () => {
+    const store = useForumStore()
+    mockedFetchByTopic.mockResolvedValue([])
+    let finish!: () => void
+    mockedReconcile.mockImplementationOnce(
+      () => new Promise<void>(resolve => (finish = resolve)),
+    )
+    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    expect(mockedReconcile).toHaveBeenCalledTimes(1)
+    expect(mockedReconcile).toHaveBeenCalledWith({ wallet: testWallet })
+    finish()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    mockedReconcile.mockRejectedValueOnce(new Error('relay still refuses'))
+    await store.refreshMessages({ wallet: testWallet, topic: 'stamp' })
+    expect(mockedReconcile).toHaveBeenCalledTimes(2)
+    // A failed resend is only logged; the refresh itself is not failed by it.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(store.outageStatus).toBe('ok')
+  })
+
+  it('a public refresh without a wallet resends nothing', async () => {
+    const store = useForumStore()
+    mockedFetchByTopic.mockResolvedValue([])
+    await store.refreshMessages({ topic: 'stamp' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(mockedReconcile).not.toHaveBeenCalled()
+  })
+})

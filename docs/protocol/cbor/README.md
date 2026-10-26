@@ -938,14 +938,16 @@ message item whose exact bytes survive every round trip.
 
 Type 40 is a public post: a network, a topic, an optional parent post hash, and
 a schema-selected body. It carries no burn, author, or vote. Type 41 wraps the exact
-type-40 frame together with the raw signed transaction that burns for it, and
-type 42 carries a raw signed burn for an existing post together with that post's
-hash. The wrapper exists because a burn commits to the identity of the post
-(T7), and a frame cannot contain a commitment to itself; this is the same
-reason a directory signature lives in type 2 outside the type-1 statement. The
-author, the vote direction, and the vote weight are properties of the verified
-chain transaction (T8). Neither wrapper repeats them, so there is one source of
-truth and nothing for a relay to reconcile.
+type-40 frame together with the set of raw signed transactions that burn for it,
+and type 42 carries a set of raw signed burns for an existing post together with
+that post's hash. A set holds 1 to 16 distinct transactions, the way a direct
+message carries a set of stamp payments: a wallet gathers the value across as
+many coins as it needs. The wrapper exists because a burn commits to the identity
+of the post (T7), and a frame cannot contain a commitment to itself; this is the
+same reason a directory signature lives in type 2 outside the type-1 statement.
+The author, the vote direction, and the vote weight are properties of the
+verified chain transactions (T8). Neither wrapper repeats them, so there is one
+source of truth and nothing for a relay to reconcile.
 
 A post is public content, so the body is not encrypted. The existing opaque
 `encodeTopicPost({body})` writer remains schema 1; the explicit structured
@@ -1355,10 +1357,18 @@ T8. A consumer that accepts a type-41 or type-42 event MUST derive the T7
 commitment itself and MUST NOT accept one supplied by the client. It MUST verify
 against the chain that the transaction carries exactly that commitment. The
 vote direction, the burned value (the vote's weight), and the sender are the
-verified transaction's, never an encoded assertion; the schemas carry none. A
-burn transaction's consumption key is its chain transaction identifier, so the
-same burn counts at most once whether it arrives as a type 41, a type 42, or a
-legacy protobuf object. For Monad the calldata layout is
+verified transactions', never an encoded assertion; the schemas carry none. Every
+burn of a set MUST carry the same commitment and direction, and the event's
+weight is the sum of the set's values (at most i64::MAX). The first burn listed
+is the event's lead: its chain transaction identifier names the event, its
+sender is the author, and its confirmed position orders a post. A burn
+transaction's consumption key is its chain transaction identifier, so the same
+burn counts at most once whether it arrives in a type 41, in a type 42, as a
+later member of another event's set, or as a legacy protobuf object. A consumer
+checks the whole set before it broadcasts any of it, and rejects the event when
+any burn fails; once any burn may have been broadcast it retains the event and
+counts it when every burn is confirmed, never refusing it after a partial
+broadcast. For Monad the calldata layout is
 `"TPIC" || 0x02 || direction || commitment`, with direction byte `01` for an
 up-vote and `00` for a down-vote. The layout of the legacy protobuf path
 (`0x01`, commitment equal to the protobuf `payload_hash`) is a different

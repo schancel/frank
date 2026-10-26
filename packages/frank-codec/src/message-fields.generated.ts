@@ -1815,14 +1815,14 @@ export const TOPIC_POST_SHAPE: MapShape = {
 export const TOPIC_POST_SUBMISSION = {
   network: 0,
   postFrame: 1,
-  burnTx: 2,
+  burnTxs: 2,
 } as const
 /** `topic-post-submission` map shape (docs/protocol/cbor/topic.cddl#topic-post-submission). */
 export const TOPIC_POST_SUBMISSION_SHAPE: MapShape = {
   required: [
     TOPIC_POST_SUBMISSION.network,
     TOPIC_POST_SUBMISSION.postFrame,
-    TOPIC_POST_SUBMISSION.burnTx,
+    TOPIC_POST_SUBMISSION.burnTxs,
   ],
   optional: [],
   open: true,
@@ -1833,14 +1833,14 @@ export const TOPIC_POST_SUBMISSION_SHAPE: MapShape = {
 export const TOPIC_VOTE_SUBMISSION = {
   network: 0,
   targetHash: 1,
-  burnTx: 2,
+  burnTxs: 2,
 } as const
 /** `topic-vote-submission` map shape (docs/protocol/cbor/topic.cddl#topic-vote-submission). */
 export const TOPIC_VOTE_SUBMISSION_SHAPE: MapShape = {
   required: [
     TOPIC_VOTE_SUBMISSION.network,
     TOPIC_VOTE_SUBMISSION.targetHash,
-    TOPIC_VOTE_SUBMISSION.burnTx,
+    TOPIC_VOTE_SUBMISSION.burnTxs,
   ],
   optional: [],
   open: true,

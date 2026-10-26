@@ -1851,11 +1851,11 @@ pub mod topic_post_submission {
     pub const NETWORK: u64 = 0;
     /// Field `post-frame`.
     pub const POST_FRAME: u64 = 1;
-    /// Field `burn-tx`.
-    pub const BURN_TX: u64 = 2;
+    /// Field `burn-txs`.
+    pub const BURN_TXS: u64 = 2;
     /// `topic-post-submission` map shape (docs/protocol/cbor/topic.cddl#topic-post-submission).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, POST_FRAME, BURN_TX],
+        required: &[NETWORK, POST_FRAME, BURN_TXS],
         optional: &[],
         open: true,
         open_from: 0,
@@ -1870,11 +1870,11 @@ pub mod topic_vote_submission {
     pub const NETWORK: u64 = 0;
     /// Field `target-hash`.
     pub const TARGET_HASH: u64 = 1;
-    /// Field `burn-tx`.
-    pub const BURN_TX: u64 = 2;
+    /// Field `burn-txs`.
+    pub const BURN_TXS: u64 = 2;
     /// `topic-vote-submission` map shape (docs/protocol/cbor/topic.cddl#topic-vote-submission).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, TARGET_HASH, BURN_TX],
+        required: &[NETWORK, TARGET_HASH, BURN_TXS],
         optional: &[],
         open: true,
         open_from: 0,

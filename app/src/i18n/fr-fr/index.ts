@@ -167,8 +167,7 @@ export const rawFrFR = {
     failedPostNotOnRelay:
       'Le relais n’a pas encore cette publication. Votre vote est conservé et sera renvoyé.',
     failedRelayRefused: 'Le relais l’a refusé. C’est conservé et sera renvoyé.',
-    failedNetwork:
-      'Le réseau est injoignable. C’est conservé et sera renvoyé.',
+    failedNetwork: 'Le réseau est injoignable. C’est conservé et sera renvoyé.',
     failedUnknown:
       'Ce n’est pas encore passé. C’est conservé et sera renvoyé ; ne l’envoyez pas deux fois.',
   },

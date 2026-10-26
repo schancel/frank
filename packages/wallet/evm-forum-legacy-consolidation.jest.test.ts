@@ -1,11 +1,11 @@
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
-/** Forum burns never fan fragmented coins into a consolidation account; legacy sends still do. */
+/** Forum burns gather fragmented coins as a burn set, never a consolidation; legacy sends still consolidate. */
 import axios from 'axios'
 import level from 'level'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Wallet, Transaction, getBytes, type Provider } from 'ethers'
+import { Wallet, Transaction, getBytes, hexlify, type Provider } from 'ethers'
 import {
   encodeForumPost,
   topicBurnCommitment,
@@ -233,24 +233,65 @@ const request = {
 }
 afterEach(() => jest.clearAllMocks())
 
-test('a Forum burn no single coin covers is refused before anything is signed, sent or consolidated', async () => {
-  // Forum burns take the direct-message stamp construction, which never fans coins into a
-  // consolidation account first. The relay verifies one burn per operation, so a burn larger
-  // than every single coin is refused at selection: nothing is signed, broadcast or handed to
-  // the relay, and every coin stays selectable.
+test('a Forum burn no single coin covers is paid by a set of burns from several coins, nothing consolidated first; reopen replays the same bytes', async () => {
+  // Forum burns take the direct-message stamp construction: value is gathered across coins
+  // as independent payments, each straight to the burn address, and the event carries them
+  // all. Nothing is fanned into a consolidation account first.
   const location = await mkdtemp(join(tmpdir(), 'forum-fragmented-'))
   const chain = network()
-  const f = await fixture(location, chain)
+  let f = await fixture(location, chain)
   try {
+    http.mockRejectedValue(new Error('ambiguous relay response'))
     await expect(submitForumOperation(f.wallet, request)).rejects.toThrow(
-      /insufficient/i,
+      'ambiguous relay response',
     )
-    expect(http).not.toHaveBeenCalled()
-    expect(chain.broadcasts).toEqual([])
-    expect(f.preparer.getOperation(request.operationId)).toBeUndefined()
-    expect(f.journal.list()).toEqual([])
-    for (const n of [1, 2])
-      expect(f.coins.isAccountReserved(key(n).address.toLowerCase())).toBe(false)
+    const original = f.preparer.getOperation(request.operationId)!
+    const bytes = original.members.map(member => member.signed!.rawTransaction)
+    expect(
+      original.members.filter(member => member.transactionSet?.role === 'funding'),
+    ).toEqual([])
+    const payments = original.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed!.rawTransaction)
+    expect(payments.length).toBeGreaterThan(1)
+    const retained = f.topicJournal.getAll()[0]!
+    const parsed = validateFrame(Uint8Array.from(retained.requestBytes))
+    if (
+      parsed.kind !== 'parsed' ||
+      parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION
+    )
+      throw new Error('Expected a Forum post submission')
+    const set = parsed.typed.burnTxs.map(raw => Transaction.from(hexlify(raw)))
+    expect(set.map(tx => tx.serialized).sort()).toEqual([...payments].sort())
+    expect(set.every(tx => tx.to === burn)).toBe(true)
+    expect(set.reduce((sum, tx) => sum + tx.value, 0n)).toBeGreaterThanOrEqual(
+      request.value,
+    )
+    const sources = [key(1), key(2)].map(k => k.address.toLowerCase())
+    expect(set.every(tx => sources.includes(tx.from!.toLowerCase()))).toBe(true)
+    // The relay was handed the complete set, exactly as retained.
+    const submitted = http.mock.calls.map(
+      call => new Uint8Array(call[0]!.data as Uint8Array),
+    )
+    expect(submitted.length).toBeGreaterThan(0)
+    for (const body of submitted)
+      expect(body).toEqual(Uint8Array.from(retained.requestBytes))
+    // Restart: recovery hands the relay the same request; nothing is signed again.
+    await f.close()
+    f = await fixture(location, chain)
+    http.mockClear()
+    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
+      'ambiguous relay response',
+    )
+    for (const call of http.mock.calls)
+      expect(new Uint8Array(call[0]!.data as Uint8Array)).toEqual(
+        Uint8Array.from(retained.requestBytes),
+      )
+    expect(
+      f.preparer
+        .getOperation(request.operationId)!
+        .members.map(member => member.signed!.rawTransaction),
+    ).toEqual(bytes)
   } finally {
     await f.close()
     await rm(location, { recursive: true, force: true })

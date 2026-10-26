@@ -239,10 +239,13 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
   )
     throw new Error('Expected canonical operation')
   const operation = parsed.typed
-  const tx = Transaction.from(
-    '0x' + Buffer.from(operation.burnTx).toString('hex'),
+  // The relay answers for the whole set: the lead names it, the value is the sum.
+  const set = operation.burnTxs.map(raw =>
+    Transaction.from('0x' + Buffer.from(raw).toString('hex')),
   )
-  observedBurns.set(tx.hash!.toLowerCase(), tx)
+  for (const member of set) observedBurns.set(member.hash!.toLowerCase(), member)
+  const tx = set[0]!
+  const total = set.reduce((sum, member) => sum + member.value, 0n)
   const hash =
     operation.type === TYPE_TOPIC_POST_SUBMISSION
       ? contentHash(operation.postFrame)
@@ -256,7 +259,7 @@ function confirmedStatus(body: Uint8Array): Uint8Array {
       [3, getBytes(tx.hash!)],
       [4, getBytes(tx.from!)],
       [5, getBytes(tx.data)[5]],
-      [6, tx.value],
+      [6, total],
       [7, 2],
       [8, 1],
       [9, 0],
@@ -329,8 +332,9 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     // The relay carries only the signed burn for exactly the vote weight.
     expect(puts).toHaveLength(1)
     const submitted = decodePostSubmission(puts[0].body)
+    expect(submitted.submission.burnTxs).toHaveLength(1)
     const burn = Transaction.from(
-      '0x' + Buffer.from(submitted.submission.burnTx).toString('hex'),
+      '0x' + Buffer.from(submitted.submission.burnTxs[0]!).toString('hex'),
     )
     expect(burn.to).toBe(BURN_ADDRESS)
     expect(burn.value).toBe(WEIGHT)
@@ -388,8 +392,9 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 
     expect(puts).toHaveLength(1)
     const submitted = decodePostSubmission(puts[0].body)
+    expect(submitted.submission.burnTxs).toHaveLength(1)
     const burn = Transaction.from(
-      '0x' + Buffer.from(submitted.submission.burnTx).toString('hex'),
+      '0x' + Buffer.from(submitted.submission.burnTxs[0]!).toString('hex'),
     )
     expect(burn.to).toBe(BURN_ADDRESS)
     expect(burn.value).toBe(WEIGHT)
@@ -529,7 +534,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
         Transaction.from(
           '0x' +
             Buffer.from(
-              decodePostSubmission(put.body).submission.burnTx,
+              decodePostSubmission(put.body).submission.burnTxs[0]!,
             ).toString('hex'),
         ).from,
     )
@@ -1304,8 +1309,9 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
       (parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION && parsed.typed?.type !== TYPE_TOPIC_VOTE_SUBMISSION)
     )
       throw new Error('expected a topic post or vote submission')
+    expect(parsed.typed.burnTxs).toHaveLength(1)
     return Transaction.from(
-      '0x' + Buffer.from(parsed.typed.burnTx).toString('hex'),
+      '0x' + Buffer.from(parsed.typed.burnTxs[0]!).toString('hex'),
     )
   }
 
@@ -1445,7 +1451,7 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
     expect(wallet.pool.accountClaimedBy(busy)).toBeUndefined()
   })
 
-  it('refuses a burn no single coin covers before signing or moving anything (no consolidation run)', async () => {
+  it('pays a burn no single coin covers with a set of burns from several coins, as a stamp does (no consolidation run)', async () => {
     const { deriveEvmStealthPrivateKey } = await import('../evm-stealth')
     const chain = createEvmChain({
       ...CONFIG,
@@ -1501,22 +1507,36 @@ describe('topics.post and topics.vote with received coin when mainAccount balanc
 
     await wallet.refreshReceivedPayments!()
 
-    // Forum burns pay exactly like a direct-message stamp: one payment transaction from the
-    // coin list, never a funding run that consolidates coins into a burn account first.
-    await expect(
-      chain.topics.post({
-        wallet,
-        topic: 'memes',
-        entries: [ENTRY],
-        direction: 'up',
-        voteWeightWei: 120_000_000_000_000n,
-      }),
-    ).rejects.toThrow(/insufficient/i)
-    expect(fake.rpcSubmissions).toHaveLength(0)
-    expect(burns(fake)).toHaveLength(0)
-    expect(puts).toHaveLength(0)
-    expect(signedGraph(wallet)).toEqual([])
-    for (const address of [main, coin1, coin2])
-      expect(fake.balances.get(address)).toBe(partBalance)
+    // Forum burns pay exactly like a direct-message stamp: payments gathered from several
+    // coins of the one coin list, never a funding run that consolidates coins into a burn
+    // account first.
+    const weight = 120_000_000_000_000n
+    await chain.topics.post({
+      wallet,
+      topic: 'memes',
+      entries: [ENTRY],
+      direction: 'up',
+      voteWeightWei: weight,
+    })
+    expect(puts).toHaveLength(1)
+    const { submission } = decodePostSubmission(puts[0].body)
+    const set = submission.burnTxs.map(raw =>
+      Transaction.from('0x' + Buffer.from(raw).toString('hex')),
+    )
+    expect(set.length).toBeGreaterThan(1)
+    expect(set.every(tx => tx.to === BURN_ADDRESS)).toBe(true)
+    expect(new Set(set.map(tx => tx.data)).size).toBe(1)
+    // At least the vote weight. As for a stamp, a remainder too small to be worth moving to
+    // change stays with the payment instead of being stranded.
+    expect(set.reduce((sum, tx) => sum + tx.value, 0n)).toBeGreaterThanOrEqual(weight)
+    // Each burn comes straight from a coin the wallet held; nothing moved between them first.
+    const sources = new Set([main, coin1, coin2])
+    expect(set.every(tx => sources.has(tx.from!.toLowerCase()))).toBe(true)
+    expect(
+      fake.rpcSubmissions.every(
+        tx => tx.to === BURN_ADDRESS || !sources.has(tx.to!.toLowerCase()),
+      ),
+    ).toBe(true)
+    expect(burns(fake).map(tx => tx.hash).sort()).toEqual(set.map(tx => tx.hash).sort())
   })
 })

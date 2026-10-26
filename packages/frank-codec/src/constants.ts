@@ -20,6 +20,8 @@ export const MAX_DIRECTORY_ATTESTATION_FRAME_BYTES = 262_144
 export const MAX_MESSAGE_ITEMS_TOTAL = 256
 export const MAX_MESSAGE_ITEMS_PER_ARRAY = 256
 export const MAX_PAYMENT_MEMBERS = 64
+/** Most burn transactions one topic post or vote may carry (types 41 and 42). */
+export const MAX_TOPIC_BURNS = 16
 export const MAX_CIPHERTEXT_BYTES = 524_288
 /** Crypto-box's maximum deterministic-CBOR envelope overhead is 88 bytes. */
 export const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES = MAX_CIPHERTEXT_BYTES + 88

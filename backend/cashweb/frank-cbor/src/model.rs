@@ -760,8 +760,9 @@ pub enum TypedPayload {
         network: String,
         /// Field 1, opened as type 40.
         post_frame: ParsedFrame,
-        /// Field 2, raw signed chain transaction.
-        burn_tx: Vec<u8>,
+        /// Field 2: the distinct raw signed chain transactions that burn for the event, lead
+        /// first.
+        burn_txs: Vec<Vec<u8>>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },
@@ -771,8 +772,9 @@ pub enum TypedPayload {
         network: String,
         /// Field 1: T1 hash of the target type-40 frame.
         target_hash: Vec<u8>,
-        /// Field 2, raw signed chain transaction.
-        burn_tx: Vec<u8>,
+        /// Field 2: the distinct raw signed chain transactions that burn for the event, lead
+        /// first.
+        burn_txs: Vec<Vec<u8>>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

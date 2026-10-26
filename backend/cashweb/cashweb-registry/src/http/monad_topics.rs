@@ -608,7 +608,10 @@ mod tests {
             cbor_map(vec![
                 (0, CborValue::Text("monad-testnet".to_string())),
                 (1, CborValue::Bytes(post_frame.to_vec())),
-                (2, CborValue::Bytes(burn_tx.to_vec())),
+                (
+                    2,
+                    CborValue::Array(vec![CborValue::Bytes(burn_tx.to_vec())]),
+                ),
             ]),
         )
     }
@@ -703,28 +706,34 @@ mod tests {
 
     #[tokio::test]
     async fn forum_over_ceiling_and_post_down_burn_reject_before_admission_or_rpc() {
-        use crate::store::forum::tests::{observation, observation_with_amount};
+        use crate::store::forum::tests::{event_frame, observation};
         let (directory, registry) = test_registry();
         let transport = MockTransport::default();
-        let over = observation_with_amount(0, None, false, i64::MAX as u128 + 1);
-        let response = forum_submission(
-            &registry,
-            "monad-testnet",
-            policy(),
-            &transport,
-            over.frame(),
-            true,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(transport.call_count(), 0);
-        assert!(!directory.path().join("db.rocksdb.forum-kv-v1").exists());
+        // One burn over the ceiling, and a set whose burns each fit but whose total does not.
+        let half = i64::MAX as u128 / 2 + 1;
+        for over in [
+            event_frame(&[(3, 0, i64::MAX as u128 + 1)], None, false, "t", "over"),
+            event_frame(&[(3, 0, half), (4, 0, half)], None, false, "t", "over"),
+        ] {
+            let response = forum_submission(
+                &registry,
+                "monad-testnet",
+                policy(),
+                &transport,
+                &over,
+                true,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(transport.call_count(), 0);
+            assert!(!directory.path().join("db.rocksdb.forum-kv-v1").exists());
+        }
         let post = observation(1, None, false);
         let vote = observation(2, Some(*post.event.target_hash()), true);
         let TopicEvent::Post(post) = post.event else {
             panic!()
         };
-        let frame = cbor_submission(&post.post_frame, vote.event.burn_tx());
+        let frame = cbor_submission(&post.post_frame, vote.event.lead_burn_tx());
         let response = forum_submission(
             &registry,
             "monad-testnet",
@@ -744,11 +753,11 @@ mod tests {
         use crate::store::forum::tests::observation;
         let (_directory, registry) = test_registry();
         let op = observation(0, None, false);
-        let hash = op.checked.decoded.tx_hash.to_hex();
+        let hash = op.checked.lead().tx_hash.to_hex();
         let transport = MockTransport::default();
         transport.set("eth_sendRawTransaction", Value::String(hash.clone()));
         transport.set("eth_getTransactionReceipt",serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(2),"blockNumber":"0x0","transactionIndex":"0x0","from":Address([9;20]).to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}));
-        transport.set("eth_getTransactionByHash",serde_json::json!({"hash":hash,"from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.decoded.input))}));
+        transport.set("eth_getTransactionByHash",serde_json::json!({"hash":hash,"from":op.checked.lead().sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.lead().input))}));
         let response = forum_submission(
             &registry,
             "monad-testnet",
@@ -856,7 +865,7 @@ mod tests {
             seconds: 200,
             nanoseconds: 0,
         };
-        let vote_key = state_key(&vote.checked.decoded.tx_hash.0);
+        let vote_key = state_key(&vote.checked.lead().tx_hash.0);
         let retained;
         {
             let (kv, store) = open_beside(&legacy);
@@ -866,7 +875,7 @@ mod tests {
             }
             retained = kv.transact(|tx| tx.get(&vote_key)).unwrap().unwrap();
             // The post's author burn disappears from the authority.
-            let author = state_key(&post.checked.decoded.tx_hash.0);
+            let author = state_key(&post.checked.lead().tx_hash.0);
             kv.transact(|tx| tx.clear(&author)).unwrap();
         }
         let router = test_server(registry).into_router();
@@ -934,11 +943,11 @@ mod tests {
                     let raw=hex::decode(request["params"][0].as_str().unwrap().trim_start_matches("0x")).unwrap();
                     decode_signed_transaction(&raw).unwrap().tx_hash.to_hex()
                 }else{request["params"][0].as_str().unwrap().to_string()};
-                let op=ops.iter().find(|op|op.checked.decoded.tx_hash.to_hex()==hash);
+                let op=ops.iter().find(|op|op.checked.lead().tx_hash.to_hex()==hash);
                 let result=match (method,op) {
                     ("eth_sendRawTransaction",Some(_))=>Value::String(hash.clone()),
-                    ("eth_getTransactionReceipt",Some(op))=>serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(0x22),"blockNumber":"0x1","transactionIndex":"0x0","from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}),
-                    ("eth_getTransactionByHash",Some(op))=>serde_json::json!({"hash":hash,"from":op.checked.decoded.sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.decoded.input))}),
+                    ("eth_getTransactionReceipt",Some(op))=>serde_json::json!({"transactionHash":hash,"blockHash":hex_hash(0x22),"blockNumber":"0x1","transactionIndex":"0x0","from":op.checked.lead().sender.to_hex(),"to":burn_address().to_hex(),"contractAddress":null,"gasUsed":"0x5208","status":"0x1","logs":[]}),
+                    ("eth_getTransactionByHash",Some(op))=>serde_json::json!({"hash":hash,"from":op.checked.lead().sender.to_hex(),"to":burn_address().to_hex(),"value":"0x7","input":format!("0x{}",hex::encode(&op.checked.lead().input))}),
                     _=>Value::Null,
                 };
                 Json(serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":result}))

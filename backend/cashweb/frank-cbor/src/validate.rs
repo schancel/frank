@@ -1308,7 +1308,7 @@ fn open_children(
         Draft::TopicPostSubmission {
             network,
             post_frame,
-            burn_tx,
+            burn_txs,
             unknown,
         } => Ok(TypedPayload::TopicPostSubmission {
             network,
@@ -1319,18 +1319,18 @@ fn open_children(
                 shared,
                 &at(&path, mf::topic_post_submission::POST_FRAME),
             )?,
-            burn_tx,
+            burn_txs,
             unknown,
         }),
         Draft::TopicVoteSubmission {
             network,
             target_hash,
-            burn_tx,
+            burn_txs,
             unknown,
         } => Ok(TypedPayload::TopicVoteSubmission {
             network,
             target_hash,
-            burn_tx,
+            burn_txs,
             unknown,
         }),
         Draft::Revision { items, unknown } => Ok(TypedPayload::MessageRevision {

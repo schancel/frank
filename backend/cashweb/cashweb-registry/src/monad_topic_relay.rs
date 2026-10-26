@@ -147,6 +147,22 @@ pub(crate) async fn broadcast_and_verify_topic_burn_checked<T: JsonRpcTransport 
     signed_sender: Option<crate::monad_http::Address>,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome> {
+    let tx_hash = match broadcast_topic_burn(transport, raw_tx, signed_hash).await {
+        Ok(tx_hash) => tx_hash,
+        Err(outcome) => return Ok(outcome),
+    };
+    confirm_topic_burn(transport, tx_hash, expected, version, signed_sender, poll).await
+}
+
+/// Hand `raw_tx` to the node with `eth_sendRawTransaction` and return the hash to confirm. An
+/// ambiguous answer (already known, nonce too low, or an error that is not a definite refusal)
+/// returns the hash of the signed bytes: a previous attempt may already have sent them. With
+/// `signed_hash`, the node's hash must equal it.
+pub(crate) async fn broadcast_topic_burn<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    raw_tx: &[u8],
+    signed_hash: Option<Hash32>,
+) -> std::result::Result<Hash32, TopicVoteRelayOutcome> {
     let client = MonadHttpClient::with_transport(transport.clone());
 
     let local_tx_hash = Hash32(Keccak256::digest(raw_tx).into());
@@ -163,18 +179,31 @@ pub(crate) async fn broadcast_and_verify_topic_burn_checked<T: JsonRpcTransport 
         {
             local_tx_hash
         }
-        Err(err) => return Ok(TopicVoteRelayOutcome::BroadcastFailed(err)),
+        Err(err) => return Err(TopicVoteRelayOutcome::BroadcastFailed(err)),
     };
 
     if let Some(signed) = signed_hash {
         if signed != tx_hash {
-            return Ok(TopicVoteRelayOutcome::NodeHashMismatch {
+            return Err(TopicVoteRelayOutcome::NodeHashMismatch {
                 signed,
                 returned: tx_hash,
             });
         }
     }
+    Ok(tx_hash)
+}
 
+/// Poll for the confirmation of the broadcast burn `tx_hash` and verify it against `expected`.
+///
+/// Returns `Err` only for infrastructure failures; every rejection is an outcome.
+pub(crate) async fn confirm_topic_burn<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    tx_hash: Hash32,
+    expected: &ExpectedTopicBurn,
+    version: TopicCalldataVersion,
+    signed_sender: Option<crate::monad_http::Address>,
+    poll: PollConfig,
+) -> Result<TopicVoteRelayOutcome> {
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
         let outcome = crate::monad_topic_verify::verify_topic_burn_checked(

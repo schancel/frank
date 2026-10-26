@@ -33,8 +33,8 @@ const KEYS: Record<ForumFailureReason, string> = {
   'no-funds': 'stampPreparation.failedNoFunds',
   'post-not-on-relay': 'stampPreparation.failedPostNotOnRelay',
   'relay-refused': 'stampPreparation.failedRelayRefused',
-  network: 'stampPreparation.failedNetwork',
-  unknown: 'stampPreparation.failedUnknown',
+  'network': 'stampPreparation.failedNetwork',
+  'unknown': 'stampPreparation.failedUnknown',
 }
 
 /** The plain-words line shown where "Voting…" or "Posting…" was. */

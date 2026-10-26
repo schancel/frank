@@ -485,8 +485,8 @@ export interface TopicPostSubmission<F> {
   network: string
   /** The type-40 topic-post frame. */
   postFrame: F
-  /** Raw signed chain transaction that burns for the post (T7, T8). */
-  burnTx: Uint8Array
+  /** The distinct raw signed chain transactions that burn for the post, lead first (T7, T8). */
+  burnTxs: Uint8Array[]
   unknownFields: UnknownFields
 }
 
@@ -495,8 +495,8 @@ export interface TopicVoteSubmission {
   network: string
   /** T1 hash of the target type-40 frame. */
   targetHash: Uint8Array
-  /** Raw signed chain transaction that burns for the vote (T7, T8). */
-  burnTx: Uint8Array
+  /** The distinct raw signed chain transactions that burn for the vote, lead first (T7, T8). */
+  burnTxs: Uint8Array[]
   unknownFields: UnknownFields
 }
 

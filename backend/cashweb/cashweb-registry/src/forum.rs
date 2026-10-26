@@ -321,7 +321,7 @@ impl Owner {
         poll: PollConfig,
     ) -> Result<Vec<u8>> {
         let request = request(network, policy, frame)?;
-        if request.checked.decoded.value_wei > i64::MAX as u128 {
+        if request.checked.value_wei > i64::MAX as u128 {
             return Err(invalid("burn exceeds i64::MAX"));
         }
         if matches!(&request.event,TopicEvent::Post(p) if p.schema_version<2) {
@@ -339,9 +339,11 @@ impl Owner {
         if op.confirmed.is_some() {
             return status(&op);
         }
-        // The durable reservation exists; every subsequent failure is indeterminate. No
-        // transaction is open while network confirmation is awaited, so a second replica given
-        // the same burn broadcasts the same bytes and confirms it at most once.
+        // The durable reservation exists; every subsequent failure is indeterminate. Once any
+        // burn of the set may have been broadcast the event is never refused: a set that is
+        // only partly confirmed stays pending, and a repeat of the same request asks the chain
+        // again. No transaction is open while network confirmation is awaited, so a second
+        // replica given the same set broadcasts the same bytes and confirms it at most once.
         let verified = crate::monad_topic_cbor::broadcast_and_verify_forum_event(
             transport, &op.event, &policy, poll,
         )
@@ -396,7 +398,7 @@ impl Owner {
 fn request(network: &str, policy: TopicBurnPolicy, frame: &[u8]) -> Result<Observation> {
     let event = parse_topic_event(frame, network).map_err(invalid)?;
     let checked = check_topic_burn_before_broadcast(&event, &policy).map_err(invalid)?;
-    u64::try_from(checked.decoded.value_wei).map_err(invalid)?;
+    u64::try_from(checked.value_wei).map_err(invalid)?;
     Ok(Observation {
         event,
         checked,
@@ -423,15 +425,15 @@ fn view_row(network: &str, row: &Row, epoch: &[u8], revision: u64) -> Result<Vec
             ),
             (
                 V::AUTHOR,
-                CborValue::Bytes(author.checked.decoded.sender.0.to_vec()),
+                CborValue::Bytes(author.checked.lead().sender.0.to_vec()),
             ),
             (
                 V::AUTHOR_BURN_TX,
-                CborValue::Bytes(author.event.burn_tx().to_vec()),
+                CborValue::Bytes(author.event.lead_burn_tx().to_vec()),
             ),
             (
                 V::TRANSACTION_HASH,
-                CborValue::Bytes(author.checked.decoded.tx_hash.0.to_vec()),
+                CborValue::Bytes(author.checked.lead().tx_hash.0.to_vec()),
             ),
             (
                 V::FIRST_VISIBLE,
@@ -476,11 +478,11 @@ fn status_frame(
         ),
         (
             S::TRANSACTION_HASH,
-            CborValue::Bytes(op.checked.decoded.tx_hash.0.to_vec()),
+            CborValue::Bytes(op.checked.lead().tx_hash.0.to_vec()),
         ),
         (
             S::SENDER,
-            CborValue::Bytes(op.checked.decoded.sender.0.to_vec()),
+            CborValue::Bytes(op.checked.lead().sender.0.to_vec()),
         ),
         (
             S::DIRECTION,
@@ -495,7 +497,7 @@ fn status_frame(
         ),
         (
             S::VALUE,
-            CborValue::Int(op.checked.decoded.value_wei.try_into().map_err(invalid)?),
+            CborValue::Int(op.checked.value_wei.try_into().map_err(invalid)?),
         ),
         (
             S::STATE,

@@ -280,7 +280,7 @@ test('actual Forum construction submits one scalar burn and excludes private cha
       parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION
     )
       throw new Error('expected post submission')
-    expect([hexlify(parsed.typed.burnTx)]).toEqual(
+    expect(parsed.typed.burnTxs.map(burn => hexlify(burn))).toEqual(
       result.operation.rawTransactions,
     )
     const other = f.preparer

@@ -3,10 +3,7 @@ import { readStoreJson } from 'src/boot/pinia'
 import { reactive, toRaw } from 'vue'
 import { uniq } from 'ramda'
 
-import {
-  activeChain,
-  WalletHandle,
-} from '@frank/wallet/chain'
+import { activeChain, WalletHandle } from '@frank/wallet/chain'
 
 import type { ForumMessage, ForumMessageEntry } from '@frank/wallet/forum-model'
 import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
@@ -143,6 +140,21 @@ export async function stageForumQuery<T>(
   } finally {
     release()
   }
+}
+
+let resending: Promise<void> | undefined
+
+/** Resends the wallet's kept Forum operations, one pass at a time, without blocking the caller. */
+function resendKeptOperations(wallet: WalletHandle): void {
+  if (resending) return
+  resending = Promise.resolve()
+    .then(() => activeChain.topics.reconcileOperations({ wallet }))
+    .catch((error: unknown) => {
+      console.warn('Kept Forum operations are still pending', error)
+    })
+    .finally(() => {
+      resending = undefined
+    })
 }
 
 export const useForumStore = defineStore('forum', {
@@ -403,6 +415,9 @@ export const useForumStore = defineStore('forum', {
         duration: this.duration,
       }
       refreshContexts.set(toRaw(this.$state), token)
+      // A vote or post that did not go through is kept by the wallet; each refresh sends the
+      // kept ones again (their original signed bytes, never a new payment).
+      if (wallet) resendKeptOperations(wallet)
       const current = () =>
         refreshContexts.get(toRaw(this.$state)) === token &&
         activeChain === token.chain &&

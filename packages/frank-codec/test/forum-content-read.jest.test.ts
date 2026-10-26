@@ -199,7 +199,7 @@ describe('active Forum public facade', () => {
       const commitment = topicBurnCommitment(raw(id))
       expect(toHex(commitment.hash)).toBe(forumFixture(id).t1)
       expect(
-        parsed(encodeTopicPostSubmission(raw(id), Uint8Array.of(1))).typed
+        parsed(encodeTopicPostSubmission(raw(id), [Uint8Array.of(1)])).typed
           ?.type,
       ).toBe(TYPE_TOPIC_POST_SUBMISSION)
     }

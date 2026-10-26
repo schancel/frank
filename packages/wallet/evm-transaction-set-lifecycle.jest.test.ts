@@ -126,7 +126,7 @@ test('releases lower nonce change separately and retries the original exact byte
   ])
 })
 
-test('a failed lower nonce handoff prevents successor broadcast while another source can progress', async () => {
+test('a failed handoff does not stop the rest of the set: every other member is still handed over', async () => {
   const f = await fixture(0)
   // Another source's own signed transfer (its own bytes: a copy of member 1's would be the same
   // transaction, already on the node once member 1 is).
@@ -147,15 +147,15 @@ test('a failed lower nonce handoff prevents successor broadcast while another so
   await expect(
     f.lifecycle.replay('message', { payments: true }),
   ).rejects.toThrow('ambiguous node refusal')
-  // The failed nonce 0, then the other source; never the nonce 1 successor of the failed one.
+  // The refused nonce 0, its nonce 1 successor and the other source each go out once; the
+  // refusal is still reported, and a later pass hands nonce 0 over again.
   expect(f.broadcast.mock.calls.map(([raw]) => raw)).toEqual([
     f.operation.members[0]!.signed!.rawTransaction,
+    f.operation.members[1]!.signed!.rawTransaction,
     otherRaw,
   ])
-  // A later pass hands the successor over once its predecessor went out.
   await f.lifecycle.replay('message', { payments: true })
-  expect(f.broadcast.mock.calls.map(([raw]) => Transaction.from(raw).from)).toContain(source.address)
-  expect(f.broadcast.mock.calls.map(([raw]) => raw)).toContain(f.operation.members[1]!.signed!.rawTransaction)
+  expect(f.broadcast.mock.calls.map(([raw]) => raw).slice(3)).toContain(f.operation.members[0]!.signed!.rawTransaction)
 })
 
 test('waits for the actual predecessor inclusion and quiet-block eligibility before the private final drain', async () => {

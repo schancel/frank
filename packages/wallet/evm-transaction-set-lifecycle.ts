@@ -103,16 +103,9 @@ export class EvmTransactionSetLifecycle {
     // Member order is a validated topological order. Independent sources still proceed when
     // one source is awaiting inclusion; no network wait owns a wallet-wide reservation lock.
     const failures: unknown[] = []
-    // A member whose handoff failed in this pass holds back its successors until a later pass:
-    // its own fate at the node is unknown. Members of other sources still go out.
-    const failed = new Set<number>()
     for (const index of [...selected].sort((a,b) => a-b)) {
       const row = this.validateOperation(await this.options.authority.readOperation(id)), member = row.members[index]!
       if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
-      if (member.dependencies.some(dependency => failed.has(dependency))) {
-        failed.add(index)
-        continue
-      }
       const signed = member.signed!
       try {
         // Only a member that has left the wallet can already be on a node; one never exposed is
@@ -127,26 +120,17 @@ export class EvmTransactionSetLifecycle {
           const alreadyKnown = error instanceof Error && /already known|known transaction/i.test(error.message)
           if (!alreadyKnown && !(await this.options.provider.getTransaction(signed.transactionHash))) throw error
         }
-      } catch (error) {
-        failed.add(index)
-        failures.push(error)
-      }
+      } catch (error) { failures.push(error) }
     }
     if (failures.length) throw failures[0]
   }
 
-  /** Read one canonical block's account state; never update inventory from relay answers.
-   * `exposedOnly`: look only at members whose bytes have left the wallet. A member never exposed
-   * cannot be on any node, so a look before its first broadcast could only record it `missing`
-   * (a submission's first look, before replay, would otherwise mark every member of a fresh set
-   * missing although they all land moments later); replay broadcasts it, and the look after
-   * replay observes it. */
-  async observe(id: string, provider: Provider, options: { exposedOnly?: boolean } = {}): Promise<void> {
+  /** Read one canonical block's account state; never update inventory from relay answers. */
+  async observe(id: string, provider: Provider): Promise<void> {
     const row = this.validateOperation(await this.options.authority.readOperation(id))
     for (let index = 0; index < row.members.length; index++) {
       const member = row.members[index]!,
         signed = member.signed!
-      if (options.exposedOnly && !member.exposed) continue
       // Terminal history must never be fed through inventory observation again.
       if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
       const receipt = await provider.getTransactionReceipt(
@@ -183,6 +167,17 @@ export class EvmTransactionSetLifecycle {
         !receipt &&
         nonce > Transaction.from(signed.rawTransaction).nonce &&
         (await provider.getTransactionReceipt(signed.transactionHash))
+      )
+        continue
+      // A member whose bytes have not left the wallet cannot be on any node. With no receipt and
+      // its nonce still free there is nothing to record: it is not missing, it is not yet sent
+      // (a submission's look before its first replay would otherwise record every member of a
+      // fresh set missing, although they all land moments later). A consumed nonce is still
+      // recorded, as evidence the member can never land.
+      if (
+        !receipt &&
+        !member.exposed &&
+        nonce <= Transaction.from(signed.rawTransaction).nonce
       )
         continue
       const observation: EvmNativeObservation = receipt

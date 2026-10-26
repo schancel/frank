@@ -142,8 +142,7 @@ export function createEvmTransactionSetSubmission(options: {
     let observationUnavailable = false
     try {
       await options.refresh()
-      // Before replay only what has left the wallet can be on chain; replay broadcasts the rest.
-      await options.lifecycle.observe(id, options.provider, { exposedOnly: true })
+      await options.lifecycle.observe(id, options.provider)
     } catch {
       // Readiness still gates unknown dependencies; unrelated signed inputs can progress.
       observationUnavailable = true

@@ -231,7 +231,7 @@ test('the public wrapper alone submits recipient and all owned change after dura
   }
 })
 
-test('a fresh set is never recorded missing: the node is asked about a member only after its broadcast', async () => {
+test('a fresh set is never recorded missing: a member not yet sent is not missing, one awaiting its block is pending', async () => {
   const chain = node(),
     f = await fixture(location, chain)
   try {
@@ -248,16 +248,8 @@ test('a fresh set is never recorded missing: the node is asked about a member on
         recorded.push(observation.state)
         return record(id, index, observation, account)
       })
-    const askedBeforeBroadcast: string[] = []
-    const receipt = chain.provider.getTransactionReceipt.getMockImplementation()!
-    chain.provider.getTransactionReceipt.mockImplementation(async (hash: string) => {
-      if (!chain.raws.some(raw => Transaction.from(raw).hash === hash))
-        askedBeforeBroadcast.push(hash)
-      return receipt(hash)
-    })
     const result = await f.submission.sendTransaction(prepared)
     expect(result.status).toBe('pending')
-    expect(askedBeforeBroadcast).toEqual([])
     expect(recorded).not.toContain('missing')
     expect(f.preparer.getOperation('fresh')!.members.map(member => member.observation.state)).toEqual(
       members.map(() => 'pending'),

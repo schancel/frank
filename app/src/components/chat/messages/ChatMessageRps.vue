@@ -66,6 +66,17 @@
               data-testid="rps-wager-input"
               style="max-width: 200px"
             />
+            <div
+              v-if="minimumStake > 0n"
+              class="text-grey-8 q-mt-xs"
+              data-testid="rps-stake-minimum"
+            >
+              {{
+                $t('gameFairness.stakeMinimum', {
+                  amount: displayWager(minimumStake.toString()),
+                })
+              }}
+            </div>
             <div class="text-grey-8 q-my-xs">
               Your stake is paid with your move. A win pays twice the stake, a
               tie returns it.
@@ -261,6 +272,14 @@ import {
   parseWager,
   type ChatGameItem,
 } from '../../../utils/chat-game-items'
+import {
+  PAYMENT_FLOOR_INJECTION,
+  stakeChipsWei,
+} from '../../../utils/game-stakes'
+import {
+  stakeAllowed,
+  stakeMinimumWei,
+} from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 import { errorNotify } from '../../../utils/notifications'
 import {
   dealerRpsStepForMatch,
@@ -286,6 +305,13 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  inject: {
+    /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
+    paymentFloorWei: {
+      from: PAYMENT_FLOOR_INJECTION,
+      default: () => (): bigint => 0n,
+    },
+  },
   mounted() {
     // Only a card that is waiting for the bot keeps time.
     if (this.item.action === 'move')
@@ -302,15 +328,28 @@ export default defineComponent({
       timer: undefined as ReturnType<typeof setInterval> | undefined,
       wagerInput: '',
       moves: RPS_MOVES,
-      wagerChips: [
-        { label: 'Free', value: '' },
-        { label: '0.01', value: '0.01' },
-        { label: '0.05', value: '0.05' },
-        { label: '0.1', value: '0.1' },
-      ],
     }
   },
   computed: {
+    /** The smallest stake a match takes: twice the payment floor (`stakeMinimumWei`, the rule
+     * the bot enforces). Zero while the floor is not known. */
+    minimumStake(): bigint {
+      return stakeMinimumWei(
+        (this.paymentFloorWei as unknown as () => bigint)(),
+      )
+    },
+    /** Free, then the paid stakes the floor allows; never a stake below the minimum. */
+    wagerChips(): { label: string; value: string }[] {
+      return [
+        { label: 'Free', value: '' },
+        ...stakeChipsWei(
+          (this.paymentFloorWei as unknown as () => bigint)(),
+        ).map(wei => {
+          const value = activeChain.toDisplayAmount(wei)
+          return { label: value, value }
+        }),
+      ]
+    },
     unit(): string {
       return activeChain.unit
     },
@@ -568,6 +607,20 @@ export default defineComponent({
           : parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a))
       if (wager === undefined) {
         errorNotify(new Error('Enter the stake as a number.'))
+        return
+      }
+      // A stake the opponent already locked is theirs to have chosen; one typed here is checked.
+      if (
+        this.fixedWagerWei === undefined &&
+        !stakeAllowed(wager, this.minimumStake)
+      ) {
+        errorNotify(
+          new Error(
+            this.$t('gameFairness.stakeBelowMinimum', {
+              amount: this.displayWager(this.minimumStake.toString()),
+            }),
+          ),
+        )
         return
       }
       this.submitting = true

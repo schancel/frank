@@ -195,6 +195,10 @@ export function errorDetail(error: unknown): string {
   // A send blocked by an earlier message keeps that message's payload digest, so the bubble can
   // name it (`blockingMessage`).
   if (error instanceof StampBlockedError) return error.blockingPayloadDigest
+  // A payment below the floor keeps the floor (wei, decimal), so the bubble can say what the
+  // minimum is.
+  if (error instanceof DirectMessageStampBelowFeeError)
+    return error.floorWei.toString()
   return (error instanceof Error ? error.message : String(error)).slice(0, 300)
 }
 

@@ -303,6 +303,10 @@ export const rawFrFR = {
       'payment-not-confirmed': 'Le paiement de la mise n’a pas été confirmé.',
     },
     dicePractice: 'Entraînement',
+    stakeMinimum:
+      'La mise minimale est de {amount} : deux fois le paiement minimal du réseau, pour qu’un gain ou un remboursement puisse toujours être payé.',
+    stakeBelowMinimum:
+      'Cette mise est inférieure à la mise minimale de {amount}. Misez au moins {amount}, ou jouez gratuitement.',
     dicePracticeDescription:
       'Mise nulle, aucun gain. L’entraînement utilise les mêmes règles de tirage sans miser de fonds.',
     dicePracticeRoll: 'Lancer d’entraînement',
@@ -942,7 +946,9 @@ export const rawFrFR = {
     reasonRecipientUnregistered:
       "Le destinataire n'est pas enregistré sur ce relais.",
     reasonStampBelowFee:
-      "Les frais du réseau ont dépassé ce timbre avant l'envoi. Rien n'a été payé. Réessayer l'envoie avec le timbre minimal actuel.",
+      'Son paiement est inférieur au minimum autorisé par le réseau. Rien n’a été payé.',
+    reasonStampBelowFeeAmount:
+      'Son paiement est inférieur au minimum de {amount} {unit} : dix fois ce que le réseau facture pour le déplacer. Rien n’a été payé.',
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:
       "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Rien n'a été payé pour celui-ci. Réessayez une fois ce message parti.",

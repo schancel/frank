@@ -298,6 +298,10 @@ export const rawEnUS = {
       'payment-not-confirmed': 'The bet payment was not confirmed.',
     },
     dicePractice: 'Practice',
+    stakeMinimum:
+      'The smallest stake is {amount}: twice the network’s minimum payment, so a win or a refund can always be paid back.',
+    stakeBelowMinimum:
+      'That stake is below the smallest stake of {amount}. Choose at least {amount}, or play for free.',
     dicePracticeDescription:
       'Zero stake, no payout. Practice uses the same roll rules without wagering funds.',
     dicePracticeRoll: 'Practice roll',
@@ -923,7 +927,9 @@ export const rawEnUS = {
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonStampBelowFee:
-      'The network fee rose above this stamp before it was sent. Nothing was paid. Retry sends it at the minimum stamp now.',
+      'Its payment is below the minimum the network allows. Nothing was paid.',
+    reasonStampBelowFeeAmount:
+      'Its payment is below the minimum of {amount} {unit}: ten times what the network charges to move it. Nothing was paid.',
     blockedBy: 'It waits for your message “{preview}” ({time}).',
     reasonBlocked:
       'An earlier message whose payment is stuck holds the funds this one needs. Nothing was paid for this one. Retry it once that message goes through.',

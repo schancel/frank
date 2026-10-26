@@ -87,6 +87,8 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 import { useBalance } from '../../composables/useBalance'
 import { HAND_FEE_RESERVE_WEI } from '../../utils/blackjack-hand'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import { PAYMENT_FLOOR_INJECTION } from '../../utils/game-stakes'
 
 /**
  * The challenge form opened from the composer's message-type menu, in any chat with any contact.
@@ -99,6 +101,13 @@ export default defineComponent({
     busy: { type: Boolean, default: false },
   },
   emits: ['submit', 'cancel'],
+  inject: {
+    /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
+    paymentFloorWei: {
+      from: PAYMENT_FLOOR_INJECTION,
+      default: () => (): bigint => 0n,
+    },
+  },
   setup() {
     const { balance } = useBalance()
     return { balance }
@@ -108,6 +117,14 @@ export default defineComponent({
     return { role: 'player' as HandRole, maxBet: '' }
   },
   computed: {
+    /** The smallest bet: the chain's configured minimum wager, and never less than twice the
+     * payment floor (`stakeMinimumWei`, the rule every game shares). */
+    minimumStake(): bigint {
+      return stakeMinimumWei(
+        (this.paymentFloorWei as unknown as () => bigint)(),
+        activeChain.minimumWagerValue,
+      )
+    },
     unit(): string {
       return activeChain.unit
     },
@@ -133,12 +150,9 @@ export default defineComponent({
       if (this.maxBet.trim() === '') return this.$t('blackjackP2p.enterAmount')
       if (this.maxBetWei === null || this.maxBetWei <= 0n)
         return this.$t('blackjackP2p.enterAmount')
-      if (this.maxBetWei < activeChain.minimumWagerValue)
+      if (this.maxBetWei < this.minimumStake)
         return this.$t('blackjackP2p.belowStamp', {
-          amount: formatDisplayAmount(
-            activeChain,
-            activeChain.minimumWagerValue,
-          ),
+          amount: formatDisplayAmount(activeChain, this.minimumStake),
         })
       if (this.maxBetWei > this.limitWei)
         return this.$t('blackjackP2p.aboveOwnLimit', {

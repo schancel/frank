@@ -526,6 +526,7 @@ import {
   type SenderIdentity,
 } from '../utils/chat-attribution'
 import { shortAddress } from '../utils/short-address'
+import { PAYMENT_FLOOR_INJECTION } from '../utils/game-stakes'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -641,6 +642,13 @@ export default defineComponent({
     registerWebRtcCallHandler: {
       default: null,
     },
+  },
+  provide() {
+    // Game cards offer no stake below the payment floor of this chain (`stakeChipsWei`): the
+    // smallest stamp the wallet sends right now, read by `refreshMinimumStamp`.
+    return {
+      [PAYMENT_FLOOR_INJECTION]: (): bigint => this.minimumStampWei,
+    }
   },
   beforeRouteUpdate(to: RouteLocationNormalized) {
     this.cancelHistoryAnchor()

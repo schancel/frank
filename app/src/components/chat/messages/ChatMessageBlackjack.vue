@@ -479,6 +479,8 @@ import {
   newSeed,
   saveSeed,
 } from '../../../utils/blackjack-hand'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import { PAYMENT_FLOOR_INJECTION } from '../../../utils/game-stakes'
 
 type Move = 'hit' | 'stand' | 'double' | 'split'
 
@@ -514,6 +516,13 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp', 'retry', 'playAgain'],
+  inject: {
+    /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
+    paymentFloorWei: {
+      from: PAYMENT_FLOOR_INJECTION,
+      default: () => (): bigint => 0n,
+    },
+  },
   setup() {
     const { balance } = useBalance()
     return { balance }
@@ -522,6 +531,14 @@ export default defineComponent({
     return { own: '', sending: false, amount: '', editingBet: false }
   },
   computed: {
+    /** The smallest bet: the chain's configured minimum wager, and never less than twice the
+     * payment floor (`stakeMinimumWei`, the rule every game shares). */
+    minimumStake(): bigint {
+      return stakeMinimumWei(
+        (this.paymentFloorWei as unknown as () => bigint)(),
+        activeChain.minimumWagerValue,
+      )
+    },
     unit(): string {
       return activeChain.unit
     },
@@ -713,9 +730,9 @@ export default defineComponent({
       if (this.balance === null) return this.$t('blackjackP2p.balanceUnknown')
       if (this.amount.trim() === '' || this.amountWei === null)
         return this.$t('blackjackP2p.enterAmount')
-      if (this.amountWei < activeChain.minimumWagerValue)
+      if (this.amountWei < this.minimumStake)
         return this.$t('blackjackP2p.belowStamp', {
-          amount: this.display(activeChain.minimumWagerValue),
+          amount: this.display(this.minimumStake),
         })
       let error: HandMoneyError | undefined
       if (this.canAccept) {

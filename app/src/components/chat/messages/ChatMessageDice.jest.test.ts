@@ -25,6 +25,11 @@ const store: { activeConversation: { messages: any[] } } = reactive({
 })
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 
+const notified: Error[] = []
+jest.mock('../../../utils/notifications', () => ({
+  errorNotify: (error: Error) => notified.push(error),
+}))
+
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -109,10 +114,19 @@ const secret = '5a'.repeat(32)
 const commitment = diceCommitment(secret)
 const STAKE = 10n ** 16n
 
-function mountCard(item: SatoshiDiceItem) {
+/** The payment floor most tests run at: 0.025, so the smallest stake is 0.05. */
+const TEST_FLOOR = 25n * 10n ** 15n
+/** The floor in the lab on 2026-10-26: ten transfers at 102 gwei, 0.02142 MON. */
+const LAB_FLOOR = 10n * 21_000n * 102_000_000_000n
+
+function mountCard(item: SatoshiDiceItem, floorWei: bigint = TEST_FLOOR) {
   return mount(ChatMessageDice, {
     props: { item, address: '0x123' },
-    global: { stubs: quasarStubs, mocks: { $t: t } },
+    global: {
+      stubs: quasarStubs,
+      mocks: { $t: t },
+      provide: { paymentFloorWei: () => floorWei },
+    },
   })
 }
 
@@ -199,6 +213,58 @@ describe('ChatMessageDice.vue', () => {
       wagerWei: (5n * 10n ** 16n).toString(),
     })
     expect(payload.items[0].clientSeed).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  test('a table offers no stake below twice the payment floor, and starts at that minimum', async () => {
+    notified.length = 0
+    const table: SatoshiDiceItem = {
+      type: 'dice',
+      action: 'table',
+      rollId: 'r1',
+      commitment,
+    }
+    const wrapper = mountCard(table, LAB_FLOOR)
+    const minimum = 2n * LAB_FLOOR // 0.04284, the minimum the bot states for its tables
+    const offered = wrapper
+      .findAll('[data-testid^="dice-chip-"]')
+      .map(chip => chip.attributes('data-testid')!.slice('dice-chip-'.length))
+    expect(offered).toEqual(['free', '0.04284', '0.08568', '0.2142'])
+    expect(wrapper.find('[data-testid="dice-chip-0.01"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="dice-stake-minimum"]').text()).toContain(
+      '0.04284 MON',
+    )
+    // Untouched, the stake is the minimum.
+    await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
+    const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
+    expect(payload.stampValueWei).toBe(minimum)
+    expect(payload.items[0].wagerWei).toBe(minimum.toString())
+    expect(notified).toEqual([])
+  })
+
+  test('a typed stake below the minimum is refused before anything is sent, naming the minimum', async () => {
+    notified.length = 0
+    const wrapper = mountCard(
+      { type: 'dice', action: 'table', rollId: 'r1', commitment },
+      LAB_FLOOR,
+    )
+    await wrapper.get('[data-testid="dice-wager-input"]').setValue('0.01')
+    await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
+    expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
+    expect(notified.map(error => error.message)).toEqual([
+      t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' }),
+    ])
+  })
+
+  test('while the floor is not known, only a free roll is offered', () => {
+    const wrapper = mountCard(
+      { type: 'dice', action: 'table', rollId: 'r1', commitment },
+      0n,
+    )
+    expect(
+      wrapper
+        .findAll('[data-testid^="dice-chip-"]')
+        .map(c => c.attributes('data-testid')),
+    ).toEqual(['dice-chip-free'])
   })
 
   test('a table with no commitment offers nothing to bet on', () => {

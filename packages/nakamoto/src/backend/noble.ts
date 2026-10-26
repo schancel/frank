@@ -8,6 +8,7 @@ import { sha256 as nobleSha256 } from '@noble/hashes/sha256.js'
 
 import { isPlainBytes } from '../bytes.js'
 import { bytesToBigint } from '../integer.js'
+import { multiplicand } from '../point-tables.js'
 import { isValidScalar } from '../secp256k1.js'
 import { CryptoBackendError, type CryptoBackend } from './types.js'
 
@@ -43,10 +44,7 @@ function parsePoint(bytes: Uint8Array): Projective {
       lifted.assertValidity()
       return lifted
     }
-    // The generator is the one point whose multiples have precomputed tables; the same point
-    // parsed afresh would multiply without them, about ten times slower.
-    const point = Point.fromHex(encoded)
-    return point.equals(Point.BASE) ? Point.BASE : point
+    return Point.fromHex(encoded)
   } catch (error) {
     if (error instanceof CryptoBackendError) throw error
     throw new CryptoBackendError('point-invalid')
@@ -178,9 +176,9 @@ export const nobleBackend: CryptoBackend = {
 
   ecdh(secret, publicKey) {
     const key = secret32(secret)
-    // `getSharedSecret` (the parsed point times the secret, compressed), with the generator kept
-    // as `Point.BASE` so a public key computed this way uses its precomputed tables.
-    const point = parsePoint(publicKey)
+    // `getSharedSecret` (the parsed point times the secret, compressed), multiplying with the
+    // point's precomputed tables when it has them (`point-tables.ts`).
+    const { point } = multiplicand(parsePoint(publicKey))
     try {
       const shared = compressed(point.multiply(bytesToBigint(key)))
       if (shared.length !== 33) throw new CryptoBackendError('point-invalid')
@@ -200,6 +198,7 @@ export const nobleBackend: CryptoBackend = {
     const factor = scalar32(scalar)
     // One times a point is that point: callers validate and normalize an encoding this way, and
     // need not pay for a full multiplication.
-    return compressed(factor === 1n ? point : point.multiply(factor))
+    if (factor === 1n) return compressed(point)
+    return compressed(multiplicand(point).point.multiply(factor))
   },
 }

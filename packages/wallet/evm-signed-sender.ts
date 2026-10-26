@@ -7,7 +7,9 @@ import { Transaction } from 'ethers'
  * answer for the same bytes never changes, so it is recovered once and remembered here, by the
  * exact bytes. Null for unsigned bytes. Bounded: cleared when full.
  *
- * The native journal does not use this: it validates every row's signatures again on reopen.
+ * The native journal does not read this: it recovers every row's signatures again on reopen.
+ * It records what it recovered (`recordSignedTransactionSender`), so the boundaries after it
+ * need not recover the same bytes again.
  */
 export function signedTransactionSender(
   raw: string,
@@ -19,6 +21,13 @@ export function signedTransactionSender(
   if (senders.size >= SENDERS_KEPT) senders.clear()
   senders.set(raw, sender)
   return sender
+}
+
+/** Records the sender a full recovery of these exact bytes found. */
+export function recordSignedTransactionSender(raw: string, sender: string): void {
+  if (senders.has(raw)) return
+  if (senders.size >= SENDERS_KEPT) senders.clear()
+  senders.set(raw, sender)
 }
 
 const senders = new Map<string, string | null>()

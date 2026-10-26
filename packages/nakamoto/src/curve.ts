@@ -19,6 +19,7 @@ import {
   type SchnorrSignature,
 } from './constructors.js'
 import { bigintToBytes, bytesToBigint, mod } from './integer.js'
+import { multiplicand } from './point-tables.js'
 import { SECP256K1_N, isValidScalar } from './secp256k1.js'
 import { encodeVarint } from './varint.js'
 
@@ -200,9 +201,7 @@ function parsePoint(bytes: Uint8Array): CurveResult<Projective> {
       lifted.assertValidity()
       return { ok: true, value: lifted }
     }
-    // The generator multiplies with its precomputed tables only as `Point.BASE` itself.
-    const point = Point.fromHex(bytes)
-    return { ok: true, value: point.equals(Point.BASE) ? Point.BASE : point }
+    return { ok: true, value: Point.fromHex(bytes) }
   } catch {
     return fail({ code: 'point-invalid' })
   }
@@ -433,13 +432,15 @@ export function pointMultiply(
   }
 }
 
-/** Variable-time `point·scalar` for public inputs. The generator keeps the constant-time path:
- * it has precomputed tables, which make that path fast, and @noble/curves 1.9.1's variable-time
- * multiplication over those tables returns wrong points (as its own verify avoids it). */
+/** Variable-time `point·scalar` for public inputs. A point with precomputed tables (the
+ * generator, or one multiplied before) takes the constant-time path, which those tables make
+ * faster still; @noble/curves 1.9.1's variable-time multiplication over tables returns wrong
+ * points (its own verify avoids it too). */
 function publicScale(point: Projective, scalar: bigint): Projective {
-  return point === Point.BASE
-    ? point.multiply(scalar)
-    : point.multiplyUnsafe(scalar)
+  const known = multiplicand(point)
+  return known.tabled
+    ? known.point.multiply(scalar)
+    : known.point.multiplyUnsafe(scalar)
 }
 
 /**

@@ -439,6 +439,30 @@ describe('typed curve', () => {
     expect(publicPointMultiply(new Uint8Array(33), scalar(1n)).ok).toBe(false)
   })
 
+  test('points multiplied again and again (tabled, and past the table limit) give the same results', () => {
+    const Point = secp256k1.ProjectivePoint
+    const points = Array.from({ length: 20 }, (_, i) =>
+      Point.BASE.multiply(BigInt(1000 + i)),
+    )
+    for (let round = 0; round < 3; round++)
+      for (const [i, point] of points.entries()) {
+        const k =
+          (bytesToBigintHigh(sha256(Uint8Array.of(round, i))) %
+            (SECP256K1_N - 1n)) +
+          1n
+        const expected = hex(
+          Point.fromAffine(point.toAffine()).multiply(k).toRawBytes(true),
+        )
+        const encoded =
+          round === 1 ? point.toRawBytes(false) : point.toRawBytes(true)
+        expect(hex(must(pointMultiply(encoded, scalar(k))))).toBe(expected)
+        expect(hex(must(publicPointMultiply(encoded, scalar(k))))).toBe(
+          expected,
+        )
+        expect(hex(must(ecdh(key(k), encoded)).point)).toBe(expected)
+      }
+  })
+
   test('one times a point is that point, and ECDH with the generator is the public key', () => {
     const point = secp256k1.ProjectivePoint.BASE.multiply(0xabcdefn)
     expect(hex(must(pointMultiply(point.toRawBytes(false), scalar(1n))))).toBe(

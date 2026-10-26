@@ -6,6 +6,7 @@ import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './evm-transaction-set-graph'
+import { recordSignedTransactionSender } from '../evm-signed-sender'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
@@ -713,6 +714,7 @@ async function validateRow(
           parsed.hash !== signed.transactionHash
         )
           fail('invalid', 'signature')
+        recordSignedTransactionSender(rawTransaction, parsed.from!)
       })
     } else if (member.exposed || member.syncApplied) fail()
     const observation = checked('observation', () =>
@@ -842,6 +844,8 @@ export class EvmNativeOperationJournal {
    * rows until this instance's first write adds one. */
   private revision = 0
   private loadedManifest?: string
+  /** The JSON text of each row held here, so a reader's copy is one parse. */
+  private readonly rowTexts = new WeakMap<EvmNativeOperation, string>()
   /** Test-only backing storage. Production history stays on disk, never in a hot map. */
   private readonly ephemeralHistory = new Map<string, { row: EvmNativeOperation; receipt: EvmNativeCompletionReceipt }>()
   private readonly ephemeralPreparations = new Map<string, string>()
@@ -976,6 +980,8 @@ export class EvmNativeOperationJournal {
       activeRows.reduce((n, r) => n + r.reservedBytes, 0) > this.maxBytes
     )
       fail('capacity')
+    for (const row of rows.values())
+      if (!this.rowTexts.has(row)) this.rowTexts.set(row, JSON.stringify(row))
     this.rows = rows
     this.validatedTexts = validated
     this.nextSequence = nextSequence
@@ -1076,7 +1082,7 @@ export class EvmNativeOperationJournal {
     const id = this.database ? await this.stored(`preparation:${preparationId}`) : this.ephemeralPreparations.get(preparationId)
     if (active) {
       if (id !== undefined) fail('conflict')
-      return clone(active)
+      return this.copy(active)
     }
     if (id === undefined) return undefined
     this.operationId(id)
@@ -1091,7 +1097,7 @@ export class EvmNativeOperationJournal {
     return this.exclusive(() => this.coordinated(async () => {
       await this.reloadRows('read')
       const active = this.rows.get(id)
-      if (active) return clone(active)
+      if (active) return this.copy(active)
       const archived = await this.readArchived(id)
       if (!archived && parseInt(id.split(':')[1]!, 16) < this.nextSequence) fail()
       return archived
@@ -1201,10 +1207,15 @@ export class EvmNativeOperationJournal {
    * rows held here are what that manifest names, and those exact bytes need no validation again. */
   private committed(id: string, text: string, row: EvmNativeOperation, manifest: string): void {
     this.rows.set(id, row)
+    this.rowTexts.set(row, text)
     this.revision++
     if (!this.database) return
     this.validatedTexts.set(`operation:${id}`, { text, row })
     this.loadedManifest = manifest
+  }
+  /** A reader's own copy of a row held here; held rows are never mutated. */
+  private copy(row: EvmNativeOperation): EvmNativeOperation {
+    return JSON.parse(this.rowTexts.get(row) ?? JSON.stringify(row)) as EvmNativeOperation
   }
   private manifest() {
     return {
@@ -1218,14 +1229,14 @@ export class EvmNativeOperationJournal {
   /** Active journal records only. Use indexed async reads for completed history. */
   list(): EvmNativeOperation[] {
     this.assertOpen()
-    return [...this.rows.values()].map(clone)
+    return [...this.rows.values()].map(row => this.copy(row))
   }
   /** Active record only; absence must not be interpreted as a never-created operation. */
   get(operationId: string): EvmNativeOperation {
     this.assertOpen()
     const row = this.rows.get(operationId)
     if (!row) fail('conflict')
-    return clone(row)
+    return this.copy(row)
   }
   /** Retained custody references for legacy stores and their source resolvers.
    * Transaction-set signing material and private change belong to CoinList; its `coin`

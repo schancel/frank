@@ -103,16 +103,23 @@ export class EvmTransactionSetLifecycle {
     // Member order is a validated topological order. Independent sources still proceed when
     // one source is awaiting inclusion; no network wait owns a wallet-wide reservation lock.
     const failures: unknown[] = []
+    // A member whose handoff failed in this pass holds back its successors until a later pass:
+    // its own fate at the node is unknown. Members of other sources still go out.
+    const failed = new Set<number>()
     for (const index of [...selected].sort((a,b) => a-b)) {
       const row = this.validateOperation(await this.options.authority.readOperation(id)), member = row.members[index]!
       if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
+      if (member.dependencies.some(dependency => failed.has(dependency))) {
+        failed.add(index)
+        continue
+      }
       const signed = member.signed!
       try {
-        if (await this.options.provider.getTransaction(signed.transactionHash)) {
-          await this.options.authority.markExposed(id, index)
-          continue
-        }
-        await this.options.authority.markExposed(id, index)
+        // Only a member that has left the wallet can already be on a node; one never exposed is
+        // marked exposed (durably, before its bytes leave) and broadcast without asking first.
+        if (member.exposed) {
+          if (await this.options.provider.getTransaction(signed.transactionHash)) continue
+        } else await this.options.authority.markExposed(id, index)
         try {
           const response = await this.options.provider.broadcastTransaction(signed.rawTransaction)
           if (response.hash.toLowerCase() !== signed.transactionHash.toLowerCase()) throw new Error('Unexpected transaction-set broadcast hash')
@@ -120,7 +127,10 @@ export class EvmTransactionSetLifecycle {
           const alreadyKnown = error instanceof Error && /already known|known transaction/i.test(error.message)
           if (!alreadyKnown && !(await this.options.provider.getTransaction(signed.transactionHash))) throw error
         }
-      } catch (error) { failures.push(error) }
+      } catch (error) {
+        failed.add(index)
+        failures.push(error)
+      }
     }
     if (failures.length) throw failures[0]
   }

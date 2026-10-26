@@ -118,8 +118,9 @@ test('releases lower nonce change separately and retries the original exact byte
   const original = f.operation.members.map((m) => m.signed!.rawTransaction)
   await f.lifecycle.replay('message', { payments: true })
   expect(f.broadcast.mock.calls.map(([raw]) => raw)).toEqual(original)
+  // Each member is marked exposed once, before its first broadcast; the change already on the
+  // node is not handed over again.
   expect(f.authority.markExposed.mock.calls).toEqual([
-    ['message', 0],
     ['message', 0],
     ['message', 1],
   ])
@@ -127,9 +128,18 @@ test('releases lower nonce change separately and retries the original exact byte
 
 test('a failed lower nonce handoff prevents successor broadcast while another source can progress', async () => {
   const f = await fixture(0)
+  // Another source's own signed transfer (its own bytes: a copy of member 1's would be the same
+  // transaction, already on the node once member 1 is).
+  const other = new Wallet('0x' + '44'.repeat(32))
+  const otherRaw = await other.signTransaction({
+    chainId: 10143, nonce: 0, to: change, value: 1000n, gasLimit: 21000n, gasPrice: 1n,
+  })
+  const otherTx = Transaction.from(otherRaw)
   const unrelated = {
     ...f.operation.members[1]!,
-    source: { kind: 'coin' as const, address: recipient.toLowerCase() },
+    source: { kind: 'coin' as const, address: other.address.toLowerCase() },
+    unsignedTransaction: otherTx.unsignedSerialized,
+    signed: { rawTransaction: otherRaw, transactionHash: otherTx.hash! },
     dependencies: [],
   } as EvmNativeMember
   f.operation.members.push(unrelated)
@@ -137,7 +147,15 @@ test('a failed lower nonce handoff prevents successor broadcast while another so
   await expect(
     f.lifecycle.replay('message', { payments: true }),
   ).rejects.toThrow('ambiguous node refusal')
-  expect(f.broadcast.mock.calls).toHaveLength(2)
+  // The failed nonce 0, then the other source; never the nonce 1 successor of the failed one.
+  expect(f.broadcast.mock.calls.map(([raw]) => raw)).toEqual([
+    f.operation.members[0]!.signed!.rawTransaction,
+    otherRaw,
+  ])
+  // A later pass hands the successor over once its predecessor went out.
+  await f.lifecycle.replay('message', { payments: true })
+  expect(f.broadcast.mock.calls.map(([raw]) => Transaction.from(raw).from)).toContain(source.address)
+  expect(f.broadcast.mock.calls.map(([raw]) => raw)).toContain(f.operation.members[1]!.signed!.rawTransaction)
 })
 
 test('waits for the actual predecessor inclusion and quiet-block eligibility before the private final drain', async () => {

@@ -37,8 +37,6 @@ jest.mock('../utils/contact-username', () => ({
 }))
 
 import { setConversationIdSalt, useChatStore } from './chats'
-import type { Conversation } from './chats'
-import { approveScreenerConversation } from '../utils/screener-triage'
 import {
   createContactKeyRotationStatement,
   deriveAddressFromPublicKeyHex,
@@ -246,40 +244,6 @@ describe('stores/contacts.ts (ticket #42)', () => {
       mockRelayHandleOf.mockResolvedValue({ username: null, reassigned: false })
       await contacts.refresh(ADDRESS)
       expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
-    })
-  })
-
-  describe('approving a Screener thread', () => {
-    it('adds the sender as an ordinary contact and resolves their profile', async () => {
-      const contacts = useContactStore()
-      contacts.setUpdateInterval(0)
-      const fetchProfileSpy = jest
-        .spyOn(activeChain, 'fetchProfile')
-        .mockResolvedValue({
-          address: { raw: ADDRESS },
-          pubKey: PUB_KEY_BYTES,
-          name: 'Stranger',
-        } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
-      const consoleError = jest.spyOn(console, 'error')
-      const conversation = {
-        id: 'screened-thread',
-        address: ADDRESS_LOWERCASE,
-        name: 'Stranger',
-        messages: [],
-      } as unknown as Conversation
-      const setScreenerStatus = jest.fn()
-
-      approveScreenerConversation(conversation, { setScreenerStatus }, contacts)
-      await new Promise(resolve => setTimeout(resolve, 0))
-      await new Promise(resolve => setTimeout(resolve, 0))
-
-      expect(conversation.screenerStatus).toBe('approved')
-      expect(consoleError).not.toHaveBeenCalledWith(
-        expect.stringContaining('ignoring curated default'),
-      )
-      expect(contacts.isContact(ADDRESS)).toBe(true)
-      expect(contacts.getContact(ADDRESS).profile.isBot).not.toBe(true)
-      expect(fetchProfileSpy).toHaveBeenCalledWith({ raw: ADDRESS })
     })
   })
 

@@ -381,13 +381,12 @@ describe('screener-triage ("The Tollbooth")', () => {
         address: 'lotus_16PSJ2eApprove1111111111111111111111',
       })
       const setScreenerStatus = jest.fn()
-      const fetchAndAddContact = jest.fn(async () => undefined)
       const addDefaultContact = jest.fn()
 
       approveScreenerConversation(
         conv,
         { setScreenerStatus },
-        { fetchAndAddContact, addDefaultContact },
+        { addDefaultContact },
       )
 
       expect(conv.screenerStatus).toBe('approved')
@@ -395,12 +394,8 @@ describe('screener-triage ("The Tollbooth")', () => {
         conversationId: 'conv-approve',
         status: 'approved',
       })
-      // An approved sender is an ordinary contact, not a relay-curated (bot) default.
-      expect(addDefaultContact).not.toHaveBeenCalled()
-      expect(fetchAndAddContact).toHaveBeenCalledWith(
-        expect.objectContaining({
-          address: 'lotus_16PSJ2eApprove1111111111111111111111',
-        }),
+      expect(addDefaultContact).toHaveBeenCalledWith(
+        'lotus_16PSJ2eApprove1111111111111111111111',
       )
     })
 

@@ -133,6 +133,22 @@ display and the wallet's fee summary.
   - queued DMs were delivered once, with one stamp each, within about 15 s of restart;
   - with only relay-c up, DMs worked both ways.
 - **Bots** answered after the outage. Dice answers "help" within a second.
+- **Clean checkout, 2026-10-26:** a fresh clone of main `c9176c730`,
+  `docker compose -f backend/labs/compose.cluster.yml up -d --build` (with
+  `FRANK_LAB_CLUSTER_PORT`, since 18080 was taken), came up all healthy, and the cluster contract
+  passed 16 of 16 on it.
+- **Direct messages over 64 KiB in S3** (#1924, verified on its branch, identical to main
+  `71d44dbe1`):
+  - cluster contract 16 of 16;
+  - DM livecheck OK: A admitted the largest message a client seals (a 401,813-byte request), B
+    and C each read back the exact delivery frame through an authenticated mailbox scan, and the
+    object under `lab/messages/sha256/<sha256 of the request>/` in MinIO hashes to that request;
+    all funds went back to the faucet.
+  - **An 8 MiB DM cannot round-trip.** The HTTP limit is 8 MiB, but the codec admits one
+    crypto-box envelope of at most 524,376 bytes (512 KiB of ciphertext) per DM, so the largest
+    admissible request is about 0.53 MB. An 8,388,315-byte request gets 400 from the codec. The
+    step 6 acceptance line in `relay-ha-cluster.md` cannot be met as written; no limit was
+    raised (owner question 14).
 
 ## Shared across replicas, and replica-local
 
@@ -209,6 +225,9 @@ Still replica-local; each relay's startup log names them:
     - run only when idle, and never touch claimed coins;
     - start above about 8 spendable coins, merging into one fresh account;
     - skip coins that cost more to move than they're worth.
+14. **DM size versus the 8 MiB acceptance line.** A DM holds at most 512 KiB of ciphertext, so
+    no 8 MiB DM exists. Keep that limit and change the acceptance line to "the largest DM a
+    client seals round-trips through S3" (recommended; met), or raise the codec limit?
 
 ## Before deploying this main
 
@@ -222,6 +241,9 @@ These are not done. The owner decides the redeploy.
   - Start the bot and gateway wallet stores fresh. Wallet database names now include the network
     (`FRANK_WALLET_STORAGE_LOCATION`).
   - Reset the forum stores to the v2 marker.
+- **Relay message store:** the DM row format moved to v3 (#1924). A single-node relay with an
+  old `<db>.messages-v3` store refuses to start until it, and `<db>.large-values/messages`, are
+  moved aside, which drops its stored DMs. The FDB subspace is now `messages-v4/`.
 - **Configuration:** set the stamp floor and the payment floor multiple (10, from
   `docs/protocol/chains/v1.json`) in the relay and bot configs.
 - **Never reset the bot custody or create replacement bot identities.**
@@ -303,3 +325,4 @@ These are not done. The owner decides the redeploy.
 - [A bot passes its own notes to self quietly, and logs a refused inbound message once (#1920)](https://github.com/schancel/frank/pull/1920)
 - [Chat stealth payments with a stamp quote what they build and refuse an over-bound stamp before signing; a message ended over the fee says so (#1921)](https://github.com/schancel/frank/pull/1921)
 - [Send to Contact says when the fee rose and shows the new one; contact payment cards show the fee breakdown; a card's network fee is the one History shows (#1922)](https://github.com/schancel/frank/pull/1922)
+- [Direct-message requests over 64 KiB are stored in S3 like group messages (#1924)](https://github.com/schancel/frank/pull/1924)

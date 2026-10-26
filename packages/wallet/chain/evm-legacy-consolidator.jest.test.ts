@@ -1780,7 +1780,8 @@ describe('wallet-lifetime EVM native operations', () => {
       const row = await broadcastLegacy(c, state, 100000n)
       state.mine(row.members[0]!.signed!.rawTransaction)
       const observed = jest.spyOn(journal, 'recordObservation')
-      const put = durability.durablePut
+      // The journal commits a mutation's row and manifest in one batch.
+      const put = durability.durableBatch
       let release!: () => void
       let entered!: () => void
       const admitted = new Promise<void>(resolve => {
@@ -1790,7 +1791,7 @@ describe('wallet-lifetime EVM native operations', () => {
         release = resolve
       })
       const write = jest
-        .spyOn(durability, 'durablePut')
+        .spyOn(durability, 'durableBatch')
         .mockImplementationOnce(async (...args) => {
           entered()
           await held

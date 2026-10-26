@@ -200,7 +200,9 @@ function parsePoint(bytes: Uint8Array): CurveResult<Projective> {
       lifted.assertValidity()
       return { ok: true, value: lifted }
     }
-    return { ok: true, value: Point.fromHex(bytes) }
+    // The generator multiplies with its precomputed tables only as `Point.BASE` itself.
+    const point = Point.fromHex(bytes)
+    return { ok: true, value: point.equals(Point.BASE) ? Point.BASE : point }
   } catch {
     return fail({ code: 'point-invalid' })
   }
@@ -346,7 +348,10 @@ export function ecdh(
   if (!scalar.ok) return scalar
   const secret = copyBytes(key.bytes)
   try {
-    return { ok: true, value: { point: cryptoBackend.ecdh(secret, publicKey) } }
+    return {
+      ok: true,
+      value: { point: cryptoBackend.ecdh(secret, publicKey) },
+    }
   } catch (error) {
     return fail(backendFailure(error))
   } finally {
@@ -426,6 +431,54 @@ export function pointMultiply(
   } catch (error) {
     return fail(backendFailure(error))
   }
+}
+
+/** Variable-time `point·scalar` for public inputs. The generator keeps the constant-time path:
+ * it has precomputed tables, which make that path fast, and @noble/curves 1.9.1's variable-time
+ * multiplication over those tables returns wrong points (as its own verify avoids it). */
+function publicScale(point: Projective, scalar: bigint): Projective {
+  return point === Point.BASE
+    ? point.multiply(scalar)
+    : point.multiplyUnsafe(scalar)
+}
+
+/**
+ * Public point times a public scalar in [1, n), in variable time: verification and public
+ * derivation arithmetic, where every input is already known to anyone watching. Never pass a
+ * secret scalar; `pointMultiply` is the constant-time form.
+ */
+export function publicPointMultiply(
+  publicPoint: Uint8Array,
+  publicScalar: Uint8Array,
+): CurveResult<Uint8Array> {
+  const point = parsePoint(publicPoint)
+  if (!point.ok) return point
+  const factor = scalar32(publicScalar)
+  if (!factor.ok) return factor
+  return compressed(publicScale(point.value, factor.value))
+}
+
+/**
+ * `a·A + b·B` for public points and public scalars in [1, n), in variable time (a DLEQ or
+ * signature check's linear combination). Never pass a secret scalar. Infinity is an error.
+ */
+export function publicPointMultiplyAdd(
+  left: Uint8Array,
+  leftScalar: Uint8Array,
+  right: Uint8Array,
+  rightScalar: Uint8Array,
+): CurveResult<Uint8Array> {
+  const a = parsePoint(left)
+  if (!a.ok) return a
+  const b = parsePoint(right)
+  if (!b.ok) return b
+  const x = scalar32(leftScalar)
+  if (!x.ok) return x
+  const y = scalar32(rightScalar)
+  if (!y.ok) return y
+  return compressed(
+    publicScale(a.value, x.value).add(publicScale(b.value, y.value)),
+  )
 }
 
 function dleqChallenge(

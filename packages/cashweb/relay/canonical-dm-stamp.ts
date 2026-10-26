@@ -3,8 +3,9 @@ import { randomBytes, sha256 } from '@frank/crypto-box'
 import {
   bigintToBytes,
   bytesToBigint,
-  pointAdd,
   pointMultiply,
+  publicPointMultiply,
+  publicPointMultiplyAdd,
 } from '@frank/nakamoto'
 import {
   addressFromCompressedPubkey,
@@ -71,6 +72,7 @@ function scalar(bytes: Uint8Array): bigint {
   return n
 }
 
+/** Constant time: `factor` may be secret (the stamp ephemeral and the proof nonce). */
 function multiply(point: Uint8Array, factor: Uint8Array): Uint8Array {
   const result = pointMultiply(point, factor)
   if (!result.ok) throw new CanonicalStampError('point')
@@ -181,8 +183,10 @@ export function verifyCanonicalStampProof(input: CanonicalStampInput): void {
   const c = scalar(proof.subarray(0, 32))
   const s = scalarBytes(scalar(proof.subarray(32)))
   const minusC = scalarBytes(ORDER - c)
+  // Every input here is public (the proof and the points it relates), so the check runs in
+  // variable time.
   const subtract = (base: Uint8Array, other: Uint8Array): Uint8Array => {
-    const sum = pointAdd(multiply(base, s), multiply(other, minusC))
+    const sum = publicPointMultiplyAdd(base, s, other, minusC)
     if (!sum.ok) throw new CanonicalStampError('proof')
     return sum.value
   }
@@ -215,7 +219,10 @@ export function canonicalStampDestination(input: {
     concat([domain, x, Uint8Array.of(i >>> 24, i >>> 16, i >>> 8, i)]),
   )
   scalar(tweak) // Never reduce or skip an invalid hash.
-  const publicKey = multiply(p, tweak)
+  // The tweak hashes only public values, so this multiplication runs in variable time.
+  const multiplied = publicPointMultiply(p, tweak)
+  if (!multiplied.ok) throw new CanonicalStampError('point')
+  const publicKey = multiplied.value
   return Object.freeze({
     publicKey,
     address: addressFromCompressedPubkey(publicKey),

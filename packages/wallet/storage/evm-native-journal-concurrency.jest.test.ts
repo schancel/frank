@@ -233,3 +233,148 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('a lookup reads the rows again exactly when another wrapper has written one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'frank-journal-lookup-'))
+  const actual: typeof level = jest.requireActual('level')
+  const handles = new Map<string, ReturnType<typeof level>>()
+  jest.mocked(level).mockImplementation(location => {
+    let db = handles.get(String(location))
+    if (!db) {
+      db = actual(location)
+      handles.set(String(location), db)
+    }
+    return db
+  })
+  const binding = {
+    chainIdentifier: 'monad-testnet',
+    nativeChainId: '10143',
+    publicTuple: 'lookup reload',
+  }
+  const a = new EvmNativeOperationJournal({ location: root, binding }),
+    b = new EvmNativeOperationJournal({ location: root, binding })
+  const signer = new Wallet('0x' + '43'.repeat(32)),
+    address = signer.address.toLowerCase()
+  try {
+    await a.Open()
+    const row = await a.prepare({
+      kind: 'native',
+      preparationId: 'stealth-payment:lookup-reload',
+      recipient: address,
+      intendedValueWei: '1000',
+      members: [
+        {
+          source: { kind: 'main', address },
+          dependencies: [],
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            chainId: 10143,
+            nonce: 0,
+            to: address,
+            value: 1000n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    })
+    await b.Open()
+    const db = [...handles.values()][0]!
+    const scans = jest.spyOn(db, 'iterator')
+    // Nothing written since `a` wrote: its lookups answer from the rows it holds.
+    await a.refreshPreparation('stealth-payment:lookup-reload')
+    await a.readOperation(row.operationId)
+    expect(scans).not.toHaveBeenCalled()
+    // `b` signs (a new manifest beside the row); `a`'s next lookup reads the rows and sees it.
+    const raw = await signer.signTransaction(
+      Transaction.from(row.members[0]!.unsignedTransaction),
+    )
+    await b.checkpointSigned(row.operationId, 0, raw)
+    scans.mockClear()
+    expect(
+      (await a.refreshPreparation('stealth-payment:lookup-reload'))!.members[0]!
+        .signed!.rawTransaction,
+    ).toBe(raw)
+    expect(scans).toHaveBeenCalledTimes(1)
+    scans.mockClear()
+    await a.refreshPreparation('stealth-payment:lookup-reload')
+    expect(scans).not.toHaveBeenCalled()
+    // A mutation always reads every row before it writes.
+    await a.markExposed(row.operationId, 0)
+    expect(scans).toHaveBeenCalledTimes(1)
+    expect(b.get(row.operationId).members[0]!.exposed).toBe(false)
+    await b.refreshPreparation('stealth-payment:lookup-reload')
+    expect(b.get(row.operationId).members[0]!.exposed).toBe(true)
+  } finally {
+    await Promise.all([a.Close(), b.Close()])
+    jest.mocked(level).mockImplementation(actual)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('a manifest written without a revision makes every lookup read the rows until the first write', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'frank-journal-no-revision-'))
+  const actual: typeof level = jest.requireActual('level')
+  const handles = new Map<string, ReturnType<typeof level>>()
+  jest.mocked(level).mockImplementation(location => {
+    let db = handles.get(String(location))
+    if (!db) {
+      db = actual(location)
+      handles.set(String(location), db)
+    }
+    return db
+  })
+  const binding = {
+    chainIdentifier: 'monad-testnet',
+    nativeChainId: '10143',
+    publicTuple: 'no revision',
+  }
+  const journal = new EvmNativeOperationJournal({ location: root, binding })
+  const address = new Wallet('0x' + '44'.repeat(32)).address.toLowerCase()
+  try {
+    await journal.Open()
+    const row = await journal.prepare({
+      kind: 'native',
+      preparationId: 'stealth-payment:no-revision',
+      recipient: address,
+      intendedValueWei: '1000',
+      members: [
+        {
+          source: { kind: 'main', address },
+          dependencies: [],
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            chainId: 10143,
+            nonce: 0,
+            to: address,
+            value: 1000n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    })
+    await journal.Close()
+    handles.clear()
+    const raw = actual(join(root, 'evm-native-operations-v1'))
+    const manifest = JSON.parse(String(await raw.get('manifest')))
+    delete manifest.revision
+    await raw.put('manifest', JSON.stringify(manifest))
+    await raw.close()
+    await journal.Open()
+    const scans = jest.spyOn([...handles.values()][0]!, 'iterator')
+    await journal.refreshPreparation('stealth-payment:no-revision')
+    await journal.refreshPreparation('stealth-payment:no-revision')
+    expect(scans).toHaveBeenCalledTimes(2)
+    await journal.cancelUnsigned(row.operationId)
+    scans.mockClear()
+    await journal.refreshPreparation('stealth-payment:no-revision')
+    expect(scans).not.toHaveBeenCalled()
+  } finally {
+    await journal.Close()
+    jest.mocked(level).mockImplementation(actual)
+    await rm(root, { recursive: true, force: true })
+  }
+})

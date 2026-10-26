@@ -403,9 +403,10 @@ describe('durable EVM native journal', () => {
   })
   it('faults after an ambiguous write and reopens the actual committed checkpoint', async () => {
     const row = await journal.prepare(plan())
-    const original = durability.durablePut
+    // A mutation commits its row and the manifest in one batch.
+    const original = durability.durableBatch
     jest
-      .spyOn(durability, 'durablePut')
+      .spyOn(durability, 'durableBatch')
       .mockImplementationOnce(async (...args) => {
         await original(...args)
         throw new Error('commit response lost')

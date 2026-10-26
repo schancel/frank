@@ -21,6 +21,8 @@ import {
   messageDigest,
   pointAdd,
   pointMultiply,
+  publicPointMultiply,
+  publicPointMultiplyAdd,
   signEcdsa,
   signMessage,
   signSchnorr,
@@ -377,6 +379,76 @@ describe('typed curve', () => {
     expect(hex(xec)).not.toBe(hex(signature))
     expect(must(verifyMessage(XEC_MAINNET, point, message, xec))).toBe(true)
     expect(must(verifyMessage(BTC_MAINNET, point, message, xec))).toBe(false)
+  })
+
+  test('variable-time public arithmetic agrees with the constant-time forms, the generator included', () => {
+    const Point = secp256k1.ProjectivePoint
+    const other = Point.BASE.multiply(0x5eedn).toRawBytes(true)
+    const scalars = [
+      2n,
+      0x0707070707070707070707070707070707070707070707070707070707070707n,
+      SECP256K1_N - 1n,
+      ...Array.from(
+        { length: 16 },
+        (_, i) =>
+          (bytesToBigintHigh(sha256(Uint8Array.of(i))) % (SECP256K1_N - 1n)) +
+          1n,
+      ),
+    ]
+    for (const point of [GENERATOR, other])
+      for (const k of scalars) {
+        const expected = Point.fromHex(point).multiply(k).toRawBytes(true)
+        expect(hex(must(pointMultiply(point, scalar(k))))).toBe(hex(expected))
+        expect(hex(must(publicPointMultiply(point, scalar(k))))).toBe(
+          hex(expected),
+        )
+      }
+    for (const a of scalars.slice(0, 6))
+      for (const b of scalars.slice(-6)) {
+        const sum = must(
+          pointAdd(
+            must(pointMultiply(GENERATOR, scalar(a))),
+            must(pointMultiply(other, scalar(b))),
+          ),
+        )
+        expect(
+          hex(
+            must(
+              publicPointMultiplyAdd(GENERATOR, scalar(a), other, scalar(b)),
+            ),
+          ),
+        ).toBe(hex(sum))
+        expect(
+          hex(
+            must(
+              publicPointMultiplyAdd(other, scalar(b), GENERATOR, scalar(a)),
+            ),
+          ),
+        ).toBe(hex(sum))
+      }
+    // a·G + (n - a)·G is the point at infinity: an error, not an encoding.
+    expect(
+      publicPointMultiplyAdd(
+        GENERATOR,
+        scalar(5n),
+        GENERATOR,
+        scalar(SECP256K1_N - 5n),
+      ).ok,
+    ).toBe(false)
+    expect(publicPointMultiply(other, scalar(0n)).ok).toBe(false)
+    expect(publicPointMultiply(new Uint8Array(33), scalar(1n)).ok).toBe(false)
+  })
+
+  test('one times a point is that point, and ECDH with the generator is the public key', () => {
+    const point = secp256k1.ProjectivePoint.BASE.multiply(0xabcdefn)
+    expect(hex(must(pointMultiply(point.toRawBytes(false), scalar(1n))))).toBe(
+      hex(point.toRawBytes(true)),
+    )
+    const offCurve = new Uint8Array(GENERATOR).fill(0xff, 1)
+    expect(pointMultiply(offCurve, scalar(1n)).ok).toBe(false)
+    expect(hex(must(ecdh(key(0x1234567n), GENERATOR)).point)).toBe(
+      hex(secp256k1.getPublicKey(scalar(0x1234567n), true)),
+    )
   })
 })
 

@@ -43,7 +43,10 @@ function parsePoint(bytes: Uint8Array): Projective {
       lifted.assertValidity()
       return lifted
     }
-    return Point.fromHex(encoded)
+    // The generator is the one point whose multiples have precomputed tables; the same point
+    // parsed afresh would multiply without them, about ten times slower.
+    const point = Point.fromHex(encoded)
+    return point.equals(Point.BASE) ? Point.BASE : point
   } catch (error) {
     if (error instanceof CryptoBackendError) throw error
     throw new CryptoBackendError('point-invalid')
@@ -175,11 +178,13 @@ export const nobleBackend: CryptoBackend = {
 
   ecdh(secret, publicKey) {
     const key = secret32(secret)
-    const point = compressed(parsePoint(publicKey))
+    // `getSharedSecret` (the parsed point times the secret, compressed), with the generator kept
+    // as `Point.BASE` so a public key computed this way uses its precomputed tables.
+    const point = parsePoint(publicKey)
     try {
-      const shared = secp256k1.getSharedSecret(key, point, true)
+      const shared = compressed(point.multiply(bytesToBigint(key)))
       if (shared.length !== 33) throw new CryptoBackendError('point-invalid')
-      return new Uint8Array(shared)
+      return shared
     } catch (error) {
       if (error instanceof CryptoBackendError) throw error
       throw new CryptoBackendError('point-invalid')
@@ -191,6 +196,10 @@ export const nobleBackend: CryptoBackend = {
   },
 
   pointMultiply(publicPoint, scalar) {
-    return compressed(parsePoint(publicPoint).multiply(scalar32(scalar)))
+    const point = parsePoint(publicPoint)
+    const factor = scalar32(scalar)
+    // One times a point is that point: callers validate and normalize an encoding this way, and
+    // need not pay for a full multiplication.
+    return compressed(factor === 1n ? point : point.multiply(factor))
   },
 }

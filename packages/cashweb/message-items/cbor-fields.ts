@@ -10,7 +10,13 @@
  * The bytes are the bare CBOR map, not a FRNK frame. On the canonical direct message path they
  * travel inside the generic plugin item frame (type 27), which names the item type.
  */
-import { encodeCanonical, type Encodable, type FrankValue } from '@frank/codec'
+import {
+  encodeCanonical,
+  fromHex,
+  toHex,
+  type Encodable,
+  type FrankValue,
+} from '@frank/codec'
 
 import {
   MessageItemDecodeError,
@@ -268,6 +274,31 @@ export function hex(minBytes: number, maxBytes = minBytes): Field<string> {
       ? `${minBytes} bytes of hexadecimal`
       : `${minBytes}..${maxBytes} bytes of hexadecimal`,
   )
+}
+
+/** Bytes held as lowercase hexadecimal text in memory and carried as a byte string on the wire:
+ * `minBytes..maxBytes` bytes. Encoding takes hex with or without `0x`; decoding gives lowercase
+ * hex without it. Unlike {@link hex}, the wire size is the byte length, not twice it, and the
+ * profile's text-string limit does not apply. */
+export function hexBytes(minBytes: number, maxBytes: number): Field<string> {
+  const sized = (length: number, path: string): void => {
+    if (length < minBytes || length > maxBytes)
+      fail(path, `expected ${minBytes}..${maxBytes} bytes`)
+  }
+  return {
+    enc: (v, path) => {
+      if (typeof v !== 'string' || !/^(?:0x)?(?:[0-9a-fA-F]{2})*$/.test(v))
+        return fail(path, 'expected hexadecimal text')
+      const digits = v.replace(/^0x/, '').toLowerCase()
+      sized(digits.length / 2, path)
+      return fromHex(digits)
+    },
+    dec: (v, path) => {
+      if (!(v instanceof Uint8Array)) return fail(path, 'expected a byte string')
+      sized(v.length, path)
+      return toHex(v)
+    },
+  }
 }
 
 /** A 32-byte hash as hexadecimal, with or without `0x`. */

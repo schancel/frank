@@ -1351,6 +1351,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return canonicalMessagingFor(wallet)?.paymentSummaryOf(params.payloadDigest);
     },
 
+    selfCopyOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.selfCopyOf(params.payloadDigest);
+    },
+
     async scanAuthenticatedMailbox(params) {
       const wallet = asMonadWallet(params.wallet, chainIdentifier);
       if (wallet.chainIdentifier !== chainIdentifier)

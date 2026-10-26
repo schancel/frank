@@ -25,10 +25,14 @@ import {
 } from 'ethers'
 
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import * as wire from '../message-item-plugins/wire'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { isDirectMessageNotAttempted } from './active-chain'
+import { SealedSelfCopyTooLargeError } from './canonical-dm'
+import {
+  MessageItemEncodeError,
+  pluginCapabilitiesNotYetAvailable,
+} from '@frank/cashweb/message-items/registry'
 import {
   STAMP,
   START_BALANCE,
@@ -563,6 +567,164 @@ describe("a wallet's sync note to itself", () => {
             items: [{ type: 'text', text: 'note held back' }],
           }),
         ])
+      },
+    )
+
+    // Each item is larger than the 64 KiB a note to self once allowed per frame, and the two
+    // together larger than half a direct message (the frames once travelled as hex text).
+    const largeItems = [
+      { type: 'text' as const, text: 'a'.repeat(150_000) },
+      { type: 'text' as const, text: 'b'.repeat(150_000) },
+    ]
+    it.each([
+      ['free', 0n],
+      ['paid', STAMP],
+    ] as const)(
+      'shows a %s sealed message with items over 64 KiB on the other device',
+      async (_kind, stampValue) => {
+        const warn = jest.spyOn(console, 'warn')
+        routeByRecipient = true
+        const id = '4b4b4b4b-4b4b-4b4b-8b4b-4b4b4b4b4b4b'
+        const sent = await one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items: largeItems,
+          stampValue,
+          messageId: id,
+          sealedSender: true,
+        })
+        expect(bobMailbox).toHaveLength(1)
+        // The note went out with the message: nothing is owed, nothing was retried.
+        expect(
+          one.chain.directMessages.selfCopyOf!({
+            wallet: one.alice,
+            payloadDigest: sent.payloadDigest,
+          }),
+        ).toBeUndefined()
+        expect(
+          warn.mock.calls.some(([text]) => String(text).includes('note to self')),
+        ).toBe(false)
+        routeByRecipient = false
+        const other = await otherDevice()
+        for (let pass = 0; pass < 2; pass++) {
+          const { messages, held } = await read(other, other.alice)
+          expect(held).toEqual([])
+          expect(messages).toEqual([
+            expect.objectContaining({
+              outbound: true,
+              payloadDigest: sent.payloadDigest,
+              messageId: id,
+              items: largeItems,
+            }),
+          ])
+        }
+      },
+    )
+
+    it('refuses, before anything is paid or sent, a sealed message too large for its note to self', async () => {
+      routeByRecipient = true
+      // Within a few hundred bytes of the largest direct message: the message alone fits, the
+      // note to self, which holds it and its own fields, does not.
+      const items = [
+        { type: 'text' as const, text: 'c'.repeat(261_900) },
+        { type: 'text' as const, text: 'd'.repeat(261_900) },
+      ]
+      for (const stampValue of [0n, STAMP]) {
+        const error = await one.chain.directMessages
+          .send({
+            wallet: one.alice,
+            recipient: one.bob.identity.address,
+            items,
+            stampValue,
+            sealedSender: true,
+          })
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          )
+        expect(error).toBeInstanceOf(SealedSelfCopyTooLargeError)
+        expect(isDirectMessageNotAttempted(error)).toBe(true)
+      }
+      expect(addressed).toEqual([])
+      expect(bobMailbox).toHaveLength(0)
+      expect(mailbox).toHaveLength(0)
+      expect(mockFunded).toHaveLength(0)
+      expect(providerBroadcasts).toHaveLength(0)
+      // The same message with its sender named needs no note to self, and is sent.
+      await one.chain.directMessages.send({
+        wallet: one.alice,
+        recipient: one.bob.identity.address,
+        items,
+        stampValue: 0n,
+      })
+      expect(bobMailbox).toHaveLength(1)
+    })
+
+    it.each([
+      ['free', 0n],
+      ['paid', STAMP],
+    ] as const)(
+      'a %s sealed message whose note to self can never be sent is delivered, says so, and the note is not retried',
+      async (_kind, stampValue) => {
+        const error = jest.spyOn(console, 'error').mockImplementation(() => undefined)
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+        routeByRecipient = true
+        // The note cannot be encoded once the message is out (the check before the send passed).
+        const encode = wire.encodeItemFrames
+        jest.spyOn(wire, 'encodeItemFrames').mockImplementation((registry, items, addressing) => {
+          if (addressed.includes('peer') && items[0]?.type === 'outbox-message')
+            throw new MessageItemEncodeError('outbox-message', 'never encodable')
+          return encode(registry, items, addressing)
+        })
+        const sent = await one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items: [{ type: 'text', text: 'no note for this one' }],
+          stampValue,
+          sealedSender: true,
+        })
+        expect(bobMailbox).toHaveLength(1)
+        const failed = {
+          state: 'failed',
+          reason: 'never encodable',
+        }
+        expect(
+          one.chain.directMessages.selfCopyOf!({
+            wallet: one.alice,
+            payloadDigest: sent.payloadDigest,
+          }),
+        ).toEqual(failed)
+        expect(
+          error.mock.calls.filter(([text]) => String(text).includes('can never be sent')),
+        ).toHaveLength(1)
+        expect(
+          warn.mock.calls.some(([text]) => String(text).includes('it is sent again later')),
+        ).toBe(false)
+        // Later passes, also after a restart, do not try it again; the failure stays recorded.
+        await one.alice.close()
+        const reopened = (await one.chain.createWallet(roots(0))) as EvmChainWalletHandle
+        ;(one as { alice: EvmChainWalletHandle }).alice = reopened
+        installCanonicalDirectory(reopened, aliceDirectories.get(one)!)
+        addressed = []
+        for (let pass = 0; pass < 2; pass++)
+          await one.chain.directMessages.reconcileAttempts({
+            wallet: reopened,
+            payloadDigests: [sent.payloadDigest],
+            maxPutAttempts: 2,
+          })
+        expect(addressed).not.toContain('self')
+        expect(
+          one.chain.directMessages.selfCopyOf!({
+            wallet: reopened,
+            payloadDigest: sent.payloadDigest,
+          }),
+        ).toEqual(failed)
+        expect(
+          error.mock.calls.filter(([text]) => String(text).includes('can never be sent')),
+        ).toHaveLength(1)
+        // The fixture closes the wallet it opened; the reopened one is closed here.
+        await reopened.close()
+        await otherDevice()
       },
     )
   })

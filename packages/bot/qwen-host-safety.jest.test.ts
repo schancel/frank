@@ -1675,10 +1675,11 @@ describe("with the real canonical wallet", () => {
     expect(submitted.length).toBeGreaterThan(0);
     expect(new Set(submitted)).toEqual(new Set([original.digest]));
     expect(new Set(submittedBodies)).toEqual(new Set(["0x" + completed.request!.body]));
-    // The sealed reply left no outbox row: the bot's other devices learn of it from one
-    // unpaid note to self, sent after the reply was delivered.
+    // The sealed reply left no outbox row: the bot's other devices learn of it from unpaid
+    // notes to self, sent after the reply was delivered: one carrying the reply, one carrying
+    // the spends of its payment.
     expect(selfCopies.length).toBeGreaterThan(0);
-    expect(new Set(selfCopies.map((copy) => copy.payloadHash)).size).toBe(1);
+    expect(new Set(selfCopies.map((copy) => copy.payloadHash)).size).toBe(2);
     expect(selfCopies.every((copy) => copy.transactions === 0)).toBe(true);
     const signed = botWallet.getNativeOperations!().flatMap((row) =>
       row.members.map((member) => member.signed!.rawTransaction)

@@ -37,6 +37,7 @@ import {
 import {
   ACCOUNT_REF,
   DIRECT_MESSAGE_DELIVERY,
+  FrankCodecError,
   KEY_TYPE,
   MESSAGE_CONTENT_REVISION,
   PAYMENT_MEMBER,
@@ -95,7 +96,11 @@ import type {
   OutboxMessageItem,
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
-import type { MessageItemRegistry } from '@frank/cashweb/message-items/registry'
+import {
+  MessageItemEncodeError,
+  MessageItemUnsupportedError,
+  type MessageItemRegistry,
+} from '@frank/cashweb/message-items/registry'
 import {
   MessageItemBudgetExceededError,
   decodeItemFrames,
@@ -132,6 +137,7 @@ import type {
   ChainAddress,
   DirectMessageAttemptStatus,
   DirectMessagePaymentSummary,
+  DirectMessageSelfCopyState,
   DirectMessageClient,
   DirectMessageReceived,
   DirectMessageSendResult,
@@ -1634,15 +1640,21 @@ async function openOwnOriginal(
 /**
  * A sealed message leaves no outbox row at the relay (the relay is not told who sent it), so
  * the account's other devices, and a restore that reads the mailbox, would never see it or the
- * coins its payment spent. Every sealed send therefore also writes this note to self, free like
- * every note to self: the sent message (`outbox-message`) and one `wallet-sync` item per signed
- * transaction of its bundle (the stamp payments and the wallet's own change/self-sends). The
- * other devices apply the spends through `applyWalletSyncItem` and show the message as sent.
+ * coins its payment spent. Every sealed send therefore also writes notes to self, free like
+ * every note to self: the sent message (`outbox-message`, carrying the original's item frames),
+ * and, for a paid send, one `wallet-sync` item per signed transaction of its bundle (the stamp
+ * payments and the wallet's own change/self-sends) in a second note. The other devices apply the
+ * spends through `applyWalletSyncItem` and show the message as sent.
  *
- * Its message ID is derived from the original's payload digest, so a repeat is the same note:
- * named free sends keep their sealed envelope until delivered, and applying a note twice changes
- * nothing. The original is opened again with this wallet's keys to recover what it carries, so a
- * resend after a restart builds exactly the same items without the plaintext ever being stored.
+ * The spends travel in their own note so the message's note is bounded by the message alone: it
+ * holds the original's items and a fixed set of fields, and {@link requireSelfCopyFits} checks,
+ * before a sealed send pays or hands out anything, that it fits in a direct message.
+ *
+ * Each note's message ID is derived from the original's payload digest, so a repeat is the same
+ * note: named free sends keep their sealed envelope until delivered, and applying a note twice
+ * changes nothing. The original is opened again with this wallet's keys to recover what it
+ * carries, so a resend after a restart builds exactly the same items without the plaintext ever
+ * being stored.
  */
 async function deliverSealedSelfCopy(
   owner: CanonicalMessagingOwner,
@@ -1659,38 +1671,170 @@ async function deliverSealedSelfCopy(
   },
 ): Promise<void> {
   const opened = await openOwnOriginal(owner, directory, original)
-  const items: MessageItem[] = [
-    buildOutboxMessageItem({
-      payloadDigest: original.digest,
-      recipientAddress: computeAddress('0x' + original.recipientSubject),
-      recipientPublicKey: original.recipientSubject,
-      sentAt: original.sentAt,
-      ...(opened.conversationId === undefined
-        ? {}
-        : { conversationId: opened.conversationId }),
-      ...(opened.conversationName === undefined
-        ? {}
-        : { conversationName: opened.conversationName }),
-      messageId: opened.messageId,
-      ...(original.stampValueWei === undefined
-        ? {}
-        : { stampValueWei: original.stampValueWei }),
-      itemFrames: opened.items.map(item => item.frame),
-    }),
-    ...original.transactions.map(rawTx => spentBySelfCopy(directory.network, rawTx)),
-  ]
+  const noStamp = async () => {
+    throw new Error('A note to self carries no stamp')
+  }
   await send(
     owner,
     {
       recipient: { raw: owner.identityAddress },
-      items,
+      items: [
+        selfCopyItem({
+          digest: original.digest,
+          recipientSubject: original.recipientSubject,
+          sentAt: original.sentAt,
+          conversationId: opened.conversationId,
+          conversationName: opened.conversationName,
+          messageId: opened.messageId,
+          stampValueWei: original.stampValueWei,
+          itemFrames: opened.items.map(item => item.frame),
+        }),
+      ],
       stampValue: 0n,
       messageId: formatUuid(outboxNoteMessageId(original.digest)),
     },
-    async () => {
-      throw new Error('A note to self carries no stamp')
-    },
+    noStamp,
   )
+  if (original.transactions.length > 0)
+    await send(
+      owner,
+      {
+        recipient: { raw: owner.identityAddress },
+        items: original.transactions.map(rawTx => spentBySelfCopy(directory.network, rawTx)),
+        stampValue: 0n,
+        messageId: formatUuid(outboxSpendsMessageId(original.digest)),
+      },
+      noStamp,
+    )
+}
+
+/** The `outbox-message` item of a sealed original's note to self. */
+function selfCopyItem(original: {
+  digest: string
+  recipientSubject: string
+  sentAt: number
+  conversationId?: Uint8Array | string
+  conversationName?: string
+  messageId: Uint8Array | string
+  stampValueWei?: bigint
+  itemFrames: readonly Uint8Array[]
+}): OutboxMessageItem {
+  return buildOutboxMessageItem({
+    payloadDigest: original.digest,
+    recipientAddress: computeAddress('0x' + original.recipientSubject),
+    recipientPublicKey: original.recipientSubject,
+    sentAt: original.sentAt,
+    ...(original.conversationId === undefined
+      ? {}
+      : { conversationId: original.conversationId }),
+    ...(original.conversationName === undefined
+      ? {}
+      : { conversationName: original.conversationName }),
+    messageId: original.messageId,
+    ...(original.stampValueWei === undefined
+      ? {}
+      : { stampValueWei: original.stampValueWei }),
+    itemFrames: original.itemFrames,
+  })
+}
+
+/** A sealed send whose note to self could not be carried in a direct message: refused before
+ * anything was paid, sealed or handed out. The account's other devices would never see it. */
+export class SealedSelfCopyTooLargeError extends MessageItemEncodeError {
+  constructor(detail: string) {
+    super(
+      'outbox-message',
+      `this sealed message is too large for the note to self that shows it on the account's other devices (${detail}); nothing was paid or sent`,
+    )
+    this.name = 'SealedSelfCopyTooLargeError'
+    Object.setPrototypeOf(this, SealedSelfCopyTooLargeError.prototype)
+  }
+}
+
+/**
+ * Refuses a sealed send whose note to self would not fit in a direct message, before anything is
+ * paid, sealed or handed out. The note is built and sealed here exactly as
+ * {@link deliverSealedSelfCopy} will build and seal it, under the same codec limits that bound
+ * every direct message; the facts not known yet stand in at their widest: the payload digest
+ * (always 32 bytes), the relay's time, and a stamp not yet settled (the largest amount).
+ *
+ * The note holds the original's item frames and its own fields, so a sealed message within a few
+ * hundred bytes of the largest direct message cannot have one; such a message is refused here
+ * rather than delivered without a note the other devices could read.
+ */
+async function requireSelfCopyFits(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  original: {
+    recipientSubject: string
+    messageId: Uint8Array
+    conversationId: Uint8Array
+    conversationName?: string
+    paid: boolean
+    itemFrames: readonly Uint8Array[]
+  },
+): Promise<void> {
+  const digest = '00'.repeat(32)
+  const item = selfCopyItem({
+    digest,
+    recipientSubject: original.recipientSubject,
+    sentAt: Date.now(),
+    conversationId: original.conversationId,
+    conversationName: original.conversationName,
+    messageId: original.messageId,
+    stampValueWei: original.paid ? (1n << 256n) - 1n : undefined,
+    itemFrames: original.itemFrames,
+  })
+  let items: Uint8Array[]
+  try {
+    items = encodeItemFrames(requireMessageItems(owner), [item], { selfAddressed: true })
+  } catch (error) {
+    if (!selfCopyCannotSucceed(error)) throw error
+    throw new SealedSelfCopyTooLargeError(detailOf(error))
+  }
+  const self = await directory.selfCurrent()
+  try {
+    sealUnpaid(owner, directory, {
+      senderCurrent: self,
+      recipientCurrent: self,
+      messageId: outboxNoteMessageId(digest),
+      conversationId: allocateOpeningConversationId(
+        owner.roles.conversationIdSalt(),
+        owner.identityAddress.toLowerCase(),
+      ),
+      items,
+    })
+  } catch (error) {
+    if (!selfCopyCannotSucceed(error)) throw error
+    throw new SealedSelfCopyTooLargeError(detailOf(error))
+  }
+}
+
+/** A note to self that can never be encoded or sealed: an item this path refuses, or more than a
+ * direct message may hold. Sending it again fails the same way, so it is not retried. */
+function selfCopyCannotSucceed(error: unknown): boolean {
+  return (
+    error instanceof MessageItemEncodeError ||
+    error instanceof MessageItemUnsupportedError ||
+    (error instanceof FrankCodecError && error.category === 'resource')
+  )
+}
+
+const detailOf = (error: unknown): string =>
+  error instanceof MessageItemEncodeError
+    ? error.detail
+    : error instanceof Error
+    ? error.message
+    : String(error)
+
+/** A note to self that cannot succeed: said loudly, once, and recorded on the message (by the
+ * caller), never retried. */
+function reportSelfCopyFailure(digest: string, error: unknown): string {
+  console.error(
+    `[monad-canonical-dm] the note to self for sealed message ${digest} can never be sent; the account's other devices will not show it:`,
+    error,
+  )
+  return detailOf(error)
 }
 
 /** The spend fact one signed transaction of a sealed send carries to the account's other devices. */
@@ -1718,15 +1862,25 @@ async function deliverOwedFreeSelfCopy(
   const payload = sealedOriginalPayload(fromHex(found.delivery))
   const { messageId, selfCopyOwed: _owed, sentAt, ...envelope } = found
   if (payload)
-    await deliverSealedSelfCopy(owner, directory, {
-      payload,
-      context: fromHex(found.context),
-      digest: found.digest,
-      recipientSubject: found.recipientSubject,
-      messageId,
-      sentAt: sentAt ?? Date.now(),
-      transactions: [],
-    })
+    try {
+      await deliverSealedSelfCopy(owner, directory, {
+        payload,
+        context: fromHex(found.context),
+        digest: found.digest,
+        recipientSubject: found.recipientSubject,
+        messageId,
+        sentAt: sentAt ?? Date.now(),
+        transactions: [],
+      })
+    } catch (error) {
+      if (!selfCopyCannotSucceed(error)) throw error
+      // Kept, with the reason, so the failure stays visible (`selfCopyOf`); no longer owed.
+      const reason = reportSelfCopyFailure(found.digest, error)
+      await owner.lifetime(() =>
+        owner.messages.setUnpaid(messageId, { ...envelope, selfCopyFailed: reason }),
+      )
+      return
+    }
   await owner.lifetime(() =>
     owner.messages.setUnpaid(messageId, envelope.hostBound ? envelope : undefined),
   )
@@ -1740,23 +1894,30 @@ async function deliverOwedSelfCopy(
 ): Promise<StoredMessage> {
   if (!row.selfCopyOwed || row.outcome !== 'delivered' || !row.construction)
     return row
-  await deliverSealedSelfCopy(owner, directory, {
-    payload: fromHex(row.construction.payload),
-    context: fromHex(row.construction.context),
-    digest: row.digest,
-    recipientSubject: row.recipientSubject,
-    messageId: row.consumerId.slice('frank-dm:'.length),
-    // The relay's time, as the recipient sees it; a row delivered before it was kept has only
-    // its local creation time.
-    sentAt: row.deliveredAt ?? row.createdAt,
-    stampValueWei: BigInt(row.construction.amountWei),
-    transactions: [...row.payments, ...row.otherTransactions]
-      .map(payment => payment.rawTx)
-      .filter(rawTx => rawTx !== ''),
-  })
+  let failed: string | undefined
+  try {
+    await deliverSealedSelfCopy(owner, directory, {
+      payload: fromHex(row.construction.payload),
+      context: fromHex(row.construction.context),
+      digest: row.digest,
+      recipientSubject: row.recipientSubject,
+      messageId: row.consumerId.slice('frank-dm:'.length),
+      // The relay's time, as the recipient sees it; a row delivered before it was kept has only
+      // its local creation time.
+      sentAt: row.deliveredAt ?? row.createdAt,
+      stampValueWei: BigInt(row.construction.amountWei),
+      transactions: [...row.payments, ...row.otherTransactions]
+        .map(payment => payment.rawTx)
+        .filter(rawTx => rawTx !== ''),
+    })
+  } catch (error) {
+    if (!selfCopyCannotSucceed(error)) throw error
+    failed = reportSelfCopyFailure(row.digest, error)
+  }
   const { selfCopyOwed: _owed, ...copied } = owner.messages.get(row.consumerId)!
-  await owner.lifetime(() => owner.messages.put(copied))
-  return copied
+  const next = failed === undefined ? copied : { ...copied, selfCopyFailed: failed }
+  await owner.lifetime(() => owner.messages.put(next))
+  return next
 }
 
 /**
@@ -2233,6 +2394,17 @@ async function send(
       params.conversationName === undefined
         ? {}
         : { conversationName: params.conversationName }
+    // A sealed message is shown on the account's other devices only through its note to self:
+    // one whose note could not be carried is refused here, before anything is paid or sent.
+    if (params.sealedSender === true && !selfAddressed)
+      await requireSelfCopyFits(owner, directory, {
+        recipientSubject: peer.subject,
+        messageId,
+        conversationId,
+        ...conversationName,
+        paid: stampValueWei !== 0n,
+        itemFrames: items,
+      })
     if (stampValueWei === 0n) {
       // No stamp: the message is sealed and handed to the relay. No account is funded or
       // reserved, no coin is claimed, and no paid message is waited for or touched: like every send, it
@@ -2358,23 +2530,28 @@ async function send(
             transactions: [],
           })
         } catch (error) {
-          console.warn(
-            '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
-            error,
-          )
+          // One that can never be sent is kept with its reason (`selfCopyOf`), not retried.
+          const cannot = selfCopyCannotSucceed(error)
+          if (!cannot)
+            console.warn(
+              '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+              error,
+            )
+          const failed = cannot ? reportSelfCopyFailure(digest, error) : undefined
           const owedName = name ?? toHex(messageId)
-          const envelope = owner.messages.unpaid(owedName)
+          const { selfCopyOwed: _owed, ...envelope } = owner.messages.unpaid(owedName) ?? {
+            digest,
+            delivery: toHex(originalDelivery),
+            context: toHex(originalContext),
+            recipientSubject: peer.subject,
+            boundary: originalBoundary,
+          }
           await owner.messages.setUnpaid(owedName, {
-            ...(envelope ?? {
-              digest,
-              delivery: toHex(originalDelivery),
-              context: toHex(originalContext),
-              recipientSubject: peer.subject,
-              boundary: originalBoundary,
-            }),
+            ...envelope,
             outcome: 'delivered',
-            selfCopyOwed: true,
-            sentAt,
+            ...(failed === undefined
+              ? { selfCopyOwed: true as const, sentAt }
+              : { selfCopyFailed: failed }),
           })
           return unpaidResult(digest)
         }
@@ -2717,6 +2894,18 @@ export function outboxNoteMessageId(payloadDigest: string): Uint8Array {
   return getBytes(
     keccak256(
       toUtf8Bytes(`frank-outbox-message:${payloadDigest.toLowerCase()}`),
+    ),
+  ).slice(0, 16)
+}
+
+/**
+ * Deterministic 16-byte message ID for the self-addressed note carrying the `wallet-sync` spends
+ * of the sealed outbound message with `payloadDigest`.
+ */
+export function outboxSpendsMessageId(payloadDigest: string): Uint8Array {
+  return getBytes(
+    keccak256(
+      toUtf8Bytes(`frank-outbox-spends:${payloadDigest.toLowerCase()}`),
     ),
   ).slice(0, 16)
 }
@@ -3481,6 +3670,18 @@ export function canonicalDirectMessages(
         .all()
         .find(row => row.digest === payloadDigest)
         ?.payments.map(payment => payment.state),
+    /** Whether the note to self of a sealed message this wallet sent is still owed, or can
+     * never be sent (and why). `undefined`: none is owed or failed for that digest. No request. */
+    selfCopyOf: (payloadDigest: string): DirectMessageSelfCopyState | undefined => {
+      const row = owner.messages.all().find(r => r.digest === payloadDigest)
+      const found =
+        row ??
+        owner.messages.failedSelfCopies().find(e => e.digest === payloadDigest) ??
+        owner.messages.owedSelfCopies().find(e => e.digest === payloadDigest)
+      if (found?.selfCopyFailed !== undefined)
+        return { state: 'failed', reason: found.selfCopyFailed }
+      return found?.selfCopyOwed ? { state: 'owed' } : undefined
+    },
     paymentSummaryOf: (
       payloadDigest: string,
     ): DirectMessagePaymentSummary | undefined => {

@@ -1,6 +1,7 @@
 import type { Provider, Wallet } from "ethers";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
 import type { EvmNativeSources } from "./evm-native-sources";
+import type { EvmNotedSends } from "./evm-noted-sends";
 import type { EvmSubAccountPool as MonadSubAccountPool } from "./evm-account-pool";
 import type { SubAccountLeaseManager } from "./evm-account-lease";
 import type { MonadTxSubmitter } from "./evm-account-tx";
@@ -159,6 +160,8 @@ export class EvmWalletInternals {
     { txHash: string; nonce: number }[]
   >();
   readonly settledSelfNotes = new Set<string>();
+  /** What the account sent, as its notes to itself report it (History's cross-device record). */
+  notedSends?: EvmNotedSends;
   readonly waitingSelfNotes = new Map<string, number>();
 
   clearOnClose(): void {
@@ -266,6 +269,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   getNativeOperationHistory!: EvmChainWalletHandle["getNativeOperationHistory"];
   getNativeOperations!: EvmChainWalletHandle["getNativeOperations"];
   readBlockTimes!: EvmChainWalletHandle["readBlockTimes"];
+  getNotedSends!: EvmChainWalletHandle["getNotedSends"];
   nativeOperationSyncFailed!: EvmChainWalletHandle["nativeOperationSyncFailed"];
   flushNativeSync!: EvmChainWalletHandle["flushNativeSync"];
   resumeNativeOperation!: EvmChainWalletHandle["resumeNativeOperation"];

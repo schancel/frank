@@ -225,6 +225,11 @@ export {
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";
+export type {
+  NotedSend,
+  NotedSendPurpose,
+  NotedSendStatus,
+} from "../evm-noted-sends";
 
 export {
   deriveEvmStealthAddress,

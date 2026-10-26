@@ -42,13 +42,26 @@
                   {{ entry.swap.status === 'pending' ? '≥' : ''
                   }}{{ entry.swap.toAmount }} {{ entry.swap.toAsset }}
                 </template>
-                <template v-else-if="entry.kind === 'received'"
-                  >+{{ nativeAmount(receivedAmount(entry.payment)) }}
-                  {{ nativeUnit }}</template
+                <span
+                  v-else-if="entry.kind === 'received'"
+                  :title="`${nativeAmount(
+                    receivedAmount(entry.payment),
+                  )} ${nativeUnit}`"
+                  >+{{ shortAmount(receivedAmount(entry.payment)) }}
+                  {{ nativeUnit }}</span
                 >
-                <template v-else
-                  >{{ nativeAmount(entry.operation.intendedValueWei) }}
-                  {{ nativeUnit }}</template
+                <span
+                  v-else-if="entry.kind === 'noted'"
+                  :title="`${nativeAmount(entry.valueWei)} ${nativeUnit}`"
+                  >{{ shortAmount(entry.valueWei) }} {{ nativeUnit }}</span
+                >
+                <span
+                  v-else
+                  :title="`${nativeAmount(
+                    entry.operation.intendedValueWei,
+                  )} ${nativeUnit}`"
+                  >{{ shortAmount(entry.operation.intendedValueWei) }}
+                  {{ nativeUnit }}</span
                 >
               </q-item-label>
               <q-badge
@@ -104,13 +117,76 @@
                 {{ $t('walletHistory.receivedClaimed') }}
               </p>
             </template>
+            <template v-else-if="entry.kind === 'noted'">
+              <q-item-label caption class="q-mt-xs">
+                {{ $t(`walletHistory.purpose.${entry.purpose}`) }}
+                ·
+                <time
+                  :datetime="new Date(entry.timeMs).toISOString()"
+                  data-testid="wallet-activity-date"
+                  >{{ formatSwapTime(entry.timeMs) }}</time
+                >
+              </q-item-label>
+              <div v-if="entry.recipient" class="wallet-history-address">
+                <address-text :address="entry.recipient" copyable />
+              </div>
+              <details
+                data-testid="wallet-noted-send"
+                class="wallet-history-details q-mt-sm"
+              >
+                <summary class="wallet-history-action">
+                  {{ $t('walletHistory.details') }}
+                </summary>
+                <div class="wallet-history-detail-body">
+                  <p class="text-caption text-grey-7">
+                    {{ $t('walletHistory.noted') }}
+                  </p>
+                  <div
+                    v-for="(send, index) in entry.sends"
+                    :key="send.txHash"
+                    class="wallet-history-transaction"
+                  >
+                    <div class="wallet-history-heading">
+                      <span class="text-weight-medium">{{
+                        $t('walletHistory.transaction', { number: index + 1 })
+                      }}</span>
+                      <span class="text-caption">{{
+                        $t(`walletHistory.status.${send.state}`)
+                      }}</span>
+                    </div>
+                    <div class="wallet-history-address">
+                      <address-text :address="send.txHash" copyable />
+                    </div>
+                    <a
+                      v-if="
+                        transactionExplorerLink(send.txHash, chainIdentifier)
+                      "
+                      :href="
+                        transactionExplorerLink(send.txHash, chainIdentifier)
+                      "
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="wallet-history-action"
+                      >{{ $t('walletPanel.viewInExplorer') }}</a
+                    >
+                    <p v-if="send.inclusion" class="text-caption q-mb-none">
+                      {{
+                        $t('nativeOperation.block', {
+                          block: send.inclusion.blockNumber,
+                        })
+                      }}
+                    </p>
+                  </div>
+                </div>
+              </details>
+            </template>
             <template v-else>
               <q-item-label caption class="q-mt-xs">
                 {{
                   $t(
                     entry.operation.kind === 'contract'
                       ? 'walletHistory.contract'
-                      : 'walletHistory.to',
+                      : `walletHistory.purpose.${entry.operation.purpose}`,
                   )
                 }}
                 <template v-if="entry.timeMs !== undefined">
@@ -127,7 +203,11 @@
               </div>
             </template>
             <details
-              v-if="entry.kind !== 'received' && entry.operation"
+              v-if="
+                entry.kind !== 'received' &&
+                entry.kind !== 'noted' &&
+                entry.operation
+              "
               data-testid="wallet-native-operation"
               class="wallet-history-details q-mt-sm"
             >
@@ -359,6 +439,7 @@
 <script setup lang="ts">
 import type { ReceivedPayment } from '@frank/wallet/chain'
 import AddressText from '../AddressText.vue'
+import { shortenDisplayAmount } from 'src/utils/chain-amount'
 import {
   changeMembers,
   observedFees,
@@ -368,7 +449,9 @@ import {
   type WalletHistoryRow,
 } from './wallet-history'
 
-defineProps<{
+const props = defineProps<{
+  /** The network these rows are of. */
+  chainIdentifier: string
   groups: WalletHistoryGroup[]
   inspectionStatus: WalletHistoryLoad['status']
   nativeUnit: string
@@ -380,6 +463,11 @@ defineProps<{
   ) => string | undefined
   formatSwapTime: (timestamp: number) => string
 }>()
+
+/** The amount as a row reads it; the exact amount is its title. */
+function shortAmount(value: string): string {
+  return shortenDisplayAmount(props.nativeAmount(value))
+}
 
 function formatDate(timeMs: number): string {
   return new Date(timeMs).toLocaleString(undefined, {
@@ -397,6 +485,10 @@ function statusLabel(entry: WalletHistoryRow) {
   if (entry.kind === 'swap') return `swap.status.${entry.swap.status}`
   if (entry.kind === 'received')
     return `walletHistory.receivedStatus.${entry.payment.status}`
+  if (entry.kind === 'noted') return `walletHistory.status.${entry.state}`
+  if (entry.contactOutcome === 'failed') return 'walletHistory.status.failed'
+  if (entry.contactOutcome === 'released')
+    return 'walletHistory.status.cancelled'
   if (
     entry.operation.kind === 'contract' &&
     entry.operation.payment === 'included'
@@ -411,7 +503,11 @@ function statusColor(entry: WalletHistoryRow) {
       ? entry.swap.status
       : entry.kind === 'received'
       ? entry.payment.status
-      : entry.operation.payment
+      : entry.kind === 'noted'
+      ? entry.state
+      : entry.contactOutcome === 'released'
+      ? 'cancelled'
+      : entry.contactOutcome ?? entry.operation.payment
   if (status === 'confirmed' || status === 'included' || status === 'received')
     return 'positive'
   if (status === 'failed' || status === 'reverted') return 'negative'

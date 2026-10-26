@@ -629,6 +629,7 @@
                   data-testid="wallet-history-panel"
                 >
                   <wallet-history
+                    :chain-identifier="sendChainIdentifier"
                     :groups="historyGroups"
                     :inspection-status="nativeOperations.status"
                     :native-unit="nativeUnit"

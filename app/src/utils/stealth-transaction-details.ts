@@ -111,3 +111,88 @@ export function stealthAssetCard(item: {
     ...(item.memo === undefined ? {} : { memo: item.memo }),
   }
 }
+
+/** What a sent `stealth-asset` card says, from the paying wallet's journal. */
+export type SentStealthState =
+  | 'unknown'
+  | 'unsent'
+  | 'pending'
+  | 'partial'
+  | 'paid'
+  | 'chainFailed'
+
+export interface SentStealthDetail {
+  readonly state: SentStealthState
+  /** Present once the journal answered for exactly these transfers. */
+  readonly payment?: {
+    readonly intendedAmountAtomic: bigint
+    readonly verifiedReceivedAmountAtomic?: bigint
+    readonly nativeFeeAtomic?: bigint
+    readonly members: readonly {
+      readonly txHash: string
+      readonly recipientAmountAtomic: bigint
+      readonly state: 'unsent' | 'pending' | 'landed' | 'failed'
+      readonly failure?: 'reverted' | 'replaced'
+    }[]
+  }
+}
+
+const bareHash = (hash: string) => hash.replace(/^0x/i, '').toLowerCase()
+
+/**
+ * The state of a sent `stealth-asset` item's payment: the journal entry of the paying wallet on
+ * the item's chain whose transfers are exactly the item's (by transaction hash). Anything else
+ * (no such entry here, a different set of transfers) is `unknown`: never taken as paid.
+ */
+export function sentStealthAssetDetail(
+  payments:
+    | readonly {
+        readonly chainIdentifier: string
+        readonly status: {
+          readonly status: 'pending' | 'partial' | 'succeeded' | 'failed'
+          readonly submitted: boolean
+          readonly intendedAmountAtomic: bigint
+          readonly verifiedReceivedAmountAtomic?: bigint
+          readonly nativeFeeAtomic?: bigint
+          readonly members: NonNullable<SentStealthDetail['payment']>['members']
+        }
+      }[]
+    | undefined,
+  item: {
+    transfers: readonly { chainIdentifier: string; txId: string }[]
+  },
+): SentStealthDetail {
+  const chainIdentifier = item.transfers[0]?.chainIdentifier
+  const hashes = item.transfers.map(transfer => bareHash(transfer.txId)).sort()
+  const found = payments?.find(
+    payment =>
+      payment.chainIdentifier === chainIdentifier &&
+      payment.status.members.length === hashes.length &&
+      payment.status.members
+        .map(member => bareHash(member.txHash))
+        .sort()
+        .every((hash, index) => hash === hashes[index]),
+  )?.status
+  if (found === undefined) return { state: 'unknown' }
+  const payment = {
+    intendedAmountAtomic: found.intendedAmountAtomic,
+    ...(found.verifiedReceivedAmountAtomic === undefined
+      ? {}
+      : { verifiedReceivedAmountAtomic: found.verifiedReceivedAmountAtomic }),
+    ...(found.nativeFeeAtomic === undefined
+      ? {}
+      : { nativeFeeAtomic: found.nativeFeeAtomic }),
+    members: found.members,
+  }
+  const state: SentStealthState =
+    found.status === 'succeeded'
+      ? 'paid'
+      : found.status === 'failed'
+      ? 'chainFailed'
+      : found.status === 'partial'
+      ? 'partial'
+      : found.submitted
+      ? 'pending'
+      : 'unsent'
+  return { state, payment }
+}

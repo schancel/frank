@@ -1205,6 +1205,39 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     }
   );
 
+  it("says a message waits for its own payment's funding transfer, not for another attempt", async () => {
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    f.setPhase('delivered')
+    const waiting = jest
+      .spyOn(f.alice.transactionSetLifecycle!, 'readCanSubmitPayments')
+      .mockResolvedValue(false)
+    let digest = ''
+    try {
+      const pending = await f.chain.directMessages
+        .send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('funded later'),
+          onAttemptCreated: created => void (digest = created),
+        })
+        .catch((error: unknown) => error)
+      expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(pending).toMatchObject({
+        reason: 'awaiting-funding',
+        payloadHashes: [digest],
+      })
+      expect((pending as Error).message).toMatch(/waiting for its funding transfer/)
+      expect((pending as Error).message).not.toMatch(/another|prior attempt/i)
+      // Not handed to the relay while it waits.
+      expect(f.requests).toHaveLength(0)
+    } finally {
+      waiting.mockRestore()
+    }
+  })
+
   it('keeps one payment set across an unknown outcome and re-sends the same bytes', async () => {
     mockMineWalletBroadcasts = false
     installCanonicalDirectory(
@@ -1224,10 +1257,13 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       .catch((error: unknown) => error)
     expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
     expect(digest).toMatch(/^[0-9a-f]{64}$/)
-    // The error is about this message only.
+    // The error is about this message only, and says what it waits for: nothing failed.
     expect((pending as MonadStampPendingAttemptError).payloadHashes).toEqual([
       digest,
     ])
+    expect(pending).toMatchObject({ reason: 'awaiting-delivery' })
+    expect((pending as Error).message).toMatch(/relay has not confirmed/)
+    expect((pending as Error).message).not.toMatch(/another|prior attempt/i)
     expect(f.requests).toHaveLength(1)
     // Wallet submission can precede relay delivery; neither proves chain inclusion.
     const storedPending = (await rowsOf(f.alice)).find(row => row.digest === digest)!

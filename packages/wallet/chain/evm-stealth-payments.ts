@@ -13,8 +13,9 @@ import type {
   StealthPaymentAsset,
   StealthPaymentCapability,
   PreparedStealthPayment,
-  StealthPaymentProgress,
   StealthPaymentIntent,
+  StealthPaymentMemberStatus,
+  StealthPaymentStatus,
   StealthPaymentQuote,
 } from '../stealth-payment'
 import type { RecordStore } from '../storage/evm-coin-store'
@@ -408,40 +409,70 @@ export function createEvmStealthPayments(
   })
   const progress = async (
     row: EvmStealthPreparation,
-  ): Promise<StealthPaymentProgress> => {
+  ): Promise<StealthPaymentStatus> => {
     const journal = await operation(row)
     const amount = BigInt(row.amountAtomic)
-    if (!journal) return { status: 'pending', intendedAmountAtomic: amount }
+    // Not signed yet (or never): nothing can have left the wallet.
+    if (!journal || journal.members.some((member) => !member.signed))
+      return { status: 'pending', intendedAmountAtomic: amount, submitted: false, members: [] }
     let received = 0n,
       fee = 0n,
       known = 0,
       failed = 0
-    let feeKnown = false
-    for (const member of journal.members)
-      if ('feeWei' in member.observation && member.transactionSet?.stageId === undefined) {
-        feeKnown = true
-        fee += BigInt(member.observation.feeWei)
-      }
+    // The payment's own transactions (its transfers, and any change they made; never a message
+    // stamp's stage). The fee is said once every one of them is final, so it is not a running
+    // figure that grows as change transfers land.
+    const own = journal.members.filter((member) => member.transactionSet?.stageId === undefined)
+    for (const member of own)
+      if ('feeWei' in member.observation) fee += BigInt(member.observation.feeWei)
+    const feeKnown =
+      own.some((member) => 'feeWei' in member.observation) &&
+      own.every((member) => 'feeWei' in member.observation || nativeMemberSuperseded(member))
+    // Handed to the chain: the set's submission was authorized, or some transfer was exposed.
+    const submitted =
+      journal.submissionAuthorized === true ||
+      journal.members.some(
+        (member) =>
+          member.exposed ||
+          !['unknown', 'missing'].includes(member.observation.state),
+      )
     const paymentMembers = journal.members.filter(
       (member) =>
         !sharedNativePreparation(row) ||
         (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined),
     )
+    const members: StealthPaymentMemberStatus[] = []
     for (let i = 0; i < paymentMembers.length; i++) {
       const member = paymentMembers[i]!,
         observation = member.observation
-      if (
-        observation.state === 'included-revert' ||
-        nativeMemberSuperseded(member)
-      ) {
+      const tx = Transaction.from(member.signed!.rawTransaction)
+      const recipientAmountAtomic = sharedNativePreparation(row)
+        ? BigInt(member.transactionSet!.intendedValueWei ?? tx.value)
+        : BigInt(row.allocation!.sources[i]!.recipientAmountAtomic)
+      const txHash = member.signed!.transactionHash
+      const superseded = nativeMemberSuperseded(member)
+      if (observation.state === 'included-revert' || superseded) {
         known++
         failed++
+        members.push({
+          txHash,
+          recipientAmountAtomic,
+          state: 'failed',
+          failure: observation.state === 'included-revert' ? 'reverted' : 'replaced',
+        })
         continue
       }
-      if (observation.state !== 'included-success') continue
+      if (observation.state !== 'included-success') {
+        members.push({
+          txHash,
+          recipientAmountAtomic,
+          state: submitted ? 'pending' : 'unsent',
+        })
+        continue
+      }
       const value =
         row.asset.kind === 'native'
-          ? Transaction.from(member.signed!.rawTransaction).value
+          ? tx.value
           : await driver.tokenReceipt(
               member.signed!.rawTransaction,
               row.recipientAddress,
@@ -450,7 +481,8 @@ export function createEvmStealthPayments(
       if (value !== undefined) {
         known++
         received += value
-      }
+        members.push({ txHash, recipientAmountAtomic, state: 'landed' })
+      } else members.push({ txHash, recipientAmountAtomic, state: 'pending' })
     }
     return {
       status:
@@ -465,6 +497,8 @@ export function createEvmStealthPayments(
       intendedAmountAtomic: amount,
       ...(known ? { verifiedReceivedAmountAtomic: received } : {}),
       ...(feeKnown ? { nativeFeeAtomic: fee } : {}),
+      submitted,
+      members,
     }
   }
 
@@ -830,6 +864,23 @@ export function createEvmStealthPayments(
         if (!row.released) continue
         if (journal) await driver.release(journal.operationId)
       }
+    },
+    // Outside the operation lock: a read never waits behind a submission's network calls.
+    async status(id) {
+      driver.assertActive()
+      const row = driver.store.get(id)
+      if (!row || row.chainIdentifier !== driver.chainIdentifier || row.operationId !== id)
+        return undefined
+      validateFeeAuthorization(row)
+      if (row.released)
+        return {
+          status: 'failed',
+          intendedAmountAtomic: BigInt(row.amountAtomic),
+          submitted: false,
+          released: true,
+          members: [],
+        }
+      return progress(row)
     },
     get: (id) =>
       exclusive(id, async () => {

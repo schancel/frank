@@ -118,6 +118,13 @@
               v-else-if="item.type == 'stealth-asset' && stealthAssetCard(item)"
               v-bind="stealthAssetCard(item)"
               :outbound="message.outbound"
+              :outbound-state="
+                message.outbound ? sentStealthAsset(item).state : undefined
+              "
+              :outbound-payment="
+                message.outbound ? sentStealthAsset(item).payment : undefined
+              "
+              :stamp-wei="message.outbound ? message.stampValueWei : undefined"
             />
             <!-- A picture the text shows where it is referenced is not shown a second time. -->
             <template v-else-if="item.type == 'image'">
@@ -264,9 +271,14 @@ import {
 import { useSentContactPayments } from 'src/composables/useSentContactPayments'
 import {
   contactPaymentState,
+  sentStealthAssetDetail,
   stealthAssetCard,
   stealthTransactionDetails,
 } from 'src/utils/stealth-transaction-details'
+import {
+  outgoingStealthPayments,
+  sentMessageDigest,
+} from 'src/utils/outgoing-stealth-payments'
 import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
 import moment from 'moment'
 import ChatMessageReply from './ChatMessageReply.vue'
@@ -481,6 +493,18 @@ export default defineComponent({
     },
   },
   methods: {
+    /** A sent `stealth-asset` payment as its paying wallet's journal shows it (see
+     * `outgoingStealthPayments`, refreshed by the outgoing tick and read again after a reload). */
+    sentStealthAsset(item: {
+      transfers: readonly { chainIdentifier: string; txId: string }[]
+    }) {
+      return sentStealthAssetDetail(
+        outgoingStealthPayments.get(
+          sentMessageDigest(this.message).toLowerCase(),
+        ),
+        item,
+      )
+    },
     openImage(image: string) {
       this.openedImage = image
       this.imageDialog = true

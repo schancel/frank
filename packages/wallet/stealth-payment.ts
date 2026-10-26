@@ -56,6 +56,27 @@ export interface StealthPaymentProgress {
   readonly nativeFeeAtomic?: bigint
 }
 
+/** One signed transfer of a payment, as the wallet's operation journal last saw it on chain.
+ * `unsent`: it has not left the wallet. `pending`: handed to the chain (or possibly handed),
+ * not in a block yet. `landed`: in a block and successful. `failed`: it can never pay — it
+ * reverted, or another transaction from the same account took its nonce. */
+export interface StealthPaymentMemberStatus {
+  readonly txHash: string
+  readonly recipientAmountAtomic: bigint
+  readonly state: 'unsent' | 'pending' | 'landed' | 'failed'
+  readonly failure?: 'reverted' | 'replaced'
+}
+
+/** What the paying wallet's journal shows of one payment now. Read without asking the chain to
+ * do anything: nothing is signed, submitted or released by reading it. */
+export interface StealthPaymentStatus extends StealthPaymentProgress {
+  /** Some transfer has been handed to the chain, or may have been. False: none left the wallet. */
+  readonly submitted: boolean
+  /** Cancelled before anything was handed to anyone: nothing was or can be paid. */
+  readonly released?: true
+  readonly members: readonly StealthPaymentMemberStatus[]
+}
+
 /** An unsigned observation of one immutable payment intent, not a spend reservation. */
 export interface StealthPaymentQuote {
   readonly operationId: string
@@ -114,6 +135,9 @@ export interface StealthPaymentCapability {
   /** Releases only an operation proven never exposed. Exposed uncertainty remains reserved. */
   release(operationId: string): Promise<boolean>
   get(operationId: string): Promise<PreparedStealthPayment | undefined>
+  /** Read-only: the journal's view of this payment (see `StealthPaymentStatus`); undefined for
+   * an operation this wallet does not hold. A wallet without it cannot say. */
+  status?(operationId: string): Promise<StealthPaymentStatus | undefined>
   /** Read-only recovery index under the operation owner; independent of chat/UI retention. */
   list(): Promise<
     readonly { readonly operationId: string; readonly payloadDigest?: string }[]

@@ -41,7 +41,15 @@
 
       <q-separator />
       <q-banner
-        v-if="
+        v-if="conversation.membershipStatus === 'removed'"
+        class="q-pa-sm"
+        role="status"
+        data-test="group-info-removed"
+      >
+        {{ $t('groupChat.removedBanner') }}
+      </q-banner>
+      <q-banner
+        v-else-if="
           conversation.groupState?.pendingEpoch ||
           conversation.groupState?.syncFailed
         "
@@ -131,11 +139,48 @@
                 :disable="busy"
                 :label="$t('groupChat.removeMemberBtn')"
                 data-test="remove-group-member-btn"
-                @click="removeMember(member.address)"
+                @click="pendingRemoval = member"
               />
             </q-item-section>
           </q-item>
         </q-list>
+
+        <!-- Removing a member cannot be undone from here: the user confirms it first. -->
+        <q-dialog
+          :model-value="pendingRemoval !== null"
+          @update:model-value="open => !open && (pendingRemoval = null)"
+        >
+          <q-card style="min-width: 300px" data-test="remove-member-confirm">
+            <q-card-section class="text-h6">
+              {{ $t('groupChat.removeMemberConfirmTitle') }}
+            </q-card-section>
+            <q-card-section class="q-pt-none">
+              {{
+                $t('groupChat.removeMemberConfirmBody', {
+                  member: pendingRemoval?.label ?? '',
+                  group: conversation.name || $t('groupChat.unnamedGroup'),
+                })
+              }}
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                flat
+                no-caps
+                :label="$t('groupChat.cancel')"
+                data-test="remove-member-cancel"
+                @click="pendingRemoval = null"
+              />
+              <q-btn
+                flat
+                no-caps
+                color="negative"
+                :label="$t('groupChat.removeMemberConfirmBtn')"
+                data-test="remove-member-confirm-btn"
+                @click="confirmRemoval"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
 
         <div
           v-if="conversation.membershipStatus === 'joined'"
@@ -194,7 +239,12 @@
 <script lang="ts">
 import { computed, defineComponent, ref } from 'vue'
 import { useChatStore, type Conversation } from '../../stores/chats'
-import { useContactStore } from '../../stores/contacts'
+import {
+  isBlankName,
+  pendingRelayData,
+  useContactStore,
+} from '../../stores/contacts'
+import { useProfileStore } from '../../stores/my-profile'
 import { isChainAddress } from '../../utils/chain-address'
 import {
   sameCanonicalAddress,
@@ -232,9 +282,16 @@ export default defineComponent({
     } catch {
       contactStore = null
     }
+    let profileStore: ReturnType<typeof useProfileStore> | null = null
+    try {
+      profileStore = useProfileStore()
+    } catch {
+      profileStore = null
+    }
     const ownAddress = useReactiveOwnCanonicalAddress()
     const inviteeAddress = ref('')
     const busy = ref(false)
+    const pendingRemoval = ref<MemberRow | null>(null)
 
     const conversation = computed<Conversation | null>(() => {
       if (props.conversationId)
@@ -282,7 +339,14 @@ export default defineComponent({
       if (!conv) return []
       const participants = conv.participants ?? []
       return participants.map(address => {
-        const contactName = contactStore?.getContact?.(address)?.profile?.name
+        const isSelf = Boolean(
+          ownAddress.value && sameCanonicalAddress(address, ownAddress.value),
+        )
+        // This user's own name is their profile's; a contact entry for a member is a
+        // placeholder ("Loading...") until its profile arrives, and never named the member.
+        const name = isSelf
+          ? profileStore?.profile?.name
+          : contactStore?.getContact?.(address)?.profile?.name
         let shortAddr = address
         try {
           shortAddr = shortAddress(address)
@@ -291,15 +355,19 @@ export default defineComponent({
         }
         return {
           address,
-          label: contactName || shortAddr,
+          label:
+            name &&
+            !isBlankName(name) &&
+            // The name a contact entry carries while its profile is being fetched.
+            name !== pendingRelayData?.profile?.name
+              ? name
+              : shortAddr,
           shortAddr,
           isAdmin: Boolean(
             creatorAddress.value &&
               sameCanonicalAddress(address, creatorAddress.value),
           ),
-          isSelf: Boolean(
-            ownAddress.value && sameCanonicalAddress(address, ownAddress.value),
-          ),
+          isSelf,
         }
       })
     })
@@ -366,6 +434,12 @@ export default defineComponent({
       }
     }
 
+    const confirmRemoval = async () => {
+      const member = pendingRemoval.value
+      pendingRemoval.value = null
+      if (member) await removeMember(member.address)
+    }
+
     const leaveGroup = async () => {
       if (!conversation.value || busy.value) return
       busy.value = true
@@ -391,6 +465,8 @@ export default defineComponent({
       busy,
       canRemoveMember,
       canInvite,
+      pendingRemoval,
+      confirmRemoval,
       closeDialog,
       syncGroup,
       inviteMember,

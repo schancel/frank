@@ -1575,6 +1575,13 @@ export const rawFrFR = {
     changeNote:
       'Ce qui restait après le paiement, déplacé vers vos propres comptes. Cela ne fait pas partie du montant envoyé.',
     changeTransaction: 'Monnaie {number}',
+    purpose: {
+      'stamp': 'Timbre de message',
+      'contact-payment': 'Paiement à un contact',
+      'forum': 'Brûlage pour un message du forum',
+      'transfer': 'À',
+    },
+    noted: 'Lu dans les notes que vos appareils partagent entre eux.',
     receivedPayment: 'Paiement reçu',
     receivedStamp: 'Timbre de message reçu',
     receivedClaimed:
@@ -1596,6 +1603,7 @@ export const rawFrFR = {
       missing: 'En attente du réseau',
       superseded: 'Nonce utilisé',
       unknown: 'Vérification du paiement',
+      failed: 'Échoué',
       cancelled: 'Annulé',
     },
     memberStatus: {

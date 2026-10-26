@@ -14,6 +14,7 @@ const operation = (
   chainIdentifier: 'monad-testnet',
   kind: 'legacy',
   recipient,
+  purpose: 'transfer',
   intendedValueWei: '1000000000000000000',
   payment,
   members: hashes.map((transactionHash, index) => ({
@@ -44,6 +45,7 @@ function mountHistory(
   const row = { ...operation(payment), kind }
   return shallowMount(History, {
     props: {
+      chainIdentifier: 'monad-testnet',
       groups: [
         {
           id: 'native',
@@ -92,7 +94,10 @@ it('shows one compact transfer, with technical evidence behind a native keyboard
     'Sent',
   )
   expect(wrapper.text().split(recipient)).toHaveLength(2)
-  expect(wrapper.text().split('1.0 MONT')).toHaveLength(2)
+  // The row reads the shortened amount; the exact one is its title.
+  const amount = wrapper.get('.wallet-history-amount span')
+  expect(amount.text()).toBe('1 MONT')
+  expect(amount.attributes('title')).toBe('1.0 MONT')
   expect(wrapper.text().split('Sent on Monad Testnet.')).toHaveLength(2)
   expect(wrapper.text()).not.toContain('evm-native-v1:')
   expect(wrapper.text()).not.toContain('Intended recipient amount')
@@ -146,6 +151,7 @@ it('shows the payment apart from the change returned to the wallet, each with it
   const change = '0x' + 'c'.repeat(64)
   const wrapper = shallowMount(History, {
     props: {
+      chainIdentifier: 'monad-testnet',
       groups: [
         {
           id: 'activity',
@@ -217,6 +223,7 @@ it.each([
 ] as const)('lists a %s payment as incoming', (status, label, note) => {
   const wrapper = shallowMount(History, {
     props: {
+      chainIdentifier: 'monad-testnet',
       groups: [
         {
           id: 'activity',
@@ -258,4 +265,88 @@ it.each([
   expect(wrapper.find('[data-testid="wallet-native-operation"]').exists()).toBe(
     false,
   )
+})
+
+it('shows a send another device made: what it was for, to whom, when, and its transactions', () => {
+  const txHash = '0x' + 'c'.repeat(64)
+  const wrapper = shallowMount(History, {
+    props: {
+      chainIdentifier: 'monad-regtest',
+      groups: [
+        {
+          id: 'activity',
+          label: 'walletPanel.tabHistory',
+          rows: [
+            {
+              id: 'noted:m1:stamp',
+              kind: 'noted',
+              purpose: 'stamp',
+              recipient,
+              valueWei: '30000000000000000',
+              state: 'included',
+              timeMs: Date.UTC(2026, 9, 26),
+              sends: [
+                {
+                  txHash,
+                  from: recipient,
+                  nonce: 0,
+                  to: recipient,
+                  valueWei: '30000000000000000',
+                  call: false,
+                  purpose: 'stamp',
+                  noteIndex: 0,
+                  notedAtMs: 1,
+                  state: 'included',
+                  inclusion: {
+                    status: 'success',
+                    blockNumber: 42,
+                    blockHash: '0x' + 'd'.repeat(64),
+                    blockTimeMs: Date.UTC(2026, 9, 26),
+                    feeWei: '1',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      inspectionStatus: 'available',
+      nativeUnit: 'MONR',
+      nativeAmount: () => '0.030000000000000000',
+      networkName: () => 'Monad Regtest',
+      transactionExplorerLink: () => undefined,
+      formatSwapTime: () => '3m ago',
+    },
+    global: {
+      mocks: { $t: translate },
+      stubs: {
+        AddressText: {
+          props: ['address'],
+          template: '<span class="address-text">{{ address }}</span>',
+        },
+        ...Object.fromEntries(
+          [
+            'QCardSection',
+            'QList',
+            'QItemLabel',
+            'QItem',
+            'QItemSection',
+            'QIcon',
+            'QBadge',
+          ].map(name => [name, { template: '<div><slot /></div>' }]),
+        ),
+      },
+    },
+  })
+  expect(wrapper.get('.wallet-history-amount span').text()).toBe('0.03 MONR')
+  expect(wrapper.text()).toContain('Message stamp')
+  expect(wrapper.get('[data-testid="wallet-activity-date"]').text()).toBe(
+    '3m ago',
+  )
+  expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
+    'Sent',
+  )
+  const details = wrapper.get('[data-testid="wallet-noted-send"]')
+  expect(details.text()).toContain(txHash)
+  expect(details.text()).toContain('Block 42')
 })

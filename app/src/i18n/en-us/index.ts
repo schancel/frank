@@ -1542,6 +1542,13 @@ export const rawEnUS = {
     changeNote:
       'What was left after the payment, moved to your own accounts. It is not part of the amount sent.',
     changeTransaction: 'Change {number}',
+    purpose: {
+      'stamp': 'Message stamp',
+      'contact-payment': 'Payment to a contact',
+      'forum': 'Forum post burn',
+      'transfer': 'To',
+    },
+    noted: 'Read from the notes your devices share with each other.',
     receivedPayment: 'Payment received',
     receivedStamp: 'Message stamp received',
     receivedClaimed:
@@ -1563,6 +1570,7 @@ export const rawEnUS = {
       missing: 'Awaiting network',
       superseded: 'Nonce used',
       unknown: 'Checking payment',
+      failed: 'Failed',
       cancelled: 'Cancelled',
     },
     memberStatus: {

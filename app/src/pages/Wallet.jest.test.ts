@@ -1392,6 +1392,7 @@ describe('Wallet detail page (#570)', () => {
       chainIdentifier: 'monad-testnet',
       kind: 'legacy',
       recipient: '0x' + '56'.repeat(20),
+      purpose: 'transfer',
       intendedValueWei: '10000000000000000',
       payment: 'included',
       members: [],
@@ -1419,6 +1420,8 @@ describe('Wallet detail page (#570)', () => {
         status: 'available',
         operations: [native, contract],
         received: [],
+        noted: [],
+        contactPayments: [],
         blockTimes: new Map(),
       })
     const swap = (

@@ -965,7 +965,24 @@ it('honors whole-operation fee caps and never gifts the continuation budget', as
   const g = await setup([1000000n])
   const primary = await g.preparer.constructTransactionSet({ operationId: 'bounded', amountWei: 300000n, reserveForContinuationWei: 200000n, maxFeeWei: 147000n, kdf })
   expect(primary.otherTransactions.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBeGreaterThanOrEqual(200000n)
-  await expect(g.preparer.appendTransactionSet({ operationId: 'bounded', stageId: 'stamp', amountWei: 70000n, maxFeeWei: 999999n, kdf })).rejects.toThrow('fee exceeds')
+  // A later stage's own larger figure never lifts the cap the first stage authorized: the stamp
+  // is planned under it, keeping its residual on its source instead of paying for fresh change.
+  const stamp = await g.preparer.appendTransactionSet({ operationId: 'bounded', stageId: 'stamp', amountWei: 70000n, maxFeeWei: 999999n, kdf })
+  expect(stamp.bundle).toHaveLength(1)
+  const bounded = g.journal.list()[0]!
+  expect(bounded.members.filter(member => member.transactionSet?.stageId === 'stamp')
+    .map(member => member.transactionSet!.role)).toEqual(['payment'])
+  expect(bounded.members.reduce((sum, member) => {
+    const tx = Transaction.from(member.unsignedTransaction)
+    return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
+  }, 0n)).toBeLessThanOrEqual(147000n)
+  // With nothing left under the cap even for its payment, a stage is refused before signing.
+  const h = await setup([1000000n])
+  const quote = await h.preparer.quoteTransactionSet({ amountWei: 300000n, kdf })
+  await h.preparer.constructTransactionSet({ operationId: 'exact', amountWei: 300000n, maxFeeWei: quote.feeWei, kdf })
+  const before = h.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  await expect(h.preparer.appendTransactionSet({ operationId: 'exact', stageId: 'stamp', amountWei: 70000n, kdf })).rejects.toThrow('fee exceeds')
+  expect(h.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(before)
 })
 
 it('constructs a single-recipient fan-in graph without exposing or selecting its private account', async () => {

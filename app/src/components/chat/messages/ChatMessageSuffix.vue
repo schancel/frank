@@ -325,6 +325,7 @@ export default defineComponent({
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'
       keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
+      keys['fee-exceeded'] = 'outgoing.reasonFeeExceeded'
       keys.blocked = 'outgoing.reasonBlocked'
       const key = keys[this.failureReason]
       if (key === undefined) return ''

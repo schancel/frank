@@ -1,6 +1,7 @@
 import {
   CanonicalRecipientNotPublishedError,
   DirectMessageStampBelowFeeError,
+  NativeFeeExceededError,
 } from '@frank/wallet/chain'
 import { SolanaStealthSendRefusedError } from '@frank/wallet/solana-stealth'
 import { EvmTransactionSetInsufficientFundsError } from '@frank/wallet/evm-transaction-set-types'
@@ -156,4 +157,16 @@ it('a payment below the floor keeps the floor as its detail, for the bubble to s
   )
   expect(classifySendFailure(error, own)).toEqual({ reason: 'stamp-below-fee' })
   expect(errorDetail(error)).toBe('21420000000000000')
+})
+
+it('a payment over the fee the user approved fails as fee-exceeded and keeps no attempt', () => {
+  // The wallet ended the message before anything was signed and gave its payment back.
+  expect(
+    classifySendFailure(
+      new NativeFeeExceededError(42_840_000_000_000_000n),
+      own,
+    ),
+  ).toEqual({
+    reason: 'fee-exceeded',
+  })
 })

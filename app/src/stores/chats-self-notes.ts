@@ -1,6 +1,7 @@
 import {
   CanonicalRecipientNotPublishedError,
   DirectMessageStampBelowFeeError,
+  NativeFeeExceededError,
 } from '@frank/wallet/chain'
 import {
   MonadStampAbandonedError,
@@ -267,6 +268,8 @@ export function classifySendFailure(
     if (isInsufficientFundsError(error)) return { reason: 'insufficient-funds' }
     if (error instanceof DirectMessageStampBelowFeeError)
       return { reason: 'stamp-below-fee' }
+    if (error instanceof NativeFeeExceededError)
+      return { reason: 'fee-exceeded' }
   } catch {
     // Hostile unknown values have no presentation classification authority.
   }

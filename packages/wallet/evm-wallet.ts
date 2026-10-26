@@ -139,6 +139,9 @@ export class EvmWalletInternals {
   receivedCoinOwner?: ReceivedCoinOwner;
   /** Resolve an authorized local payment/stamp binding without exposing signing material. */
   resolveMessagePayment?: (paymentOperationId: string, stampValue: bigint) => Promise<string>;
+  /** Releases the unexposed payment operation a message would have joined, through its owner
+   * (stealth or contact payment), which proves non-exposure. True once released. */
+  releaseMessagePayment?: (paymentOperationId: string) => Promise<boolean>;
   heldTransferSources?: () => Set<string>;
   nativeOperationOwner?: EvmLegacyConsolidator;
   runningMainTasks = 0;

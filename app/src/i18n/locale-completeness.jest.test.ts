@@ -31,6 +31,7 @@ const SAME_IN_FRENCH = new Set([
   'leftDrawer.contacts',
   'leftDrawer.forum',
   'walletHistory.transaction',
+  'sendAddressDialog.sendMax',
   'walletPanel.avuUnitValue',
   'walletPanel.avuTestnetValue',
   'walletPanel.chartUsdKwh',

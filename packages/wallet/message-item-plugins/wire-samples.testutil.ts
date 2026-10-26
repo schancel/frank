@@ -90,6 +90,7 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     commitment: HASH,
     nextRollId: '8899aabbccddeeff',
     nextCommitment: HASH,
+    maxPayoutWei: '480000000000000000',
   },
   {
     type: 'rps',

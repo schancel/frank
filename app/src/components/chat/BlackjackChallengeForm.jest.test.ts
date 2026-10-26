@@ -15,7 +15,6 @@ jest.mock('../../composables/useBalance', () => ({
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
-    minimumWagerValue: 10n,
     toDisplayAmount: (n: bigint) => n.toString(),
     fromDisplayAmount: (s: string) => BigInt(s),
   },
@@ -100,11 +99,13 @@ describe('BlackjackChallengeForm', () => {
     w.unmount()
   })
 
-  it('a max bet below twice the payment floor is refused, even above the configured minimum wager', async () => {
-    // Configured minimum wager 10; payment floor 300, so the smallest bet is 600.
+  it('a max bet below twice the payment floor is refused, naming the smallest bet', async () => {
+    // Payment floor 300, so the smallest bet is 600: the rule the dealer bot applies too.
     const w = mountForm(300n)
     await w.find('[data-testid="blackjack-challenge-max"]').setValue('599')
-    expect(error(w).text()).toContain('600 MON')
+    expect(error(w).text()).toBe(
+      'A bet cannot be below the smallest bet of 600 MON.',
+    )
     expect(send(w).attributes('disabled')).toBeDefined()
     await w.find('[data-testid="blackjack-challenge-max"]').setValue('600')
     expect(error(w).exists()).toBe(false)
@@ -154,9 +155,9 @@ describe('BlackjackChallengeForm', () => {
     ['empty', ''],
     ['zero', '0'],
     ['not a number', 'ten'],
-    ['below the minimum stamp', '9'],
+    ['below the smallest bet', '9'],
   ])('refuses a max bet that is %s', async (_n, value) => {
-    const w = mountForm()
+    const w = mountForm(5n)
     await w.find('[data-testid="blackjack-challenge-max"]').setValue(value)
     expect(error(w).exists()).toBe(true)
     expect(send(w).attributes('disabled')).toBeDefined()

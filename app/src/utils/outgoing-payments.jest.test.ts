@@ -74,6 +74,28 @@ describe('what the bubbles show of sent payments', () => {
     expect(outgoingPaymentSummaries.get('aa')).toBe('paid')
   })
 
+  it('a failed payment of a message not yet delivered is read again: the wallet may still pay the same message from other coins', () => {
+    says = { aa: 'failed' }
+    const message = sent('aa', { status: 'payment-pending' })
+    expect(refreshOutgoingPaymentSummaries(wallet, [message], NOW)).toBe(1)
+    expect(outgoingPaymentSummaries.has('aa')).toBe(false)
+    says = { aa: 'paid' }
+    refreshOutgoingPaymentSummaries(
+      wallet,
+      [{ ...message, status: 'confirmed' }],
+      NOW,
+    )
+    expect(outgoingPaymentSummaries.get('aa')).toBe('paid')
+    // Delivered and final: no longer asked.
+    asked = []
+    refreshOutgoingPaymentSummaries(
+      wallet,
+      [{ ...message, status: 'confirmed' }],
+      NOW,
+    )
+    expect(asked).toEqual([])
+  })
+
   it('a wallet that cannot answer changes nothing and is not counted', () => {
     jest
       .spyOn(activeChain.directMessages, 'paymentSummaryOf')

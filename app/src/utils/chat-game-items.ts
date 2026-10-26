@@ -15,6 +15,9 @@ export interface ChatGameItem<T> {
   stampValueWei: bigint
   /** When the message was sent or received, in milliseconds; 0 if unknown. */
   timeMs: number
+  /** The digest of the message carrying the item: what the wallet's stamp receipt for it is
+   * looked up by (`useStampReceipt`). Empty if unknown. */
+  payloadDigest: string
   /** True for an own message whose send failed: it is in the chat with its Retry and Discard,
    * and the peer has not received it. */
   failed: boolean
@@ -42,6 +45,7 @@ export function chatGameItems<T extends MessageItem['type']>(
     senderAddress?: string
     serverTime?: number
     receivedTime?: number
+    payloadDigest?: string
   }[]
   const fromPeer = (sender?: string) =>
     !sender || !peer || sender.toLowerCase() === peer.toLowerCase()
@@ -58,6 +62,7 @@ export function chatGameItems<T extends MessageItem['type']>(
           outbound: !!message.outbound,
           stampValueWei: message.stampValueWei ?? 0n,
           timeMs: message.serverTime || message.receivedTime || 0,
+          payloadDigest: message.payloadDigest ?? '',
           failed: !!message.outbound && message.status === 'error',
         })),
     )

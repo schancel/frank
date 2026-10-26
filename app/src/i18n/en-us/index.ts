@@ -302,6 +302,8 @@ export const rawEnUS = {
       'The smallest stake is {amount}: twice the network’s minimum payment, so a win or a refund can always be paid back.',
     stakeBelowMinimum:
       'That stake is below the smallest stake of {amount}. Choose at least {amount}, or play for free.',
+    diceAboveTableLimit:
+      'A win would pay {payout}, more than this table’s limit of {limit} per roll, so the bot would refuse the bet. Lower the stake or pick a higher target.',
     dicePracticeDescription:
       'Zero stake, no payout. Practice uses the same roll rules without wagering funds.',
     dicePracticeRoll: 'Practice roll',
@@ -322,10 +324,14 @@ export const rawEnUS = {
       'Verified: the move and salt the bot revealed match the commitment it sent before you moved.',
     rpsVerifiedPeer:
       'Verified: the move and salt your opponent revealed match the commitment sent before you moved.',
+    rpsVerifiedOwn:
+      'Verified: the move and salt you revealed match the commitment you sent before your opponent moved.',
     payoutClaimed:
       'Payout: {amount}. The bot says this message carries it; that is not yet verified on chain.',
     payoutClaimedPeer:
       'Payout: {amount}. Your opponent says this message carries it; that is not yet verified on chain.',
+    payoutVerified:
+      'Payout: {amount}. Verified on chain: it has arrived in your wallet.',
     payoutMissing:
       'Payout: {amount}, but this message carried {carried}. You have not been paid in full.',
     awaiting: 'Waiting for the bot to reveal ({seconds} s).',
@@ -436,7 +442,7 @@ export const rawEnUS = {
       'This challenge is more than your balance covers. Nothing was sent.',
     balanceUnknown: 'Your balance is not loaded yet.',
     enterAmount: 'Enter an amount greater than zero.',
-    belowStamp: 'The amount cannot be below the minimum stamp ({amount}).',
+    belowMinimumBet: 'A bet cannot be below the smallest bet of {amount}.',
     aboveOwnLimit: 'That is more than you can cover (at most {amount}).',
     aboveMaxBet: 'That is above the maximum bet of this hand ({amount}).',
     lineChallengeDealer:

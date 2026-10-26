@@ -17,6 +17,7 @@ import {
   buildAccept,
   dealerStep,
   foldHand,
+  refundBetStep,
   DEALER_COVER_MULTIPLE,
   type HandEvent,
   type HandItem,
@@ -412,6 +413,23 @@ export class BlackjackDealerBot implements FrankBotDefinition {
             text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted)}.`,
           }
         : undefined;
+    }
+    if (state.phase === "awaiting_deal") {
+      // A bet below the table's smallest bet (the stake rule every game shares, which the app
+      // applies too) is returned instead of dealt: its payout or refund might not clear the fee
+      // floor by the time the hand ends.
+      const { minBet } = await this.limits(ctx);
+      const refund = state.wagerWei < minBet ? refundBetStep(state) : undefined;
+      if (refund)
+        return {
+          item: refund.item,
+          text: `Your bet of ${ctx.formatAmount(
+            state.wagerWei
+          )} is below this table's smallest bet of ${ctx.formatAmount(
+            minBet
+          )}, so it was not dealt. It is returned with this message.`,
+          payWei: refund.payWei,
+        };
     }
     const step = seed ? dealerStep(state, seed) : undefined;
     if (!step) return undefined;

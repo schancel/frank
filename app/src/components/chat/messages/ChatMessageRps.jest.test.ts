@@ -22,8 +22,26 @@ const store: { activeConversation: { messages: any[] } } = reactive({
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 
 const notified: Error[] = []
+/** What each notification shows: `safeMessage`, or the generic text when there is none. */
+const shown: (string | undefined)[] = []
 jest.mock('../../../utils/notifications', () => ({
-  errorNotify: (error: Error) => notified.push(error),
+  errorNotify: (error: Error, options?: { safeMessage?: string }) => {
+    notified.push(error)
+    shown.push(options?.safeMessage)
+  },
+}))
+
+/** The wallet's stamp receipts by message digest, as `getMessagePayment` reports them. */
+const mockPayments = new Map<
+  string,
+  { stampStatus: string; stampReceivedWei: bigint }
+>()
+jest.mock('../../../utils/clients', () => ({
+  useMonadWallet: () => ({
+    getMessagePayment: (digest: string) =>
+      mockPayments.get(digest) ?? { stampStatus: 'none', stampReceivedWei: 0n },
+    refreshReceivedPayments: async () => [],
+  }),
 }))
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -152,12 +170,16 @@ function chat(
       status: m.status ?? 'confirmed',
       items: [m.item],
       stampValueWei: m.paid ?? 0n,
+      payloadDigest: `digest-${m.item.action}-${m.item.matchId}`,
     })),
   }
 }
 
 describe('ChatMessageRps.vue', () => {
-  beforeEach(() => chat())
+  beforeEach(() => {
+    chat()
+    mockPayments.clear()
+  })
 
   test('a move answers the commitment the bot sent and carries the stake as its value', async () => {
     const wrapper = mountCard(start)
@@ -184,6 +206,7 @@ describe('ChatMessageRps.vue', () => {
 
   test('a match offers no stake below twice the payment floor, and refuses a typed one', async () => {
     notified.length = 0
+    shown.length = 0
     const wrapper = mountCard(start, LAB_FLOOR)
     const offered = wrapper
       .findAll('[data-testid^="rps-chip-"]')
@@ -192,12 +215,24 @@ describe('ChatMessageRps.vue', () => {
     expect(wrapper.get('[data-testid="rps-stake-minimum"]').text()).toContain(
       '0.04284 MON',
     )
-    await wrapper.get('[data-testid="rps-wager-input"]').setValue('0.01')
-    await wrapper.find('[data-testid="rps-paper"]').trigger('click')
+    const why = t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' })
+    await wrapper.get('[data-testid="rps-wager-input"]').setValue('0.03')
+    // Said on the card, and the moves are disabled while the stake is invalid.
+    expect(wrapper.get('[data-testid="rps-stake-error"]').text()).toBe(why)
+    for (const move of ['rock', 'paper', 'scissors'])
+      expect(
+        wrapper.get(`[data-testid="rps-${move}"]`).attributes('disabled'),
+      ).toBeDefined()
+      // A move asked for anyway is refused, and the toast says why.
+    ;(wrapper.vm as any).chooseMove('paper')
     expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
-    expect(notified.map(error => error.message)).toEqual([
-      t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' }),
-    ])
+    expect(notified.map(error => error.message)).toEqual([why])
+    expect(shown).toEqual([why])
+    await wrapper.get('[data-testid="rps-wager-input"]').setValue('0.04284')
+    expect(wrapper.find('[data-testid="rps-stake-error"]').exists()).toBe(false)
+    expect(
+      wrapper.get('[data-testid="rps-paper"]').attributes('disabled'),
+    ).toBeUndefined()
   })
 
   test('a free move carries no stake and no stamp', async () => {
@@ -267,7 +302,70 @@ describe('ChatMessageRps.vue', () => {
     ).toBe(true)
   })
 
-  test('a win is verified as an outcome; its payout is shown as claimed, or as short, never as verified', () => {
+  // F4: the card said "not yet verified on chain" forever while the footer showed the payout
+  // had landed. Both now read the wallet's stamp receipt for the resolve message.
+  test('a win whose payout the wallet saw land on chain shows the payout as verified', () => {
+    mockPayments.set('digest-resolve-m1', {
+      stampStatus: 'received',
+      stampReceivedWei: STAKE * 2n,
+    })
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE * 2n },
+    )
+    const line = mountCard(resolved).find('[data-testid="rps-payout"]')
+    expect(line.text()).toContain('Verified on chain')
+    expect(line.text()).not.toContain('not yet verified')
+    expect(line.classes()).toContain('text-positive')
+  })
+
+  test('a P2P win whose payout landed is verified the same way', () => {
+    const p2p: RpsItem = {
+      ...resolved,
+      opponentAddress: '0x' + '11'.repeat(20),
+    }
+    mockPayments.set('digest-resolve-m1', {
+      stampStatus: 'received',
+      stampReceivedWei: STAKE * 2n,
+    })
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: p2p, paid: STAKE * 2n },
+    )
+    const line = mountCard(p2p).find('[data-testid="rps-payout"]')
+    expect(line.text()).toContain('Verified on chain')
+    expect(line.text()).not.toContain('Your opponent says')
+  })
+
+  // F8: the revealer's own resolve bubble (the loser's own side when the opponent won) said
+  // "the move and salt your opponent revealed": it was this user who revealed.
+  test('the revealer’s own resolve says it was its own move and salt that were revealed', async () => {
+    const { saveRpsSecret } = await import('../../../utils/p2p-games')
+    saveRpsSecret('self', '0x123', 'm1', 'scissors', salt)
+    const p2pStart: RpsItem = {
+      ...start,
+      opponentAddress: '0x123',
+      wagerWei: STAKE.toString(),
+    }
+    const own: RpsItem = { ...resolved, opponentAddress: '0x123' }
+    chat(
+      { outbound: true, item: p2pStart },
+      { outbound: false, item: mine },
+      { outbound: true, item: own },
+    )
+    const wrapper = mount(ChatMessageRps, {
+      props: { item: own, address: '0x123', outbound: true },
+      global: { stubs: quasarStubs, mocks: { $t: t } },
+    })
+    // The opponent won: this user lost, and revealed.
+    expect(wrapper.text()).toContain('YOU LOSE')
+    expect(wrapper.get('[data-testid="rps-verified"]').text()).toBe(
+      enUS.gameFairness.rpsVerifiedOwn,
+    )
+    expect(wrapper.text()).not.toContain('your opponent revealed')
+  })
+
+  test('a win is verified as an outcome; its payout is shown as claimed or as short until the chain shows it', () => {
     chat(
       { outbound: true, item: mine },
       { outbound: false, item: resolved, paid: STAKE * 2n },

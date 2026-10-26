@@ -26,8 +26,26 @@ const store: { activeConversation: { messages: any[] } } = reactive({
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 
 const notified: Error[] = []
+/** What each notification shows: `safeMessage`, or the generic text when there is none. */
+const shown: (string | undefined)[] = []
 jest.mock('../../../utils/notifications', () => ({
-  errorNotify: (error: Error) => notified.push(error),
+  errorNotify: (error: Error, options?: { safeMessage?: string }) => {
+    notified.push(error)
+    shown.push(options?.safeMessage)
+  },
+}))
+
+/** The wallet's stamp receipts by message digest, as `getMessagePayment` reports them. */
+const mockPayments = new Map<
+  string,
+  { stampStatus: string; stampReceivedWei: bigint }
+>()
+jest.mock('../../../utils/clients', () => ({
+  useMonadWallet: () => ({
+    getMessagePayment: (digest: string) =>
+      mockPayments.get(digest) ?? { stampStatus: 'none', stampReceivedWei: 0n },
+    refreshReceivedPayments: async () => [],
+  }),
 }))
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -178,12 +196,16 @@ function chat(
       status: m.status ?? 'confirmed',
       items: [m.item],
       stampValueWei: m.paid ?? 0n,
+      payloadDigest: `digest-${m.item.action}-${m.item.rollId}`,
     })),
   }
 }
 
 describe('ChatMessageDice.vue', () => {
-  beforeEach(() => chat())
+  beforeEach(() => {
+    chat()
+    mockPayments.clear()
+  })
 
   test('a bet names the commitment the bot published, adds a random value, and carries the stake as its value', async () => {
     const wrapper = mountCard({
@@ -243,16 +265,87 @@ describe('ChatMessageDice.vue', () => {
 
   test('a typed stake below the minimum is refused before anything is sent, naming the minimum', async () => {
     notified.length = 0
+    shown.length = 0
     const wrapper = mountCard(
       { type: 'dice', action: 'table', rollId: 'r1', commitment },
       LAB_FLOOR,
     )
-    await wrapper.get('[data-testid="dice-wager-input"]').setValue('0.01')
-    await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
+    const why = t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' })
+    await wrapper.get('[data-testid="dice-wager-input"]').setValue('0.03')
+    // Said on the card, and Roll is disabled while the stake is invalid.
+    expect(wrapper.get('[data-testid="dice-stake-error"]').text()).toBe(why)
+    expect(
+      wrapper.get('[data-testid="dice-roll-btn"]').attributes('disabled'),
+    ).toBeDefined()
+    // A roll asked for anyway is refused, and the toast says why (not "Something went wrong").
+    ;(wrapper.vm as any).rollDice()
     expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
-    expect(notified.map(error => error.message)).toEqual([
-      t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' }),
-    ])
+    expect(notified.map(error => error.message)).toEqual([why])
+    expect(shown).toEqual([why])
+    // At the minimum, the error goes and Roll is enabled.
+    await wrapper.get('[data-testid="dice-wager-input"]').setValue('0.04284')
+    expect(wrapper.find('[data-testid="dice-stake-error"]').exists()).toBe(
+      false,
+    )
+    expect(
+      wrapper.get('[data-testid="dice-roll-btn"]').attributes('disabled'),
+    ).toBeUndefined()
+  })
+
+  // F5: the card let a player bet 0.04284 on a target < 655 ("A win pays 4.2049") at a table
+  // whose limit was 0.48; the bot refused it and the player paid the fees.
+  test('a bet whose win would pay more than the table limit the bot stated is warned of and not sent', async () => {
+    notified.length = 0
+    shown.length = 0
+    const limit = 48n * 10n ** 16n // 0.48 MON
+    const wrapper = mountCard(
+      {
+        type: 'dice',
+        action: 'table',
+        rollId: 'r1',
+        commitment,
+        maxPayoutWei: limit.toString(),
+      },
+      LAB_FLOOR,
+    )
+    await wrapper.get('[data-testid="dice-preset-655"]').trigger('click')
+    const payout = dicePayoutWei(2n * LAB_FLOOR, 655)
+    expect(payout > limit).toBe(true)
+    const error = wrapper.get('[data-testid="dice-stake-error"]').text()
+    expect(error).toContain('0.48 MON')
+    expect(error).toContain('A win would pay 4.2049 MON')
+    expect(
+      wrapper.get('[data-testid="dice-roll-btn"]').attributes('disabled'),
+    ).toBeDefined()
+    ;(wrapper.vm as any).rollDice()
+    expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
+    expect(shown).toEqual([error])
+    // An easier target at the same stake fits the limit and may be rolled.
+    await wrapper.get('[data-testid="dice-preset-32768"]').trigger('click')
+    expect(wrapper.find('[data-testid="dice-stake-error"]').exists()).toBe(
+      false,
+    )
+    await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
+    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
+  })
+
+  test('the next offer of a result carries its own table limit', async () => {
+    const limit = 48n * 10n ** 16n
+    const wrapper = mountCard(
+      {
+        type: 'dice',
+        action: 'result',
+        rollId: 'r0',
+        nextRollId: 'r1',
+        nextCommitment: commitment,
+        maxPayoutWei: limit.toString(),
+      },
+      LAB_FLOOR,
+    )
+    await wrapper.get('[data-testid="dice-preset-655"]').trigger('click')
+    expect(wrapper.get('[data-testid="dice-stake-error"]').text()).toContain(
+      '0.48 MON',
+    )
   })
 
   test('while the floor is not known, only a free roll is offered', () => {
@@ -320,7 +413,7 @@ describe('ChatMessageDice.vue', () => {
     ).toContain('more than one roll')
   })
 
-  test('the outcome is verified separately from the payout, which is never shown as verified', () => {
+  test('the outcome is verified separately from the payout, which is claimed until the chain shows it', () => {
     const { bet, result, payout } = played()
     chat(
       { outbound: true, item: bet },
@@ -331,6 +424,54 @@ describe('ChatMessageDice.vue', () => {
     const line = wrapper.find('[data-testid="dice-payout"]')
     expect(line.text()).toContain('not yet verified on chain')
     expect(line.classes()).not.toContain('text-positive')
+  })
+
+  // F4: the footer turned from "(claimed)" to the amount once the payout landed, while the card
+  // said "not yet verified on chain" forever. Both now read the wallet's stamp receipt.
+  test('a payout the wallet saw land on chain is shown as verified, by the evidence the footer uses', () => {
+    const { bet, result, payout } = played()
+    expect(payout > 0n).toBe(true)
+    mockPayments.set('digest-result-r1', {
+      stampStatus: 'received',
+      stampReceivedWei: payout,
+    })
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: result, paid: payout },
+    )
+    const line = mountCard(result).find('[data-testid="dice-payout"]')
+    expect(line.text()).toContain('Verified on chain')
+    expect(line.text()).not.toContain('not yet verified')
+    expect(line.classes()).toContain('text-positive')
+  })
+
+  test('a payout that landed short on chain is shown as short, not verified', () => {
+    const { bet, result, payout } = played()
+    mockPayments.set('digest-result-r1', {
+      stampStatus: 'received',
+      stampReceivedWei: payout - 1n,
+    })
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: result, paid: payout },
+    )
+    const line = mountCard(result).find('[data-testid="dice-payout"]')
+    expect(line.text()).toContain('not been paid in full')
+    expect(line.classes()).toContain('text-negative')
+  })
+
+  test('a payout still pending on chain stays claimed', () => {
+    const { bet, result, payout } = played()
+    mockPayments.set('digest-result-r1', {
+      stampStatus: 'pending',
+      stampReceivedWei: 0n,
+    })
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: result, paid: payout },
+    )
+    const line = mountCard(result).find('[data-testid="dice-payout"]')
+    expect(line.text()).toContain('not yet verified on chain')
   })
 
   test('a payout the message did not carry is shown as not paid, whatever the outcome check says', () => {

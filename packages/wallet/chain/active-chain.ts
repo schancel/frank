@@ -848,8 +848,6 @@ export interface ActiveChain extends NativeAssetChain {
     readonly directMessages: true;
     readonly topics: true;
   };
-  /** Existing configured EVM wager minimum, independent of the message stamp default. */
-  readonly minimumWagerValue: bigint;
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
   createWallet(

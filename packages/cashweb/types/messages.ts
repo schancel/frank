@@ -515,6 +515,10 @@ export interface SatoshiDiceItem {
   /** `result` only: the next roll on offer and its commitment. */
   nextRollId?: string
   nextCommitment?: string
+  /** `table`, and `result` for its next offer: the most one roll on that offer pays, stake
+   * included (the table limit), as the bot stated it when it made the offer. The bot works the
+   * limit out again when the bet arrives and refuses a bet that could win more. */
+  maxPayoutWei?: string
   /** `rejected` only: no roll was made for `rollId`. Does not assert a refund settled. */
   rejectionReason?: DiceRejectionReason
 }

@@ -99,14 +99,16 @@ export async function loadWalletHistory(
         wallet.nativeOperationSyncFailed?.(row.operationId) ?? false,
       ),
     )
-    const blockHashes = operations.flatMap(operation =>
+    const blocks = operations.flatMap(operation =>
       operation.members.flatMap(member =>
-        member.blockHash ? [member.blockHash] : [],
+        member.blockHash && member.blockNumber !== undefined
+          ? [{ blockNumber: member.blockNumber, blockHash: member.blockHash }]
+          : [],
       ),
     )
     const [blockTimes, received] = await Promise.all([
-      wallet.readBlockTimes && blockHashes.length
-        ? wallet.readBlockTimes(blockHashes).catch(() => new Map())
+      wallet.readBlockTimes && blocks.length
+        ? wallet.readBlockTimes(blocks).catch(() => new Map())
         : Promise.resolve(new Map<string, number>()),
       Promise.resolve(wallet.getReceivedPayments?.() ?? []),
     ])

@@ -23,6 +23,7 @@ import { startMonadRegtest } from './monad-regtest'
 import { openMonadWallet, returnToFaucet } from './monad-wallets'
 import type { RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
+import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 
 const RELAY = process.env.FRANK_EXACT_RELAY ?? 'http://127.0.0.1:18180'
 const FUND_WEI = parseEther(process.env.FRANK_EXACT_FUND ?? '5')
@@ -38,7 +39,7 @@ async function main() {
     relayLogPath: '',
     stop: async () => {},
   }
-  const floor = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
+  const floor = evmPaymentFloorWei(BigInt(await monad.provider.send('eth_gasPrice', [])))
   const wallets: RealWallet[] = []
   const lines: string[] = []
   let failed = false

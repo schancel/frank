@@ -426,8 +426,12 @@ export default defineComponent({
       }
       switch (this.walletStatus) {
         case 'received':
+          // The wallet's own classification, the one the balance breakdown shows: a coin
+          // below the payment floor is held, not spendable.
           return this.$t(
-            this.payment?.spendable
+            this.payment?.tooSmall
+              ? 'chatMessageStealth.tooSmallHint'
+              : this.payment?.spendable
               ? 'chatMessageStealth.spendableHint'
               : 'chatMessageStealth.spentHint',
           ) as string

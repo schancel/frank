@@ -15,7 +15,9 @@ import { navigateBack } from 'src/utils/navigate-back'
 import enUS from '../i18n/en-us'
 
 // The stamp chosen for the conversation with the contact; free unless a test says otherwise.
-let mockStampWei = 0n
+let mockStampWei: bigint | undefined = 0n
+// The wallet's payment floor (`directMessages.minimumStamp`); not known unless a test sets it.
+let mockFloorWei = 0n
 const mockPrepare = jest.fn()
 const mockSendMessage = jest.fn()
 const PREPARED = {
@@ -50,6 +52,9 @@ jest.mock('@frank/wallet/chain', () => ({
       const [whole, frac = ''] = display.split('.')
       if (frac.length > 18) throw new Error('too many decimals')
       return BigInt((whole || '0') + frac.padEnd(18, '0'))
+    },
+    directMessages: {
+      minimumStamp: async () => mockFloorWei,
     },
     formatAddress: (addr: { raw: string }) => addr.raw,
     parseAddress: (input: string) => {
@@ -443,15 +448,18 @@ describe('SendContact.vue (dual-send model)', () => {
     expect(mockPrepare).not.toHaveBeenCalled()
   })
 
-  it('shows the wallet quote for the network fee and the total before confirming', async () => {
-    const estimateLegacyFee = jest.fn().mockResolvedValue({
-      totalFee: 4_242_000_000_000_000n,
-      deliveryFee: 4_242_000_000_000_000n,
-      inputCount: 1,
+  it('shows the wallet quote: the payment, the message stamp, the network fee and their total', async () => {
+    mockStampWei = 50_000_000_000_000_000n // 0.05
+    const quoteContactPayment = jest.fn().mockResolvedValue({
+      valueWei: 1_500_000_000_000_000_000n,
+      stampWei: 50_000_000_000_000_000n,
+      networkFeeWei: 4_242_000_000_000_000n,
+      totalWei: 1_554_242_000_000_000_000n,
+      floorWei: 21_420_000_000_000_000n,
     })
     ;(useActiveWallet as jest.Mock).mockResolvedValue({
       ...mockWallet,
-      estimateLegacyFee,
+      quoteContactPayment,
     })
     const wrapper = mountSendContact()
     await flushPromises()
@@ -463,11 +471,87 @@ describe('SendContact.vue (dual-send model)', () => {
       .find('[data-test="send-contact-review-button"]')
       .trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-test="review-fee"]').text()).toContain('0.004242')
-    expect(wrapper.get('[data-test="review-total"]').text()).toContain(
-      '1.504242',
+    // The wallet is asked about this payment with the stamp its message will carry.
+    expect(quoteContactPayment).toHaveBeenCalledWith({
+      recipient: { raw: aliceAddress },
+      value: 1_500_000_000_000_000_000n,
+      stampValue: 50_000_000_000_000_000n,
+    })
+    expect(wrapper.get('[data-test="review-amount"]').text()).toBe('1.5 MON')
+    expect(wrapper.get('[data-test="review-stamp"]').text()).toBe('0.05 MON')
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe('0.004242 MON')
+    // Everything the wallet takes: the payment, the stamp and the fee.
+    expect(wrapper.get('[data-test="review-total"]').text()).toBe(
+      '1.554242 MON',
     )
+    expect(wrapper.text()).toContain('Total (payment, stamp and network fee)')
     expect(mockPrepare).not.toHaveBeenCalled()
+    mockStampWei = 0n
+  })
+
+  it('Confirm sends the stamp the review showed', async () => {
+    // No stamp chosen for the chat: the wallet's quote names its default, and that is sent.
+    mockStampWei = undefined
+    try {
+      ;(useActiveWallet as jest.Mock).mockResolvedValue({
+        ...mockWallet,
+        quoteContactPayment: jest.fn().mockResolvedValue({
+          valueWei: 1_500_000_000_000_000_000n,
+          stampWei: 70_000_000_000_000_000n,
+          networkFeeWei: 1n,
+          totalWei: 1_570_000_000_000_000_001n,
+          floorWei: 1n,
+        }),
+      })
+      mockPrepare.mockResolvedValueOnce({
+        ...PREPARED,
+        stampValue: 70_000_000_000_000_000n,
+      })
+      mockSendMessage.mockResolvedValueOnce({
+        state: 'sent',
+        payloadDigest: 'dd',
+      })
+      await confirm()
+      expect(mockPrepare.mock.calls[0][0].stampValue).toBe(
+        70_000_000_000_000_000n,
+      )
+    } finally {
+      mockStampWei = 0n
+    }
+  })
+
+  it('names the smallest payment, and refuses one below it before review', async () => {
+    mockFloorWei = 21_420_000_000_000_000n // 0.02142
+    try {
+      const wrapper = mountSendContact()
+      await flushPromises()
+      await wrapper.find('[data-test="contact-item"]').trigger('click')
+      await wrapper
+        .find('[data-test="send-contact-amount-input"]')
+        .setValue('0.05')
+      await flushPromises()
+      expect(wrapper.get('[data-test="send-contact-minimum"]').text()).toBe(
+        'The smallest payment is 0.02142 MON: ten times the network fee to move it, so your contact can always spend it.',
+      )
+
+      await wrapper
+        .find('[data-test="send-contact-amount-input"]')
+        .setValue('0.01')
+      await flushPromises()
+      expect(wrapper.get('[data-test="send-contact-below-floor"]').text()).toBe(
+        'That is below the smallest payment of 0.02142 MON. Your contact could not move it for less than a tenth of its value: pay at least 0.02142 MON.',
+      )
+      const review = wrapper.get('[data-test="send-contact-review-button"]')
+      expect(review.attributes('disabled')).toBeDefined()
+      await review.trigger('click')
+      await flushPromises()
+      expect(
+        wrapper.find('[data-test="send-contact-review-card"]').exists(),
+      ).toBe(false)
+      expect(mockPrepare).not.toHaveBeenCalled()
+    } finally {
+      mockFloorWei = 0n
+    }
   })
 
   it('says when the fee cannot be estimated, with the reason', async () => {

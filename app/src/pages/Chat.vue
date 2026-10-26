@@ -41,6 +41,17 @@
         <q-banner
           v-if="
             conversation?.kind === 'group' &&
+            conversation.membershipStatus === 'removed'
+          "
+          class="q-pa-sm"
+          data-testid="group-removed-banner"
+          role="status"
+        >
+          {{ $t('groupChat.removedBanner') }}
+        </q-banner>
+        <q-banner
+          v-if="
+            conversation?.kind === 'group' &&
             conversation.membershipStatus === 'joined' &&
             (conversation.groupState?.syncFailed ||
               conversation.groupState?.pendingEpoch)

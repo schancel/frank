@@ -206,6 +206,8 @@ export type {
   ContactPaymentInfo,
   ContactPaymentUnsettledReason,
   PreparedContactPayment,
+  WalletBalanceParts,
+  ContactPaymentQuote,
   ReceivedPayment,
   ReceivedPaymentStatus,
   ReceivedCoinSweep,
@@ -216,8 +218,10 @@ export {
   ContactPaymentFailedError,
   ContactPaymentNotSettledError,
   ContactPaymentReleasedError,
+  ContactPaymentBelowFloorError,
   ContactPaymentTooLargeError,
   MAX_STEALTH_ITEM_AMOUNT,
+  balanceOfParts,
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";

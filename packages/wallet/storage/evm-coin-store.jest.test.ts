@@ -101,6 +101,7 @@ describe('received coins', () => {
     // transaction, or a zero-value transfer), with an empty account: proof of nothing.
     const forged = observeEvmCoin(coin({ claimedAmountWei: '1000000' }), {
       balanceWei: 0n,
+      accountNonce: 0,
       transfer: 'included',
       transferValueWei: 0n,
       atMs: 10,
@@ -185,6 +186,81 @@ describe('received coins', () => {
     })
     expect(arrived.state).toBe('unspent')
     expect(arrived.transferSeen).toBeUndefined()
+  })
+
+  it('"not received" only on evidence: a node that cannot show the transfer proves nothing', () => {
+    // The node shows nothing either way (it no longer serves the transfer's block), and the
+    // account has held money (or its nonce was never read): it cannot be checked now.
+    for (const observation of [
+      { balanceWei: 0n, accountNonce: 3, transfer: 'unknown' as const },
+      { balanceWei: 5_000n, transfer: 'unknown' as const },
+      { balanceWei: 0n, transfer: 'unknown' as const },
+    ]) {
+      const unclear = observeEvmCoin(coin(), { ...observation, atMs: 10 })
+      expect(unclear.state).toBe('pending')
+      expect(receivedPaymentOf(unclear, EARLY).status).toBe('pending')
+      expect(receivedPaymentOf(unclear, LATE)).toMatchObject({
+        status: 'unverifiable',
+        spendable: false,
+      })
+      expect(messagePaymentOf([unclear], unclear.payloadDigest!, LATE).status).toBe(
+        'unverifiable',
+      )
+    }
+    // The account has never held money (balance and nonce zero): that is evidence.
+    const empty = observeEvmCoin(coin(), {
+      balanceWei: 0n,
+      accountNonce: 0,
+      transfer: 'unknown',
+      atMs: 10,
+    })
+    expect(empty.accountFunded).toBe(false)
+    expect(receivedPaymentOf(empty, LATE).status).toBe('not-received')
+    // An account once seen funded stays so, even when a later read sees it empty.
+    const seenFunded = observeEvmCoin(
+      observeEvmCoin(coin(), { balanceWei: 7n, transfer: 'unknown', atMs: 10 }),
+      { balanceWei: 0n, transfer: 'unknown', atMs: 20 },
+    )
+    expect(seenFunded.accountFunded).toBe(true)
+    expect(receivedPaymentOf(seenFunded, LATE).status).toBe('unverifiable')
+    // A received coin stays received, whatever the node can show of its transfer later.
+    const received = observeEvmCoin(coin(), {
+      balanceWei: 5_000n,
+      transfer: 'included',
+      atMs: 10,
+    })
+    const spentLater = observeEvmCoin(received, {
+      balanceWei: 0n,
+      transfer: 'unknown',
+      atMs: LATE,
+    })
+    expect(receivedPaymentOf(spentLater, LATE)).toMatchObject({
+      status: 'received',
+      receivedAmountWei: 5_000n,
+    })
+  })
+
+  it('a set of transactions not shown on the chain is not received only when its missing members are shown not executed', () => {
+    const set = (overrides: Partial<EvmCoin>): EvmCoin => ({
+      ...coin({ transactions: ['aa'.repeat(32), 'bb'.repeat(32)] }),
+      settledTransactions: [],
+      failedTransactions: [],
+      checkedAtMs: 2,
+      ...overrides,
+    })
+    expect(receivedPaymentOf(set({}), LATE).status).toBe('unverifiable')
+    expect(receivedPaymentOf(set({ transferUnexecuted: true }), LATE).status).toBe(
+      'not-received',
+    )
+    expect(receivedPaymentOf(set({ accountFunded: false }), LATE).status).toBe(
+      'not-received',
+    )
+    expect(
+      receivedPaymentOf(
+        set({ settledTransactions: ['aa'.repeat(32), 'bb'.repeat(32)], receivedAmountWei: '9' }),
+        LATE,
+      ).status,
+    ).toBe('received')
   })
 
   it('a claim that never arrives is asked about less and less often, and is still found late', () => {

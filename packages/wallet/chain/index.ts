@@ -286,6 +286,7 @@ export type { UtxoChain, UtxoChainConfig } from "./utxo-chain";
 
 export {
   summarizeEvmNativeOperation,
+  summarizeEvmNativeStampStages,
   findEvmNativeOperationStatus,
 } from "./evm-native-operation-status";
 export type { EvmNativeOperationStatus } from "./evm-native-operation-status";

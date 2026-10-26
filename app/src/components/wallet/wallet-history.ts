@@ -1,5 +1,6 @@
 import {
   summarizeEvmNativeOperation,
+  summarizeEvmNativeStampStages,
   type ContactPaymentInfo,
   type EvmNativeOperationStatus,
   type NativeWalletHandle,
@@ -13,7 +14,8 @@ import type { SwapActivityRow } from 'src/swap/useSwapActivity'
  * The wallet page's History: a derived view, never a store of its own.
  *
  * Owners of the facts it shows:
- * - sends and contract calls made on this device: the wallet's native operation journal.
+ * - sends and contract calls made on this device: the wallet's native operation journal. A
+ *   message stamp paid in the same transaction set as a contact payment is its own row;
  *   Operations still being reconciled are its active rows (`getNativeOperations`); finished ones
  *   are archived to its completed history (`getNativeOperationHistory`). Both are read, so a
  *   reload shows the same activity as before it;
@@ -134,12 +136,16 @@ export async function loadWalletHistory(
     }
     if (rows.some(row => row.binding.chainIdentifier !== chainIdentifier))
       return { status: 'unavailable' }
-    const operations = rows.map(row =>
-      summarizeEvmNativeOperation(
-        row,
-        wallet.nativeOperationSyncFailed?.(row.operationId) ?? false,
-      ),
-    )
+    // A contact payment's message stamp is a stage of the payment's operation: it is shown as
+    // its own send (a message stamp), as the chat card shows it apart from the payment.
+    const operations = rows.flatMap(row => {
+      const syncFailed =
+        wallet.nativeOperationSyncFailed?.(row.operationId) ?? false
+      return [
+        summarizeEvmNativeOperation(row, syncFailed),
+        ...summarizeEvmNativeStampStages(row, syncFailed),
+      ]
+    })
     const blocks = operations.flatMap(operation =>
       operation.members.flatMap(member =>
         member.blockHash !== undefined && member.blockNumber !== undefined
@@ -238,6 +244,8 @@ function combinedPayment(coins: readonly ReceivedPayment[]): ReceivedPayment {
     ? 'failed'
     : statuses.has('pending')
     ? 'pending'
+    : statuses.has('unverifiable')
+    ? 'unverifiable'
     : statuses.has('not-received')
     ? statuses.has('received')
       ? 'pending'

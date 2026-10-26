@@ -41,12 +41,23 @@ export interface EvmCoin {
   readonly amountWei: string
   /** What the chain showed the first time it showed any money here (decimal wei): the amount that
    * arrived, which later spending does not change. Absent until then. For a registered native
-   * set this is the current canonical verified member sum, which can fall after a reorg. */
+   * set this is the sum of the members a receipt has shown settled; it falls only when a receipt
+   * shows a member failed, never because a node stopped serving a receipt. */
   readonly receivedAmountWei?: string
   /** When the chain was last read for this coin. Absent: never read. */
   readonly checkedAtMs?: number
   /** A pending coin only: whether the node knew the transfer that funds it at the last read. */
   readonly transferSeen?: boolean
+  /** Whether the account has ever held money, as far as the chain has shown: true once a read
+   * showed a balance or a transaction sent from it (nonce above zero), and true from then on;
+   * false when the last read showed neither. Absent: not known. Only `false` is evidence that a
+   * payment did not arrive: a node that no longer serves a transaction (pruned history) proves
+   * nothing. */
+  readonly accountFunded?: boolean
+  /** A coin not yet verified: at the last read, the transfer the message named (every member
+   * of a set not yet shown included or failed) was shown not executed: its sender's nonce is
+   * unused, and the node does not know it. Evidence that it has not arrived (yet). */
+  readonly transferUnexecuted?: boolean
   /** What the sender's message said the amount was (decimal wei). Display only. */
   readonly claimedAmountWei: string
   /** The transfers the message carried for this coin: a signed raw transaction or a hash, hex. */
@@ -892,7 +903,26 @@ export async function registerStoredEvmNativePaymentSet(
   })
 }
 
+/** What one chain read shows of a registered native set. `receivedAmountsWei[i]`: what member
+ * `i` paid the account (0 when its receipt shows it failed), or undefined when the node did not
+ * show its receipt. */
+export interface EvmNativePaymentSetRead {
+  readonly balanceWei: bigint
+  readonly receivedAmountsWei: readonly (bigint | undefined)[]
+  /** The account's own transaction count at the same read, when it was read. */
+  readonly accountNonce?: number
+  /** Whether the node knows (or just accepted) a member it has not shown included. */
+  readonly seen?: boolean
+  /** Per member: shown not executed (its sender's nonce is unused and the node does not know it). */
+  readonly unexecuted?: readonly boolean[]
+}
+
 /** Canonical observation for a registered independent native set. RPC does not hold a write lock.
+ *
+ * A member's settled or failed fact, once shown by a receipt, is kept: a later read that cannot
+ * show its receipt (a node that no longer serves old blocks, or one that is behind) is no
+ * evidence, and leaves it as it was. Only a receipt changes it. The received amount is the sum of
+ * the settled members' signed values, so a payment once verified stays received.
  * Unknown members contribute no verified value; this lower bound never proves nonexecution. */
 export async function refreshStoredEvmNativePaymentSet(
   store: RecordStore<EvmCoin>,
@@ -901,10 +931,7 @@ export async function refreshStoredEvmNativePaymentSet(
   read: (
     address: string,
     rawTransactions: readonly string[],
-  ) => Promise<{
-    balanceWei: bigint
-    receivedAmountsWei: readonly (bigint | undefined)[]
-  }>,
+  ) => Promise<EvmNativePaymentSetRead>,
   atMs: number,
 ): Promise<{
   applied: boolean
@@ -931,6 +958,8 @@ export async function refreshStoredEvmNativePaymentSet(
       coin.receivedAmountWei,
       coin.checkedAtMs,
       coin.transferSeen,
+      coin.accountFunded,
+      coin.transferUnexecuted,
       coin.settledTransactions,
       coin.failedTransactions,
     ])
@@ -946,31 +975,45 @@ export async function refreshStoredEvmNativePaymentSet(
     observation.receivedAmountsWei.length !== raws.length
   )
     throw new Error('Invalid native payment set evidence')
-  let received = 0n,
-    known = 0,
-    failures = 0
-  const settledTransactions: string[] = []
-  const failedTransactions: string[] = []
+  if (
+    observation.unexecuted !== undefined &&
+    observation.unexecuted.length !== raws.length
+  )
+    throw new Error('Invalid native payment set evidence')
+  const settled = new Set(captured.settledTransactions ?? [])
+  const failed = new Set(captured.failedTransactions ?? [])
+  const members = raws.map(raw => Transaction.from('0x' + raw))
+  const hashes = members.map(tx => tx.hash!.replace(/^0x/, '').toLowerCase())
   for (let i = 0; i < raws.length; i++) {
     const value = observation.receivedAmountsWei[i]
+    // No receipt shown: no evidence either way; what was known stays.
     if (value === undefined) continue
-    const tx = Transaction.from('0x' + raws[i]!)
-    if (value !== 0n && value !== tx.value)
+    if (value !== 0n && value !== members[i]!.value)
       throw new Error(
         'Native payment member evidence differs from signed value',
       )
-    known++
-    const txHash = tx.hash!.replace(/^0x/, '').toLowerCase()
     if (value === 0n) {
-      failures++
-      failedTransactions.push(txHash)
+      settled.delete(hashes[i]!)
+      failed.add(hashes[i]!)
     } else {
-      settledTransactions.push(txHash)
+      failed.delete(hashes[i]!)
+      settled.add(hashes[i]!)
     }
-    received += value
   }
-  const complete = known === raws.length,
-    allFailed = failures === raws.length
+  const settledTransactions = hashes.filter(hash => settled.has(hash))
+  const failedTransactions = hashes.filter(hash => failed.has(hash))
+  const received = members.reduce(
+    (sum, tx, i) => (settled.has(hashes[i]!) ? sum + tx.value : sum),
+    0n,
+  )
+  const unresolved = hashes.flatMap((hash, i) =>
+    settled.has(hash) || failed.has(hash) ? [] : [i],
+  )
+  const complete = unresolved.length === 0,
+    allFailed = failedTransactions.length === raws.length
+  const transferUnexecuted =
+    unresolved.length > 0 &&
+    unresolved.every(i => observation.unexecuted?.[i] === true)
   let applied = false
   const coin = await changeStoredCoin(store, key, current => {
     applied = false
@@ -983,16 +1026,26 @@ export async function refreshStoredEvmNativePaymentSet(
     )
       return current
     applied = true
+    const {
+      transferSeen: _seen,
+      transferUnexecuted: _unexecuted,
+      ...observed
+    } = observeEvmCoin(current, {
+      balanceWei,
+      ...(observation.accountNonce === undefined
+        ? {}
+        : { accountNonce: observation.accountNonce }),
+      transfer: received > 0n ? 'included' : allFailed ? 'failed' : 'unknown',
+      transferValueWei: received,
+      atMs,
+    })
     return {
-      ...observeEvmCoin(current, {
-        balanceWei,
-        transfer: received > 0n ? 'included' : allFailed ? 'failed' : 'unseen',
-        transferValueWei: received,
-        atMs,
-      }),
+      ...observed,
       receivedAmountWei: received.toString(),
       settledTransactions,
       failedTransactions,
+      ...(!complete && observation.seen === true ? { transferSeen: true } : {}),
+      ...(transferUnexecuted ? { transferUnexecuted: true } : {}),
     }
   })
   return {
@@ -1096,14 +1149,26 @@ export async function refreshStoredEvmErc20Position(
  * - `none`: the message named no transfer; only the balance can speak.
  * - `included`: that exact transaction is in a block and succeeded.
  * - `seen`: the node knows it (or just accepted it) and it is not in a block yet.
- * - `unseen`: the node does not know it and it could not be handed to the node this time.
+ * - `unseen`: it has not executed: the node does not know it, could not be handed it this time,
+ *   and its sender's nonce is not used yet.
+ * - `unknown`: the node shows nothing either way: it does not know the transaction, and either
+ *   only its hash was named or its sender's nonce is already used. A node that no longer serves
+ *   old blocks answers so for a transfer that landed long ago.
  * - `failed`: it can never land: it reverted, or its sender's nonce was used by another
- *   transaction. */
-export type EvmCoinTransfer = 'none' | 'included' | 'seen' | 'unseen' | 'failed'
+ *   transaction while the account never held money. */
+export type EvmCoinTransfer =
+  | 'none'
+  | 'included'
+  | 'seen'
+  | 'unseen'
+  | 'unknown'
+  | 'failed'
 
 /** What one chain read says about a coin. */
 export interface EvmCoinObservation {
   readonly balanceWei: bigint
+  /** The account's own transaction count at the same read, when it was read. */
+  readonly accountNonce?: number
   /** Asked only while the coin is not yet known to be funded. */
   readonly transfer?: EvmCoinTransfer
   /** With `included`: what that transaction pays this account, read from the transaction. */
@@ -1139,9 +1204,25 @@ export function observeEvmCoin(
     else if (transfer === 'none' && funded) state = 'unspent'
     else state = coin.state === 'failed' ? 'failed' : 'pending'
   }
-  const { transferSeen: _dropped, ...rest } = coin
+  const {
+    transferSeen: _dropped,
+    accountFunded: _funded,
+    transferUnexecuted: _unexecuted,
+    ...rest
+  } = coin
+  // An account that has held money stays one that did; a read of both its balance and its nonce
+  // at zero is the only thing that says it never did.
+  const accountFunded =
+    coin.accountFunded === true ||
+    funded ||
+    (observation.accountNonce ?? 0) > 0
+      ? true
+      : observation.accountNonce === 0
+      ? false
+      : undefined
   return {
     ...rest,
+    ...(accountFunded === undefined ? {} : { accountFunded }),
     state,
     amountWei: observation.balanceWei.toString(),
     ...(coin.receivedAmountWei === undefined &&
@@ -1159,6 +1240,9 @@ export function observeEvmCoin(
     checkedAtMs: observation.atMs,
     ...(state === 'pending'
       ? { transferSeen: observation.transfer === 'seen' }
+      : {}),
+    ...(state === 'pending' && observation.transfer === 'unseen'
+      ? { transferUnexecuted: true }
       : {}),
   }
 }
@@ -1188,15 +1272,29 @@ export function pendingCoinDue(coin: EvmCoin, nowMs: number): boolean {
 
 /** What a host shows for a received payment.
  * - `pending`: not on the chain yet, and either the node knows the transfer or it is early.
- * - `received`: the chain showed the transfer included and the money at the account.
- * - `not-received`: the sender's message claimed it, the node does not know the transfer, and
- *   `PAYMENT_NOT_RECEIVED_AFTER_MS` has passed since the message. Still re-checked.
- * - `failed`: the transfer can never land (reverted, or its nonce went to another transaction). */
+ * - `received`: the chain showed the transfer included and the money at the account. Once shown,
+ *   it stays received: a node that later cannot serve the transaction proves nothing.
+ * - `not-received`: `PAYMENT_NOT_RECEIVED_AFTER_MS` has passed since the message, and the chain
+ *   shows positively that the money is not there: the account has never held money (balance and
+ *   nonce zero), or every transfer still missing has not executed (its sender's nonce is unused).
+ *   Still re-checked.
+ * - `unverifiable`: as long after the message, the node cannot show the transfer and nothing shows
+ *   it did not arrive (for example the node no longer serves those blocks). Still re-checked.
+ * - `failed`: the transfer can never land (reverted, or its nonce went to another transaction
+ *   while the account never held money). */
 export type ReceivedPaymentStatus =
   | 'pending'
   | 'received'
   | 'not-received'
+  | 'unverifiable'
   | 'failed'
+
+/** A status no stronger than its evidence: shown not there, or only not shown. */
+function overdueStatus(coin: EvmCoin): 'not-received' | 'unverifiable' {
+  return coin.accountFunded === false || coin.transferUnexecuted === true
+    ? 'not-received'
+    : 'unverifiable'
+}
 
 /** What a host may say about a received payment. `spendable` only while the chain shows funds. */
 export interface ReceivedPayment {
@@ -1268,7 +1366,7 @@ export function receivedPaymentOf(
     ) {
       status = 'pending'
     } else {
-      status = 'not-received'
+      status = overdueStatus(coin)
     }
   } else {
     status =
@@ -1283,7 +1381,7 @@ export function receivedPaymentOf(
           coin.transferSeen === true ||
           nowMs - coin.discoveredAtMs < PAYMENT_NOT_RECEIVED_AFTER_MS
         ? 'pending'
-        : 'not-received'
+        : overdueStatus(coin)
   }
 
   const isPartial =
@@ -1339,8 +1437,11 @@ export function spendableCoinTotal(coins: readonly EvmCoin[]): bigint {
   )
 }
 
+/** The status of a message's payments taken together; `none` when it carried none to this wallet. */
+export type MessagePaymentStatus = 'none' | ReceivedPaymentStatus
+
 function summarizePaymentSubset(subset: readonly ReceivedPayment[]): {
-  status: 'none' | 'pending' | 'received' | 'not-received' | 'failed'
+  status: MessagePaymentStatus
   receivedWei: bigint
   statedWei: bigint
   partial: boolean
@@ -1352,6 +1453,8 @@ function summarizePaymentSubset(subset: readonly ReceivedPayment[]): {
       ? 'failed'
       : subset.some(p => p.status === 'not-received')
       ? 'not-received'
+      : subset.some(p => p.status === 'unverifiable')
+      ? 'unverifiable'
       : subset.some(p => p.status !== 'received')
       ? 'pending'
       : 'received'
@@ -1372,31 +1475,22 @@ function summarizePaymentSubset(subset: readonly ReceivedPayment[]): {
 /** Whether the payments a message carried have landed, from the wallet's coins for it.
  * - `none`: the wallet holds no coin for the message (it carried no payment to this wallet).
  * - `pending`: at least one payment is not on the chain yet, and none has failed or is overdue.
- * - `not-received`: at least one payment the message claimed is still unknown to the node long
- *   after the message (`PAYMENT_NOT_RECEIVED_AFTER_MS`). It is still re-checked.
+ * - `not-received`: long after the message (`PAYMENT_NOT_RECEIVED_AFTER_MS`), the chain shows
+ *   positively that at least one payment the message claimed is not there. It is still re-checked.
+ * - `unverifiable`: at least one payment is overdue and the node cannot show whether it arrived.
  * - `failed`: at least one payment can never land.
  * - `received`: the chain shows every payment included, with its money at its account.
  * `receivedWei` is what the chain showed arriving, across the received ones; `statedWei` is what
  * the message said, and is never a balance. */
 export interface MessagePayment {
-  readonly status: 'none' | 'pending' | 'received' | 'not-received' | 'failed'
+  readonly status: MessagePaymentStatus
   readonly receivedWei: bigint
   readonly statedWei: bigint
   readonly partial: boolean
-  readonly stampStatus:
-    | 'none'
-    | 'pending'
-    | 'received'
-    | 'not-received'
-    | 'failed'
+  readonly stampStatus: MessagePaymentStatus
   readonly stampReceivedWei: bigint
   readonly stampStatedWei: bigint
-  readonly contentStatus:
-    | 'none'
-    | 'pending'
-    | 'received'
-    | 'not-received'
-    | 'failed'
+  readonly contentStatus: MessagePaymentStatus
   readonly contentReceivedWei: bigint
   readonly contentStatedWei: bigint
   readonly payments: readonly ReceivedPayment[]

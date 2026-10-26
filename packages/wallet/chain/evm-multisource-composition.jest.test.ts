@@ -390,7 +390,7 @@ test('public ERC20 quote gathers funded fragments while skipping a gasless small
     await wallet.stealthPayments!.reconcile(payment.operationId),
   ).toMatchObject({ status: 'succeeded', verifiedReceivedAmountAtomic: 7n })
 })
-test('recipient records the complete native set, retries every original, and rolls canonical partial/full evidence back after a dropped receipt', async () => {
+test('recipient records the complete native set, retries every original, and keeps what receipts showed when the node later stops serving them', async () => {
   const derived = deriveEvmStealthAddress({
     recipientSpendPubKey: wallet.identity!.compressedPubKey,
   })
@@ -433,15 +433,17 @@ test('recipient records the complete native set, retries every original, and rol
     status: 'succeeded',
     verifiedReceivedAmountAtomic: 2000n,
   })
+  // A node that no longer serves a receipt (pruned history), or whose block it cannot match,
+  // shows nothing either way: a payment once verified stays received.
   state.receipts.delete(Transaction.from(raws[0]!).hash!)
   expect(await wallet.stealthReceipts!.observe(claim)).toMatchObject({
-    status: 'partial',
-    verifiedReceivedAmountAtomic: 1000n,
+    status: 'succeeded',
+    verifiedReceivedAmountAtomic: 2000n,
   })
   state.changeBlock('0x' + 'ef'.repeat(32))
   expect(await wallet.stealthReceipts!.observe(claim)).toMatchObject({
-    status: 'pending',
-    verifiedReceivedAmountAtomic: 0n,
+    status: 'succeeded',
+    verifiedReceivedAmountAtomic: 2000n,
   })
   await expect(
     wallet.stealthReceipts!.record({ ...claim, amountAtomic: 1000n }),

@@ -1284,6 +1284,9 @@ export const rawEnUS = {
     notReceived: 'Payment not received',
     notReceivedHint:
       'The sender claimed this payment, and the chain shows no such transfer. It is not in your balance. Your wallet keeps checking.',
+    unverifiable: "Can't check now",
+    unverifiableHint:
+      'The network node cannot show this payment right now (it may no longer keep those blocks), and nothing shows it failed. Your wallet keeps checking.',
     failed: 'Payment failed',
     failedHint:
       'This payment can never arrive: its transaction failed or was replaced. It is not in your balance.',
@@ -1559,6 +1562,7 @@ export const rawEnUS = {
       'pending': 'Arriving',
       'received': 'Received',
       'not-received': 'Not received',
+      'unverifiable': "Can't check now",
       'failed': 'Failed',
     },
     status: {

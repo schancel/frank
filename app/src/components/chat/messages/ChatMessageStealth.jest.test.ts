@@ -261,6 +261,15 @@ describe('ChatMessageStealth', () => {
     )
   })
 
+  it('a payment the node cannot show either way reads "can\'t check now", not "not received"', () => {
+    mockPayment.value = coin({ status: 'unverifiable' })
+    const wrapper = mountComponent()
+    expect(text(wrapper, 'stealth-status-badge')).toBe("Can't check now")
+    expect(text(wrapper, 'stealth-status-hint')).toBe(
+      'The network node cannot show this payment right now (it may no longer keep those blocks), and nothing shows it failed. Your wallet keeps checking.',
+    )
+  })
+
   it('a payment that can never arrive is shown as failed', () => {
     mockPayment.value = coin({ status: 'failed' })
     const wrapper = mountComponent()

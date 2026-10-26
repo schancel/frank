@@ -602,26 +602,57 @@ export function createEvmReceivedCoinAndContactManager(
             verifiedFinancialReceipt(raw, address, head.number)
           )
         );
+        // A member a receipt already showed settled or failed is not sent again, nor asked
+        // about: a node that no longer serves its receipt does not make it unknown.
+        const resolved = new Set([
+          ...(coin.settledTransactions ?? []),
+          ...(coin.failedTransactions ?? []),
+        ]);
+        const open = raws.flatMap((raw, index) => {
+          const tx = Transaction.from(raw);
+          return amounts[index] === undefined &&
+            !resolved.has(tx.hash!.replace(/^0x/, "").toLowerCase())
+            ? [{ index, tx }]
+            : [];
+        });
+        const accepted = new Set<number>();
         if (replay) {
-          for (let index = 0; index < raws.length; index++) {
-            if (amounts[index] !== undefined) continue;
+          for (const { index, tx } of open) {
             try {
               assertFinancialActive();
               const response = await provider.broadcastTransaction(
                 raws[index]!
               );
-              if (
-                response.hash.toLowerCase() !==
-                Transaction.from(raws[index]!).hash
-              ) {
+              if (response.hash.toLowerCase() !== tx.hash) {
                 throw new Error("Unexpected native receipt retry hash");
               }
+              accepted.add(index);
             } catch (error) {
               retryFailure ??= error;
             }
           }
         }
-        const balanceWei = await provider.getBalance(address, head.number);
+        // What the chain shows of each member still open: known to the node, or shown not
+        // executed (its sender's nonce is unused at this block). A used nonce with no receipt
+        // shows nothing either way.
+        const unexecuted = raws.map(() => false);
+        let seen = accepted.size > 0;
+        for (const { index, tx } of open) {
+          if (accepted.has(index)) continue;
+          if ((await provider.getTransaction(tx.hash!)) !== null) {
+            seen = true;
+            continue;
+          }
+          const used = await provider.getTransactionCount(
+            tx.from!,
+            head.number
+          );
+          unexecuted[index] = used <= tx.nonce;
+        }
+        const [balanceWei, accountNonce] = await Promise.all([
+          provider.getBalance(address, head.number),
+          provider.getTransactionCount(address, head.number),
+        ]);
         const checked = await provider.getBlock(head.number);
         assertFinancialActive();
         if (checked?.hash?.toLowerCase() !== head.hash.toLowerCase()) {
@@ -629,7 +660,13 @@ export function createEvmReceivedCoinAndContactManager(
             "Native receipt snapshot changed; retry original set"
           );
         }
-        return { balanceWei, receivedAmountsWei: amounts };
+        return {
+          balanceWei,
+          receivedAmountsWei: amounts,
+          accountNonce,
+          seen,
+          unexecuted,
+        };
       },
       atMs
     );
@@ -651,7 +688,7 @@ export function createEvmReceivedCoinAndContactManager(
       coin.address,
       nativeChainId
     );
-    if (transfer === undefined) return { transfer: "unseen" };
+    if (transfer === undefined) return { transfer: "unknown" };
     const included = async (): Promise<
       { transfer: EvmCoinTransfer; valueWei?: bigint } | undefined
     > => {
@@ -678,7 +715,8 @@ export function createEvmReceivedCoinAndContactManager(
         transfer:
           (await provider.getTransaction(transfer.txHash)) !== null
             ? "seen"
-            : "unseen",
+            : // Only a hash: whether it executed cannot be told from the node.
+              "unknown",
       };
     }
     try {
@@ -699,7 +737,18 @@ export function createEvmReceivedCoinAndContactManager(
       if ((await provider.getTransaction(transfer.txHash)) !== null) {
         return (await included()) ?? { transfer: "seen" };
       }
-      return (await included()) ?? { transfer: "failed" };
+      const late = await included();
+      if (late !== undefined) return late;
+      // The sender's nonce is used and the node shows no such transaction. On a node that no
+      // longer serves old blocks that is also what a landed transfer looks like; it failed only
+      // if the account never held money.
+      const [balance, accountNonce] = await Promise.all([
+        provider.getBalance(coin.address),
+        provider.getTransactionCount(coin.address),
+      ]);
+      return balance === 0n && accountNonce === 0
+        ? { transfer: "failed" }
+        : { transfer: "unknown" };
     }
   };
 
@@ -780,6 +829,12 @@ export function createEvmReceivedCoinAndContactManager(
                 : transferOf(coin),
               provider.getBalance(coin.address),
             ]);
+            // An empty account that was never verified: whether it ever held money is the
+            // evidence that says a claimed payment did not arrive.
+            const accountNonce =
+              coin.state !== "unspent" && balanceWei === 0n
+                ? await provider.getTransactionCount(coin.address)
+                : undefined;
             const current = coinStore.get(coin.address);
             if (current === undefined || evmWalletInternals(wallet).closed) {
               return;
@@ -789,6 +844,7 @@ export function createEvmReceivedCoinAndContactManager(
               coin.address,
               {
                 balanceWei,
+                ...(accountNonce === undefined ? {} : { accountNonce }),
                 transfer: read?.transfer,
                 transferValueWei: read?.valueWei,
                 atMs: Date.now(),
@@ -2268,7 +2324,7 @@ export function createEvmReceivedCoinAndContactManager(
               balanceWei: balance,
               transfer:
                 received === undefined
-                  ? "unseen"
+                  ? "unknown"
                   : received === 0n
                   ? "failed"
                   : "included",

@@ -177,9 +177,12 @@ impl RelayChains {
         };
         if evm.enabled {
             let timeout = Duration::from_millis(evm.timeout_ms);
+            let checkpoint_refresh = Duration::from_secs(evm.operator_checkpoint_refresh_secs);
             for row in &evm.chains {
                 // A row with no URL set is not served; setting it and restarting serves it.
-                if let Some(adapter) = EvmChainAdapter::from_row(row, timeout, &env)? {
+                if let Some(adapter) =
+                    EvmChainAdapter::from_row(row, timeout, checkpoint_refresh, &env)?
+                {
                     chains.evm.insert(adapter.id(), Arc::new(adapter));
                 }
             }
@@ -319,7 +322,16 @@ impl RelayChains {
     /// Check every upstream's identity in the background, again and again until all pass or the
     /// relay stops. Startup waits only briefly for the first round, so a healthy upstream is
     /// verified before the first request and a dead one never holds the relay up.
+    ///
+    /// Every EVM chain whose checkpoint is operator data also has its checkpoint re-attested in
+    /// the background for as long as the relay runs (see
+    /// [`EvmChainAdapter::refresh_operator_checkpoint`]).
     pub async fn start_verifying(self: &Arc<Self>) {
+        for chain in self.evm.values() {
+            if let Some(every) = chain.operator_checkpoint_refresh() {
+                refresh_operator_checkpoint_every(Arc::downgrade(chain), every);
+            }
+        }
         let chains = Arc::downgrade(self);
         let (first_round, first_round_done) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
@@ -341,6 +353,33 @@ impl RelayChains {
         });
         let _ = tokio::time::timeout(STARTUP_WAIT, first_round_done).await;
     }
+}
+
+/// Re-attest `chain`'s operator checkpoint every `every` until the chain is dropped. A failed
+/// round leaves the checkpoint where it was and is logged; the next round tries again.
+fn refresh_operator_checkpoint_every(chain: std::sync::Weak<EvmChainAdapter>, every: Duration) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(chain) = chain.upgrade() else {
+                return;
+            };
+            match chain.refresh_operator_checkpoint().await {
+                Ok(evm::CheckpointRefresh::Advanced { from, to }) => tracing::info!(
+                    chain = %chain.id(),
+                    from,
+                    to,
+                    "Operator checkpoint re-attested on the same chain"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::error!(
+                    chain = %chain.id(),
+                    error = %error,
+                    "The operator checkpoint was NOT re-attested; it is tried again later"
+                ),
+            }
+        }
+    });
 }
 
 /// POST a JSON body to `url` and return the bounded response body of a 2xx answer.

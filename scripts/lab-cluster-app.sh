@@ -12,11 +12,12 @@
 #   scripts/lab-cluster-app.sh sweep     # the bot funding wallet pays its balance back to the faucet
 #   scripts/lab-cluster-app.sh down      # stop the cluster, keeping its volumes
 #
-# The relays verify solonet against a checkpoint block taken when they start (16 behind the
-# head). solonet keeps only a few thousand blocks (under an hour), so a relay that restarts later
-# cannot verify that block any more. `up` therefore always takes a fresh checkpoint and restarts
-# the relays; if paid sends or chain reads start failing after a relay restarted, run `up` or
-# `refresh-checkpoint` again.
+# The relays start from a checkpoint block lab-init takes 16 behind solonet's head, and each
+# running relay re-attests it every 10 minutes along the same chain (operator_checkpoint_refresh_secs
+# in backend/labs/cluster/relay.toml.in), so a long session never outlives solonet's history
+# (about 75 minutes). A relay *restarted* later still starts from lab-init's block, which is pruned
+# by then: `up` therefore always takes a fresh checkpoint and restarts the relays, and after
+# restarting solonet or a relay, run `up` or `refresh-checkpoint` again.
 #
 # Overrides: FRANK_LAB_CLUSTER_PORT (proxy port, default 18180), COMPOSE_PROJECT_NAME (default
 # frank-lab-app), FRANK_LAB_CLUSTER_SUBNET (default 10.89.180), FRANK_LAB_DIR (bot state and the
@@ -141,8 +142,8 @@ Bots (another terminal): scripts/lab-cluster-app.sh bots, which runs
 
   with a funding key of its own in $BOT_KEY_FILE, topped up from the faucet.
 
-If paid sends or chain reads fail after a while (a relay restarted after solonet pruned its
-checkpoint block): scripts/lab-cluster-app.sh refresh-checkpoint.
+The running relays keep their chain checkpoint current on their own. After restarting solonet,
+or a relay more than about an hour after this, run: scripts/lab-cluster-app.sh refresh-checkpoint.
 
 Return the test funds: scripts/lab-cluster-app.sh sweep (the bot funding wallet), and send each
 app account's balance to the faucet, 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266, from the app.

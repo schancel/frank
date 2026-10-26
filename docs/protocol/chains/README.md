@@ -24,7 +24,9 @@ on, and none otherwise). An upstream carries traffic only after its probe passes
   registry probe is `operator-block-checkpoint`; a registry-pinned checkpoint is never restated
   by a relay). Before opening a wallet on such a network the app reads it there
   (`requireRelayOperatorCheckpoint` in `app/src/accounts/relay-wallet-route.ts`) and checks the
-  RPC route has that block, as it checks a pinned block on a public network.
+  RPC route has that block, as it checks a pinned block on a public network. A running relay moves
+  an operator checkpoint forward along the same chain (see "Monad regtest" below), so the block
+  named there may change between two reads; each is one the relay's upstreams have.
 - Bitcoin-family JSON-RPC: `getblockhash` at the registry-pinned post-fork checkpoint (operator
   checkpoints remain available only for regtest rows).
 - Chronik: `GET /block/<height>` at the same registry-pinned checkpoint.
@@ -173,10 +175,16 @@ kind and a testnet-or-mainnet setting, and has no setting that supplies a checkp
 [monad-solonet](https://github.com/monad-crypto/monad-solonet): the real consensus and execution
 client as a single validator. Chain ID 20143 (Monad's devnet ID), network tag `MONR`, unit `MONR`.
 Its checkpoint is a block 16 below the head when a stack starts, written into that run's relay
-config (solonet keeps only its last few thousand blocks, under an hour, so a relay restarted
-later needs a fresh checkpoint); the wallet reaches the chain only through the relay's proxy, which has
-verified it. The app takes the checkpoint from that relay's `GET /chains` route (above) and checks
-the route against it whenever it opens the wallet. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
+config. Solonet keeps only its last few thousand blocks (about 75 minutes), so a running relay
+re-attests an operator checkpoint every `operator_checkpoint_refresh_secs` (`[registry.evm_rpc]`,
+default 600): it takes the block 16 below its first verified upstream's head, checks every block
+back to the current checkpoint links by parent hash, checks every other verified upstream has it,
+and only then advertises it; a chain that does not descend from the checkpoint is refused and the
+checkpoint stays. A registry-pinned checkpoint never changes. A relay restarted later starts from
+its configured block again and so needs a fresh one. The wallet reaches the chain only through the
+relay's proxy, which has verified it. The app takes the checkpoint from that relay's `GET /chains` route (above) and checks
+the route against it whenever it opens the wallet; a wallet already open keeps the checkpoint it
+verified and is not checked again. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
 record is never committed) and a wallet is given their addresses in its chain config
 (`EvmChainConfig.contracts`). How to install, start and stop solonet on a Mac is at the top of
 `packages/bot/demo/regtest/monad-regtest.ts`.

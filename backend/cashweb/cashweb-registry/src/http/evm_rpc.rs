@@ -590,7 +590,7 @@ where
         .pointer("/hash")
         .and_then(Value::as_str)
         .ok_or_else(unavailable)?;
-    if !actual.eq_ignore_ascii_case(expected_hash) {
+    if !actual.eq_ignore_ascii_case(&expected_hash) {
         return Err(IdentityError::CheckpointMismatch(chain.id().to_string()));
     }
     Ok(())
@@ -2947,6 +2947,7 @@ mod tests {
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
             capability_ttl_ms: 60 * 60 * 1000,
+            operator_checkpoint_refresh_secs: 600,
         };
         let upstream_url = format!("http://{address}/provider-secret");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, |name| {
@@ -3874,6 +3875,7 @@ mod tests {
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
             capability_ttl_ms: 60 * 60 * 1000,
+            operator_checkpoint_refresh_secs: 600,
         };
         let upstream_url = format!("http://{address}/");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, |_| Some(upstream_url.clone()))
@@ -4007,6 +4009,7 @@ mod tests {
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
             capability_ttl_ms: 60 * 60 * 1000,
+            operator_checkpoint_refresh_secs: 600,
         };
         let upstream_url = format!("http://{address}/");
         let runtime = EvmRpcRuntime::from_conf_with_env(&conf, |_| Some(upstream_url.clone()))
@@ -4128,6 +4131,7 @@ mod tests {
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
             capability_ttl_ms: 60 * 60 * 1000,
+            operator_checkpoint_refresh_secs: 600,
         };
 
         let url_1 = format!("http://{addr_1}/provider-secret");
@@ -4524,6 +4528,7 @@ mod tests {
             customer_units_per_hour: 10_000,
             anonymous_units_per_hour: 500,
             capability_ttl_ms: 60 * 60 * 1000,
+            operator_checkpoint_refresh_secs: 600,
         };
         conf.validate().unwrap();
         let upstream_url = format!("http://{address}/");

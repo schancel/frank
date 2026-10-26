@@ -634,6 +634,62 @@ describe('a network whose registry row requires an operator block checkpoint', (
     },
   )
 
+  it('keeps the checkpoint an open wallet verified when the relay re-attests a newer one, and a fresh open takes the newer one', async () => {
+    const renewed = { blockNumber: 7_000, blockHash: '0x' + 'cd'.repeat(32) }
+    let route = regtestRoute(advertised)
+    const discovery = jest.fn(async (url: string) => {
+      if (url !== `${mockRelay}/chains`) throw new Error(`unexpected ${url}`)
+      return {
+        ok: true,
+        json: async () => ({ schema_version: 1, chains: [route] }),
+      }
+    })
+    globalThis.fetch = discovery as unknown as typeof fetch
+    // A pruning regtest node: once the relay has moved on, the first block is gone.
+    let pruned = false
+    const block = jest.mocked(primary.provider.getBlock)
+    block.mockImplementation((async (number: number) =>
+      number === anchor.blockNumber && !pruned
+        ? { number, hash: anchor.blockHash }
+        : number === renewed.blockNumber
+        ? { number, hash: renewed.blockHash }
+        : null) as never)
+    const first = await openEvmWallet('monad-regtest')
+    expect(block).toHaveBeenCalledTimes(1)
+    expect(block).toHaveBeenLastCalledWith(anchor.blockNumber)
+
+    route = regtestRoute({
+      block_number: renewed.blockNumber,
+      block_hash: renewed.blockHash,
+    })
+    pruned = true
+    // Sends, balance reads and sync items later in the session reuse the verified owner: the
+    // pruned block is not asked for again and the relay is not asked for a checkpoint.
+    const requestsBefore = discovery.mock.calls.length
+    for (let i = 0; i < 3; i++)
+      expect((await openEvmWallet('monad-regtest')).wallet).toBe(first.wallet)
+    expect(block).toHaveBeenCalledTimes(1)
+    expect(discovery).toHaveBeenCalledTimes(requestsBefore)
+
+    // A fresh open, once the app's short-lived copy of GET /chains has expired, checks the
+    // route against the relay's current checkpoint.
+    const now = Date.now()
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 60_000)
+    await closeOpenedEvmWallets()
+    expect((await openEvmWallet('monad-regtest')).wallet).toBe(primary)
+    expect(block).toHaveBeenCalledTimes(2)
+    expect(block).toHaveBeenLastCalledWith(renewed.blockNumber)
+
+    // And it still refuses a route that does not have the block the relay names.
+    await closeOpenedEvmWallets()
+    route = regtestRoute(advertised)
+    clock.mockReturnValue(now + 120_000)
+    await expect(openEvmWallet('monad-regtest')).rejects.toThrow(
+      /checkpoint mismatch/,
+    )
+    clock.mockRestore()
+  })
+
   it('keeps an explicit checkpoint and still verifies it', async () => {
     const block = jest.mocked(primary.provider.getBlock)
     block.mockResolvedValueOnce({

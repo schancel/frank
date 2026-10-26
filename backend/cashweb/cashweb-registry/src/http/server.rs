@@ -92,7 +92,7 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
                 .and_then(|chain| chain.operator_checkpoint())
                 .map(|(block_number, block_hash)| AdvertisedCheckpoint {
                     block_number,
-                    block_hash: block_hash.to_string(),
+                    block_hash,
                 }),
         })
         .collect();

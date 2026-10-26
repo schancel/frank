@@ -2,7 +2,8 @@
 # A template: lab-init writes it to the shared `config` volume with @PUBLIC_ORIGIN@ set to the
 # proxy origin (http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT), the one origin clients use, and
 # @SOLONET_CHECKPOINT_NUMBER@ and @SOLONET_CHECKPOINT_HASH@ set to a block a few behind the head
-# of the solonet run it reached (see below).
+# of the solonet run it reached (see below). That is the block each relay starts from; a running
+# relay then moves its checkpoint forward along the same chain (operator_checkpoint_refresh_secs).
 # Synthetic and local-only: no funded identity and no production state.
 host = "0.0.0.0:8080"
 url = "@PUBLIC_ORIGIN@"
@@ -67,13 +68,19 @@ payee = "burn"
 # solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
 # MONAD_REGTEST_HTTP_RPC_URL (default http://host.docker.internal:48080). The mailbox and the
 # forum need it, so a relay without it refuses to start. The relay checks the upstream's chain id
-# and the checkpoint block before serving it. No
-# WebSocket upstream: each new one is verified against the checkpoint, which solonet prunes
-# within an hour.
+# and the checkpoint block before serving it. No WebSocket upstream.
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000
 anonymous_units_per_hour = 1000000
+# solonet keeps only about 6,950 blocks (about 75 minutes). Every 600 seconds (the default, set
+# here so it is visible; 10 to 3600 allowed) each relay re-attests the monad-regtest checkpoint
+# it advertises in GET /chains: it reads the block 16 below its upstream's head, checks every
+# block back to the current checkpoint links by parent hash (the same chain), and only then
+# advertises it. So the checkpoint never falls out of solonet's history while the relay runs.
+# The checkpoint lab-init writes below is only where a relay starts: a relay restarted more than
+# about an hour after lab-init needs `scripts/lab-cluster-app.sh refresh-checkpoint`.
+operator_checkpoint_refresh_secs = 600
 
 [[registry.evm_rpc.chains]]
 id = "monad-regtest"

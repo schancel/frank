@@ -31,7 +31,12 @@
           <div class="text-h4 text-weight-bold">
             {{ $t('about.appName') }}
           </div>
-          <div class="text-caption text-grey-8" data-test="about-commit-hash">
+          <!-- Tapping the version seven times shows the Developer section. -->
+          <div
+            class="text-caption text-grey-8"
+            data-test="about-commit-hash"
+            @click="tapVersion"
+          >
             v{{ appVersion }} ({{ commitHash }})
           </div>
           <div class="row q-gutter-xs q-mt-xs justify-center items-center">
@@ -154,6 +159,8 @@
           </q-card-section>
         </q-card>
 
+        <wallet-reconcile-card v-if="developerShown" />
+
         <section data-test="third-party-notices">
           <h2 class="text-h6 q-mt-none">{{ $t('about.thirdPartyTitle') }}</h2>
 
@@ -187,7 +194,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue'
+import { defineAsyncComponent, defineComponent, ref } from 'vue'
 import { Dialog, Notify } from 'quasar'
 import { version as appVersion } from '../../package.json'
 
@@ -212,9 +219,31 @@ import {
  * used for two-party signing. Its licence requires that users are told it is
  * used, that it was changed and by whom, and that they get the licence text.
  */
+/** Taps on the version line that show the Developer section (an ordinary hidden menu). */
+const DEVELOPER_TAPS = 7
+
 export default defineComponent({
+  components: {
+    WalletReconcileCard: defineAsyncComponent(
+      () => import('src/components/settings/WalletReconcileCard.vue'),
+    ),
+  },
   emits: ['toggleMyDrawerOpen'],
   setup(_, { emit }) {
+    const developerShown = ref(false)
+    let versionTaps = 0
+    function tapVersion() {
+      if (developerShown.value) return
+      versionTaps += 1
+      if (versionTaps < DEVELOPER_TAPS) return
+      developerShown.value = true
+      Notify.create({
+        message: translateMessage('walletMaintenance.developerRevealed'),
+        color: 'primary',
+        icon: 'developer_mode',
+        timeout: 2000,
+      })
+    }
     const rawHash = import.meta.env.QCLI_GIT_COMMIT_HASH || 'unknown'
     const commitHash = rawHash !== 'unknown' ? rawHash.substring(0, 7) : rawHash
     const checkingForUpdate = ref(false)
@@ -291,6 +320,8 @@ export default defineComponent({
       sourcePath: SILENCE_LABORATORIES_SOURCE_PATH,
       changedOn: SILENCE_LABORATORIES_CHANGED_ON,
       checkingForUpdate,
+      developerShown,
+      tapVersion,
       handleCheckForUpdate,
       handleReloadAndClearCache,
       toggleSettingsDrawerOpen() {

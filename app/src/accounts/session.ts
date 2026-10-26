@@ -1757,7 +1757,7 @@ export async function resetAccountStorage(
         if (
           db.name &&
           (db.name.startsWith('frank-') ||
-            db.name.includes('monad-wallet-state') ||
+            db.name.includes('wallet-state') ||
             db.name.includes('level-js'))
         ) {
           names.add(db.name)

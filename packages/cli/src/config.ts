@@ -64,10 +64,10 @@ export function resolveDataDir(overrideDir?: string): string {
     return resolve(process.env.SIGNET_DATA_DIR.trim())
   }
   if (
-    process.env.MONAD_WALLET_STORAGE_LOCATION &&
-    process.env.MONAD_WALLET_STORAGE_LOCATION.trim().length > 0
+    process.env.FRANK_WALLET_STORAGE_LOCATION &&
+    process.env.FRANK_WALLET_STORAGE_LOCATION.trim().length > 0
   ) {
-    return resolve(process.env.MONAD_WALLET_STORAGE_LOCATION.trim())
+    return resolve(process.env.FRANK_WALLET_STORAGE_LOCATION.trim())
   }
   return join(homedir(), '.signet')
 }

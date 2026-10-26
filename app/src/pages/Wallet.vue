@@ -90,6 +90,9 @@
               class="wallet-content-card bg-transparent"
               style="max-width: 680px; width: 100%; margin: 0 auto"
             >
+              <earlier-wallet-state-notice
+                :chain-identifier="walletChainIdentifier"
+              />
               <tempo-path-usd-panel
                 v-if="!selectedHasNativeCoin && walletStatus === 'available'"
               />
@@ -715,6 +718,7 @@ import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import WalletNetworkSwitcher from 'src/components/wallet/WalletNetworkSwitcher.vue'
+import EarlierWalletStateNotice from 'src/components/wallet/EarlierWalletStateNotice.vue'
 import {
   buildWalletHistoryGroups,
   loadWalletHistory,
@@ -741,6 +745,7 @@ export default defineComponent({
     DappBridgePanel,
     ExtensionPopoutBtn,
     WalletNetworkSwitcher,
+    EarlierWalletStateNotice,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {
@@ -1111,6 +1116,7 @@ export default defineComponent({
       selectedWallet,
       sendChainIdentifier,
       walletStatus,
+      walletChainIdentifier: computed(() => support.value.entry?.id),
       selectedHasNativeCoin,
       isPrimaryStampChain,
       supportsHeldContactPayments,

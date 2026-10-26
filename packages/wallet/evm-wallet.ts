@@ -34,6 +34,11 @@ import type { EvmBlockWatcher } from "./evm-block-watcher";
 import type { EvmCoinListSync } from "./evm-coin-list-sync";
 import type { EvmCoinList } from "./evm-coin-list";
 import type { StealthPaymentReceiptCapability } from "./stealth-payment";
+import type { EarlierWalletState } from "./storage/wallet-state-location";
+import type {
+  WalletReconcileProgress,
+  WalletReconcileSummary,
+} from "./evm-wallet-reconcile";
 
 export interface MainAccountAdmission {
   key: string;
@@ -143,6 +148,12 @@ export class EvmWalletInternals {
   transactionSetPreparer?: EvmChainWalletHandle["transactionSetPreparer"];
   transactionSetLifecycle?: EvmChainWalletHandle["transactionSetLifecycle"];
   lastOwnLookMs?: number;
+  /** State earlier builds wrote for this wallet under another name, found at open. */
+  earlierWalletState?: EarlierWalletState;
+  /** The user's reconcile pass; concurrent callers share one run. */
+  reconcile?: (
+    onProgress?: (progress: WalletReconcileProgress) => void
+  ) => Promise<WalletReconcileSummary>;
   readonly unjournalledTransfers = new Map<
     string,
     { txHash: string; nonce: number }[]

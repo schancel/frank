@@ -240,11 +240,10 @@ export async function consumeEvmSelfNotes(
   return { kind: "consumed", rest };
 }
 
-/** Where the coin list's own read of the whole mailbox stands. The key names what that read
- * records: a read made before the coin list recorded `stealth-asset` items (the app's stealth
- * send) passed those payments by, so a wallet with only the older record reads its mailbox
- * from the start once more. Recording is idempotent; the read records coins only. */
-const MAILBOX_SCAN_KEY = "scan-with-stealth-asset";
+/** Where the coin list's own first read of the whole mailbox stands: done once per wallet
+ * state. A later read from the start is the user's own reconcile pass
+ * (`evm-wallet-reconcile.ts`), never an automatic one. */
+const MAILBOX_SCAN_KEY = "scan";
 
 export async function recordEvmReceivedCoins(
   wallet: EvmChainWalletHandle,

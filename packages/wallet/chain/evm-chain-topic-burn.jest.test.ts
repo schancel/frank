@@ -1,3 +1,4 @@
+import { walletStateLocation } from '../storage/wallet-state-location'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Topic posts and votes use the composed wallet's shared signed transaction graph.
@@ -621,7 +622,7 @@ describe('a Forum vote pays through the direct-message stamp path', () => {
   it('a vote whose burn was submitted is finished after a restart from its original bytes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'frank-forum-vote-restart-'))
     const location = join(directory, 'wallet')
-    mkdirSync(`${location}-${MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC }).address.raw.toLowerCase()}`)
+    mkdirSync(walletStateLocation({ base: location, chainIdentifier: 'monad-testnet', owner: MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC }).address.raw.toLowerCase() }))
     const persistent = { ...CONFIG, walletStorageLocation: location }
     try {
       const first = await createEvmChain(persistent).createWallet({ mnemonic: TEST_MNEMONIC }) as EvmChainWalletHandle
@@ -776,7 +777,7 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
     directories.push(directory)
     const location = join(directory, 'wallet')
     const identity = MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC })
-    mkdirSync(`${location}-${identity.address.raw.toLowerCase()}`)
+    mkdirSync(walletStateLocation({ base: location, chainIdentifier: 'monad-testnet', owner: identity.address.raw.toLowerCase() }))
     return location
   }
 

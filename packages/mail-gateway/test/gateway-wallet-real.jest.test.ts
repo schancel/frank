@@ -1,3 +1,4 @@
+import { evmWalletStateOwner, walletStateLocation } from '@frank/wallet/storage/wallet-state-location'
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -23,7 +24,7 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
     const identityAddress = MonadIdentity.fromDomainRoot(roots.authentication).displayAddress;
     const material = createMonadWalletMaterial(roots);
     const walletBase = join(directory, 'wallet');
-    const walletLocation = `${walletBase}-evm-${material.mainAccount.address.toLowerCase()}`;
+    const walletLocation = walletStateLocation({ base: walletBase, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(material.mainAccount.address) });
     mkdirSync(walletLocation, { recursive: true });
     material.dispose();
     const rootFile = join(directory, 'roots.json');

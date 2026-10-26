@@ -7,6 +7,7 @@ import {
 import { runNativeTransactionExclusive } from '@frank/wallet/chain/chain-wallet'
 import { createMonadJsonRpcProvider } from '@frank/wallet/evm-provider'
 import { LevelRecordStore } from '@frank/wallet/storage/evm-coin-store'
+import { walletStateLocation } from '@frank/wallet/storage/wallet-state-location'
 import {
   TempoPathUsdJournal,
   TempoPathUsdTransfers,
@@ -132,7 +133,11 @@ export async function openTempoPathUsdWallet(
   )
   // The canonical network and owned address partition durable facts. Source locks span tabs;
   // store-level CAS protects transitions even when a second tab opened before the first wrote.
-  const location = `${host.walletStorageLocation}-${chainIdentifier}-${signer.source.address}`
+  const location = walletStateLocation({
+    base: host.walletStorageLocation,
+    chainIdentifier,
+    owner: `pathusd-${signer.source.address.toLowerCase()}`,
+  })
   const lock = <T>(
     role: 'source' | 'recipient',
     address: string,

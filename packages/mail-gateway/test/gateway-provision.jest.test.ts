@@ -94,6 +94,6 @@ describe('explicit testnet mail provisioning', () => {
       expectedIdentityAddress: `0x${'1'.repeat(40)}`,
     })).rejects.toThrow('differs from expected public address');
     expect(existsSync(config.journalFile)).toBe(false);
-    expect(readdirSync(dir).some(name => name.startsWith('wallet-evm-'))).toBe(false);
+    expect(readdirSync(dir).some(name => name.startsWith('wallet-monad-testnet-evm-'))).toBe(false);
   });
 });

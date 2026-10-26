@@ -6,6 +6,7 @@ import level from 'level';
 
 import { hmacSha256 } from '@frank/crypto-box';
 import { createEvmChain } from '@frank/wallet/chain/evm-chain';
+import { evmWalletStateOwner, walletStateLocation } from '@frank/wallet/storage/wallet-state-location';
 import type { ActiveChain } from '@frank/wallet/chain/active-chain';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';
@@ -168,9 +169,11 @@ async function openGatewayWalletMode(
     try {
       if (getAddress(material.identity.displayAddress) !== expectedAddress)
         throw new GatewayWalletStartRefusal('identity-mismatch');
-      const walletLocation = `${
-        config.walletStorageLocation
-      }-evm-${material.mainAccount.address.toLowerCase()}`;
+      const walletLocation = walletStateLocation({
+        base: config.walletStorageLocation,
+        chainIdentifier: config.chainIdentifier,
+        owner: evmWalletStateOwner(material.mainAccount.address),
+      });
       try {
         for (const namespace of [
           'wallet-manifest',

@@ -17,5 +17,6 @@ scratchpad/
 .wallets/
 *.wallet.json
 .serena/
+frank-wallet-state-*/
 frank-monad-wallet-state-*/
 **/.blackjack-p2p/

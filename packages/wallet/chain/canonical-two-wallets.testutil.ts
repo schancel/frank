@@ -556,7 +556,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     config,
     alice,
     bob,
-    /** The temp directory holding the wallets' storage (`<root>/wallet-evm-<address>`). */
+    /** The temp directory holding the wallets' storage (`<root>/wallet-monad-testnet-evm-<address>`). */
     root: directory,
     requests,
     selfNotes,

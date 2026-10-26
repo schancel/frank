@@ -1,3 +1,4 @@
+import { walletStateLocation } from "../storage/wallet-state-location";
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import * as legacyEnvelope from "@frank/cashweb/relay/message-envelope";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
@@ -1191,9 +1192,11 @@ describe("canonical topic owner production composition", () => {
         wallet.pool.setStatus(index, "in-use");
       await wallet.pool.flush();
       const highWater = wallet.pool.nextUnusedIndex();
-      const location = `${
-        config.walletStorageLocation
-      }-${wallet.identity.address.raw.toLowerCase()}`;
+      const location = walletStateLocation({
+        base: config.walletStorageLocation,
+        chainIdentifier: wallet.chainIdentifier,
+        owner: wallet.identity.address.raw.toLowerCase(),
+      });
       await wallet.close();
       const database = level(join(location, "wallet-manifest"));
       const journal = new LevelTopicOperationJournal(database, () => {});

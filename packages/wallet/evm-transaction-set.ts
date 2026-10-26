@@ -643,23 +643,57 @@ export class EvmTransactionSetPreparer {
     }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
+    const memberFee = (unsigned: string) => {
+      const tx = Transaction.from(unsigned)
+      return tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
+    }
+    // The fee the user authorized bounds the whole operation, every stage included. Payments
+    // are what the authorization is for; fresh change is optional. Change outputs are only
+    // planned while their fees fit under what the payments leave of the bound, and a residual
+    // that does not get them stays with its sender on the account's next nonce.
+    const bound = [request.maxFeeWei, ...(existing?.transactionSetStages ?? []).map(stage =>
+      stage.maxFeeWei === undefined ? undefined : BigInt(stage.maxFeeWei))]
+      .reduce<bigint | undefined>((least, value) =>
+        value === undefined || (least !== undefined && least <= value) ? least : value, undefined)
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    let changeBudget: bigint | undefined
+    const changeAllowance = () => changeBudget === undefined ? policy.maxChangeOutputs
+      : Math.min(policy.maxChangeOutputs, Number(changeBudget / changeFee))
+    const spendChange = (planned: LocalMember[]) => {
+      if (changeBudget === undefined) return
+      for (const member of planned)
+        if (member.plan.transactionSet!.role === 'change') changeBudget -= memberFee(member.plan.unsignedTransaction)
+    }
     try {
       if (fanIn) members = await this.prepareFanIn(request, policy, context(0), parts, yielder)
       else {
         let remaining = request.amountWei, paymentIndex = 0
-        members = []
-        for (const part of parts) {
+        const planned = parts.map(part => {
           const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
           remaining -= payment
           // Only recipient-bearing sources execute calldata. A genuine zero-value
           // call executes once; additional inputs exist solely to fund private change.
           const hasPayment = payment > 0n || (request.amountWei === 0n && paymentIndex === 0 && data !== '0x')
-          members.push(...await this.prepareSource(
-            hasPayment ? request : { ...request, calldata: undefined },
-            policy, context(hasPayment ? paymentIndex : 0),
-            { ...part, paymentValueWei: payment }, paymentIndex, yielder,
-          ))
+          const index = paymentIndex
           if (hasPayment) paymentIndex++
+          return { part, payment, hasPayment, index }
+        })
+        if (bound !== undefined) {
+          const paymentFees = planned.reduce((sum, item) =>
+            item.hasPayment ? sum + context(item.index).gas * policy.gasPriceWei : sum, 0n)
+          const committed = (existing?.members ?? []).reduce((sum, member) => sum + memberFee(member.unsignedTransaction), 0n)
+          if (committed + paymentFees > bound) throw new EvmTransactionSetFeeExceededError(committed + paymentFees)
+          changeBudget = bound - committed - paymentFees
+        }
+        members = []
+        for (const { part, payment, hasPayment, index } of planned) {
+          const source = await this.prepareSource(
+            hasPayment ? request : { ...request, calldata: undefined },
+            policy, context(hasPayment ? index : 0),
+            { ...part, paymentValueWei: payment }, index, yielder, changeAllowance(),
+          )
+          spendChange(source)
+          members.push(...source)
         }
       }
       // Selection budgets the recipient transfer first. Geometric change has its own
@@ -673,17 +707,24 @@ export class EvmTransactionSetPreparer {
         const remainingMembers = 64 - (existing?.members.length ?? 0) - members.length
         const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? 64) - parts.length)
         if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
+        // A change-only source moves value by change alone: with no change fee left under the
+        // bound there is nothing it may sign.
+        if (changeAllowance() < 1) throw new EvmTransactionSetFeeExceededError(bound! - changeBudget! + changeFee)
         const additional = select(false, { deficit: reserve - privateValue(), maxCoins })
         if (!additional) {
           this.options.assertFundingObserved?.()
           throw new EvmTransactionSetInsufficientFundsError()
         }
         parts.push(...additional)
-        for (const part of additional)
-          members.push(...await this.prepareSource(
+        for (const part of additional) {
+          if (changeAllowance() < 1) throw new EvmTransactionSetFeeExceededError(bound! - changeBudget! + changeFee)
+          const source = await this.prepareSource(
             { ...request, calldata: undefined }, policy, context(0),
-            { ...part, paymentValueWei: 0n }, 0, yielder,
-          ))
+            { ...part, paymentValueWei: 0n }, 0, yielder, changeAllowance(),
+          )
+          spendChange(source)
+          members.push(...source)
+        }
       }
       const offset = existing?.members.length ?? 0
       const all = [...(existing?.members.map(member => ({ plan: member })) ?? []), ...members]
@@ -809,16 +850,17 @@ export class EvmTransactionSetPreparer {
   /** The fresh change outputs a source's residual is split into (none when the radix split
    * cannot carry it: the residual then stays with the sender on the account's next nonce).
    * How many there are depends only on the residual and the payment, never on the entropy. */
-  private changeOutputs(policy: EvmTransactionSetPolicy, remainder: bigint, recipientAmountWei: bigint): bigint[] {
+  private changeOutputs(policy: EvmTransactionSetPolicy, remainder: bigint, recipientAmountWei: bigint,
+    maxOutputs = policy.maxChangeOutputs): bigint[] {
     const changeFee = policy.changeGasLimit * policy.gasPriceWei
-    if (remainder < policy.dustWei + changeFee) return []
+    if (remainder < policy.dustWei + changeFee || maxOutputs < 1) return []
     try {
       return computeGeometricRadixChangeSplits({
         totalAvailableWei: remainder,
         recipientAmountWei,
         dustThresholdWei: policy.dustWei,
         minFeePerTxWei: changeFee,
-        maxOutputs: policy.maxChangeOutputs,
+        maxOutputs: Math.min(maxOutputs, policy.maxChangeOutputs),
         radix: policy.radix,
         jitterBps: policy.jitterBps,
         random: () => this.entropy(),
@@ -1119,6 +1161,8 @@ export class EvmTransactionSetPreparer {
     part: CoinPart,
     paymentIndex: number,
     yielder: CooperativeBatchYielder,
+    /** At most this many fresh change outputs: what the operation's fee bound leaves for them. */
+    maxChangeOutputs = policy.maxChangeOutputs,
   ): Promise<LocalMember[]> {
     const { coins, deriveChange } = this.options
     const paymentGas = context.gas
@@ -1139,7 +1183,7 @@ export class EvmTransactionSetPreparer {
       throw new EvmTransactionSetInsufficientFundsError()
     const remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
     const destination = context.destination
-    const outputs = this.changeOutputs(policy, remainder, hasPayment ? payment : request.amountWei)
+    const outputs = this.changeOutputs(policy, remainder, hasPayment ? payment : request.amountWei, maxChangeOutputs)
     if (!hasPayment && !outputs.length) throw new Error('Insufficient private change for continuation')
     type Move = {
       role: 'payment' | 'change'

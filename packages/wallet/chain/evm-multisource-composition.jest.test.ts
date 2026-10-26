@@ -523,7 +523,7 @@ test('a current fee increase leaves no durable operation or held funds when it e
   expect(refreshed.estimatedNativeFeeAtomic).toBe(2n * 42000n)
   expect(state.broadcast).not.toHaveBeenCalled()
 })
-test('the native fee authorization covers private change as well as the recipient payment', async () => {
+test('the native fee authorization bounds private change as well as the recipient payment', async () => {
   const source = await importOwned(1000000n)
   const payment = {
     ...intent('change-fee-bound', 100000n),
@@ -531,10 +531,17 @@ test('the native fee authorization covers private change as well as the recipien
   }
   const { maxNativeFeeAtomic: _, ...unsigned } = payment
   const quote = await wallet.stealthPayments!.quote!(unsigned)
-  await expect(wallet.stealthPayments!.prepare(payment)).rejects.toThrow(
-    /fee exceeds authorized bound/,
-  )
-  expect(wallet.getNativeOperations!()).toHaveLength(0)
+  // Authorized for the payment's own transfer only: no change fee fits, so the residual stays
+  // with its source on the next nonce, and nothing beyond the authorized fee is signed.
+  await wallet.stealthPayments!.prepare(payment)
+  const bounded = wallet.transactionSetPreparer!.getOperation(
+    evmStealthTransactionSetOperationId(payment.operationId),
+  )!
+  expect(bounded.members.map(member => member.transactionSet?.role)).toEqual(['payment'])
+  expect(bounded.members.reduce((sum, member) => {
+    const tx = Transaction.from(member.signed!.rawTransaction)
+    return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
+  }, 0n)).toBeLessThanOrEqual(payment.maxNativeFeeAtomic)
   expect(state.broadcast).not.toHaveBeenCalled()
   expect(await wallet.stealthPayments!.release(payment.operationId)).toBe(
     true,

@@ -2289,6 +2289,15 @@ export function createEvmReceivedCoinAndContactManager(
       return id;
     };
 
+    walletInternals.releaseMessagePayment = async (id) => {
+      await preparations.refresh();
+      const row = preparations.get(id);
+      if (row) return row.released === true || (await financialPayments.release(id)) === true;
+      const contact = paymentStore.all().find(payment => payment.transactionSetOperationId === id);
+      if (!contact) return false;
+      return contact.state === "released" || releaseContactPayment(contact.stealthAddress);
+    };
+
     walletInternals.receivedCoinOwner = {
       recordStampCoin,
       async recordStampPayments(message) {

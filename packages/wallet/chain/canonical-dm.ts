@@ -7,7 +7,8 @@ import type {
   UnpaidEnvelope,
 } from '../storage/outgoing-message-store'
 import { EvmTransactionSetInsufficientFundsError } from '../evm-transaction-set-types'
-import { constructWhenSpendable } from '../evm-transaction-set'
+import { constructWhenSpendable, EvmTransactionSetFeeExceededError } from '../evm-transaction-set'
+import { NativeFeeExceededError } from './chain-wallet'
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
  * Canonical (#778) direct messages for a typed Monad wallet: type20 -> type12 -> type11/schema2/suite1
@@ -274,6 +275,11 @@ export interface CanonicalMessagingOwner {
     /** Resolves once the chain is at `block` or past it. */
     untilBlock: (block: number) => Promise<unknown>
     resolvePaymentOperation?: (id: string, amount: bigint) => Promise<string>
+    /** Gives back the coins of the payment operation `id` (a message's `paymentOperationId`)
+     * through the owner of that payment, which itself proves that nothing of it was exposed.
+     * True once it is released (also when it already was); false: it may have been exposed
+     * and stays held. */
+    releasePaymentOperation?: (id: string) => Promise<boolean>
     sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
   signDigest(digest: Uint8Array): Uint8Array
@@ -991,11 +997,68 @@ async function resignRefused(
  * so existing tests that set it still load; remove with them. */
 export const REPLACED_AFTER_MS = { value: 0 }
 
-function sharedConstructionPending(row: StoredMessage): boolean {
+/** A shared-set message whose stamp stage was never signed: no payment, change or request of
+ * it exists, so nothing of it has been handed to the node or the relay. */
+function unconstructed(row: StoredMessage): boolean {
   return Boolean(
     row.version === 2 && row.construction && !row.request &&
     row.payments.length === 0 && row.otherTransactions.length === 0,
   )
+}
+
+function sharedConstructionPending(row: StoredMessage): boolean {
+  return unconstructed(row) && row.outcome === undefined
+}
+
+/**
+ * Ends a message whose stamp stage was never signed, and gives back the payment it would have
+ * joined. Only on evidence that nothing of it can be out: the message has no signed stage and no
+ * request (so the relay was handed nothing), and the payment operation it joins shows no member
+ * exposed, authorized for submission or seen by the node. Its record first (`dead`, `reason`),
+ * then the payment's own owner releases it (and proves non-exposure again); a crash between the
+ * two is finished by the resend pass. Returns whether it ended.
+ */
+async function endUnconstructed(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+  reason: 'fee_exceeded' | 'discarded',
+): Promise<boolean> {
+  const shared = owner.transactionSets
+  if (!shared || !sharedConstructionPending(row) || !row.transactionSetOperationId) return false
+  const operation = await shared.preparer.readOperation(row.transactionSetOperationId)
+  if (row.transactionSetStageId === undefined) {
+    // A stamp of its own: its operation is written only when its stage is signed.
+    if (operation && !operation.cancelled) return false
+  } else {
+    if (!operation || !shared.releasePaymentOperation) return false
+    if (!operation.cancelled && (
+      operation.transactionSetStages?.some(stage => stage.stageId === row.transactionSetStageId) ||
+      operation.submissionAuthorized ||
+      operation.members.some(member => member.exposed || nativeMemberSuperseded(member) ||
+        !['unknown', 'missing'].includes(member.observation.state))))
+      return false
+  }
+  const { exposurePending: _pending, unexposed: _unexposed, ...kept } = row
+  const ended: StoredMessage = { ...kept, outcome: 'dead', reason }
+  await owner.messages.put(ended)
+  await releaseEndedPayment(owner, ended)
+  return true
+}
+
+/** The payment an ended, never-signed message would have joined: released once. */
+async function releaseEndedPayment(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<void> {
+  if (row.outcome !== 'dead' || !unconstructed(row) || !row.paymentOperationId || row.paymentReleased)
+    return
+  if (!(await owner.transactionSets?.releasePaymentOperation?.(row.paymentOperationId))) {
+    console.warn(
+      `[monad-canonical-dm] the payment of ended message ${row.digest} was not released: it may have been exposed, so its coins stay held.`,
+    )
+    return
+  }
+  await owner.messages.put({ ...owner.messages.get(row.consumerId)!, paymentReleased: true })
 }
 
 async function finishSharedConstruction(
@@ -1699,6 +1762,17 @@ async function resend(
       }),
     ),
   )
+  // An ended never-signed message whose payment release did not finish (a crash between the two).
+  const releases = Promise.all(
+    owner.messages
+      .all()
+      .filter(row => row.outcome === 'dead' && unconstructed(row) && row.paymentOperationId && !row.paymentReleased)
+      .map(async row => {
+        const work = workOf(owner, row.consumerId)
+        if (work.creating || work.busy) return
+        await owner.lifetime(() => releaseEndedPayment(owner, row))
+      }),
+  )
   const paidResends = Promise.all(
     owner.messages
       .all()
@@ -1726,6 +1800,10 @@ async function resend(
               // This intent remains pending for its own retry. Other operations can still
               // settle and report their status; malformed or uncertain authority still fails.
               if (error instanceof EvmTransactionSetInsufficientFundsError) return
+              // Over the fee the user authorized, before anything was signed: it ends, and the
+              // payment it would have joined is given back.
+              if (error instanceof EvmTransactionSetFeeExceededError &&
+                  await endUnconstructed(owner, row, 'fee_exceeded')) return
               throw error
             }
           }
@@ -1796,7 +1874,7 @@ async function resend(
         }
       }),
   )
-  await Promise.all([owedCopies, paidResends])
+  await Promise.all([owedCopies, paidResends, releases])
 }
 
 /** At open, before the wallet is handed out: the coins every stored message with a pending
@@ -1813,6 +1891,8 @@ export async function restoreOutgoingClaims(
       const operationId = row.transactionSetOperationId
       validateSharedStoredMessage(row)
       if (!operationId) throw new Error('Stored stamp operation identity mismatch')
+      // Ended before its stamp stage was signed: it names no transaction and holds no coin.
+      if (row.outcome === 'dead' && unconstructed(row)) continue
       const operation = await owner.transactionSets?.preparer.readOperation(operationId)
       if (!operation && !sharedConstructionPending(row))
         throw new Error('Stored message is missing its durable signed transaction set')
@@ -2278,6 +2358,12 @@ async function send(
         finishSharedConstruction(owner, row, 'construct', true),
       )
     } catch (error) {
+      // Over the fee the user authorized, refused before anything was signed: the message ends
+      // and the payment it would have joined is given back. Nothing was paid or sent.
+      const stored = recorded ? owner.messages.get(consumerId) : undefined
+      if (error instanceof EvmTransactionSetFeeExceededError && stored &&
+          await owner.lifetime(() => endUnconstructed(owner, stored, 'fee_exceeded')).catch(() => false))
+        throw new NativeFeeExceededError(error.feeWei)
       // The journal or message write may have reached durable storage. Keep the stable ID
       // and every reservation; reopen will finish this same operation.
       work.unrecorded = true
@@ -3220,7 +3306,9 @@ export function canonicalDirectMessages(
               recipientSubject: paid.recipientSubject,
               messageId: name,
             })
-          } else if (paid?.exposurePending)
+          } else if (paid?.exposurePending && !sharedConstructionPending(paid))
+            // A message whose stamp stage is not signed yet has no bytes to hold: the resend
+            // pass below signs it (or ends it) first.
             throw new Error('Held original message bytes unavailable')
           if (unpaid?.hostBound)
             await validateOriginalEnvelope(owner, directory, {
@@ -3281,6 +3369,21 @@ export function canonicalDirectMessages(
       await account(owner, row =>
         target === '*' || target === 'all' || clean(row.digest) === target,
       )
+      // A message whose stamp stage was never signed was never handed to anyone: discarding it
+      // ends it, so it is never signed later, and gives its payment's coins back.
+      for (const row of owner.messages.all()) {
+        if (!(target === '*' || target === 'all' || clean(row.digest) === target)) continue
+        const work = workOf(owner, row.consumerId)
+        if (!sharedConstructionPending(row) || work.creating || work.busy) continue
+        let ended!: () => void
+        work.busy = new Promise<void>(resolve => (ended = resolve))
+        try {
+          await owner.lifetime(() => endUnconstructed(owner, row, 'discarded'))
+        } finally {
+          work.busy = undefined
+          ended()
+        }
+      }
     },
     /** What is stored for the message a caller named `messageId`. No request. */
     attemptOf: async (params: {

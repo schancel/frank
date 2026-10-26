@@ -93,6 +93,9 @@ export interface StoredMessage {
    * note to self carrying the message and its spends is sent to the account's other devices.
    * Set when the record is created; removed, durably, once that note is delivered. */
   selfCopyOwed?: true
+  /** An ended message whose stamp stage was never signed (`outcome` dead, no request): the
+   * payment operation it would have joined (`paymentOperationId`) has been given back. */
+  paymentReleased?: true
   createdAt: number
   /** When the relay committed the message to the recipient's mailbox (its own clock), from the
    * delivery answer: the time every device shows for the message. */

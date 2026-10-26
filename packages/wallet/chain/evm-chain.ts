@@ -3330,6 +3330,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   if (!resolve) throw new Error("Combined payment and stamp capability is unavailable");
                   return resolve(id, amount);
                 },
+                releasePaymentOperation: async (id) => {
+                  const release = walletInternals.releaseMessagePayment;
+                  return release ? release(id) : false;
+                },
               },
               lifetime: (operation) => topicOwner!.runLifetime(() => operation()),
               settleOtherHolder: (holder) =>

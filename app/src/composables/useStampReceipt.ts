@@ -46,7 +46,13 @@ export interface StampedMessage {
 /** What the wallet saw of a received message's stamp. `received`: on chain, `receivedWei` of
  * it at this wallet's account. */
 export interface StampReceipt {
-  status: 'none' | 'pending' | 'received' | 'not-received' | 'failed'
+  status:
+    | 'none'
+    | 'pending'
+    | 'received'
+    | 'not-received'
+    | 'unverifiable'
+    | 'failed'
   receivedWei: bigint
 }
 

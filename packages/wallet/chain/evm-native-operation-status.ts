@@ -196,6 +196,86 @@ export function summarizeEvmNativeOperation(
   };
 }
 
+/**
+ * The message stamps appended to an operation as their own stages (a contact payment and its
+ * message's stamp are one transaction set: `stamp-<message id>` stages after the payment leg).
+ * Each is shown as its own send, with purpose `stamp`: its members, what it paid and what the
+ * chain did with it. The operation's own summary keeps every member (so none is shown twice).
+ */
+export function summarizeEvmNativeStampStages(
+  row: EvmNativeOperation,
+  syncFailed = false
+): EvmNativeOperationStatus[] {
+  if (row.kind !== "transaction-set") return [];
+  const whole = summarizeEvmNativeOperation(row, syncFailed);
+  return (row.transactionSetStages ?? []).flatMap((stage) => {
+    const labelled = /^stamp-([0-9a-f]+)$/.exec(stage.stageId ?? "");
+    if (!labelled) return [];
+    const indexes = row.members.flatMap((member, index) =>
+      member.transactionSet?.stageId === stage.stageId ? [index] : []
+    );
+    const payments = indexes.filter(
+      (index) => row.members[index]!.transactionSet!.role === "payment"
+    );
+    const first = payments[0];
+    if (first === undefined) return [];
+    const members = indexes.map((index) => whole.members[index]!);
+    const states = payments.map((index) => whole.members[index]!.state);
+    const observed = members.filter((member) => member.feeWei !== undefined);
+    const included = indexes.filter(
+      (index) => row.members[index]!.observation.state === "included-success"
+    );
+    const payment = row.cancelled
+      ? "cancelled"
+      : states.every((state) => state === "included-success")
+      ? "included"
+      : states.every((state) => state === "included-revert")
+      ? "reverted"
+      : states.some((state) => state === "included-success")
+      ? "partial"
+      : states.some((state) => state === "pending")
+      ? "pending"
+      : states.some((state) => state === "missing")
+      ? "missing"
+      : states.every((state) => state === "superseded")
+      ? "superseded"
+      : "unknown";
+    const status: EvmNativeOperationStatus = {
+      operationId: `${row.operationId}:${stage.stageId}`,
+      chainIdentifier: row.binding.chainIdentifier,
+      kind: row.kind,
+      recipient: Transaction.from(
+        row.members[first]!.unsignedTransaction
+      ).to!.toLowerCase(),
+      purpose: "stamp",
+      ...(labelled[1].length === 32 ? { messageId: labelled[1] } : {}),
+      intendedValueWei: stage.intendedValueWei,
+      payment,
+      finalTransactionHash:
+        row.members[payments[payments.length - 1]!]!.signed?.transactionHash,
+      members,
+      observedFeeWei: observed
+        .reduce((sum, member) => sum + BigInt(member.feeWei!), 0n)
+        .toString(),
+      feeCoverage:
+        observed.length === members.length
+          ? "complete"
+          : observed.length
+          ? "partial"
+          : "unknown",
+      sharing:
+        included.length === 0
+          ? "none"
+          : included.every((index) => row.members[index]!.syncApplied)
+          ? "shared"
+          : syncFailed
+          ? "failed"
+          : "not-shared",
+    };
+    return [status];
+  });
+}
+
 /** A hash binds only a unique recipient member in the captured wallet and canonical chain. */
 export function findEvmNativeOperationStatus(
   operations: readonly EvmNativeOperationStatus[],

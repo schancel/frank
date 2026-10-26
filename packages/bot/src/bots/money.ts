@@ -79,7 +79,8 @@ async function confirm(
       if (
         !receipt ||
         receipt.status === "pending" ||
-        receipt.status === "not-received"
+        receipt.status === "not-received" ||
+        receipt.status === "unverifiable"
       ) {
         unconfirmed.push(payment);
         continue;

@@ -1309,6 +1309,9 @@ export const rawFrFR = {
     notReceived: 'Paiement non reçu',
     notReceivedHint:
       'L’expéditeur a annoncé ce paiement, et la chaîne ne montre aucun transfert de ce type. Il n’est pas dans votre solde. Votre portefeuille continue de vérifier.',
+    unverifiable: 'Vérification impossible pour l’instant',
+    unverifiableHint:
+      'Le nœud du réseau ne peut pas montrer ce paiement pour l’instant (il ne garde peut-être plus ces blocs), et rien ne montre qu’il a échoué. Votre portefeuille continue de vérifier.',
     failed: 'Paiement échoué',
     failedHint:
       'Ce paiement ne peut plus arriver : sa transaction a échoué ou a été remplacée. Il n’est pas dans votre solde.',
@@ -1592,6 +1595,7 @@ export const rawFrFR = {
       'pending': 'En cours d’arrivée',
       'received': 'Reçu',
       'not-received': 'Non reçu',
+      'unverifiable': 'Vérification impossible pour l’instant',
       'failed': 'Échoué',
     },
     status: {

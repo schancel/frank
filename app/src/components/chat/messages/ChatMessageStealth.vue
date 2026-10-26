@@ -186,13 +186,20 @@ import { useTranslate } from '../../../composables/useTranslate'
 import { errorNotify } from '../../../utils/notifications'
 import type { SentStealthDetail } from '../../../utils/stealth-transaction-details'
 
-type WalletStatus = 'pending' | 'received' | 'not-received' | 'failed'
+type WalletStatus =
+  | 'pending'
+  | 'received'
+  | 'not-received'
+  | 'unverifiable'
+  | 'failed'
 
 /**
  * A stealth payment in a conversation. The amount in the item is what the SENDER wrote. Whether
  * money arrived, how much, and whether it can be spent come from the wallet, which reads the
- * chain: `pending` until the chain shows it, `received` then, `not-received` when the chain still
- * shows no such transfer long after the message, `failed` when it can never arrive. Until it is
+ * chain: `pending` until the chain shows it, `received` then (and from then on), `not-received`
+ * when, long after the message, the chain shows positively that the money is not there,
+ * `unverifiable` when the node cannot show it either way (it no longer serves those blocks), and
+ * `failed` when it can never arrive. Until it is
  * received the amount is labelled as the sender's claim. A payment the wallet holds no coin for is
  * shown as not checked.
  */
@@ -376,6 +383,8 @@ export default defineComponent({
           return this.$t('chatMessageStealth.pending') as string
         case 'not-received':
           return this.$t('chatMessageStealth.notReceived') as string
+        case 'unverifiable':
+          return this.$t('chatMessageStealth.unverifiable') as string
         case 'failed':
           return this.$t('chatMessageStealth.failed') as string
         default:
@@ -397,6 +406,7 @@ export default defineComponent({
         case 'received':
           return 'positive'
         case 'pending':
+        case 'unverifiable':
           return 'warning'
         case 'not-received':
         case 'failed':
@@ -439,6 +449,8 @@ export default defineComponent({
           return this.$t('chatMessageStealth.pendingHint') as string
         case 'not-received':
           return this.$t('chatMessageStealth.notReceivedHint') as string
+        case 'unverifiable':
+          return this.$t('chatMessageStealth.unverifiableHint') as string
         case 'failed':
           return this.$t('chatMessageStealth.failedHint') as string
         default:
@@ -454,6 +466,7 @@ export default defineComponent({
           : 'schedule'
       if (this.walletStatus === 'received') return 'check_circle'
       if (this.walletStatus === 'pending') return 'schedule'
+      if (this.walletStatus === 'unverifiable') return 'help_outline'
       return 'error_outline'
     },
     /** The payment's chain, resolved from the item's network. */

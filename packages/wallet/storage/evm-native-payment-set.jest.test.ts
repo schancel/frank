@@ -185,7 +185,7 @@ describe('atomic native received payment sets', () => {
     })
     expect(store.get(note.address)!.transactions).toHaveLength(2)
   })
-  it('updates canonical received totals across partial/full/reorg evidence without treating balances as receipt value', async () => {
+  it('updates canonical received totals across partial/full/failure evidence without treating balances as receipt value; a receipt the node no longer serves changes nothing', async () => {
     const raws = await Promise.all(senders.map(sender => signed(sender)))
     const claim = payment(raws)
     await registerStoredEvmNativePaymentSet(store, note.address, claim)
@@ -193,8 +193,11 @@ describe('atomic native received payment sets', () => {
     for (const [values, expected, complete] of [
       [[1000n, undefined], 1000n, false],
       [[1000n, 1000n], 2000n, true],
-      [[undefined, 1000n], 1000n, false],
-      [[undefined, undefined], 0n, false],
+      // A node that no longer serves a receipt (pruned history) is no evidence: what a
+      // receipt showed stays.
+      [[undefined, 1000n], 2000n, true],
+      [[undefined, undefined], 2000n, true],
+      // Only a receipt changes a member: one that shows it failed.
       [[0n, 0n], 0n, true],
       [[1000n, 1000n], 2000n, true],
     ] as const) {

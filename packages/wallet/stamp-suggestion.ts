@@ -99,7 +99,7 @@ export interface PeerStampMetrics {
 export interface StampHistoryPaymentEntry {
   valueWei?: bigint | string | number;
   receivedValueWei?: bigint | string | number;
-  status?: "pending" | "received" | "not-received" | "failed";
+  status?: "pending" | "received" | "not-received" | "unverifiable" | "failed";
 }
 
 export interface StampHistoryMessage {
@@ -114,6 +114,7 @@ export interface StampHistoryMessage {
     | "pending"
     | "received"
     | "not-received"
+    | "unverifiable"
     | "failed";
   stampPayments?: ReadonlyArray<StampHistoryPaymentEntry>;
   outpoints?: Array<{ value?: number | string | bigint }>;

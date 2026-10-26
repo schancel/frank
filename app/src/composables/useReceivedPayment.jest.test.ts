@@ -133,4 +133,29 @@ describe('useReceivedPayment', () => {
     expect(told).toEqual([missing])
     mounts.forEach(wrapper => wrapper.unmount())
   })
+
+  it('says nothing alarming for a payment the node cannot show either way, and keeps checking', async () => {
+    const unclear = coin({ status: 'unverifiable', address: '0xunclear' })
+    wallet.getReceivedPayments.mockReturnValue([unclear])
+    wallet.refreshReceivedPayments.mockResolvedValue([unclear])
+    const told: ReceivedPayment[] = []
+    const wrapper = mount(
+      defineComponent({
+        setup() {
+          useReceivedPayment(
+            () => KEY,
+            RECHECK_MS,
+            payment => told.push(payment),
+          )
+          return () => h('div')
+        },
+      }),
+    )
+    await afterRecheck(2)
+    expect(told).toEqual([])
+    expect(
+      wallet.refreshReceivedPayments.mock.calls.length,
+    ).toBeGreaterThanOrEqual(2)
+    wrapper.unmount()
+  })
 })

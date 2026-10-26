@@ -770,7 +770,11 @@ async function submitStored(
   // Delivery resolves the relay obligation, independently of the payments' chain state.
   const { request: _request, reason: _reason, ...kept } =
     owner.messages.get(row.consumerId)!
-  const answered: StoredMessage = { ...kept, outcome: 'delivered' }
+  const answered: StoredMessage = {
+    ...kept,
+    outcome: 'delivered',
+    deliveredAt: accepted.mailbox_committed_at_ms,
+  }
   await owner.messages.put(answered)
   return { row: answered }
 }
@@ -1563,7 +1567,9 @@ async function deliverOwedSelfCopy(
     digest: row.digest,
     recipientSubject: row.recipientSubject,
     messageId: row.consumerId.slice('frank-dm:'.length),
-    sentAt: row.createdAt,
+    // The relay's time, as the recipient sees it; a row delivered before it was kept has only
+    // its local creation time.
+    sentAt: row.deliveredAt ?? row.createdAt,
     stampValueWei: BigInt(row.construction.amountWei),
     transactions: [...row.payments, ...row.otherTransactions]
       .map(payment => payment.rawTx)

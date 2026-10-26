@@ -347,6 +347,12 @@ export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
     clearedBefore: 1760000000000,
   },
   {
+    type: 'contact-state',
+    address: '0x' + 'b2'.repeat(20),
+    present: true,
+    setAt: 1760000000000,
+  },
+  {
     type: 'outbox-message',
     payloadDigest: '34'.repeat(32),
     recipientAddress: '0x' + 'b2'.repeat(20),

@@ -82,6 +82,7 @@ jest.mock('./stores/contacts', () => {
     refresh: jest.fn(async () => undefined),
     refreshContacts: jest.fn(async () => undefined),
     fetchAndAddContact: jest.fn(async () => undefined),
+    refreshPeerProfiles: jest.fn(async () => undefined),
     replaceCuratedDefaults: jest.fn(),
     clearCuratedDefaults: jest.fn(),
     isContact: () => true,

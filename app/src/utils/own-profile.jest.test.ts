@@ -60,11 +60,20 @@ interface Relay {
 }
 
 function seamRelay(): Relay {
-  const held = new Map<string, MonadProfileFields>()
+  const held = new Map<
+    string,
+    MonadProfileFields & { publishedAtMs?: number }
+  >()
   let publishes = 0
   return {
     name: 'the rule, relay narrowed to read and publish',
-    published: async identity => held.get(identity.address.raw),
+    published: async identity => {
+      const entry = held.get(identity.address.raw)
+      if (!entry) return undefined
+      const profile = { ...entry }
+      delete profile.publishedAtMs
+      return profile
+    },
     sync: (store, identity) =>
       syncOwnProfile({
         store,
@@ -83,7 +92,11 @@ function seamRelay(): Relay {
         },
         publish: async profile => {
           publishes += 1
-          held.set(identity.address.raw, JSON.parse(JSON.stringify(profile)))
+          // A relay entry is signed with the time it was published.
+          held.set(identity.address.raw, {
+            ...JSON.parse(JSON.stringify(profile)),
+            publishedAtMs: Date.now(),
+          })
         },
       }),
     syncUnreachable: (store, identity) =>
@@ -142,6 +155,9 @@ function liveRelay(relayBaseUrl: string): Relay {
     },
   }
 }
+
+/** Lets the clock move on, so two edits are told apart by when they were made. */
+const pause = () => new Promise(resolve => setTimeout(resolve, 5))
 
 function device() {
   const pinia = createPinia()
@@ -263,6 +279,55 @@ describe.each(relays)('the account profile on two devices: $name', relay => {
         'unchanged',
       )
     expect(relay.takePublishes()).toBe(0)
+    expect(two.store.profile).toEqual(one.store.profile)
+  })
+
+  it('an older edit never replaces a newer profile another device published: the device adopts it (F6)', async () => {
+    const one = device()
+    nameAtSetup(one.store, identity, 'Ada')
+    await relay.sync(one.store, identity, one.pinia)
+    const two = device()
+    await relay.sync(two.store, identity, two.pinia)
+
+    // Device one is edited while it cannot reach the relay; device two is edited later and
+    // publishes first.
+    editInForm(one.store, { name: 'Ada', location: 'Old place' })
+    await relay.syncUnreachable(one.store, identity, one.pinia)
+    await pause()
+    editInForm(two.store, { name: 'Ada', location: 'QA Lab Restored' })
+    expect(await relay.sync(two.store, identity, two.pinia)).toBe('published')
+    relay.takePublishes()
+
+    // Device one reaches the relay: it shows the newer profile and publishes nothing.
+    expect(await relay.sync(one.store, identity, one.pinia)).toBe('adopted')
+    expect(relay.takePublishes()).toBe(0)
+    expect(one.store.profile.location).toBe('QA Lab Restored')
+    expect(one.store.unpublished).toBe(false)
+    expect((await relay.published(identity))?.location).toBe('QA Lab Restored')
+    // And later starts agree.
+    expect(await relay.sync(one.store, identity, one.pinia)).toBe('unchanged')
+    expect(one.store.profile).toEqual(two.store.profile)
+  })
+
+  it('an edit made over an old copy publishes only what was changed, keeping another device’s later change', async () => {
+    const one = device()
+    nameAtSetup(one.store, identity, 'Ada')
+    await relay.sync(one.store, identity, one.pinia)
+    const two = device()
+    await relay.sync(two.store, identity, two.pinia)
+
+    editInForm(two.store, { name: 'Ada', location: 'QA Lab Restored' })
+    expect(await relay.sync(two.store, identity, two.pinia)).toBe('published')
+    await pause()
+    // Device one has not polled since: its form still shows no location. Its user edits the bio.
+    editInForm(one.store, { name: 'Ada', bio: 'Edited on one' })
+    expect(await relay.sync(one.store, identity, one.pinia)).toBe('published')
+    expect(await relay.published(identity)).toMatchObject({
+      name: 'Ada',
+      bio: 'Edited on one',
+      location: 'QA Lab Restored',
+    })
+    expect(await relay.sync(two.store, identity, two.pinia)).toBe('adopted')
     expect(two.store.profile).toEqual(one.store.profile)
   })
 

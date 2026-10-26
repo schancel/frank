@@ -12,6 +12,7 @@ import { initCalendarInvitePlugin } from './calendar-invite/plugin'
 import { initCalendarRsvpPlugin } from './calendar-rsvp/plugin'
 import { initChannelUpdatePlugin } from './channel-update/plugin'
 import { initContactCardPlugin } from './contact-card/plugin'
+import { initContactStatePlugin } from './contact-state/plugin'
 import { initConversationStatePlugin } from './conversation-state/plugin'
 import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
@@ -63,6 +64,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['swap-record', initSwapRecordPlugin],
   ['received-coin', initReceivedCoinPlugin],
   ['conversation-state', initConversationStatePlugin],
+  ['contact-state', initContactStatePlugin],
   ['outbox-message', initOutboxMessagePlugin],
   ['message-tombstone', initMessageTombstonePlugin],
   ['journal-checkpoint', initJournalCheckpointPlugin],

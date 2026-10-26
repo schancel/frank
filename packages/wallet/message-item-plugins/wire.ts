@@ -125,6 +125,10 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   interpret it: a host hands it to its conversation list. Because it is carried only here,
  *   another person cannot delete, mark or rename a conversation in someone's list.
  *
+ * - `contact-state`: that the account's user added or removed a contact, and when. The wallet
+ *   does not interpret it: a host hands it to its contact list. Because it is carried only here,
+ *   another person cannot add or remove someone in an account's contacts.
+ *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
  * item and is not interpreted: another person must not be able to hand a wallet a record of its
@@ -136,6 +140,7 @@ export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'swap-record',
   'received-coin',
   'conversation-state',
+  'contact-state',
   'outbox-message',
   'message-tombstone',
   'journal-checkpoint',

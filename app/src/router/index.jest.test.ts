@@ -1,5 +1,6 @@
 const mockStatus = { status: 'fresh' }
 let mockGuard: (to: any, from: any) => Promise<unknown>
+let mockAfter: (to: any, from: any, failure?: unknown) => void
 jest.mock('../accounts/session', () => ({
   accountStatus: mockStatus,
   accountSession: { initialize: jest.fn(async () => undefined) },
@@ -9,7 +10,10 @@ jest.mock('vue-router', () => ({
     beforeEach: (guard: typeof mockGuard) => {
       mockGuard = guard
     },
-    afterEach: jest.fn(),
+    afterEach: (hook: typeof mockAfter) => {
+      mockAfter = hook
+    },
+    currentRoute: { value: { path: '/', params: {}, query: {} } },
     onError: jest.fn(),
   }),
   createMemoryHistory: jest.fn(),
@@ -18,14 +22,20 @@ jest.mock('vue-router', () => ({
 }))
 jest.mock('./routes', () => ({ createRoutes: () => [] }))
 jest.mock('src/stores/chats', () => ({
+  hasConversationIdSalt: () => true,
+  resolveConversation: () => undefined,
   useChatStore: () => ({
     conversations: {},
     setActiveConversation: jest.fn(),
     setActiveChat: jest.fn(),
   }),
 }))
+const mockContacts = {
+  fetchAndAddContact: jest.fn(),
+  refreshPeerProfiles: jest.fn(async () => undefined),
+}
 jest.mock('src/stores/contacts', () => ({
-  useContactStore: () => ({ fetchAndAddContact: jest.fn() }),
+  useContactStore: () => mockContacts,
 }))
 import router from './index'
 import { isPersistableExtensionRoute } from './extension-route-persistence'
@@ -164,4 +174,20 @@ test('temporary pairing pages cannot become the extension landing page', () => {
   expect(isPersistableExtensionRoute('/account-sync/send')).toBe(false)
   expect(isPersistableExtensionRoute('/account-sync/receive')).toBe(false)
   expect(isPersistableExtensionRoute('/profile')).toBe(true)
+})
+
+test('opening a chat with an address looks the peer up without making them a contact', async () => {
+  const peer = '0x5555555555555555555555555555555555555555'
+  mockAfter(
+    {
+      path: `/chat/${peer}`,
+      fullPath: `/chat/${peer}`,
+      params: { address: peer },
+      query: {},
+    },
+    {},
+  )
+  await new Promise(resolve => setImmediate(resolve))
+  expect(mockContacts.refreshPeerProfiles).toHaveBeenCalledWith([peer])
+  expect(mockContacts.fetchAndAddContact).not.toHaveBeenCalled()
 })

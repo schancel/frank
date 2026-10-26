@@ -94,6 +94,9 @@ export interface StoredMessage {
    * Set when the record is created; removed, durably, once that note is delivered. */
   selfCopyOwed?: true
   createdAt: number
+  /** When the relay committed the message to the recipient's mailbox (its own clock), from the
+   * delivery answer: the time every device shows for the message. */
+  deliveredAt?: number
 }
 
 /** The wallet's sent messages. Per wallet: never shared with another wallet on the same coins. */

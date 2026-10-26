@@ -14,6 +14,13 @@ export interface State {
   /** The user edited the profile here and the relay does not have the edit yet. Only such an
    * edit is published over what the relay holds. */
   unpublished?: boolean
+  /** When the user made the unpublished edit (ms). A profile the relay holds that was published
+   * later (on another device) is the newer one, and replaces the edit. */
+  editedAt?: number
+  /** The published profile this copy was last read from or published as: what an edit was made
+   * over. Fields the user did not change in an edit are taken from what the relay holds when it is
+   * published, so an edit on one device does not undo another device's later edit. */
+  base?: State['profile']
   profile: {
     username?: string
     name?: string
@@ -39,6 +46,8 @@ export const useProfileStore = defineStore('myProfile', {
     owner: undefined,
     restoredAccountId: undefined,
     unpublished: false,
+    editedAt: undefined,
+    base: undefined,
     profile: {},
     inbox: {},
     emailBridgeGatewayAddress: undefined,
@@ -47,9 +56,11 @@ export const useProfileStore = defineStore('myProfile', {
     /** Stores what the user typed in the profile form. It is theirs to publish: it stays marked
      * `unpublished` until the relay has it. */
     setRelayData(relayData: Pick<State, 'profile' | 'inbox'> & Partial<State>) {
+      if (!this.unpublished) this.base = { ...this.profile }
       this.profile = relayData.profile
       this.inbox = relayData.inbox
       this.unpublished = true
+      this.editedAt = Date.now()
       if (relayData.emailBridgeGatewayAddress !== undefined) {
         this.emailBridgeGatewayAddress = relayData.emailBridgeGatewayAddress
       }

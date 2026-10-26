@@ -418,6 +418,7 @@ import {
   isNoResponseError,
   normalizeOutboxWrapper,
   ownConversationStates,
+  ownContactStates,
   ownJournalCheckpoints,
   ownMessageTombstones,
   ownSwapRecords,
@@ -631,7 +632,32 @@ function carriesWalletRecord(wrapper: ReceivedMessageWrapper): boolean {
  */
 function carriesOnlyRecords(wrapper: ReceivedMessageWrapper): boolean {
   return (
-    isInternalMessage(wrapper.message.items) && !carriesWalletRecord(wrapper)
+    (isInternalMessage(wrapper.message.items) || isSelfGroupRecord(wrapper)) &&
+    !carriesWalletRecord(wrapper)
+  )
+}
+
+/**
+ * A row the account sent to itself that carries only group membership records: how a group's
+ * administrator tells its own other devices of the group (`retryGroupMemberDeliveries`). Its
+ * items go to the group; it is never a conversation with oneself.
+ */
+function isSelfGroupRecord(wrapper: ReceivedMessageWrapper): boolean {
+  const items = wrapper.message.items
+  // A row's coparty is its sender when it is received: only a row whose sender, coparty and
+  // destination are all one address is a note to self.
+  const destination = wrapper.message.destinationAddress
+  return (
+    sameCanonicalAddress(wrapper.senderAddress, wrapper.copartyAddress) &&
+    !!destination &&
+    sameCanonicalAddress(wrapper.senderAddress, destination) &&
+    Array.isArray(items) &&
+    items.length > 0 &&
+    items.every(
+      item =>
+        !!item &&
+        (item.type === 'group-welcome' || item.type === 'group-control'),
+    )
   )
 }
 
@@ -1819,6 +1845,15 @@ function applyGroupFeatureItem(
   ownAddress: string | null,
 ): void {
   if (item.type !== 'group-welcome' && item.type !== 'group-control') return
+  // An invitation this account sent to someone else is shown as sent. It is the invitee's
+  // membership, not ours: our own devices learn of the group from the note to self.
+  if (
+    item.type === 'group-welcome' &&
+    isOwnMessage(message) &&
+    !!message.destinationAddress &&
+    !sameCanonicalAddress(message.destinationAddress, message.senderAddress)
+  )
+    return
   try {
     if (item.type === 'group-welcome')
       applyGroupWelcomeItem(conversations, item, message, ownAddress)
@@ -1924,6 +1959,7 @@ function isInternalMessage(items: unknown): boolean {
           item.type === 'wallet-sync' ||
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||
+          item.type === 'contact-state' ||
           item.type === 'message-tombstone' ||
           item.type === 'journal-checkpoint' ||
           item.type === 'outbox-message' ||
@@ -2647,6 +2683,23 @@ function captureGroupContext(
 }
 
 const groupLiveStops = new WeakMap<object, () => void>()
+/** Groups whose relay refused this account's read for good (403/404) this session, and until when
+ * the background poll leaves them alone: a group the user can no longer read is not asked for
+ * every few seconds. Opening the conversation asks again at once. */
+const groupReadRefusals = new WeakMap<
+  object,
+  Map<string, { until: number; attempts: number }>
+>()
+const GROUP_REFUSED_RETRY_MS = 60_000
+const GROUP_REFUSED_RETRY_MAX_MS = 60 * 60_000
+
+/** The relay answered a group read with a definitive refusal (it does not hold the group for
+ * this reader, or will not route it): asking again soon will not change the answer. */
+function isGroupReadRefusal(error: unknown): boolean {
+  const response = (error as { response?: { status?: unknown } } | null)
+    ?.response
+  return response?.status === 403 || response?.status === 404
+}
 const groupHomeRelays = new WeakMap<object, string>()
 const groupRelayClientRegistries = new WeakMap<
   object,
@@ -5028,6 +5081,34 @@ export const useChatStore = defineStore('chats', {
       const tombstoneNotes = recordRows.flatMap(wrapper =>
         ownMessageTombstones(wrapper, ownAddress),
       )
+      const contactNotes = recordRows.flatMap(wrapper =>
+        ownContactStates(wrapper, ownAddress),
+      )
+      if (contactNotes.length > 0) {
+        const contacts = useContactStore()
+        for (const note of contactNotes)
+          await contacts.applyContactState(note, ownAddress)
+      }
+      // What the account's administrator devices noted to themselves about their groups.
+      let groupRecords = 0
+      for (const wrapper of recordRows) {
+        if (
+          !ownAddress ||
+          !isSelfGroupRecord(wrapper) ||
+          !sameCanonicalAddress(wrapper.senderAddress, ownAddress)
+        )
+          continue
+        const message = {
+          outbound: true,
+          senderAddress: wrapper.senderAddress,
+          destinationAddress: ownAddress,
+          serverTime: wrapper.message.serverTime,
+          items: [...wrapper.message.items],
+        }
+        for (const item of message.items)
+          applyGroupFeatureItem(this.conversations, item, message, ownAddress)
+        groupRecords++
+      }
       // A later durable receipt is a restart frontier even before the poll advances its
       // cursor. Commit authenticated note effects first, through the existing metadata
       // owner, so a crash cannot skip a note whose raw row is intentionally not stored.
@@ -5040,7 +5121,8 @@ export const useChatStore = defineStore('chats', {
       if (
         checkpointNotes.length > 0 ||
         conversationNotes.length > 0 ||
-        tombstoneNotes.length > 0
+        tombstoneNotes.length > 0 ||
+        groupRecords > 0
       ) {
         await this.flushPersistence?.()
       }
@@ -6633,6 +6715,25 @@ export const useChatStore = defineStore('chats', {
               'Administrative group secret cannot be delivered to a peer',
             )
           try {
+            if (sameCanonicalAddress(address, wallet.identity.displayAddress)) {
+              // The account's own other devices learn of the group (and its administrative
+              // secret) from a free note to self, like every note to self: it is a record,
+              // never a conversation with oneself.
+              await activeChain.directMessages.send({
+                wallet,
+                recipient: wallet.identity.address,
+                items: deliveries[0].items,
+                stampValue: 0n,
+                messageId: uuidv5Bytes(
+                  new Uint8Array(16),
+                  `frank-group-self-delivery:${deliveries[0].operationId}`,
+                ),
+              })
+              checkGroup()
+              deliveries.shift()
+              await this.flushPersistence?.()
+              continue
+            }
             const outcome = await this.sendMessage({
               wallet,
               address,
@@ -6970,11 +7071,31 @@ export const useChatStore = defineStore('chats', {
       options: { relayClient?: GroupRelayClient; ownAddress?: string } = {},
     ): Promise<number> {
       let total = 0
+      let refusals = groupReadRefusals.get(toRaw(this))
+      if (!refusals) {
+        refusals = new Map()
+        groupReadRefusals.set(toRaw(this), refusals)
+      }
       for (const conv of Object.values(this.conversations)) {
         if (conv && this.shouldPollGroupMailbox(conv.id)) {
+          const refused = refusals.get(conv.id)
+          if (refused && Date.now() < refused.until) continue
           try {
             total += await this.syncGroupConversation(conv.id, options)
+            refusals.delete(conv.id)
           } catch (err) {
+            if (isGroupReadRefusal(err)) {
+              const attempts = (refused?.attempts ?? 0) + 1
+              refusals.set(conv.id, {
+                attempts,
+                until:
+                  Date.now() +
+                  Math.min(
+                    GROUP_REFUSED_RETRY_MS * 2 ** (attempts - 1),
+                    GROUP_REFUSED_RETRY_MAX_MS,
+                  ),
+              })
+            }
             console.warn(
               `[chats] Failed to sync group conversation ${conv.id}:`,
               err,
@@ -7355,7 +7476,6 @@ export const useChatStore = defineStore('chats', {
       for (const messageWrapper of messageWrappers) {
         const {
           copartyAddress,
-          copartyPubKey,
           index,
           message: newMsg,
           stampValue,
@@ -7368,34 +7488,11 @@ export const useChatStore = defineStore('chats', {
         if (lease?.isCancelled()) return
 
         const contacts = useContactStore()
-        // The peer of a conversation becomes a contact when they write. Someone else who posts
-        // into that conversation does not: they stay marked as not in the contacts.
-        const rawClaimedId =
-          messageWrapper.message.conversationId || messageWrapper.conversationId
-        let claimedConv: Conversation | undefined
-        if (rawClaimedId) {
-          try {
-            claimedConv =
-              this.conversations[canonicalConversationId(rawClaimedId)]
-          } catch {
-            claimedConv = undefined
-          }
-        }
-        const conversation = this.conversations[stored.conversationId ?? '']
-        const isPeer =
-          (!conversation ||
-            !isChainAddress(conversation.address) ||
-            sameCanonicalAddress(conversation.address, copartyAddress)) &&
-          (!claimedConv ||
-            !isChainAddress(claimedConv.address) ||
-            sameCanonicalAddress(claimedConv.address, copartyAddress))
-        if (isPeer && !contacts.isContact(copartyAddress)) {
-          contacts.addLoadingContact({
-            address: copartyAddress,
-            pubKey: copartyPubKey,
-          })
-          await contacts.refresh(copartyAddress)
-        }
+        // Writing to someone does not make the writer their contact: only the user adds one (from
+        // the screener, the contacts or by writing first). A sender who is not one is shown from
+        // the directory's profile, and stays in the screener until the user decides.
+        if (!contacts.isContact(copartyAddress))
+          void contacts.refreshPeerProfiles([copartyAddress])
 
         const acceptancePrice = useProfileStore().inbox.acceptancePrice ?? 0
         if (document.hasFocus()) {

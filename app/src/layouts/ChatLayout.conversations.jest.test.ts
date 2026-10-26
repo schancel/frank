@@ -258,15 +258,17 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks())
 
 it.each([false, true])(
-  'creates a fresh blank-subject thread for a peer (bot: %s)',
+  "Start Conversation without a subject opens the peer's one default thread (bot: %s)",
   async bot => {
     const app = await mountedConversations(bot)
     try {
       const defaultId = await app.create(PEER, '', false)
       const first = await app.create(PEER, '')
       const second = await app.create(PEER, '')
-      expect(new Set([defaultId, first, second]).size).toBe(3)
-      expect(app.router.currentRoute.value.params.address).toBe(second)
+      // Every device of the account computes the same default thread: a blank Start
+      // Conversation opens it instead of making a thread only this device knows.
+      expect(new Set([defaultId, first, second]).size).toBe(1)
+      expect(app.router.currentRoute.value.params.address).toBe(defaultId)
       expect(app.chats.chats[PEER].id).toBe(defaultId)
     } finally {
       app.root.unmount()
@@ -453,13 +455,15 @@ it.each([false, true])(
       const second = await app.create(PEER, 'Same subject')
       const blank = await app.create(PEER, '')
       const other = await app.create(OTHER, 'Same subject')
-      expect(new Set([defaultId, first, second, blank, other]).size).toBe(5)
+      // A blank subject is the default thread; each subject made its own conversation.
+      expect(blank).toBe(defaultId)
+      expect(new Set([defaultId, first, second, other]).size).toBe(4)
       expect(
         app.root
           .findAllComponents(ChatListItem)
           .map(item => item.props('conversationId'))
           .sort(),
-      ).toEqual([defaultId, first, second, blank, other].sort())
+      ).toEqual([defaultId, first, second, other].sort())
       expect(app.chats.conversations[first].topic).toBeUndefined()
       for (const [id, peer] of [
         [first, PEER],
@@ -623,7 +627,7 @@ it.each([false, true])(
       )
       const restored = await rehydrateState(JSON.parse(metadata))
       expect(Object.keys(restored.conversations).sort()).toEqual(
-        [defaultId, first, second, blank, other].sort(),
+        [defaultId, first, second, other].sort(),
       )
       expect(restored.conversations[first].name).toBe('Same subject')
       expect(restored.conversations[second].name).toBe('Same subject')

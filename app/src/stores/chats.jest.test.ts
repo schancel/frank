@@ -1299,11 +1299,14 @@ describe('stores/chats.ts (ticket #42)', () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
       let releaseRefresh: (() => void) | undefined
-      const refresh = jest.spyOn(useContactStore(), 'refresh').mockReturnValue(
-        new Promise(resolve => {
-          releaseRefresh = () => resolve(undefined)
-        }) as never,
-      )
+      // An unknown sender is looked up (not made a contact); that lookup stalls here.
+      const refresh = jest
+        .spyOn(useContactStore(), 'refreshPeerProfiles')
+        .mockReturnValue(
+          new Promise(resolve => {
+            releaseRefresh = () => resolve(undefined)
+          }) as never,
+        )
       const receiving = chats.receiveMessages([
         {
           outbound: false,

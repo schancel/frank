@@ -979,12 +979,17 @@ export default defineComponent({
       this.addContactToStore({ address: resolvedAddress, contact })
       if (this.isConversationMode) {
         const chatStore = useChatStore()
-        const conversation = chatStore.createConversation({
-          kind: 'direct',
-          name: this.topic.trim() || undefined,
-          participants: [resolvedAddress],
-          address: resolvedAddress,
-        })
+        const subject = this.topic.trim()
+        // Without a subject this is the peer's one default thread, the same on every device;
+        // a conversation the user gives a subject is a new, independent one.
+        const conversation = subject
+          ? chatStore.createConversation({
+              kind: 'direct',
+              name: subject,
+              participants: [resolvedAddress],
+              address: resolvedAddress,
+            })
+          : chatStore.openDirectConversation(resolvedAddress)
         chatStore.setActiveConversation(conversation.id)
         openChat(this.$router, conversation.id)
         return

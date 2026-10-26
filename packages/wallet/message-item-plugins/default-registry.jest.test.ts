@@ -32,6 +32,7 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'swap-record': true,
   'received-coin': true,
   'conversation-state': true,
+  'contact-state': true,
   'outbox-message': true,
   'message-tombstone': true,
   'journal-checkpoint': true,

@@ -252,7 +252,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchProfile).not.toHaveBeenCalled()
     })
 
-    it('displays the polled message once and creates the contact from the directory', async () => {
+    it('displays the polled message once and leaves the sender for the screener', async () => {
       const realSetImmediate = setImmediate
       const settle = async () => {
         for (let i = 0; i < 25; i++)
@@ -286,7 +286,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(chats.chats[BOT_ADDRESS]?.messages[0].items).toEqual([
           { type: 'text', text: 'hi' },
         ])
-        expect(useContactStore().isContact(BOT_ADDRESS)).toBe(true)
+        // Writing does not make the sender a contact: the user decides, in the screener.
+        expect(useContactStore().isContact(BOT_ADDRESS)).toBe(false)
         // The cursor moved past the row instead of being pinned by a missing profile.
         expect(fetchSince.mock.calls.at(-1)![0].sinceMs).toBeGreaterThan(0)
       } finally {

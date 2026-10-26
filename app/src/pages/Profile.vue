@@ -113,7 +113,6 @@ import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import {
   MonadIdentity,
   type MonadProfileFields,
-  registerMonadIdentityCbor,
   validateProfileUsername,
 } from '@frank/wallet/evm-identity'
 
@@ -159,6 +158,25 @@ type ProfileData = {
   botRole?: number
 }
 
+/** The form's fields as one comparable value (JSON): which fields the form still shows as they
+ * were loaded. */
+function formFields(profile: ProfileData): string {
+  return JSON.stringify({
+    name: profile.name ?? '',
+    username: profile.username ?? '',
+    location: profile.location ?? '',
+    bio: profile.bio ?? '',
+    avatar: profile.avatar ?? '',
+    links: (profile.links ?? []).map(link => ({
+      type: link.type,
+      url: link.url,
+      label: link.label ?? '',
+    })),
+    accountType: profile.accountType ?? ACCOUNT_TYPE_PERSON,
+    botRole: profile.botRole,
+  })
+}
+
 type RelayData = {
   profile: MonadProfileFields
   inbox: {
@@ -168,7 +186,7 @@ type RelayData = {
 
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
 import OwnProfileUncheckedNotice from 'src/components/OwnProfileUncheckedNotice.vue'
-import { ownProfileCheck } from 'src/utils/own-profile'
+import { ownProfileCheck, syncOwnProfileWithRelay } from 'src/utils/own-profile'
 import { isNarrowWidth } from 'src/utils/layout'
 import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
 
@@ -214,6 +232,8 @@ export default defineComponent({
           ? ACCOUNT_TYPE_PERSON
           : myProfile.profile.accountType,
       botRole: myProfile.profile.botRole,
+      /** What the form was last loaded with (`formFields`). */
+      loadedFields: formFields(myProfile.profile as ProfileData),
     }
   },
   computed: {
@@ -304,9 +324,40 @@ export default defineComponent({
     },
   },
   watch: {
-    profileUnchecked(unchecked: boolean) {
+    'profileUnchecked'(unchecked: boolean) {
       // The relay answered: show the profile it holds, which is now this device's copy.
       if (!unchecked) this.loadStoredProfile()
+    },
+    // The account's profile changed while the form is open (another device published a newer
+    // one and this device adopted it): each field the user has not touched shows the new value.
+    'storedRelayData.profile': {
+      deep: true,
+      handler() {
+        const loaded = JSON.parse(this.loadedFields) as Record<string, unknown>
+        const form = JSON.parse(formFields(this.profile)) as Record<
+          string,
+          unknown
+        >
+        const untouched = (field: string) =>
+          JSON.stringify(form[field]) === JSON.stringify(loaded[field])
+        const stored = this.storedRelayData.profile
+        if (untouched('name')) this.name = stored.name
+        if (untouched('username')) this.username = stored.username
+        if (untouched('location')) this.location = stored.location
+        if (untouched('bio')) this.bio = stored.bio
+        if (untouched('avatar')) this.avatar = stored.avatar
+        if (untouched('links'))
+          this.links = stored.links
+            ? (JSON.parse(JSON.stringify(stored.links)) as ProfileLinkItem[])
+            : []
+        if (untouched('accountType'))
+          this.accountType =
+            stored.accountType === undefined
+              ? ACCOUNT_TYPE_PERSON
+              : stored.accountType
+        if (untouched('botRole')) this.botRole = stored.botRole
+        this.loadedFields = formFields(stored as ProfileData)
+      },
     },
   },
   methods: {
@@ -325,6 +376,7 @@ export default defineComponent({
           ? ACCOUNT_TYPE_PERSON
           : profile.accountType
       this.botRole = profile.botRole
+      this.loadedFields = formFields(this.profile)
     },
     profileFormIsCurrent(): boolean {
       const current =
@@ -439,18 +491,21 @@ export default defineComponent({
             return
           }
           const cfg = loadMonadChainConfigFromEnv()
-          await registerMonadIdentityCbor({
+          // Published by the one rule every device follows (`own-profile.ts`): what the relay
+          // holds is read first, and only the fields edited here are published over it, so a
+          // newer edit another device made to another field is kept. Until the relay has the
+          // edit it stays marked as this device's to publish, and the next poll sends it.
+          const outcome = await syncOwnProfileWithRelay({
             relayBaseUrl:
               (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
               cfg.relayBaseUrl,
             identity: wallet.identity as MonadIdentity,
-            profile: relayData.profile,
             network: cfg.rpcChain,
           })
-          // The relay has the edit. Until it does, the edit stays marked as this device's to
-          // publish, and the next start sends it.
           if (!this.profileFormIsCurrent()) return
-          this.storedRelayData.unpublished = false
+          if (outcome === 'unreachable')
+            throw new Error('profile relay unreachable')
+          this.loadStoredProfile()
         }
       } catch (err: unknown) {
         console.error(err)

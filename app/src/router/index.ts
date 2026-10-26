@@ -48,11 +48,10 @@ async function ensureChatState(
     }
     if (isChainAddress(address)) {
       const contactsStore = useContactStore()
-      void contactsStore
-        .fetchAndAddContact({ address, contact: {} })
-        .catch(err => {
-          console.debug('fetchAndAddContact suppressed error:', err)
-        })
+      // Opening a chat looks the peer up; only the user makes them a contact.
+      void contactsStore.refreshPeerProfiles([address]).catch(err => {
+        console.debug('refreshPeerProfiles suppressed error:', err)
+      })
       // Opening a chat allocates its ID from the account's salt. At launch a route can be
       // followed before the wallet is at hand: wait for it then.
       if (!hasConversationIdSalt()) {

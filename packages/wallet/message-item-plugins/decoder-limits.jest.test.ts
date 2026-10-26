@@ -510,6 +510,19 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
   {
     item: {
+      type: 'contact-state',
+      address: A,
+      present: true,
+      setAt: 1760000000000,
+    },
+    cases: [
+      ...each('address', [0], BAD_CHAIN_ADDRESSES),
+      ['present: not a boolean', [1], 1],
+      ...each('setAt', [2], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
       type: 'device-claim',
       instanceId: '123e4567-e89b-42d3-a456-426614174000',
       deviceName: 'iOS Device',
@@ -871,6 +884,7 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
         'calendar-invite',
         'calendar-rsvp',
         'contact-card',
+        'contact-state',
         'conversation-state',
         'device-claim',
         'dice',

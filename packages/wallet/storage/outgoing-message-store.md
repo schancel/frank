@@ -15,7 +15,9 @@ their delivery facts for the owning financial workflow. A delivered sealed free
 envelope whose note to self did not get through is kept with `outcome: 'delivered'`,
 `selfCopyOwed` and `sentAt`; `owedSelfCopies` lists those, every reconcile pass
 retries the note, and the mark (with the envelope, unless host-bound) is removed once
-the note is delivered. Paid rows owe theirs through `selfCopyOwed` on the row.
+the note is delivered. Paid rows owe theirs through `selfCopyOwed` on the row, and
+keep the relay's mailbox commit time as `deliveredAt` once delivered; the note carries
+that time (`sentAt`) so every device of the account shows the time the recipient sees.
 
 `put` and `setUnpaid` await durable writes/deletes before changing their in-memory
 views. A rejected write leaves the prior memory view intact. There is no private

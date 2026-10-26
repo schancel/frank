@@ -1146,7 +1146,7 @@
     },
     {
       "path": "packages/wallet/evm-identity.ts",
-      "sha256": "fe4606cf57c4e31d3ced7d7f9f4114dd18519cbf879363f7004b401f8754a335"
+      "sha256": "2372f2fe173dee904d4cf72480a16edd7479a89948b3c5b5271049faf41d1752"
     },
     {
       "path": "packages/wallet/evm-wallet-material.ts",

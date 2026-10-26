@@ -219,7 +219,8 @@ Services:
   0400 and never on the host: a random 32-byte session secret, a random VAPID key below
   the P-256 order, and MinIO's root user and random password. On every start it renders
   `cluster/relay.toml.in` into the `config` volume with the proxy origin as the relays'
-  `url` and that block as their checkpoint. All three relays mount the same files. The relay refuses a provisioned file its
+  `url` and that block as their starting checkpoint; each running relay then re-attests it
+  every 10 minutes (`operator_checkpoint_refresh_secs`, see below). All three relays mount the same files. The relay refuses a provisioned file its
   group or other users can access, so this mode matters; see "Provisioned file
   permissions" below for real deployments.
 - `minio` reads its root credentials from those files, and `minio-init` creates the
@@ -367,9 +368,9 @@ Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run 
 minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`
 on Docker Desktop (the Compose files map that name to the host gateway on Linux). Stop it
 with `yarn --cwd packages/bot regtest:monad-stop`. A fresh solonet has new blocks, and
-a checkpoint falls out of solonet's history after a few thousand blocks, so restart the
-cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet or before a run on
-a lab that has been up for a while.
+a running relay keeps its checkpoint inside solonet's history (below), so restart the
+cluster lab (`up -d`, which reruns `lab-init`) after restarting solonet, or before restarting
+a relay on a lab that has been up for more than about an hour.
 
 ### The app and the bots on the cluster
 
@@ -389,9 +390,17 @@ scripts/lab-cluster-app.sh down
 ```
 
 The relays verify solonet against a checkpoint block that `lab-init` takes 16 blocks behind the
-head. Solonet keeps only a few thousand blocks (under an hour), so a relay that restarts later
-cannot verify it. `up` therefore always reruns `lab-init` and restarts the relays; **if paid
-sends or chain reads fail, run `refresh-checkpoint`**.
+head. Solonet keeps only about 6,950 blocks (about 75 minutes), so each running relay
+re-attests its checkpoint every 10 minutes (`operator_checkpoint_refresh_secs` in
+`cluster/relay.toml.in`): it reads the block 16 below its upstream's head, checks that every
+block back to its current checkpoint links by parent hash, and only then advertises the new block
+in `GET /chains`. Replicas re-attest independently, so they may name different blocks; each names
+one its own upstream has. A chain that does not descend from the checkpoint (solonet restarted,
+or a reorg below it) is refused and logged, and the old checkpoint stays. The app opens a wallet
+with the checkpoint the relay names at that moment, and a wallet already open keeps the one it
+verified. A long session needs nothing. Only a relay *restarted* more than about an hour after
+`lab-init` starts from a pruned block and refuses solonet: run `refresh-checkpoint` (or `up`)
+then, and after restarting solonet.
 
 In the app, set "Advanced options" → relay server to the cluster origin
 (`http://127.0.0.1:18180`) when creating each account. Without it the dev server's own origin

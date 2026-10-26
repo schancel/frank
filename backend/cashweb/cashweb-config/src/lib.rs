@@ -1361,6 +1361,13 @@ pub struct EvmRpcConf {
     /// credentials and should be renewed rather than stored permanently.
     #[serde(default = "default_rpc_capability_ttl_ms")]
     pub capability_ttl_ms: u64,
+    /// How often, in seconds, the relay re-attests the checkpoint of a row whose registry probe
+    /// is `operator-block-checkpoint` (a local regtest chain): it reads a recent block from its
+    /// verified upstreams, proves it descends from the current checkpoint, and advertises it.
+    /// A regtest node that prunes old blocks (solonet keeps about 75 minutes) would otherwise
+    /// lose the block the relay started with. Registry-pinned rows never change.
+    #[serde(default = "default_operator_checkpoint_refresh_secs")]
+    pub operator_checkpoint_refresh_secs: u64,
 }
 
 impl Default for EvmRpcConf {
@@ -1376,8 +1383,15 @@ impl Default for EvmRpcConf {
             customer_units_per_hour: default_evm_customer_units_per_hour(),
             anonymous_units_per_hour: default_evm_anonymous_units_per_hour(),
             capability_ttl_ms: default_rpc_capability_ttl_ms(),
+            operator_checkpoint_refresh_secs: default_operator_checkpoint_refresh_secs(),
         }
     }
+}
+
+/// Ten minutes: well inside the history solonet keeps, and few enough blocks between two
+/// checkpoints (about a thousand) for the relay to check every link between them.
+const fn default_operator_checkpoint_refresh_secs() -> u64 {
+    600
 }
 
 /// The RPC quotas default high enough that the app works against a relay started from a
@@ -1534,6 +1548,11 @@ impl EvmRpcConf {
         }
         if self.capability_ttl_ms < 60_000 || self.capability_ttl_ms > 24 * 60 * 60 * 1000 {
             return Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"));
+        }
+        if !(10..=3600).contains(&self.operator_checkpoint_refresh_secs) {
+            return Err(EvmRpcConfigError::InvalidLimit(
+                "operator_checkpoint_refresh_secs",
+            ));
         }
         let mut ids = HashSet::new();
         for chain in &self.chains {
@@ -2364,6 +2383,17 @@ continuity_file = "/var/lib/frank/continuity"
             Err(EvmRpcConfigError::InvalidLimit("capability_ttl_ms"))
         );
         enabled.capability_ttl_ms = 60 * 60 * 1000;
+        assert_eq!(enabled.operator_checkpoint_refresh_secs, 600);
+        for secs in [0, 9, 3601] {
+            enabled.operator_checkpoint_refresh_secs = secs;
+            assert_eq!(
+                enabled.validate(),
+                Err(EvmRpcConfigError::InvalidLimit(
+                    "operator_checkpoint_refresh_secs"
+                ))
+            );
+        }
+        enabled.operator_checkpoint_refresh_secs = 600;
         enabled.chains[0].upstream_ws_env = Some(String::new());
         assert_eq!(
             enabled.validate(),

@@ -51,7 +51,7 @@ Other commands:
 | --- | --- |
 | `scripts/lab-cluster-app.sh fund 0x… 20` | The solonet faucet pays 20 MON to an app account (Wallet → Receive). Fund more than 10 MON: Monad keeps a 10 MON reserve per account. |
 | `scripts/lab-cluster-app.sh bots` | Runs every bot (Qwen in stub mode) against the cluster; the faucet grants 1 MONR per account (use `fund` for more), with their own funding key and state in `~/.frank-lab-cluster/frank-lab-app`. |
-| `scripts/lab-cluster-app.sh refresh-checkpoint` | Takes a fresh checkpoint and restarts the relays. Run it if paid sends or chain reads start failing. |
+| `scripts/lab-cluster-app.sh refresh-checkpoint` | Takes a fresh starting checkpoint and restarts the relays. Needed only after restarting solonet, or before restarting a relay more than about an hour after `up`. |
 | `scripts/lab-cluster-app.sh sweep` | Returns the bot funding wallet's balance to the faucet. Stop the bots first. |
 | `scripts/lab-cluster-app.sh down` | Stops the cluster and keeps its volumes. |
 
@@ -70,9 +70,13 @@ FRANK_DM_LAB_BURST=60 yarn --cwd packages/bot regtest:monad-dm-cluster
 ## Machine notes
 
 - Port 18080 is used by another process on this machine, so the script uses 18180.
-- solonet keeps only a few thousand blocks (under an hour). A relay restarted after its checkpoint
-  block is pruned refuses the chain ("did not answer the identity probe"). Run
-  `refresh-checkpoint`.
+- solonet keeps only about 6,950 blocks (about 75 minutes). Each running relay re-attests its
+  checkpoint every 10 minutes along the same chain (`operator_checkpoint_refresh_secs` in
+  `backend/labs/cluster/relay.toml.in`), so a long session keeps working without restarts. A
+  relay *restarted* more than about an hour after `up` starts from the block `lab-init` wrote,
+  which is pruned by then, and refuses the chain ("did not answer the identity probe"): run
+  `refresh-checkpoint`. The relay log names each re-attestation ("Operator checkpoint
+  re-attested") and each refusal.
 - Under heavy load, Colima's port forward for solonet's RPC (48080) can drop. Check
   `yarn --cwd packages/bot regtest:monad-status` before running the checks.
 - The `minio/minio` image can no longer be pulled, so the lab builds MinIO from source. The first

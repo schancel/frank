@@ -1588,6 +1588,61 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     },
   )
 
+  // A transfer whose nonce another transaction took is final. Its line says so; the page does not
+  // add "Recovery is currently unavailable" (there is nothing left to recover) nor "Not yet shared
+  // with your other devices" (a transfer that did not land is never shared).
+  it('a superseded transfer reads final: no recovery line, no sharing line, and it cannot pay again', async () => {
+    const fixture = await includedNativeTransfer(false, { observed: false })
+    await fixture.journal.recordObservation(
+      fixture.journal.beginCapture(fixture.operationId, 0),
+      { state: 'missing' },
+      {
+        blockHash: '0x' + 'cd'.repeat(32),
+        blockNumber: 69526800,
+        nonce: 1_000_000,
+        balanceWei: '0',
+      },
+    )
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => fixture.journal.list(),
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => true,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      throw new Error('Original native member was superseded')
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      const outcome = wrapper.get('[data-test="native-operation-outcome"]')
+      expect(outcome.text()).toContain(
+        'Monad Testnet no longer has this transfer',
+      )
+      expect(
+        wrapper.find('[data-test="native-operation-recovery"]').exists(),
+      ).toBe(false)
+      expect(wrapper.find('[data-test="native-operation-sync"]').exists()).toBe(
+        false,
+      )
+      expect(outcome.text()).toContain(enUS.nativeOperation.reviewHeld)
+      expect(sentTransactionNotify).not.toHaveBeenCalled()
+      await (
+        wrapper.vm as unknown as { confirmSend(): Promise<void> }
+      ).confirmSend()
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
   // Seen in the browser on Monad testnet: the transfer was mined (status 1) and the page kept
   // "Payment outcome is unresolved. Funds may have moved." with "Recovery is currently
   // unavailable", because it read the journal once, right after the broadcast, and never again.

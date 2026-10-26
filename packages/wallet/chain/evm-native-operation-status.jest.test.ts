@@ -102,7 +102,10 @@ it.each([
       expect(status.feeCoverage).toBe(
         state.startsWith("included") ? "complete" : "unknown"
       );
-      expect(status.sharing).toBe("not-shared");
+      // Only a member included with success is ever shared with the account's other devices.
+      expect(status.sharing).toBe(
+        state === "included-success" ? "not-shared" : "none"
+      );
       expect(status.intendedValueWei).toBe("1000");
       expect(status.members[0]!.transactionHash).toBe(
         fixture.row.members[0]!.signed!.transactionHash
@@ -142,6 +145,8 @@ it("a transfer the node no longer knows, its account's nonce past it, is final: 
     );
     expect(status.payment).toBe("superseded");
     expect(status.members[0]!.state).toBe("superseded");
+    // Nothing landed, so nothing is, or ever will be, shared: not "not yet shared".
+    expect(status.sharing).toBe("none");
     // Missing with the nonce still free stays "missing": the same bytes are offered again.
     await fixture.journal.recordObservation(
       fixture.journal.beginCapture(fixture.row.operationId, 0),

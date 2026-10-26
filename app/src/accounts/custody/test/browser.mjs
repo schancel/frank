@@ -44,7 +44,7 @@ for (const input of Object.keys(bundle.metafile.inputs)) {
       packages.some(name =>
         absolute.startsWith(join(root, 'packages', name, 'src/')),
       ) ||
-      /^packages\/nakamoto\/src\/(bech32|base32|convert-bits|encoding-error|integer|bytes|secp256k1|backend|backend\/types|backend\/noble|base58|base58check|constructors|keys|hd)\.ts$/.test(
+      /^packages\/nakamoto\/src\/(bech32|base32|convert-bits|encoding-error|integer|bytes|secp256k1|backend|backend\/types|backend\/noble|point-tables|base58|base58check|constructors|keys|hd)\.ts$/.test(
         input,
       ) ||
       /\/node_modules\/@noble\/(hashes|curves)\//.test(absolute),

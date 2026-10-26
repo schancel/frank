@@ -107,6 +107,21 @@ export interface CoinPart {
   readonly paymentValueWei: bigint
 }
 
+/** One coin selection for a transaction set: what to cover, at what fee per payment, from
+ * which coins. */
+export interface TransactionSetSelection {
+  readonly ownedCandidates?: readonly EvmListCoin[]
+  readonly holder: string
+  readonly amountWei: bigint
+  readonly feeWei: bigint | ((paymentIndex: number) => bigint)
+  readonly head: number
+  readonly sourceOrder: readonly EvmCoinListOrigin[]
+  readonly maxCoins?: number
+  readonly canSelect?: (coin: EvmListCoin) => boolean
+  readonly minimumPaymentWei?: bigint
+  readonly capacityWei?: (coin: EvmListCoin, feeWei: bigint) => bigint
+}
+
 export class EvmCoinListError extends Error {
   constructor(message: string) {
     super(message)
@@ -462,23 +477,27 @@ export class EvmCoinList {
   }
 
   /** Selection and ownership change form one synchronous section; no provider work occurs. */
-  reserveTransactionSetSources(params: {
-    ownedCandidates?: readonly EvmListCoin[]
-    holder: string
-    amountWei: bigint
-    feeWei: bigint | ((paymentIndex: number) => bigint)
-    head: number
-    sourceOrder: readonly EvmCoinListOrigin[]
-    maxCoins?: number
-    canSelect?: (coin: EvmListCoin) => boolean
-    minimumPaymentWei?: bigint
-    capacityWei?: (coin: EvmListCoin, feeWei: bigint) => bigint
-  }): CoinPart[] | undefined {
-    if (
-      params.amountWei < 0n ||
-      (typeof params.feeWei === 'bigint' && params.feeWei <= 0n)
-    )
-      throw new EvmCoinListError('Invalid transaction-set amount or fee')
+  reserveTransactionSetSources(params: TransactionSetSelection): CoinPart[] | undefined {
+    const picked = this.planTransactionSetSources(params)
+    if (!picked) return undefined
+    const reserved = picked.map(part => {
+      const coin: EvmListCoin = {
+        ...part.coin,
+        state: 'spend_pending',
+        holder: params.holder,
+      }
+      this.coinsByKey.set(coinKey(coin.account, coin.nonce), coin)
+      return { ...part, coin }
+    })
+    this.notify()
+    return reserved
+  }
+
+  /** The candidates selection walks, in its order (operation-private outputs first, then by
+   * origin, change index and value). Read only. */
+  transactionSetCandidates(
+    params: Pick<TransactionSetSelection, 'ownedCandidates' | 'holder' | 'head' | 'sourceOrder' | 'canSelect'>,
+  ): EvmListCoin[] {
     const rank = new Map(
       params.sourceOrder.map((origin, index) => [origin, index]),
     )
@@ -506,6 +525,18 @@ export class EvmCoinList {
           : 0) ||
         (a.valueWei > b.valueWei ? -1 : a.valueWei < b.valueWei ? 1 : 0),
     )
+    return free
+  }
+
+  /** What `reserveTransactionSetSources` would take, without taking it: the same pass, read
+   * only. A quote and the construction that follows it make one decision, not two. */
+  planTransactionSetSources(params: TransactionSetSelection): CoinPart[] | undefined {
+    if (
+      params.amountWei < 0n ||
+      (typeof params.feeWei === 'bigint' && params.feeWei <= 0n)
+    )
+      throw new EvmCoinListError('Invalid transaction-set amount or fee')
+    const free = this.transactionSetCandidates(params)
     const minimum = params.minimumPaymentWei ?? 0n
     if (minimum < 0n) throw new EvmCoinListError('Invalid minimum payment')
     if (params.amountWei < minimum) return undefined
@@ -594,17 +625,7 @@ export class EvmCoinList {
       if (deficit > 0n) return undefined
       picked[picked.length - 1] = { ...last, paymentValueWei: minimum }
     }
-    const reserved = picked.map(part => {
-      const coin: EvmListCoin = {
-        ...part.coin,
-        state: 'spend_pending',
-        holder: params.holder,
-      }
-      this.coinsByKey.set(coinKey(coin.account, coin.nonce), coin)
-      return { ...part, coin }
-    })
-    this.notify()
-    return reserved
+    return picked
   }
 
   private readonly transactionSetTails = new Map<string, Promise<void>>()

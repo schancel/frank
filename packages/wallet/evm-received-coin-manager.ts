@@ -44,6 +44,7 @@ import {
   configuredEvmStealthToken,
   createEvmStealthPayments,
   evmStealthTransactionSetOperationId,
+  STEALTH_NATIVE_PAYMENT_PARTS,
   type EvmStealthPreparation,
 } from "./chain/evm-stealth-payments";
 import {
@@ -1714,7 +1715,7 @@ export function createEvmReceivedCoinAndContactManager(
       assertActive: assertFinancialActive,
       derive: (recipientSpendPubKey) =>
         deriveEvmStealthAddress({ recipientSpendPubKey }),
-      quoteNative: async (_amountWei) => {
+      quoteNative: async (amountWei, recipientAddress) => {
         await wallet.refreshTransactionSetInventory?.();
         assertFinancialActive();
         const preparer = wallet.transactionSetPreparer;
@@ -1723,8 +1724,13 @@ export function createEvmReceivedCoinAndContactManager(
         const policy = preparer.transactionSetPolicy();
         const available = coins.all().filter(coin => coin.origin !== "legacy-subaccount" && coin.state === "unspent" && (coin.spendableFromBlock === undefined || coin.spendableFromBlock <= policy.head));
         const balance = available.reduce((sum, coin) => sum + coin.valueWei, 0n);
-        const maximumFee = BigInt(available.length) * (policy.paymentGasLimit("0x") + BigInt(policy.maxChangeOutputs) * policy.changeGasLimit) * policy.gasPriceWei;
-        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: maximumFee };
+        if (amountWei === 0n || recipientAddress === undefined)
+          return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: 0n };
+        // The fee of the inputs this amount needs, from the selection the payment itself makes
+        // (the same arguments `constructNativePayment` receives from the stealth owner).
+        const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS });
+        assertFinancialActive();
+        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: quote.feeWei };
       },
       constructNativePayment: async (request) => {
         const preparer = wallet.transactionSetPreparer;

@@ -198,6 +198,7 @@ export type {
   LegacySendStage,
   LegacySendProgress,
   LegacyFeeEstimate,
+  LegacyMaxEstimate,
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,

@@ -71,6 +71,7 @@ import {
   LegacySendStage,
   LegacySendProgress,
   LegacyFeeEstimate,
+  LegacyMaxEstimate,
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
@@ -87,6 +88,7 @@ export type {
   LegacySendStage,
   LegacySendProgress,
   LegacyFeeEstimate,
+  LegacyMaxEstimate,
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
@@ -664,6 +666,9 @@ export interface NativeTransferClient {
     wallet: NativeWalletHandle;
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw
+     * NativeFeeExceededError instead of paying more. */
+    maxFee?: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
@@ -679,6 +684,12 @@ export interface NativeTransferClient {
     recipient: ChainAddress;
     value: bigint;
   }): Promise<LegacyFeeEstimate>;
+
+  /** The most one transfer to a legacy destination can send now, and its fee. */
+  estimateLegacyMax?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+  }): Promise<LegacyMaxEstimate>;
 
   /**
    * Pays a Frank contact at a one-time address only the contact can spend from, and delivers the
@@ -696,6 +707,9 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     wallet: NativeWalletHandle;
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw
+     * NativeFeeExceededError instead of paying more. */
+    maxFee?: bigint;
     /** Called with the transaction hash after signing and BEFORE any byte is broadcast. It is
      * awaited; if it rejects, nothing is broadcast and `send` rejects with that error. Lets a
      * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
@@ -718,6 +732,9 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     wallet: NativeWalletHandle;
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw
+     * NativeFeeExceededError instead of paying more. */
+    maxFee?: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
@@ -732,6 +749,12 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     recipient: ChainAddress;
     value: bigint;
   }): Promise<LegacyFeeEstimate>;
+
+  /** The most one transfer to a legacy destination can send now, and its fee. */
+  estimateLegacyMax?(params: {
+    wallet: NativeWalletHandle;
+    recipient: ChainAddress;
+  }): Promise<LegacyMaxEstimate>;
 
   sendToContact?(
     params: ContactSendParams & { wallet: NativeWalletHandle }

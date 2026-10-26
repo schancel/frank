@@ -1484,21 +1484,33 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return wallet.getBalance();
     },
 
+    // One pool: a native transfer is the same single-recipient transaction set over the coin
+    // list as Send to Address, stamps, contact payments and forum burns.
     async send({
       wallet,
       recipient,
       value,
+      maxFee,
       onSigned,
       mainAccountWaitMs,
-    }): Promise<{ txHash: string }> {
-      asMonadWallet(wallet, config.networkId);
+    }): Promise<ChainTransaction> {
+      const owned = asMonadWallet(wallet, config.networkId);
       requirePeerSyncDelivery();
-      return wallet.sendNative({
+      if (!owned.sendLegacy)
+        throw new Error("Native transfers require the wallet's transaction-set owner");
+      const result = await owned.sendLegacy({
         recipient,
         value,
-        onSigned,
-        mainAccountWaitMs,
+        ...(maxFee === undefined ? {} : { maxFee }),
+        ...(onSigned === undefined ? {} : { onSigned }),
+        ...(mainAccountWaitMs === undefined ? {} : { mainAccountWaitMs }),
       });
+      return {
+        txHash: result.txHash,
+        ...(result.intermediateTxHashes?.length
+          ? { relatedTxHashes: result.intermediateTxHashes }
+          : {}),
+      };
     },
 
     async getTransactionStatus({ wallet, transaction }) {
@@ -1517,6 +1529,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       wallet,
       recipient,
       value,
+      maxFee,
       onProgress,
       onSigned,
       mainAccountWaitMs,
@@ -1527,6 +1540,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return owned.sendLegacy!({
         recipient,
         value,
+        maxFee,
         onProgress,
         onSigned,
         mainAccountWaitMs,
@@ -1537,6 +1551,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (!active.estimateLegacyFee)
         throw new Error("Legacy fee estimation requires a durable native-operation owner");
       return active.estimateLegacyFee({ recipient, value });
+    },
+    async estimateLegacyMax({ wallet, recipient }) {
+      const active = asMonadWallet(wallet, config.networkId);
+      if (!active.estimateLegacyMax)
+        throw new Error("Legacy fee estimation requires a durable native-operation owner");
+      return active.estimateLegacyMax({ recipient });
     },
 
     async sendToContact({ wallet, ...params }) {
@@ -2187,8 +2207,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
             readOperation: id => transactionOwner.nativeJournal!.readOperation(id),
-            getCoins: () => coinList.all().filter(coin => coin.origin !== 'legacy-subaccount' && transactionOwner.nativeJournal!.canSelect(coin.account, coin.nonce) &&
-              !transactionSetRuntime.coinListSync.isDirty(coin.account) && pool.accountClaimedBy(coin.account) === undefined),
           });
           const paymentStore = contactPayments;
           const spendPool = new EvmSpendPool({
@@ -2960,6 +2978,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return result;
             },
             estimateLegacyFee: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyFee(params)),
+            estimateLegacyMax: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyMax(params)),
             getUnresolvedLegacySend: () => [...new Map([
               ...nativeOperationOwner(wallet).getUnresolvedLegacySend(), ...legacyTransactions.getUnresolvedLegacySend(),
             ].map(row => [row.operationId, row])).values()],

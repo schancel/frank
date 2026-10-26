@@ -701,21 +701,30 @@ describe("createEvmChain: nativeTransfers", () => {
     );
     expect(recipient).toBeDefined();
 
-    const sendNative = jest.fn().mockResolvedValue({ txHash: "0xbroadcast" });
-    wallet.sendNative = sendNative;
+    // One pool: the common native transfer is the wallet's coin-list transaction set.
+    const sendLegacy = jest.fn().mockResolvedValue({
+      txHash: "0xbroadcast",
+      intermediateTxHashes: ["0xfunding"],
+      totalValueSent: 1_500_000_000_000_000_000n,
+      totalFeePaid: 2n,
+    });
+    wallet.sendLegacy = sendLegacy;
 
     await expect(
       chain.nativeTransfers.send({
         wallet,
         recipient: recipient!,
         value: 1_500_000_000_000_000_000n,
+        maxFee: 9n,
       })
-    ).resolves.toEqual({ txHash: "0xbroadcast" });
+    ).resolves.toEqual({ txHash: "0xbroadcast", relatedTxHashes: ["0xfunding"] });
 
-    expect(sendNative).toHaveBeenCalledWith({
+    expect(sendLegacy).toHaveBeenCalledWith({
       recipient,
       value: 1_500_000_000_000_000_000n,
+      maxFee: 9n,
     });
+    expect(wallet.sendNative).not.toHaveBeenCalled();
   });
 
   it("forwards onSigned through the common wallet API", async () => {
@@ -723,15 +732,20 @@ describe("createEvmChain: nativeTransfers", () => {
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
     const onSigned = jest.fn().mockResolvedValue(undefined);
-    const sendNative = jest.fn().mockResolvedValue({ txHash: "0xsigned" });
-    wallet.sendNative = sendNative;
+    const sendLegacy = jest.fn().mockResolvedValue({
+      txHash: "0xsigned",
+      intermediateTxHashes: [],
+      totalValueSent: 1n,
+      totalFeePaid: 1n,
+    });
+    wallet.sendLegacy = sendLegacy;
     await chain.nativeTransfers.send({
       wallet,
       recipient: identity.address,
       value: 1n,
       onSigned,
     });
-    expect(sendNative).toHaveBeenCalledWith({
+    expect(sendLegacy).toHaveBeenCalledWith({
       recipient: identity.address,
       value: 1n,
       onSigned,
@@ -770,8 +784,8 @@ describe("createEvmChain: nativeTransfers", () => {
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
 
     const wallet = makeWallet(identity);
-    const sendNative = jest.fn().mockRejectedValue(new RangeError("bad value"));
-    wallet.sendNative = sendNative;
+    const sendLegacy = jest.fn().mockRejectedValue(new RangeError("bad value"));
+    wallet.sendLegacy = sendLegacy;
     await expect(
       chain.nativeTransfers.send({
         wallet,
@@ -779,7 +793,7 @@ describe("createEvmChain: nativeTransfers", () => {
         value: 0n,
       })
     ).rejects.toThrow("bad value");
-    expect(sendNative).toHaveBeenCalled();
+    expect(sendLegacy).toHaveBeenCalled();
   });
 
   it.each(["estimate", "send"] as const)(

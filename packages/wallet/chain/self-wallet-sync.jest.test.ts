@@ -592,8 +592,7 @@ describe("a wallet's sync note to itself", () => {
       mockBalances.set(source.address.toLowerCase(), 10n ** 17n)
       minesNativeTransfers(sender)
       one.setMailbox(mailbox)
-      const sent = await sendingChain.nativeTransfers.send({
-        wallet: sender,
+      const sent = await sender.sendNative({
         recipient: { raw: one.bob.identity.address.raw },
         value: 1_000n,
       })

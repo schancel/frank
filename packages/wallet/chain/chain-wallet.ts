@@ -379,6 +379,9 @@ export interface NativeWalletHandle {
     value: bigint;
     /** Stable caller identity for replaying the same approved EVM funding operation. */
     operationId?: string;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw
+     * NativeFeeExceededError instead of paying more. */
+    maxFee?: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
@@ -393,6 +396,11 @@ export interface NativeWalletHandle {
     recipient: ChainAddress;
     value: bigint;
   }): Promise<LegacyFeeEstimate>;
+  /** The most one transfer to a legacy destination can send now, and its fee. Absent: the
+   * wallet cannot say (the host offers no "send everything"). */
+  estimateLegacyMax?(params: {
+    recipient: ChainAddress;
+  }): Promise<LegacyMaxEstimate>;
 
   /** Recovers or resumes any in-flight staging intent interrupted by an app/browser crash. */
   getUnresolvedLegacySend?(): readonly EvmNativeOperation[];
@@ -541,6 +549,12 @@ export interface LegacyFeeEstimate {
   consolidationFee?: bigint;
   /** Final delivery fee to destination. */
   deliveryFee: bigint;
+}
+
+/** The most one transfer to a legacy destination can send now, and the fee it pays. */
+export interface LegacyMaxEstimate extends LegacyFeeEstimate {
+  /** What the recipient receives: everything spendable now, less `totalFee`. */
+  value: bigint;
 }
 
 export type {

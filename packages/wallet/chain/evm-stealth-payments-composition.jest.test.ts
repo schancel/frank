@@ -297,7 +297,9 @@ test('production native preparation retains exact bytes and claims until bound e
       sources: [],
       nativeBalanceAtomic: 1000000n,
       assetBalanceAtomic: 1000000n,
-      estimatedNativeFeeAtomic: 441000n,
+      // Exactly what the payment signs below: its transfer and the change split of the rest
+      // (six transfers at gas price 1), not a bound of every coin times the most change.
+      estimatedNativeFeeAtomic: 126000n,
     })
     expect(wallet.getNativeOperations!()).toEqual([])
     expect(
@@ -320,6 +322,13 @@ test('production native preparation retains exact bytes and claims until bound e
     expect(wallet.getNativeOperations!()).toEqual([])
     intent.maxNativeFeeAtomic = quote.estimatedNativeFeeAtomic
     const prepared = await wallet.stealthPayments!.prepare(intent)
+    const [signedOperation] = wallet.getNativeOperations!()
+    expect(
+      signedOperation!.members.reduce((sum, member) => {
+        const tx = Transaction.from(member.signed!.rawTransaction)
+        return sum + tx.gasLimit * tx.gasPrice!
+      }, 0n),
+    ).toBe(quote.estimatedNativeFeeAtomic)
     expect(prepared.recipientDestination).toEqual(quote.recipientDestination)
     expect(prepared.ephemeralPublicKey).toEqual(quote.ephemeralPublicKey)
 
@@ -872,7 +881,8 @@ test('native quote reads the authoritative inventory without selecting a single 
       amountAtomic: 10_000n,
       nativeBalanceAtomic: 5_000_000n,
       assetBalanceAtomic: 5_000_000n,
-      estimatedNativeFeeAtomic: 441_000n,
+      // One transfer and the change split of the rest: eight transfers at gas price 1.
+      estimatedNativeFeeAtomic: 168_000n,
     })
     expect(quote.sourceAddress).toBeUndefined()
 

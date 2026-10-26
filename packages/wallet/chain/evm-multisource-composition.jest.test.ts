@@ -516,9 +516,11 @@ test('a current fee increase leaves no durable operation or held funds when it e
   const refreshed = await wallet.stealthPayments!.quote!(unsigned)
   expect(refreshed.recipientAddress).toBe(quote.recipientAddress)
   expect(refreshed.nativeBalanceAtomic).toBe(quote.nativeBalanceAtomic)
-  expect(refreshed.estimatedNativeFeeAtomic).toBe(
-    quote.estimatedNativeFeeAtomic * 2n,
-  )
+  // The quote is the fee of the inputs this amount needs. At gas price 1 one 50000 coin pays
+  // 10000 with one transfer (21000); at price 2 a transfer costs 42000, so no single coin
+  // covers 10000 and both coins each pay a share: two transfers.
+  expect(quote.estimatedNativeFeeAtomic).toBe(21000n)
+  expect(refreshed.estimatedNativeFeeAtomic).toBe(2n * 42000n)
   expect(state.broadcast).not.toHaveBeenCalled()
 })
 test('the native fee authorization covers private change as well as the recipient payment', async () => {
@@ -611,11 +613,15 @@ test('honestly rejects more than sixteen required members and gasless-only token
   for (let i = 0; i < 17; i++) await importOwned(22000n)
   const tooMany = intent('over-member-cap', 17000n),
     { maxNativeFeeAtomic: _, ...unsigned } = tooMany
-  const quote = await wallet.stealthPayments!.quote!(unsigned)
+  // Seventeen sources would be needed: the quote makes the payment's own selection, so it
+  // already says so, and preparation with any fee ceiling refuses the same way.
+  await expect(wallet.stealthPayments!.quote!(unsigned)).rejects.toThrow(
+    /Insufficient available EVM coins/,
+  )
   await expect(
     wallet.stealthPayments!.prepare({
       ...tooMany,
-      maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+      maxNativeFeeAtomic: 17n * 21000n,
     }),
   ).rejects.toThrow(/Insufficient available EVM coins/)
   expect(wallet.getNativeOperations!()).toHaveLength(0)

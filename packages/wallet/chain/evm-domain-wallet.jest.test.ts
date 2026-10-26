@@ -791,8 +791,7 @@ test('a real Sepolia owner retries the original sync event without signing or br
     jest.spyOn(wallet.provider, 'getNetwork')
       .mockResolvedValue(Network.from(11155111))
     const notesSettled = watchNotes()
-    const sent = await chain.nativeTransfers.send({
-      wallet,
+    const sent = await wallet.sendNative({
       recipient: { raw: expected[1].main },
       value: 1000n,
     })

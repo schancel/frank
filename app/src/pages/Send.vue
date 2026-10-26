@@ -40,7 +40,32 @@
             dense
             data-test="send-amount-input"
             :placeholder="$t('sendAddressDialog.enterAmount', { unit })"
-          />
+          >
+            <template v-if="maxSupported" #append>
+              <q-btn
+                flat
+                dense
+                no-caps
+                :label="$t('sendAddressDialog.sendMax')"
+                :disable="!recipientValid || sending || fillingMax"
+                :loading="fillingMax"
+                data-test="send-max-button"
+                @click="fillMax"
+              />
+            </template>
+          </q-input>
+          <p
+            v-if="maxUnavailableReason"
+            class="text-caption text-negative q-mt-xs q-mb-none"
+            role="alert"
+            data-test="send-max-unavailable"
+          >
+            {{
+              $t('sendAddressDialog.sendMaxUnavailable', {
+                reason: maxUnavailableReason,
+              })
+            }}
+          </p>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn
@@ -373,6 +398,9 @@ export default defineComponent({
       typeof route.query.to === 'string' ? route.query.to : '',
     )
     const amount = ref('')
+    // "Max": the wallet's answer for the most one transfer can send now, and why it has none.
+    const fillingMax = ref(false)
+    const maxUnavailableReason = ref('')
     const isReviewing = ref(false)
     const sending = ref(false)
     const dispatched = ref(false)
@@ -517,6 +545,45 @@ export default defineComponent({
       openFailure,
       feeChanged,
       isValid: computed(() => parsedTransfer.value !== undefined),
+      maxSupported: computed(
+        () => !!context.value?.chain.nativeTransfers.estimateLegacyMax,
+      ),
+      recipientValid: computed(
+        () => !!context.value?.chain.parseAddress(address.value.trim()),
+      ),
+      fillingMax,
+      maxUnavailableReason,
+      // Everything the wallet can send now in one transfer, less its fee: the same selection
+      // the send makes, so reviewing this amount shows the fee that will be paid.
+      fillMax: async () => {
+        const captured = context.value
+        const recipient = captured?.chain.parseAddress(address.value.trim())
+        const transfers = captured?.chain.nativeTransfers
+        if (
+          !captured ||
+          !recipient ||
+          !transfers?.estimateLegacyMax ||
+          fillingMax.value
+        )
+          return
+        fillingMax.value = true
+        maxUnavailableReason.value = ''
+        try {
+          const binding = await captured.captureWallet()
+          const max = await transfers.estimateLegacyMax({
+            wallet: binding.wallet,
+            recipient,
+          })
+          if (disposed || context.value !== captured) return
+          amount.value = captured.chain.toDisplayAmount(max.value)
+        } catch (err) {
+          if (!disposed)
+            maxUnavailableReason.value =
+              err instanceof Error && err.message ? err.message : String(err)
+        } finally {
+          if (!disposed) fillingMax.value = false
+        }
+      },
       formattedRecipient,
       networkName,
       unit,

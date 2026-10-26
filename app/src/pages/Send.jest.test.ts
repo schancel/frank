@@ -147,8 +147,9 @@ function mountSend(messages: unknown = enUS) {
         QInput: {
           props: ['modelValue', 'placeholder', 'disable'],
           emits: ['update:modelValue'],
+          inheritAttrs: false,
           template:
-            '<input :value="modelValue" :placeholder="placeholder" :disabled="disable" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+            '<input v-bind="$attrs" :value="modelValue" :placeholder="placeholder" :disabled="disable" @input="$emit(\'update:modelValue\', $event.target.value)" /><slot name="append" />',
         },
         QBtn: {
           props: ['label', 'disable', 'loading'],
@@ -283,6 +284,57 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       expect(mockSend).not.toHaveBeenCalled()
     },
   )
+
+  it('Max fills everything the wallet can send to this recipient, and review shows its exact fee', async () => {
+    const metadata = getChainRegistryEntry('monad-regtest')!
+    mockRoute.query = { chainIdentifier: 'monad-regtest' }
+    const fee = {
+      totalFee: 23_562_000_000_000_000n,
+      deliveryFee: 2_142_000_000_000_000n,
+      consolidationFee: 21_420_000_000_000_000n,
+      inputCount: 10,
+    }
+    const estimateLegacyMax = jest
+      .fn()
+      .mockResolvedValue({ ...fee, value: 946_474_000_000_000_000n })
+    mockSelectedChain = {
+      ...activeChain,
+      chainIdentifier: 'monad-regtest',
+      unit: metadata.unit,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest.fn().mockResolvedValue(fee),
+        estimateLegacyMax,
+      },
+    }
+    const wrapper = mountSend()
+    await flushPromises()
+    // No recipient yet: what one transfer can send depends on where it goes.
+    expect(
+      wrapper.get('[data-test="send-max-button"]').attributes('disabled'),
+    ).toBeDefined()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-max-button"]').trigger('click')
+    await flushPromises()
+    expect(estimateLegacyMax).toHaveBeenCalledTimes(1)
+    expect(
+      (
+        wrapper.get('[data-test="send-amount-input"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe('0.946474')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe(
+      `0.023562 ${metadata.unit}`,
+    )
+    expect(wrapper.get('[data-test="review-total"]').text()).toBe(
+      `0.970036 ${metadata.unit}`,
+    )
+    expect(mockSend).not.toHaveBeenCalled()
+  })
 
   it('initial form action performs no signing or broadcast and opens review state', async () => {
     const wrapper = mountSend()

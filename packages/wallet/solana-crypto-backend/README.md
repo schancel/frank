@@ -78,6 +78,17 @@ bash .agents/scripts/with-cargo-slot bash packages/wallet/solana-crypto-backend/
 node packages/wallet/solana-crypto-backend/package-test.mjs
 ```
 
+From a macOS or other non-canonical host, run the same generator inside an x86_64 Linux container (Docker emulates amd64 on Apple silicon). This is the setup used to regenerate after the CAIP-2 registry change; run `--check` in a second fresh container to confirm the result reproduces:
+
+```sh
+docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src rust:1.93.0 bash -c '
+  rustup target add wasm32-unknown-unknown
+  cargo install wasm-bindgen-cli --version 0.2.129 --locked
+  cargo fetch --locked --manifest-path packages/wallet/solana-crypto-backend/Cargo.toml
+  rm -rf packages/wallet/solana-crypto-backend/target
+  bash packages/wallet/solana-crypto-backend/build-wasm.sh'   # then again with --check
+```
+
 `--check` uses offline locked Cargo, regenerates into a temporary directory, byte-compares all outputs including the hash manifest, and removes only its own temporary directory. It neither rewrites tracked artifacts nor deletes other build outputs. Cargo's reported artifact path is used, including when the cargo slot chooses an external target directory. The CI workflow `.github/workflows/solana-crypto-package.yml` bootstraps these pinned tools/dependencies and enforces the same source-equivalence and clean-package checks.
 
 The package test uses only Node builtins, verifies the full artifact hash manifest, imports the actual runtime, instantiates the committed WASM bytes with networking disabled, compares its public key to the independent public synthetic vector, and closes custody. It does not replace the existing browser signing/vector tests or establish cryptographic approval. A future authorized Vite composition must bundle the local `generated/backend_bg.wasm?url` asset and pass that same-origin emitted URL to the adapter; it must not fetch an external WASM implementation. No application export or capability is activated here.

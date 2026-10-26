@@ -176,6 +176,21 @@ yarn typecheck:fast
 cd app && ../node_modules/.bin/quasar build -m spa
 ```
 
+One consumer does embed the registry as bytes: the Solana custody backend compiles the whole of
+`v1.json` into its tracked WASM package (`include_str!` in
+`packages/wallet/solana-crypto-backend/lib.rs`). Any edit to `v1.json`, including one to another
+chain family's row, changes `generated/backend_bg.wasm` and its `SHA256SUMS`, and the
+`Solana crypto package reproducibility` workflow fails until the package is regenerated in the
+same change. Regenerate it with that package's own generator, on its canonical build host
+(x86_64 Linux, Rust 1.93.0, wasm-bindgen 0.2.129), after rebasing onto the registry you mean to
+land; the setup and commands are under "Reproducible browser build" in
+[its README](../../../packages/wallet/solana-crypto-backend/README.md#reproducible-browser-build):
+
+```sh
+bash packages/wallet/solana-crypto-backend/build-wasm.sh
+bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+```
+
 Relay operator upstreams belong to runtime configuration: EVM rows name server-only environment
 variables through `EvmRpcChainConf.upstream_env` and `upstream_envs`, rather than storing provider
 credentials in checked-in public metadata. Public client defaults do not override that runtime

@@ -325,7 +325,7 @@ export const BLACKJACK_ITEM_WELCOME_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash. */
+/** `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; relay transaction store value, never on the wire). The body is the request as submitted, stored as a large-value cell: 0x00 then the bytes when it is at most 64 KiB, else 0x01 then its SHA-256 (32), length (u64 BE) and upload id (16), naming the object messages/sha256/<hex>/<upload> in the large-value store. The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash. */
 export const CANONICAL_DM_MESSAGE_ROW = {
   version: 0,
   body: 1,
@@ -1920,7 +1920,7 @@ export const BOT_ROLE = {
 
 /** `canonical-dm-message-row-version` values: canonical-dm-message-row field 0. */
 export const CANONICAL_DM_MESSAGE_ROW_VERSION = {
-  v2: 2,
+  v3: 3,
 } as const
 
 /** `encryption-suite` values: Type 11 field 3 (README S2c). */

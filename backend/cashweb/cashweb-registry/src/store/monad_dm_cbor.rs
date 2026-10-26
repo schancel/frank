@@ -5,23 +5,33 @@
 //!
 //! | key | value | what it is |
 //! |---|---|---|
-//! | `dm/R` + payload hash | the stored message | the request bytes as submitted, and when it was delivered |
-//! | `dm/r` + payload hash + part | part of a stored message | a stored message longer than one value, split |
+//! | `dm/R` + payload hash | the stored message | the request bytes as submitted (or the reference to them), and when it was delivered |
 //! | `dm/I` + recipient + time + payload hash | payload hash | the recipient's inbox, in delivery order |
 //! | `dm/O` + sender + time + payload hash | payload hash | the sender's own copies, in delivery order |
 //! | `dm/T` + transaction hash | payload hash | a payment already used, so it pays for one message only |
 //! | `dm/L` + address | time | the last delivery time issued in that address's mailbox |
 //! | `dm/N` + recipient + epoch + nonce | expiry | a login challenge already used |
 //! | `dm/P` + address | policy JSON | the mailbox's notification policy |
+//! | `dm/V` | | this store's large-value index ([`LargeValues`]) |
 //!
 //! A message is written once, with all of its keys, in one transaction, and never changed.
 //! Nothing is ever deleted except expired login challenges. There is no key every message
 //! writes: two messages conflict only when they share a party (or are the same message).
 //!
+//! A request of at most [`INLINE_LIMIT`] bytes is kept inline in its row. A larger one is an
+//! object in the large-value store composition passes in (S3 in a cluster, a directory beside
+//! the database on a single node), named `messages/sha256/<hex>/<upload>`. The object is
+//! uploaded before the admission transaction, and its reference commits in that transaction
+//! with the row, the payment keys and the delivery times, or not at all. An upload whose
+//! admission did not commit it is left to the sweep ([`Owner::sweep_large_values`]). So
+//! admitting a large message needs the object store: while it is down, such a message is
+//! refused as unavailable and nothing is stored.
+//!
 //! Single-replica relays keep these keys in a RocksDB directory beside the registry database.
-//! Its name carries the format version. Frank has no users yet, so there is no reader for any
-//! earlier format: [`crate::store::db::Db::open`] refuses to start beside a store of an older
-//! one and says what to delete. A cluster hands the owner its shared transaction backend
+//! Its name carries the format version (in a cluster, the FoundationDB subspace name does).
+//! Frank has no users yet, so there is no reader for any earlier format:
+//! [`crate::store::db::Db::open`] refuses to start beside a store of an older one and says what
+//! to delete. A cluster hands the owner its shared transaction backend
 //! ([`Owner::with_store`]) and starts from an empty subspace.
 //!
 //! The store's calls block (FoundationDB waits on its own network thread), so async callers run
@@ -44,17 +54,25 @@ use crate::{
     monad_dm_payment::CanonicalPaymentInput,
     monad_http::{Address, Hash32},
     monad_mailbox::ChallengeConsumption,
-    store::kv_store::{
-        key_after, prefix_end, KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact,
-        MAX_VALUE_BYTES,
+    store::{
+        kv_store::{
+            key_after, prefix_end, KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact,
+            MAX_VALUE_BYTES,
+        },
+        large_values::{
+            LargeValueError, LargeValues, ObjectStore, Staged, Stored, SweepReport, INLINE_LIMIT,
+        },
     },
 };
 
 /// The message store's directory is the registry database's path with this extension.
-pub(crate) const STORE_EXTENSION: &str = "messages-v3";
+pub(crate) const STORE_EXTENSION: &str = "messages-v4";
 /// Extensions of message stores written by earlier development builds. None can be read.
-pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1", "messages-v2"];
-const ROW_VERSION: i128 = canonical_dm_message_row_version::V2 as i128;
+pub(crate) const OLD_STORE_EXTENSIONS: &[&str] =
+    &["monad-dm-cbor-v1", "messages-v2", "messages-v3"];
+const ROW_VERSION: i128 = canonical_dm_message_row_version::V3 as i128;
+/// Where requests over [`INLINE_LIMIT`] live in the large-value store.
+pub(crate) const OBJECT_NAMESPACE: &str = "messages";
 
 /// What admission established about a message, kept with it: who it is from and to, and the
 /// directory facts its context was checked against.
@@ -218,14 +236,36 @@ impl Storage {
     }
 }
 
-/// Why a transaction body stopped: a refusal of the message, or the store.
+/// Why a transaction body stopped: a refusal of the message, the store, or a large request's
+/// upload that the sweep collected before the admission committed it.
 enum Stop {
     Refused(CanonicalError),
     Store(KvError),
+    IntentLost,
 }
 impl From<KvError> for Stop {
     fn from(error: KvError) -> Self {
         Self::Store(error)
+    }
+}
+impl From<LargeValueError> for Stop {
+    fn from(error: LargeValueError) -> Self {
+        match error {
+            LargeValueError::Kv(error) => Self::Store(error),
+            LargeValueError::IntentLost => Self::IntentLost,
+            other => Self::Refused(large_value_error(other)),
+        }
+    }
+}
+/// A large-value failure outside a transaction. The object store's message is logged, never
+/// answered: it may name the endpoint or the bucket.
+fn large_value_error(error: LargeValueError) -> CanonicalError {
+    match error {
+        LargeValueError::Kv(error) => store_error(error),
+        other => {
+            tracing::warn!("Direct-message large values: {other}");
+            CanonicalError::Unavailable
+        }
     }
 }
 impl From<CanonicalError> for Stop {
@@ -244,6 +284,7 @@ impl From<Stop> for CanonicalError {
         match stop {
             Stop::Refused(error) => error,
             Stop::Store(error) => store_error(error),
+            Stop::IntentLost => CanonicalError::Unavailable,
         }
     }
 }
@@ -253,6 +294,10 @@ type Body<T> = std::result::Result<T, Stop>;
 #[derive(Debug)]
 pub(crate) struct Owner {
     storage: Storage,
+    /// Where requests over [`INLINE_LIMIT`] live (`registry.large_values`).
+    objects: Arc<dyn ObjectStore>,
+    /// The large-value index, in this owner's store, once the store is open.
+    large: std::sync::OnceLock<LargeValues>,
     /// Newly stored canonical messages since this relay process started. Retries are excluded.
     messages_stored_total: AtomicU64,
     directory: Mutex<Weak<DirectoryRuntime>>,
@@ -270,22 +315,29 @@ pub(crate) struct Owner {
     last_wakeup_at_ms: Mutex<std::collections::HashMap<Address, i64>>,
 }
 impl Owner {
-    /// The store that belongs beside the registry database at `registry_db`.
-    pub(crate) fn new(registry_db: PathBuf) -> Self {
-        Self::with_storage(Storage::Beside {
-            path: registry_db.with_extension(STORE_EXTENSION),
-            opened: Mutex::new(None),
-        })
+    /// The store that belongs beside the registry database at `registry_db`. Requests over
+    /// [`INLINE_LIMIT`] go to `objects`.
+    pub(crate) fn new(registry_db: PathBuf, objects: Arc<dyn ObjectStore>) -> Self {
+        Self::with_storage(
+            Storage::Beside {
+                path: registry_db.with_extension(STORE_EXTENSION),
+                opened: Mutex::new(None),
+            },
+            objects,
+        )
     }
 
-    /// The store on a transaction backend shared by every replica of a cluster.
-    pub(crate) fn with_store(store: Arc<dyn RelayKvStore>) -> Self {
-        Self::with_storage(Storage::Shared(store))
+    /// The store on a transaction backend shared by every replica of a cluster. Requests over
+    /// [`INLINE_LIMIT`] go to `objects`, which every replica must share too (S3).
+    pub(crate) fn with_store(store: Arc<dyn RelayKvStore>, objects: Arc<dyn ObjectStore>) -> Self {
+        Self::with_storage(Storage::Shared(store), objects)
     }
 
-    fn with_storage(storage: Storage) -> Self {
+    fn with_storage(storage: Storage, objects: Arc<dyn ObjectStore>) -> Self {
         Self {
             storage,
+            objects,
+            large: std::sync::OnceLock::new(),
             messages_stored_total: AtomicU64::new(0),
             directory: Mutex::new(Weak::new()),
             payment_broadcasts: Default::default(),
@@ -310,6 +362,52 @@ impl Owner {
 
     fn writable(&self) -> Result<Arc<dyn RelayKvStore>> {
         self.storage.open(true)?.ok_or(CanonicalError::Unavailable)
+    }
+
+    /// The large-value index inside `store`, which is this owner's only store.
+    fn large(&self, store: &Arc<dyn RelayKvStore>) -> &LargeValues {
+        self.large.get_or_init(|| {
+            LargeValues::new(
+                Arc::clone(store),
+                Arc::clone(&self.objects),
+                &large_value_prefix(),
+                OBJECT_NAMESPACE,
+            )
+        })
+    }
+
+    /// The request a row holds: inline, or read from the object store and checked against
+    /// its digest and length. Read outside any transaction, so a slow object store never holds
+    /// one open.
+    fn resolve(&self, row: Row) -> Result<Claim> {
+        let body = match row.body {
+            Stored::Inline(bytes) => bytes,
+            Stored::Large(reference) => {
+                let store = self
+                    .storage
+                    .open(false)?
+                    .ok_or(CanonicalError::Unavailable)?;
+                self.large(&store)
+                    .read(&reference)
+                    .map_err(large_value_error)?
+            }
+        };
+        let request =
+            ExactRequest::parse(body, row.content_type).map_err(|_| CanonicalError::Unavailable)?;
+        Ok(Claim {
+            request,
+            policy: row.policy,
+            delivered_at: row.delivered_at,
+        })
+    }
+
+    /// Delete unreferenced message objects (requests over the inline limit) as sweep lease
+    /// holder `holder`. Nothing is done before this replica's store exists. Blocks.
+    pub(crate) fn sweep_large_values(&self, holder: [u8; 16]) -> Result<SweepReport> {
+        match self.storage.open(false)? {
+            None => Ok(SweepReport::default()),
+            Some(store) => self.large(&store).sweep(holder).map_err(large_value_error),
+        }
     }
 
     /// Whether this message's payments may be handed to the node now: at most once per
@@ -351,7 +449,9 @@ impl Owner {
         self.directory.lock().ok()?.upgrade()
     }
     pub(crate) fn get(&self, payload_hash: &[u8; 32]) -> Result<Option<Claim>> {
-        self.read(|| None, |tx| load(tx, payload_hash))
+        self.read(|| None, |tx| load(tx, payload_hash))?
+            .map(|row| self.resolve(row))
+            .transpose()
     }
     /// The stored message this request is an exact repeat of, if any. The same message under
     /// different bytes is a conflict.
@@ -360,13 +460,14 @@ impl Owner {
             return Ok(None);
         }
         let hash = request_hash(request)?;
-        let Some(existing) = self.get(&hash)? else {
+        let Some(existing) = self.read(|| None, |tx| load(tx, &hash))? else {
             return Ok(None);
         };
-        if !existing.request.exact_equal(request) {
+        // A large request is compared by its digest and length; its object is not read.
+        if !existing.holds(request) {
             return Err(CanonicalError::Conflict);
         }
-        Ok(Some(existing))
+        Ok(Some(existing.with_request(request.clone())))
     }
     /// Store a checked message in the recipient's inbox and the sender's own mailbox, in one
     /// transaction. An exact repeat returns what is already stored, on whichever replica it is
@@ -383,8 +484,42 @@ impl Owner {
     /// now stale). Found, the row is the stored message; not found, admission runs again. So
     /// nothing is announced and no payment is broadcast for a message that may not exist, and
     /// a late commit cannot add a second row or a time behind one a reader has already seen.
+    ///
+    /// A request over [`INLINE_LIMIT`] is uploaded first (see the module documentation); its
+    /// reference commits with the row. An upload the stored row does not reference (a refusal,
+    /// an exact repeat that raced this one, a failure) is left to the sweep.
     pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Admitted> {
         let store = self.writable()?;
+        let large = self.large(&store);
+        let mut staged: Option<Staged> = None;
+        let result = self.admit(&store, large, &input, now, &mut staged);
+        if let Some(staged) = &staged {
+            let referenced = matches!(&result,
+                Ok((row, _)) if matches!(&row.body, Stored::Large(r) if r.upload == staged.reference.upload));
+            if !referenced {
+                large.abandon(staged);
+            }
+        }
+        let (row, new) = result?;
+        if new {
+            self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(Admitted {
+            claim: row.with_request(input.request),
+            new,
+        })
+    }
+
+    /// The admission loop of [`Owner::claim`]: the stored row, and whether this call may have
+    /// committed it. `staged` is this call's upload of a large request, if any.
+    fn admit(
+        &self,
+        store: &Arc<dyn RelayKvStore>,
+        large: &LargeValues,
+        input: &CanonicalPaymentInput,
+        now: i64,
+        staged: &mut Option<Staged>,
+    ) -> Result<(Row, bool)> {
         let hash = input.policy.payload_hash;
         let recipient = input.policy.recipient()?;
         // The recipient first: the fence after an unknown commit outcome writes its key.
@@ -393,17 +528,20 @@ impl Owner {
             .payment_hashes()
             .map(|payment| payment_key(&payment))
             .collect();
+        let body = input.request.body();
         let started = Instant::now();
         loop {
-            let attempt = store.transact(|tx| -> Body<Admitted> {
+            if body.len() > INLINE_LIMIT && staged.is_none() {
+                // Before anything else is decided: an object store that is down refuses the
+                // message here, with nothing stored.
+                *staged = Some(large.stage(body).map_err(large_value_error)?);
+            }
+            let attempt = store.transact(|tx| -> Body<(Row, bool)> {
                 if let Some(existing) = load(tx, &hash)? {
-                    if !existing.request.exact_equal(&input.request) {
+                    if !existing.holds(&input.request) {
                         return Err(Stop::Refused(CanonicalError::Conflict));
                     }
-                    return Ok(Admitted {
-                        claim: existing,
-                        new: false,
-                    });
+                    return Ok((existing, false));
                 }
                 // One signed payment pays for one message. Nothing on chain names the message,
                 // so this index is what stops a payment being presented again for another.
@@ -413,12 +551,21 @@ impl Owner {
                     }
                 }
                 let delivered_at = next_delivery_time(tx, &parties, now)?;
-                let message = Claim {
-                    request: input.request.clone(),
+                let row_key = row_key(&hash);
+                let stored = match staged.as_ref() {
+                    Some(staged) => {
+                        large.commit_reference(tx, staged, &row_key)?;
+                        Stored::Large(staged.reference)
+                    }
+                    None => Stored::Inline(body.to_vec()),
+                };
+                let row = Row {
+                    body: stored,
+                    content_type: input.request.content_type().to_owned(),
                     policy: input.policy.clone(),
                     delivered_at,
                 };
-                put_split(tx, &hash, &encode_row(&message)?)?;
+                tx.set(&row_key, &encode_row(&row)?)?;
                 for key in &payment_keys {
                     tx.set(key, &hash)?;
                 }
@@ -429,19 +576,19 @@ impl Owner {
                 for party in &parties {
                     tx.set(&last_delivery_key(*party), &delivered_at.to_be_bytes())?;
                 }
-                Ok(Admitted {
-                    claim: message,
-                    new: true,
-                })
+                Ok((row, true))
             });
             match attempt {
-                Ok(admitted) => {
-                    if admitted.new {
-                        self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
-                    }
-                    return Ok(admitted);
-                }
+                Ok(admitted) => return Ok(admitted),
                 Err(Stop::Refused(error)) => return Err(error),
+                // The sweep judged the upload abandoned (this writer stalled past the intent's
+                // lifetime). Expire it for the sweep and upload anew.
+                Err(Stop::IntentLost) if started.elapsed() < ADMISSION_BUDGET => {
+                    if let Some(lost) = staged.take() {
+                        large.abandon(&lost);
+                    }
+                }
+                Err(Stop::IntentLost) => return Err(CanonicalError::Unavailable),
                 // Every attempt lost to another commit on one of these mailboxes. The body has
                 // no effect outside the transaction, so it is simply run again.
                 Err(Stop::Store(KvError::ConflictRetriesExhausted { .. }))
@@ -456,11 +603,8 @@ impl Owner {
                         reason = %reason,
                         "Direct-message commit outcome unknown; fencing and reading the store"
                     );
-                    match self.fence(&store, &hash, recipient, started)? {
-                        Some(claim) if claim.request.exact_equal(&input.request) => {
-                            self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
-                            return Ok(Admitted { claim, new: true });
-                        }
+                    match self.fence(store, &hash, recipient, started)? {
+                        Some(row) if row.holds(&input.request) => return Ok((row, true)),
                         Some(_) => return Err(CanonicalError::Conflict),
                         // The first attempt can no longer commit: admit the message afresh.
                         None if started.elapsed() < ADMISSION_BUDGET => {}
@@ -483,10 +627,10 @@ impl Owner {
         hash: &[u8; 32],
         recipient: Address,
         started: Instant,
-    ) -> Result<Option<Claim>> {
+    ) -> Result<Option<Row>> {
         let key = last_delivery_key(recipient);
         loop {
-            let fenced = store.transact(|tx| -> Body<Option<Claim>> {
+            let fenced = store.transact(|tx| -> Body<Option<Row>> {
                 let row = load(tx, hash)?;
                 match tx.get(&key)? {
                     Some(current) => tx.set(&key, &current)?,
@@ -496,7 +640,7 @@ impl Owner {
             });
             match fenced {
                 Ok(row) => return Ok(row),
-                Err(Stop::Refused(error)) => return Err(error),
+                Err(stop @ (Stop::Refused(_) | Stop::IntentLost)) => return Err(stop.into()),
                 // The fence writes nothing new, so running it again is harmless.
                 Err(Stop::Store(
                     KvError::CommitUnknownResult(_) | KvError::ConflictRetriesExhausted { .. },
@@ -833,8 +977,9 @@ fn key(kind: u8, parts: &[&[u8]]) -> Vec<u8> {
 fn row_key(hash: &[u8; 32]) -> Vec<u8> {
     key(b'R', &[hash])
 }
-fn row_part_prefix(hash: &[u8; 32]) -> Vec<u8> {
-    key(b'r', &[hash])
+/// Where this store's large-value index keeps its keys.
+fn large_value_prefix() -> Vec<u8> {
+    key(b'V', &[])
 }
 /// Used-payment index: signed transaction hash to the one message it paid for.
 fn payment_key(tx_hash: &Hash32) -> Vec<u8> {
@@ -921,54 +1066,6 @@ fn request_hash(request: &ExactRequest) -> Result<[u8; 32]> {
         .map_err(|_| CanonicalError::Invalid)
 }
 
-/// Write a message row, split into parts when it is longer than one value may be. A row is
-/// CBOR and never starts with `0x00`; a split row is `0x00 || part count (u32 BE)`.
-///
-/// Interim: once the large-value store lands (HA plan step 4), a request over 64 KiB goes to S3
-/// and the row holds its reference instead of parts.
-fn put_split(tx: &mut dyn KvTransaction, hash: &[u8; 32], row: &[u8]) -> Body<()> {
-    if row.len() <= MAX_VALUE_BYTES && row.first() != Some(&0) {
-        return Ok(tx.set(&row_key(hash), row)?);
-    }
-    let parts: Vec<&[u8]> = row.chunks(MAX_VALUE_BYTES).collect();
-    let count = u32::try_from(parts.len()).map_err(|_| Stop::Refused(CanonicalError::TooLarge))?;
-    tx.set(
-        &row_key(hash),
-        &[[0u8].as_slice(), &count.to_be_bytes()].concat(),
-    )?;
-    let prefix = row_part_prefix(hash);
-    for (index, part) in (0u32..).zip(parts) {
-        tx.set(&[prefix.as_slice(), &index.to_be_bytes()].concat(), part)?;
-    }
-    Ok(())
-}
-
-/// Read a row written by [`put_split`].
-fn get_split(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Vec<u8>>> {
-    let Some(stored) = tx.get(&row_key(hash))? else {
-        return Ok(None);
-    };
-    if stored.first() != Some(&0) {
-        return Ok(Some(stored));
-    }
-    let count = u32::from_be_bytes(
-        stored[1..]
-            .try_into()
-            .map_err(|_| Stop::Refused(CanonicalError::Unavailable))?,
-    ) as usize;
-    let prefix = row_part_prefix(hash);
-    let parts = tx.scan_prefix(&prefix, None, count + 1)?;
-    if parts.len() != count
-        || parts
-            .iter()
-            .enumerate()
-            .any(|(index, (k, _))| k[prefix.len()..] != (index as u32).to_be_bytes())
-    {
-        return Err(Stop::Refused(CanonicalError::Unavailable));
-    }
-    Ok(Some(parts.into_iter().flat_map(|(_, part)| part).collect()))
-}
-
 fn int(n: impl Into<i128>) -> CborValue {
     CborValue::Int(n.into())
 }
@@ -1007,8 +1104,38 @@ fn fixed<const N: usize>(value: &CborValue) -> Result<[u8; N]> {
         .map_err(|_| CanonicalError::Unavailable)
 }
 
-fn encode_row(message: &Claim) -> Result<Vec<u8>> {
-    let p = &message.policy;
+/// A stored message as its row holds it: the request inline, or a reference to its object.
+#[derive(Debug, Clone)]
+struct Row {
+    body: Stored,
+    content_type: String,
+    policy: FrozenCanonicalPolicy,
+    delivered_at: i64,
+}
+
+impl Row {
+    /// Whether this row holds exactly `request`: the same content type and the same bytes (a
+    /// large body is compared by its SHA-256 and length).
+    fn holds(&self, request: &ExactRequest) -> bool {
+        self.content_type == request.content_type()
+            && match &self.body {
+                Stored::Inline(bytes) => bytes.as_slice() == request.body(),
+                Stored::Large(reference) => reference.matches(request.body()),
+            }
+    }
+
+    /// The stored message, given the request this row [`holds`](Row::holds).
+    fn with_request(self, request: ExactRequest) -> Claim {
+        Claim {
+            request,
+            policy: self.policy,
+            delivered_at: self.delivered_at,
+        }
+    }
+}
+
+fn encode_row(row: &Row) -> Result<Vec<u8>> {
+    let p = &row.policy;
     let policy = CborValue::Array(vec![
         CborValue::Text(p.network.clone()),
         int(p.chain_id),
@@ -1024,13 +1151,10 @@ fn encode_row(message: &Claim) -> Result<Vec<u8>> {
     ]);
     encode_canonical(&cbor_map(vec![
         (R::VERSION, int(ROW_VERSION)),
-        (R::BODY, blob(message.request.body())),
-        (
-            R::CONTENT_TYPE,
-            CborValue::Text(message.request.content_type().into()),
-        ),
+        (R::BODY, blob(row.body.encode())),
+        (R::CONTENT_TYPE, CborValue::Text(row.content_type.clone())),
         (R::POLICY, policy),
-        (R::DELIVERED_AT, int(message.delivered_at)),
+        (R::DELIVERED_AT, int(row.delivered_at)),
     ]))
     .map_err(|_| CanonicalError::Unavailable)
 }
@@ -1041,10 +1165,11 @@ thread_local! {
     pub(crate) static ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Read one stored message. It was checked in full when it was admitted and has not changed
-/// since, so reading it only decodes it: no signature or proof is verified again.
-fn load(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Claim>> {
-    let Some(raw) = get_split(tx, hash)? else {
+/// Read one stored message's row. It was checked in full when it was admitted and has not
+/// changed since, so reading it only decodes it: no signature or proof is verified again. A
+/// large request's object is read afterwards, outside the transaction ([`Owner::resolve`]).
+fn load(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Row>> {
+    let Some(raw) = tx.get(&row_key(hash))? else {
         return Ok(None);
     };
     #[cfg(test)]
@@ -1052,7 +1177,7 @@ fn load(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Body<Option<Claim>> {
     Ok(Some(decode_row(&raw, hash)?))
 }
 
-fn decode_row(raw: &[u8], hash: &[u8; 32]) -> Result<Claim> {
+fn decode_row(raw: &[u8], hash: &[u8; 32]) -> Result<Row> {
     let value = decode_canonical(raw).map_err(|_| CanonicalError::Unavailable)?;
     let CborValue::Map(rows) = &value else {
         return Err(CanonicalError::Unavailable);
@@ -1065,8 +1190,11 @@ fn decode_row(raw: &[u8], hash: &[u8; 32]) -> Result<Claim> {
     if number(version)? != ROW_VERSION || p.len() != 11 {
         return Err(CanonicalError::Unavailable);
     }
-    let request = ExactRequest::parse(bytes(body)?.to_vec(), text(content_type)?.into())
-        .map_err(|_| CanonicalError::Unavailable)?;
+    let body = Stored::decode(bytes(body)?).ok_or(CanonicalError::Unavailable)?;
+    // A request that fits inline is never stored as a reference, and the reverse.
+    if (body.len() > INLINE_LIMIT as u64) != matches!(body, Stored::Large(_)) {
+        return Err(CanonicalError::Unavailable);
+    }
     let policy = FrozenCanonicalPolicy {
         network: text(&p[0])?.into(),
         chain_id: convert(&p[1])?,
@@ -1083,11 +1211,24 @@ fn decode_row(raw: &[u8], hash: &[u8; 32]) -> Result<Claim> {
     if policy.payload_hash != *hash {
         return Err(CanonicalError::Unavailable);
     }
-    Ok(Claim {
-        request,
+    Ok(Row {
+        body,
+        content_type: text(content_type)?.into(),
         policy,
         delivered_at: convert(delivered_at)?,
     })
+}
+
+#[cfg(test)]
+impl Owner {
+    /// The store beside `registry_db`, with large requests in the directory a single-node relay
+    /// uses beside it ([`crate::registry::Registry::local_large_values_path`]).
+    pub(crate) fn beside(registry_db: PathBuf) -> Self {
+        let objects = Arc::new(crate::store::large_values::LocalFsObjectStore::new(
+            crate::registry::Registry::local_large_values_path(&registry_db),
+        ));
+        Self::new(registry_db, objects)
+    }
 }
 
 #[cfg(test)]
@@ -1097,11 +1238,11 @@ mod challenge_tests {
 
     fn store() -> (tempdir::TempDir, Owner) {
         let dir = tempdir::TempDir::new("used-challenges").unwrap();
-        let owner = Owner::new(dir.path().join("db.rocksdb"));
+        let owner = Owner::beside(dir.path().join("db.rocksdb"));
         (dir, owner)
     }
     fn stored(dir: &tempdir::TempDir) -> usize {
-        let path = dir.path().join("db.messages-v3");
+        let path = dir.path().join("db.messages-v4");
         let db = rocksdb::DB::open_for_read_only(&Options::default(), path, false).unwrap();
         db.iterator(IteratorMode::Start)
             .filter(|row| row.as_ref().unwrap().0.starts_with(b"dm/N"))
@@ -1229,7 +1370,13 @@ mod persistence_tests {
 
     // Use the public protocol capture, then sign one ordinary, synthetic payment. No directory,
     // node, private deployment configuration or application key material is involved.
-    fn paid_input() -> (CanonicalPaymentInput, [u8; 32]) {
+    pub(super) fn paid_input() -> (CanonicalPaymentInput, [u8; 32]) {
+        paid_input_sealing(None)
+    }
+
+    /// [`paid_input`] with its sealed crypto-box envelope replaced by `envelope` bytes when
+    /// given, so the request is about that much larger. The relay never opens the envelope.
+    pub(super) fn paid_input_sealing(envelope: Option<usize>) -> (CanonicalPaymentInput, [u8; 32]) {
         use frank_cbor::{FramePayload, TypedPayload, ValidationResult};
         let source: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../docs/protocol/cbor/vectors/dm-runtime.json"
@@ -1299,6 +1446,29 @@ mod persistence_tests {
                 .unwrap(),
             payload_hash: payload_digest.as_slice().try_into().unwrap(),
         };
+        let mut policy = policy;
+        let resealed = envelope.map(|len| {
+            use frank_cbor::message_fields::recipient_encrypted_payload_v2 as P;
+            let CborValue::Map(mut sealed) = payload_frame.payload.clone() else {
+                panic!("recipient payload map");
+            };
+            sealed
+                .iter_mut()
+                .find(|(k, _)| *k == P::CRYPTO_BOX_ENVELOPE)
+                .unwrap()
+                .1 = CborValue::Bytes((0..len).map(|i| (i % 251) as u8).collect());
+            let frame = frank_cbor::encode_frame(
+                frank_cbor::EnvelopeFields {
+                    type_id: frank_cbor::message_types::TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+                    schema_version: 2,
+                    min_reader_version: 2,
+                },
+                FramePayload::Value(&CborValue::Map(sealed)),
+            )
+            .unwrap();
+            policy.payload_hash = frank_cbor::recipient_payload_digest(network, &frame).unwrap();
+            frame
+        });
         let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
             network,
             destination,
@@ -1336,6 +1506,11 @@ mod persistence_tests {
             panic!("direct message map");
         };
         outer.iter_mut().find(|(k, _)| *k == 4).unwrap().1 = CborValue::Array(vec![member]);
+        if let Some(frame) = resealed {
+            outer.iter_mut().find(|(k, _)| *k == 2).unwrap().1 = CborValue::Bytes(frame);
+            outer.iter_mut().find(|(k, _)| *k == 3).unwrap().1 =
+                CborValue::Bytes(policy.payload_hash.to_vec());
+        }
         let delivery = frank_cbor::encode_frame(
             frank_cbor::EnvelopeFields {
                 type_id: frank_cbor::message_types::TYPE_DIRECT_MESSAGE_DELIVERY,
@@ -1383,18 +1558,20 @@ mod persistence_tests {
             .collect()
     }
 
-    // Independently spell the CBOR v2 row, including fixed-width minimum and the exact request.
+    // Independently spell the CBOR v3 row, including fixed-width minimum and the exact request
+    // inline (cell tag 0x00 before the request bytes).
     // Do not use encode_row, load, or production key builders to generate expected storage bytes.
     fn persisted_row(message: &Claim) -> Vec<u8> {
         assert_eq!(message.delivered_at, 1234);
         assert_eq!(message.policy.network, "monad-testnet");
         assert_eq!(message.policy.chain_id, 10143);
-        let mut bytes = vec![0xa5, 0x00, 0x02, 0x01, 0x59];
+        let mut bytes = vec![0xa5, 0x00, 0x03, 0x01, 0x59];
         bytes.extend_from_slice(
-            &u16::try_from(message.request.body().len())
+            &u16::try_from(message.request.body().len() + 1)
                 .unwrap()
                 .to_be_bytes(),
         );
+        bytes.push(0x00);
         bytes.extend_from_slice(message.request.body());
         let content_type_len = u8::try_from(message.request.content_type().len()).unwrap();
         assert!(content_type_len > 23);
@@ -1428,12 +1605,12 @@ mod persistence_tests {
     }
 
     #[test]
-    fn canonical_row_and_delivery_indexes_keep_exact_v2_bytes_across_reopen() {
+    fn canonical_row_and_delivery_indexes_keep_exact_v3_bytes_across_reopen() {
         let dir = tempdir::TempDir::new("canonical-layout").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v3");
+        let path = registry_path.with_extension("messages-v4");
         let (input, payment_hash) = paid_input();
-        let owner = Owner::new(registry_path.clone());
+        let owner = Owner::beside(registry_path.clone());
         let claim = owner.claim(input, 1234).unwrap().claim;
         let (retry, _) = paid_input();
         assert_eq!(owner.claim(retry, 9999).unwrap().claim.delivered_at, 1234);
@@ -1467,7 +1644,7 @@ mod persistence_tests {
         expected.sort();
         drop(owner);
         assert_eq!(raw_rows(&path), expected);
-        let reopened = Owner::new(registry_path);
+        let reopened = Owner::beside(registry_path);
         let stored = reopened.get(&hash).unwrap().unwrap();
         assert!(stored.request.exact_equal(&claim.request));
         assert_eq!(stored.policy, claim.policy);
@@ -1489,8 +1666,8 @@ mod persistence_tests {
     fn canonical_reads_are_lazy_and_open_failures_retry_without_reset() {
         let dir = tempdir::TempDir::new("canonical-open").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v3");
-        let owner = Owner::new(registry_path.clone());
+        let path = registry_path.with_extension("messages-v4");
+        let owner = Owner::beside(registry_path.clone());
         let address = Address([3; 20]);
         let invalid = ExactRequest::parse(vec![0], "application/cbor".into()).unwrap();
         let policy = crate::store::notification_policy::MailboxNotificationPolicy::default();
@@ -1542,7 +1719,7 @@ mod persistence_tests {
         assert_eq!(owner.get_notification_policy(address).unwrap(), policy);
         drop(owner);
         assert_eq!(
-            Owner::new(registry_path)
+            Owner::beside(registry_path)
                 .get_notification_policy(address)
                 .unwrap(),
             policy
@@ -1557,8 +1734,8 @@ mod persistence_tests {
     fn canonical_challenge_is_consumed_once_under_race_and_after_reopen() {
         let dir = tempdir::TempDir::new("canonical-nonce-race").unwrap();
         let registry_path = dir.path().join("registry.rocksdb");
-        let path = registry_path.with_extension("messages-v3");
-        let owner = Arc::new(Owner::new(registry_path.clone()));
+        let path = registry_path.with_extension("messages-v4");
+        let owner = Arc::new(Owner::beside(registry_path.clone()));
         let barrier = Arc::new(std::sync::Barrier::new(8));
         let recipient = Address([3; 20]);
         let workers: Vec<_> = (0..8)
@@ -1597,7 +1774,7 @@ mod persistence_tests {
             2000i64.to_be_bytes().to_vec(),
         )];
         assert_eq!(raw_rows(&path), expected);
-        let reopened = Owner::new(registry_path);
+        let reopened = Owner::beside(registry_path);
         assert_eq!(
             reopened
                 .consume_challenge([4; 32], recipient, [5; 32], 2000, 1000, 1)
@@ -1613,7 +1790,7 @@ mod persistence_tests {
         for bad_key in [false, true] {
             let dir = tempdir::TempDir::new("canonical-nonce-malformed").unwrap();
             let registry_path = dir.path().join("registry.rocksdb");
-            let path = registry_path.with_extension("messages-v3");
+            let path = registry_path.with_extension("messages-v4");
             let recipient = Address([3; 20]);
             let expired = stored_nonce(recipient, [4; 32], [0; 32]);
             let mut malformed = stored_nonce(recipient, [4; 32], [1; 32]);
@@ -1629,7 +1806,7 @@ mod persistence_tests {
                 db.put(&malformed, &expiry).unwrap();
             }
             let expected = raw_rows(&path);
-            let owner = Owner::new(registry_path);
+            let owner = Owner::beside(registry_path);
             assert!(matches!(
                 owner.consume_challenge([4; 32], recipient, [2; 32], 2000, 1000, 10),
                 Err(CanonicalError::Unavailable)
@@ -1648,7 +1825,10 @@ mod fence_tests {
     #[test]
     fn a_fence_stops_an_admission_that_has_not_committed_yet() {
         let store: Arc<dyn RelayKvStore> = Arc::new(RocksDbKvStore::open_temporary().unwrap());
-        let owner = Owner::with_store(Arc::clone(&store));
+        let owner = Owner::with_store(
+            Arc::clone(&store),
+            Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
+        );
         let recipient = Address([7; 20]);
         let hash = [9u8; 32];
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1693,41 +1873,280 @@ mod fence_tests {
 }
 
 #[cfg(test)]
-mod split_row_tests {
+mod large_request_tests {
+    use super::persistence_tests::{paid_input, paid_input_sealing};
     use super::*;
-    use crate::store::kv_store::RocksDbKvStore;
+    use crate::store::large_values::LocalFsObjectStore;
+    use std::path::Path;
+
+    /// Every message object under a single-node relay's large-value directory, as
+    /// `<hex>/<upload>`.
+    fn objects(registry: &Path) -> Vec<String> {
+        let root = crate::registry::Registry::local_large_values_path(registry)
+            .join(OBJECT_NAMESPACE)
+            .join("sha256");
+        let mut found = Vec::new();
+        let Ok(digests) = std::fs::read_dir(root) else {
+            return found;
+        };
+        for digest in digests {
+            let digest = digest.unwrap();
+            for upload in std::fs::read_dir(digest.path()).unwrap() {
+                let name = upload.unwrap().file_name().into_string().unwrap();
+                if !name.starts_with('.') {
+                    found.push(format!(
+                        "{}/{name}",
+                        digest.file_name().into_string().unwrap()
+                    ));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    fn stored_row(owner: &Owner, hash: &[u8; 32]) -> Option<Row> {
+        owner.read(|| None, |tx| load(tx, hash)).unwrap()
+    }
+
+    /// The largest crypto-box envelope a relay admits (`MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES`:
+    /// 512 KiB of ciphertext and its envelope overhead).
+    const LARGEST_ENVELOPE: usize = 524_288 + 88;
 
     #[test]
-    fn rows_of_every_size_up_to_the_request_limit_read_back_unchanged() {
-        let store = RocksDbKvStore::open_temporary().unwrap();
-        let limit = crate::http::monad_message_cbor::MAX_REQUEST_BYTES;
-        let cases: Vec<Vec<u8>> = vec![
-            vec![0xa1],
-            vec![0xa1; MAX_VALUE_BYTES],
-            vec![0xa1; MAX_VALUE_BYTES + 1],
-            // A row starting with the split marker is always split, so it is never misread.
-            vec![0; 10],
-            (0..limit).map(|i| (i % 251) as u8 | 1).collect(),
-        ];
-        for (n, row) in cases.iter().enumerate() {
-            let hash = [n as u8 + 1; 32];
-            store
-                .transact(|tx| put_split(tx, &hash, row))
-                .map_err(|_| "put")
-                .unwrap();
-            let read = store
-                .transact(|tx| get_split(tx, &hash))
-                .map_err(|_| "get")
-                .unwrap();
-            assert_eq!(read.as_deref(), Some(row.as_slice()), "row {n}");
-        }
-        assert_eq!(
-            store
-                .transact(|tx| get_split(tx, &[0xee; 32]))
-                .map_err(|_| "get")
-                .unwrap(),
-            None
+    fn a_request_over_the_inline_limit_is_an_object_its_row_references() {
+        let dir = tempdir::TempDir::new("dm-large").unwrap();
+        let registry = dir.path().join("registry.rocksdb");
+        let owner = Owner::beside(registry.clone());
+        let (input, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
+        let body = input.request.body().to_vec();
+        assert!(body.len() > INLINE_LIMIT);
+        eprintln!(
+            "largest admissible direct-message request: {} bytes",
+            body.len()
         );
+        let hash = input.policy.payload_hash;
+        let admitted = owner.claim(input, 1234).unwrap();
+        assert!(admitted.new);
+        // The row holds a reference to one object whose content is the request.
+        let Some(Row {
+            body: Stored::Large(reference),
+            ..
+        }) = stored_row(&owner, &hash)
+        else {
+            panic!("a large request is stored as a reference");
+        };
+        assert!(reference.matches(&body));
+        let key = format!(
+            "{}/{}",
+            hex::encode(reference.digest),
+            hex::encode(reference.upload)
+        );
+        assert_eq!(objects(&registry), vec![key.clone()]);
+        let file = crate::registry::Registry::local_large_values_path(&registry)
+            .join("messages/sha256")
+            .join(&key);
+        assert_eq!(std::fs::read(&file).unwrap(), body);
+        // It reads back byte for byte, also after a restart, through every read path.
+        drop(owner);
+        let reopened = Owner::beside(registry.clone());
+        assert_eq!(reopened.get(&hash).unwrap().unwrap().request.body(), body);
+        let recipient = admitted.claim.policy.recipient().unwrap();
+        let inbox = reopened.inbox(recipient, 0, None, 10).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].request.body(), body);
+        // An exact repeat is answered from the row without reading or uploading the object.
+        assert!(reopened
+            .find_request(&admitted.claim.request)
+            .unwrap()
+            .is_some());
+        // A repeat that reaches admission anyway uploads again; that upload is collected and
+        // the stored one never is.
+        let (repeat, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
+        let repeated = reopened.claim(repeat, 9999).unwrap();
+        assert!(!repeated.new);
+        assert_eq!(repeated.claim.delivered_at, 1234);
+        assert_eq!(objects(&registry).len(), 2);
+        assert_eq!(reopened.sweep_large_values([1; 16]).unwrap().deleted, 1);
+        assert_eq!(objects(&registry), vec![key]);
+        assert_eq!(reopened.sweep_large_values([1; 16]).unwrap().deleted, 0);
+        assert_eq!(reopened.get(&hash).unwrap().unwrap().request.body(), body);
+    }
+
+    #[test]
+    fn a_request_one_byte_over_the_envelope_limit_is_not_a_valid_message() {
+        let result = std::panic::catch_unwind(|| paid_input_sealing(Some(LARGEST_ENVELOPE + 1)));
+        assert!(result.is_err(), "the codec refuses a larger envelope");
+    }
+
+    #[test]
+    fn a_request_up_to_the_inline_limit_stays_in_its_row() {
+        let dir = tempdir::TempDir::new("dm-inline").unwrap();
+        let registry = dir.path().join("registry.rocksdb");
+        let owner = Owner::beside(registry.clone());
+        let (input, _) = paid_input();
+        assert!(input.request.body().len() <= INLINE_LIMIT);
+        let hash = input.policy.payload_hash;
+        owner.claim(input, 1234).unwrap();
+        assert!(matches!(
+            stored_row(&owner, &hash),
+            Some(Row {
+                body: Stored::Inline(_),
+                ..
+            })
+        ));
+        assert!(objects(&registry).is_empty());
+    }
+
+    #[test]
+    fn a_refused_large_request_stores_nothing_and_its_upload_is_swept() {
+        let dir = tempdir::TempDir::new("dm-refused").unwrap();
+        let registry = dir.path().join("registry.rocksdb");
+        let owner = Owner::beside(registry.clone());
+        // Both messages carry the same signed payment: it pays for the first only.
+        let (first, payment) = paid_input();
+        let (second, again) = paid_input_sealing(Some(200_000));
+        assert_eq!(payment, again);
+        let second_hash = second.policy.payload_hash;
+        owner.claim(first, 1234).unwrap();
+        assert_eq!(
+            owner.claim(second, 1235).unwrap_err(),
+            CanonicalError::Conflict
+        );
+        assert!(stored_row(&owner, &second_hash).is_none());
+        assert_eq!(objects(&registry).len(), 1);
+        assert_eq!(owner.sweep_large_values([1; 16]).unwrap().deleted, 1);
+        assert!(objects(&registry).is_empty());
+    }
+
+    #[test]
+    fn with_the_object_store_down_a_large_request_is_refused_and_nothing_is_stored() {
+        let dir = tempdir::TempDir::new("dm-objects-down").unwrap();
+        let registry = dir.path().join("registry.rocksdb");
+        // A regular file where the object directory should be: every object write fails.
+        let blocked = dir.path().join("objects");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let owner = Owner::new(
+            registry.clone(),
+            Arc::new(LocalFsObjectStore::new(&blocked)),
+        );
+        let (large, _) = paid_input_sealing(Some(200_000));
+        let hash = large.policy.payload_hash;
+        let recipient = large.policy.recipient().unwrap();
+        assert_eq!(
+            owner.claim(large, 1234).unwrap_err(),
+            CanonicalError::Unavailable
+        );
+        assert!(stored_row(&owner, &hash).is_none());
+        assert!(owner.inbox(recipient, 0, None, 10).unwrap().is_empty());
+        // A message that fits inline does not need the object store.
+        let (small, _) = paid_input();
+        assert!(owner.claim(small, 1235).unwrap().new);
+        assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_tampered_object_is_refused_on_read() {
+        let dir = tempdir::TempDir::new("dm-tampered").unwrap();
+        let registry = dir.path().join("registry.rocksdb");
+        let owner = Owner::beside(registry.clone());
+        let (input, _) = paid_input_sealing(Some(100_000));
+        let hash = input.policy.payload_hash;
+        owner.claim(input, 1234).unwrap();
+        let [key] = objects(&registry).try_into().unwrap();
+        let file = crate::registry::Registry::local_large_values_path(&registry)
+            .join("messages/sha256")
+            .join(key);
+        std::fs::write(&file, b"tampered").unwrap();
+        assert_eq!(owner.get(&hash).unwrap_err(), CanonicalError::Unavailable);
+    }
+
+    /// A store whose planned transactions lose their answer: the backend reports an unknown
+    /// commit outcome after committing (`Some(true)`) or after discarding the writes
+    /// (`Some(false)`). `None`, or no plan left, answers normally.
+    #[derive(Debug)]
+    struct LostAnswers {
+        inner: RocksDbKvStore,
+        plan: Mutex<std::collections::VecDeque<Option<bool>>>,
+    }
+
+    impl RelayKvStore for LostAnswers {
+        fn run_transaction(
+            &self,
+            body: &mut dyn FnMut(&mut dyn KvTransaction) -> crate::store::kv_store::Outcome,
+        ) -> std::result::Result<crate::store::kv_store::Outcome, KvError> {
+            use crate::store::kv_store::Outcome;
+            match self.plan.lock().unwrap().pop_front().flatten() {
+                None => self.inner.run_transaction(body),
+                Some(committed) => {
+                    self.inner.run_transaction(&mut |tx| {
+                        let outcome = body(tx);
+                        if committed {
+                            outcome
+                        } else {
+                            Outcome::Abort
+                        }
+                    })?;
+                    Err(KvError::CommitUnknownResult("answer lost".into()))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_request_whose_commit_answer_was_lost_is_stored_once_with_its_object() {
+        for committed in [true, false] {
+            let store = Arc::new(LostAnswers {
+                inner: RocksDbKvStore::open_temporary().unwrap(),
+                plan: Mutex::new(Default::default()),
+            });
+            let objects = Arc::new(LocalFsObjectStore::temporary());
+            let root = objects.root().join(OBJECT_NAMESPACE);
+            let owner = Owner::with_store(store.clone(), objects);
+            // Claims the object namespace, so the admission's transactions are the planned ones.
+            owner.sweep_large_values([1; 16]).unwrap();
+            let (input, _) = paid_input_sealing(Some(200_000));
+            let body = input.request.body().to_vec();
+            let hash = input.policy.payload_hash;
+            // The upload intent answers; the admission loses its answer.
+            *store.plan.lock().unwrap() = [None, Some(committed)].into_iter().collect();
+            let admitted = owner.claim(input, 1234).unwrap();
+            assert!(admitted.new, "committed: {committed}");
+            assert!(store.plan.lock().unwrap().is_empty());
+            let Some(Row {
+                body: Stored::Large(reference),
+                ..
+            }) = stored_row(&owner, &hash)
+            else {
+                panic!("one row referencing the request");
+            };
+            // The stored row references this call's only upload, and the sweep keeps it.
+            let uploads: Vec<_> =
+                std::fs::read_dir(root.join("sha256").join(hex::encode(reference.digest)))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                    .filter(|name| !name.starts_with('.'))
+                    .collect();
+            assert_eq!(uploads, vec![hex::encode(reference.upload)]);
+            assert_eq!(owner.sweep_large_values([1; 16]).unwrap().deleted, 0);
+            assert_eq!(owner.get(&hash).unwrap().unwrap().request.body(), body);
+        }
+    }
+
+    #[test]
+    fn replicas_on_one_store_read_each_others_large_requests() {
+        let shared: Arc<dyn RelayKvStore> = Arc::new(RocksDbKvStore::open_temporary().unwrap());
+        let objects: Arc<dyn ObjectStore> = Arc::new(LocalFsObjectStore::temporary());
+        let a = Owner::with_store(Arc::clone(&shared), Arc::clone(&objects));
+        let b = Owner::with_store(Arc::clone(&shared), Arc::clone(&objects));
+        let (input, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
+        let body = input.request.body().to_vec();
+        let hash = input.policy.payload_hash;
+        a.claim(input, 1234).unwrap();
+        assert_eq!(b.get(&hash).unwrap().unwrap().request.body(), body);
+        // Either replica's sweep keeps the referenced object.
+        assert_eq!(b.sweep_large_values([2; 16]).unwrap().deleted, 0);
+        assert_eq!(a.get(&hash).unwrap().unwrap().request.body(), body);
     }
 }
 

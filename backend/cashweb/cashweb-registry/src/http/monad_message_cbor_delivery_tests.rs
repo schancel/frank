@@ -1853,9 +1853,11 @@ async fn replicas_sharing_one_store_agree_on_times_rows_and_challenges() {
     };
     let shared: Arc<dyn crate::store::kv_store::RelayKvStore> =
         Arc::new(crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap());
+    let objects: Arc<dyn crate::store::large_values::ObjectStore> =
+        Arc::new(crate::store::large_values::LocalFsObjectStore::temporary());
     let replicas = [
-        Owner::with_store(Arc::clone(&shared)),
-        Owner::with_store(Arc::clone(&shared)),
+        Owner::with_store(Arc::clone(&shared), Arc::clone(&objects)),
+        Owner::with_store(Arc::clone(&shared), Arc::clone(&objects)),
     ];
     let recipient = relay.recipient();
     let clock = now_ms();
@@ -2013,7 +2015,10 @@ async fn an_unknown_commit_outcome_is_settled_by_a_fence_and_admits_the_message_
         inner: crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap(),
         plan: Mutex::new(Default::default()),
     });
-    let owner = Owner::with_store(store.clone());
+    let owner = Owner::with_store(
+        store.clone(),
+        Arc::new(crate::store::large_values::LocalFsObjectStore::temporary()),
+    );
     let recipient = relay.recipient();
     let now = now_ms();
     let plan = |steps: &[Option<bool>]| {

@@ -355,9 +355,13 @@ impl Db {
     }
 
     fn old_format(path: &Path, found: String) -> DbError {
+        // The message store's large requests go with it: a new store would refuse the object
+        // namespace its predecessor claimed.
         let mut delete = vec![
             path.to_path_buf(),
             path.with_extension(super::monad_dm_cbor::STORE_EXTENSION),
+            crate::registry::Registry::local_large_values_path(path)
+                .join(super::monad_dm_cbor::OBJECT_NAMESPACE),
         ];
         delete.extend(
             super::monad_dm_cbor::OLD_STORE_EXTENSIONS

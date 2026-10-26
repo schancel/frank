@@ -273,7 +273,7 @@ pub mod blackjack_item {
     };
 }
 
-/// `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; local RocksDB value, never on the wire). The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash.
+/// `canonical-dm-message-row` field keys: One admitted canonical direct message with its frozen payment policy (cashweb-registry canonical message store; relay transaction store value, never on the wire). The body is the request as submitted, stored as a large-value cell: 0x00 then the bytes when it is at most 64 KiB, else 0x01 then its SHA-256 (32), length (u64 BE) and upload id (16), naming the object messages/sha256/<hex>/<upload> in the large-value store. The policy is an 11-element array in the order network, chain id, minimum, sender P, recipient P, sender M, recipient M, stamp key, sender T1, recipient T1, payload hash.
 pub mod canonical_dm_message_row {
     use super::MapShape;
 
@@ -2001,8 +2001,8 @@ pub mod bot_role {
 
 /// `canonical-dm-message-row-version` values: canonical-dm-message-row field 0.
 pub mod canonical_dm_message_row_version {
-    /// `v2`.
-    pub const V2: u32 = 2;
+    /// `v3`.
+    pub const V3: u32 = 3;
 }
 
 /// `encryption-suite` values: Type 11 field 3 (README S2c).

@@ -329,7 +329,7 @@ move_old_relay_database_aside() {
         *) stem="$db" ;;
     esac
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    for path in "$db" "$stem.messages-v2" "$stem.monad-dm-cbor-v1"; do
+    for path in "$db" "$db.large-values/messages" "$stem.messages-v3" "$stem.messages-v2" "$stem.monad-dm-cbor-v1"; do
         [[ -e "$path" ]] || continue
         # Only what the relay itself named.
         [[ "$refusal" == *"$path"* ]] || continue

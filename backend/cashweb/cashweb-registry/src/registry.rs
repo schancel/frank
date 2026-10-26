@@ -70,13 +70,15 @@ pub struct Registry {
 pub struct RegistryBackends {
     /// Where groups keep their state (`registry.cluster.driver`).
     pub groups: crate::store::groups::GroupBackend,
-    /// Where values over the inline limit (group ciphertexts) live (`registry.large_values`).
+    /// Where values over the inline limit (group ciphertexts, direct-message requests, forum
+    /// frames, directory evidence) live (`registry.large_values`).
     pub objects: Arc<dyn crate::store::large_values::ObjectStore>,
     /// Where the directory keeps its state (`registry.cluster.driver`).
     pub directory: crate::store::directory_store::DirectoryBackend,
     /// Where direct messages keep their state (`registry.cluster.driver`): `None` is this
-    /// replica's RocksDB beside the registry database (`<db>.messages-v3`), `Some` a
-    /// transaction store every replica shares (FoundationDB, under `<prefix>messages-v3/`).
+    /// replica's RocksDB beside the registry database (`<db>.messages-v4`), `Some` a
+    /// transaction store every replica shares (FoundationDB, under `<prefix>messages-v4/`).
+    /// Requests over the inline limit go to `objects`.
     pub messages: Option<Arc<dyn crate::store::kv_store::RelayKvStore>>,
     /// Where the forum keeps its state (`registry.cluster.driver`): `None` is this replica's
     /// RocksDB beside the registry database (`<db>.forum-kv-v1`), `Some` a transaction store
@@ -270,8 +272,13 @@ impl Registry {
             ),
         };
         let canonical_dm = match backends.messages {
-            Some(store) => crate::store::monad_dm_cbor::Owner::with_store(store),
-            None => crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
+            Some(store) => {
+                crate::store::monad_dm_cbor::Owner::with_store(store, Arc::clone(&backends.objects))
+            }
+            None => crate::store::monad_dm_cbor::Owner::new(
+                db.owned_path().to_path_buf(),
+                Arc::clone(&backends.objects),
+            ),
         };
         let groups = crate::store::groups::Owner::new(backends.groups, backends.objects);
         Registry {
@@ -386,6 +393,18 @@ impl Registry {
 
     pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {
         &self.canonical_dm
+    }
+
+    /// Delete unreferenced direct-message objects (requests over the inline limit) as sweep
+    /// lease holder `holder`. Nothing is done before this replica's message store exists.
+    /// Blocks; run it on a blocking worker.
+    pub fn sweep_message_large_values(
+        &self,
+        holder: [u8; 16],
+    ) -> std::result::Result<crate::store::large_values::SweepReport, String> {
+        self.canonical_dm
+            .sweep_large_values(holder)
+            .map_err(|error| error.to_string())
     }
 
     pub(crate) fn groups(

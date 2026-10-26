@@ -54,7 +54,8 @@ variables.
 | Event bus | Publish only on wakeup; websocket fallback invents a timestamp when the row is missing | Publish after every new commit on `frank.<cluster>.dm.<addr>` / `frank.<cluster>.grp.<id>`. Drop a hint whose row is missing; the client catches up from its cursor. |
 
 FoundationDB limits shape the large-value rule: 100 KB per value, 10 MB and 5 s per
-transaction. Values that can be larger are DM requests (up to 8 MiB), group messages (about
+transaction. Values that can be larger are DM requests (an 8 MiB HTTP limit, but
+the codec admits about 0.53 MB: see step 6), group messages (about
 2 MiB stored), profiles, forum and DM frames (up to 1 MiB), directory evidence (up to 256 KiB)
 and forward bodies. These are inlined up to 64 KiB and stored in S3 above that. Each
 upload is its own S3 object, `<namespace>/sha256/<hex>/<upload-id>`: content-verified on
@@ -117,12 +118,23 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      - with NATS down, readers catch up from their cursor;
      - an 8 MiB request round-trips through S3.
    - Progress (branch `ha/dm-owner-port`): the owner runs on `RelayKvStore` transactions, opened
-     through step 2's driver selection under `<fdb_subspace_prefix>messages-v3/`; an ambiguous
+     through step 2's driver selection under `<fdb_subspace_prefix>messages-v4/`; an ambiguous
      commit is settled by a fence on the recipient's delivery-time key.
-     `packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` checks every item above except S3
-     on the three relays of the cluster lab (`backend/labs/compose.cluster.yml`). Until step 4,
-     rows over 100 kB are split across FDB values. Clients seal at most 512 KiB of ciphertext per
-     message, so the livecheck sends a 400 kB message and a unit test covers an 8 MiB row.
+     `packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` checks every item above on the
+     three relays of the cluster lab (`backend/labs/compose.cluster.yml`).
+   - Large requests: a request over 64 KiB is an object in step 4's large-value store
+     (`<bucket prefix>/messages/sha256/<hex>/<upload>`; on a single node, the directory beside
+     the database). It is uploaded before the admission transaction, and its reference commits
+     with the row, the payment keys and the delivery times, or not at all; an upload no row
+     references is left to the orphan sweep. While S3 is down, admitting a request over 64 KiB
+     fails as unavailable with nothing stored (decision E); smaller requests do not need S3.
+     There is no FDB splitting.
+   - Request size: the HTTP limit is 8 MiB, but the codec bounds what a relay admits: a
+     direct-message frame holds one crypto-box envelope of at most 524,376 bytes (512 KiB of
+     ciphertext), stamps are calldata-free transfers, at most 64. The largest admissible request
+     is therefore about 0.53 MB (a unit test admits one of 525,850 bytes with one stamp), and an
+     8 MiB request cannot round-trip. The livecheck sends the largest message a client seals,
+     reads it back on B and C, and finds its object in MinIO.
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.
 8. **Directory port.** Accept: an entry published on A resolves on B; conflicting revisions on A and B leave one accepted and no fork; a forward interrupted by killing A is delivered exactly once.
 9. **Forum port.** Accept: a cursor from A works on B; one burn presented to A and B gives one post.

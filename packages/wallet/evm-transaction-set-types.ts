@@ -30,6 +30,12 @@ export interface ConstructEvmTransactionSetRequest {
   readonly maxFeeWei?: bigint
   /** Value kept in private change for a later leg of this same operation. */
   readonly reserveForContinuationWei?: bigint
+  /** The continuation is one transfer, and this is its fee (part of the reserve). The reserve is
+   * then kept as one fresh account holding exactly `reserveForContinuationWei`, which that one
+   * transfer spends whole, and the fee bound (`maxFeeWei`) counts this fee: change is never
+   * planned from it, and a set whose continuation would not fit under the bound is refused here,
+   * before anything is signed, instead of at the continuation. */
+  readonly continuationFeeWei?: bigint
   /** Internal protocol constraint for consumers that require one on-chain payment. */
   readonly maxPaymentParts?: number
   /** Captured minimum for each recipient transaction; never recomputed during replay. */

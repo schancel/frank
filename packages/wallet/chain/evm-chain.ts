@@ -3380,9 +3380,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   if (!resolve) throw new Error("Combined payment and stamp capability is unavailable");
                   return resolve(id, amount);
                 },
-                releasePaymentOperation: async (id) => {
+                releasePaymentOperation: async (id, endedMessage) => {
                   const release = walletInternals.releaseMessagePayment;
-                  return release ? release(id) : false;
+                  return release ? release(id, endedMessage) : false;
                 },
               },
               lifetime: (operation) => topicOwner!.runLifetime(() => operation()),

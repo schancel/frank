@@ -28,6 +28,7 @@ import {
 import {
   ContactPaymentFailedError,
   ContactPaymentNotSettledError,
+  NativeFeeExceededError,
   ContactPaymentPendingError,
   ContactPaymentBelowFloorError,
   type ContactPaymentQuote,
@@ -41,7 +42,10 @@ import {
   type PreparedContactPayment,
   type ReceivedCoinSweep,
 } from "./chain/chain-wallet";
-import type { EvmNativeOperation } from "./storage/evm-native-operation-journal";
+import {
+  nativeMemberSuperseded,
+  type EvmNativeOperation,
+} from "./storage/evm-native-operation-journal";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import {
   configuredEvmStealthToken,
@@ -108,6 +112,7 @@ import {
 } from "./storage/evm-coin-store";
 import type { EvmNativeSource } from "./storage/evm-native-operation-journal";
 import { EvmTransactionSetInsufficientFundsError } from "./evm-transaction-set-types";
+import { EvmTransactionSetFeeExceededError } from "./evm-transaction-set";
 import type { TransactionSetSubmission } from "./transaction-set";
 import type {
   EvmWalletOperationAdmission,
@@ -951,7 +956,48 @@ export function createEvmReceivedCoinAndContactManager(
 
   const holdsItsSource = (payment: ContactPayment): boolean =>
     (payment.state === "prepared" || payment.state === "failed") &&
+    payment.spentElsewhere !== true &&
     !transferIncluded(payment);
+
+  /** A held payment whose signed set may have left the wallet (the journal shows it authorized
+   * for submission or a member exposed) is held until the chain says what became of it. This
+   * asks the chain: when every transaction of the set is either included or can never land
+   * (its nonce used by another transaction, as when another device of the account spent the
+   * same coins) and the payment's own transfer is one that cannot, the payment is failed and
+   * holds nothing. A set that never left the wallet is not looked at here: the end of its
+   * message releases it. Returns the payment as it now stands. */
+  const reconcileHeldContactPayment = async (
+    payment: ContactPayment
+  ): Promise<ContactPayment> => {
+    const wallet = getWallet();
+    const id = payment.transactionSetOperationId;
+    const preparer = wallet.transactionSetPreparer;
+    const lifecycle = wallet.transactionSetLifecycle;
+    if (!holdsItsSource(payment) || !id || !preparer || !lifecycle) return payment;
+    const row = await preparer.readOperation(id);
+    if (!row || row.cancelled ||
+        (!row.submissionAuthorized && !row.members.some((member) => member.exposed)))
+      return payment;
+    await getTopicOwner().runLifetime(() => lifecycle.observe(id, wallet.provider));
+    const observed = await preparer.readOperation(id);
+    const transfer = primaryMember(observed);
+    if (!observed || !transfer || !nativeMemberSuperseded(transfer) ||
+        !observed.members.every((member) => nativeMemberSuperseded(member) ||
+          member.observation.state === "included-success" ||
+          member.observation.state === "included-revert"))
+      return payment;
+    const current = paymentStore.get(payment.stealthAddress);
+    if (!current || !holdsItsSource(current)) return current ?? payment;
+    const failed: ContactPayment = {
+      ...current,
+      state: "failed",
+      spentElsewhere: true,
+      failure: "its coins were spent by another transaction, so it can never be paid",
+    };
+    await paymentStore.put(payment.stealthAddress, failed);
+    invalidateBalanceRead();
+    return failed;
+  };
 
   let financialPaymentsInstance: ReturnType<typeof createEvmStealthPayments> | undefined;
 
@@ -994,14 +1040,26 @@ export function createEvmReceivedCoinAndContactManager(
     return released.cancelled === true;
   };
 
-  const releaseContactPayment = (stealthAddress: string): Promise<boolean> =>
+  /** Releases a payment nothing of which can have left the wallet. Without `endedMessage`, that
+   * is one no message has learned of yet (no digest) and none is sending. With it, the message
+   * of that digest carried the payment and ended before anything of it was signed or handed out
+   * (`endUnconstructed`): the payment may have learned that digest, and that very send may be
+   * the one in flight. Either way the journal proves the signed set unexposed again before it
+   * is cancelled (`releaseUnexposed`). */
+  const releaseContactPayment = (
+    stealthAddress: string,
+    endedMessage?: string
+  ): Promise<boolean> =>
     exposureExclusive(async () => {
       const payment = paymentStore.get(stealthAddress);
       if (
         payment === undefined ||
         (payment.state !== "prepared" && payment.state !== "planned") ||
-        payment.payloadDigest !== undefined ||
-        inFlight.has(payment.ephemeralPubKey)
+        (endedMessage === undefined
+          ? payment.payloadDigest !== undefined ||
+            inFlight.has(payment.ephemeralPubKey)
+          : payment.payloadDigest !== undefined &&
+            payment.payloadDigest !== endedMessage)
       ) {
         return false;
       }
@@ -1265,25 +1323,41 @@ export function createEvmReceivedCoinAndContactManager(
     return quote.amount;
   };
 
-  /** The network fee of a contact payment and its stamp: the payment's own transfers as the
-   * payment selects and splits them (`estimateLegacyFee`), and the stamp's one transfer, the
-   * continuation `payContact` reserves for it. `payContact` constructs under this fee as its
-   * bound, so the stamp stage plans fresh change only from what the payment leaves of it: the
-   * built set pays exactly this, or is refused before anything is exposed. */
+  /** What `payContact` keeps back for the message's stamp: one fresh account holding the stamp
+   * and the fee of the one transfer that pays it. None for a message without a stamp. */
+  const stampContinuation = (
+    wallet: EvmChainWalletHandle,
+    stampWei: bigint
+  ): { reserveWei: bigint; feeWei: bigint } | undefined => {
+    if (stampWei <= 0n) return undefined;
+    const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+    const feeWei = policy.paymentGasLimit("0x") * policy.gasPriceWei;
+    return { reserveWei: stampWei + feeWei, feeWei };
+  };
+
+  /** The network fee of a contact payment and its stamp, from the same selection `payContact`
+   * builds with (`quoteLegacyTransactionSet` given the stamp's continuation): the payment's own
+   * transfers, the transfer that keeps the stamp's account, and the stamp's one transfer.
+   * `payContact` constructs under this fee as its bound: the built set pays exactly this, or is
+   * refused before anything is signed. */
   const contactNetworkFeeWei = async (
     wallet: EvmChainWalletHandle,
     recipient: ContactSendParams["recipient"],
     value: bigint,
     stampWei: bigint
   ): Promise<bigint> => {
-    if (!wallet.estimateLegacyFee) {
+    const preparer = wallet.transactionSetPreparer;
+    if (!preparer || !wallet.refreshTransactionSetInventory) {
       throw new Error("This wallet cannot quote a contact payment's fee");
     }
-    const payment = await wallet.estimateLegacyFee({ recipient, value });
-    const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
-    const stampFeeWei =
-      stampWei > 0n ? policy.paymentGasLimit("0x") * policy.gasPriceWei : 0n;
-    return payment.totalFee + stampFeeWei;
+    await wallet.refreshTransactionSetInventory();
+    const continuation = stampContinuation(wallet, stampWei);
+    const quote = await preparer.quoteLegacyTransactionSet({
+      destination: recipient.raw,
+      amountWei: value,
+      ...(continuation ? { continuation } : {}),
+    });
+    return quote.feeWei;
   };
 
   const quoteContactPayment = async (
@@ -1416,18 +1490,24 @@ export function createEvmReceivedCoinAndContactManager(
             contactParams.value,
             stampWei
           ));
-        const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+        const continuation = stampContinuation(wallet, stampWei);
         await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
           operationId: transactionSetOperationId,
           amountWei: contactParams.value,
           maxFeeWei,
           kdf: () => stealthAddress,
-          ...(stampWei! > 0n ? { reserveForContinuationWei:
-            stampWei! + policy.paymentGasLimit("0x") * policy.gasPriceWei } : {}),
+          ...(continuation ? {
+            reserveForContinuationWei: continuation.reserveWei,
+            continuationFeeWei: continuation.feeWei,
+          } : {}),
         }));
       } catch (error) {
         if (signedTransferTo(stealthAddress) === undefined) {
           await paymentStore.delete(stealthAddress);
+          // Over the fee the user approved, the stamp's transfer included: refused before
+          // anything was signed. Nothing is held.
+          if (error instanceof EvmTransactionSetFeeExceededError)
+            throw new NativeFeeExceededError(error.feeWei);
           throw error;
         }
       }
@@ -1483,6 +1563,9 @@ export function createEvmReceivedCoinAndContactManager(
           await cancelReleasedTransfer(payment).catch(() => undefined);
           continue;
         }
+        // An exposed set the chain shows can never land holds nothing: failed, not resumed.
+        payment = await reconcileHeldContactPayment(payment).catch(() => payment);
+        if (payment.spentElsewhere) continue;
         if (
           payment.state !== "planned" &&
           payment.state !== "prepared" &&
@@ -2529,13 +2612,14 @@ export function createEvmReceivedCoinAndContactManager(
       return id;
     };
 
-    walletInternals.releaseMessagePayment = async (id) => {
+    walletInternals.releaseMessagePayment = async (id, endedMessage) => {
       await preparations.refresh();
       const row = preparations.get(id);
       if (row) return row.released === true || (await financialPayments.release(id)) === true;
       const contact = paymentStore.all().find(payment => payment.transactionSetOperationId === id);
       if (!contact) return false;
-      return contact.state === "released" || releaseContactPayment(contact.stealthAddress);
+      return contact.state === "released" ||
+        releaseContactPayment(contact.stealthAddress, endedMessage);
     };
 
     walletInternals.receivedCoinOwner = {

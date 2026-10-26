@@ -26,6 +26,7 @@ import {
   ContactPaymentBelowFloorError,
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
+  NativeFeeExceededError,
   type ReceivedPayment,
   type ContactSendParams,
   type ContactSendResult,
@@ -503,6 +504,206 @@ describe('a payment to a contact', () => {
     // Nothing was taken or signed to quote it.
     expect(alice.getContactPayments!()).toEqual([])
     expect(node.broadcasts).toEqual([])
+  })
+
+  describe('Send to Contact from one large coin and several small received ones', () => {
+    // As on the lab: the main account's own large coin, and a faucet's payment received as four
+    // coins. The payment, 5,000,000, fits in one received coin (5,147,000) with too little left
+    // over to hold the message's stamp; the stamp, 500,000, is above the payment floor.
+    const RECEIVED = [5_147_000n, 2_118_000n, 1_500_000n, 1_235_000n]
+    const STAMP_HERE = 500_000n
+    const TRANSFER = 21_000n
+    const contactsHeld = (wallet: EvmChainWalletHandle) =>
+      wallet.getContactPayments!().filter(payment => payment.holdsFunds)
+    const operationOf = (txHash: string) =>
+      alice.getNativeOperations!().find(row =>
+        row.members.some(member => member.signed?.transactionHash === txHash))
+    const feeOf = (rawTransactions: readonly string[]) =>
+      rawTransactions.reduce((sum, raw) => {
+        const tx = Transaction.from(raw)
+        return sum + tx.gasLimit * tx.gasPrice!
+      }, 0n)
+
+    beforeEach(async () => {
+      // Bob pays alice four times; alice reads her mailbox and the chain shows each payment.
+      f.setMailbox(mailboxes.get(subjectOf(alice)))
+      for (const value of RECEIVED) {
+        try {
+          await bob.sendToContact!({ recipient: alice.identity.address, value })
+        } catch (error) {
+          if (!(error instanceof ContactPaymentPendingError)) throw error
+          await recoverMessage(bob, digestOf(error))
+        }
+      }
+      f.setMailbox(bobMailbox)
+      await poll(alice)
+      mockBalances.set(await mainOf(alice), 200_000_000n)
+      await settle(alice)
+      expect(
+        coinsOf(alice).filter(coin => coin.spendable).map(coin => coin.amountWei).sort(),
+      ).toEqual([...RECEIVED].sort())
+      node.broadcasts.length = 0
+      bobMailbox.length = 0
+    })
+
+    it('the first attempt is built from the selection its review quoted, and pays exactly the reviewed fee', async () => {
+      const quote = await alice.quoteContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: STAMP_HERE,
+      })
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: quote.stampWei,
+        maxFeeWei: quote.networkFeeWei,
+      })
+      let attempt: string | undefined
+      await f.chain.directMessages
+        .send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [prepared.item],
+          stampValue: prepared.stampValue,
+          onAttemptCreated: digest => {
+            attempt = digest
+          },
+        })
+        .catch(error => {
+          expect(error).toBeInstanceOf(MonadStampPendingAttemptError)
+        })
+      await recoverMessage(alice, attempt!)
+      expect(bobMailbox).toHaveLength(1)
+      const operation = operationOf(prepared.txHash)!
+      const raws = operation.members.map(member => member.signed!.rawTransaction)
+      // Every transaction of the payment and its stamp, under the fee the review showed.
+      expect(feeOf(raws)).toBe(quote.networkFeeWei)
+      const paid = operation.members
+        .filter(member => member.transactionSet?.role === 'payment')
+        .reduce((sum, member) => sum + Transaction.from(member.signed!.rawTransaction).value, 0n)
+      expect(paid + feeOf(raws)).toBe(quote.totalWei)
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'paid', holdsFunds: false }),
+      ])
+    })
+
+    it('a stamp that would not fit under the approved fee is refused before anything is signed, and nothing is held', async () => {
+      // The payment's transfer, the transfer keeping the stamp's account and the stamp's own
+      // transfer do not fit: refused at the payment, not after it was signed.
+      await expect(
+        alice.prepareContactPayment!({
+          recipient: bob.identity.address,
+          value: VALUE,
+          stampValue: STAMP_HERE,
+          maxFeeWei: 3n * TRANSFER - 1n,
+        }),
+      ).rejects.toBeInstanceOf(NativeFeeExceededError)
+      expect(alice.getContactPayments!()).toEqual([])
+      expect(alice.getNativeOperations!().filter(row => !row.cancelled)).toEqual([])
+      expect(contactsHeld(alice)).toEqual([])
+      expect(node.broadcasts).toEqual([])
+      expect(bobMailbox).toEqual([])
+      // Every received coin is spendable again at once.
+      const quote = await alice.quoteContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: STAMP_HERE,
+      })
+      await expect(
+        alice.prepareContactPayment!({
+          recipient: bob.identity.address,
+          value: VALUE,
+          stampValue: quote.stampWei,
+          maxFeeWei: quote.networkFeeWei,
+        }),
+      ).resolves.toBeDefined()
+    })
+
+    it('a stamp refused over the fee after its payment was signed, with nothing handed out, gives the payment back', async () => {
+      const quote = await alice.quoteContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: STAMP_HERE,
+      })
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: quote.stampWei,
+        maxFeeWei: quote.networkFeeWei,
+      })
+      expect(contactsHeld(alice)).toHaveLength(1)
+      // The network's price doubles between the payment and its stamp: the stamp's transfer no
+      // longer fits under the approved fee, and is refused before it is signed.
+      policyGasPriceWei = 2n
+      await expect(
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [prepared.item],
+          stampValue: prepared.stampValue,
+        }),
+      ).rejects.toBeInstanceOf(NativeFeeExceededError)
+      // The message learned of the payment, but nothing of either was handed to anyone: the
+      // payment is released, its coins free, and every view says so.
+      expect(node.broadcasts).toEqual([])
+      expect(bobMailbox).toEqual([])
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'released', holdsFunds: false }),
+      ])
+      expect(operationOf(prepared.txHash)).toBeUndefined()
+      expect(
+        coinsOf(alice).filter(coin => coin.spendable).map(coin => coin.amountWei).sort(),
+      ).toEqual([...RECEIVED].sort())
+    })
+
+    it('a held payment whose set left the wallet is failed and holds nothing once the chain shows every coin of it spent by other transactions', async () => {
+      const quote = await alice.quoteContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: STAMP_HERE,
+      })
+      // An approved fee with room to spare: this is about the hold, not the fee bound.
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: quote.stampWei,
+        maxFeeWei: 10n * quote.networkFeeWei,
+      })
+      // The set is handed to alice's node, which takes nothing, and the relay cannot be reached.
+      node.unreachable.add(alice)
+      f.setPhase('fail')
+      await f.chain.directMessages
+        .send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [prepared.item],
+          stampValue: prepared.stampValue,
+        })
+        .catch(() => undefined)
+      expect(node.broadcasts).toEqual([])
+      const operation = operationOf(prepared.txHash)!
+      expect(
+        operation.submissionAuthorized || operation.members.some(member => member.exposed),
+      ).toBe(true)
+      // Out of the wallet, and nothing shows it cannot land: it stays held.
+      await alice.resumeContactPayments!()
+      expect(contactsHeld(alice)).toHaveLength(1)
+
+      // Another device of the account spends the same coins: every nonce of the set is used by
+      // another transaction.
+      for (const member of operation.members) {
+        const tx = Transaction.from(member.signed!.rawTransaction)
+        node.nonces.set(
+          member.source.address,
+          Math.max(node.nonces.get(member.source.address) ?? 0, tx.nonce + 1),
+        )
+      }
+      await alice.resumeContactPayments!()
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'failed', holdsFunds: false }),
+      ])
+      expect(contactsHeld(alice)).toEqual([])
+    })
   })
 
   it('a received payment below the floor is too small to move, by the same test as the balance', async () => {

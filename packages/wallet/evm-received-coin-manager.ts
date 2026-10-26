@@ -2850,6 +2850,7 @@ export function createEvmReceivedCoinAndContactManager(
         holdsFunds: holdsItsSource(payment),
         ...(payment.txHash ? { txHash: payment.txHash } : {}),
         ...(payment.failure ? { failure: payment.failure } : {}),
+        ...(payment.operationId ? { operationId: payment.operationId } : {}),
       })),
     sendToContact: (sendParams: ContactSendParams) =>
       payContact(sendParams, false) as Promise<ContactSendResult>,

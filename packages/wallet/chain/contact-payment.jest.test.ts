@@ -343,6 +343,12 @@ describe('a payment to a contact', () => {
         txHash: sent.txHash,
       }),
     ])
+    // It names the journal operation that paid it: what its card reads its network fee from.
+    const [paid] = alice.getContactPayments!()
+    const row = await alice.readNativeOperation!(paid!.operationId!)
+    expect(
+      row!.members.some(member => member.signed?.transactionHash === sent.txHash)
+    ).toBe(true)
   })
 
   it('the contact sees it pending, then received at the chain amount, and spends it in an ordinary send', async () => {

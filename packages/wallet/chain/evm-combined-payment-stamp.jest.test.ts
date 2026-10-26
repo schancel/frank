@@ -84,6 +84,36 @@ test('one funded root prepares a stealth payment and its stamp under one operati
   } finally { await f.close() }
 })
 
+test('a sent stealth payment with its stamp reads the network fee of every transaction of its operation, as History does', async () => {
+  const f = await setup()
+  try {
+    const id = evmStealthTransactionSetOperationId(paymentId)
+    let digest: string | undefined
+    const put = LevelOutgoingMessageStore.prototype.put
+    jest.spyOn(LevelOutgoingMessageStore.prototype, 'put').mockImplementation(async function(row) {
+      await put.call(this, row)
+      if (row.request) digest = row.digest
+    })
+    await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address,
+      messageId, paymentOperationId: paymentId, stampValue: stamp,
+      items: [recipientAssetPaymentFromPrepared(f.prepared)],
+      onEnvelopeDurable: d => f.alice.stealthPayments!.expose({ operationId: paymentId, payloadDigest: d }),
+    }).catch(error => { expect(error).toBeInstanceOf(MonadStampPendingAttemptError) })
+    // The chain charges each transaction a fee from here on (receipts are read below).
+    offlineChain.gasPrice = 1n
+    for (let i = 0; i < 6; i++) await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [digest!], maxPutAttempts: 1 })
+    await f.alice.stealthPayments!.reconcile(paymentId)
+    const summary = summarizeEvmNativeOperation(f.alice.transactionSetPreparer!.getOperation(id)!)
+    // The stamp's stage is part of the operation and the chain charged it a fee.
+    const stampFees = summary.members.filter(m => m.stageId?.startsWith('stamp-') && BigInt(m.feeWei ?? '0') > 0n)
+    expect(stampFees.length).toBeGreaterThan(0)
+    expect(summary.feeCoverage).toBe('complete')
+    const status = (await f.alice.stealthPayments!.status!(paymentId))!
+    // The card's figure is History's: every member of the operation, the stamp's included.
+    expect(status.nativeFeeAtomic).toBe(BigInt(summary.observedFeeWei))
+  } finally { await f.close() }
+})
+
 test('restart after stamp append preserves original payment, stamp, encrypted payload, and reservations', async () => {
   const f = await setup()
   let active: EvmChainWalletHandle = f.alice
@@ -283,6 +313,8 @@ test.each([true, false])('Send to Contact from one large coin pays exactly the n
       messageId, stampValue: prepared.stampValue, items: [prepared.item],
       onAttemptCreated: async value => { digest = value },
     }).catch(error => { expect(error).toBeInstanceOf(MonadStampPendingAttemptError) })
+    // The chain charges each transaction a fee from here on (receipts are read below).
+    offlineChain.gasPrice = 1n
     for (let i = 0; i < 6; i++) await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [digest!], maxPutAttempts: 1 })
     const graph = f.alice.transactionSetPreparer!.getOperation(send.mock.calls[0]![0].operationId)!
     // The payment and the stamp were both built into this one operation.

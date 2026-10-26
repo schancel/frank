@@ -268,6 +268,19 @@
           </div>
         </q-card-section>
 
+        <!-- Refused over the reviewed fee: nothing was sent; the fee and total above are the
+             new quote, which bounds the payment if the user confirms again. -->
+        <q-card-section
+          v-if="feeChanged"
+          class="q-pt-none"
+          role="alert"
+          data-test="review-fee-changed"
+        >
+          <q-banner dense rounded class="bg-amber-1 text-amber-10">
+            {{ $t('sendAddressDialog.feeChanged') }}
+          </q-banner>
+        </q-card-section>
+
         <q-card-section class="q-pt-none">
           <q-banner
             class="bg-blue-1 text-primary q-pa-sm"
@@ -291,7 +304,7 @@
             @click="cancelReview"
           />
           <q-btn
-            :disable="sending"
+            :disable="sending || quote.state === 'estimating'"
             :loading="sending"
             :label="$t('sendContactDialog.confirmAndSend')"
             color="primary"
@@ -310,6 +323,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   activeChain,
   MAX_STEALTH_ITEM_AMOUNT,
+  NativeFeeExceededError,
   type ContactPaymentQuote,
 } from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
@@ -363,6 +377,8 @@ export default defineComponent({
     })
     let feeRequest = 0
     const sending = ref(false)
+    // The last Confirm was refused because the network fee rose above the reviewed one.
+    const feeChanged = ref(false)
 
     const balanceText = computed(() =>
       loaded.value ? formattedSpendable.value : '',
@@ -475,7 +491,40 @@ export default defineComponent({
         : pendingText(),
     )
 
+    /** Asks the wallet for this payment's quote (shown in the review); a later request wins. */
+    function requote() {
+      const request = ++feeRequest
+      quote.value = { state: 'estimating' }
+      const value = parsedValue.value!
+      // The message carries the stamp chosen for the conversation with this contact, as a
+      // payment sent from the chat itself does (the wallet's default when none is chosen).
+      const stampValue = chatStore.getStampWei(selectedContactAddress.value)
+      void (async () => {
+        try {
+          const wallet = await useActiveWallet()
+          if (!wallet.quoteContactPayment)
+            throw new Error($t('sendContactDialog.noFeeQuote'))
+          const quoted = await wallet.quoteContactPayment({
+            recipient: { raw: selectedContactAddress.value },
+            value,
+            stampValue,
+          })
+          if (request === feeRequest)
+            quote.value = { state: 'known', quote: quoted }
+        } catch (err) {
+          if (request === feeRequest)
+            quote.value = {
+              state: 'unavailable',
+              reason:
+                err instanceof Error && err.message ? err.message : String(err),
+            }
+        }
+      })()
+    }
+
     return {
+      quote,
+      feeChanged,
       feeText,
       stampText,
       totalText,
@@ -527,41 +576,16 @@ export default defineComponent({
           return
         }
         isReviewing.value = true
-        const request = ++feeRequest
-        quote.value = { state: 'estimating' }
-        const value = parsedValue.value!
-        // The message carries the stamp chosen for the conversation with this contact, as a
-        // payment sent from the chat itself does (the wallet's default when none is chosen).
-        const stampValue = chatStore.getStampWei(selectedContactAddress.value)
-        void (async () => {
-          try {
-            const wallet = await useActiveWallet()
-            if (!wallet.quoteContactPayment)
-              throw new Error($t('sendContactDialog.noFeeQuote'))
-            const quoted = await wallet.quoteContactPayment({
-              recipient: { raw: selectedContactAddress.value },
-              value,
-              stampValue,
-            })
-            if (request === feeRequest)
-              quote.value = { state: 'known', quote: quoted }
-          } catch (err) {
-            if (request === feeRequest)
-              quote.value = {
-                state: 'unavailable',
-                reason:
-                  err instanceof Error && err.message
-                    ? err.message
-                    : String(err),
-              }
-          }
-        })()
+        feeChanged.value = false
+        requote()
       },
       cancelReview() {
         isReviewing.value = false
+        feeChanged.value = false
       },
       async confirmSend() {
-        if (sending.value) return
+        // While the fee is being quoted again there is no reviewed fee to bound the payment by.
+        if (sending.value || quote.value.state === 'estimating') return
         if (!isValid.value) {
           // The details stopped being a payment that can be sent (the contact or the amount
           // is gone): said, and back to the form, never a button that does nothing.
@@ -572,6 +596,7 @@ export default defineComponent({
           return
         }
         sending.value = true
+        feeChanged.value = false
 
         try {
           const wallet = await useActiveWallet()
@@ -627,6 +652,13 @@ export default defineComponent({
           }
           navigateBack(router)
         } catch (err) {
+          // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
+          // says so and shows the new quote, whose fee bounds the payment if confirmed again.
+          if (err instanceof NativeFeeExceededError) {
+            feeChanged.value = true
+            requote()
+            return
+          }
           // Refused before anything was signed: nothing was sent.
           errorNotify(err, { fallbackKey: 'sendContactDialog.notSent' })
         } finally {

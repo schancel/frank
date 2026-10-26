@@ -122,6 +122,12 @@
                   group => group.itemIndex === subIndex,
                 )?.state
               "
+              :outbound-payment="
+                stealthTransactionGroups.find(
+                  group => group.itemIndex === subIndex,
+                )?.payment
+              "
+              :stamp-wei="message.outbound ? message.stampValueWei : undefined"
             />
             <chat-message-stealth
               v-else-if="item.type == 'stealth-asset' && stealthAssetCard(item)"
@@ -679,18 +685,19 @@ export default defineComponent({
         const digest = (
           this.message.delivery?.attemptDigest ?? this.message.payloadDigest
         )?.toLowerCase()
-        const state =
-          recorded === 'unknown' &&
-          this.message.outbound &&
-          chain &&
-          digest !== undefined
+        // What the paying wallet's journal (or, from another device, the chain and the
+        // account's notes) shows of it: its breakdown, with the network fee History shows.
+        const sent =
+          this.message.outbound && chain && digest !== undefined
             ? sentStealthAssetDetail(outgoingStealthPayments.get(digest), {
                 transfers: transactions.map(tx => ({
                   chainIdentifier: chain.id,
                   txId: tx.txHash,
                 })),
-              }).state
-            : recorded
+              })
+            : undefined
+        const state =
+          recorded === 'unknown' && sent !== undefined ? sent.state : recorded
         return [
           {
             itemIndex,
@@ -698,6 +705,7 @@ export default defineComponent({
             chainIdentifier: chain?.id,
             unit: chain?.unit,
             state,
+            payment: sent?.payment,
             transactions,
           },
         ]

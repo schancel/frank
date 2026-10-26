@@ -41,6 +41,14 @@ jest.mock('src/stores/chats', () => ({
 
 jest.mock('@frank/wallet/chain', () => ({
   MAX_STEALTH_ITEM_AMOUNT: 2n ** 64n - 1n,
+  NativeFeeExceededError: class NativeFeeExceededError extends Error {
+    constructor(readonly fee: bigint) {
+      super(
+        'The network fee rose above the reviewed fee; review the transfer again',
+      )
+      this.name = 'NativeFeeExceededError'
+    }
+  },
   activeChain: {
     name: 'monad',
     unit: 'MON',
@@ -507,6 +515,75 @@ describe('SendContact.vue (dual-send model)', () => {
     })
     await confirm()
     expect(mockPrepare.mock.calls[0][0].maxFeeWei).toBe(12_852_000_000_000_000n)
+  })
+
+  it('a fee that rose above the reviewed one is said, and the review shows the new fee and total to confirm again', async () => {
+    const { NativeFeeExceededError } = jest.requireMock('@frank/wallet/chain')
+    const quotes = [
+      {
+        valueWei: 1_500_000_000_000_000_000n,
+        stampWei: 0n,
+        networkFeeWei: 12_852_000_000_000_000n,
+        totalWei: 1_512_852_000_000_000_000n,
+        floorWei: 1n,
+      },
+      {
+        valueWei: 1_500_000_000_000_000_000n,
+        stampWei: 0n,
+        networkFeeWei: 23_562_000_000_000_000n,
+        totalWei: 1_523_562_000_000_000_000n,
+        floorWei: 1n,
+      },
+    ]
+    // The fee the network asks now: the first quote's, until the fee rises.
+    let current = quotes[0]
+    const quoteContactPayment = jest.fn(async () => current)
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      ...mockWallet,
+      quoteContactPayment,
+    })
+    mockPrepare.mockImplementationOnce(async () => {
+      current = quotes[1]
+      throw new NativeFeeExceededError(23_562_000_000_000_000n)
+    })
+    const wrapper = mountSendContact()
+    await flushPromises()
+    await wrapper.find('[data-test="contact-item"]').trigger('click')
+    await wrapper
+      .find('[data-test="send-contact-amount-input"]')
+      .setValue('1.5')
+    await wrapper
+      .find('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    // Not the generic "could not be made": the fee went up, nothing was sent, and the review
+    // shows the new fee and total.
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="review-fee-changed"]').text()).toBe(
+      enUS.sendAddressDialog.feeChanged,
+    )
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe('0.023562 MON')
+    expect(wrapper.get('[data-test="review-total"]').text()).toBe(
+      '1.523562 MON',
+    )
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(navigateBack).not.toHaveBeenCalled()
+
+    // Confirming again is bounded by the new fee.
+    mockPrepare.mockResolvedValueOnce(PREPARED)
+    mockSendMessage.mockResolvedValueOnce({
+      state: 'sent',
+      payloadDigest: 'dd',
+    })
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockPrepare.mock.calls[1][0].maxFeeWei).toBe(23_562_000_000_000_000n)
+    expect(wrapper.find('[data-test="review-fee-changed"]').exists()).toBe(
+      false,
+    )
   })
 
   it('Confirm sends the stamp the review showed', async () => {

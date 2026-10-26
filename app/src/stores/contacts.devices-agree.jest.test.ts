@@ -55,7 +55,12 @@ jest.mock('../utils/contact-username', () => ({
 import { activeChain } from '@frank/wallet/chain'
 import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import { setConversationIdSalt, useChatStore } from './chats'
-import { useContactStore } from './contacts'
+import {
+  omitSessionCuratedDefaults,
+  rehydrateContacts,
+  useContactStore,
+} from './contacts'
+import { approveScreenerConversation } from '../utils/screener-triage'
 
 const ME = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const FAUCET = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
@@ -338,6 +343,49 @@ describe('someone who writes', () => {
     expect(Object.values(useChatStore(one).conversations)).toHaveLength(1)
     expect(useContactStore(one).isContact(STRANGER)).toBe(false)
     expect(await notes(one)).toEqual([])
+  })
+
+  it('approved in the screener, is a contact here, after a reload and on the other devices', async () => {
+    const one = device()
+    await deliver(one, [
+      row({
+        digest: 'paid-hello',
+        time: 1,
+        from: STRANGER,
+        items: [{ type: 'text', text: 'hello' }],
+      }),
+    ])
+    await new Promise(resolve => setImmediate(resolve))
+    await on(one, ({ chats, contacts }) => {
+      const [conversation] = Object.values(chats.conversations)
+      approveScreenerConversation(conversation!, chats, contacts, ME)
+    })
+    expect(contactsOf(one)).toEqual([STRANGER])
+    // The user's own decision, not an app-added default: the sender is the user's contact.
+    expect(useContactStore(one).getContact(STRANGER).profile.isBot).not.toBe(
+      true,
+    )
+
+    // What the store persists brings the contact back after a reload.
+    const reloaded = await rehydrateContacts(
+      JSON.parse(
+        JSON.stringify(omitSessionCuratedDefaults(useContactStore(one).$state)),
+      ),
+    )
+    expect(Object.keys(reloaded.contacts ?? {})).toEqual([STRANGER])
+
+    const note = await notes(one)
+    expect(note).toHaveLength(1)
+    expect(note[0].message.items).toEqual([
+      expect.objectContaining({
+        type: 'contact-state',
+        address: STRANGER.toLowerCase(),
+        present: true,
+      }),
+    ])
+    const other = device()
+    await deliver(other, note)
+    expect(contactsOf(other)).toEqual([STRANGER])
   })
 
   it('is looked up, not added, when their conversation is opened', async () => {

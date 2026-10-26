@@ -10,6 +10,7 @@ import {
   isScreenerConversation,
   rankScreenerConversations,
   summarizeScreenerQueue,
+  type ScreenerContactStore,
 } from './screener-triage'
 import { splitQuotedEmailBody } from '../components/chat/email/EmailThreadView.vue'
 import type { ChatMessage, Conversation } from '../stores/chats'
@@ -381,20 +382,29 @@ describe('screener-triage ("The Tollbooth")', () => {
         address: 'lotus_16PSJ2eApprove1111111111111111111111',
       })
       const setScreenerStatus = jest.fn()
-      const addDefaultContact = jest.fn()
+      const addContact = jest.fn()
+      const refresh = jest.fn(async () => undefined)
+      const contactStore = {
+        isContact: () => false,
+        addContact,
+        refresh,
+        peerProfiles: {},
+      } as unknown as ScreenerContactStore
 
-      approveScreenerConversation(
-        conv,
-        { setScreenerStatus },
-        { addDefaultContact },
-      )
+      approveScreenerConversation(conv, { setScreenerStatus }, contactStore)
 
       expect(conv.screenerStatus).toBe('approved')
       expect(setScreenerStatus).toHaveBeenCalledWith({
         conversationId: 'conv-approve',
         status: 'approved',
       })
-      expect(addDefaultContact).toHaveBeenCalledWith(
+      // The user's own add (noted to the account's devices), never a curated default's.
+      expect(addContact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: 'lotus_16PSJ2eApprove1111111111111111111111',
+        }),
+      )
+      expect(refresh).toHaveBeenCalledWith(
         'lotus_16PSJ2eApprove1111111111111111111111',
       )
     })

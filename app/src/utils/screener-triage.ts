@@ -5,6 +5,8 @@ import type { SupportedAsset } from '@frank/wallet/oracle'
 import { formatCompactAmount, formatDisplayAmount } from './chain-amount'
 import { formatAvu } from './avu-units'
 import { sameCanonicalAddress } from './own-address'
+import { safeToChainDisplayAddress } from './chain-address'
+import { pendingRelayData, type useContactStore } from '../stores/contacts'
 
 export type ScreenerStatus = 'pending' | 'approved' | 'dismissed'
 
@@ -556,29 +558,22 @@ function invokeSetScreenerStatus(
   }
 }
 
+/** What approving needs of the contact store: the user's own add, and a directory lookup. */
+export type ScreenerContactStore = Pick<
+  ReturnType<typeof useContactStore>,
+  'isContact' | 'addContact' | 'refresh' | 'peerProfiles'
+>
+
 /**
- * Approves a Screener thread and adds its sender to the contact store.
+ * Approves a Screener thread and adds its sender to the user's contacts.
  */
 export function approveScreenerConversation(
   conversation: Conversation,
-  storesOrChatStore: any = {},
-  contactStoreArg?: any,
-  ownAddressArg?: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  chatStore: any,
+  contactStore: ScreenerContactStore,
+  ownAddress?: string | null,
 ): string {
-  const isWrapperObject =
-    storesOrChatStore &&
-    typeof storesOrChatStore === 'object' &&
-    ('chatStore' in storesOrChatStore || 'contactStore' in storesOrChatStore)
-  const chatStore = isWrapperObject
-    ? storesOrChatStore.chatStore
-    : storesOrChatStore
-  const contactStore = isWrapperObject
-    ? storesOrChatStore.contactStore
-    : contactStoreArg
-  const ownAddress = isWrapperObject
-    ? storesOrChatStore.ownAddress
-    : ownAddressArg
-
   conversation.screenerStatus = 'approved'
   invokeSetScreenerStatus(chatStore, conversation.id, 'approved')
 
@@ -588,33 +583,35 @@ export function approveScreenerConversation(
       : getScreenerSenderAddress(conversation, ownAddress)
   const contactAddr = senderAddr || conversation.address
 
-  if (contactAddr && contactStore) {
-    const alreadyContact = contactStore.isContact?.(contactAddr) ?? false
-    if (!alreadyContact && !contactAddr.includes('@')) {
-      if (typeof contactStore.addDefaultContact === 'function') {
-        contactStore.addDefaultContact(contactAddr)
-      } else if (typeof contactStore.addContact === 'function') {
-        const displayName =
-          conversation.name && !conversation.name.includes('@')
-            ? conversation.name
-            : null
-        contactStore.addContact({
-          address: contactAddr,
-          contact: {
-            lastUpdateTime: Date.now(),
-            notify: true,
-            relayURL: null,
-            profile: {
-              name: displayName,
-              bio: null,
-              avatar: null,
-              pubKey: null,
-            },
-            inbox: {},
-          },
-        })
-      }
-    }
+  // Approving is the user's own decision, so the sender is added like any contact the user adds
+  // (`addContact`): persisted, noted to the account's other devices, and looked up in the
+  // directory. Never as a curated default, which the app adds without a decision.
+  if (
+    contactAddr &&
+    !contactAddr.includes('@') &&
+    !contactStore.isContact(contactAddr)
+  ) {
+    const known =
+      contactStore.peerProfiles[
+        safeToChainDisplayAddress(contactAddr) ?? contactAddr
+      ]?.profile
+    const displayName =
+      known?.name ??
+      (conversation.name && !conversation.name.includes('@')
+        ? conversation.name
+        : pendingRelayData.profile.name)
+    contactStore.addContact({
+      address: contactAddr,
+      contact: {
+        ...pendingRelayData,
+        profile: {
+          ...pendingRelayData.profile,
+          ...(known ?? {}),
+          name: displayName,
+        },
+      },
+    })
+    void contactStore.refresh(contactAddr)
   }
 
   return contactAddr

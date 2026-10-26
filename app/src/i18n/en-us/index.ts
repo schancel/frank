@@ -1553,6 +1553,7 @@ export const rawEnUS = {
       'group-write': 'Group write fee',
       'transfer': 'To',
     },
+    stamp: 'Message stamp {amount} {unit}',
     fee: 'Network fee {amount} {unit}',
     noted: 'Read from the notes your devices share with each other.',
     receivedPayment: 'Payment received',

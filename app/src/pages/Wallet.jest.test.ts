@@ -1418,6 +1418,7 @@ describe('Wallet detail page (#570)', () => {
       .spyOn(walletHistory, 'loadWalletHistory')
       .mockResolvedValue({
         status: 'available',
+        stampStages: [],
         operations: [native, contract],
         received: [],
         noted: [],
@@ -1506,6 +1507,7 @@ describe('Wallet detail page (#570)', () => {
       .spyOn(walletHistory, 'loadWalletHistory')
       .mockResolvedValue({
         status: 'available',
+        stampStages: [],
         operations: [],
         received: [],
         noted: [

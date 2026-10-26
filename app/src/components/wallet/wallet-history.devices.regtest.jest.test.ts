@@ -9,12 +9,13 @@
  * History is read the way the wallet page reads it: `loadWalletHistory`, then
  * `buildWalletHistoryGroups`.
  *
- * Device one sends a paid message (its stamp), a Send to Address, and a payment in a chat (a
- * stealth payment of several transactions with its message's stamp appended to it). Device two
+ * Device one sends a paid message (its stamp), a Send to Address, a payment in a chat (a
+ * stealth payment of several transactions with its message's stamp appended to it) and a Send
+ * to Contact (a payment to the contact's one-time address, its message's stamp appended to it). Device two
  * of the same account was open the whole time and reads its mailbox. A third device is opened
  * afterwards from the account's root alone ("restored from the seed") and reads the mailbox.
- * Every device shows each send as one row, with the same label, amount, recipient, fee, time
- * and status.
+ * Every device shows each user action as one row, with the same label, amount paid to the
+ * recipient, stamp (apart from the amount), recipient, fee, time and status.
  *
  * Runs only when FRANK_REGTEST_LIVE=1 (solonet must be up, see monad-regtest.ts; CASHWEBD_BIN
  * names a relay build, otherwise this worktree's Cargo build is used):
@@ -45,6 +46,8 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 /** What one History row says about a send, in the terms a person reads. */
 interface SendLine {
   amountWei: string
+  /** The message's stamp paid with it, apart from the amount. */
+  stampWei: string
   recipient: string
   purpose: string
   status: string
@@ -59,6 +62,7 @@ function sendLines(rows: readonly WalletHistoryRow[]): SendLine[] {
         ? [
             {
               amountWei: row.operation.intendedValueWei,
+              stampWei: row.stampWei,
               recipient: row.operation.recipient.toLowerCase(),
               purpose: row.operation.purpose,
               status: row.operation.payment,
@@ -70,6 +74,7 @@ function sendLines(rows: readonly WalletHistoryRow[]): SendLine[] {
         ? [
             {
               amountWei: row.valueWei,
+              stampWei: row.stampWei,
               recipient: row.recipient ?? '',
               purpose: row.purpose,
               status: row.state,
@@ -325,30 +330,85 @@ live('History on every device of one account (solonet, real relay)', () => {
       await sleep(2000)
     }
 
-    // The sending device: every send, each one row, dated by its block.
+    // A Send to Contact: the wallet pays the contact's one-time address and sends the message
+    // carrying it, its stamp appended to the payment's transaction set.
+    const contactWei = 3n * 10n ** 17n
+    let contactMessageId: string | undefined
+    for (let attempt = 0; contactMessageId === undefined; attempt++) {
+      try {
+        contactMessageId = (
+          await one.handle.sendToContact!({
+            recipient: { raw: peer.address },
+            value: contactWei,
+            stampValue: stampWei,
+          })
+        ).messageId
+      } catch (error) {
+        // Saved and signed; its message goes to the relay once its funding transfer lands, and
+        // the wallet finishes it on its own (as every mailbox read does).
+        if ((error as Error)?.name === 'ContactPaymentPendingError') {
+          contactMessageId = (error as { messageId: string }).messageId
+          break
+        }
+        // The chat payment's coins are the account's until the chain has their successors.
+        if (
+          (error as Error)?.name ===
+            'EvmTransactionSetInsufficientFundsError' &&
+          attempt < 30
+        ) {
+          await sleep(2000)
+          await one.handle.getBalance().catch(() => undefined)
+          continue
+        }
+        throw error
+      }
+    }
+    const contactPayment = () =>
+      one.handle
+        .getContactPayments?.()
+        .find(payment => payment.messageId === contactMessageId)
+    for (let pass = 0; pass < 90; pass++) {
+      if (contactPayment()?.state === 'paid') break
+      await one.handle.resumeContactPayments?.().catch(() => undefined)
+      await sleep(2000)
+    }
+    expect(contactPayment()?.state).toBe('paid')
+    // The contact's one-time address: where the payment's transfer went.
+    const contactAddress = (await one.handle.provider.getTransaction(
+      contactPayment()!.txHash!,
+    ))!.to!.toLowerCase()
+
+    // The sending device: every user action, each one row, dated by its block.
     // The app's mailbox poll re-observes the wallet's own transfers and shares them; so does
     // this loop.
     const onOne = await settledHistory(one, 4, async () => {
       await one.handle.reobserveNativeOperations?.().catch(() => undefined)
       await one.handle.flushNativeSync?.().catch(() => undefined)
     })
+    // A payment and its message's stamp are one row: the amount paid to the contact, and the
+    // stamp apart from it.
     expect(onOne).toEqual([
       expect.objectContaining({
         purpose: 'contact-payment',
         amountWei: chatPaymentWei.toString(),
+        stampWei: stampWei.toString(),
         recipient: prepared.recipientAddress.toLowerCase(),
       }),
       expect.objectContaining({
-        purpose: 'stamp',
-        amountWei: stampWei.toString(),
+        purpose: 'contact-payment',
+        amountWei: contactWei.toString(),
+        stampWei: stampWei.toString(),
+        recipient: contactAddress,
       }),
       expect.objectContaining({
         purpose: 'stamp',
         amountWei: stampWei.toString(),
+        stampWei: '0',
       }),
       expect.objectContaining({
         purpose: 'transfer',
         amountWei: TRANSFER_WEI.toString(),
+        stampWei: '0',
         recipient: faucet,
       }),
     ])
@@ -378,8 +438,29 @@ live('History on every device of one account (solonet, real relay)', () => {
     await peer
       .receive(message => message.payloadDigest === chatDigest, 30_000)
       .catch(() => undefined)
+    const ephemeral = contactPayment()!.ephemeralPubKey.toLowerCase()
+    const contactDigest = await peer
+      .receive(
+        message =>
+          message.items.some(
+            item =>
+              item.type === 'stealth' &&
+              item.ephemeralPubKey?.toLowerCase() === ephemeral,
+          ),
+        30_000,
+      )
+      .then(
+        message => message.payloadDigest,
+        () => undefined,
+      )
     await peer.handle
-      .sweepReceivedCoins?.({ payloadDigests: [digest, chatDigest!] })
+      .sweepReceivedCoins?.({
+        payloadDigests: [
+          digest,
+          chatDigest!,
+          ...(contactDigest ? [contactDigest] : []),
+        ],
+      })
       .catch(() => undefined)
   })
 })

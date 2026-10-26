@@ -1,4 +1,7 @@
 import { reactive } from 'vue'
+import { Transaction } from 'ethers'
+import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
+import type { NotedSendStatus } from '@frank/wallet/chain'
 import type {
   StealthPaymentCapability,
   StealthPaymentStatus,
@@ -9,6 +12,22 @@ export interface SentStealthPayment {
   readonly chainIdentifier: string
   readonly operationId: string
   readonly status: StealthPaymentStatus
+  /** Sent from another device and nothing here can tell its network fee: the account's notes
+   * to itself do not name the operation that paid it (or cannot be read on this wallet). */
+  readonly feeUnknowable?: true
+}
+
+/** Nothing more will be learnt of it (`stealthPaymentFinal`), or all that can be has been: it
+ * landed and its fee cannot be known here. */
+function settled(payment: SentStealthPayment): boolean {
+  return (
+    stealthPaymentFinal(payment.status) ||
+    (payment.feeUnknowable === true &&
+      payment.status.members.length > 0 &&
+      payment.status.members.every(
+        member => member.state === 'landed' || member.state === 'failed',
+      ))
+  )
 }
 
 /**
@@ -33,6 +52,9 @@ export interface StealthPaymentOwner {
       readonly status: number | null
     } | null>
   }
+  /** The account's sends as its notes to itself record them, with what the chain showed of
+   * each (`NotedSendStatus`): how the network fee of a payment another device sent is read. */
+  readonly getNotedSends?: () => Promise<readonly NotedSendStatus[]>
 }
 
 interface SentTransfer {
@@ -47,8 +69,51 @@ interface SentMessage {
   outbound: boolean
   payloadDigest: string
   delivery?: { attemptDigest?: string }
-  items: readonly { type: string; transfers?: readonly SentTransfer[] }[]
+  items: readonly {
+    type: string
+    transfers?: readonly SentTransfer[]
+    /** A `stealth` item's signed transfers (Send to Contact). */
+    transactions?: readonly string[]
+    networkTag?: string
+    chainId?: string
+  }[]
 }
+
+/** The transfers a sent `stealth` item carries, from its signed transactions; undefined when
+ * any is only a hash or does not decode (nothing is claimed for it then). */
+function stealthItemTransfers(
+  item: SentMessage['items'][number],
+): SentTransfer[] | undefined {
+  const chainIdentifier = resolveChainIdentifier(
+    item.networkTag || item.chainId || '',
+  )?.id
+  if (chainIdentifier === undefined || !item.transactions?.length)
+    return undefined
+  const transfers: SentTransfer[] = []
+  for (const raw of item.transactions) {
+    const hex = raw.replace(/^0x/i, '')
+    if (/^[0-9a-f]{64}$/i.test(hex)) return undefined
+    try {
+      const tx = Transaction.from(`0x${hex}`)
+      if (!tx.hash || !tx.to) return undefined
+      transfers.push({
+        chainIdentifier,
+        txId: tx.hash,
+        destination: tx.to,
+        amountAtomic: tx.value.toString(),
+        asset: { kind: 'native' },
+      })
+    } catch {
+      return undefined
+    }
+  }
+  return transfers
+}
+
+/** The sent payments' items a message carries: `stealth-asset` (a payment in a chat) or
+ * `stealth` (Send to Contact). */
+const paymentItem = (item: { type: string }) =>
+  item.type === 'stealth-asset' || item.type === 'stealth'
 
 /** Most transfers one refresh looks up on the chain for payments sent from another device. */
 const CHAIN_LOOKUPS_PER_REFRESH = 32
@@ -118,14 +183,59 @@ async function chainStatusOf(
   }
 }
 
-/** Nothing more can happen to it: every transfer landed or can never land, or it was cancelled. */
+/**
+ * The network fee of a payment another device of the account sent, as the account's notes to
+ * itself show it: every transaction of the operation that paid these transfers (gathering coins,
+ * the transfers, their change), not a message stamp appended to it. That is what the sending
+ * device's journal counts (`nativeFeeAtomic`). Undefined until the chain showed each of them;
+ * `unnamed` when no note names the operation that paid them.
+ */
+function notedFeeOf(
+  noted: readonly NotedSendStatus[],
+  transfers: readonly SentTransfer[],
+): bigint | 'unnamed' | undefined {
+  const hashes = new Set(transfers.map(transfer => prefixed(transfer.txId)))
+  const operations = new Set(
+    noted.flatMap(send =>
+      hashes.has(prefixed(send.txHash)) && send.operation
+        ? [send.operation.id]
+        : [],
+    ),
+  )
+  if (operations.size === 0) return 'unnamed'
+  const own = noted.filter(
+    send =>
+      send.operation !== undefined &&
+      operations.has(send.operation.id) &&
+      !/^stamp-/.test(send.operation.stage ?? ''),
+  )
+  if (
+    [...hashes].some(hash => !own.some(send => prefixed(send.txHash) === hash))
+  )
+    return undefined
+  let fee = 0n
+  for (const send of own) {
+    if (send.inclusion === undefined) return undefined
+    fee += BigInt(send.inclusion.feeWei)
+  }
+  return fee
+}
+
+/**
+ * Nothing more can happen to it, and nothing more will be learnt: every transfer landed or can
+ * never land and its network fee is known, or it was cancelled. A payment whose transfers landed
+ * before its change did is read again until the fee is known, so the card does not say "not
+ * known yet" for good.
+ */
 export function stealthPaymentFinal(status: StealthPaymentStatus): boolean {
   return (
     status.released === true ||
     (status.members.length > 0 &&
       status.members.every(
         member => member.state === 'landed' || member.state === 'failed',
-      ))
+      ) &&
+      (status.nativeFeeAtomic !== undefined ||
+        status.members.every(member => member.state === 'failed')))
   )
 }
 
@@ -150,19 +260,20 @@ export async function refreshOutgoingStealthPayments(
   const transfersOf = new Map<string, readonly SentTransfer[]>()
   for (const message of messages) {
     if (!message.outbound) continue
-    if (!message.items.some(item => item.type === 'stealth-asset')) continue
+    if (!message.items.some(paymentItem)) continue
     const digest = sentMessageDigest(message).toLowerCase()
     if (digest.startsWith('pending:')) continue
     const known = outgoingStealthPayments.get(digest)
-    if (
-      known?.length &&
-      known.every(payment => stealthPaymentFinal(payment.status))
-    )
-      continue
+    if (known?.length && known.every(settled)) continue
     wanted.add(digest)
-    const items = message.items.filter(item => item.type === 'stealth-asset')
-    if (items.length === 1 && items[0]!.transfers?.length)
-      transfersOf.set(digest, items[0]!.transfers!)
+    const items = message.items.filter(paymentItem)
+    const transfers =
+      items.length !== 1
+        ? undefined
+        : items[0]!.type === 'stealth'
+        ? stealthItemTransfers(items[0]!)
+        : items[0]!.transfers
+    if (transfers?.length) transfersOf.set(digest, transfers)
   }
   if (wanted.size === 0) return 0
   const found = new Map<string, SentStealthPayment[]>()
@@ -192,6 +303,11 @@ export async function refreshOutgoingStealthPayments(
   // No journal here holds it: another device of the account sent it (or it is not bound yet).
   // The chain answers for its transfers, read by their hashes on the chain they were sent on.
   let lookups = 0
+  // The account's notes, read once per refresh for each wallet asked.
+  const notedOf = new Map<
+    StealthPaymentOwner,
+    Promise<readonly NotedSendStatus[]>
+  >()
   for (const digest of wanted) {
     if (found.has(digest)) continue
     const transfers = transfersOf.get(digest)
@@ -218,13 +334,26 @@ export async function refreshOutgoingStealthPayments(
     if (!owner) continue
     lookups += transfers.length
     try {
-      const status = await chainStatusOf(owner.evmReader!, transfers)
+      let status = await chainStatusOf(owner.evmReader!, transfers)
+      let feeUnknowable = true
+      if (status && owner.getNotedSends) {
+        let noted = notedOf.get(owner)
+        if (noted === undefined) {
+          noted = owner.getNotedSends().catch(() => [])
+          notedOf.set(owner, noted)
+        }
+        const fee = notedFeeOf(await noted, transfers)
+        feeUnknowable = fee === 'unnamed'
+        if (typeof fee === 'bigint')
+          status = { ...status, nativeFeeAtomic: fee }
+      }
       if (status)
         found.set(digest, [
           {
             chainIdentifier: owner.chainIdentifier,
             operationId: `chain:${digest}`,
             status,
+            ...(feeUnknowable ? { feeUnknowable: true as const } : {}),
           },
         ])
     } catch (error) {
@@ -236,7 +365,7 @@ export async function refreshOutgoingStealthPayments(
     const payments = found.get(digest)
     if (payments === undefined) continue
     outgoingStealthPayments.set(digest, payments)
-    if (!payments.every(payment => stealthPaymentFinal(payment.status))) open++
+    if (!payments.every(settled)) open++
   }
   return open
 }

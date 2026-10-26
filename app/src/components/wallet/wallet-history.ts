@@ -15,11 +15,14 @@ import type { SwapActivityRow } from 'src/swap/useSwapActivity'
  * The wallet page's History: a derived view, never a store of its own.
  *
  * Owners of the facts it shows:
- * - sends and contract calls made on this device: the wallet's native operation journal. A
- *   message stamp paid in the same transaction set as a contact payment is its own row;
- *   Operations still being reconciled are its active rows (`getNativeOperations`); finished ones
- *   are archived to its completed history (`getNativeOperationHistory`). Both are read, so a
- *   reload shows the same activity as before it;
+ * - sends and contract calls made on this device: the wallet's native operation journal. One
+ *   user action is one row: a message's payment and its stamp (a stage appended to the
+ *   payment's transaction set, or an operation of its own for the same message) are one row
+ *   that shows the amount paid to the recipient, the stamp as a figure of its own and the
+ *   network fee of every transaction. Operations still being reconciled are its active rows
+ *   (`getNativeOperations`); finished ones are archived to its completed history
+ *   (`getNativeOperationHistory`). Both are read, so a reload shows the same activity as
+ *   before it;
  * - sends made on any device of the account: the account's notes to itself
  *   (`getNotedSends`). Every device reads them from the account's mailbox, and a device restored
  *   from the seed reads them again, so every device shows the account's sends. A transaction this
@@ -57,7 +60,11 @@ export type WalletHistoryRow =
       contactOutcome?: 'failed' | 'released'
       /** The time of the block that included the payment; absent until it is in one. */
       timeMs?: number
-      /** Network fees the chain charged for this send's transactions so far, wei. */
+      /** The message's stamp paid with it (its stamp stages and stamp operations), wei; '0'
+       * when there is none or the row is the stamp itself. */
+      stampWei: string
+      /** Network fees the chain charged for this send's transactions so far (its stamps' with
+       * them), wei. */
       feeWei: string
     }
   | {
@@ -66,9 +73,13 @@ export type WalletHistoryRow =
       purpose: NotedSendPurpose
       /** Lower-case 0x destination; absent for a contract creation. */
       recipient?: string
-      /** What the transactions carried to the recipient, wei. */
+      /** What the transactions carried to the recipient, wei: not the message's stamp, unless
+       * the row is the stamp itself. */
       valueWei: string
-      /** The transactions of this send, as noted: those to the recipient. */
+      /** The message's stamp paid with it, wei; '0' when there is none or the row is the stamp
+       * itself. */
+      stampWei: string
+      /** The transactions of this send, as noted: those to the recipient and the stamp's. */
       sends: readonly NotedSendStatus[]
       /** Network fees the chain charged for all of its transactions (with those that moved
        * value between the wallet's own accounts), wei. */
@@ -96,6 +107,11 @@ export type WalletHistoryLoad =
   | {
       status: 'available'
       operations: readonly EvmNativeOperationStatus[]
+      /** Stamps appended as stages to an operation (`of`, its operation ID): shown in its row. */
+      stampStages: readonly {
+        of: string
+        stamp: EvmNativeOperationStatus
+      }[]
       received: readonly ReceivedPayment[]
       /** Sends of every device of the account, from its notes to itself. */
       noted: readonly NotedSendStatus[]
@@ -146,16 +162,20 @@ export async function loadWalletHistory(
     }
     if (rows.some(row => row.binding.chainIdentifier !== chainIdentifier))
       return { status: 'unavailable' }
-    // A contact payment's message stamp is a stage of the payment's operation: it is shown as
-    // its own send (a message stamp), as the chat card shows it apart from the payment.
-    const operations = rows.flatMap(row => {
-      const syncFailed =
-        wallet.nativeOperationSyncFailed?.(row.operationId) ?? false
-      return [
-        summarizeEvmNativeOperation(row, syncFailed),
-        ...summarizeEvmNativeStampStages(row, syncFailed),
-      ]
-    })
+    const operations = rows.map(row =>
+      summarizeEvmNativeOperation(
+        row,
+        wallet.nativeOperationSyncFailed?.(row.operationId) ?? false,
+      ),
+    )
+    // A message's stamp appended to its payment's transaction set is a stage of the payment's
+    // operation: shown in the payment's row, as its own figure.
+    const stampStages = rows.flatMap(row =>
+      summarizeEvmNativeStampStages(
+        row,
+        wallet.nativeOperationSyncFailed?.(row.operationId) ?? false,
+      ).map(stamp => ({ of: row.operationId, stamp })),
+    )
     const blocks = operations.flatMap(operation =>
       operation.members.flatMap(member =>
         member.blockHash !== undefined && member.blockNumber !== undefined
@@ -179,6 +199,7 @@ export async function loadWalletHistory(
     return {
       status: 'available',
       operations,
+      stampStages,
       received,
       noted,
       contactPayments,
@@ -219,15 +240,18 @@ export function observedFees(members: EvmNativeOperationStatus['members']): {
 }
 
 /** When the operation's payment was included: the latest block among the transactions that
- * paid its recipient (not those of a stamp appended to it, which is a row of its own; not those
- * that moved value between the wallet's own accounts). Another device dates the same send by
- * the same transactions. */
+ * paid its recipient (not those of a stamp appended to it; not those that moved value between
+ * the wallet's own accounts). Another device dates the same send by the same transactions. */
 function operationTime(
   operation: EvmNativeOperationStatus,
   blockTimes: ReadonlyMap<string, number>,
 ): number | undefined {
   let time: number | undefined
-  for (const member of ownMembers(operation).filter(
+  const unstaged = operation.members.filter(
+    member => member.stageId === undefined || !/^stamp-/.test(member.stageId),
+  )
+  // A stamp operation of its own: every member is the stamp's.
+  for (const member of (unstaged.length ? unstaged : operation.members).filter(
     member => member.role === 'payment',
   )) {
     const at = member.blockHash
@@ -306,16 +330,19 @@ function notedGroupPurpose(
   return sends.find(send => send.purpose !== 'transfer')?.purpose ?? 'transfer'
 }
 
-/**
- * The members whose fees belong to this row: a payment's own transactions, without the stamp
- * stages appended to it (each is a row of its own, with its own fee).
- */
-function ownMembers(operation: EvmNativeOperationStatus) {
-  const unstaged = operation.members.filter(
-    member => member.stageId === undefined || !/^stamp-/.test(member.stageId),
+/** Every transaction of these operations once, by hash: an operation's stamp stage repeats
+ * members of the operation itself. */
+function uniqueMembers(operations: readonly EvmNativeOperationStatus[]) {
+  const seen = new Set<string>()
+  return operations.flatMap(operation =>
+    operation.members.filter(member => {
+      if (member.transactionHash === undefined) return true
+      const hash = member.transactionHash.toLowerCase()
+      if (seen.has(hash)) return false
+      seen.add(hash)
+      return true
+    }),
   )
-  // A stamp stage's own row: every member is the stage's.
-  return unstaged.length ? unstaged : operation.members
 }
 
 /**
@@ -400,11 +427,50 @@ export function buildWalletHistoryGroups(input: {
           `${member.account}:${member.nonce}`,
           member.transactionHash.toLowerCase(),
         )
+  // One user action is one row: a message's stamp goes with the operation that paid the
+  // message's payment, as a stage of it or as an operation of its own for the same message, as
+  // another device groups the same transactions from its notes (`notedSendGroupKeys`).
+  const stampsOf = new Map<string, EvmNativeOperationStatus[]>()
+  const addStamp = (of: string, stamp: EvmNativeOperationStatus) => {
+    const list = stampsOf.get(of)
+    if (list) list.push(stamp)
+    else stampsOf.set(of, [stamp])
+  }
+  for (const { of, stamp } of load.status === 'available'
+    ? load.stampStages
+    : [])
+    addStamp(of, stamp)
+  const messageOwners = new Map<string, string[]>()
+  for (const operation of operations)
+    if (operation.purpose !== 'stamp')
+      for (const messageId of new Set([
+        ...(operation.messageId === undefined ? [] : [operation.messageId]),
+        ...(stampsOf.get(operation.operationId) ?? []).flatMap(stamp =>
+          stamp.messageId === undefined ? [] : [stamp.messageId],
+        ),
+      ]))
+        messageOwners.set(messageId, [
+          ...(messageOwners.get(messageId) ?? []),
+          operation.operationId,
+        ])
+  const shownWith = new Set<string>()
+  for (const operation of operations) {
+    if (operation.purpose !== 'stamp' || operation.messageId === undefined)
+      continue
+    const owners = messageOwners.get(operation.messageId)
+    if (owners?.length !== 1) continue
+    addStamp(owners[0]!, operation)
+    shownWith.add(operation.operationId)
+  }
   for (const operation of operations)
     if (
       !attached.has(operation.operationId) &&
+      !shownWith.has(operation.operationId) &&
       !lostToAnother(operation, included)
     ) {
+      const stamps = (stampsOf.get(operation.operationId) ?? []).filter(
+        stamp => !lostToAnother(stamp, included),
+      )
       // The chain's answer stands once it showed the payment; before that, a contact payment
       // that ended without paying reads as the chat's card does.
       const outcome =
@@ -422,7 +488,10 @@ export function buildWalletHistoryGroups(input: {
           ? { contactOutcome: outcome }
           : {}),
         timeMs: operationTime(operation, blockTimes),
-        feeWei: observedFees(ownMembers(operation)).feeWei,
+        stampWei: stamps
+          .reduce((total, stamp) => total + BigInt(stamp.intendedValueWei), 0n)
+          .toString(),
+        feeWei: observedFees(uniqueMembers([operation, ...stamps])).feeWei,
       })
     }
   if (load.status === 'available') {
@@ -472,7 +541,15 @@ export function buildWalletHistoryGroups(input: {
       // What moved between the wallet's own accounts is no send of its own: only its fee is.
       const group = all.filter(send => !send.toOwnAccount)
       if (group.length === 0) continue
-      const times = group.flatMap(send =>
+      // What the recipient was paid, apart from the message's stamp; a stamp alone is the row.
+      const paid = group.filter(send => send.purpose !== 'stamp')
+      const stamps = group.filter(send => send.purpose === 'stamp')
+      const primary = paid.length ? paid : stamps
+      const sum = (list: readonly NotedSendStatus[]) =>
+        list
+          .reduce((total, send) => total + BigInt(send.valueWei), 0n)
+          .toString()
+      const times = primary.flatMap(send =>
         send.inclusion?.blockTimeMs !== undefined
           ? [send.inclusion.blockTimeMs]
           : [],
@@ -480,11 +557,10 @@ export function buildWalletHistoryGroups(input: {
       rows.push({
         kind: 'noted',
         id: `noted:${key}`,
-        purpose: notedGroupPurpose(group),
-        ...(group[0]!.to === undefined ? {} : { recipient: group[0]!.to }),
-        valueWei: group
-          .reduce((total, send) => total + BigInt(send.valueWei), 0n)
-          .toString(),
+        purpose: notedGroupPurpose(primary),
+        ...(primary[0]!.to === undefined ? {} : { recipient: primary[0]!.to }),
+        valueWei: sum(primary),
+        stampWei: paid.length ? sum(stamps) : '0',
         sends: group,
         feeWei: all
           .reduce(
@@ -492,7 +568,7 @@ export function buildWalletHistoryGroups(input: {
             0n,
           )
           .toString(),
-        state: notedState(group),
+        state: notedState(primary),
         timeMs: times.length
           ? Math.max(...times)
           : Math.min(...group.map(send => send.notedAtMs)),

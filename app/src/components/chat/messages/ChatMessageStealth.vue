@@ -85,8 +85,72 @@
         <span data-testid="stealth-status-hint">{{ hint }}</span>
       </div>
 
+      <!-- A sent payment: what the recipient gets, apart from the network fee and the stamp -->
+      <div
+        v-if="outbound && (outboundPayment || stampWei)"
+        class="text-caption q-my-xs"
+        data-testid="stealth-sent-breakdown"
+      >
+        <div data-testid="stealth-sent-recipient">
+          {{ $t('chatMessageStealth.sentRecipientAmount') }}:
+          {{ formatAmount(statedWei) }}
+        </div>
+        <div
+          v-if="outboundPayment?.verifiedReceivedAmountAtomic !== undefined"
+          data-testid="stealth-sent-landed"
+        >
+          {{ $t('chatMessageStealth.sentLandedAmount') }}:
+          {{ formatAmount(outboundPayment.verifiedReceivedAmountAtomic) }}
+        </div>
+        <div v-if="outboundPayment" data-testid="stealth-sent-fee">
+          {{ $t('chatMessageStealth.sentNetworkFee') }}:
+          {{
+            outboundPayment.nativeFeeAtomic === undefined
+              ? $t('chatMessageStealth.sentFeeNotKnown')
+              : formatNativeAmount(outboundPayment.nativeFeeAtomic)
+          }}
+        </div>
+        <div v-if="stampWei" data-testid="stealth-sent-stamp">
+          {{ $t('chatMessageStealth.sentStamp') }}:
+          {{ formatNativeAmount(stampWei) }}
+        </div>
+      </div>
+
+      <!-- A sent payment's transfers, each as the chain showed it -->
+      <div
+        v-if="outbound && outboundPayment?.members.length"
+        class="q-mt-xs"
+        data-testid="stealth-sent-transfers"
+      >
+        <div
+          v-for="member in outboundPayment.members"
+          :key="member.txHash"
+          class="row items-center text-caption"
+          data-testid="stealth-sent-transfer"
+        >
+          <a
+            v-if="explorerFor(member.txHash)"
+            :href="explorerFor(member.txHash)"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary stealth-tx-link font-monospace q-mr-xs"
+            >{{ truncate(member.txHash) }}</a
+          >
+          <span v-else class="font-monospace q-mr-xs">{{
+            truncate(member.txHash)
+          }}</span>
+          <span data-testid="stealth-sent-transfer-state">{{
+            $t(
+              `chatMessageStealth.transferState.${
+                member.failure ?? member.state
+              }`,
+            )
+          }}</span>
+        </div>
+      </div>
+
       <!-- Explorer link (if transaction exists) -->
-      <div v-if="primaryTx" class="row items-center q-mt-xs">
+      <div v-else-if="primaryTx" class="row items-center q-mt-xs">
         <a
           v-if="explorerUrl"
           :href="explorerUrl"
@@ -120,6 +184,7 @@ import { transactionExplorerUrl } from '../../../utils/explorer'
 import { useReceivedPayment } from '../../../composables/useReceivedPayment'
 import { useTranslate } from '../../../composables/useTranslate'
 import { errorNotify } from '../../../utils/notifications'
+import type { SentStealthDetail } from '../../../utils/stealth-transaction-details'
 
 type WalletStatus = 'pending' | 'received' | 'not-received' | 'failed'
 
@@ -162,6 +227,16 @@ export default defineComponent({
       default: () => [],
     },
     outboundState: { type: String, default: 'unknown' },
+    /** A sent payment as the paying wallet's journal shows it (`SentStealthDetail.payment`). */
+    outboundPayment: {
+      type: Object as PropType<SentStealthDetail['payment']>,
+      default: undefined,
+    },
+    /** The message's stamp, paid apart from the payment (a sent message only). */
+    stampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
     outbound: {
       type: Boolean,
       default: false,
@@ -311,8 +386,12 @@ export default defineComponent({
       if (this.outbound)
         return this.outboundState === 'paid'
           ? 'positive'
-          : this.outboundState === 'failed' || this.outboundState === 'released'
+          : this.outboundState === 'failed' ||
+            this.outboundState === 'released' ||
+            this.outboundState === 'chainFailed'
           ? 'negative'
+          : this.outboundState === 'pending' || this.outboundState === 'partial'
+          ? 'warning'
           : 'grey'
       switch (this.walletStatus) {
         case 'received':
@@ -327,7 +406,24 @@ export default defineComponent({
       }
     },
     hint(): string {
-      if (this.outbound) return ''
+      if (this.outbound) {
+        // A transfer that can never land is said, whatever landed besides it.
+        const failure = this.outboundPayment?.members.find(
+          member => member.failure,
+        )?.failure
+        if (failure || this.outboundState === 'chainFailed') {
+          return this.$t(
+            failure === 'replaced'
+              ? 'chatMessageStealth.outboundHint.replaced'
+              : 'chatMessageStealth.outboundHint.reverted',
+          ) as string
+        }
+        return SENT_HINTS.has(this.outboundState)
+          ? (this.$t(
+              `chatMessageStealth.outboundHint.${this.outboundState}`,
+            ) as string)
+          : ''
+      }
       switch (this.walletStatus) {
         case 'received':
           return this.$t(
@@ -346,9 +442,19 @@ export default defineComponent({
       }
     },
     hintIcon(): string {
+      if (this.outbound)
+        return this.outboundState === 'paid'
+          ? 'check_circle'
+          : this.outboundState === 'chainFailed'
+          ? 'error_outline'
+          : 'schedule'
       if (this.walletStatus === 'received') return 'check_circle'
       if (this.walletStatus === 'pending') return 'schedule'
       return 'error_outline'
+    },
+    /** The payment's chain, resolved from the item's network. */
+    paymentChain() {
+      return resolveChainIdentifier(this.networkTag || this.chainId || '')
     },
     explorerUrl(): string | undefined {
       const tx = this.primaryTx
@@ -360,7 +466,26 @@ export default defineComponent({
       return transactionExplorerUrl(tx, chain?.id)
     },
   },
+  methods: {
+    /** An amount of the payment's asset, with its unit. */
+    formatAmount(atomic: bigint): string {
+      return `${activeChain.toDisplayAmount(atomic)} ${this.displayUnit}`
+    },
+    /** A fee or stamp: paid in the messaging chain's own coin. */
+    formatNativeAmount(atomic: bigint): string {
+      return `${activeChain.toDisplayAmount(atomic)} ${activeChain.unit}`
+    },
+    truncate(hash: string): string {
+      return `${hash.slice(0, 8)}...${hash.slice(-6)}`
+    },
+    explorerFor(hash: string): string | undefined {
+      return transactionExplorerUrl(hash, this.paymentChain?.id)
+    },
+  },
 })
+
+/** Sent states with a plain hint of their own. */
+const SENT_HINTS = new Set(['unsent', 'pending', 'partial', 'paid'])
 </script>
 
 <style scoped>

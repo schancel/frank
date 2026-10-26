@@ -410,16 +410,37 @@ export class MonadStampTerminalError extends MonadStampError {
   }
 }
 
-/** A previous exact payment set still needs reconciliation. Building a fresh salted envelope
- * while it is pending could pay twice under a different payload hash. */
+/** Why a paid message's one attempt is still pending. Nothing failed in any of these. */
+export type MonadStampPendingReason =
+  /** Its own payments wait for their funding transfer to land before the relay is given it. */
+  | 'awaiting-funding'
+  /** The relay has not answered that it stored the message yet; the same bytes go again. */
+  | 'awaiting-delivery'
+  /** The host has not yet recorded the sealed envelope it must hold before the message leaves. */
+  | 'awaiting-host-binding'
+
+const PENDING_TEXT: Record<MonadStampPendingReason, string> = {
+  'awaiting-funding':
+    "This message's payment is waiting for its funding transfer to land; the message is handed to the relay once it has. Nothing failed.",
+  'awaiting-delivery':
+    'The relay has not confirmed it stored this message yet; the same message is sent again. Nothing failed.',
+  'awaiting-host-binding':
+    'This message waits for the app to record its sealed envelope before it is sent. Nothing failed.',
+}
+
+/** A paid message's one attempt (its exact payment set) is still pending: it is finished with
+ * the same bytes, never paid again under a fresh envelope, which could pay twice. Not a failure. */
 export class MonadStampPendingAttemptError extends MonadStampError {
   readonly payloadHashes: string[]
+  readonly reason: MonadStampPendingReason
 
-  constructor(payloadHashes: string[]) {
-    super(
-      `Cannot create another stamp payment while ${payloadHashes.length} prior attempt(s) remain pending`,
-    )
+  constructor(
+    payloadHashes: string[],
+    reason: MonadStampPendingReason = 'awaiting-delivery',
+  ) {
+    super(PENDING_TEXT[reason])
     this.payloadHashes = payloadHashes
+    this.reason = reason
   }
 }
 

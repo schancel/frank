@@ -319,4 +319,147 @@ describe('ChatMessageStealth', () => {
       false,
     )
   })
+
+  describe('a sent payment, as the paying wallet journal shows it', () => {
+    const HASH_A = '0x' + 'a7'.repeat(32)
+    const HASH_B = '0x' + 'b8'.repeat(32)
+    const sent = (
+      outboundState: string,
+      members: {
+        txHash: string
+        recipientAmountAtomic: bigint
+        state: 'unsent' | 'pending' | 'landed' | 'failed'
+        failure?: 'reverted' | 'replaced'
+      }[],
+      extra: {
+        verifiedReceivedAmountAtomic?: bigint
+        nativeFeeAtomic?: bigint
+      } = {},
+    ) =>
+      mountComponent({
+        outbound: true,
+        amountWei: (2n * ONE).toString(),
+        outboundState,
+        stampWei: 1000n,
+        outboundPayment: {
+          intendedAmountAtomic: 2n * ONE,
+          members,
+          ...extra,
+        },
+      })
+    const states = (wrapper: ReturnType<typeof mountComponent>) =>
+      wrapper
+        .findAll('[data-testid="stealth-sent-transfer-state"]')
+        .map(node => node.text())
+
+    it('not sent yet: says so, with the recipient amount apart from fee and stamp', () => {
+      const wrapper = sent('unsent', [
+        { txHash: HASH_A, recipientAmountAtomic: ONE, state: 'unsent' },
+        { txHash: HASH_B, recipientAmountAtomic: ONE, state: 'unsent' },
+      ])
+      expect(mockAskedFor).toEqual([undefined])
+      expect(text(wrapper, 'stealth-status-badge')).toBe('Not sent yet')
+      expect(text(wrapper, 'stealth-status-hint')).toMatch(
+        /not been handed to the chain yet/,
+      )
+      expect(text(wrapper, 'stealth-sent-recipient')).toBe(
+        `Recipient gets: ${activeChain.toDisplayAmount(2n * ONE)} MONT`,
+      )
+      expect(text(wrapper, 'stealth-sent-fee')).toBe(
+        'Network fee: not known yet',
+      )
+      expect(text(wrapper, 'stealth-sent-stamp')).toBe(
+        `Message stamp: ${activeChain.toDisplayAmount(1000n)} ${
+          activeChain.unit
+        }`,
+      )
+      expect(states(wrapper)).toEqual(['not sent yet', 'not sent yet'])
+      expect(wrapper.html()).toContain(
+        `${HASH_A.slice(0, 8)}...${HASH_A.slice(-6)}`,
+      )
+      expect(wrapper.html()).toContain(
+        `${HASH_B.slice(0, 8)}...${HASH_B.slice(-6)}`,
+      )
+    })
+
+    it('pending until the chain includes it', () => {
+      const wrapper = sent('pending', [
+        { txHash: HASH_A, recipientAmountAtomic: 2n * ONE, state: 'pending' },
+      ])
+      expect(text(wrapper, 'stealth-status-badge')).toBe('Pending')
+      expect(text(wrapper, 'stealth-status-hint')).toBe(
+        'Waiting for the chain to include the payment.',
+      )
+      expect(states(wrapper)).toEqual(['pending'])
+      expect(wrapper.find('[data-testid="stealth-sent-landed"]').exists()).toBe(
+        false,
+      )
+    })
+
+    it('partly landed: exactly what landed, and each transfer as the chain showed it', () => {
+      const wrapper = sent(
+        'partial',
+        [
+          { txHash: HASH_A, recipientAmountAtomic: ONE, state: 'landed' },
+          { txHash: HASH_B, recipientAmountAtomic: ONE, state: 'pending' },
+        ],
+        { verifiedReceivedAmountAtomic: ONE, nativeFeeAtomic: 21000n },
+      )
+      expect(text(wrapper, 'stealth-status-badge')).toBe('Partly landed')
+      expect(text(wrapper, 'stealth-sent-landed')).toBe(
+        `Landed on chain: ${activeChain.toDisplayAmount(ONE)} MONT`,
+      )
+      expect(text(wrapper, 'stealth-sent-fee')).toBe(
+        `Network fee: ${activeChain.toDisplayAmount(21000n)} ${
+          activeChain.unit
+        }`,
+      )
+      expect(states(wrapper)).toEqual(['landed', 'pending'])
+    })
+
+    it('paid once every transfer landed', () => {
+      const wrapper = sent(
+        'paid',
+        [{ txHash: HASH_A, recipientAmountAtomic: 2n * ONE, state: 'landed' }],
+        { verifiedReceivedAmountAtomic: 2n * ONE, nativeFeeAtomic: 21000n },
+      )
+      expect(text(wrapper, 'stealth-status-badge')).toBe('Paid')
+      expect(text(wrapper, 'stealth-status-hint')).toBe(
+        'The chain shows the whole payment landed.',
+      )
+      expect(states(wrapper)).toEqual(['landed'])
+    })
+
+    it('failed, with the reason, when a transfer reverted or was replaced', () => {
+      const reverted = sent('chainFailed', [
+        {
+          txHash: HASH_A,
+          recipientAmountAtomic: 2n * ONE,
+          state: 'failed',
+          failure: 'reverted',
+        },
+      ])
+      expect(text(reverted, 'stealth-status-badge')).toBe('Payment failed')
+      expect(text(reverted, 'stealth-status-hint')).toMatch(/reverted on chain/)
+      expect(states(reverted)).toEqual(['reverted'])
+      const replaced = sent(
+        'partial',
+        [
+          { txHash: HASH_A, recipientAmountAtomic: ONE, state: 'landed' },
+          {
+            txHash: HASH_B,
+            recipientAmountAtomic: ONE,
+            state: 'failed',
+            failure: 'replaced',
+          },
+        ],
+        { verifiedReceivedAmountAtomic: ONE },
+      )
+      expect(text(replaced, 'stealth-status-badge')).toBe('Partly landed')
+      expect(text(replaced, 'stealth-status-hint')).toMatch(
+        /took a transfer’s place/,
+      )
+      expect(states(replaced)).toEqual(['landed', 'replaced'])
+    })
+  })
 })

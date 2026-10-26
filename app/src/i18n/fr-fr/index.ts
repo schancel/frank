@@ -1226,7 +1226,36 @@ export const rawFrFR = {
       paid: 'Payé',
       failed: 'Échec de livraison du transfert',
       released: 'Annulé avant envoi',
+      unsent: 'Pas encore envoyé',
+      pending: 'En attente',
+      partial: 'Arrivé en partie',
+      chainFailed: 'Paiement échoué',
     },
+    outboundHint: {
+      unsent:
+        'Le paiement n’a pas encore été remis à la chaîne. Il part avec le message.',
+      pending: 'En attente de l’inclusion du paiement par la chaîne.',
+      partial:
+        'Une partie du paiement est arrivée ; la chaîne n’a pas encore montré le reste.',
+      paid: 'La chaîne montre que tout le paiement est arrivé.',
+      reverted:
+        'Un transfert de ce paiement a été annulé sur la chaîne ; cette partie n’a pas été payée.',
+      replaced:
+        'Une autre transaction du même compte a pris la place d’un transfert ; cette partie n’a pas été payée.',
+    },
+    transferState: {
+      unsent: 'pas encore envoyé',
+      pending: 'en attente',
+      landed: 'arrivé',
+      failed: 'échoué',
+      reverted: 'annulé',
+      replaced: 'remplacé',
+    },
+    sentRecipientAmount: 'Le destinataire reçoit',
+    sentLandedAmount: 'Arrivé sur la chaîne',
+    sentNetworkFee: 'Frais de réseau',
+    sentFeeNotKnown: 'pas encore connus',
+    sentStamp: 'Timbre du message',
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',
     receivedTitle: 'Paiement furtif reçu',

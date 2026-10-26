@@ -33,12 +33,17 @@
  *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
  */
 import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
+import {
+  refreshOutgoingStealthPayments,
+  type StealthPaymentOwner,
+} from '../utils/outgoing-stealth-payments'
 import { activeChain } from '@frank/wallet/chain'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
 import {
   openEvmWallet,
+  peekOpenedEvmWallets,
   recoverSecondaryEvmWallets,
 } from '../accounts/evm-wallets'
 import { peekOpenedUtxoWallets } from '../accounts/utxo-wallets'
@@ -838,6 +843,38 @@ export function startOutgoingReconciliation({
     }
   }
 
+  const stealthPaymentOwners = (): StealthPaymentOwner[] => [
+    wallet as StealthPaymentOwner,
+    ...peekOpenedEvmWallets().map(open => open.wallet),
+    ...peekOpenedUtxoWallets().map(open => open.wallet),
+  ]
+  // What each sent stealth payment's own wallet journal shows (the cards read it). Only already
+  // open wallets are asked; nothing is opened, submitted or released here. It runs beside the
+  // tick, never behind a slow send, and again shortly while a payment is not final, so a card
+  // shows each step (not sent, pending, landed) as the journal records it.
+  let stealthOpen = 0
+  let stealthRun: Promise<void> | undefined
+  let stealthTimer: ReturnType<typeof setTimeout> | undefined
+  const refreshStealthPayments = () => {
+    if (stopped || stealthRun) return
+    if (stealthTimer !== undefined) clearTimeout(stealthTimer)
+    stealthTimer = undefined
+    stealthRun = (async () => {
+      try {
+        stealthOpen = await refreshOutgoingStealthPayments(
+          stealthPaymentOwners(),
+          sentMessages(),
+        )
+      } catch (err) {
+        console.warn('sent stealth payment status unavailable', err)
+      } finally {
+        stealthRun = undefined
+        if (!stopped && stealthOpen > 0)
+          stealthTimer = setTimeout(refreshStealthPayments, intervalMs)
+      }
+    })()
+  }
+
   const tick = async () => {
     if (stopped) return
     // This owner is independent of presentation rows and never holds the chat recovery tick.
@@ -854,6 +891,7 @@ export function startOutgoingReconciliation({
         ? Math.max(intervalMs, backgroundIntervalMs)
         : intervalMs,
     )
+    refreshStealthPayments()
     if (ticking) return
     ticking = true
     resetRequested = false
@@ -884,6 +922,7 @@ export function startOutgoingReconciliation({
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
     }
+    pending += stealthOpen
     // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
     // again, within its own request bound (none when nothing is pending). It runs whether or
     // not the reconciliation above succeeded: the relay being down says nothing about the node.
@@ -973,6 +1012,8 @@ export function startOutgoingReconciliation({
     // the delivery queue, so its outer action can settle after another action has already updated
     // `knownPending`; the exclusive action is the exact serialized state/persistence boundary.
     if (name !== 'setOutgoingStateExclusive') return
+    // A sent message changed state: its payment may have just left or been bound.
+    after(() => refreshStealthPayments())
     after(() => {
       const now = pendingIds()
       const isNew = [...now].some(id => !knownPending.has(id))
@@ -991,6 +1032,8 @@ export function startOutgoingReconciliation({
       unsubscribe()
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
+      if (stealthTimer !== undefined) clearTimeout(stealthTimer)
+      stealthTimer = undefined
       if (
         typeof document !== 'undefined' &&
         typeof document.removeEventListener === 'function'

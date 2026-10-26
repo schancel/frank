@@ -689,6 +689,8 @@ async function submitStored(
   dead?: string
   /** Every submission of these bytes, this one included, was refused before exposure. */
   refusedUnexposed?: true
+  /** Not handed to the relay: its own payments still wait on their funding transfer. */
+  awaitingFunding?: true
 }> {
   if (
     row.exposurePending ||
@@ -705,7 +707,7 @@ async function submitStored(
     // This message's own payments still wait on their funding transactions: nothing failed
     // and no other attempt competes. It is handed to the relay on a later pass.
     if (!await shared.lifecycle.readCanSubmitPayments(row.transactionSetOperationId, row.transactionSetStageId))
-      return { row }
+      return { row, awaitingFunding: true }
   }
   if (row.transactionSetOperationId && owner.transactionSets) {
     const operation = await owner.transactionSets.preparer.readOperation(row.transactionSetOperationId)
@@ -2098,7 +2100,7 @@ async function send(
       const held = name ? owner.messages.unpaid(name) : undefined
       if (params.onEnvelopeDurable || held?.exposurePending) {
         if (!params.onEnvelopeDurable || !name || !held)
-          throw new MonadStampPendingAttemptError([digest])
+          throw new MonadStampPendingAttemptError([digest], 'awaiting-host-binding')
         // Keep the marker until both the host effect and this durable clear succeed.
         await owner.lifetime(async () => params.onEnvelopeDurable!(digest))
         const { exposurePending: _pending, ...authorized } = held
@@ -2301,7 +2303,10 @@ async function send(
         )
       }
       if (row.outcome !== 'delivered')
-        throw new MonadStampPendingAttemptError([digest])
+        throw new MonadStampPendingAttemptError(
+          [digest],
+          submitted.awaitingFunding ? 'awaiting-funding' : 'awaiting-delivery',
+        )
       row = await owner.lifetime(() => settleSharedPayments(owner, row))
       // The message and its payment are out; telling the account's other devices is not a
       // condition of that. A note that does not get through now is sent by the resend pass.

@@ -1200,7 +1200,36 @@ export const rawEnUS = {
       paid: 'Paid',
       failed: 'Transfer delivery failed',
       released: 'Cancelled before sending',
+      unsent: 'Not sent yet',
+      pending: 'Pending',
+      partial: 'Partly landed',
+      chainFailed: 'Payment failed',
     },
+    outboundHint: {
+      unsent:
+        'The payment has not been handed to the chain yet. It goes out with the message.',
+      pending: 'Waiting for the chain to include the payment.',
+      partial:
+        'Part of the payment has landed; the chain has not shown the rest yet.',
+      paid: 'The chain shows the whole payment landed.',
+      reverted:
+        'A transfer of this payment reverted on chain; that part was not paid.',
+      replaced:
+        'Another transaction from the same account took a transfer’s place; that part was not paid.',
+    },
+    transferState: {
+      unsent: 'not sent yet',
+      pending: 'pending',
+      landed: 'landed',
+      failed: 'failed',
+      reverted: 'reverted',
+      replaced: 'replaced',
+    },
+    sentRecipientAmount: 'Recipient gets',
+    sentLandedAmount: 'Landed on chain',
+    sentNetworkFee: 'Network fee',
+    sentFeeNotKnown: 'not known yet',
+    sentStamp: 'Message stamp',
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',
     receivedTitle: 'Received Stealth Payment',

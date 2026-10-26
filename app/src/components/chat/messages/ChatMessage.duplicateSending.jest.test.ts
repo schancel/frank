@@ -76,6 +76,7 @@ const statusKeys = [
   'outgoing.sending',
   'outgoing.paymentPending',
   'outgoing.paymentQueued',
+  'outgoing.paymentQueuedUnreachable',
   'outgoing.paymentChecking',
   'chatMessage.failedToSend',
 ]
@@ -188,10 +189,16 @@ const states: Array<{
 }> = [
   { name: 'sending', status: 'pending', phrase: 'outgoing.sending' },
   {
-    name: 'queued behind another message',
+    name: 'queued',
     status: 'payment-pending',
     delivery: {},
     phrase: 'outgoing.paymentQueued',
+  },
+  {
+    name: 'queued: the relay could not be reached',
+    status: 'payment-pending',
+    delivery: { failureReason: 'unreachable' },
+    phrase: 'outgoing.paymentQueuedUnreachable',
   },
   {
     name: 'payment pending',

@@ -696,7 +696,10 @@ export default defineComponent({
     },
     paymentState(): string {
       const delivery = this.message.delivery
-      if (delivery?.attemptDigest === undefined) return 'queued'
+      if (delivery?.attemptDigest === undefined)
+        return delivery?.failureReason === 'unreachable'
+          ? 'unreachable'
+          : 'queued'
       return delivery.live === true ? 'live' : 'checking'
     },
     bubbleSize() {

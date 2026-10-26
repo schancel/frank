@@ -4,6 +4,7 @@ import {
   type EvmNativeObservation,
 } from "../storage/evm-native-operation-journal";
 import {
+  classifyEvmOperation,
   summarizeEvmNativeOperation,
   findEvmNativeOperationStatus,
 } from "./evm-native-operation-status";
@@ -251,4 +252,48 @@ it("associates only a unique final hash on the captured chain and rejects mismat
   } finally {
     await fixture.journal.Close();
   }
+});
+
+const MESSAGE = "0123456789abcdef0123456789abcdef";
+
+it("names every kind of send the wallet makes from its operation identity", () => {
+  const set = (id: string) => `evm-transaction-set:${id}`;
+  expect(classifyEvmOperation(set(`stamp-${MESSAGE}`))).toEqual({
+    purpose: "stamp",
+    messageId: MESSAGE,
+  });
+  // A stamp paid again after its coins were taken is still that message's stamp.
+  expect(classifyEvmOperation(set(`stamp-${MESSAGE}-r2`))).toEqual({
+    purpose: "stamp",
+    messageId: MESSAGE,
+  });
+  expect(classifyEvmOperation(set(`contact-${MESSAGE}`))).toEqual({
+    purpose: "contact-payment",
+    messageId: MESSAGE,
+  });
+  // A payment made in a chat is a payment to a contact, as Send to Contact is.
+  expect(classifyEvmOperation(set(`stealth-${"ab".repeat(32)}`))).toEqual({
+    purpose: "contact-payment",
+  });
+  expect(classifyEvmOperation("stealth-payment:chat-payment-1")).toEqual({
+    purpose: "contact-payment",
+  });
+  expect(classifyEvmOperation(set(`forum-${"cd".repeat(16)}`))).toEqual({
+    purpose: "forum",
+  });
+  // Creating a group, or writing in one, pays for a group write; it is no forum post.
+  expect(classifyEvmOperation(set(`group-write-${"ef".repeat(32)}`))).toEqual({
+    purpose: "group-write",
+  });
+  expect(classifyEvmOperation(set(`legacy-${"12".repeat(16)}`))).toEqual({
+    purpose: "transfer",
+  });
+  expect(classifyEvmOperation(undefined)).toEqual({ purpose: "transfer" });
+  expect(classifyEvmOperation(`tx-0x${"34".repeat(32)}`)).toEqual({
+    purpose: "transfer",
+  });
+  // A message's stamp appended to a payment is that message's stamp.
+  expect(
+    classifyEvmOperation(set(`stealth-${"ab".repeat(32)}`), `stamp-${MESSAGE}`)
+  ).toEqual({ purpose: "stamp", messageId: MESSAGE });
 });

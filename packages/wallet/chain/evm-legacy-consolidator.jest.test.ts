@@ -2329,6 +2329,11 @@ describe('wallet-lifetime EVM native operations', () => {
       direction: 'out',
       chainIdentifier: binding.chainIdentifier,
       txHash: result.txHash,
+      // No preparation identity: the operation is named by its first transaction, which no
+      // other device's operation shares (the journal's own ID is this device's sequence).
+      operation: {
+        id: `tx-${journal.get(result.operationId).members[0]!.signed!.transactionHash.toLowerCase()}`,
+      },
     })
     expect(journal.get(result.operationId).members[0]!.syncApplied).toBe(true)
   })
@@ -2401,6 +2406,12 @@ describe('wallet-lifetime EVM native operations', () => {
     await current.executor.flushSync(set.operationId)
     await current.executor.flushSync(set.operationId)
     expect(current.sync).toHaveBeenCalledTimes(set.members.length)
+    // Every member's note names the set by its preparation identity: the account's other
+    // devices show its transactions as the one send they are, named as this device names it.
+    for (const call of current.sync.mock.calls as unknown[][])
+      expect(call[0]).toMatchObject({
+        operation: { id: 'evm-transaction-set:gate' },
+      })
     expect(
       journal.get(set.operationId).members.every(m => m.syncApplied),
     ).toBe(true)

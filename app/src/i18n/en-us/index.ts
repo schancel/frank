@@ -909,8 +909,9 @@ export const rawEnUS = {
     sending: 'Sending…',
     paymentPending:
       'Payment pending, will retry. You will not be charged again.',
-    paymentQueued:
-      'Waiting for an earlier message to finish. This one will be sent after it.',
+    paymentQueued: 'Queued. It will be sent automatically.',
+    paymentQueuedUnreachable:
+      'Queued: the relay or the network cannot be reached. It will be sent automatically.',
     paymentChecking: 'Checking payment status…',
     waitingForPreviousPayment: 'Waiting for the previous payment to confirm…',
     waitingForChain: 'Queued: the network cannot be reached.',
@@ -1549,11 +1550,13 @@ export const rawEnUS = {
       'stamp': 'Message stamp',
       'contact-payment': 'Payment to a contact',
       'forum': 'Forum post burn',
+      'group-write': 'Group write fee',
       'transfer': 'To',
     },
+    fee: 'Network fee {amount} {unit}',
     noted: 'Read from the notes your devices share with each other.',
     receivedPayment: 'Payment received',
-    receivedStamp: 'Message stamp received',
+    receivedStamp: 'Received',
     receivedClaimed:
       'The amount the sender stated. It is not confirmed on the network yet.',
     receivedPartial:

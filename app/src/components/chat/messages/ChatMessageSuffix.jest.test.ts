@@ -196,12 +196,23 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     )
   })
 
-  it('a message queued behind another one makes no payment claim', () => {
+  it('a queued message makes no payment claim, and claims no earlier message it waits for', () => {
     const queued = mountSuffix({
       status: 'payment-pending',
       paymentState: 'queued',
     })
-    expect(queued.text()).toContain('Waiting for an earlier message')
+    expect(queued.text()).toContain('Queued')
+    expect(queued.text()).not.toContain('earlier message')
+    expect(queued.text()).not.toContain('charged')
+  })
+
+  it('a message queued because the relay could not be reached says so', () => {
+    const queued = mountSuffix({
+      status: 'payment-pending',
+      paymentState: 'unreachable',
+    })
+    expect(queued.text()).toContain('cannot be reached')
+    expect(queued.text()).not.toContain('earlier message')
     expect(queued.text()).not.toContain('charged')
   })
 

@@ -69,6 +69,14 @@ export function refreshOutgoingPaymentSummaries(
       continue
     }
     if (summary === undefined) continue
+    // A final word is kept only once the message is delivered: until then the wallet may still
+    // build the payment of the same message again (its earlier one `failed`, taken by another
+    // transaction), and the bubble shows the payment that went with the message.
+    if (FINAL.has(summary) && message.status !== 'confirmed') {
+      outgoingPaymentSummaries.delete(digest)
+      open++
+      continue
+    }
     outgoingPaymentSummaries.set(digest, summary)
     if (!FINAL.has(summary)) open++
   }

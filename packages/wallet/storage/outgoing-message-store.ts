@@ -57,8 +57,15 @@ export interface StoredMessage {
    * removed after delivery is durably recorded. */
   request?: { body: string; contentType: string }
   payments: StoredPayment[]
-  /** Stable link to the wallet-owned EVM construction journal. Present on shared-set sends. */
+  /** Stable link to the wallet-owned EVM construction journal. Present on shared-set sends:
+   * `stamp-<message ID>`, or `stamp-<message ID>-r<n>` once the payment was built again `n`
+   * times (`replacedOperationIds`). */
   transactionSetOperationId?: string
+  /** Shared-set sends only: earlier payment operations of this same message, oldest first, each
+   * of whose payments the chain showed taken by a different transaction (its account's nonce
+   * used, the block that used it not holding this payment) while the relay held no copy of the
+   * message. None of them can ever pay. The message's one payment is the current operation's. */
+  replacedOperationIds?: string[]
   /** A stamp stage inside an already prepared same-wallet payment operation. */
   transactionSetStageId?: string
   paymentOperationId?: string
@@ -89,6 +96,12 @@ export interface StoredMessage {
    * during one leaves the bytes possibly out), and set again only by such a refusal. Never set
    * for a recipient reached through forwarding. */
   unexposed?: true
+  /** Shared-set sends only: the home relay holds no copy of this message. It was never
+   * submitted, or every submission was refused before the relay stored or broadcast anything
+   * (`REFUSED_BEFORE_EXPOSURE`). Cleared, durably, before every submission (a lost answer leaves
+   * the relay possibly holding it), and set again only by such a refusal. Never set for a
+   * recipient reached through forwarding. Only such a message may have its payment built again. */
+  unstored?: true
   /** A sealed-sender message: the relay keeps no outbox row for it, so once it is delivered a
    * note to self carrying the message and its spends is sent to the account's other devices.
    * Set when the record is created; removed, durably, once that note is delivered. */
@@ -228,13 +241,24 @@ export async function noticeOldLinkState(location: string): Promise<boolean> {
   return true
 }
 
+/** The payment operation of a shared-set stamp after its payment was built again `rebuilds`
+ * times: the first is `stamp-<message ID>` itself. */
+export function sharedStampOperationId(stampId: string, rebuilds: number): string {
+  return rebuilds === 0 ? stampId : `${stampId}-r${rebuilds}`
+}
+
 export function validateSharedStoredMessage(row: StoredMessage): void {
   const intent = row.construction
+  const stampId = `stamp-${row.consumerId.slice('frank-dm:'.length)}`
+  const replaced = row.replacedOperationIds
   if (
     row.version !== 2 ||
     typeof row.transactionSetOperationId !== 'string' ||
+    (replaced !== undefined &&
+      (row.transactionSetStageId !== undefined || !Array.isArray(replaced) || replaced.length === 0 ||
+        replaced.some((id, n) => id !== sharedStampOperationId(stampId, n)))) ||
     (row.transactionSetStageId === undefined
-      ? row.transactionSetOperationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}` || row.paymentOperationId !== undefined
+      ? row.transactionSetOperationId !== sharedStampOperationId(stampId, replaced?.length ?? 0) || row.paymentOperationId !== undefined
       : row.transactionSetStageId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}` ||
         typeof row.paymentOperationId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.paymentOperationId)) ||
     !/^[0-9a-f]{64}$/i.test(row.digest) ||

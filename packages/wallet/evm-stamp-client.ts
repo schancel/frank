@@ -410,8 +410,13 @@ export class MonadStampTerminalError extends MonadStampError {
   }
 }
 
-/** Why a paid message's one attempt is still pending. Nothing failed in any of these. */
+/** Why a paid message's one attempt is still pending. */
 export type MonadStampPendingReason =
+  /** Another transaction (another device of this account, paying from the same coin) used the
+   * coin its payment was signed from: that payment can never land and nothing was charged for it.
+   * Once the chain confirms that, the payment is built again from other coins and the message is
+   * sent with it, paid once. */
+  | 'payment-taken'
   /** Its own payments wait for their funding transfer to land before the relay is given it. */
   | 'awaiting-funding'
   /** The relay has not answered that it stored the message yet; the same bytes go again. */
@@ -420,6 +425,8 @@ export type MonadStampPendingReason =
   | 'awaiting-host-binding'
 
 const PENDING_TEXT: Record<MonadStampPendingReason, string> = {
+  'payment-taken':
+    "Another transaction used the coin this message's payment was signed from, so that payment will not go through and nothing was charged for it. Once the network confirms this, the message is paid from other funds and sent. It is paid once.",
   'awaiting-funding':
     "This message's payment is waiting for its funding transfer to land; the message is handed to the relay once it has. Nothing failed.",
   'awaiting-delivery':

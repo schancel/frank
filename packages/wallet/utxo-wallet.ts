@@ -726,7 +726,8 @@ export class UtxoWallet implements NativeWalletHandle {
   get stealthPayments(): StealthPaymentCapability | undefined {
     if (!this.stealthCustody) return undefined;
     return {
-      quote: (intent) => this.quoteStealthPayment(intent),
+      // No combined stamp here (`supportsCombinedStamp` is not offered): a stamp is not quoted.
+      quote: ({ messageStamp: _stamp, ...intent }) => this.quoteStealthPayment(intent),
       prepare: (intent) => this.prepareStealthPayment(intent),
       list: async () => {
         this.requireStealthCustody();

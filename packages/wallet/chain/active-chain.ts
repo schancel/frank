@@ -332,6 +332,16 @@ export type DirectMessageAttemptStatus =
   | "dead"
   | "unknown";
 
+/** Why a `dead` attempt ended (`DirectMessageClient.endOf`). `fee-exceeded`: its payment or
+ * stamp would have cost more network fee than the user approved, and it ended before anything
+ * of it was signed or handed out: nothing was paid, and what it held is given back.
+ * `discarded`: ended by the user before anything of it was signed or handed out. `relay`: the
+ * relay ended it (`relayReason`, when it gave one). */
+export type DirectMessageEnd =
+  | { readonly reason: "fee-exceeded" }
+  | { readonly reason: "discarded" }
+  | { readonly reason: "relay"; readonly relayReason?: string };
+
 /** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only
  * through {@link isDirectMessageNotAttempted}. */
 export const directMessageNotAttempted: unique symbol = Symbol(
@@ -518,6 +528,13 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     payloadDigest: string;
   }): Promise<DirectMessageAttemptStatus | undefined>;
+  /** Why the attempt `payloadDigest` ended, when it is `dead`; `undefined` while it has not
+   * ended or for a digest this wallet has no record of. Reads the wallet's own record: no
+   * request, nothing written. A host shows this, not a guess, for a `dead` status. */
+  endOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): Promise<DirectMessageEnd | undefined>;
   /** Payload hashes of every attempt the wallet can still account for that is not in
    * `knownDigests`: payments no message points at. Re-sends live attempts first, so a
    * just-resumed one is included. An attempt with no outcome yet is always reported. A delivered

@@ -60,6 +60,7 @@ export interface ExecutionContext {
     DirectMessageClient,
     | 'send'
     | 'reconcileAttempts'
+    | 'endOf'
     | 'attemptOf'
     | 'unattributedAttempts'
     | 'resolveUnattributedAttempts'
@@ -477,7 +478,23 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
           if (applied === 'live') return { state: 'payment-pending' }
           // A relay terminal status or an exhausted local attempt is not financial nonexecution
           // proof. Even a confirmed Retry must settle the original authorized payment.
-          const failureReason = applied === 'dead' ? 'rejected' : 'unverified'
+          // Why the wallet says it ended: only an end the relay gave is "rejected" (the same
+          // mapping as `failureOfEnd` in outgoing-recovery.ts).
+          const end =
+            applied === 'dead'
+              ? await messagingChain.directMessages
+                  .endOf?.({ wallet, payloadDigest: digest })
+                  .catch(() => undefined)
+              : undefined
+          const failureReason: OutgoingFailureReason =
+            applied !== 'dead'
+              ? 'unverified'
+              : end?.reason === 'fee-exceeded'
+              ? 'fee-exceeded'
+              : end?.reason === 'discarded'
+              ? 'error'
+              : 'rejected'
+          assertCurrent()
           await ports.setState(
             address,
             id,
@@ -776,7 +793,13 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
             !financial
           )
             ports.stripReleasedPayments(ports.message(id)!)
-          const failure = ports.classifySendFailure(error, ownDigest)
+          // A Retry of a message ended over the fee finds its payment given back: that is the
+          // same end, told the same way (nothing was paid, its funds are available again).
+          const failure =
+            error instanceof ContactPaymentReleasedError &&
+            previous?.failureReason === 'fee-exceeded'
+              ? { reason: 'fee-exceeded' as const }
+              : ports.classifySendFailure(error, ownDigest)
           await setFirstSendState('error', {
             ...(failure.keepDigest === undefined
               ? {}

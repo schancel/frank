@@ -136,6 +136,7 @@ import type {
   AuthenticatedMailboxRecord,
   ChainAddress,
   DirectMessageAttemptStatus,
+  DirectMessageEnd,
   DirectMessagePaymentSummary,
   DirectMessageSelfCopyState,
   DirectMessageClient,
@@ -3574,6 +3575,21 @@ export function canonicalDirectMessages(
         ?? owner.messages.unpaidByDigest(params.payloadDigest)
       if (!row) return undefined
       return row.exposurePending ? 'live' : row.outcome ?? 'live'
+    },
+    endOf: async (
+      params: Parameters<NonNullable<DirectMessageClient['endOf']>>[0],
+    ): Promise<DirectMessageEnd | undefined> => {
+      if (!/^[0-9a-f]{64}$/.test(params.payloadDigest))
+        throw new Error('Expected canonical message payload digest')
+      const row = owner.messages.all().find(row => row.digest === params.payloadDigest)
+        ?? owner.messages.unpaidByDigest(params.payloadDigest)
+      if (!row || row.exposurePending || row.outcome !== 'dead') return undefined
+      // Ended by this wallet before anything of it was signed or handed out (`endUnconstructed`).
+      if ('payments' in row && unconstructed(row)) {
+        if (row.reason === 'fee_exceeded') return { reason: 'fee-exceeded' }
+        if (row.reason === 'discarded') return { reason: 'discarded' }
+      }
+      return { reason: 'relay', ...(row.reason === undefined ? {} : { relayReason: row.reason }) }
     },
     /**
      * The host's tick. Drives every unresolved message of this wallet one step (see `resend`),

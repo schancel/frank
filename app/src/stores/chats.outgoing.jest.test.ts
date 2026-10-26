@@ -1135,6 +1135,36 @@ describe('outgoing direct messages (#269, #270)', () => {
       },
     )
 
+    it('a Retry of an attempt the wallet ended over the approved fee says so, never that the relay rejected it', async () => {
+      const send = sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      await chats.setOutgoingState(PEER, message.payloadDigest, 'error', {
+        attemptDigest: HASH,
+      })
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({ reason: 'fee-exceeded' as const }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      try {
+        const result = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        })
+        expect(result).toEqual({ state: 'failed', reason: 'fee-exceeded' })
+        expect(endOf).toHaveBeenCalledWith({ wallet, payloadDigest: HASH })
+        expect(only(chats)[0].delivery?.failureReason).toBe('fee-exceeded')
+        expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+        expect(send).toHaveBeenCalledTimes(1)
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
+    })
+
     it('retains the recorded digest on presentation updates and rejects a replacement before mutation', async () => {
       sendJournalsThenPending()
       const chats = useChatStore()
@@ -2097,6 +2127,31 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
       expect(only(chats)[1].status).toBe('confirmed')
       expect(only(chats)[1].items).toEqual([{ type: 'text', text: 'second' }])
+    })
+
+    it('reconcileOutgoing shows an attempt the wallet ended over the approved fee as that, not as a relay rejection', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({ reason: 'fee-exceeded' as const }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      try {
+        await chats.reconcileOutgoing({ wallet })
+        expect(only(chats)[0].status).toBe('error')
+        expect(only(chats)[0].delivery?.failureReason).toBe('fee-exceeded')
+        expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
     })
 
     it('reconciles pending outgoing messages stored under conversations (UUID key) and drains queued messages', async () => {

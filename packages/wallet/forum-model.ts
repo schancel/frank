@@ -46,8 +46,9 @@ export interface ForumMessage {
   revision: string
   transactionHash: string
   authorBurnTx: string
-  blockNumber: string
-  transactionIndex: string
+  /** The author's burns' inclusion position, once they landed; a post is visible before. */
+  blockNumber?: string
+  transactionIndex?: string
   replies?: ForumMessage[]
 }
 export interface DiscoveredTopic {
@@ -158,7 +159,11 @@ export function projectForumView(
     revision: view.revision.toString(),
     transactionHash: toHex(view.transactionHash),
     authorBurnTx: '0x' + toHex(view.authorBurnTx),
-    blockNumber: view.block.toString(),
-    transactionIndex: view.transactionIndex.toString(),
+    ...(view.block !== undefined && view.transactionIndex !== undefined
+      ? {
+          blockNumber: view.block.toString(),
+          transactionIndex: view.transactionIndex.toString(),
+        }
+      : {}),
   }
 }

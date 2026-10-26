@@ -1624,6 +1624,8 @@ export function parseDraft(
     case TYPE_FORUM_VIEW: {
       const K = FORUM_SINGLE_VIEW
       const m = shaped(payload, P, FORUM_SINGLE_VIEW_SHAPE, allow)
+      if (m.has(K.block) !== m.has(K.transactionIndex))
+        throw bad(P, 'inclusion block and index together')
       return {
         type: TYPE_FORUM_VIEW,
         network: networkTag(m.get(K.network), at(P, K.network)),
@@ -1642,13 +1644,17 @@ export function parseDraft(
           32,
         ),
         firstVisible: timestamp(m.get(K.firstVisible), at(P, K.firstVisible)),
-        block: uintRange(m.get(K.block), at(P, K.block), 0n, U64_MAX),
-        transactionIndex: uintRange(
-          m.get(K.transactionIndex),
-          at(P, K.transactionIndex),
-          0n,
-          U64_MAX,
-        ),
+        ...(m.has(K.block)
+          ? {
+              block: uintRange(m.get(K.block), at(P, K.block), 0n, U64_MAX),
+              transactionIndex: uintRange(
+                m.get(K.transactionIndex),
+                at(P, K.transactionIndex),
+                0n,
+                U64_MAX,
+              ),
+            }
+          : {}),
         aggregate: forumAggregate(m.get(K.aggregate), at(P, K.aggregate)),
         revision: uintRange(m.get(K.revision), at(P, K.revision), 0n, U64_MAX),
         epoch: bstr(m.get(K.epoch), at(P, K.epoch), 16, 16),
@@ -1768,15 +1774,23 @@ export function parseDraft(
         epoch: bstr(m.get(K.epoch), at(P, K.epoch), 16, 16),
         unknownFields: m.unknown,
       }
-      const { pending: PENDING, confirmed: CONFIRMED } = FORUM_OPERATION_STATE
-      const state = u32ish(m.get(K.state), at(P, K.state), 0, 3)
+      const {
+        pending: PENDING,
+        confirmed: CONFIRMED,
+        counted: COUNTED,
+        dropped: DROPPED,
+      } = FORUM_OPERATION_STATE
+      const state = u32ish(m.get(K.state), at(P, K.state), 0, DROPPED)
       if (
         m.has(K.block) !== (state === CONFIRMED) ||
         m.has(K.transactionIndex) !== (state === CONFIRMED)
       )
         throw bad(P, 'confirmation position iff confirmed')
       if (
-        (state === PENDING || state === CONFIRMED) &&
+        (state === PENDING ||
+          state === CONFIRMED ||
+          state === COUNTED ||
+          state === DROPPED) &&
         (common.value === 0n || common.value > I64_MAX)
       )
         throw bad(at(P, K.value), 'observed burn outside 1..i64::MAX')
@@ -1793,8 +1807,12 @@ export function parseDraft(
             U64_MAX,
           ),
         }
-      if (state === PENDING)
-        return { ...common, state, evidence: 'relay-observed' }
+      if (state === PENDING || state === COUNTED || state === DROPPED)
+        return {
+          ...common,
+          state: state as 1 | 4 | 5,
+          evidence: 'relay-observed',
+        }
       return {
         ...common,
         state: state as 0 | 3,

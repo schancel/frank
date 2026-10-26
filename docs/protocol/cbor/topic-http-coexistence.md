@@ -23,8 +23,13 @@ Historical rows cannot be reached through normal view, list or discovery routes.
 
 ## Retained authority
 
-Canonical operations live in a lazy private sibling RocksDB, with synchronous
-pending admission before broadcast and atomic receipt/publication transitions.
+Canonical operations live in the relay's forum transaction store (FoundationDB in
+a cluster, a sibling RocksDB on a single node), with synchronous pending admission
+before broadcast and atomic counting, confirmation and drop transitions. A post
+is visible, and a vote counts, as soon as the node has accepted every burn of
+its set; the PUT answers then (state 4), with no wait for a block. A background
+pass on every replica confirms the event when its burns land, or drops it and
+takes its weight back when they cannot.
 See the [private storage contract](../forum-runtime-storage.md) for bounds,
 restart, rebuild and predecessor reopening. Ordinary predecessor column families
 and exact records remain unchanged; no origin is transcoded into another identity.
@@ -42,8 +47,12 @@ Generated historical bindings remain while storage/test/history reachability exi
 The wallet journals exact signed submissions before dispatch and replays identical
 bytes. Unknown outcomes keep the lease in use. Both post and vote obligations are
 reconciled before another normal paid write. State0/3 are unverified echoes; state1
-is retained pending authority; state2 is the exact retained successful receipt and
-publication. Same transaction hash with different bytes cannot borrow confirmation.
+is retained pending authority (not every burn accepted by the node yet); state4 is
+counted on acceptance (published, not landed); state2 is the exact retained
+successful receipt; state5 is dropped (a burn did not land, the weight was taken
+back). The author's wallet reports a post or vote as done at state 4 and keeps
+settling its own coins from the chain; state 5 is final and never authorizes a
+second payment. Same transaction hash with different bytes cannot borrow confirmation.
 Status never sends or claims. Before settlement the wallet independently matches
 its operation and checks provider transaction/receipt facts and configured policy.
 Post existence alone cannot confirm another burn. Receipt observation does not add

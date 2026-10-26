@@ -358,11 +358,14 @@ last payer funded, so the relays can broadcast every payer's payment. Reads are 
 the node or the port forward is too busy, for up to a minute.
 
 A relay that cannot check a payment yet answers 503 `group_payment_not_ready` or
-`group_payment_check_unavailable` with `Retry-After`, and a Forum relay whose reads of solonet
-time out answers 503 `topic_burn_outcome_unknown` (`forum_unavailable` when it could not settle its own
-commit). None is a refusal: the protocol has the client
-resend the same signed write or event, and the contract does exactly that (same bytes, never a
-new payment) before it asserts on the answer.
+`group_payment_check_unavailable` with `Retry-After`. A Forum relay counts a post or vote as
+soon as solonet accepts every burn, without waiting for a block; while solonet has not accepted
+them yet it answers 200 pending, or 422 `topic_burn_refused` when it refused every burn (a
+freshly funded sender, for example), and 503 `forum_unavailable` when it could not settle its own
+commit. None is a refusal of the event: the protocol has the client resend the same signed write
+or event, and the contract does exactly that (same bytes, never a new payment) before it asserts
+on the answer. It then waits for every replica to report the event confirmed (the relays'
+background pass saw the burns land).
 
 Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run takes 5 to 8
 minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`

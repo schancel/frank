@@ -104,6 +104,8 @@ export const rawEnUS = {
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
     voteOutcomeUnknown:
       'Your vote was not confirmed. Your wallet keeps it pending and it may still count. Reload later to check. Do not vote again.',
+    forumNotCounted:
+      'This was not counted: its payment did not land on the chain. Check your balance before you try again.',
     voteSlow:
       'Still voting. The network is slow; your vote is kept and will be sent.',
     postSlow:

@@ -7,7 +7,6 @@ use crate::{
     chains::EvmChainAdapter,
     http::server::RegistryServer,
     monad_http::{Address, JsonRpcTransport},
-    monad_stamp_relay::PollConfig,
     monad_topic_cbor::{parse_topic_event, TopicEvent, MAX_TOPIC_EVENT_FRAME_BYTES},
     registry::Registry,
     store::forum::{invalid, ForumError},
@@ -50,6 +49,50 @@ impl ForumRuntime {
 
     fn policy(&self) -> crate::monad_topic_cbor::TopicBurnPolicy {
         crate::forum::policy(self.chain.evm_chain_id(), self.burn_address)
+    }
+
+    /// Run the forum's background pass every `interval` for as long as the relay runs: events
+    /// counted on acceptance are confirmed once their burns land, or dropped (their weight
+    /// taken back) when they cannot, and pending ones are handed to the node again. Every
+    /// replica runs it; each change happens once whichever replica makes it.
+    pub fn spawn_reconciler(
+        self: Arc<Self>,
+        registry: Arc<crate::registry::Registry>,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(interval);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                // Burns are read only through upstreams that have proved they are the chain.
+                let Some(transport) = self.chain.transport() else {
+                    continue;
+                };
+                match registry
+                    .forum()
+                    .reconcile(
+                        self.network(),
+                        self.policy(),
+                        &transport,
+                        crate::forum::now(),
+                    )
+                    .await
+                {
+                    Ok(report) if report.counted + report.confirmed + report.dropped > 0 => {
+                        tracing::info!(
+                            counted = report.counted,
+                            confirmed = report.confirmed,
+                            dropped = report.dropped,
+                            waiting = report.waiting,
+                            "Forum reconciliation pass"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!("Forum reconciliation pass failed: {error}"),
+                }
+            }
+        })
     }
 }
 
@@ -180,6 +223,7 @@ fn forum_error(error: crate::store::forum::ForumError) -> Response {
             StatusCode::SERVICE_UNAVAILABLE,
             "topic_burn_outcome_unknown",
         ),
+        Refused(_) => (StatusCode::UNPROCESSABLE_ENTITY, "topic_burn_refused"),
         // Settled inside the store; reaching here means it could not be settled.
         Unavailable | CommitUnknown(_) | IntentLost => {
             (StatusCode::SERVICE_UNAVAILABLE, "forum_unavailable")
@@ -267,7 +311,7 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
     }
     match registry
         .forum()
-        .submit(network, policy, frame, transport, PollConfig::default())
+        .submit(network, policy, frame, transport)
         .await
     {
         Ok(frame) => forum_bytes(frame),
@@ -749,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forum_receipt_sender_mismatch_keeps_pending_exact_operation() {
+    async fn forum_receipt_sender_mismatch_is_never_confirmed() {
         use crate::store::forum::tests::observation;
         let (_directory, registry) = test_registry();
         let op = observation(0, None, false);
@@ -767,8 +811,22 @@ mod tests {
             true,
         )
         .await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // The node took the burn: counted at once.
+        assert_eq!(response.status(), StatusCode::OK);
         let policy = crate::forum::policy(10143, burn_address());
+        assert!(registry
+            .forum()
+            .contains("monad-testnet", policy, op.event.target_hash())
+            .unwrap());
+        // A receipt from another sender is an upstream that cannot be believed: the background
+        // pass decides nothing from it, so the event is never confirmed.
+        transport.set("eth_getTransactionCount", Value::String("0x0".into()));
+        let report = registry
+            .forum()
+            .reconcile("monad-testnet", policy, &transport, crate::forum::now())
+            .await
+            .unwrap();
+        assert_eq!((report.confirmed, report.waiting), (0, 1));
         let status = registry
             .forum()
             .status("monad-testnet", policy, op.frame())
@@ -783,11 +841,7 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(status.evidence, frank_cbor::ForumOperationEvidence::Pending);
-        assert!(!registry
-            .forum()
-            .contains("monad-testnet", policy, op.event.target_hash())
-            .unwrap());
+        assert_eq!(status.evidence, frank_cbor::ForumOperationEvidence::Counted);
     }
 
     #[tokio::test]
@@ -1005,10 +1059,8 @@ mod tests {
         let TypedPayload::ForumOperationStatus(status) = parsed.typed.as_deref().unwrap() else {
             panic!()
         };
-        assert!(matches!(
-            status.evidence,
-            ForumOperationEvidence::Confirmed { .. }
-        ));
+        // Counted as soon as the node took the burn; no block is waited for.
+        assert_eq!(status.evidence, ForumOperationEvidence::Counted);
         call(&router, "PUT", "/message/monad/topics/vote", vote.frame()).await;
         let hash = hex::encode(post.event.target_hash());
         call(

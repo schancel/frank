@@ -8,13 +8,15 @@
 //! | `format` | [`FORMAT`] | the store's format; anything else stops with the reset path |
 //! | `h` | `forum-store-header` | the network, chain id and burn address the store is bound to |
 //! | `e/` lead tx hash | stored frame | the exact submitted post or vote frame (authority, immutable) |
-//! | `o/` lead tx hash | `forum-observation-row` | that event's state: pending, or confirmed at the latest block/index of its burns |
+//! | `o/` lead tx hash | `forum-observation-row` | that event's phase: pending, counted, confirmed (with the latest block/index of its burns) or dropped |
 //! | `m/` tx hash | lead tx hash | every burn of an event's set, naming the event it pays for |
+//! | `u/` lead tx hash | empty | every event not yet confirmed or dropped, for the background pass |
+//! | `w/` post hash lead tx hash | empty | every post burn event of a post, to pick another author when one is dropped |
 //! | `p/` post hash | `forum-post-row` | the post's topic, author burn, first visibility, aggregate and pending reservations |
 //! | `t/` sha256(topic) time post hash | post hash | a topic's visible posts in first-visible order |
 //! | `d/` topic | `forum-discovery-row` | the topic's visible post count and last activity |
-//! | `q` | `forum-pending-accounting` | pending burns and their byte charge, for the capacity limits |
-//! | `r` | revision (u64 BE) | advanced by every new admission and every first confirmation |
+//! | `q` | `forum-pending-accounting` | unsettled events and their byte charge, for the capacity limits |
+//! | `r` | revision (u64 BE) | advanced by every admission, counting, confirmation and drop |
 //! | `n` | count (u64 LE, atomic add) | visible posts, for metrics |
 //! | `lv/` | | this store's large-value index |
 //!
@@ -25,21 +27,27 @@
 //! An event (a post or a vote) is paid by a set of burns, the way a direct message is paid by a
 //! set of stamp payments. The first burn listed is the lead: its hash keys the event.
 //!
-//! Only `e/`, `o/` and `m/` are authority. `p/`, `t/`, `d/`, `q`, `r` and `n` are derived from them,
-//! and every admission or confirmation writes the authority and everything derived from it in
-//! one transaction, so they never disagree and nothing is rebuilt on open. A derived row that
-//! does not match its authority is a corrupt store: reads fail closed (`Unavailable`), and
+//! Only `e/`, `o/` and `m/` are authority. `u/`, `w/`, `p/`, `t/`, `d/`, `q`, `r` and `n` are
+//! derived from them, and every state change writes the authority and everything derived from
+//! it in one transaction, so they never disagree and nothing is rebuilt on open. A derived row
+//! that does not match its authority is a corrupt store: reads fail closed (`Unavailable`), and
 //! nothing is repaired or reset.
+//!
+//! An event's phases: admission reserves the set's total on the post (pending). Once the node
+//! has accepted every burn of the set the event is counted: the reservation moves into the
+//! post's aggregate and a post becomes visible. The chain is not waited for. A background pass
+//! then reads each counted event's receipts: when every burn landed the event is confirmed
+//! (final); when one reverted or was replaced, or they have not all landed within
+//! [`LAND_BOUND`], it is dropped and its weight taken back, hiding a post no other counted burn
+//! pays for. So the forum never keeps weight the chain did not pay.
 //!
 //! Exactly-once burn accounting: every burn's transaction hash belongs to one event (`m/`), so a
 //! burn submitted again inside another event's set is a conflict, refused before anything is
-//! broadcast. Admission reserves the set's total on the post once (a repeat finds `o/` and
-//! changes nothing), and confirmation of every burn of the set moves the reservation into the
-//! aggregate once (a repeat finds the event confirmed). Two replicas
-//! racing on one burn conflict on `o/` and `q`, so one commits and the other sees its row.
-//! A commit whose outcome is unknown is settled by a fence: one transaction that rewrites `q`
-//! unchanged, which the first attempt read, so once the fence commits that attempt either
-//! landed (the fence sees its row) or never will.
+//! broadcast. Each phase change happens once (a repeat finds the later phase and changes
+//! nothing). Two replicas racing on one event conflict on `o/` and `q`, so one commits and the
+//! other sees its row. A commit whose outcome is unknown is settled by a fence: one transaction
+//! that rewrites `q` unchanged, which the first attempt read, so once the fence commits that
+//! attempt either landed (the fence sees its row) or never will.
 //!
 //! The store's calls block (FoundationDB waits on its own network thread), so async callers
 //! hand the worker over for each call.
@@ -82,6 +90,10 @@ pub(crate) enum ForumError {
     RowTooLarge,
     #[error("topic burn outcome unknown: {0}")]
     OutcomeUnknown(String),
+    /// The node refused every burn of the set. The event stays pending: a later handoff may
+    /// still succeed, and it is dropped if its burns never land.
+    #[error("the node refused the topic burns: {0}")]
+    Refused(String),
     /// A store commit whose outcome is unknown. Settled by a fence before anything is reported.
     #[error("Forum store commit outcome unknown: {0}")]
     CommitUnknown(String),
@@ -121,7 +133,7 @@ pub(crate) fn invalid(error: impl std::fmt::Display) -> ForumError {
 
 /// Format marker key and value of this store.
 pub(crate) const FORMAT_KEY: &[u8] = b"format";
-pub(crate) const FORMAT: &[u8] = b"frank-forum-kv-v1";
+pub(crate) const FORMAT: &[u8] = b"frank-forum-kv-v2";
 /// A single-node relay keeps the store beside its registry database, at the database's file
 /// name plus this suffix.
 pub(crate) const STORE_SUFFIX: &str = ".forum-kv-v1";
@@ -140,6 +152,8 @@ const PENDING: &[u8] = b"q";
 const REVISION: &[u8] = b"r";
 const VISIBLE_POSTS: &[u8] = b"n";
 const LARGE_VALUES: &[u8] = b"lv/";
+const UNSETTLED: &[u8] = b"u/";
+const POST_EVENTS: &[u8] = b"w/";
 /// Pending burns the store holds at once, and their byte charge.
 pub(crate) const MAX_PENDING_COUNT: u64 = 4096;
 pub(crate) const MAX_PENDING_BYTES: u64 = 64 * 1024 * 1024;
@@ -286,12 +300,63 @@ impl Aggregate {
     }
 }
 
+/// Where one event (a post or a vote) stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    /// Admitted, and its value reserved on the post, but not every burn of its set has been
+    /// accepted by the node yet.
+    Pending,
+    /// Every burn was accepted by the node: the event counts. `visible` is when it was counted;
+    /// another post burn of a visible post copies the post's first visibility.
+    Counted { visible: Timestamp },
+    /// Counted, and every burn landed with a successful receipt: final. `block`/`index` are the
+    /// set's inclusion watermark (its last burn).
+    Confirmed {
+        block: u64,
+        index: u64,
+        visible: Timestamp,
+    },
+    /// A burn failed, was replaced, or never landed within [`LAND_BOUND`]: the event does not
+    /// count (any weight it added is taken back). Final.
+    Dropped,
+}
+
+impl Phase {
+    /// Whether the event's weight is in its post's aggregate.
+    pub(crate) fn counts(self) -> bool {
+        matches!(self, Self::Counted { .. } | Self::Confirmed { .. })
+    }
+    /// Whether nothing will change the event any more.
+    pub(crate) fn settled(self) -> bool {
+        matches!(self, Self::Confirmed { .. } | Self::Dropped)
+    }
+    pub(crate) fn visible(self) -> Option<Timestamp> {
+        match self {
+            Self::Counted { visible } | Self::Confirmed { visible, .. } => Some(visible),
+            _ => None,
+        }
+    }
+    pub(crate) fn position(self) -> Option<(u64, u64)> {
+        match self {
+            Self::Confirmed { block, index, .. } => Some((block, index)),
+            _ => None,
+        }
+    }
+}
+
+/// How long after admission an event's burns have to land. A counted event whose burns have
+/// not all landed by then (the node lost them and kept refusing them again, or never mined
+/// them) is dropped and its weight taken back. Monad makes a block about every second, so a
+/// burn the node accepted lands within seconds; the background pass hands an unlanded burn to
+/// the node again on every round until then.
+pub(crate) const LAND_BOUND: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 #[derive(Debug, Clone)]
 pub(crate) struct Observation {
     pub(crate) event: TopicEvent,
     pub(crate) checked: CheckedTopicBurn,
     pub(crate) first_seen: Timestamp,
-    pub(crate) confirmed: Option<(u64, u64, Timestamp)>,
+    pub(crate) phase: Phase,
 }
 
 impl Observation {
@@ -307,35 +372,34 @@ impl Observation {
     }
     fn state_value(&self) -> CborValue {
         use forum_observation_row as R;
+        use forum_observation_state as S;
+        let state = match self.phase {
+            Phase::Pending => S::PENDING,
+            Phase::Counted { .. } => S::COUNTED,
+            Phase::Confirmed { .. } => S::CONFIRMED,
+            Phase::Dropped => S::DROPPED,
+        };
         let mut fields = vec![
             (
                 R::VERSION,
                 CborValue::Int(forum_store_row_version::V1.into()),
             ),
             (R::FIRST_SEEN, time_value(self.first_seen)),
-            (
-                R::STATE,
-                CborValue::Int(
-                    if self.confirmed.is_some() {
-                        forum_observation_state::CONFIRMED
-                    } else {
-                        forum_observation_state::PENDING
-                    }
-                    .into(),
-                ),
-            ),
+            (R::STATE, CborValue::Int(state.into())),
         ];
-        if let Some((block, index, visible)) = self.confirmed {
+        if let Some((block, index)) = self.phase.position() {
             fields.extend([
                 (R::BLOCK, CborValue::Int(block.into())),
                 (R::TRANSACTION_INDEX, CborValue::Int(index.into())),
-                (R::VISIBLE, time_value(visible)),
             ]);
+        }
+        if let Some(visible) = self.phase.visible() {
+            fields.push((R::VISIBLE, time_value(visible)));
         }
         cbor_map(fields)
     }
-    /// The byte charge of a pending burn against [`MAX_PENDING_BYTES`]: its frame, the post it
-    /// may create, and fixed bookkeeping. The same at admission and at confirmation.
+    /// The byte charge of an unsettled event against [`MAX_PENDING_BYTES`]: its frame, the post
+    /// it may create, and fixed bookkeeping. The same at admission and at settlement.
     pub(crate) fn charge(&self) -> u64 {
         let post = match &self.event {
             TopicEvent::Post(p) => p.post_frame.len() + p.topic.len(),
@@ -343,61 +407,64 @@ impl Observation {
         };
         (self.frame().len() + post + 1024) as u64
     }
+    /// The weight's sign and magnitude.
+    fn weight(&self) -> (bool, Magnitude) {
+        (
+            self.checked.direction == VoteDirection::Down,
+            Magnitude::from_u64(self.checked.value_wei as u64),
+        )
+    }
     /// This request with the state stored for it (`o/`).
     fn with_state(&self, state: &[u8]) -> Result<Self> {
-        let (first_seen, confirmed) = decode_state(state)?;
+        let (first_seen, phase) = decode_state(state)?;
         Ok(Self {
             first_seen,
-            confirmed,
+            phase,
             ..self.clone()
         })
     }
 }
 
-type State = (Timestamp, Option<(u64, u64, Timestamp)>);
-
-fn decode_state(value: &[u8]) -> Result<State> {
+fn decode_state(value: &[u8]) -> Result<(Timestamp, Phase)> {
     use forum_observation_row as R;
+    use forum_observation_state as S;
     let map = decode(value)?;
     let state = uint(field(&map, R::STATE)?)?;
-    let confirmed = state == u64::from(forum_observation_state::CONFIRMED);
-    closed(
-        &map,
-        if confirmed {
-            &[
-                R::VERSION,
-                R::FIRST_SEEN,
-                R::STATE,
-                R::BLOCK,
-                R::TRANSACTION_INDEX,
-                R::VISIBLE,
-            ]
-        } else {
-            R::SHAPE.required
-        },
-    )?;
+    let keys: &[u64] = match u32::try_from(state).map_err(|_| ForumError::Unavailable)? {
+        S::PENDING | S::DROPPED => R::SHAPE.required,
+        S::COUNTED => &[R::VERSION, R::FIRST_SEEN, R::STATE, R::VISIBLE],
+        S::CONFIRMED => &[
+            R::VERSION,
+            R::FIRST_SEEN,
+            R::STATE,
+            R::BLOCK,
+            R::TRANSACTION_INDEX,
+            R::VISIBLE,
+        ],
+        _ => return Err(ForumError::Unavailable),
+    };
+    closed(&map, keys)?;
     version_ok(&map, R::VERSION)?;
-    if !(state == u64::from(forum_observation_state::PENDING) || confirmed) {
-        return Err(ForumError::Unavailable);
-    }
-    Ok((
-        timestamp(field(&map, R::FIRST_SEEN)?)?,
-        if confirmed {
-            Some((
-                uint(field(&map, R::BLOCK)?)?,
-                uint(field(&map, R::TRANSACTION_INDEX)?)?,
-                timestamp(field(&map, R::VISIBLE)?)?,
-            ))
-        } else {
-            None
+    let visible = || timestamp(field(&map, R::VISIBLE)?);
+    let phase = match state as u32 {
+        S::PENDING => Phase::Pending,
+        S::DROPPED => Phase::Dropped,
+        S::COUNTED => Phase::Counted {
+            visible: visible()?,
         },
-    ))
+        _ => Phase::Confirmed {
+            block: uint(field(&map, R::BLOCK)?)?,
+            index: uint(field(&map, R::TRANSACTION_INDEX)?)?,
+            visible: visible()?,
+        },
+    };
+    Ok((timestamp(field(&map, R::FIRST_SEEN)?)?, phase))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Post {
     pub(crate) topic: String,
-    /// The confirmed burn that authored the post: its frame holds the post frame.
+    /// The counted burn that authored the post: its frame holds the post frame.
     pub(crate) author: Option<[u8; 32]>,
     pub(crate) visible: Option<Timestamp>,
     pub(crate) aggregate: Aggregate,
@@ -511,7 +578,7 @@ pub(crate) struct StoredRow {
     author_state: Vec<u8>,
 }
 
-/// A visible post and the confirmed burn that authored it.
+/// A visible post and the counted burn that authored it.
 #[derive(Debug, Clone)]
 pub(crate) struct Row {
     pub(crate) hash: [u8; 32],
@@ -950,11 +1017,12 @@ impl Store {
         if count > MAX_PENDING_COUNT || bytes > MAX_PENDING_BYTES {
             return Err(ForumError::Capacity);
         }
-        // Revision headroom for every pending burn's confirmation as well as this admission:
-        // no later successful burn may force a wrapped revision.
+        // Revision headroom for every unsettled event's counting and settlement as well as this
+        // admission: no later burn may force a wrapped revision.
         let revision = Self::revision(tx)?;
-        revision
-            .checked_add(count)
+        count
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(revision))
             .and_then(|v| v.checked_add(1))
             .ok_or(ForumError::Capacity)?;
         let frame_key = key(FRAMES, &hash);
@@ -970,6 +1038,13 @@ impl Store {
         for member in &observation.checked.members {
             tx.set(&key(MEMBERS, &member.tx_hash.0), &hash)?;
         }
+        tx.set(&key(UNSETTLED, &hash), &[])?;
+        if let TopicEvent::Post(_) = observation.event {
+            tx.set(
+                &Self::post_event_key(observation.event.target_hash(), &hash),
+                &[],
+            )?;
+        }
         tx.set(
             &key(POSTS, observation.event.target_hash()),
             &encode(&post.value())?,
@@ -979,30 +1054,30 @@ impl Store {
         Ok(Admission::New(observation.clone()))
     }
 
-    /// Record the chain's confirmation of every burn of an admitted event, once: its
-    /// reservation moves into the post's aggregate and a post's first confirmation makes it
-    /// visible. `facts` are the burns' chain facts in the event's order, lead first.
-    pub(crate) fn confirm(
+    fn post_event_key(post: &[u8; 32], lead: &[u8; 32]) -> Vec<u8> {
+        [POST_EVENTS, post.as_slice(), lead.as_slice()].concat()
+    }
+
+    /// Run one state change of an admitted event, settling an unknown commit with a fence.
+    fn transition(
         &self,
         request: &Observation,
-        facts: &[VerifiedTopicBurn],
-        now: Timestamp,
+        what: &str,
+        done: impl Fn(Phase) -> bool,
+        mut body: impl FnMut(&mut dyn KvTransaction) -> Result<Observation>,
     ) -> Result<Observation> {
         let mut attempts = 0;
         loop {
             attempts += 1;
-            match self
-                .kv
-                .transact(|tx| Self::confirm_body(tx, request, facts, now))
-            {
+            match self.kv.transact(&mut body) {
                 Err(ForumError::CommitUnknown(reason)) if attempts < SETTLE_ATTEMPTS => {
                     tracing::warn!(
                         tx_hash = %hex::encode(request.hash()),
                         %reason,
-                        "Forum confirmation commit outcome unknown; fencing and reading the store"
+                        "Forum {what} commit outcome unknown; fencing and reading the store"
                     );
                     match self.fence(request)? {
-                        Some(op) if op.confirmed.is_some() => return Ok(op),
+                        Some(op) if done(op.phase) => return Ok(op),
                         Some(_) => {}
                         None => return Err(ForumError::Unavailable),
                     }
@@ -1012,15 +1087,143 @@ impl Store {
         }
     }
 
+    /// Count an admitted event, once: every burn of its set was accepted by the node. Its
+    /// reservation moves into the post's aggregate, and a post's first counting makes it
+    /// visible. An event already counted, confirmed or dropped is returned unchanged.
+    pub(crate) fn count(&self, request: &Observation, now: Timestamp) -> Result<Observation> {
+        self.transition(
+            request,
+            "counting",
+            |p| p != Phase::Pending,
+            |tx| {
+                let op = Self::retained(tx, request)?.ok_or(ForumError::Unavailable)?;
+                if op.phase != Phase::Pending {
+                    return Ok(op);
+                }
+                let op = Self::count_in(tx, op, now)?;
+                Self::bump_revision(tx)?;
+                Ok(op)
+            },
+        )
+    }
+
+    /// Record that every burn of an event landed, once. A pending event is counted first.
+    /// `facts` are the burns' chain facts in the event's order, lead first.
+    pub(crate) fn confirm(
+        &self,
+        request: &Observation,
+        facts: &[VerifiedTopicBurn],
+        now: Timestamp,
+    ) -> Result<Observation> {
+        self.transition(
+            request,
+            "confirmation",
+            |p| matches!(p, Phase::Confirmed { .. } | Phase::Dropped),
+            |tx| Self::confirm_body(tx, request, facts, now),
+        )
+    }
+
+    /// Drop an event whose burns cannot all land, once: its reservation is released or, when
+    /// it was counted, its weight is taken back; a post that no counted burn pays for any more
+    /// is hidden. A confirmed event is never dropped.
+    pub(crate) fn drop_event(&self, request: &Observation) -> Result<Observation> {
+        self.transition(
+            request,
+            "drop",
+            |p| p.settled(),
+            |tx| Self::drop_body(tx, request),
+        )
+    }
+
+    /// Lead hashes of events not yet confirmed or dropped, in key order after `after`.
+    pub(crate) fn unsettled(
+        &self,
+        after: Option<&[u8; 32]>,
+        limit: usize,
+    ) -> Result<Vec<[u8; 32]>> {
+        let after = after.map(|hash| key(UNSETTLED, hash));
+        self.read(|tx| {
+            tx.scan_prefix(UNSETTLED, after.as_deref(), limit)?
+                .into_iter()
+                .map(|(k, _)| {
+                    k[UNSETTLED.len()..]
+                        .try_into()
+                        .map_err(|_| ForumError::Unavailable)
+                })
+                .collect()
+        })
+    }
+
+    /// The stored event `hash`, with its frame read back.
+    pub(crate) fn load(&self, hash: &[u8; 32]) -> Result<Option<Observation>> {
+        let Some((frame, state)) = self.read(|tx| Self::operation(tx, hash))? else {
+            return Ok(None);
+        };
+        let frame = match frame {
+            Stored::Inline(bytes) => bytes,
+            Stored::Large(reference) => self.large.read(&reference)?,
+        };
+        self.decode_observation(hash, &frame, &state).map(Some)
+    }
+
+    fn bump_revision(tx: &mut dyn KvTransaction) -> Result<()> {
+        let revision = Self::revision(tx)?
+            .checked_add(1)
+            .ok_or(ForumError::Unavailable)?;
+        tx.set(REVISION, &revision.to_be_bytes())?;
+        Ok(())
+    }
+
+    /// Settle an unsettled event's bookkeeping: off the pending accounting and the unsettled
+    /// index.
+    fn settle(tx: &mut dyn KvTransaction, op: &Observation) -> Result<()> {
+        let (count, bytes) = Self::pending(tx)?;
+        let count = count.checked_sub(1).ok_or(ForumError::Unavailable)?;
+        let bytes = bytes
+            .checked_sub(op.charge())
+            .ok_or(ForumError::Unavailable)?;
+        Self::put_pending(tx, count, bytes)?;
+        tx.clear(&key(UNSETTLED, &op.hash()))?;
+        Ok(())
+    }
+
+    fn release(post: &mut Post, op: &Observation) -> Result<()> {
+        let (negative, amount) = op.weight();
+        let reserved = if negative {
+            &mut post.reserved_down
+        } else {
+            &mut post.reserved_up
+        };
+        *reserved = reserved.sub(amount)?;
+        Ok(())
+    }
+
+    /// Count the pending `op` inside `tx` (no revision change).
+    fn count_in(
+        tx: &mut dyn KvTransaction,
+        mut op: Observation,
+        now: Timestamp,
+    ) -> Result<Observation> {
+        let mut post = Self::post(tx, op.event.target_hash())?.ok_or(ForumError::Unavailable)?;
+        Self::release(&mut post, &op)?;
+        let visible = match op.event {
+            TopicEvent::Post(_) => post.visible.unwrap_or(now),
+            TopicEvent::Vote(_) => now,
+        };
+        op.phase = Phase::Counted { visible };
+        tx.set(&key(STATES, &op.hash()), &encode(&op.state_value())?)?;
+        Self::apply_count(tx, &op, post)?;
+        Ok(op)
+    }
+
     fn confirm_body(
         tx: &mut dyn KvTransaction,
         request: &Observation,
         facts: &[VerifiedTopicBurn],
         now: Timestamp,
     ) -> Result<Observation> {
-        let hash = request.hash();
         let mut op = Self::retained(tx, request)?.ok_or(ForumError::Unavailable)?;
-        if op.confirmed.is_some() {
+        if op.phase.settled() {
             return Ok(op);
         }
         if facts.len() != op.checked.members.len()
@@ -1034,64 +1237,140 @@ impl Store {
             return Err(ForumError::Unavailable);
         }
         // The event is paid when its last burn is included: that position (the set's inclusion
-        // watermark) orders it, and the author's wallet checks the status against it.
+        // watermark) is what the author's wallet checks the status against.
         let (block, index) = facts
             .iter()
             .map(|fact| (fact.block_number, fact.transaction_index))
             .max()
             .ok_or(ForumError::Unavailable)?;
-        let mut post = Self::post(tx, op.event.target_hash())?.ok_or(ForumError::Unavailable)?;
-        let reserved = if op.checked.direction == VoteDirection::Down {
-            &mut post.reserved_down
-        } else {
-            &mut post.reserved_up
+        if op.phase == Phase::Pending {
+            op = Self::count_in(tx, op, now)?;
+        }
+        let visible = op.phase.visible().ok_or(ForumError::Unavailable)?;
+        op.phase = Phase::Confirmed {
+            block,
+            index,
+            visible,
         };
-        *reserved = reserved.sub(Magnitude::from_u64(op.checked.value_wei as u64))?;
-        let visible = if matches!(op.event, TopicEvent::Post(_)) {
-            post.visible.unwrap_or(now)
-        } else {
-            now
-        };
-        op.confirmed = Some((block, index, visible));
-        let (count, bytes) = Self::pending(tx)?;
-        let count = count.checked_sub(1).ok_or(ForumError::Unavailable)?;
-        let bytes = bytes
-            .checked_sub(op.charge())
-            .ok_or(ForumError::Unavailable)?;
-        let revision = Self::revision(tx)?
-            .checked_add(1)
-            .ok_or(ForumError::Unavailable)?;
-        tx.set(&key(STATES, &hash), &encode(&op.state_value())?)?;
-        Self::publish_projection(tx, &op, post)?;
-        Self::put_pending(tx, count, bytes)?;
-        tx.set(REVISION, &revision.to_be_bytes())?;
+        tx.set(&key(STATES, &op.hash()), &encode(&op.state_value())?)?;
+        Self::settle(tx, &op)?;
+        Self::bump_revision(tx)?;
         Ok(op)
     }
 
-    fn author_order(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Result<(u64, u64, [u8; 32])> {
-        let state = tx.get(&key(STATES, hash))?.ok_or(ForumError::Unavailable)?;
-        let (_, confirmed) = decode_state(&state)?;
-        let (block, index, _) = confirmed.ok_or(ForumError::Unavailable)?;
-        Ok((block, index, *hash))
+    fn drop_body(tx: &mut dyn KvTransaction, request: &Observation) -> Result<Observation> {
+        let mut op = Self::retained(tx, request)?.ok_or(ForumError::Unavailable)?;
+        if op.phase.settled() {
+            return Ok(op);
+        }
+        let target = *op.event.target_hash();
+        let mut post = Self::post(tx, &target)?.ok_or(ForumError::Unavailable)?;
+        let counted = op.phase.counts();
+        if counted {
+            let (negative, amount) = op.weight();
+            post.aggregate = post.aggregate.add(!negative, amount)?;
+        } else {
+            Self::release(&mut post, &op)?;
+        }
+        op.phase = Phase::Dropped;
+        tx.set(&key(STATES, &op.hash()), &encode(&op.state_value())?)?;
+        if counted && post.author == Some(op.hash()) {
+            // Another counted burn of the same post keeps it visible; with none it is hidden.
+            post.author = None;
+            let prefix = [POST_EVENTS, target.as_slice()].concat();
+            for (k, _) in tx.scan_prefix(&prefix, None, usize::MAX)? {
+                let lead: [u8; 32] = k[prefix.len()..]
+                    .try_into()
+                    .map_err(|_| ForumError::Unavailable)?;
+                if lead == op.hash() {
+                    continue;
+                }
+                let state = tx
+                    .get(&key(STATES, &lead))?
+                    .ok_or(ForumError::Unavailable)?;
+                let (first_seen, phase) = decode_state(&state)?;
+                if !phase.counts() {
+                    continue;
+                }
+                let order = (time_key(first_seen), lead);
+                let better = match post.author {
+                    None => true,
+                    Some(current) => order < Self::author_order(tx, &current)?,
+                };
+                if better {
+                    post.author = Some(lead);
+                }
+            }
+            if post.author.is_none() {
+                Self::hide(tx, &target, &mut post)?;
+            }
+        }
+        tx.set(&key(POSTS, &target), &encode(&post.value())?)?;
+        Self::settle(tx, &op)?;
+        Self::bump_revision(tx)?;
+        Ok(op)
     }
 
-    fn publish_projection(
+    /// Take a post out of its topic and the discovery counts.
+    fn hide(tx: &mut dyn KvTransaction, target: &[u8; 32], post: &mut Post) -> Result<()> {
+        let visible = post.visible.take().ok_or(ForumError::Unavailable)?;
+        tx.clear(&Self::topic_index_key(
+            &post.topic,
+            Some(visible),
+            Some(target),
+        ))?;
+        let discovery_key = Self::discovery_key(&post.topic);
+        let (count, last) =
+            Self::discovery_entry(tx, &post.topic)?.ok_or(ForumError::Unavailable)?;
+        match count.checked_sub(1).ok_or(ForumError::Unavailable)? {
+            0 => tx.clear(&discovery_key)?,
+            count => Self::put_discovery(tx, &discovery_key, count, last)?,
+        }
+        tx.atomic_add(VISIBLE_POSTS, -1)?;
+        Ok(())
+    }
+
+    fn put_discovery(
         tx: &mut dyn KvTransaction,
-        op: &Observation,
-        mut post: Post,
+        discovery_key: &[u8],
+        count: u64,
+        last: Timestamp,
     ) -> Result<()> {
-        let (block, index, visible) = op.confirmed.ok_or(ForumError::Unavailable)?;
-        let amount = Magnitude::from_u64(op.checked.value_wei as u64);
-        post.aggregate = post
-            .aggregate
-            .add(op.checked.direction == VoteDirection::Down, amount)?;
+        tx.set(
+            discovery_key,
+            &encode(&cbor_map(vec![
+                (
+                    forum_discovery_row::VERSION,
+                    CborValue::Int(forum_store_row_version::V1.into()),
+                ),
+                (forum_discovery_row::COUNT, CborValue::Int(count.into())),
+                (forum_discovery_row::LAST_ACTIVITY, time_value(last)),
+            ]))?,
+        )?;
+        Ok(())
+    }
+
+    /// A post's author is its counted post burn admitted first (ties by lead hash).
+    fn author_order(tx: &mut dyn KvTransaction, hash: &[u8; 32]) -> Result<((i64, u32), [u8; 32])> {
+        let state = tx.get(&key(STATES, hash))?.ok_or(ForumError::Unavailable)?;
+        let (first_seen, phase) = decode_state(&state)?;
+        if !phase.counts() {
+            return Err(ForumError::Unavailable);
+        }
+        Ok((time_key(first_seen), *hash))
+    }
+
+    fn apply_count(tx: &mut dyn KvTransaction, op: &Observation, mut post: Post) -> Result<()> {
+        let visible = op.phase.visible().ok_or(ForumError::Unavailable)?;
+        let (negative, amount) = op.weight();
+        post.aggregate = post.aggregate.add(negative, amount)?;
         if let TopicEvent::Post(_) = op.event {
             let hash = op.hash();
             let current = match post.author {
                 Some(old) => Some(Self::author_order(tx, &old)?),
                 None => None,
             };
-            if current.is_none_or(|old| (block, index, hash) < old) {
+            if current.is_none_or(|old| (time_key(op.first_seen), hash) < old) {
                 post.author = Some(hash);
             }
             if post.visible.is_none() {
@@ -1104,17 +1383,7 @@ impl Store {
                 } else {
                     last
                 };
-                tx.set(
-                    &discovery_key,
-                    &encode(&cbor_map(vec![
-                        (
-                            forum_discovery_row::VERSION,
-                            CborValue::Int(forum_store_row_version::V1.into()),
-                        ),
-                        (forum_discovery_row::COUNT, CborValue::Int(count.into())),
-                        (forum_discovery_row::LAST_ACTIVITY, time_value(last)),
-                    ]))?,
-                )?;
+                Self::put_discovery(tx, &discovery_key, count, last)?;
                 let index_key =
                     Self::topic_index_key(&post.topic, Some(visible), Some(op.event.target_hash()));
                 tx.set(&index_key, op.event.target_hash())?;
@@ -1151,14 +1420,14 @@ impl Store {
     }
 
     /// Read a referenced author frame (outside any transaction) and check the row: the author
-    /// burn must be a confirmed post burn of exactly this post and topic.
+    /// burn must be a counted post burn of exactly this post and topic.
     pub(crate) fn resolve_row(&self, row: StoredRow) -> Result<Row> {
         let frame = match row.author_frame {
             Stored::Inline(bytes) => bytes,
             Stored::Large(reference) => self.large.read(&reference)?,
         };
         let author = self.decode_observation(&row.author, &frame, &row.author_state)?;
-        if author.confirmed.is_none() || author.event.target_hash() != &row.hash {
+        if !author.phase.counts() || author.event.target_hash() != &row.hash {
             return Err(ForumError::Unavailable);
         }
         let TopicEvent::Post(author_post) = &author.event else {
@@ -1191,12 +1460,12 @@ impl Store {
         if checked.lead().tx_hash.0.as_slice() != hash || checked.value_wei > i64::MAX as u128 {
             return Err(ForumError::Unavailable);
         }
-        let (first_seen, confirmed) = decode_state(state)?;
+        let (first_seen, phase) = decode_state(state)?;
         Ok(Observation {
             event,
             checked,
             first_seen,
-            confirmed,
+            phase,
         })
     }
 }

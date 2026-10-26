@@ -155,10 +155,12 @@
     },
     {
       "key": "forum-observation-state",
-      "description": "forum-observation-row field 3.",
+      "description": "forum-observation-row field 3: pending (admitted, not every burn accepted by the node), counted (every burn accepted; the event counts), confirmed (counted and every burn landed), dropped (a burn failed or never landed; the event no longer counts).",
       "values": {
         "pending": 1,
-        "confirmed": 2
+        "confirmed": 2,
+        "counted": 3,
+        "dropped": 4
       }
     },
     {

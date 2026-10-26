@@ -47,6 +47,8 @@ use self::CashwebdExeError::*;
 
 /// How often this replica tries to take the sweep lease and collect unreferenced objects.
 const LARGE_VALUE_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How often the forum's background pass reads the chain for counted posts and votes.
+const FORUM_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Build the object store for values over the inline limit. Composition is the only reader of
 /// the S3 credentials, from `credentials_file` or from the environment.
@@ -828,6 +830,11 @@ async fn run(
             None
         }
     };
+    // Posts and votes count once the node accepts their burns; this pass confirms them when
+    // the burns land and takes the weight back from any that cannot.
+    if let Some(forum) = &forum {
+        Arc::clone(forum).spawn_reconciler(Arc::clone(&registry), FORUM_RECONCILE_INTERVAL);
+    }
     // Every write to a group this relay hosts is paid; there is no free or disabled mode. The
     // host reads each payer's account through the network's upstream before accepting a write,
     // so without one it refuses every new write (retryably) rather than accept unchecked ones.

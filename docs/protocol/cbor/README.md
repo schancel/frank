@@ -753,10 +753,13 @@ and parent remain the sole routing/reference fields, without content sniffing.
 
 Known property, first-burner authorship. A post has no author field and no
 nonce: its identity is its T1 hash and its author is the sender of the first
-confirmed burn that carries its T7 commitment (T8). Anyone who sees a public
-post can submit the byte-identical frame with their own burn; the first burn to
-confirm is the author, and the original author's burn then counts only as a
-vote. Front-running from the mempool alone is not possible, because the
+counted burn that carries its T7 commitment (T8): the relay counts an event once
+the node has accepted every burn of its set, and among counted post burns the
+one the relay admitted first (ties by lead transaction hash) is the author. If
+the author's burns never land, the next counted post burn becomes the author.
+Anyone who sees a public post can submit the byte-identical frame with their own
+burn; the first burn counted is the author, and the original author's burn then
+counts only as a vote. Front-running from the mempool alone is not possible, because the
 commitment hides the content until the post is public. Adding an author or a
 nonce to the post would close the race but changes the schema, so it is a
 candidate for a later schema version, not a version-1 rule.
@@ -982,7 +985,7 @@ Types 43–46 use schema 1/min-reader 1 and [topic.cddl](topic.cddl) (note: "pag
 
 | Type | Fields                                                                                                                                                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 43   | 0 network; 1 exact type-40 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; 6 block u64; 7 transaction index u64; 8 aggregate; 9 observation revision u64; 10 epoch16 |
+| 43   | 0 network; 1 exact type-40 frame; 2 author address20; 3 author raw burn1–16384; 4 transaction hash32; 5 first-visible timestamp; optional 6 block u64; optional 7 transaction index u64 (both once the author's burns landed); 8 aggregate; 9 observation revision u64; 10 epoch16 |
 | 44   | 0 network; 1 topic; 2 inclusive since; 3 snapshot revision u64; 4 array of type-43 frames; optional 5 next cursor; 6 epoch16; optional 7 exact request cursor                                                             |
 | 45   | 0 network; 1 snapshot revision u64; 2 entries of topic0/count-u64-1/last-activity2; optional 3 next cursor; 4 epoch16; optional 5 request cursor                                                                          |
 | 46   | 0 network; 1 exact submitted type41/42; 2 target T1; 3 transaction hash32; 4 sender20; 5 direction0-down/1-up; 6 value u64; 7 state; optional 8 block u64; optional 9 index u64; 10 revision u64; 11 epoch16              |
@@ -995,8 +998,14 @@ positions retain full u64 precision.
 
 State 0 unknown and state 3 rejected-before-broadcast classify fields 1–6 as
 `unverified-request` echoes, including otherwise inadmissible u64 values.
-State 1 pending and state 2 confirmed classify them as relay observations;
-only state 2 has both positions 8/9, including zero. Unknown for burn B cannot
+States 1 pending, 4 counted, 2 confirmed and 5 dropped classify them as relay
+observations. Pending: admitted, but the node has not accepted every burn of the
+set. Counted: the node accepted every burn, so the event counts (a post is
+visible, a vote is in the aggregate) before any block. Confirmed: counted, and
+every burn landed with a successful receipt. Dropped: a burn reverted, was
+replaced, or the set did not land within the relay's bound, so the relay took
+the event's weight back (hiding a post no other counted burn pays for). Only
+state 2 has both positions 8/9, including zero. Unknown for burn B cannot
 borrow author/payment facts from burn A on the same post. No status alone
 releases a wallet lease or proves chain inclusion/finality/absence. Pure
 matching compares exact request bytes, network, target, transaction hash,
@@ -1363,14 +1372,15 @@ weight is the sum of the set's values (at most i64::MAX). The first burn listed
 is the event's lead: its chain transaction identifier names the event, its
 sender is the author. The event's confirmed position is its set's inclusion
 watermark, the latest (block, index) of any of its burns: it is paid when its
-last burn is included, and that position orders a post. A burn
+last burn is included. Posts are ordered by first-visible time. A burn
 transaction's consumption key is its chain transaction identifier, so the same
 burn counts at most once whether it arrives in a type 41, in a type 42, as a
 later member of another event's set, or as a legacy protobuf object. A consumer
 checks the whole set before it broadcasts any of it, and rejects the event when
-any burn fails; once any burn may have been broadcast it retains the event and
-counts it when every burn is confirmed, never refusing it after a partial
-broadcast. For Monad the calldata layout is
+any burn fails; once any burn may have been broadcast it retains the event,
+never refusing it after a partial broadcast. A relay counts the event once the
+node has accepted every burn (into its mempool, or already landed), without
+waiting for a block, and takes the weight back if the burns then fail to land. For Monad the calldata layout is
 `"TPIC" || 0x02 || direction || commitment`, with direction byte `01` for an
 up-vote and `00` for a down-vote. The layout of the legacy protobuf path
 (`0x01`, commitment equal to the protobuf `payload_hash`) is a different

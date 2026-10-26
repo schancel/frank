@@ -1143,6 +1143,9 @@ fn parse_forum_read(
         TYPE_FORUM_VIEW => {
             use mf::forum_single_view as k;
             let m = shaped(Some(value), path, &k::SHAPE, allow)?;
+            if m.has(k::BLOCK) != m.has(k::TRANSACTION_INDEX) {
+                return Err(bad(path, "inclusion block and index together"));
+            }
             Ok(Draft::ForumView(ForumView {
                 network: network_tag(m.get(k::NETWORK), path)?,
                 post_frame: framed(m.get(k::POST_FRAME), path)?,
@@ -1150,8 +1153,16 @@ fn parse_forum_read(
                 author_burn_tx: bstr(m.get(k::AUTHOR_BURN_TX), path, 1, 16384)?,
                 transaction_hash: bstr(m.get(k::TRANSACTION_HASH), path, 32, 32)?,
                 first_visible: timestamp(m.get(k::FIRST_VISIBLE), path)?,
-                block: u64_in(m.get(k::BLOCK), path, 0, u64::MAX)?,
-                transaction_index: u64_in(m.get(k::TRANSACTION_INDEX), path, 0, u64::MAX)?,
+                block: if m.has(k::BLOCK) {
+                    Some(u64_in(m.get(k::BLOCK), path, 0, u64::MAX)?)
+                } else {
+                    None
+                },
+                transaction_index: if m.has(k::TRANSACTION_INDEX) {
+                    Some(u64_in(m.get(k::TRANSACTION_INDEX), path, 0, u64::MAX)?)
+                } else {
+                    None
+                },
                 aggregate: forum_aggregate(m.get(k::AGGREGATE), path)?,
                 revision: u64_in(m.get(k::REVISION), path, 0, u64::MAX)?,
                 epoch: bstr(m.get(k::EPOCH), path, 16, 16)?,
@@ -1222,18 +1233,24 @@ fn parse_forum_read(
             use mf::forum_operation_status as k;
             use mf::forum_vote_direction as direction;
             let m = shaped(Some(value), path, &k::SHAPE, allow)?;
-            let state = u32_in(m.get(k::STATE), path, 0, state_k::REJECTED)?;
+            let state = u32_in(m.get(k::STATE), path, 0, state_k::DROPPED)?;
             let confirmed = state == state_k::CONFIRMED;
             if m.has(k::BLOCK) != confirmed || m.has(k::TRANSACTION_INDEX) != confirmed {
                 return Err(bad(path, "confirmation position iff confirmed"));
             }
             let value = u64_in(m.get(k::VALUE), path, 0, u64::MAX)?;
-            if (state == state_k::PENDING || confirmed) && (value == 0 || value > i64::MAX as u64) {
+            let observed = matches!(
+                state,
+                state_k::PENDING | state_k::CONFIRMED | state_k::COUNTED | state_k::DROPPED
+            );
+            if observed && (value == 0 || value > i64::MAX as u64) {
                 return Err(bad(path, "observed burn outside 1..i64::MAX"));
             }
             let evidence = match state {
                 state_k::UNKNOWN => ForumOperationEvidence::UnknownRequest,
                 state_k::PENDING => ForumOperationEvidence::Pending,
+                state_k::COUNTED => ForumOperationEvidence::Counted,
+                state_k::DROPPED => ForumOperationEvidence::Dropped,
                 state_k::CONFIRMED => ForumOperationEvidence::Confirmed {
                     block: u64_in(m.get(k::BLOCK), path, 0, u64::MAX)?,
                     transaction_index: u64_in(m.get(k::TRANSACTION_INDEX), path, 0, u64::MAX)?,

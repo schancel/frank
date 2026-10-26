@@ -395,6 +395,15 @@ export class ForumOperationPendingError extends Error {
   }
 }
 
+/** The relay counted the operation, then took it back: a burn reverted, was replaced, or never
+ * landed. Final for the relay; it never authorizes another payment. */
+export class ForumOperationDroppedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ForumOperationDroppedError'
+  }
+}
+
 /** A relay response is diagnostic only; it never authorizes another payment. */
 export class ForumRelayResponseError extends Error {
   constructor(
@@ -488,7 +497,7 @@ async function exchange(
     data: bound.request,
     headers: {
       'Content-Type': 'application/cbor',
-      Accept: 'application/cbor',
+      'Accept': 'application/cbor',
     },
     responseType: 'arraybuffer',
     maxContentLength: 4 * 1024 * 1024,
@@ -514,8 +523,17 @@ async function exchange(
     direction: operation.direction === 'up' ? 1 : 0,
     value: BigInt(operation.valueWei),
   })
+  // Counted: the node accepted every burn, so the post is visible or the vote is in the
+  // tally. Nothing has landed yet; settlement watches the chain for the wallet's own coins.
+  if (status.state === 4) return status
+  if (status.state === 5)
+    throw new ForumOperationDroppedError(
+      'The relay no longer counts this operation: its burns did not all land',
+    )
   if (status.state !== 2)
-    throw new ForumOperationPendingError('Forum operation remains unconfirmed')
+    throw new ForumOperationPendingError(
+      'The node has not accepted every burn of this operation yet',
+    )
   let lastBlock = -1n,
     lastIndex = -1n
   for (const transaction of bound.transactions) {
@@ -578,9 +596,9 @@ async function prepareForumHandoff(
       ),
     )
     if (
-      !await wallet.transactionSetLifecycle!.readCanSubmitPayments(
+      !(await wallet.transactionSetLifecycle!.readCanSubmitPayments(
         operation.transactionSetOperationId,
-      )
+      ))
     )
       throw new ForumOperationPendingError(
         'Forum funding is pending the selected network confirmation delay',
@@ -606,7 +624,8 @@ async function settle(
   const journal = await wallet.transactionSetPreparer!.readOperation(
     operation.transactionSetOperationId,
   )
-  if (!journal) throw new Error('Forum operation is missing durable signed authority')
+  if (!journal)
+    throw new Error('Forum operation is missing durable signed authority')
   if (
     journal.members.every(
       member =>
@@ -650,9 +669,15 @@ export async function reconcileForumOperations(
           await bindForumAuthority(wallet, operation)
           await prepareForumHandoff(wallet, operation)
           try {
-            await exchange(wallet, operation, 'post')
-          } catch {
-            await exchange(wallet, operation, 'put')
+            try {
+              await exchange(wallet, operation, 'post')
+            } catch (error) {
+              if (error instanceof ForumOperationDroppedError) throw error
+              await exchange(wallet, operation, 'put')
+            }
+          } catch (error) {
+            // The relay's answer is final; the wallet still settles its own coins from the chain.
+            if (!(error instanceof ForumOperationDroppedError)) throw error
           }
           await settle(wallet, operation)
         }),
@@ -705,7 +730,8 @@ async function finishForumConstruction(
   const prepared = wallet.untilBlock
     ? await constructWhenSpendable(construct, {
         untilBlock: wallet.untilBlock,
-        refresh: () => wallet.refreshTransactionSetInventory?.() ?? Promise.resolve(),
+        refresh: () =>
+          wallet.refreshTransactionSetInventory?.() ?? Promise.resolve(),
       })
     : await construct()
   // The first payment is the lead: its hash names the event and its sender is the author.
@@ -793,6 +819,7 @@ async function submitForumOperationAdmitted(
     await settle(wallet, operation)
     return { operation, status }
   } catch (error) {
+    if (error instanceof ForumOperationDroppedError) throw error
     throw new ForumOperationPendingError(
       `Forum operation retained pending: ${
         error instanceof Error ? error.message : String(error)

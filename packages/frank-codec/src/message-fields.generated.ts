@@ -1086,13 +1086,11 @@ export const FORUM_SINGLE_VIEW_SHAPE: MapShape = {
     FORUM_SINGLE_VIEW.authorBurnTx,
     FORUM_SINGLE_VIEW.transactionHash,
     FORUM_SINGLE_VIEW.firstVisible,
-    FORUM_SINGLE_VIEW.block,
-    FORUM_SINGLE_VIEW.transactionIndex,
     FORUM_SINGLE_VIEW.aggregate,
     FORUM_SINGLE_VIEW.revision,
     FORUM_SINGLE_VIEW.epoch,
   ],
-  optional: [],
+  optional: [FORUM_SINGLE_VIEW.block, FORUM_SINGLE_VIEW.transactionIndex],
   open: true,
   openFrom: 0,
 }
@@ -1937,18 +1935,22 @@ export const FORUM_ENTRY_KIND = {
   game: 2,
 } as const
 
-/** `forum-observation-state` values: forum-observation-row field 3. */
+/** `forum-observation-state` values: forum-observation-row field 3: pending (admitted, not every burn accepted by the node), counted (every burn accepted; the event counts), confirmed (counted and every burn landed), dropped (a burn failed or never landed; the event no longer counts). */
 export const FORUM_OBSERVATION_STATE = {
   pending: 1,
   confirmed: 2,
+  counted: 3,
+  dropped: 4,
 } as const
 
-/** `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations. */
+/** `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1, 2, 4 and 5 are relay observations. 4 counted: every burn was accepted by the node and the event counts; 2 confirmed: counted and every burn landed; 5 dropped: a burn failed or never landed, so the event no longer counts. */
 export const FORUM_OPERATION_STATE = {
   unknown: 0,
   pending: 1,
   confirmed: 2,
   rejected: 3,
+  counted: 4,
+  dropped: 5,
 } as const
 
 /** `forum-store-row-version` values: Field 0 of every forum store row. */

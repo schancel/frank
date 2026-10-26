@@ -13,8 +13,12 @@ import {
   reconcileForumOperations,
   submitForumOperation,
   ForumOperationPendingError,
+  ForumOperationDroppedError,
 } from './evm-forum-operation'
-import { TopicOperationPendingError } from './topic-operations'
+import {
+  TopicOperationDroppedError,
+  TopicOperationPendingError,
+} from './topic-operations'
 import type {
   TopicOperationCapability,
   TopicVoteDirection,
@@ -118,6 +122,8 @@ export function createEvmTopicOperations(
       } catch (error) {
         if (error instanceof ForumOperationPendingError)
           throw new TopicOperationPendingError(error.message, error)
+        if (error instanceof ForumOperationDroppedError)
+          throw new TopicOperationDroppedError(error.message, error)
         throw error
       }
     },

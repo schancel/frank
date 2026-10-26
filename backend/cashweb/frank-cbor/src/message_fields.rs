@@ -1038,8 +1038,8 @@ pub mod forum_single_view {
     pub const EPOCH: u64 = 10;
     /// `forum-single-view` map shape (docs/protocol/cbor/topic.cddl#forum-single-view).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, POST_FRAME, AUTHOR, AUTHOR_BURN_TX, TRANSACTION_HASH, FIRST_VISIBLE, BLOCK, TRANSACTION_INDEX, AGGREGATE, REVISION, EPOCH],
-        optional: &[],
+        required: &[NETWORK, POST_FRAME, AUTHOR, AUTHOR_BURN_TX, TRANSACTION_HASH, FIRST_VISIBLE, AGGREGATE, REVISION, EPOCH],
+        optional: &[BLOCK, TRANSACTION_INDEX],
         open: true,
         open_from: 0,
     };
@@ -2021,15 +2021,19 @@ pub mod forum_entry_kind {
     pub const GAME: u32 = 2;
 }
 
-/// `forum-observation-state` values: forum-observation-row field 3.
+/// `forum-observation-state` values: forum-observation-row field 3: pending (admitted, not every burn accepted by the node), counted (every burn accepted; the event counts), confirmed (counted and every burn landed), dropped (a burn failed or never landed; the event no longer counts).
 pub mod forum_observation_state {
     /// `pending`.
     pub const PENDING: u32 = 1;
     /// `confirmed`.
     pub const CONFIRMED: u32 = 2;
+    /// `counted`.
+    pub const COUNTED: u32 = 3;
+    /// `dropped`.
+    pub const DROPPED: u32 = 4;
 }
 
-/// `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations.
+/// `forum-operation-state` values: forum-operation-status field 7: 0 and 3 echo an unverified request; 1, 2, 4 and 5 are relay observations. 4 counted: every burn was accepted by the node and the event counts; 2 confirmed: counted and every burn landed; 5 dropped: a burn failed or never landed, so the event no longer counts.
 pub mod forum_operation_state {
     /// `unknown`.
     pub const UNKNOWN: u32 = 0;
@@ -2039,6 +2043,10 @@ pub mod forum_operation_state {
     pub const CONFIRMED: u32 = 2;
     /// `rejected`.
     pub const REJECTED: u32 = 3;
+    /// `counted`.
+    pub const COUNTED: u32 = 4;
+    /// `dropped`.
+    pub const DROPPED: u32 = 5;
 }
 
 /// `forum-store-row-version` values: Field 0 of every forum store row.

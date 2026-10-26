@@ -169,13 +169,11 @@
             "author-burn-tx",
             "transaction-hash",
             "first-visible",
-            "block",
-            "transaction-index",
             "aggregate",
             "revision",
             "epoch"
           ],
-          "optional": [],
+          "optional": ["block", "transaction-index"],
           "open": true
         }
       ]
@@ -370,12 +368,14 @@
     },
     {
       "key": "forum-operation-state",
-      "description": "forum-operation-status field 7: 0 and 3 echo an unverified request; 1 and 2 are relay observations.",
+      "description": "forum-operation-status field 7: 0 and 3 echo an unverified request; 1, 2, 4 and 5 are relay observations. 4 counted: every burn was accepted by the node and the event counts; 2 confirmed: counted and every burn landed; 5 dropped: a burn failed or never landed, so the event no longer counts.",
       "values": {
         "unknown": 0,
         "pending": 1,
         "confirmed": 2,
-        "rejected": 3
+        "rejected": 3,
+        "counted": 4,
+        "dropped": 5
       }
     }
   ]

@@ -46,6 +46,14 @@ export class TopicOperationPendingError extends Error {
     this.name = 'TopicOperationPendingError'
   }
 }
+/** The relay counted the operation and then took it back, because its payment did not land.
+ * Final for the relay; it never authorizes another payment. */
+export class TopicOperationDroppedError extends Error {
+  constructor(message: string, readonly cause: unknown) {
+    super(message)
+    this.name = 'TopicOperationDroppedError'
+  }
+}
 export function requireTopicOperations(
   wallet: TopicWalletHandle,
 ): TopicOperationCapability {

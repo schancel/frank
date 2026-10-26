@@ -1651,17 +1651,19 @@ fn forum_typed(bytes: &[u8]) -> frank_cbor::TypedPayload {
     *parsed.typed.unwrap()
 }
 
-/// The 503 codes a Forum relay answers when it holds the event but does not know yet whether
-/// its burn landed (`topic_burn_outcome_unknown`, for example when its reads of solonet time
-/// out) or could not settle its own commit (`forum_unavailable`). Not refusals: the protocol
-/// has the wallet resend the identical bytes (docs/protocol/forum-runtime-storage.md, "Outcome
-/// recovery"), and so does this contract. A fresh burn is never signed for it.
-const FORUM_OUTCOME_NOT_KNOWN_YET: [&str; 2] = ["topic_burn_outcome_unknown", "forum_unavailable"];
-/// How long one Forum event is resent while its outcome is unknown.
+/// The answers of a Forum relay that holds the event but has not counted it yet: 200 pending
+/// (the node has not accepted every burn: solonet refuses a freshly funded sender for a few
+/// blocks, or is overloaded), 422 `topic_burn_refused` (the node refused every burn, for the
+/// same reasons) and 503 `forum_unavailable` (it could not settle its own commit). Not
+/// refusals of the event: the protocol has the wallet resend the identical bytes
+/// (docs/protocol/forum-runtime-storage.md), and so does this contract. A fresh burn is never
+/// signed for it.
+const FORUM_NOT_COUNTED_YET: [&str; 2] = ["topic_burn_refused", "forum_unavailable"];
+/// How long one Forum event is resent until it counts.
 const FORUM_OUTCOME_PATIENCE: Duration = Duration::from_secs(300);
 
-/// `PUT /topics` (post) or `/topics/vote`: the status and the body. While the relay answers
-/// that the outcome is not known yet, the same event bytes are sent again.
+/// `PUT /topics` (post) or `/topics/vote`: the status and the body. Until the relay counts the
+/// event, the same event bytes are sent again. A counted answer comes without waiting for a block.
 async fn forum_put(
     client: &reqwest::Client,
     origin: &str,
@@ -1675,17 +1677,75 @@ async fn forum_put(
             .ok()
             .and_then(|error| error["error"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        if status != 503
-            || !FORUM_OUTCOME_NOT_KNOWN_YET.contains(&code.as_str())
-            || started.elapsed() >= FORUM_OUTCOME_PATIENCE
-        {
+        let pending = status == 200
+            && matches!(
+                forum_typed(&body),
+                frank_cbor::TypedPayload::ForumOperationStatus(frank_cbor::ForumOperationStatus {
+                    evidence: frank_cbor::ForumOperationEvidence::Pending,
+                    ..
+                })
+            );
+        let not_yet = pending
+            || (matches!(status, 422 | 503) && FORUM_NOT_COUNTED_YET.contains(&code.as_str()));
+        if !not_yet || started.elapsed() >= FORUM_OUTCOME_PATIENCE {
             return (status, body);
         }
         println!(
-            "{origin}: 503 {code} ({}); the same event again",
+            "{origin}: {status} {} ({}); the same event again",
+            if pending { "pending" } else { &code },
             String::from_utf8_lossy(&body[..body.len().min(200)])
         );
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// The relay's evidence for a status answer.
+fn forum_evidence(body: &[u8]) -> frank_cbor::ForumOperationEvidence {
+    let frank_cbor::TypedPayload::ForumOperationStatus(status) = forum_typed(body) else {
+        panic!("not a forum status")
+    };
+    status.evidence
+}
+
+/// A PUT answer is counted: visible or in the tally now, landed or not.
+fn assert_counted(body: &[u8], what: &str) {
+    assert!(
+        matches!(
+            forum_evidence(body),
+            frank_cbor::ForumOperationEvidence::Counted
+                | frank_cbor::ForumOperationEvidence::Confirmed { .. }
+        ),
+        "{what}: {:?}",
+        forum_evidence(body)
+    );
+}
+
+/// Wait until every relay of `origins` reports `event` confirmed: the background pass saw each
+/// of its burns land, so the counted weight is paid and stays.
+async fn forum_wait_confirmed(client: &reqwest::Client, origins: &[&String], event: &[u8]) {
+    let started = Instant::now();
+    for origin in origins {
+        loop {
+            let response = client
+                .post(format!("{origin}/topics/status"))
+                .header("content-type", "application/cbor")
+                .header("accept", "application/cbor")
+                .body(event.to_vec())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 200, "{origin} status");
+            let evidence = forum_evidence(&response.bytes().await.unwrap());
+            match evidence {
+                frank_cbor::ForumOperationEvidence::Confirmed { .. } => break,
+                frank_cbor::ForumOperationEvidence::Counted
+                    if started.elapsed() < FORUM_OUTCOME_PATIENCE =>
+                {
+                    tokio::time::sleep(Duration::from_millis(500)).await
+                }
+                other => panic!("{origin}: the event did not land: {other:?}"),
+            }
+        }
     }
 }
 
@@ -1781,8 +1841,11 @@ async fn forum_a_post_on_a_reads_on_b_and_c_and_a_vote_on_c_counts_everywhere() 
     let topic = fresh_topic("read");
     let post = forum_event(&solonet, payers.take(), &topic, "posted on A", None);
     let target = target_of(&post);
+    let started = Instant::now();
     let (status, body) = forum_put(&client, &a, &post, false).await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_counted(&body, "post on A");
+    // Counted on acceptance: visible on B, C and the proxy as soon as A answers.
     for origin in [&b, &c, &proxy()] {
         let (rows, _, _) = forum_page(&client, origin, &topic, None).await;
         assert_eq!(
@@ -1791,9 +1854,25 @@ async fn forum_a_post_on_a_reads_on_b_and_c_and_a_vote_on_c_counts_everywhere() 
             "{origin}"
         );
     }
+    println!(
+        "forum: post on A visible on B, C and the proxy {:?} after it was sent",
+        started.elapsed()
+    );
     let vote = forum_event(&solonet, payers.take(), &topic, "", Some(target));
     let (status, body) = forum_put(&client, &c, &vote, true).await;
     assert_eq!(status, 200, "vote on C: {}", String::from_utf8_lossy(&body));
+    assert_counted(&body, "vote on C");
+    for origin in [&a, &b, &c] {
+        let (rows, _, _) = forum_page(&client, origin, &topic, None).await;
+        assert_eq!(
+            rows,
+            vec![(target, wei_magnitude(2 * FORUM_BURN_WEI))],
+            "{origin}: the vote counts before its burn lands"
+        );
+    }
+    // The burns land: every replica confirms both, and the counted weight stays.
+    forum_wait_confirmed(&client, &[&a, &b, &c], &post).await;
+    forum_wait_confirmed(&client, &[&a, &b, &c], &vote).await;
     for origin in [&a, &b, &c] {
         let (rows, _, _) = forum_page(&client, origin, &topic, None).await;
         assert_eq!(
@@ -1846,16 +1925,17 @@ async fn forum_one_burn_sent_to_a_and_b_and_replayed_gives_one_post_counted_once
     );
     assert_eq!(to_a.0, 200, "A: {}", String::from_utf8_lossy(&to_a.1));
     assert_eq!(to_b.0, 200, "B: {}", String::from_utf8_lossy(&to_b.1));
+    assert_counted(&to_a.1, "A");
+    assert_counted(&to_b.1, "B");
+    // Settle the post first, so the background pass changes nothing more under the revision.
+    forum_wait_confirmed(&client, &[&a, &b, &c], &post).await;
     let (_, _, revision) = forum_page(&client, &c, &topic, None).await;
     // A replay on C, and on A again, is answered from the store and changes nothing.
     for origin in [&c, &a] {
         let (status, body) = forum_put(&client, origin, &post, false).await;
         assert_eq!(status, 200, "{origin}: {}", String::from_utf8_lossy(&body));
-        let frank_cbor::TypedPayload::ForumOperationStatus(status) = forum_typed(&body) else {
-            panic!()
-        };
         assert!(matches!(
-            status.evidence,
+            forum_evidence(&body),
             frank_cbor::ForumOperationEvidence::Confirmed { .. }
         ));
     }
@@ -1865,8 +1945,12 @@ async fn forum_one_burn_sent_to_a_and_b_and_replayed_gives_one_post_counted_once
         forum_put(&client, &c, &vote, true)
     );
     assert_eq!((v_b.0, v_c.0), (200, 200));
-    let (status, _) = forum_put(&client, &a, &vote, true).await;
+    assert_counted(&v_b.1, "vote on B");
+    assert_counted(&v_c.1, "vote on C");
+    let (status, body) = forum_put(&client, &a, &vote, true).await;
     assert_eq!(status, 200, "a replayed vote on A");
+    assert_counted(&body, "a replayed vote on A");
+    forum_wait_confirmed(&client, &[&a, &b, &c], &vote).await;
     for origin in [&a, &b, &c] {
         let (rows, _, now) = forum_page(&client, origin, &topic, None).await;
         assert_eq!(
@@ -1874,8 +1958,8 @@ async fn forum_one_burn_sent_to_a_and_b_and_replayed_gives_one_post_counted_once
             vec![(target, wei_magnitude(2 * FORUM_BURN_WEI))],
             "{origin}"
         );
-        // One admission and one confirmation for the vote since the first read.
-        assert_eq!(now, revision + 2, "{origin}");
+        // One admission, one counting and one confirmation for the vote since the first read.
+        assert_eq!(now, revision + 3, "{origin}");
     }
     let discover = forum_get(&client, &format!("{c}/topics/discover")).await;
     let frank_cbor::TypedPayload::ForumDiscoveryPage(mut page) = forum_typed(&discover) else {
@@ -1935,6 +2019,7 @@ async fn forum_a_cursor_from_a_continues_on_b_and_c() {
             let _slot = in_flight.acquire().await.unwrap();
             let (status, body) = forum_put(&client, &origin, &event, false).await;
             assert_eq!(status, 200, "{origin}: {}", String::from_utf8_lossy(&body));
+            assert_counted(&body, &origin);
             target_of(&event)
         }));
     }

@@ -1309,13 +1309,14 @@ describe('Wallet detail page (#570)', () => {
     const fixture = await includedNativeTransfer()
     try {
       const rows = fixture.journal.list()
-      const blockHash = (
-        rows[0]!.members[0]!.observation as { blockHash: string }
-      ).blockHash
+      const { blockHash, blockNumber } = rows[0]!.members[0]!.observation as {
+        blockHash: string
+        blockNumber: number
+      }
       const blockTime = Date.UTC(2026, 9, 20, 12, 0)
       const readBlockTimes = jest.fn(
-        async (hashes: readonly string[]) =>
-          new Map(hashes.map(hash => [hash, blockTime])),
+        async (blocks: readonly { blockHash: string }[]) =>
+          new Map(blocks.map(block => [block.blockHash, blockTime])),
       )
       const getNativeOperationHistory = jest.fn(async () => ({
         operations: rows,
@@ -1351,7 +1352,9 @@ describe('Wallet detail page (#570)', () => {
         await flush()
         const history = wrapper.get('[data-testid="wallet-native-operations"]')
         expect(history.text()).toContain(fixture.hash)
-        expect(readBlockTimes).toHaveBeenCalledWith([blockHash])
+        expect(readBlockTimes).toHaveBeenCalledWith([
+          { blockNumber, blockHash },
+        ])
         const items = history.findAll('[data-testid="wallet-activity-item"]')
         // Newest first: the payment received after the send.
         expect(items.map(item => item.attributes('data-activity-id'))).toEqual([

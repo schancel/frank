@@ -215,6 +215,32 @@ it('clears recovered account failures after an accepted pending observation', as
   await f.sync.stop()
 })
 
+it('a targeted re-read leaves the listed coin selectable while it is out, then lists what it read', async () => {
+  const f = await fixture()
+  f.sources.splice(1)
+  const account = f.sources[0]!.account
+  await f.sync.refresh()
+  expect(f.list.latestOf(account)).toMatchObject({ state: 'unspent', valueWei: 100n })
+  let release!: () => void
+  const held = new Promise<void>(resolve => (release = resolve))
+  f.provider.getBalance.mockImplementationOnce(async () => {
+    await held
+    return 250n
+  })
+  const reread = f.sync.refreshAccounts([account])
+  // Asking for a look is not evidence of an outside spend: the coin is not withdrawn.
+  expect(f.sync.isDirty(account)).toBe(false)
+  release()
+  await reread
+  expect(f.list.latestOf(account)).toMatchObject({ state: 'unspent', valueWei: 250n })
+  // Evidence of an outside spend still withdraws it until the next read.
+  f.sync.markDirty(account)
+  expect(f.sync.isDirty(account)).toBe(true)
+  await f.sync.refresh()
+  expect(f.sync.isDirty(account)).toBe(false)
+  await f.sync.stop()
+})
+
 it.each([429, 'NETWORK_ERROR'])('keeps a failed read observable when invalidated in flight (%s)', async code => {
   const f = await fixture()
   f.sources.splice(1)

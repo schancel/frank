@@ -114,9 +114,15 @@ export class EvmCoinListSync {
   /** Something outside the list may have spent from `account` (or paid into it): its coin is
    * dropped from selection until the chain has been read again. */
   markDirty(account: string): void {
+    this.supersedeReads(account)
+    this.dirty.add(account.toLowerCase())
+  }
+
+  /** What was read of `account` so far (its empty evidence, a read still out) no longer counts:
+   * the next read decides. Its coin stays selectable meanwhile; only `markDirty` withdraws it. */
+  private supersedeReads(account: string): void {
     const key = account.toLowerCase()
     this.empty.delete(key)
-    this.dirty.add(key)
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1)
   }
 
@@ -248,8 +254,11 @@ export class EvmCoinListSync {
   ): Promise<void> {
     if (this.stopped) return Promise.resolve()
     // A targeted request invalidates old empty evidence even when a shared cooldown refuses RPC.
+    // It is not evidence that anything spent from the account: its listed coin stays
+    // selectable while the read is out, so a concurrent payment can still use it. A caller
+    // that knows of an outside spend marks the account dirty itself first.
     if (options.accounts !== undefined)
-      for (const account of options.accounts) this.markDirty(account)
+      for (const account of options.accounts) this.supersedeReads(account)
     if (this.rateLimit && Date.now() < this.rateLimit.until)
       return Promise.reject(this.rateLimit.error)
     if (options.all === true) this.againAll = true

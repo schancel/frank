@@ -1751,6 +1751,43 @@ describe('parallel paid messages', () => {
     expect(signed.some(tx => tx.from!.toLowerCase() === sub.address.toLowerCase() && tx.nonce === successor.nonce)).toBe(true)
   })
 
+  it('a re-read of the main account that another operation started does not hide its coin from a message selecting meanwhile', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    const { coinList, coinListSync } = evmWalletInternals(alice)
+    await coinListSync!.refreshAccounts([main])
+    expect(coinList!.latestOf(main)?.state).toBe('unspent')
+    // Another operation (a Send's submission, say) asks for a fresh look at the main account
+    // just as this message selects its coins; that read is still out while it selects.
+    let release!: () => void, holding = false
+    const held = new Promise<void>(resolve => (release = resolve))
+    const getBalance = alice.provider.getBalance.bind(alice.provider)
+    jest.spyOn(alice.provider, 'getBalance').mockImplementation(async (address, block) => {
+      if (holding && String(address).toLowerCase() === main) await held
+      return getBalance(address, block)
+    })
+    let reread: Promise<void> | undefined
+    const select = coinList!.reserveTransactionSetSources.bind(coinList)
+    jest.spyOn(coinList!, 'reserveTransactionSetSources').mockImplementation(selection => {
+      if (reread || !selection.holder.startsWith('stamp-')) return select(selection)
+      holding = true
+      reread = coinListSync!.refreshAccounts([main])
+      try {
+        return select(selection)
+      } finally {
+        // The send's own later refresh joins this read: let it finish once selection is done.
+        release()
+      }
+    })
+    await send(1)
+    await reread
+    expect(reread).toBeDefined()
+    const paid = relayPayments()
+    expect(paid.length).toBeGreaterThan(0)
+    expect(paid.every(tx => tx.from!.toLowerCase() === main)).toBe(true)
+    expect(bobMailbox).toHaveLength(1)
+  })
+
   it('a pending quiet-window graph keeps its inputs reserved against both Sends and messages', async () => {
     await alice.close()
     await f.close()

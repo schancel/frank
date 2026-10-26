@@ -92,6 +92,19 @@ export default () => {
     ) {
       return '/setup'
     }
+    // A saved account that did not open (its wallet state was refused, or custody is locked or
+    // unavailable) is not a signed-out session either. The landing and signup pages would hide
+    // the failure behind "Create Account"; Setup says what failed and offers Retry.
+    if (
+      (accountStatus.status === 'unavailable' ||
+        accountStatus.status === 'locked') &&
+      (to.path === '/' ||
+        to.path === '/welcome' ||
+        to.path === '/onboard' ||
+        to.path.startsWith('/onboard/'))
+    ) {
+      return '/setup'
+    }
     // Release notes, documentation, and legal notices are readable without an account.
     if (
       to.path === '/setup' ||

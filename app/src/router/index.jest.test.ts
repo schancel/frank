@@ -113,6 +113,40 @@ test.each([
   },
 )
 
+describe.each(['unavailable', 'locked'])(
+  'a saved account that did not open (%s)',
+  status => {
+    test.each(['/', '/welcome', '/onboard', '/onboard/profile'])(
+      'shows the failure on setup instead of the signup page at %s',
+      async path => {
+        mockStatus.status = status
+        expect(await mockGuard({ path, fullPath: path, params: {} }, {})).toBe(
+          '/setup',
+        )
+      },
+    )
+    test.each(['/setup', '/forum', '/topic/example', '/docs', '/about'])(
+      'can still read %s',
+      async path => {
+        mockStatus.status = status
+        expect(
+          await mockGuard({ path, fullPath: path, params: {} }, {}),
+        ).toBeUndefined()
+      },
+    )
+  },
+)
+
+test('a fresh device still lands on the welcome page and can sign up', async () => {
+  mockStatus.status = 'fresh'
+  expect(await mockGuard({ path: '/', fullPath: '/', params: {} }, {})).toBe(
+    '/welcome',
+  )
+  expect(
+    await mockGuard({ path: '/onboard', fullPath: '/onboard', params: {} }, {}),
+  ).toBeUndefined()
+})
+
 test.each(['/setup', '/docs', '/docs/guide', '/about', '/changelog'])(
   'standby account can read %s without taking custody',
   async path => {

@@ -312,11 +312,14 @@ to all three relays and to the proxy:
 - directory: relay-a killed mid-load while three writers publish 40 accounts each (revision
   0 and one renewal, retried on the next relay): every acknowledged account resolves at its
   acknowledged head on every relay;
-- FoundationDB restarted mid-load, and separately relay-b killed mid-load and started again:
-  three writers append 150 messages each and retry a failed append, with the same
-  envelope and payment, on the next relay. The test checks that the container really restarted
-  (`State.StartedAt` changed) and that the writers felt it: an attempt overlapping the
-  fault window failed or took at least 1 s. Relay-b's kill must cause a failed attempt.
+- FoundationDB stopped mid-load, held down for 3 s and started again, and separately relay-b
+  killed mid-load and started again: three writers append 150 messages each and retry a
+  failed append, with the same envelope and payment, on the next relay. The test checks that
+  the container really restarted (`State.StartedAt` changed). For FoundationDB the fault
+  window runs from the stop to the first append acknowledged after the start, and the writers
+  must have felt it: an attempt overlapping that window failed or took at least 2 s (an
+  attempt in flight at the stop cannot commit for 3 s). Relay-b's kill must cause a failed
+  attempt.
   The pre-fault baseline, measured after each writer's first 10 attempts, is only
   reported. Afterwards every acknowledged append is readable on
   every relay at its acknowledged sequence number, and no retried append was stored
@@ -338,6 +341,27 @@ funds fresh accounts from the solonet faucet (one faucet payment into a fresh fu
 account per test, which then funds the payers) and signs each write's EIP-1559 payment to
 the payee the relay's `write-policy` names, with the write's commitment as calldata. Each
 payer pays once, at nonce 0; a retry resends the same bytes.
+
+Solonet is shared with other labs, bots and workers, so funding expects a busy node. A Monad node
+admits a transaction against its sender's balance at its last committed block less the execution
+delay, which trails `eth_blockNumber` by a margin that grows with load: a freshly funded sender is
+refused ("Signer had insufficient balance") for a few blocks, and a burst may be refused as
+"overloaded, try again later" (sometimes while taking it after all: the next send at that
+nonce is then refused with "An existing transaction had higher priority", which counts as sent).
+Each funding send is therefore retried a block later with other
+bytes (the node keeps refusing bytes it once refused; only one transaction can land at a nonce,
+so nothing is paid twice) for up to three minutes, and then fails naming the signer, the nonce and
+its balance at the head and four blocks back. Funding ends with a probe account funded after
+every payer sending its funds back to the faucet: the node admits that send only once it sees the
+last payer funded, so the relays can broadcast every payer's payment. Reads are asked again while
+the node or the port forward is too busy, for up to a minute.
+
+A relay that cannot check a payment yet answers 503 `group_payment_not_ready` or
+`group_payment_check_unavailable` with `Retry-After`, and a Forum relay whose reads of solonet
+time out answers 503 `topic_burn_outcome_unknown` (`forum_unavailable` when it could not settle its own
+commit). None is a refusal: the protocol has the client
+resend the same signed write or event, and the contract does exactly that (same bytes, never a
+new payment) before it asserts on the answer.
 
 Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run takes 5 to 8
 minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`

@@ -89,28 +89,27 @@ export function notedSendPurpose(
 }
 
 /**
- * The names of the one send a noted transaction belongs to; transactions sharing any name are
- * one send. A message's stamp is named by its message, whatever operation paid it; another
- * transaction by its operation and stage, and by the message that pays it as an item. A
- * transaction no note relates to anything else is a send of its own.
+ * The names of the one user action a noted transaction belongs to; transactions sharing any
+ * name are one action, one row of History. An action is the sending wallet's operation, with
+ * every stage appended to it (a message's stamp paid in the same transaction set as the
+ * message's payment), and the message it was for: a message's payment and its stamp are one
+ * action, whatever operations paid them. The sending device groups its journal the same way.
+ * A transaction no note relates to anything else is an action of its own.
  */
 export function notedSendGroupKeys(
   row: Pick<NotedSend, 'txHash' | 'operation' | 'message'>,
 ): string[] {
   const keys: string[] = []
   if (row.operation) {
+    keys.push(`operation:${row.operation.id}`)
     const named = classifyEvmOperation(row.operation.id, row.operation.stage)
-    keys.push(
-      named.purpose === 'stamp' && named.messageId !== undefined
-        ? `stamp:${named.messageId}`
-        : `operation:${row.operation.id}#${row.operation.stage ?? ''}`,
-    )
+    if (named.messageId !== undefined) keys.push(`message:${named.messageId}`)
   }
   if (row.message)
     keys.push(
-      !row.message.item && row.message.messageId !== undefined
-        ? `stamp:${row.message.messageId}`
-        : `message:${row.message.digest}:${row.message.item ? 'item' : 'stamp'}`,
+      row.message.messageId !== undefined
+        ? `message:${row.message.messageId}`
+        : `digest:${row.message.digest}`,
     )
   if (keys.length === 0) keys.push(`tx:${row.txHash}`)
   return keys

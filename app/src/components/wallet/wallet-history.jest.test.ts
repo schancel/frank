@@ -91,6 +91,7 @@ describe('buildWalletHistoryGroups', () => {
       swaps: [],
       load: {
         status: 'available',
+        stampStages: [],
         operations: [],
         noted: [],
         contactPayments: [],
@@ -147,13 +148,14 @@ describe('buildWalletHistoryGroups', () => {
       ...over,
     } as EvmNativeOperationStatus)
 
-  it("shows another device's sends once per message and purpose, dated by their block, and this device's own once", () => {
+  it("shows another device's sends once per message, dated by their payment's block, and this device's own once", () => {
     const own = '0x' + 'aa'.repeat(32)
     const groups = buildWalletHistoryGroups({
       chainIdentifier: 'monad-regtest',
       swaps: [],
       load: {
         status: 'available',
+        stampStages: [],
         operations: [
           operation({
             operationId: 'mine',
@@ -193,7 +195,7 @@ describe('buildWalletHistoryGroups', () => {
               feeWei: '1',
             },
           }),
-          // The same message's payment to the contact: its own row.
+          // The same message's payment to the contact: the same row, its stamp a figure of it.
           sent('0x' + 'c0'.repeat(32), {
             purpose: 'contact-payment',
             message: { digest: 'm1', item: true },
@@ -218,14 +220,21 @@ describe('buildWalletHistoryGroups', () => {
       noted.map(row => [
         row.purpose,
         row.valueWei,
+        row.stampWei,
         row.recipient,
         row.state,
         row.timeMs,
       ]),
     ).toEqual([
-      ['transfer', '10', '0x' + '02'.repeat(20), 'pending', 9000],
-      ['stamp', '50', '0x' + '04'.repeat(20), 'included', 6000],
-      ['contact-payment', '500', '0x' + '02'.repeat(20), 'included', 5000],
+      ['transfer', '10', '0', '0x' + '02'.repeat(20), 'pending', 9000],
+      [
+        'contact-payment',
+        '500',
+        '50',
+        '0x' + '02'.repeat(20),
+        'included',
+        5000,
+      ],
     ])
     expect(groups[0]!.id).toBe('pending')
     expect(groups[0]!.rows.map(row => row.kind)).toEqual(['noted'])
@@ -248,6 +257,7 @@ describe('buildWalletHistoryGroups', () => {
       swaps: [],
       load: {
         status: 'available',
+        stampStages: [],
         operations: [],
         received: [
           coin('0x' + '0a'.repeat(20), 2142n),
@@ -272,6 +282,7 @@ describe('buildWalletHistoryGroups', () => {
       swaps: [],
       load: {
         status: 'available',
+        stampStages: [],
         operations: [
           operation({
             purpose: 'contact-payment',
@@ -405,15 +416,6 @@ describe('buildWalletHistoryGroups', () => {
         ].map(member),
       }),
       operation({
-        operationId: `evm-native-v1:01:stamp-${MESSAGE}`,
-        purpose: 'stamp',
-        messageId: MESSAGE,
-        recipient: stampTo,
-        intendedValueWei: '50',
-        payment: 'included',
-        members: of(chatPayment, `stamp-${MESSAGE}`).map(member),
-      }),
-      operation({
         operationId: 'evm-native-v1:02',
         purpose: 'group-write',
         recipient: dead,
@@ -468,15 +470,32 @@ describe('buildWalletHistoryGroups', () => {
         },
       ],
     })
+    // Its message's stamp, appended to the chat payment's transaction set as a stage.
+    const senderStages = [
+      {
+        of: 'evm-native-v1:01',
+        stamp: operation({
+          operationId: `evm-native-v1:01:stamp-${MESSAGE}`,
+          purpose: 'stamp',
+          messageId: MESSAGE,
+          recipient: stampTo,
+          intendedValueWei: '50',
+          payment: 'included',
+          members: of(chatPayment, `stamp-${MESSAGE}`).map(member),
+        }),
+      },
+    ]
     const lines = (
       operations: EvmNativeOperationStatus[],
       notes: NotedSendStatus[],
+      stampStages: typeof senderStages = [],
     ) =>
       buildWalletHistoryGroups({
         chainIdentifier: 'monad-regtest',
         swaps: [],
         load: {
           status: 'available',
+          stampStages,
           operations,
           received: [],
           noted: notes,
@@ -494,6 +513,7 @@ describe('buildWalletHistoryGroups', () => {
                 [
                   row.operation.purpose,
                   row.operation.intendedValueWei,
+                  row.stampWei,
                   row.feeWei,
                   row.operation.recipient,
                   row.operation.payment,
@@ -505,6 +525,7 @@ describe('buildWalletHistoryGroups', () => {
                 [
                   row.purpose,
                   row.valueWei,
+                  row.stampWei,
                   row.feeWei,
                   row.recipient,
                   row.state,
@@ -514,15 +535,153 @@ describe('buildWalletHistoryGroups', () => {
             : [],
         )
         .sort((a, b) => String(a).localeCompare(String(b)))
-    const onSender = lines(sender, [])
+    const onSender = lines(sender, [], senderStages)
+    // The chat payment and its message's stamp are one row: the amount paid to the contact,
+    // the stamp as its own figure, the fee of every transaction (with the change's).
     expect(onSender).toEqual([
-      ['contact-payment', '600', '12', contact, 'included', 5000],
-      ['group-write', '1', '3', dead, 'included', 5000],
-      ['stamp', '50', '3', '0x' + '0f'.repeat(20), 'included', 5000],
-      ['stamp', '50', '6', stampTo, 'included', 7000],
+      ['contact-payment', '600', '50', '18', contact, 'included', 5000],
+      ['group-write', '1', '0', '3', dead, 'included', 5000],
+      ['stamp', '50', '0', '3', '0x' + '0f'.repeat(20), 'included', 5000],
     ])
     // One row per send, the same label, amount and fee; the attempt that lost the race and
     // never landed is no row.
     expect(lines([lost], noted)).toEqual(onSender)
+  })
+
+  it('shows Send to Contact and its stamp as one row, the same on the device that sent it and on another, however the notes name its transactions', () => {
+    const MESSAGE = '00112233445566778899aabbccddeeff'
+    const id = `evm-transaction-set:contact-${MESSAGE}`
+    const stage = `stamp-${MESSAGE}`
+    const contact = '0x' + '0c'.repeat(20)
+    const stampTo = '0x' + '0d'.repeat(20)
+    const own = '0x' + '0e'.repeat(20)
+    const block = { blockNumber: 9, blockHash: '0x' + '09'.repeat(32) }
+    const hash = (n: number) => '0x' + n.toString(16).padStart(64, '0')
+    // Gathering the coins into the paying account, the payment, its change, and the message's
+    // stamp appended as a stage of two coins.
+    const txs = [
+      { n: 1, role: 'funding' as const, to: own, valueWei: '300', own: true },
+      { n: 2, role: 'payment' as const, to: contact, valueWei: '500' },
+      { n: 3, role: 'change' as const, to: own, valueWei: '7', own: true },
+      { n: 4, role: 'payment' as const, to: stampTo, valueWei: '25', stage },
+      { n: 5, role: 'payment' as const, to: stampTo, valueWei: '25', stage },
+    ]
+    const member = (tx: (typeof txs)[number]) => ({
+      role: tx.role,
+      account: '0x' + tx.n.toString(16).padStart(40, '0'),
+      nonce: 0,
+      ...(tx.stage ? { stageId: tx.stage } : {}),
+      transactionHash: hash(tx.n),
+      state: 'included-success' as const,
+      ...block,
+      feeWei: '2',
+    })
+    const payment = operation({
+      operationId: 'evm-native-v1:05',
+      purpose: 'contact-payment',
+      messageId: MESSAGE,
+      recipient: contact,
+      intendedValueWei: '500',
+      payment: 'included',
+      members: txs.map(member),
+    })
+    const stamp = operation({
+      operationId: `evm-native-v1:05:${stage}`,
+      purpose: 'stamp',
+      messageId: MESSAGE,
+      recipient: stampTo,
+      intendedValueWei: '50',
+      payment: 'included',
+      members: txs.filter(tx => tx.stage).map(member),
+    })
+    // Another device: each transaction's own note names its operation; the message's note to
+    // self (before its spends had a note of their own) named the message too.
+    const noted = (withMessage: boolean) =>
+      txs.map(tx => {
+        const facts = {
+          operation: { id, ...(tx.stage ? { stage: tx.stage } : {}) },
+          ...(withMessage
+            ? {
+                message: {
+                  digest: 'dd',
+                  messageId: MESSAGE,
+                  item: tx.n === 2,
+                },
+              }
+            : {}),
+        }
+        return sent(hash(tx.n), {
+          from: '0x' + tx.n.toString(16).padStart(40, '0'),
+          to: tx.to,
+          valueWei: tx.valueWei,
+          ...facts,
+          purpose: notedSendPurpose(facts),
+          inclusion: {
+            status: 'success',
+            ...block,
+            blockTimeMs: 5000,
+            feeWei: '2',
+          },
+          ...(tx.own ? { toOwnAccount: true } : {}),
+        })
+      })
+    const rows = (
+      operations: EvmNativeOperationStatus[],
+      notes: NotedSendStatus[],
+      stampStages: { of: string; stamp: EvmNativeOperationStatus }[] = [],
+    ) =>
+      buildWalletHistoryGroups({
+        chainIdentifier: 'monad-regtest',
+        swaps: [],
+        load: {
+          status: 'available',
+          stampStages,
+          operations,
+          received: [],
+          noted: notes,
+          contactPayments: [],
+          blockTimes: new Map([[block.blockHash, 5000]]),
+        },
+      })
+        .flatMap(group => group.rows)
+        .flatMap(row =>
+          row.kind === 'native'
+            ? [
+                [
+                  row.operation.purpose,
+                  row.operation.intendedValueWei,
+                  row.stampWei,
+                  row.feeWei,
+                  row.operation.recipient,
+                  row.timeMs,
+                ],
+              ]
+            : row.kind === 'noted'
+            ? [
+                [
+                  row.purpose,
+                  row.valueWei,
+                  row.stampWei,
+                  row.feeWei,
+                  row.recipient,
+                  row.timeMs,
+                ],
+              ]
+            : [],
+        )
+    // 0.5 to the contact, the stamp 0.05 apart from it, the fee of all five transactions.
+    const expected = [['contact-payment', '500', '50', '10', contact, 5000]]
+    expect(rows([payment], [], [{ of: payment.operationId, stamp }])).toEqual(
+      expected,
+    )
+    expect(rows([], noted(true))).toEqual(expected)
+    expect(rows([], noted(false))).toEqual(expected)
+    // The stamp paid again in an operation of its own (its first coin taken) is still the
+    // message's stamp, in the same row.
+    const repaid = operation({
+      ...stamp,
+      operationId: 'evm-native-v1:06',
+    })
+    expect(rows([payment, repaid], [])).toEqual(expected)
   })
 })

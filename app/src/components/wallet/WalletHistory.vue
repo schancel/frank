@@ -131,6 +131,18 @@
                 <address-text :address="entry.recipient" copyable />
               </div>
               <p
+                v-if="entry.stampWei !== '0'"
+                class="text-caption q-mt-xs q-mb-none"
+                data-testid="wallet-activity-stamp"
+              >
+                {{
+                  $t('walletHistory.stamp', {
+                    amount: nativeAmount(entry.stampWei),
+                    unit: nativeUnit,
+                  })
+                }}
+              </p>
+              <p
                 v-if="entry.feeWei !== '0'"
                 class="text-caption q-mt-xs q-mb-none"
                 data-testid="wallet-activity-fee"
@@ -213,6 +225,18 @@
               <div class="wallet-history-address">
                 <address-text :address="entry.operation.recipient" copyable />
               </div>
+              <p
+                v-if="entry.stampWei !== '0'"
+                class="text-caption q-mt-xs q-mb-none"
+                data-testid="wallet-activity-stamp"
+              >
+                {{
+                  $t('walletHistory.stamp', {
+                    amount: nativeAmount(entry.stampWei),
+                    unit: nativeUnit,
+                  })
+                }}
+              </p>
               <p
                 v-if="entry.feeWei !== '0'"
                 class="text-caption q-mt-xs q-mb-none"

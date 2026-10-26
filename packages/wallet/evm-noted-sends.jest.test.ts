@@ -139,18 +139,20 @@ describe('EvmNotedSends', () => {
         notedSendGroupKeys(row)[0],
       )
     }
-    // The payment's coins are one payment to a contact, the stamp one stamp of its message.
+    // The payment's coins are one payment to a contact, the stamp one stamp of its message, and
+    // the two are one action: one operation (the stamp is a stage of it) for one message.
     for (const rawTx of payments) {
       expect(first.get(hashOf(rawTx))?.purpose).toBe('contact-payment')
-      expect(notedSendGroupKeys(first.get(hashOf(rawTx))!)[0]).toBe(
-        `operation:${operation.id}#`,
-      )
+      expect(notedSendGroupKeys(first.get(hashOf(rawTx))!)).toEqual([
+        `operation:${operation.id}`,
+      ])
     }
     for (const rawTx of stamps) {
       expect(first.get(hashOf(rawTx))?.purpose).toBe('stamp')
       expect(notedSendGroupKeys(first.get(hashOf(rawTx))!)).toEqual([
-        `stamp:${messageId}`,
-        `stamp:${messageId}`,
+        `operation:${operation.id}`,
+        `message:${messageId}`,
+        `message:${messageId}`,
       ])
     }
     // A group write's payment is named by its own calldata, though it goes to the burn address.

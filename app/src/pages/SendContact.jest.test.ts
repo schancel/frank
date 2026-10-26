@@ -501,7 +501,10 @@ describe('SendContact.vue (dual-send model)', () => {
       }),
     })
     mockPrepare.mockResolvedValueOnce(PREPARED)
-    mockSendMessage.mockResolvedValueOnce({ state: 'sent', payloadDigest: 'dd' })
+    mockSendMessage.mockResolvedValueOnce({
+      state: 'sent',
+      payloadDigest: 'dd',
+    })
     await confirm()
     expect(mockPrepare.mock.calls[0][0].maxFeeWei).toBe(12_852_000_000_000_000n)
   })

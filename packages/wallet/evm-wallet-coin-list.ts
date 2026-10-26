@@ -145,13 +145,18 @@ export function installEvmWalletCoinList(params: {
         })
       }
       // A received coin is an input only once the wallet has verified on chain that its
-      // transfer landed (`unspent`, or `spent` after that). A pending or failed one is a
+      // transfer landed: the native transfer (`unspent`, or `spent` after that), or a token
+      // transfer whose Transfer log the wallet read from its receipt. A coin with neither is a
       // sender's claim: its account is not watched, so whatever money sits there is never
       // listed, spent or swept, and the balance (which counts only verified coins) is what Send
       // can spend. Once verified, its account is read like any other.
       const unverified = new Set<string>()
       for (const coin of coinStore.all()) {
-        if (coin.state !== 'unspent' && coin.state !== 'spent') {
+        if (
+          coin.state !== 'unspent' &&
+          coin.state !== 'spent' &&
+          !coin.erc20Positions?.some(position => position.receipts.length > 0)
+        ) {
           unverified.add(coin.address.toLowerCase())
           continue
         }

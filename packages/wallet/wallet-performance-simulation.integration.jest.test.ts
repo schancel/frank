@@ -18,6 +18,7 @@ import {
   type InboxRecord,
 } from './chain/canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './chain/evm-chain'
+import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import { toHex } from '@frank/codec'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 import { SEED_DISCOVERY_GAP } from './evm-seed-discovery'
@@ -140,6 +141,7 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       chainHttpRequests.length = 0
       providerBroadcasts.length = 0
       f!.setMailbox(bobMailbox)
+      const requestsBefore = f!.requests.length
       const t0 = performance.now()
       const sent = await f!.chain.directMessages.send({
         wallet: f!.alice,
@@ -154,7 +156,14 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       expect(
         chainHttpRequests.filter(r => r === 'submitRawTransaction'),
       ).toHaveLength(0)
-      return { elapsed, transactions: providerBroadcasts.length }
+      // The bundle is what the wallet broadcast plus what the relay broadcast on storing the
+      // message (its carried payments, which reach the chain only after that).
+      const relayed = offlineChain.relayBroadcasts
+        ? f!.requests
+            .slice(requestsBefore)
+            .reduce((n, request) => n + restoreCanonicalRequest(request).parts.transactions.length, 0)
+        : 0
+      return { elapsed, transactions: providerBroadcasts.length + relayed }
     }
 
     // The deposit is one large coin. A send that spends a coin that large also splits it into

@@ -97,7 +97,7 @@ export class EvmTransactionSetLifecycle {
   }
 
   /** Called only after the complete encrypted message and signed graph are durable. */
-  async replayDependencies(id: string, stageId: string): Promise<void> {
+  async replayDependencies(id: string, stageId?: string): Promise<void> {
     const row = this.validateOperation(await this.options.authority.readOperation(id)), selected = new Set<number>()
     const visit = (index: number) => {
       if (selected.has(index)) return

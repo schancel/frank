@@ -1095,7 +1095,8 @@ describe('a payment to a contact', () => {
       expect.objectContaining({ state: 'prepared', txHash: prepared.txHash }),
     ])
 
-    // A failed relay attempt may already have paid the contact. Retain that same operation.
+    // The relay cannot be reached: the transfer travels in that message, so it is not
+    // broadcast; the same signed operation is retained for the retry.
     f.setPhase('fail')
     let attempt: string | undefined
     await f.chain.directMessages
@@ -1109,10 +1110,11 @@ describe('a payment to a contact', () => {
         },
       })
       .catch(() => undefined)
-    expect(toOneTimeAddresses()).toEqual([expect.objectContaining({ hash: prepared.txHash })])
-    expect(alice.getContactPayments!()[0].state).toBe('prepared')
+    expect(toOneTimeAddresses()).toEqual([])
+    expect(alice.getContactPayments!()[0]).toMatchObject({ state: 'prepared', txHash: prepared.txHash })
 
-    // Reconcile the original attempt until its message is stored; never pay a second time.
+    // Reconcile the original attempt until its message is stored, then its same transfer goes
+    // out; never pay a second time.
     f.setPhase('delivered')
     await recoverMessage(alice, attempt!)
     expect(bobMailbox).toHaveLength(1)

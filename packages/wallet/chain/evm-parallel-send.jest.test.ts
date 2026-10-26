@@ -39,8 +39,9 @@ import {
 import { InsufficientStampFundsError } from '../evm-stamp-payer'
 import {
   MonadStampPendingAttemptError,
+  MonadStampTerminalError,
 } from '../evm-stamp-client'
-import { REFUSED_BEFORE_EXPOSURE } from './canonical-dm'
+import { CanonicalRecipientUndeliverableError, REFUSED_BEFORE_EXPOSURE } from './canonical-dm'
 import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 
 jest.mock('../evm-provider', () =>
@@ -293,7 +294,8 @@ describe('parallel paid messages', () => {
     async refusal => {
       const [coin] = await fundAccounts(1)
       offlineChain.relayBroadcasts = false
-      // Wallet submission precedes relay delivery; keep its exact bytes ambiguous.
+      // The relay stores the message but its answer is lost, and the node takes no broadcast:
+      // whether the payment is out stays unknown to the wallet.
       offlineChain.broadcastDown = true
       const handed: { body: Uint8Array; contentType: string }[] = []
       const base = directory.fetch!
@@ -321,7 +323,9 @@ describe('parallel paid messages', () => {
       const digest = pending.payloadHashes[0]
       expect(bobMailbox).toHaveLength(1)
       const original = relayPayments()[0]
-      expect(offlineChain.walletBroadcasts).toEqual([original.serialized])
+      // The wallet has no word that the relay stored the message, so it has not broadcast the
+      // payment: a carried payment goes to the chain only once the relay has the message.
+      expect(offlineChain.walletBroadcasts).toEqual([])
       const operationId = alice.getNativeOperations!().find(row =>
         row.members.some(member => member.signed?.transactionHash === original.hash),
       )!.operationId
@@ -374,7 +378,9 @@ describe('parallel paid messages', () => {
       )
       const operation = alice.getNativeOperations!().find(row => row.operationId === operationId)!
       expect(operation.members.map(member => member.signed!.rawTransaction)).toEqual([original.serialized])
-      expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set([original.serialized]))
+      // The original bytes landed before the relay confirmed delivery, so once it did the wallet
+      // found them on the chain: it never broadcast them, nor any other payment.
+      expect(offlineChain.walletBroadcasts).toEqual([])
       for (const request of handed) expect(request).toEqual(handed[0])
       await expect(send(1)).rejects.toBeInstanceOf(
         DirectMessageAlreadyAttemptedError,
@@ -523,7 +529,12 @@ describe('parallel paid messages', () => {
     expect(owned.length).toBeGreaterThan(0)
     const destinations = new Set([identity, ...owned.map(member => Transaction.from(member.signed!.rawTransaction).to!.toLowerCase())])
     expect([...destinations].reduce((sum, address) => sum + (mockBalances.get(address) ?? 0n), 0n)).toBe(10n ** 17n - STAMP)
-    expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(operation.members.map(member => member.signed!.rawTransaction)))
+    // Every member reached the chain. The wallet broadcast its own moves; the stamp went out
+    // with the relay that stored the message, and the wallet never broadcast it before then.
+    for (const member of operation.members)
+      expect(offlineChain.mined.has(member.signed!.transactionHash)).toBe(true)
+    expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(owned.map(member => member.signed!.rawTransaction)))
+    expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
   })
 
   it('three concurrent sends with only one root input reserve it once and reject the other two without a global wait', async () => {
@@ -666,17 +677,23 @@ describe('parallel paid messages', () => {
     f.setPhase('fail')
     const stuck = await send(1).catch(error => error)
     expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
-    // Financial submission can settle while delivery remains unknown.
-    expect(offlineChain.walletBroadcasts).toHaveLength(1)
-    const original = offlineChain.walletBroadcasts[0]
+    // The relay could not be reached: the payment, signed and recorded, is not on the chain.
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    const [original] = graphBytes()
+    expect(graphBytes()).toHaveLength(1)
+    expect(offlineChain.mined.has(Transaction.from(original!).hash!)).toBe(false)
     f.setPhase('delivered')
     const second = await send(2)
     expect(bobMailbox).toHaveLength(1)
     await tick()
-    // The second is delivered and paid; the first was re-sent by the same pass, the same bytes.
+    // The second is delivered and paid; the first was re-sent by the same pass with the same
+    // bytes, and its payment went out only with the relay that stored it.
     for (const row of [a, b]) expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
-    expect(alice.getNativeOperations!().flatMap(row => row.members).every(member => member.observation.state === 'included-success')).toBe(true)
-    expect(offlineChain.walletBroadcasts.filter(raw => raw === original)).toHaveLength(1)
+    const operations = alice.getNativeOperations!()
+    expect(operations.flatMap(row => row.members).every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(relayPayments().filter(tx => tx.serialized === original)).toHaveLength(1)
+    expect(offlineChain.walletBroadcasts.filter(raw => raw === original).length).toBeLessThanOrEqual(1)
+    for (const operation of operations) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
     expect(bobMailbox).toHaveLength(2)
     expect(
       await f.chain.directMessages.reconcileAttempts({
@@ -690,7 +707,7 @@ describe('parallel paid messages', () => {
     expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(2)
   })
 
-  it('wallet payment can settle while the relay is unavailable and recovery delivers the original message without repaying', async () => {
+  it('while the relay is unavailable the payment stays off the chain and held; recovery delivers the original message and then pays it, never repaying', async () => {
     const [coin] = await fundAccounts(1)
     f.setPhase('fail')
     offlineChain.broadcastDown = true
@@ -703,14 +720,23 @@ describe('parallel paid messages', () => {
     await expect(constructOnly('unrelated-while-held')).rejects.toThrow('Insufficient available EVM coins')
     offlineChain.broadcastDown = false
     for (let pass = 0; pass < 8; pass++) await tick([digest])
-    expect(offlineChain.mined.has(Transaction.from(original[0]).hash!)).toBe(true)
+    // The node takes broadcasts again, but no relay has the message: its payment is not
+    // broadcast (it would pay for a message nobody can fetch), and its coin stays held.
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(offlineChain.mined.has(Transaction.from(original[0]).hash!)).toBe(false)
     expect(bobMailbox).toHaveLength(0)
-    expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(false)
+    expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(true)
     f.setPhase('delivered')
     for (let pass = 0; pass < 16 && bobMailbox.length === 0; pass++) await tick([digest])
     expect(bobMailbox).toHaveLength(1)
+    // Delivered with the original bytes; then the wallet broadcasts those same bytes.
     expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set(original))
+    for (let pass = 0; pass < 8 && alice.transactionSetPreparer!.isSourceReserved(coin.address); pass++) await tick([digest])
+    expect(offlineChain.mined.has(Transaction.from(original[0]).hash!)).toBe(true)
     expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(original))
+    expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(false)
+    expect(graphBytes().filter(raw => !original.includes(raw))).toEqual([])
+    for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
   })
 
   it('the relay stored and broadcast but its answer was lost: the coins are spent from the chain and delivery is retried, never re-paid', async () => {
@@ -729,7 +755,8 @@ describe('parallel paid messages', () => {
     const stuck = await send(1).catch(error => error)
     expect(stuck).toBeInstanceOf(MonadStampPendingAttemptError)
     const digest: string = stuck.payloadHashes[0]
-    expect(offlineChain.walletBroadcasts).toHaveLength(1)
+    // Without the relay's answer the wallet broadcasts nothing; the relay's broadcast paid.
+    expect(offlineChain.walletBroadcasts).toEqual([])
     await tick([digest])
     // Seen on chain: spent, although the wallet still has no confirmation of delivery.
     expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
@@ -738,7 +765,8 @@ describe('parallel paid messages', () => {
     for (let pass = 0; pass < 16; pass++)
       if ((await tick([digest]))[digest] === 'delivered') break
     expect((await tick([digest]))[digest]).toBe('delivered')
-    expect(offlineChain.walletBroadcasts).toHaveLength(1)
+    // Delivered at last: the payment is already on the chain, so nothing is broadcast again.
+    expect(offlineChain.walletBroadcasts).toEqual([])
     expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
     await expect(send(1)).rejects.toBeInstanceOf(
       DirectMessageAlreadyAttemptedError,
@@ -997,7 +1025,10 @@ describe('parallel paid messages', () => {
       racedBytes = operation.members.map(member => member.signed!.rawTransaction)
       offlineChain.mine(stolen.rawTx)
     }).catch(error => error)
-    expect(raced).toBeInstanceOf(MonadStampPendingAttemptError)
+    // Nothing of this message reached the chain before the relay stored it, so the consumed
+    // nonce does not hold it back: it is delivered, and its payment is then found failed.
+    expect(raced).not.toBeInstanceOf(Error)
+    expect(bobMailbox).toHaveLength(2)
     const settled = await Promise.allSettled([Promise.resolve(raced), send(3), send(4)])
     expect(await operationBytes(racedOperationId)).toEqual(racedBytes)
     expect(alice.getNativeOperations!().some(row => row.operationId === racedOperationId)).toBe(false)
@@ -1023,7 +1054,9 @@ describe('parallel paid messages', () => {
       .flat()
     expect(states.sort()).toEqual(['failed', 'spent', 'spent', 'spent'])
     expect(alice.transactionSetPreparer!.isSourceReserved(victim.address)).toBe(false)
-    expect(bobMailbox).toHaveLength(3)
+    // All four messages are delivered, once each; the one whose payment failed among them.
+    expect(bobMailbox).toHaveLength(4)
+    expect(new Set(bobMailbox.map(message => message.submissionIdentity)).size).toBe(4)
   })
 
   it.each([
@@ -1163,25 +1196,35 @@ describe('parallel paid messages', () => {
     expect(relay.bodies).toHaveLength(0)
   })
 
-  it('repeated first refusals retain the original graph instead of replanning against unrelated inputs', async () => {
+  it('a first refusal before anything was broadcast ends the message and frees its coin; it is never replanned against other inputs', async () => {
     const [held, ...others] = await fundAccounts(4)
     offlineChain.broadcastDown = true
     offlineChain.relayBroadcasts = false
+    const handed: string[][] = []
+    relay.beforeResponse = async transactions => {
+      handed.push(transactions.map(tx => tx.serialized))
+    }
     refuseBeforeExposure('stale_nonce')
     const refused = await send(1).catch(error => error)
-    expect(refused).toBeInstanceOf(MonadStampPendingAttemptError)
-    const original = alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
+    expect(refused).toBeInstanceOf(MonadStampTerminalError)
+    expect(handed).toHaveLength(1)
+    expect(handed[0]).toHaveLength(1)
+    expect(Transaction.from(handed[0]![0]!).from!.toLowerCase()).toBe(held.address.toLowerCase())
     for (let pass = 0; pass < 4; pass++) await tick()
-    expect(original).toHaveLength(1)
-    expect(alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))).toEqual(original)
-    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
-    for (const coin of others) expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(false)
+    // Nothing was broadcast, nothing is signed any more, and the message was not paid again
+    // from the other coins: the relay saw it once.
+    expect(handed).toHaveLength(1)
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(graphBytes()).toEqual([])
+    for (const coin of [held, ...others]) expect(alice.transactionSetPreparer!.isSourceReserved(coin.address)).toBe(false)
     await reopen()
-    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
+    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(false)
+    expect(graphBytes()).toEqual([])
+    await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
     relay.answer = undefined
     offlineChain.broadcastDown = false
     await send(2)
-    expect(relayPayments()[0].from!.toLowerCase()).not.toBe(held.address.toLowerCase())
+    expect(bobMailbox).toHaveLength(1)
   })
 
   it('the refusals taken as before exposure are exactly those the relay answers before it stores anything', () => {
@@ -1226,22 +1269,23 @@ describe('parallel paid messages', () => {
     ).toEqual(['pending'])
   })
 
-  it('an undeliverable first refusal retains exposed signed bytes across restart without authorizing another payment', async () => {
+  it('an undeliverable first refusal frees its coin across restart and never pays that message again', async () => {
     const [held] = await fundAccounts(1)
     offlineChain.broadcastDown = true
     offlineChain.relayBroadcasts = false
     refuseBeforeExposure('undeliverable')
-    await expect(send(1)).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
-    const original = alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))
-    expect(original).toHaveLength(1)
-    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
+    await expect(send(1)).rejects.toBeInstanceOf(CanonicalRecipientUndeliverableError)
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(graphBytes()).toEqual([])
+    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(false)
     await reopen()
-    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
-    expect(alice.getNativeOperations!().flatMap(row => row.members.map(member => member.signed!.rawTransaction))).toEqual(original)
+    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(false)
+    expect(graphBytes()).toEqual([])
     await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+    expect(offlineChain.walletBroadcasts).toEqual([])
   })
 
-  it('a stored unsubmitted message resumes the same graph before relay refusal and keeps its ambiguous reservation', async () => {
+  it('a stored unsubmitted message resumes the same graph; a relay refusal before anything was broadcast returns its coin', async () => {
     const [held] = await fundAccounts(1)
     offlineChain.broadcastDown = true
     offlineChain.relayBroadcasts = false
@@ -1263,10 +1307,20 @@ describe('parallel paid messages', () => {
     // Across a restart: the record says nothing of it left the wallet.
     await reopen()
     expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
+    const graph = graphBytes()
+    expect(graph).toHaveLength(1)
+    const handed: string[] = []
+    relay.beforeResponse = async transactions => {
+      handed.push(...transactions.map(tx => tx.serialized))
+    }
     refuseBeforeExposure('insufficient_total')
     await tick()
-    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(true)
-    expect(new Set(offlineChain.walletBroadcasts).size).toBe(1)
+    // The resume handed the same graph to the relay, which refused it before broadcasting
+    // anything, and the wallet broadcasts a payment only after the relay stored its message:
+    // no byte of it ever left the wallet, so its coin is free again.
+    expect(handed).toEqual(graph)
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(false)
   })
 
   it('a refusal on a resend after a submission whose answer was lost keeps the coin held', async () => {
@@ -1442,14 +1496,26 @@ describe('parallel paid messages', () => {
       // It stays a durable intent under its own identity, not a dropped message.
       const intent = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })
       expect(intent?.paid).toBe(true)
-      // The node is back: reconciliation lands the failed message's same bytes, which frees
-      // the account, and the refused send resumes under the same identity.
+      // The node is back but no relay has the failed message: its payment is not broadcast
+      // (it would pay for a message nobody can fetch), so the account stays held.
       offlineChain.broadcastDown = false
-      for (let pass = 0; pass < 8 && bobMailbox.length === 0; pass++) await tick([failed.digest])
-      expect(bobMailbox).toHaveLength(1)
+      for (let pass = 0; pass < 8; pass++) await tick([failed.digest])
+      // Only the set's own moves that stand before the payment may go out.
+      expect(offlineChain.walletBroadcasts.map(raw => Transaction.from(raw).hash)).not.toContain(failed.payment.hash)
+      for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
+      expect(offlineChain.mined.has(failed.payment.hash!)).toBe(false)
+      expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+      expect(bobMailbox).toHaveLength(0)
+      // The relay is back: the failed message is delivered, then its same bytes land, which
+      // frees the account, and the refused send resumes under the same identity.
+      relay.answer = undefined
+      for (let pass = 0; pass < 16 && bobMailbox.length < 2; pass++) await tick([failed.digest])
+      expect(bobMailbox).toHaveLength(2)
+      expect(offlineChain.mined.has(failed.payment.hash!)).toBe(true)
       expect(await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })).toEqual(intent)
       expect(graphBytes().filter(raw => original.includes(raw))).toEqual(original)
       expect(signedAtNonceOf(failed.payment)).toEqual(new Set([failed.payment.hash]))
+      for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
       everySlotOnce()
     })
 
@@ -1497,7 +1563,8 @@ describe('parallel paid messages', () => {
     const [held] = await fundAccounts(1)
     offlineChain.broadcastDown = true
     offlineChain.relayBroadcasts = false
-    refuseBeforeExposure('insufficient_total')
+    // A refusal that does not prove the payment unexposed: the first message stays unresolved.
+    refuseBeforeExposure('expired')
     const pending = await send(1).catch(error => error)
     expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
     const original = graphBytes()
@@ -1585,7 +1652,10 @@ describe('parallel paid messages', () => {
     for (let pass = 0; pass < 4; pass++) await tick()
     expect(alice.getNativeOperations!()).toEqual([])
     expect(await operationBytes(operation.operationId)).toEqual([original.serialized])
-    expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set([original.serialized]))
+    // The relay that stored the message broadcast its payment, which landed and reverted; the
+    // wallet found it on the chain and never broadcast it, nor anything in its place.
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(new Set(relayPayments().map(tx => tx.serialized))).toEqual(new Set([original.serialized]))
     expect(mockBalances.get(original.to!.toLowerCase()) ?? 0n).toBe(0n)
   })
 
@@ -1680,15 +1750,20 @@ describe('parallel paid messages', () => {
     const digest = pending.payloadHashes[0]
     for (let i = 0; i < 4; i++) await tick([digest])
     expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(true)
-    const original = [...new Set(offlineChain.walletBroadcasts)]
+    // Not stored by the relay: its payment is not broadcast, and stays signed and held.
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    const original = graphBytes()
     expect(original).toHaveLength(1)
     offlineChain.broadcastDown = false
     relay.answer = undefined
     // Existing retry backoff schedules the next submission at pass eight.
     for (let pass = 0; pass < 4; pass++) await tick([digest])
     expect((await tick([digest]))[digest]).toBe('delivered')
+    for (let pass = 0; pass < 4 && alice.transactionSetPreparer!.isSourceReserved(row.address); pass++) await tick([digest])
     expect(alice.transactionSetPreparer!.isSourceReserved(row.address)).toBe(false)
+    // Once delivered, the original bytes and nothing else were broadcast.
     expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(original))
+    for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
   })
 
   it.each([

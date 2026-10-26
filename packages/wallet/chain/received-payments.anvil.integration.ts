@@ -40,8 +40,12 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 import { deriveEvmStealthPrivateKey } from '../evm-stealth'
+import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
+import { MonadStampPendingAttemptError } from '../evm-stamp-client'
+import type { LegacySendResult } from './chain-wallet'
 
 // The wallet normally reaches its node through the relay's RPC gateway. Here it is pointed
 // straight at the real node this test started: the node is real, only the route to it differs.
@@ -167,6 +171,42 @@ const stampsOf = (wallet: EvmChainWalletHandle, digest?: string): ReceivedPaymen
         coin.origin === 'stamp' &&
         (digest === undefined || coin.payloadDigest === digest),
     )
+/** The nonce at which the transaction set carrying `txHash` starts on `account`: the transfer
+ * travels with the change it splits off, so nothing of the set on the chain leaves the
+ * account's nonce here. */
+const setStartNonce = (wallet: EvmChainWalletHandle, txHash: string, account: string) => {
+  const operation = wallet
+    .getNativeOperations!()
+    .find(row => row.members.some(member => member.signed?.transactionHash === txHash))!
+  return Math.min(
+    ...operation.members
+      .filter(member => member.source.address === account && member.signed)
+      .map(member => Transaction.from(member.signed!.rawTransaction).nonce),
+  )
+}
+/** A transfer whose change moves wait out the chain's spend spacing returns pending while they
+ * land; the app's reconciler then finishes the same operation. This does the same. */
+async function finished(
+  wallet: EvmChainWalletHandle,
+  transfer: Promise<LegacySendResult>,
+): Promise<LegacySendResult> {
+  let operationId: string
+  try {
+    return await transfer
+  } catch (error) {
+    if (!(error instanceof LegacyTransactionSetPendingError)) throw error
+    operationId = error.operation.operationId
+  }
+  for (let pass = 0; pass < 200; pass++) {
+    try {
+      return await wallet.resumeLegacySend!(operationId)
+    } catch (error) {
+      if (!(error instanceof LegacyTransactionSetPendingError)) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+  throw new Error('transfer did not settle')
+}
 /** Reads the chain through the wallet until nothing of it is pending any more. */
 async function settled(wallet: EvmChainWalletHandle) {
   await until(
@@ -186,6 +226,44 @@ describe('payments between two wallets on a real EVM node', () => {
   let snapshot: string | undefined
   const poll = (wallet: EvmChainWalletHandle, chain = f.chain) =>
     chain.directMessages.fetchSince({ wallet, sinceMs: 0 })
+  /** A paid message whose stamp is funded within its own set waits for that funding to be
+   * spendable (blocks after it lands) before the relay is given it, and its send answers
+   * "pending; nothing failed". A real chain keeps making blocks and the host's tick finishes the
+   * same message; here the node makes a block and the test ticks, until it is delivered. */
+  const delivered = async (
+    wallet: EvmChainWalletHandle,
+    sending: Promise<{ payloadDigest: string }>,
+    { paid = false }: { paid?: boolean } = {},
+  ): Promise<{ payloadDigest: string }> => {
+    let digest: string | undefined
+    try {
+      digest = (await sending).payloadDigest
+    } catch (error) {
+      if (!(error instanceof MonadStampPendingAttemptError) || error.reason !== 'awaiting-funding')
+        throw error
+      digest = error.payloadHashes[0]!
+      for (let pass = 0; ; pass++) {
+        if (pass === 50) throw new Error('message was not delivered')
+        await node.send('evm_mine', [])
+        const outcomes = await f.chain.directMessages.reconcileAttempts({
+          wallet,
+          payloadDigests: [digest],
+        })
+        if (outcomes[digest] === 'delivered') break
+        if (outcomes[digest] === 'dead') throw new Error('message refused')
+      }
+    }
+    // With `paid`, also until its payments are on the chain: the tick after delivery hands a
+    // payment not yet seen there to the node again, the same bytes.
+    for (let pass = 0; paid; pass++) {
+      const states = f.chain.directMessages.paymentsOf!({ wallet, payloadDigest: digest })
+      if (states && states.length > 0 && states.every(state => state === 'spent')) break
+      if (pass === 50) throw new Error('message payments did not land')
+      await f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: [digest] })
+      await node.send('evm_mine', [])
+    }
+    return { payloadDigest: digest }
+  }
   /** What the relay does with a message's payments: broadcasts each carried transaction. */
   const relayBroadcasts = async (requestIndex: number) => {
     const { parts } = restoreCanonicalRequest(f.requests[requestIndex])
@@ -207,7 +285,13 @@ describe('payments between two wallets on a real EVM node', () => {
     snapshot = await node.send('evm_snapshot', [])
     mailboxes.clear()
     extraRoots = []
-    f = await fixture()
+    // The shared fixture's fixed policy (3 wei gas, head 100) is for its stub node; against a
+    // real node the wallet prices and paces its transactions from the node, as in production.
+    // A message's default stamp is STAMP, the amount every assertion here counts.
+    f = await fixture({
+      transactionSetPolicy: undefined,
+      resolveDefaultStamp: fixedStampDefault(STAMP),
+    })
     alice = f.alice
     bob = f.bob
     installCanonicalDirectory(alice, await f.directoryFor('alice', alice, bob))
@@ -268,10 +352,10 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // B spends it in an ordinary send. He has no other money.
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendLegacy!({
+    const spent = await finished(bob, bob.sendLegacy!({
       recipient: { raw: carol },
       value: VALUE / 2n,
-    })
+    }))
     const spend = await node.waitForTransaction(spent.txHash)
     expect(spend!.status).toBe(1)
     expect(spend!.from.toLowerCase()).toBe(oneTime)
@@ -279,6 +363,11 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // Reload: a new handle on the same storage, and no mailbox read.
     await settled(bob)
+    // What the send left is still his: the residual of the one-time account went to fresh
+    // change accounts of his seed (the split every send makes), less the moves' fees.
+    const held = await bob.getBalance()
+    expect(held).toBeGreaterThan(STAMP)
+    expect(held).toBeLessThan(VALUE + STAMP - VALUE / 2n)
     const known = bob.getReceivedPayments!().map(coin => coin.address).sort()
     await bob.close()
     const reloaded = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
@@ -288,12 +377,8 @@ describe('payments between two wallets on a real EVM node', () => {
       )
       await settled(reloaded)
       const left = await node.getBalance(oneTime)
-      expect(left).toBeGreaterThan(0n)
-      expect(stealthOf(reloaded)[0]).toMatchObject({
-        status: 'received',
-        amountWei: left,
-      })
-      expect(await reloaded.getBalance()).toBe(left + STAMP)
+      expect(stealthOf(reloaded)[0]).toMatchObject({ address: oneTime, amountWei: left })
+      expect(await reloaded.getBalance()).toBe(held)
     } finally {
       await reloaded.close()
     }
@@ -337,23 +422,30 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(saved.state).toBe('prepared')
     // Nothing of the transfer reached the node: it is unknown there and its nonce is unused.
     expect(await node.getTransaction(saved.txHash!)).toBeNull()
+    // The transfer is one member of its transaction set (beside the change it splits off).
     const operation = alice
       .getNativeOperations!()
-      .find(row => row.members[0]!.signed?.transactionHash === saved.txHash)!
-    expect(operation.members[0]!.source.address).toBe(aliceMain)
-    const heldNonce = Transaction.from(
-      operation.members[0]!.signed!.rawTransaction,
-    ).nonce
+      .find(row => row.members.some(member => member.signed?.transactionHash === saved.txHash))!
+    const transfer = operation.members.find(
+      member => member.signed?.transactionHash === saved.txHash,
+    )!
+    expect(transfer.source.address).toBe(aliceMain)
+    const heldNonce = Transaction.from(transfer.signed!.rawTransaction).nonce
     expect(await node.getTransactionCount(aliceMain)).toBe(heldNonce)
     expect(bobMailbox).toHaveLength(0)
 
     // Nothing else can take the claimed account's nonce: an ordinary send only it could cover
-    // is refused, and the transfer cannot be
-    // pushed out by hand.
+    // (more than all of alice's other coins together: the change the transfer's set already
+    // split off, on the chain before the relay was tried) is refused, and the transfer cannot
+    // be pushed out by hand.
+    let elsewhere = 0n
+    for (const member of operation.members)
+      if (member.transactionSet?.role === 'change' && member.observation.state === 'included-success')
+        elsewhere += await node.getBalance(Transaction.from(member.signed!.rawTransaction).to!)
     await expect(
       alice.sendLegacy!({
         recipient: { raw: Wallet.createRandom().address },
-        value: parseEther('0.5'),
+        value: elsewhere + 1n,
       }),
     ).rejects.toThrow('Insufficient available EVM coins')
     await expect(alice.resumeNativeOperation!(operation.operationId)).rejects.toThrow(
@@ -411,19 +503,31 @@ describe('payments between two wallets on a real EVM node', () => {
 
   it('the relay accepts and the sender stops before its own broadcast: the recipient broadcasts the carried transfer and has the money', async () => {
     // The relay has the message before anything of the transfer reaches the node.
-    const seenByNodeAtBroadcast: boolean[] = []
+    // Before the relay has it, her wallet puts only its own self-sends (the change the
+    // transfer splits off, and the funding of the stamp) on the chain.
+    const transferAttempts: { raw: string; afterStored: boolean }[] = []
+    let transferHash: string | undefined
     const real = alice.provider.broadcastTransaction.bind(alice.provider)
-    jest.spyOn(alice.provider, 'broadcastTransaction').mockImplementation(async () => {
-      seenByNodeAtBroadcast.push(bobMailbox.length === 1)
-      // Alice's device is gone from here on: her broadcast never happens.
-      throw new Error('device stopped')
+    jest.spyOn(alice.provider, 'broadcastTransaction').mockImplementation(async raw => {
+      const hash = Transaction.from(raw).hash
+      transferHash ??= alice.getContactPayments!()[0]?.txHash
+      if (hash === transferHash)
+        transferAttempts.push({ raw, afterStored: bobMailbox.length === 1 })
+      // Alice's device is gone once the relay has the message: no broadcast after that.
+      if (bobMailbox.length === 1) throw new Error('device stopped')
+      return real(raw)
     })
-    void real
     const sent = await alice.sendToContact!({
       recipient: bob.identity.address,
       value: VALUE,
     })
-    expect(seenByNodeAtBroadcast).toEqual([true])
+    expect(sent.txHash).toBe(transferHash)
+    // Every attempt at the transfer (the same bytes, retried) came after the relay stored it.
+    // A retry is allowed only as the very same signed bytes the relay stored.
+    expect(transferAttempts.length).toBeGreaterThan(0)
+    expect(transferAttempts.every(attempt => attempt.afterStored)).toBe(true)
+    expect(new Set(transferAttempts.map(attempt => attempt.raw)).size).toBe(1)
+    expect(Transaction.from(transferAttempts[0]!.raw).hash).toBe(sent.txHash)
     expect(bobMailbox).toHaveLength(1)
     expect(await node.getTransaction(sent.txHash)).toBeNull()
 
@@ -499,7 +603,7 @@ describe('payments between two wallets on a real EVM node', () => {
       recipient: bob.identity.address,
       value: VALUE,
     })
-    const heldNonce = Transaction.from('0x' + prepared.item.transactions![0]).nonce
+    const heldNonce = setStartNonce(alice, prepared.txHash, aliceMain)
     expect(alice.getContactPayments!()[0]).toMatchObject({
       state: 'prepared',
       holdsFunds: true,
@@ -521,13 +625,13 @@ describe('payments between two wallets on a real EVM node', () => {
     })
     // The account is free: an ordinary send goes out at the nonce the cancelled transfer had.
     const carol = Wallet.createRandom().address
-    const spent = await alice.sendLegacy!({
+    const spent = await finished(alice, alice.sendLegacy!({
       recipient: { raw: carol },
       value: parseEther('0.5'),
-    })
+    }))
     const landed = await node.waitForTransaction(spent.txHash)
     expect(landed!.status).toBe(1)
-    expect((await node.getTransaction(spent.txHash))!.nonce).toBe(heldNonce)
+    expect(setStartNonce(alice, spent.txHash, aliceMain)).toBe(heldNonce)
     expect(landed!.from.toLowerCase()).toBe(aliceMain)
     // The released transfer can never land now, and a message carrying it never leaves.
     await expect(
@@ -546,16 +650,23 @@ describe('payments between two wallets on a real EVM node', () => {
 
   it('a released payment never reaches the contact, even with its nonce still free: its message is refused, and later messages carry nothing of it', async () => {
     const aliceMain = await mainOf(alice)
+    const broadcastHashes: string[] = []
+    const realBroadcast = alice.provider.broadcastTransaction.bind(alice.provider)
+    jest.spyOn(alice.provider, 'broadcastTransaction').mockImplementation(async raw => {
+      broadcastHashes.push(Transaction.from(raw).hash!)
+      return realBroadcast(raw)
+    })
     const prepared = await alice.prepareContactPayment!({
       recipient: bob.identity.address,
       value: VALUE,
     })
     const signed = Transaction.from('0x' + prepared.item.transactions![0])
+    const heldNonce = setStartNonce(alice, prepared.txHash, aliceMain)
     expect(await alice.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
       'released',
     )
     // The nonce is NOT consumed here: if those bytes left the device they would land.
-    expect(await node.getTransactionCount(aliceMain)).toBe(signed.nonce)
+    expect(await node.getTransactionCount(aliceMain)).toBe(heldNonce)
     const requests = f.requests.length
     for (let attempt = 0; attempt < 2; attempt++)
       await expect(
@@ -584,12 +695,21 @@ describe('payments between two wallets on a real EVM node', () => {
     // The wallet no longer holds the signed bytes anywhere.
     expect(alice.getContactPayments!()[0]).toMatchObject({ state: 'released' })
     expect(alice.getContactPayments!()[0].txHash).toBeUndefined()
+    // Nothing signed of it was ever exposed: the wallet never broadcast it, no request to the
+    // relay carried it, and no record the wallet keeps still holds its bytes.
+    expect(broadcastHashes).not.toContain(signed.hash)
+    const handed = f.requests.flatMap(request =>
+      restoreCanonicalRequest(request).parts.transactions.map(
+        raw => Transaction.from(toHexString(raw)).hash,
+      ),
+    )
+    expect(handed).not.toContain(signed.hash)
     expect(
       alice
         .getNativeOperations!()
-        .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
-        .map(row => row.members[0]!.signed),
-    ).toEqual([null])
+        .flatMap(row => row.members)
+        .filter(member => member.signed?.transactionHash === signed.hash),
+    ).toEqual([])
   })
 
   it('a free message carries a payment too: the sender is told it was delivered, pays, and holds nothing', async () => {
@@ -637,11 +757,23 @@ describe('payments between two wallets on a real EVM node', () => {
       createEvmChain({ ...f.config, walletStorageLocation: join(root, 'wallet') }),
     )
     const fresh = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
+    // The forged claims come from alice's account on another device, which never made that
+    // payment: her own wallet binds a contact payment to the one message that carries it and
+    // refuses to send its item in any other.
+    const forgerRoot = mkdtempSync(join(tmpdir(), 'received-payments-forger-'))
+    extraRoots.push(forgerRoot)
+    const forgerChain = withDefaultMessageItems(
+      createEvmChain({ ...f.config, walletStorageLocation: join(forgerRoot, 'wallet') }),
+    )
+    installCanonicalDirectory(fresh, await f.directoryFor('bob-claim', fresh, alice))
+    await alice.close()
+    let forger: EvmChainWalletHandle | undefined
     try {
-      installCanonicalDirectory(fresh, await f.directoryFor('bob-claim', fresh, alice))
+      forger = (await forgerChain.createWallet(roots(0))) as EvmChainWalletHandle
+      installCanonicalDirectory(forger, await f.directoryFor('alice-forger', forger, fresh))
       // The same real transfer, under a claim a thousand times larger.
-      await f.chain.directMessages.send({
-        wallet: alice,
+      await forgerChain.directMessages.send({
+        wallet: forger,
         recipient: fresh.identity.address,
         items: [
           {
@@ -655,8 +787,8 @@ describe('payments between two wallets on a real EVM node', () => {
         ],
       })
       // And a claim with no transfer behind it at all.
-      const empty = await f.chain.directMessages.send({
-        wallet: alice,
+      const empty = await forgerChain.directMessages.send({
+        wallet: forger,
         recipient: fresh.identity.address,
         items: [
           {
@@ -702,6 +834,7 @@ describe('payments between two wallets on a real EVM node', () => {
       fresh.invalidateBalanceCache!()
       expect(await fresh.getBalance()).toBe(VALUE + 2n * STAMP)
     } finally {
+      await forger?.close()
       await fresh.close()
     }
     function unseenAddress(coins: ReceivedPayment[]): string | undefined {
@@ -786,10 +919,15 @@ describe('payments between two wallets on a real EVM node', () => {
   })
 
   it('a payment whose nonce another transaction took is failed and never counted', async () => {
-    // Alice signs and delivers, and her own broadcast does not reach the node.
+    // Alice signs and delivers, and her own broadcast of what the message carries does not
+    // reach the node (her self-sends before the relay has the message do).
+    const realBroadcast = alice.provider.broadcastTransaction.bind(alice.provider)
     const aliceBroadcast = jest
       .spyOn(alice.provider, 'broadcastTransaction')
-      .mockRejectedValue(new Error('node unreachable'))
+      .mockImplementation(async raw => {
+        if (bobMailbox.length > 0) throw new Error('node unreachable')
+        return realBroadcast(raw)
+      })
     const sent = await alice.sendToContact!({
       recipient: bob.identity.address,
       value: VALUE,
@@ -826,16 +964,40 @@ describe('payments between two wallets on a real EVM node', () => {
   })
 
   it('stamps: delivered without a broadcast, the recipient broadcasts and verifies; then they are spent, or moved by an explicit sweep', async () => {
+    // Nobody but the recipient broadcasts what the messages carry: not the relay stand-in, and
+    // not alice's wallet (its broadcast of a carried payment never reaches the node). Her
+    // self-sends, which the carried payments stand on, do.
+    const carriedHashes = () =>
+      new Set(
+        f.requests.flatMap(request =>
+          restoreCanonicalRequest(request).parts.transactions.map(
+            raw => Transaction.from(toHexString(raw)).hash,
+          ),
+        ),
+      )
+    const realBroadcast = alice.provider.broadcastTransaction.bind(alice.provider)
+    jest.spyOn(alice.provider, 'broadcastTransaction').mockImplementation(async raw => {
+      if (carriedHashes().has(Transaction.from(raw).hash)) throw new Error('node unreachable')
+      return realBroadcast(raw)
+    })
     const send = (text: string) =>
-      f.chain.directMessages.send({
-        wallet: alice,
-        recipient: bob.identity.address,
-        items: [{ type: 'text', text }],
-        stampValue: STAMP,
-      })
+      delivered(
+        alice,
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [{ type: 'text', text }],
+          stampValue: STAMP,
+        }),
+      )
+    // Alice's host tick: what the chain shows of a delivered message is read, and her own moves
+    // that stood behind its payment on the same account (they wait for it, in nonce order) go
+    // out once it landed, so her next message has that money.
+    const tick = async (digest: string) => {
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [digest] })
+      await settled(alice)
+    }
     const first = await send('one')
-    const second = await send('two')
-    const third = await send('three')
     // The relay stand-in delivered and broadcast nothing: the node has never heard of the
     // stamp payments, and no stamp account holds anything.
     const carried = restoreCanonicalRequest(f.requests[0]).parts.transactions.map(raw =>
@@ -862,15 +1024,25 @@ describe('payments between two wallets on a real EVM node', () => {
     })
     for (const payment of message.stampPayments)
       expect(await node.getBalance(payment.destinationAddress)).toBe(payment.valueWei)
+    await tick(first.payloadDigest)
+
     // For the second message the relay does broadcast: the wallet's own broadcast of what is
     // already mined changes nothing, and the stamp is counted once.
+    const second = await send('two')
     await relayBroadcasts(1)
+    await tick(second.payloadDigest)
+    // The third is again broadcast by nobody but its recipient.
+    const third = await send('three')
+    expect(f.requests).toHaveLength(3)
+    for (const raw of restoreCanonicalRequest(f.requests[2]).parts.transactions)
+      expect(await node.getTransaction(Transaction.from(toHexString(raw)).hash!)).toBeNull()
+    await poll(bob)
     await settled(bob)
     expect(await bob.getBalance()).toBe(3n * STAMP)
 
     // Spent by an ordinary send (B has no other money).
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n })
+    const spent = await finished(bob, bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n }))
     expect((await node.waitForTransaction(spent.txHash))!.status).toBe(1)
     expect(await node.getBalance(carol)).toBe(STAMP / 4n)
     await settled(bob)
@@ -913,14 +1085,23 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // Asked for every message: every unspent stamp left is swept.
     const all = [first.payloadDigest, second.payloadDigest, third.payloadDigest]
+    const stampCoins = stampsOf(bob)
+    let leftInStamps = 0n
+    for (const coin of stampCoins) leftInStamps += await node.getBalance(coin.address)
+    const mainBeforeAll = await node.getBalance(bobMain)
     const answers = await bob.sweepReceivedCoins!({ payloadDigests: all })
     for (const digest of all)
       expect(['swept', 'none']).toContain(answers[digest].outcome)
     await settled(bob)
-    // What a restore from the seed finds is the main account: nearly everything is there now.
+    // No stamp account holds anything worth a move now: what they held is at the seed-derived
+    // main account, less the moves' fees. (The residual of B's own send is on fresh change of
+    // his seed, which a restore finds by walking the seed.)
+    for (const coin of stampCoins)
+      expect(await node.getBalance(coin.address)).toBeLessThan(STAMP / 100n)
     const atMain = await node.getBalance(bobMain)
-    expect(atMain).toBeGreaterThan((3n * STAMP - STAMP / 4n) * 8n / 10n)
-    expect(await bob.getBalance()).toBeLessThanOrEqual(atMain + STAMP / 10n)
+    expect(atMain - mainBeforeAll).toBeGreaterThan((leftInStamps * 8n) / 10n)
+    expect(atMain - mainBeforeAll).toBeLessThanOrEqual(leftInStamps)
+    expect(await bob.getBalance()).toBeGreaterThanOrEqual(atMain)
   })
 
   it('a deleted message: no money moves and its coin is still spent from; a second wallet opened from the same roots with empty state finds the coin through the note to self, without the message, and spends it', async () => {
@@ -942,12 +1123,16 @@ describe('payments between two wallets on a real EVM node', () => {
     installCanonicalDirectory(bob, await selfAware('bob-self', bob))
 
     const send = (text: string) =>
-      f.chain.directMessages.send({
-        wallet: alice,
-        recipient: bob.identity.address,
-        items: [{ type: 'text', text }],
-        stampValue: STAMP,
-      })
+      delivered(
+        alice,
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [{ type: 'text', text }],
+          stampValue: STAMP,
+        }),
+        { paid: true },
+      )
     const first = await send('one')
     const second = await send('two')
     expect(bobMailbox).toHaveLength(2)
@@ -982,7 +1167,7 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // The deleted message's coin is spent by an ordinary send (B has no other money).
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n })
+    const spent = await finished(bob, bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n }))
     const spend = await node.waitForTransaction(spent.txHash)
     expect(spend!.status).toBe(1)
     expect(addresses).toContain(spend!.from.toLowerCase())
@@ -1004,30 +1189,41 @@ describe('payments between two wallets on a real EVM node', () => {
       const requests = f.requests.length
       // The notes are the wallet's: none is handed on as a message.
       expect(await poll(secondDevice, secondChain)).toEqual([])
+      expect(f.requests).toHaveLength(requests)
       expect(
         secondDevice.getReceivedPayments!().map(coin => coin.address).sort(),
       ).toEqual(addresses)
       // Claims until the chain is read; then exactly what the chain holds.
       await settled(secondDevice)
+      // The coin the send above spent from is empty (its residual went to fresh change of the
+      // seed, which this device finds from the seed, not from the notes); the other is whole.
       let left = 0n
       for (const address of addresses) left += await node.getBalance(address)
-      expect(left).toBeGreaterThan(STAMP)
-      expect(await secondDevice.getBalance()).toBe(left)
+      expect(left).toBe(STAMP)
+      expect(await secondDevice.getBalance()).toBeGreaterThan(left)
 
-      // And it can SPEND them: the key it derived from the note signs for the money.
+      // And it can SPEND them: the key it derived from the note signs for the money. The
+      // amount is more than all of the earlier send's change together (under 3/4 of a stamp),
+      // so the noted, untouched coin must pay it.
       const dave = Wallet.createRandom().address
-      const again = await secondDevice.sendLegacy!({
+      const again = await finished(secondDevice, secondDevice.sendLegacy!({
         recipient: { raw: dave },
-        value: STAMP / 2n,
-      })
+        value: (STAMP * 8n) / 10n,
+      }))
       const moved = await node.waitForTransaction(again.txHash)
       expect(moved!.status).toBe(1)
-      expect(addresses).toContain(moved!.from.toLowerCase())
-      expect(await node.getBalance(dave)).toBe(STAMP / 2n)
-      // It read the notes from the mailbox, so it wrote none itself.
+      // The money left the noted coin (directly, or through the account it funded first).
+      let leftAfter = 0n
+      for (const address of addresses) leftAfter += await node.getBalance(address)
+      expect(leftAfter).toBeLessThanOrEqual(left - (STAMP * 8n) / 10n)
+      expect(await node.getBalance(dave)).toBe((STAMP * 8n) / 10n)
+      // It read the notes from the mailbox, so it wrote none itself. (The send above noted
+      // itself to the account's other devices, as every send to an address does.)
+      const afterSend = f.requests.length
+      const mailboxAfterSend = bobMailbox.length
       await secondDevice.noteReceivedCoins!()
-      expect(f.requests).toHaveLength(requests)
-      expect(bobMailbox).toHaveLength(coins.length)
+      expect(f.requests).toHaveLength(afterSend)
+      expect(bobMailbox).toHaveLength(mailboxAfterSend)
     } finally {
       await secondDevice.close()
     }

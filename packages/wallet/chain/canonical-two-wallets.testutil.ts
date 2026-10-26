@@ -17,7 +17,7 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { computeAddress, getBytes, hexlify } from 'ethers'
+import { computeAddress, getBytes, hexlify, Transaction } from 'ethers'
 import { decodeDirectMessageCryptoContext, toHex } from '@frank/codec'
 import {
   restoreCanonicalRequest,
@@ -91,6 +91,10 @@ export function useProviderStandIns(enabled = true) {
  *   unreachable); balances and fee reads still answer.
  * - `relayBroadcasts`: whether the relay stand-in broadcasts the payments of a delivered message.
  * - `walletBroadcasts`: raw transactions the WALLET's provider was asked to broadcast, in order.
+ * - `relayStored`: hashes of the transactions carried by every message the relay stand-in stored.
+ * - `broadcastBeforeStore`: hashes the WALLET broadcast while no stored message carried them. A
+ *   message's carried payments (recipient payments, stamps, a contact transfer) go to the chain
+ *   only after the relay stored the message, so none may be here (`paymentsBroadcastEarly`).
  */
 export const offlineChain = {
   mined: new Map<string, string>(),
@@ -100,6 +104,8 @@ export const offlineChain = {
   broadcastDown: false,
   relayBroadcasts: true,
   walletBroadcasts: [] as string[],
+  relayStored: new Set<string>(),
+  broadcastBeforeStore: new Set<string>(),
   /** The next transaction mined is included and REVERTED: nonce consumed, value not moved. */
   revertNext: false,
   reverted: new Set<string>(),
@@ -124,6 +130,18 @@ export const offlineChain = {
     this.broadcastDown = false
     this.relayBroadcasts = true
     this.walletBroadcasts.length = 0
+    this.relayStored.clear()
+    this.broadcastBeforeStore.clear()
+  },
+  /** The payment members of `operation` the wallet broadcast before the relay stored the message
+   * carrying them: always empty under the broadcast rule (persist, submit, then broadcast). */
+  paymentsBroadcastEarly(operation: {
+    members: readonly { signed?: { transactionHash: string }; transactionSet?: { role: string } }[]
+  }): string[] {
+    return operation.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed!.transactionHash.toLowerCase())
+      .filter(hash => this.broadcastBeforeStore.has(hash))
   },
   /** Puts a signed transfer in a block, once: moves its value and consumes its nonce. */
   mine(raw: string): string {
@@ -175,6 +193,8 @@ export function offlineProviderModule() {
             .signedTransaction
           const tx = ethers.Transaction.from(raw)
           offlineChain.walletBroadcasts.push(raw)
+          if (!offlineChain.relayStored.has(tx.hash.toLowerCase()))
+            offlineChain.broadcastBeforeStore.add(tx.hash.toLowerCase())
           if (offlineChain.nodeDown || offlineChain.broadcastDown)
             throw new Error('node unreachable')
           if (offlineChain.mined.has(tx.hash)) throw new Error('already known')
@@ -459,6 +479,9 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
         selfSubject
     if (toSelf) selfNotes.push({ body, contentType: init.headers['Content-Type'] })
     else requests.push({ body, contentType: init.headers['Content-Type'] })
+    if (phase === 'delivered')
+      for (const raw of restored.parts.transactions)
+        offlineChain.relayStored.add(Transaction.from(hexlify(raw)).hash!.toLowerCase())
     // A relay that stores a message broadcasts its payments, once each.
     if (phase === 'delivered' && offlineChain.relayBroadcasts)
       for (const raw of restored.parts.transactions) {

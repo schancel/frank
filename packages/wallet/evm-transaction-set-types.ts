@@ -115,6 +115,7 @@ export type EvmTransactionSetJournal = Pick<
   | 'markSyncApplied'
   | 'markTransactionSetInventoryApplied'
   | 'discardUnexposed'
+  | 'discardRefusedBeforeBroadcast'
   | 'recordObservation'
 > & {
   /** Snapshot other authorization owners once per selection, never once per coin. */

@@ -255,14 +255,14 @@ test('ambiguous relay submission reopens with the original signed recipient and 
     const originalBytes = original.members.map(member => member.signed!.rawTransaction)
     expect(original.members.filter(member => member.transactionSet?.role === 'change'))
       .toHaveLength(stored.otherTransactions.length)
-    expect(original.members.filter(member => member.transactionSet?.role === 'payment')
-      .every(member => member.exposed)).toBe(true)
-    expect(original.members.every(member => member.observation.state === 'included-success')).toBe(true)
-    expect(evmWalletInternals(active).coinList!.heldBy(operationId)).toHaveLength(0)
-    // Wallet submission owns both lists even when relay delivery is ambiguous.
-    // Every broadcast must reuse bytes from this original operation.
+    const paymentMembers = original.members.filter(member => member.transactionSet?.role === 'payment')
+    // Handed to a relay whose answer never came: exposed, but not broadcast by the wallet and
+    // not on the chain, since no relay is known to have stored the message.
+    expect(paymentMembers.every(member => member.exposed)).toBe(true)
+    expect(paymentMembers.some(member => member.observation.state === 'included-success')).toBe(false)
+    expect(offlineChain.paymentsBroadcastEarly(original)).toEqual([])
+    // Every broadcast reuses bytes from this original operation.
     expect(original.submissionAuthorized).toBe(true)
-    expect(offlineChain.walletBroadcasts.length).toBeGreaterThan(0)
     for (const raw of offlineChain.walletBroadcasts) {
       expect(originalBytes).toContain(raw)
     }
@@ -290,6 +290,15 @@ test('ambiguous relay submission reopens with the original signed recipient and 
     expect(relay.parts.transactions.map(raw => hexlify(raw))).not.toEqual(
       expect.arrayContaining(stored.otherTransactions.map(payment => payment.rawTx)),
     )
+    // Delivered: the original set, payments and change alike, reaches the chain.
+    for (let pass = 0; pass < 8 && evmWalletInternals(active).coinList!.heldBy(operationId).length > 0; pass++)
+      await f.chain.directMessages.reconcileAttempts({ wallet: active, payloadDigests: [stored.digest] })
+    const settled = (await active.transactionSetPreparer!.readOperation(operationId))!
+    expect(settled.members.every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(settled.members.map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+    expect(evmWalletInternals(active).coinList!.heldBy(operationId)).toHaveLength(0)
+    for (const raw of offlineChain.walletBroadcasts) expect(originalBytes).toContain(raw)
+    expect(offlineChain.paymentsBroadcastEarly(settled)).toEqual([])
     capture.mockRestore()
   } finally {
     await active.close()

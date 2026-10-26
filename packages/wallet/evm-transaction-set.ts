@@ -168,6 +168,28 @@ export class EvmTransactionSetPreparer {
     })
   }
 
+  /** A set whose first relay handoff was refused before the relay stored or broadcast anything
+   * (`discardRefusedBeforeBroadcast`): its coins are free again. False, and nothing changes,
+   * when any of its own moves went to the node or the chain knows any member. */
+  releaseRefusedBeforeBroadcast(operationId: string): Promise<boolean> {
+    return this.options.coins.runTransactionSetExclusive(operationId, async () => {
+      let row = await this.options.journal.refreshPreparation(prefix + operationId)
+      if (!row) return false
+      if (row.cancelled && !this.getOperation(operationId)) return true
+      if (!row.cancelled && row.members.some(member =>
+        (member.exposed && member.transactionSet?.role !== 'payment') ||
+        nativeMemberSuperseded(member) ||
+        !['unknown', 'missing'].includes(member.observation.state)))
+        return false
+      const originals = this.cancellationSources(row)
+      if (!row.cancelled) row = await this.options.journal.discardRefusedBeforeBroadcast(row.operationId)
+      this.options.coins.restoreTransactionSetCancellation(operationId, originals)
+      await this.options.coins.checkpointTransactionSetCancellation(operationId, originals)
+      await this.options.onCancellationCheckpoint?.(row)
+      return true
+    })
+  }
+
   /** Authorized-mutation compaction only; opening remains read-only. A crash after the
    * cancellation row or projection write retries the same cleanup before retirement. */
   async recoverCancelledOperations(excludeOperationId?: string): Promise<void> {
@@ -1335,6 +1357,20 @@ export class EvmTransactionSetPreparer {
     for (let index = moves.length - 1; index > 0; index--) {
       const other = Math.floor(this.entropy() * (index + 1))
       ;[moves[index], moves[other]] = [moves[other]!, moves[index]!]
+    }
+    // A continuation (the stamp of the message this payment travels in) is paid from this
+    // set's own change, and its funding goes to the chain before the relay has the message,
+    // the payment only after. Keep one change that can carry the continuation ahead of the
+    // payment, so funding it never puts the payment on the chain first.
+    const continuation = request.reserveForContinuationWei ?? 0n
+    if (hasPayment && continuation > 0n) {
+      const payment = moves.findIndex(move => move.role === 'payment')
+      const carries = (move: { role: string; value: bigint }) =>
+        move.role === 'change' && move.value >= continuation
+      if (!moves.slice(0, payment).some(carries)) {
+        const later = moves.findIndex((move, index) => index > payment && carries(move))
+        if (later > payment) moves.splice(payment, 0, moves.splice(later, 1)[0]!)
+      }
     }
     // The relay/recipient can rebroadcast payment bytes. A below-reserve final drain
     // requiring a quiet window must therefore remain a private, wallet-scheduled change.

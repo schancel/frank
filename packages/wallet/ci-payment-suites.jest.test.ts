@@ -28,6 +28,7 @@ describe('the wallet suites hosted CI names', () => {
   it.each([
     'chain/evm-parallel-send.jest.test.ts',
     'chain/evm-parallel-send.anvil.jest.test.ts',
+    'chain/received-payments.anvil.integration.ts',
     'chain/outgoing-message-store.jest.test.ts',
     'chain/evm-recorded-funding-recovery.jest.test.ts',
     'chain/evm-shared-canonical-callers.jest.test.ts',

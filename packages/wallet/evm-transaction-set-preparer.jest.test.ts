@@ -1247,6 +1247,48 @@ it('refuses to cancel exposed bytes and serializes cancellation behind an in-fli
   expect(await f.preparer.releaseUnexposed('unknown')).toBe(false)
 })
 
+it('a relay refusal before any broadcast releases a set whose only exposed members are its payments, and never one whose own moves were exposed', async () => {
+  const f = await setup(), original = f.coins.all()
+  // A random draw that splits off no change first: the payment is the set's first move.
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => 0.99 })
+  const construct = async (operationId: string) => {
+    await f.preparer.constructTransactionSet({ operationId, amountWei: 300000n, kdf })
+    const row = f.preparer.getOperation(operationId)!
+    await f.preparer.authorizeSubmission(operationId)
+    return row.members.map((member, index) => ({ role: member.transactionSet?.role, index, dependencies: member.dependencies }))
+  }
+  // Handed to the relay (payments exposed), refused before the relay stored or broadcast it.
+  const members = await construct('refused')
+  // Only a payment standing on no move of the set's own can be handed over unbroadcast.
+  const payments = members.filter(member => member.role === 'payment' && member.dependencies.length === 0)
+  expect(payments.length).toBeGreaterThan(0)
+  for (const { index } of payments) await f.journal.markExposed(f.preparer.getOperation('refused')!.operationId, index)
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('refused')).toBe(true)
+  // Nothing signed survives, nothing is marked exposed, and the coins are back as they were.
+  const tombstone = f.journal.list().find(row => row.preparationId?.endsWith('refused'))!
+  expect(tombstone.cancelled).toBe(true)
+  expect(tombstone.members.every(member => member.signed === null && !member.exposed)).toBe(true)
+  expect(f.coins.heldBy('refused')).toEqual([])
+  const byAccount = (a: { account: string }, b: { account: string }) => a.account.localeCompare(b.account)
+  expect(f.coins.all().filter(coin => coin.origin !== 'change').sort(byAccount)).toEqual([...original].sort(byAccount))
+  // Idempotent: a repeat after a crash finds the tombstone and answers the same.
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('refused')).toBe(true)
+
+  // A set one of whose own moves (change) was exposed keeps its bytes and its reservation.
+  const exposedMembers = await construct('own-move-exposed')
+  const own = exposedMembers.find(member => member.role !== 'payment')
+  expect(own).toBeDefined()
+  const id = f.preparer.getOperation('own-move-exposed')!.operationId
+  // Expose it with what it stands on (the payment first in this draw), as a broadcast would.
+  for (let index = 0; index <= own!.index; index++) await f.journal.markExposed(id, index)
+  const before = f.coins.all(), graph = f.preparer.getTransactionSet('own-move-exposed')
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('own-move-exposed')).toBe(false)
+  expect(f.coins.all()).toEqual(before)
+  expect(f.preparer.getTransactionSet('own-move-exposed')).toEqual(graph)
+  await expect(f.journal.discardRefusedBeforeBroadcast(id)).rejects.toThrow()
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('unknown')).toBe(false)
+})
+
 it.each([0n, 70000n, 800000n])('releases only uncommitted stage reservations after a journal precommit failure (append amount=%s)', async appendAmount => {
   const append = appendAmount > 0n
   const f = await setup(), operationId = 'precommit-fault'

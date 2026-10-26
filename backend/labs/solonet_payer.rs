@@ -42,6 +42,49 @@ const TREASURY_RESERVE_WEI: u128 = 20_000_000_000_000_000_000;
 const SWEEP_IN_FLIGHT: usize = 20;
 /// Funding transactions sent before waiting for them to land.
 const FUNDING_BATCH: usize = 50;
+/// How long a read is asked again while solonet is too busy to answer it.
+const RPC_PATIENCE: Duration = Duration::from_secs(60);
+/// How long a funding send is retried while the node does not yet see its sender funded or is
+/// too busy to take it. On a quiet solonet the first retry, a block later, is taken.
+const FUNDING_PATIENCE: Duration = Duration::from_secs(180);
+
+/// A JSON-RPC call that did not succeed.
+#[derive(Debug)]
+enum RpcError {
+    /// The request or its answer did not get through: a timeout, a dropped connection, or an
+    /// answer that is not JSON-RPC.
+    Transport(String),
+    /// The node answered with an error.
+    Node(String),
+}
+
+impl RpcError {
+    /// Worth asking again unchanged: the node or the way to it was too busy.
+    fn busy(&self) -> bool {
+        match self {
+            RpcError::Transport(_) => true,
+            RpcError::Node(message) => {
+                let message = message.to_ascii_lowercase();
+                ["overloaded", "try again", "timed out", "timeout", "busy"]
+                    .iter()
+                    .any(|busy| message.contains(busy))
+            }
+        }
+    }
+
+    /// The node does not (yet) see the sender holding the transaction's gas and value.
+    fn insufficient_balance(&self) -> bool {
+        matches!(self, RpcError::Node(message) if message.contains("insufficient balance"))
+    }
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RpcError::Transport(message) | RpcError::Node(message) => f.write_str(message),
+        }
+    }
+}
 
 fn keccak(bytes: &[u8]) -> [u8; 32] {
     Keccak256::digest(bytes).into()
@@ -149,33 +192,58 @@ impl Solonet {
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RpcError> {
         let body =
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-        let answer: serde_json::Value = self
+        let transport =
+            |error: String| RpcError::Transport(format!("{method} on {}: {error}", self.rpc));
+        let bytes = self
             .http
             .post(&self.rpc)
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
             .await
-            .map_err(|error| format!("{method} on {}: {error}", self.rpc))?
+            .map_err(|error| transport(error.to_string()))?
             .bytes()
             .await
-            .map_err(|error| format!("{method} on {}: {error}", self.rpc))
-            .and_then(|bytes| {
-                serde_json::from_slice(&bytes).map_err(|error| format!("{method}: {error}"))
-            })?;
+            .map_err(|error| transport(error.to_string()))?;
+        // A proxy or a node too busy to answer may send something that is not JSON-RPC.
+        let answer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            transport(format!(
+                "not a JSON-RPC answer ({error}): {}",
+                String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
+            ))
+        })?;
         match answer.get("error") {
-            Some(error) => Err(format!("{method}: {error}")),
+            Some(error) => Err(RpcError::Node(format!("{method}: {error}"))),
             None => Ok(answer["result"].clone()),
         }
     }
 
+    /// A read. A busy node or a dropped connection is asked again, with backoff, for up to
+    /// [`RPC_PATIENCE`]; any other error, or a node busy for longer, fails the test.
     async fn call(&self, method: &str, params: serde_json::Value) -> serde_json::Value {
-        self.try_call(method, params)
-            .await
-            .unwrap_or_else(|error| panic!("{error}"))
+        let started = Instant::now();
+        let mut backoff = Duration::from_millis(250);
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match self.try_call(method, params.clone()).await {
+                Ok(value) => return value,
+                Err(error) if error.busy() && started.elapsed() < RPC_PATIENCE => {
+                    if attempts == 1 || attempts % 10 == 0 {
+                        println!("solonet: {error}; asking again (attempt {attempts})");
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(4));
+                }
+                Err(error) => panic!(
+                    "solonet: {method} {params} failed after {attempts} attempts over {:?}: {error}",
+                    started.elapsed()
+                ),
+            }
+        }
     }
 
     async fn quantity(&self, method: &str, params: serde_json::Value) -> u128 {
@@ -196,18 +264,33 @@ impl Solonet {
         }
     }
 
+    async fn receipt(&self, hash: &[u8; 32]) -> Option<serde_json::Value> {
+        let receipt = self
+            .call(
+                "eth_getTransactionReceipt",
+                serde_json::json!([format!("0x{}", hex::encode(hash))]),
+            )
+            .await;
+        (!receipt.is_null()).then_some(receipt)
+    }
+
     async fn wait_receipt(&self, hash: &[u8; 32]) {
         let deadline = Instant::now() + Duration::from_secs(120);
-        let hash = format!("0x{}", hex::encode(hash));
         loop {
-            let receipt = self
-                .call("eth_getTransactionReceipt", serde_json::json!([hash]))
-                .await;
-            if !receipt.is_null() {
-                assert_eq!(receipt["status"], "0x1", "transaction {hash} failed");
+            if let Some(receipt) = self.receipt(hash).await {
+                assert_eq!(
+                    receipt["status"],
+                    "0x1",
+                    "transaction 0x{} failed",
+                    hex::encode(hash)
+                );
                 return;
             }
-            assert!(Instant::now() < deadline, "transaction {hash} never landed");
+            assert!(
+                Instant::now() < deadline,
+                "transaction 0x{} never landed",
+                hex::encode(hash)
+            );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
@@ -220,42 +303,110 @@ impl Solonet {
         .await as u64
     }
 
-    /// Send `value` from `from` to `to` at `from`'s next nonce; the transaction hash.
-    async fn transfer(&self, from: &SecretKey, nonce: u64, to: [u8; 20], value: u128) -> [u8; 32] {
-        let (raw, hash) = sign_eip1559(
-            from,
-            SOLONET_CHAIN_ID,
-            nonce,
-            self.max_fee,
-            21_000,
-            to,
-            value,
-            &[],
-        );
-        self.call(
-            "eth_sendRawTransaction",
-            serde_json::json!([format!("0x{}", hex::encode(raw))]),
+    /// `account`'s balance at the head and four blocks back (the state a new transaction is
+    /// usually admitted against), and the head: what a refused funding send is logged with.
+    async fn balance_report(&self, account: [u8; 20]) -> String {
+        let head = self.block().await;
+        let at = |tag: String| async move {
+            match self
+                .try_call(
+                    "eth_getBalance",
+                    serde_json::json!([format!("0x{}", hex::encode(account)), tag]),
+                )
+                .await
+            {
+                Ok(value) => value.as_str().map_or_else(
+                    || value.to_string(),
+                    |hex| {
+                        u128::from_str_radix(hex.trim_start_matches("0x"), 16)
+                            .map_or_else(|_| hex.to_owned(), |wei| wei.to_string())
+                    },
+                ),
+                Err(error) => format!("unreadable ({error})"),
+            }
+        };
+        format!(
+            "head {head}, balance {} wei at the head and {} wei at head - 4",
+            at("latest".into()).await,
+            at(format!("0x{:x}", head.saturating_sub(4))).await
         )
-        .await;
-        hash
     }
 
-    /// `count` fresh accounts, each funded for one payment. The faucet is shared with whatever
-    /// else runs on solonet, so it pays once, into a fresh account of this call, which then
-    /// funds the payers at nonces nothing else uses. Waits until the funding is a few blocks
-    /// deep: Monad checks a new transaction against state a few blocks behind the head, and
-    /// keeps turning down bytes it once turned down.
-    pub async fn fund(&self, count: usize) -> Funded {
-        let payers: Vec<Payer> = (0..count).map(|_| Payer::fresh()).collect();
-        let treasury = Payer::fresh();
-        // Monad holds back a reserve of each sender's balance for gas of transactions still in
-        // flight; keeping the treasury above it lets a batch go out without spacing.
-        let need =
-            count as u128 * (PAYER_FUNDING_WEI + 21_000 * self.max_fee) + TREASURY_RESERVE_WEI;
+    /// Send `value` from `from` to `to` at `from`'s nonce `nonce`, and keep at it until solonet
+    /// holds a transaction of `from` at that nonce. A node turns down a sender it does not yet
+    /// see funded ("Signer had insufficient balance"): it admits a transaction against the
+    /// sender's balance at its last committed block less the execution delay, and that block
+    /// trails `eth_blockNumber` by a margin that grows when solonet is busy. It also turns down a
+    /// burst ("overloaded, try again later"). Both are asked again a block later with other
+    /// bytes (a node keeps turning down bytes it once turned down: the value is one wei less per
+    /// attempt), for up to [`FUNDING_PATIENCE`]. Only one transaction can ever land at the nonce,
+    /// so a resend never pays twice. Anything else, or a refusal that outlasts the patience,
+    /// fails the test naming the signer, the nonce and its balance.
+    async fn send_funding(&self, from: &Payer, nonce: u64, to: [u8; 20], value: u128) {
+        let started = Instant::now();
+        let signer = format!("0x{}", hex::encode(from.address));
+        for attempt in 0u128.. {
+            let (raw, _) = sign_eip1559(
+                &from.key,
+                SOLONET_CHAIN_ID,
+                nonce,
+                self.max_fee,
+                21_000,
+                to,
+                value - attempt,
+                &[],
+            );
+            let error = match self
+                .try_call(
+                    "eth_sendRawTransaction",
+                    serde_json::json!([format!("0x{}", hex::encode(raw))]),
+                )
+                .await
+            {
+                Ok(_) => {
+                    if attempt > 0 {
+                        println!(
+                            "solonet: {signer} at nonce {nonce} accepted on attempt {} after {:?}",
+                            attempt + 1,
+                            started.elapsed()
+                        );
+                    }
+                    return;
+                }
+                Err(error) => error,
+            };
+            // A send whose answer was lost may still have reached the pool.
+            if self.pending_nonce(from.address).await > nonce {
+                return;
+            }
+            let retryable = error.insufficient_balance() || error.busy();
+            if !retryable || started.elapsed() >= FUNDING_PATIENCE {
+                panic!(
+                    "solonet: {signer} could not send at nonce {nonce} after {} attempts over \
+                     {:?}: {error}; {}",
+                    attempt + 1,
+                    started.elapsed(),
+                    self.balance_report(from.address).await
+                );
+            }
+            if attempt == 0 || attempt % 10 == 9 {
+                println!(
+                    "solonet: {signer} at nonce {nonce} refused ({error}); {}; again next block",
+                    self.balance_report(from.address).await
+                );
+            }
+            self.wait_blocks(1).await;
+        }
+    }
+
+    /// Pay `need` from the faucet into the fresh `treasury` and wait until it has landed. The
+    /// faucet is shared: another user can take the nonce between the read and the send, or get
+    /// its own transaction mined at that nonce after ours was accepted, so a refused or
+    /// superseded payment is signed again at the faucet's next nonce.
+    async fn fund_treasury(&self, treasury: &Payer, need: u128) {
         let faucet = address(&self.faucet);
-        let mut attempt = 0;
-        let funded = loop {
-            // Another faucet user can take the nonce between the read and the send.
+        let started = Instant::now();
+        for attempt in 0u128.. {
             let nonce = self.pending_nonce(faucet).await;
             let (raw, hash) = sign_eip1559(
                 &self.faucet,
@@ -264,40 +415,173 @@ impl Solonet {
                 self.max_fee,
                 21_000,
                 treasury.address,
-                need,
+                // Other bytes on each attempt: a node keeps turning down bytes it once did.
+                need + attempt,
                 &[],
             );
-            match self
+            let sent = self
                 .try_call(
                     "eth_sendRawTransaction",
                     serde_json::json!([format!("0x{}", hex::encode(raw))]),
                 )
-                .await
-            {
-                Ok(_) => break hash,
-                Err(error) if attempt < 10 => {
-                    attempt += 1;
-                    println!("solonet: faucet send at nonce {nonce} refused ({error}); again");
+                .await;
+            let outcome = match sent {
+                // The answer may be lost on a transaction that did reach the pool.
+                Ok(_) | Err(RpcError::Transport(_)) => {
+                    self.landed_or_superseded(&hash, faucet, nonce).await
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            match outcome {
+                Ok(()) => return,
+                Err(why) if started.elapsed() < FUNDING_PATIENCE => {
+                    println!("solonet: faucet payment at nonce {nonce}: {why}; again");
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(error) => panic!("the solonet faucet would not pay: {error}"),
+                Err(why) => panic!(
+                    "solonet: the faucet 0x{} would not fund 0x{} after {} attempts over {:?}: \
+                     {why}; faucet {}",
+                    hex::encode(faucet),
+                    hex::encode(treasury.address),
+                    attempt + 1,
+                    started.elapsed(),
+                    self.balance_report(faucet).await
+                ),
             }
-        };
-        self.wait_receipt(&funded).await;
-        self.wait_blocks(6).await;
+        }
+    }
+
+    /// Wait until `hash`, sent by `sender` at `nonce`, has landed and succeeded (`Ok`), or
+    /// another transaction of `sender` has taken that nonce (`Err`).
+    async fn landed_or_superseded(
+        &self,
+        hash: &[u8; 32],
+        sender: [u8; 20],
+        nonce: u64,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Some(receipt) = self.receipt(hash).await {
+                assert_eq!(
+                    receipt["status"],
+                    "0x1",
+                    "transaction 0x{} failed",
+                    hex::encode(hash)
+                );
+                return Ok(());
+            }
+            if self.latest_nonce(sender).await > nonce {
+                // The nonce is used; the receipt is read again in case it was ours after all.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if self.receipt(hash).await.is_some() {
+                    continue;
+                }
+                return Err("another transaction took the nonce".into());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "0x{} not mined within 120 s (pending nonce {})",
+                    hex::encode(hash),
+                    self.pending_nonce(sender).await
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait until `account` has made `count` transactions.
+    async fn wait_nonce(&self, account: [u8; 20], count: u64) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let landed = self.latest_nonce(account).await;
+            if landed >= count {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "solonet: only {landed} of 0x{}'s {count} transactions landed within 120 s \
+                 (pending nonce {})",
+                hex::encode(account),
+                self.pending_nonce(account).await
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// `count` fresh accounts, each funded for one payment. The faucet is shared with whatever
+    /// else runs on solonet, so it pays once, into a fresh account of this call (the treasury),
+    /// which then funds the payers at nonces nothing else uses.
+    ///
+    /// A payer's payment is sent to solonet by the relay that accepts its write, so funding is
+    /// finished only when the node admits transactions from the payers. That is proven, not
+    /// guessed from a block count: the treasury funds one more fresh account (the probe) after
+    /// every payer, and the probe's own send back to the faucet is retried until the node
+    /// admits it. The node admits it only against state that holds the probe's funding, which
+    /// is in the same block as the last payer's or a later one.
+    pub async fn fund(&self, count: usize) -> Funded {
+        let started = Instant::now();
+        let payers: Vec<Payer> = (0..count).map(|_| Payer::fresh()).collect();
+        let treasury = Payer::fresh();
+        let probe = Payer::fresh();
+        // Every transfer's value and its gas at the fee cap, the probe's included, and a margin
+        // that keeps the treasury above Monad's 10 MON reserve: the node budgets the gas of a
+        // sender's transactions in flight against `min(10 MON, balance)`, and a transfer that
+        // took the treasury below the reserve while others are in flight would be reverted.
+        let need = (count as u128 + 1) * (PAYER_FUNDING_WEI + 21_000 * self.max_fee)
+            + TREASURY_RESERVE_WEI;
+        self.fund_treasury(&treasury, need).await;
+        // A new account is usually admitted four blocks after its funding; send_funding retries
+        // the ones that take longer.
+        self.wait_blocks(4).await;
+        let recipients: Vec<[u8; 20]> = payers
+            .iter()
+            .chain([&probe])
+            .map(|payer| payer.address)
+            .collect();
         let mut nonce = 0;
-        for batch in payers.chunks(FUNDING_BATCH) {
-            let mut last = [0; 32];
-            for payer in batch {
-                last = self
-                    .transfer(&treasury.key, nonce, payer.address, PAYER_FUNDING_WEI)
+        for batch in recipients.chunks(FUNDING_BATCH) {
+            for recipient in batch {
+                self.send_funding(&treasury, nonce, *recipient, PAYER_FUNDING_WEI)
                     .await;
                 nonce += 1;
             }
-            self.wait_receipt(&last).await;
+            self.wait_nonce(treasury.address, nonce).await;
         }
-        self.wait_blocks(6).await;
-        println!("solonet: funded {count} payers");
+        let unfunded: Vec<String> = futures::stream::iter(payers.iter().map(|payer| async move {
+            let balance = loop {
+                match self.balance(payer.address).await {
+                    Ok(balance) => break balance,
+                    Err(error) if error.busy() => {
+                        tokio::time::sleep(Duration::from_millis(500)).await
+                    }
+                    Err(error) => panic!("solonet: {error}"),
+                }
+            };
+            // A resent funding pays a few wei less than PAYER_FUNDING_WEI.
+            (balance < PAYER_FUNDING_WEI - 1_000_000)
+                .then(|| format!("0x{} holds {balance} wei", hex::encode(payer.address)))
+        }))
+        .buffer_unordered(SWEEP_IN_FLIGHT)
+        .filter_map(|unfunded| async move { unfunded })
+        .collect()
+        .await;
+        assert!(
+            unfunded.is_empty(),
+            "solonet: the treasury's transfers landed but {} payers are not funded: {:?}",
+            unfunded.len(),
+            &unfunded[..unfunded.len().min(5)]
+        );
+        // The probe pays back what it holds: admitted only once the node sees it funded.
+        let gas = 21_000 * self.max_fee;
+        // Below what it holds by more than any resent funding took off it.
+        self.send_funding(
+            &probe,
+            0,
+            address(&self.faucet),
+            PAYER_FUNDING_WEI - gas - 1_000_000,
+        )
+        .await;
+        println!("solonet: funded {count} payers in {:?}", started.elapsed());
         // The treasury's reserve goes back now; the payers' leftovers when they are dropped.
         self.sweep(vec![treasury]).await;
         Funded {
@@ -331,7 +615,7 @@ impl Solonet {
         let mut left = accounts;
         let (mut swept, mut total) = (0usize, 0u128);
         for attempt in 0..3u128 {
-            let results: Vec<(Payer, Result<Option<u128>, String>)> =
+            let results: Vec<(Payer, Result<Option<u128>, RpcError>)> =
                 futures::stream::iter(left.into_iter().map(|account| async move {
                     let result = async {
                         let balance = self.balance(account.address).await?;
@@ -386,7 +670,9 @@ impl Solonet {
             println!(
                 "solonet: {} sweeps refused ({}); again in a few blocks",
                 left.len(),
-                last_error.unwrap_or_default()
+                last_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_default()
             );
             self.wait_blocks(4).await;
         }
@@ -408,7 +694,7 @@ impl Solonet {
         .await as u64
     }
 
-    async fn balance(&self, account: [u8; 20]) -> Result<u128, String> {
+    async fn balance(&self, account: [u8; 20]) -> Result<u128, RpcError> {
         let value = self
             .try_call(
                 "eth_getBalance",
@@ -419,7 +705,7 @@ impl Solonet {
             value.as_str().unwrap_or_default().trim_start_matches("0x"),
             16,
         )
-        .map_err(|error| format!("eth_getBalance: {error}"))
+        .map_err(|error| RpcError::Node(format!("eth_getBalance: {error}")))
     }
 
     /// The `payment` member of a write's body and its transaction hash: `payer`'s payment for

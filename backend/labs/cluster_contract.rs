@@ -323,9 +323,53 @@ struct Appended {
     message: Option<StoredGroupMessage>,
     /// The JSON error body of a refusal.
     error: Option<serde_json::Value>,
+    /// The `Retry-After` of the answer in seconds (1 when absent, at most 10).
+    retry_after: u64,
 }
 
+/// The 503 codes a relay answers before it stores anything when it cannot check a payment yet:
+/// the node does not show the payment can land (`group_payment_not_ready`) or cannot be read
+/// (`group_payment_check_unavailable`). Not refusals: the protocol has the writer resend the
+/// same write (docs/protocol/groups/shared-mailbox-baseline.md), and so does this contract.
+const PAYMENT_NOT_CHECKED_YET: [&str; 2] =
+    ["group_payment_not_ready", "group_payment_check_unavailable"];
+/// How long one write is resent while its relay cannot check the payment yet.
+const PAYMENT_CHECK_PATIENCE: Duration = Duration::from_secs(120);
+
+/// `write` sent to `origin` as a client sends it: while the relay answers that it cannot check
+/// the payment yet, the same write (same envelope, same signed payment) is sent again after the
+/// relay's `Retry-After`. Any other answer, or a transport error, is returned as it is.
 async fn append(
+    client: &reqwest::Client,
+    origin: &str,
+    write: &Write,
+) -> Result<Appended, reqwest::Error> {
+    let started = Instant::now();
+    loop {
+        let answer = append_once(client, origin, write).await?;
+        let code = answer
+            .error
+            .as_ref()
+            .and_then(|error| error["error"].as_str())
+            .unwrap_or_default();
+        if answer.status != 503
+            || !PAYMENT_NOT_CHECKED_YET.contains(&code)
+            || started.elapsed() >= PAYMENT_CHECK_PATIENCE
+        {
+            return Ok(answer);
+        }
+        println!(
+            "{origin}: 503 {code} ({}) for {}; the same write again in {} s",
+            answer.error.as_ref().unwrap()["reason"],
+            write.envelope.nonce,
+            answer.retry_after
+        );
+        tokio::time::sleep(Duration::from_secs(answer.retry_after)).await;
+    }
+}
+
+/// `write` sent to `origin` once.
+async fn append_once(
     client: &reqwest::Client,
     origin: &str,
     write: &Write,
@@ -345,6 +389,13 @@ async fn append(
         .get("x-group-append-disposition")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(1u64)
+        .min(10);
     let bytes = response.bytes().await?;
     let message = (status == 200).then(|| serde_json::from_slice(&bytes).unwrap());
     let error =
@@ -354,6 +405,7 @@ async fn append(
         disposition,
         message,
         error,
+        retry_after,
     })
 }
 
@@ -536,7 +588,7 @@ where
                 loop {
                     assert!(Instant::now() < deadline, "writer {writer} never finished");
                     let attempt = Instant::now();
-                    let answer = append(&client, &relays[target % 3], &write).await;
+                    let answer = append_once(&client, &relays[target % 3], &write).await;
                     let ok = matches!(&answer, Ok(answer) if answer.status == 200);
                     attempts.push((attempt, attempt.elapsed(), !ok));
                     match answer {
@@ -1575,8 +1627,46 @@ fn forum_typed(bytes: &[u8]) -> frank_cbor::TypedPayload {
     *parsed.typed.unwrap()
 }
 
-/// `PUT /topics` (post) or `/topics/vote`: the status and the body.
+/// The 503 codes a Forum relay answers when it holds the event but does not know yet whether
+/// its burn landed (`topic_burn_outcome_unknown`, for example when its reads of solonet time
+/// out) or could not settle its own commit (`forum_unavailable`). Not refusals: the protocol
+/// has the wallet resend the identical bytes (docs/protocol/forum-runtime-storage.md, "Outcome
+/// recovery"), and so does this contract. A fresh burn is never signed for it.
+const FORUM_OUTCOME_NOT_KNOWN_YET: [&str; 2] = ["topic_burn_outcome_unknown", "forum_unavailable"];
+/// How long one Forum event is resent while its outcome is unknown.
+const FORUM_OUTCOME_PATIENCE: Duration = Duration::from_secs(300);
+
+/// `PUT /topics` (post) or `/topics/vote`: the status and the body. While the relay answers
+/// that the outcome is not known yet, the same event bytes are sent again.
 async fn forum_put(
+    client: &reqwest::Client,
+    origin: &str,
+    event: &[u8],
+    vote: bool,
+) -> (u16, Vec<u8>) {
+    let started = Instant::now();
+    loop {
+        let (status, body) = forum_put_once(client, origin, event, vote).await;
+        let code = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|error| error["error"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if status != 503
+            || !FORUM_OUTCOME_NOT_KNOWN_YET.contains(&code.as_str())
+            || started.elapsed() >= FORUM_OUTCOME_PATIENCE
+        {
+            return (status, body);
+        }
+        println!(
+            "{origin}: 503 {code} ({}); the same event again",
+            String::from_utf8_lossy(&body[..body.len().min(200)])
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// `PUT /topics` (post) or `/topics/vote` once.
+async fn forum_put_once(
     client: &reqwest::Client,
     origin: &str,
     event: &[u8],

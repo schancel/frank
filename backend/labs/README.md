@@ -339,6 +339,25 @@ account per test, which then funds the payers) and signs each write's EIP-1559 p
 the payee the relay's `write-policy` names, with the write's commitment as calldata. Each
 payer pays once, at nonce 0; a retry resends the same bytes.
 
+Solonet is shared with other labs, bots and workers, so funding expects a busy node. A Monad node
+admits a transaction against its sender's balance at its last committed block less the execution
+delay, which trails `eth_blockNumber` by a margin that grows with load: a freshly funded sender is
+refused ("Signer had insufficient balance") for a few blocks, and a burst may be refused as
+"overloaded, try again later". Each funding send is therefore retried a block later with other
+bytes (the node keeps refusing bytes it once refused; only one transaction can land at a nonce,
+so nothing is paid twice) for up to three minutes, and then fails naming the signer, the nonce and
+its balance at the head and four blocks back. Funding ends with a probe account funded after
+every payer sending its funds back to the faucet: the node admits that send only once it sees the
+last payer funded, so the relays can broadcast every payer's payment. Reads are asked again while
+the node or the port forward is too busy, for up to a minute.
+
+A relay that cannot check a payment yet answers 503 `group_payment_not_ready` or
+`group_payment_check_unavailable` with `Retry-After`, and a Forum relay whose reads of solonet
+time out answers 503 `topic_burn_outcome_unknown` (`forum_unavailable` when it could not settle its own
+commit). None is a refusal: the protocol has the client
+resend the same signed write or event, and the contract does exactly that (same bytes, never a
+new payment) before it asserts on the answer.
+
 Start solonet with `yarn --cwd packages/bot regtest:monad-start` (the first run takes 5 to 8
 minutes) and pass its RPC as the containers reach it: `http://host.docker.internal:48080`
 on Docker Desktop (the Compose files map that name to the host gateway on Linux). Stop it

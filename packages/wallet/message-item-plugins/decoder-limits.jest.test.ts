@@ -6,7 +6,13 @@ import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/pl
  * the rule. Each must be refused with the typed decode error, and the unmodified bytes must be
  * accepted.
  */
-import { decodeCanonical, encodeCanonical, type Encodable } from '@frank/codec'
+import {
+  MAX_CIPHERTEXT_BYTES,
+  MAX_MESSAGE_ITEMS_PER_ARRAY,
+  decodeCanonical,
+  encodeCanonical,
+  type Encodable,
+} from '@frank/codec'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 
 import { createDefaultMessageItemRegistry } from './default-registry'
@@ -771,7 +777,18 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('messageId', [5], ['', 'not-a-uuid']),
       ...each('stampValueWei', [6], BAD_AMOUNTS),
       ...each('recipientPublicKey', [7], ['', '04' + H, '02' + 'zz'.repeat(32)]),
-      ['itemFrames: 33 entries', [8], many(33, new Uint8Array([1]))],
+      [
+        `itemFrames: ${MAX_MESSAGE_ITEMS_PER_ARRAY + 1} entries`,
+        [8],
+        many(MAX_MESSAGE_ITEMS_PER_ARRAY + 1, new Uint8Array([1])),
+      ],
+      ['itemFrames: an empty frame', [8], [new Uint8Array(0)]],
+      ['itemFrames: a frame as hex text', [8], ['a1006568656c6c6f']],
+      [
+        `itemFrames: a frame over ${MAX_CIPHERTEXT_BYTES} bytes`,
+        [8],
+        [new Uint8Array(MAX_CIPHERTEXT_BYTES + 1)],
+      ],
       ...each('text', [9], ['', 'x'.repeat(16_385)]),
     ],
   },

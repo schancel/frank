@@ -310,6 +310,16 @@ export type DirectMessagePaymentSummary =
   | "repaid"
   | "failed"
   | "unsent";
+/**
+ * The note to self of a sealed message this wallet sent (the relay keeps no outbox row for a
+ * sealed message, so the account's other devices see it only through that note):
+ * - `owed`: not delivered yet; the resend pass sends it again;
+ * - `failed`: it can never be sent (`reason` says why), and is not retried. The message itself
+ *   was delivered; the account's other devices do not show it.
+ */
+export type DirectMessageSelfCopyState =
+  | { state: "owed" }
+  | { state: "failed"; reason: string };
 /** What the sender knows about an earlier outgoing attempt; see `MonadStampAttemptStatus` in
  * `../monad-stamp-client.ts` for the legacy path's meaning. Canonical paid attempts remain `live`
  * while delivery is unresolved, including after HTTP rejection or a `dead` relay answer. The
@@ -561,6 +571,13 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     payloadDigest: string;
   }): DirectMessagePaymentSummary | undefined;
+  /** The note to self of a sealed message this wallet sent, while it is owed or once it can never
+   * be sent; `undefined` when it was delivered or none was needed. Reads the wallet's own record:
+   * no request. */
+  selfCopyOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): DirectMessageSelfCopyState | undefined;
   /**
    * The smallest paid stamp this wallet sends right now: the payment floor, ten times what the
    * chain charges for the one transfer that moves it (`payment_floor_multiple` in the protocol

@@ -106,6 +106,10 @@ export interface StoredMessage {
    * note to self carrying the message and its spends is sent to the account's other devices.
    * Set when the record is created; removed, durably, once that note is delivered. */
   selfCopyOwed?: true
+  /** The note to self can never be sent (it cannot be encoded or is larger than a direct message
+   * may be): why. Set in place of `selfCopyOwed`, which is then not retried. The message itself
+   * is delivered; the account's other devices do not show it. */
+  selfCopyFailed?: string
   /** An ended message whose stamp stage was never signed (`outcome` dead, no request): the
    * payment operation it would have joined (`paymentOperationId`) has been given back. */
   paymentReleased?: true
@@ -133,6 +137,8 @@ export interface OutgoingMessageStore {
   setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
   /** Delivered sealed envelopes whose note to self is still owed, by message ID. */
   owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[]
+  /** Delivered sealed envelopes whose note to self can never be sent, by message ID. */
+  failedSelfCopies(): (UnpaidEnvelope & { messageId: string })[]
 }
 /** Hex throughout. `recipientSubject`: whom the envelope is sealed to. */
 export interface UnpaidEnvelope {
@@ -155,6 +161,9 @@ export interface UnpaidEnvelope {
    * not been delivered yet. The message itself is delivered; only the note is retried. Removed,
    * with the record unless it is host-bound, once the note is delivered. */
   selfCopyOwed?: true
+  /** As on {@link StoredMessage}: the note to self can never be sent, and why. The envelope is
+   * kept with it, so the failure stays visible. */
+  selfCopyFailed?: string
   /** The relay's time for the delivered original, carried by its note to self. */
   sentAt?: number
 }
@@ -179,6 +188,11 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
     return [...this.envelopes.entries()]
       .filter(([, envelope]) => envelope.selfCopyOwed === true)
+      .map(([messageId, envelope]) => ({ ...envelope, messageId }))
+  }
+  failedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
+    return [...this.envelopes.entries()]
+      .filter(([, envelope]) => envelope.selfCopyFailed !== undefined)
       .map(([messageId, envelope]) => ({ ...envelope, messageId }))
   }
   unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {
@@ -366,6 +380,11 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   owedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
     return [...this.envelopes.entries()]
       .filter(([, envelope]) => envelope.selfCopyOwed === true)
+      .map(([messageId, envelope]) => ({ ...envelope, messageId }))
+  }
+  failedSelfCopies(): (UnpaidEnvelope & { messageId: string })[] {
+    return [...this.envelopes.entries()]
+      .filter(([, envelope]) => envelope.selfCopyFailed !== undefined)
       .map(([messageId, envelope]) => ({ ...envelope, messageId }))
   }
   unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {

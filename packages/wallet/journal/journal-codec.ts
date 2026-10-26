@@ -4,7 +4,11 @@
  * - `message-tombstone` ({@link MessageTombstoneItem})
  * - `journal-checkpoint` ({@link JournalCheckpointItem})
  */
-import { standaloneItemBudget } from '@frank/codec'
+import {
+  MAX_CIPHERTEXT_BYTES,
+  MAX_MESSAGE_ITEMS_PER_ARRAY,
+  standaloneItemBudget,
+} from '@frank/codec'
 import type {
   JournalCheckpointConversationEntry,
   JournalCheckpointItem,
@@ -22,7 +26,7 @@ import {
   cborItemCodec,
   evmAddress,
   hash32,
-  hex,
+  hexBytes,
   listOf,
   matching,
   opt,
@@ -35,8 +39,16 @@ import {
 } from '@frank/cashweb/message-items/cbor-fields'
 
 export const MAX_JOURNAL_SUBJECT_BYTES = 160
-export const MAX_OUTBOX_ITEM_FRAMES = 32
-export const MAX_OUTBOX_ITEM_FRAME_BYTES = 65_536
+/**
+ * A note to self carries a sent message's item frames (`itemFrames`, field 8) so the account's
+ * other devices show what was sent. Its limits are the direct message's own, from the codec, not a
+ * number of its own: as many frames as one message may hold, each as large as the encrypted
+ * content that holds it may be. The frames travel as byte strings, so the note is not twice the
+ * size of the message. The whole note is a direct message too, so it is bounded as one; a sealed
+ * send whose note would not fit is refused before anything is paid (`canonical-dm.ts`).
+ */
+export const MAX_OUTBOX_ITEM_FRAMES = MAX_MESSAGE_ITEMS_PER_ARRAY
+export const MAX_OUTBOX_ITEM_FRAME_BYTES = MAX_CIPHERTEXT_BYTES
 export const MAX_CHECKPOINT_CONVERSATIONS = 1024
 export const MAX_CHECKPOINT_TOMBSTONES_PER_CONVERSATION = 1024
 
@@ -82,7 +94,7 @@ const rawOutboxMessageCodec = cborItemCodec<OutboxMessageItem>(
     recipientPublicKey: opt(7, compressedPubKeyField),
     itemFrames: opt(
       8,
-      listOf(hex(1, MAX_OUTBOX_ITEM_FRAME_BYTES), MAX_OUTBOX_ITEM_FRAMES),
+      listOf(hexBytes(1, MAX_OUTBOX_ITEM_FRAME_BYTES), MAX_OUTBOX_ITEM_FRAMES),
     ),
     text: opt(9, str(16_384, 1)),
   },

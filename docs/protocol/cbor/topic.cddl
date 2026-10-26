@@ -72,8 +72,10 @@ forum-aggregate = { 0: bool, 1: bstr .size 32 } ; closed; big endian; no negativ
 forum-cursor-bytes = bstr .size (1..2048)
 
 ; Types 43–46 are schema 1/min-reader 1. All observations are relay claims.
-; Where a view or a status names one burn (its raw bytes, hash, sender, block
-; and index), that is the event's lead burn; a status's value is the set's sum.
+; Where a view or a status names one burn (its raw bytes, hash, sender), that is
+; the event's lead burn. A status's value is the set's sum. Where a view or a
+; status gives a block and index, they are the set's inclusion watermark: the
+; latest position of any of its burns.
 ; Note: "page" in types 44 and 45 refers to cursor-paginated database query result
 ; batches (holding up to 128 verified post observation frames), not HTML web pages.
 forum-single-view = { ; complete frame <=2MiB

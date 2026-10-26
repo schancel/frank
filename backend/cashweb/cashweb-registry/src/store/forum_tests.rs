@@ -796,7 +796,12 @@ fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
         Magnitude::from_u64(60)
     );
     // A set confirmed only in part stays pending: nothing is counted and nothing is refused.
-    let all = facts(&vote, 2, 0);
+    // Included out of order: the lead at (2, 7), the second burn at (3, 1), the third at (2, 9).
+    let mut all = facts(&vote, 2, 0);
+    for (fact, (block, index)) in all.iter_mut().zip([(2, 7), (3, 1), (2, 9)]) {
+        fact.block_number = block;
+        fact.transaction_index = index;
+    }
     assert!(matches!(
         store.confirm(&vote, &all[..1], at(200)),
         Err(ForumError::Unavailable)
@@ -810,11 +815,12 @@ fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
         post_of(&store, &target).unwrap().aggregate.magnitude,
         Magnitude::from_u64(7)
     );
-    // Every burn confirmed: the set's total is counted once, at the lead's position.
+    // Every burn confirmed: the set's total is counted once, at the set's inclusion watermark
+    // (the latest burn's position, not the lead's or the last listed).
     let confirmed = store.confirm(&vote, &all, at(300)).unwrap();
     assert_eq!(
         confirmed.confirmed.map(|(block, index, _)| (block, index)),
-        Some((2, 0))
+        Some((3, 1))
     );
     store.confirm(&vote, &all, at(400)).unwrap();
     assert_eq!(

@@ -1361,7 +1361,9 @@ verified transactions', never an encoded assertion; the schemas carry none. Ever
 burn of a set MUST carry the same commitment and direction, and the event's
 weight is the sum of the set's values (at most i64::MAX). The first burn listed
 is the event's lead: its chain transaction identifier names the event, its
-sender is the author, and its confirmed position orders a post. A burn
+sender is the author. The event's confirmed position is its set's inclusion
+watermark, the latest (block, index) of any of its burns: it is paid when its
+last burn is included, and that position orders a post. A burn
 transaction's consumption key is its chain transaction identifier, so the same
 burn counts at most once whether it arrives in a type 41, in a type 42, as a
 later member of another event's set, or as a legacy protobuf object. A consumer

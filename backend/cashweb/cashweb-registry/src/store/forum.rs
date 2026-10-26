@@ -8,7 +8,7 @@
 //! | `format` | [`FORMAT`] | the store's format; anything else stops with the reset path |
 //! | `h` | `forum-store-header` | the network, chain id and burn address the store is bound to |
 //! | `e/` lead tx hash | stored frame | the exact submitted post or vote frame (authority, immutable) |
-//! | `o/` lead tx hash | `forum-observation-row` | that event's state: pending, or confirmed at the lead's block/index |
+//! | `o/` lead tx hash | `forum-observation-row` | that event's state: pending, or confirmed at the latest block/index of its burns |
 //! | `m/` tx hash | lead tx hash | every burn of an event's set, naming the event it pays for |
 //! | `p/` post hash | `forum-post-row` | the post's topic, author burn, first visibility, aggregate and pending reservations |
 //! | `t/` sha256(topic) time post hash | post hash | a topic's visible posts in first-visible order |
@@ -1033,7 +1033,13 @@ impl Store {
         {
             return Err(ForumError::Unavailable);
         }
-        let lead = &facts[0];
+        // The event is paid when its last burn is included: that position (the set's inclusion
+        // watermark) orders it, and the author's wallet checks the status against it.
+        let (block, index) = facts
+            .iter()
+            .map(|fact| (fact.block_number, fact.transaction_index))
+            .max()
+            .ok_or(ForumError::Unavailable)?;
         let mut post = Self::post(tx, op.event.target_hash())?.ok_or(ForumError::Unavailable)?;
         let reserved = if op.checked.direction == VoteDirection::Down {
             &mut post.reserved_down
@@ -1046,7 +1052,7 @@ impl Store {
         } else {
             now
         };
-        op.confirmed = Some((lead.block_number, lead.transaction_index, visible));
+        op.confirmed = Some((block, index, visible));
         let (count, bytes) = Self::pending(tx)?;
         let count = count.checked_sub(1).ok_or(ForumError::Unavailable)?;
         let bytes = bytes

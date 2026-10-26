@@ -1,7 +1,18 @@
 import { reactive } from 'vue'
 import { Transaction } from 'ethers'
 import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
-import type { NotedSendStatus } from '@frank/wallet/chain'
+import {
+  summarizeEvmNativeOperation,
+  summarizeEvmNativeStampStages,
+  type ContactPaymentInfo,
+  type EvmNativeOperation,
+  type NotedSendStatus,
+} from '@frank/wallet/chain'
+import {
+  groupNotedSends,
+  notedSendFeeWei,
+  sendFees,
+} from 'src/components/wallet/wallet-history'
 import type {
   StealthPaymentCapability,
   StealthPaymentStatus,
@@ -55,6 +66,16 @@ export interface StealthPaymentOwner {
   /** The account's sends as its notes to itself record them, with what the chain showed of
    * each (`NotedSendStatus`): how the network fee of a payment another device sent is read. */
   readonly getNotedSends?: () => Promise<readonly NotedSendStatus[]>
+  /** The wallet's own contact payments (Send to Contact), with the journal operation each was
+   * paid by: how the network fee of one this device sent is read. */
+  readonly getContactPayments?: () => readonly Pick<
+    ContactPaymentInfo,
+    'ephemeralPubKey' | 'operationId'
+  >[]
+  /** One journal operation, active or completed. */
+  readonly readNativeOperation?: (
+    operationId: string,
+  ) => Promise<EvmNativeOperation | undefined>
 }
 
 interface SentTransfer {
@@ -76,6 +97,8 @@ interface SentMessage {
     transactions?: readonly string[]
     networkTag?: string
     chainId?: string
+    /** A `stealth` item's one-time key: what its contact payment is found by. */
+    ephemeralPubKey?: string
   }[]
 }
 
@@ -185,40 +208,69 @@ async function chainStatusOf(
 
 /**
  * The network fee of a payment another device of the account sent, as the account's notes to
- * itself show it: every transaction of the operation that paid these transfers (gathering coins,
- * the transfers, their change), not a message stamp appended to it. That is what the sending
- * device's journal counts (`nativeFeeAtomic`). Undefined until the chain showed each of them;
- * `unnamed` when no note names the operation that paid them.
+ * itself show it: the fee History shows for the same send (`notedSendFeeWei` of the group of
+ * noted sends these transfers are in), every transaction of the operation that paid them and of
+ * the message's stamp. Undefined until the chain showed each of them; `unnamed` when no note
+ * names the operation that paid them.
  */
 function notedFeeOf(
   noted: readonly NotedSendStatus[],
   transfers: readonly SentTransfer[],
 ): bigint | 'unnamed' | undefined {
   const hashes = new Set(transfers.map(transfer => prefixed(transfer.txId)))
-  const operations = new Set(
-    noted.flatMap(send =>
-      hashes.has(prefixed(send.txHash)) && send.operation
-        ? [send.operation.id]
-        : [],
-    ),
+  if (
+    !noted.some(
+      send => hashes.has(prefixed(send.txHash)) && send.operation !== undefined,
+    )
   )
-  if (operations.size === 0) return 'unnamed'
-  const own = noted.filter(
-    send =>
-      send.operation !== undefined &&
-      operations.has(send.operation.id) &&
-      !/^stamp-/.test(send.operation.stage ?? ''),
+    return 'unnamed'
+  const group = [...groupNotedSends(noted).values()].find(sends =>
+    sends.some(send => hashes.has(prefixed(send.txHash))),
   )
   if (
-    [...hashes].some(hash => !own.some(send => prefixed(send.txHash) === hash))
+    !group ||
+    [...hashes].some(
+      hash => !group.some(send => prefixed(send.txHash) === hash),
+    ) ||
+    group.some(send => send.inclusion === undefined)
   )
     return undefined
-  let fee = 0n
-  for (const send of own) {
-    if (send.inclusion === undefined) return undefined
-    fee += BigInt(send.inclusion.feeWei)
-  }
-  return fee
+  return BigInt(notedSendFeeWei(group))
+}
+
+/**
+ * The network fee of a contact payment this device sent, from its journal operation: the fee
+ * History shows for the same send (`sendFees`), every transaction of the operation, its
+ * message's stamp stage included. Undefined until every one of them is final; `unnamed` when
+ * this wallet holds no such payment.
+ */
+async function journalFeeOf(
+  owner: StealthPaymentOwner,
+  ephemeralPubKey: string | undefined,
+): Promise<bigint | 'unnamed' | undefined> {
+  if (
+    !ephemeralPubKey ||
+    !owner.getContactPayments ||
+    !owner.readNativeOperation
+  )
+    return 'unnamed'
+  const operationId = owner
+    .getContactPayments()
+    .find(
+      payment =>
+        payment.ephemeralPubKey.toLowerCase() === ephemeralPubKey.toLowerCase(),
+    )?.operationId
+  if (operationId === undefined) return 'unnamed'
+  const row = await owner.readNativeOperation(operationId)
+  if (row === undefined) return undefined
+  const operation = summarizeEvmNativeOperation(row)
+  if (
+    !operation.members.every(
+      member => member.feeWei !== undefined || member.state === 'superseded',
+    )
+  )
+    return undefined
+  return BigInt(sendFees(operation, summarizeEvmNativeStampStages(row)).feeWei)
 }
 
 /**
@@ -258,6 +310,8 @@ export async function refreshOutgoingStealthPayments(
 ): Promise<number> {
   const wanted = new Set<string>()
   const transfersOf = new Map<string, readonly SentTransfer[]>()
+  // The one-time key of a message's `stealth` item (Send to Contact).
+  const contactKeyOf = new Map<string, string>()
   for (const message of messages) {
     if (!message.outbound) continue
     if (!message.items.some(paymentItem)) continue
@@ -274,6 +328,8 @@ export async function refreshOutgoingStealthPayments(
         ? stealthItemTransfers(items[0]!)
         : items[0]!.transfers
     if (transfers?.length) transfersOf.set(digest, transfers)
+    if (items.length === 1 && items[0]!.type === 'stealth')
+      contactKeyOf.set(digest, items[0]!.ephemeralPubKey ?? '')
   }
   if (wanted.size === 0) return 0
   const found = new Map<string, SentStealthPayment[]>()
@@ -336,7 +392,15 @@ export async function refreshOutgoingStealthPayments(
     try {
       let status = await chainStatusOf(owner.evmReader!, transfers)
       let feeUnknowable = true
-      if (status && owner.getNotedSends) {
+      // A contact payment this device sent: its journal operation names the fee.
+      const journalFee = status
+        ? await journalFeeOf(owner, contactKeyOf.get(digest))
+        : 'unnamed'
+      if (status && journalFee !== 'unnamed') {
+        feeUnknowable = false
+        if (journalFee !== undefined)
+          status = { ...status, nativeFeeAtomic: journalFee }
+      } else if (status && owner.getNotedSends) {
         let noted = notedOf.get(owner)
         if (noted === undefined) {
           noted = owner.getNotedSends().catch(() => [])

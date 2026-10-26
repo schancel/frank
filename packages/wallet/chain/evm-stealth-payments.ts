@@ -443,10 +443,12 @@ export function createEvmStealthPayments(
       fee = 0n,
       known = 0,
       failed = 0
-    // The payment's own transactions (its transfers, and any change they made; never a message
-    // stamp's stage). The fee is said once every one of them is final, so it is not a running
-    // figure that grows as change transfers land.
-    const own = journal.members.filter((member) => member.transactionSet?.stageId === undefined)
+    // Every transaction of the operation: its transfers, the change they made and the message
+    // stamp's stage appended to it. That is the network fee History shows for the same send (the
+    // fees of every member of the operation's journal row), so the card and History agree. It is
+    // said once every one of them is final, so it is not a running figure that grows as change
+    // transfers land.
+    const own = journal.members
     for (const member of own)
       if ('feeWei' in member.observation) fee += BigInt(member.observation.feeWei)
     const feeKnown =

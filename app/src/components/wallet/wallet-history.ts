@@ -346,6 +346,68 @@ function uniqueMembers(operations: readonly EvmNativeOperationStatus[]) {
 }
 
 /**
+ * The network fee History shows for one send of this device's journal: every transaction of its
+ * operation and of the stamps paid with it (`stamps`: its stamp stages and stamp operations for
+ * the same message), each once. A sent payment's card in a chat shows the same figure.
+ */
+export function sendFees(
+  operation: EvmNativeOperationStatus,
+  stamps: readonly EvmNativeOperationStatus[] = [],
+): ReturnType<typeof observedFees> {
+  return observedFees(uniqueMembers([operation, ...stamps]))
+}
+
+/**
+ * The account's noted sends as History groups them: one user action each, its transactions
+ * sharing any name `notedSendGroupKeys` gives (the sending wallet's operation with its stages,
+ * and the message it was for), in note order, by the group's first key. The sending device's
+ * journal groups the same transactions the same way.
+ */
+export function groupNotedSends(
+  noted: readonly NotedSendStatus[],
+): Map<string, NotedSendStatus[]> {
+  const parent = new Map<string, string>()
+  const root = (key: string): string => {
+    let at = key
+    while (parent.get(at) !== at) at = parent.get(at)!
+    return at
+  }
+  const ordered = [...noted].sort(
+    (a, b) =>
+      a.notedAtMs - b.notedAtMs ||
+      a.noteIndex - b.noteIndex ||
+      a.txHash.localeCompare(b.txHash),
+  )
+  const keysOf = new Map(
+    ordered.map(send => [send.txHash, notedSendGroupKeys(send)]),
+  )
+  for (const keys of keysOf.values())
+    for (const key of keys) if (!parent.has(key)) parent.set(key, key)
+  for (const keys of keysOf.values())
+    for (const key of keys.slice(1)) {
+      const [a, b] = [root(keys[0]!), root(key)].sort()
+      parent.set(b!, a!)
+    }
+  const sends = new Map<string, NotedSendStatus[]>()
+  for (const send of ordered) {
+    const key = root(keysOf.get(send.txHash)![0]!)
+    const group = sends.get(key)
+    if (group) group.push(send)
+    else sends.set(key, [send])
+  }
+  return sends
+}
+
+/** The network fee History shows for one noted send (a group of `groupNotedSends`): every one
+ * of its transactions the chain charged so far, those to the wallet's own accounts included. A
+ * sent payment's card on another device of the account shows the same figure. */
+export function notedSendFeeWei(group: readonly NotedSendStatus[]): string {
+  return group
+    .reduce((total, send) => total + BigInt(send.inclusion?.feeWei ?? '0'), 0n)
+    .toString()
+}
+
+/**
  * An attempt that never landed and took nothing: the chain gave every one of its payment
  * transactions' nonces to another transaction of the account (another device's, which won the
  * race for the same coin). It moved no money and charged no fee, so it is no row of History.
@@ -491,7 +553,7 @@ export function buildWalletHistoryGroups(input: {
         stampWei: stamps
           .reduce((total, stamp) => total + BigInt(stamp.intendedValueWei), 0n)
           .toString(),
-        feeWei: observedFees(uniqueMembers([operation, ...stamps])).feeWei,
+        feeWei: sendFees(operation, stamps).feeWei,
       })
     }
   if (load.status === 'available') {
@@ -506,37 +568,9 @@ export function buildWalletHistoryGroups(input: {
     // One send of the account is one row on every device: its transactions are grouped by the
     // operation and message their notes name (`notedSendGroupKeys`), as the sending device's
     // journal groups them.
-    const parent = new Map<string, string>()
-    const root = (key: string): string => {
-      let at = key
-      while (parent.get(at) !== at) at = parent.get(at)!
-      return at
-    }
-    const ordered = [...noted]
-      .filter(send => !shown.has(send.txHash.toLowerCase()))
-      .sort(
-        (a, b) =>
-          a.notedAtMs - b.notedAtMs ||
-          a.noteIndex - b.noteIndex ||
-          a.txHash.localeCompare(b.txHash),
-      )
-    const keysOf = new Map(
-      ordered.map(send => [send.txHash, notedSendGroupKeys(send)]),
+    const sends = groupNotedSends(
+      noted.filter(send => !shown.has(send.txHash.toLowerCase())),
     )
-    for (const keys of keysOf.values())
-      for (const key of keys) if (!parent.has(key)) parent.set(key, key)
-    for (const keys of keysOf.values())
-      for (const key of keys.slice(1)) {
-        const [a, b] = [root(keys[0]!), root(key)].sort()
-        parent.set(b!, a!)
-      }
-    const sends = new Map<string, NotedSendStatus[]>()
-    for (const send of ordered) {
-      const key = root(keysOf.get(send.txHash)![0]!)
-      const group = sends.get(key)
-      if (group) group.push(send)
-      else sends.set(key, [send])
-    }
     for (const [key, all] of sends) {
       // What moved between the wallet's own accounts is no send of its own: only its fee is.
       const group = all.filter(send => !send.toOwnAccount)
@@ -562,12 +596,7 @@ export function buildWalletHistoryGroups(input: {
         valueWei: sum(primary),
         stampWei: paid.length ? sum(stamps) : '0',
         sends: group,
-        feeWei: all
-          .reduce(
-            (total, send) => total + BigInt(send.inclusion?.feeWei ?? '0'),
-            0n,
-          )
-          .toString(),
+        feeWei: notedSendFeeWei(all),
         state: notedState(primary),
         timeMs: times.length
           ? Math.max(...times)

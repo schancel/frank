@@ -809,6 +809,9 @@ export interface ContactPaymentInfo {
   state: "planned" | "prepared" | "delivered" | "paid" | "failed" | "released";
   txHash?: string;
   failure?: string;
+  /** From `prepared` on: the native journal operation that holds its signed transaction set
+   * (`readNativeOperation`), the payment and its message's stamp. */
+  operationId?: string;
 }
 
 /** Minimum identity surface accepted by profile, message, and topic capabilities. */

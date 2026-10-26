@@ -169,9 +169,10 @@ function mountOutgoing(
         ChatMessageText: quiet,
         ChatMessageImage: quiet,
         ChatMessageStealth: {
-          props: ['outboundState'],
+          props: ['outboundState', 'outboundPayment', 'stampWei'],
           template:
-            '<span data-testid="stealth-item-owner">{{ outboundState }}</span>',
+            '<span data-testid="stealth-item-owner">{{ outboundState }}</span>' +
+            '<span data-testid="stealth-item-breakdown">{{ outboundPayment ? `fee ${outboundPayment.nativeFeeAtomic}` : "none" }} stamp {{ stampWei }}</span>',
         },
         ChatMessageBlackjack: quiet,
         ChatMessageDigitalGoods: quiet,
@@ -394,3 +395,77 @@ it('shows a Send to Contact payment another device of the account sent as the ch
     wrapper.unmount()
   }
 })
+
+it.each([
+  ['this device, which holds its contact payment record', true],
+  ['another device of the account', false],
+])(
+  'a Send to Contact payment card has the fee breakdown a chat payment card has, on %s',
+  async (_device, recorded) => {
+    const { outgoingStealthPayments } = await import(
+      '../../../utils/outgoing-stealth-payments'
+    )
+    const hash = '0x' + 'ee'.repeat(32)
+    const digest = 'ef'.repeat(32)
+    mockSentPayments.value = recorded
+      ? [
+          {
+            messageId: 'payment',
+            ephemeralPubKey: '02ee',
+            holdsFunds: false,
+            recipientAddress: 'peer',
+            valueWei: 1n,
+            state: 'paid',
+            txHash: hash,
+          },
+        ]
+      : []
+    // What the paying journal (or the chain and the account's notes) showed of it, with the
+    // network fee History shows for the same send.
+    outgoingStealthPayments.set(digest, [
+      {
+        chainIdentifier: 'monad-testnet',
+        operationId: `chain:${digest}`,
+        status: {
+          status: 'succeeded',
+          intendedAmountAtomic: 1n,
+          verifiedReceivedAmountAtomic: 1n,
+          nativeFeeAtomic: 23562n,
+          submitted: true,
+          members: [
+            { txHash: hash, recipientAmountAtomic: 1n, state: 'landed' },
+          ],
+        },
+      },
+    ])
+    const wrapper = mountOutgoing('confirmed', enUS, { attemptDigest: digest })
+    try {
+      const original = wrapper.props('message')
+      await wrapper.setProps({
+        message: {
+          ...original,
+          items: [
+            {
+              type: 'stealth' as const,
+              amount: 1,
+              amountWei: '1',
+              ephemeralPubKey: '02ee',
+              networkTag: 'MONT',
+              transactions: [hash],
+            },
+          ],
+        },
+      })
+      expect(wrapper.get('[data-testid="stealth-item-owner"]').text()).toBe(
+        'paid',
+      )
+      expect(wrapper.get('[data-testid="stealth-item-breakdown"]').text()).toBe(
+        'fee 23562 stamp 5',
+      )
+    } finally {
+      mockSentPayments.value = []
+      outgoingStealthPayments.clear()
+      wrapper.unmount()
+    }
+  },
+)

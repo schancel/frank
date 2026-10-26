@@ -288,8 +288,12 @@ describe('Chat.vue converged geometric stamp suggestion and per-message override
 
     await page.methods.sendMessage.call(self, 'hello')
 
+    // A stamp the user set is the message's own amount: a Retry may not raise it.
     expect(sendDirectMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ stampValue: 5_000n }),
+      expect.objectContaining({
+        stampValue: 5_000n,
+        stampIsDeliveryFee: false,
+      }),
     )
     // After send: override is cleared and composer returns to the converged suggestion (2000)
     expect(setStampWei).toHaveBeenCalledWith({
@@ -298,6 +302,13 @@ describe('Chat.vue converged geometric stamp suggestion and per-message override
     })
     expect(self.isDefaultStampMode).toBe(true)
     expect(self.stampAmount).toBe('2000')
+
+    // The composer's default is only the delivery fee, which a Retry may raise to the minimum.
+    self.message = 'again'
+    await page.methods.sendMessage.call(self, 'again')
+    expect(sendDirectMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stampValue: 2_000n, stampIsDeliveryFee: true }),
+    )
   })
 
   it('offers a bot the default stamp: its payouts and refunds never raise the suggestion', () => {

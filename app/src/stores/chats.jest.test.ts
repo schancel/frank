@@ -1709,6 +1709,8 @@ describe('stores/chats.ts (ticket #42)', () => {
           address: RECIPIENT_ADDRESS,
           items: [{ type: 'text', text: 'fee moved' }],
           stampValue: 1_000n,
+          // The composer's default: only the delivery fee, which the Retry below may raise.
+          stampIsDeliveryFee: true,
         }),
       ).resolves.toEqual({ state: 'failed', reason: 'stamp-below-fee' })
       // One try, at the stamp the user saw; never a second at a higher one.

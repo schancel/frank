@@ -47,6 +47,7 @@ export interface ExecutionMessage extends RecoveryMessage {
   items: MessageItem[]
   conversationId?: string
   stampValueWei?: bigint
+  stampIsDeliveryFee?: Message['stampIsDeliveryFee']
   applicationAuthorization?: Message['applicationAuthorization']
 }
 export interface ExecutionContext {
@@ -581,12 +582,17 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
       )
       if (!stillCurrent()) return { state: 'busy' }
       application?.assertCurrent()
-      // Ordinary chat's manual Retry can use the current minimum. A retained application
-      // authorization fixes its stamp for every retry, including interrupted automatic sends.
+      // A manual Retry may raise to the current minimum only a stamp that is just the delivery
+      // fee the composer chose (`stampIsDeliveryFee`): that was the sender's intent. An amount
+      // the sender typed, or one the message states (a bet, a purchase, a payment), is the
+      // message's meaning: its Retry sends that same amount, and fails again below the minimum
+      // until the sender makes a new one. A retained application authorization fixes its stamp
+      // for every retry, including interrupted automatic sends.
       if (
         !application &&
         manual &&
         !automatic &&
+        message.stampIsDeliveryFee === true &&
         message.delivery?.failureReason === 'stamp-below-fee' &&
         message.stampValueWei !== undefined
       ) {

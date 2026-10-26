@@ -196,6 +196,37 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
     )
     expect(errorNotify).not.toHaveBeenCalled()
   })
+
+  it('a bet names its own amount: never marked as a delivery fee a Retry may raise', async () => {
+    const self = fakeThis({ isDefaultStampMode: true })
+    await methods.sendFollowUpItems.call(self, {
+      items,
+      stampValueWei: 30_000n,
+    })
+    expect(self.sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stampValue: 30_000n,
+        stampIsDeliveryFee: false,
+      }),
+    )
+  })
+
+  it('written content at the composer default is stamped like typed text: only the delivery fee', async () => {
+    const self = fakeThis({ isDefaultStampMode: true })
+    await methods.sendFollowUpItems.call(self, {
+      items: [{ type: 'text', text: 'an attachment' }],
+    })
+    expect(self.sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ stampIsDeliveryFee: true }),
+    )
+    const explicit = fakeThis({ isDefaultStampMode: false })
+    await methods.sendFollowUpItems.call(explicit, {
+      items: [{ type: 'text', text: 'an attachment' }],
+    })
+    expect(explicit.sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ stampIsDeliveryFee: false }),
+    )
+  })
 })
 
 describe('Chat.vue priced action availability and custody affinity', () => {

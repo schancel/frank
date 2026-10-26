@@ -496,6 +496,7 @@ import {
 import { Signature, Transaction } from 'ethers'
 import { getChainRegistryEntry } from '@frank/wallet/chain'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import { RELAY_RPC_MAX_BATCH_CALLS } from '@frank/wallet/evm-provider'
 import {
   formatDisplayAmount,
   registryAmountAdapter,
@@ -633,24 +634,36 @@ export async function discoverUsedPersonasOnChain(
       })
     }
 
-    const res = await fetchFn(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(batchPayload),
-    })
-    if (!res.ok) return []
-    const json = await res.json()
-    if (!Array.isArray(json)) return []
-
+    // The relay refuses a batch over its limit whole, so send the scan in batches it accepts.
+    // A batch that fails leaves its slots unknown; the others still count.
     const byId = new Map<number, string>()
-    for (const entry of json) {
-      if (
-        entry &&
-        typeof entry === 'object' &&
-        typeof entry.id === 'number' &&
-        typeof entry.result === 'string'
-      ) {
-        byId.set(entry.id, entry.result)
+    for (
+      let start = 0;
+      start < batchPayload.length;
+      start += RELAY_RPC_MAX_BATCH_CALLS
+    ) {
+      const chunk = batchPayload.slice(start, start + RELAY_RPC_MAX_BATCH_CALLS)
+      try {
+        const res = await fetchFn(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(chunk),
+        })
+        if (!res.ok) continue
+        const json = await res.json()
+        if (!Array.isArray(json)) continue
+        for (const entry of json) {
+          if (
+            entry &&
+            typeof entry === 'object' &&
+            typeof entry.id === 'number' &&
+            typeof entry.result === 'string'
+          ) {
+            byId.set(entry.id, entry.result)
+          }
+        }
+      } catch {
+        // A transient failure leaves this batch's slots unknown.
       }
     }
 

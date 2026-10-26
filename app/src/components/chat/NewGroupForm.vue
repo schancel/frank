@@ -180,7 +180,10 @@ import {
 } from 'vue'
 import { useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
-import { discoverRelayOrigins } from '@frank/cashweb/relay/relay-discovery'
+import {
+  discoverRelayOrigins,
+  isLoopbackHttpOrigin,
+} from '@frank/cashweb/relay/relay-discovery'
 import { normalizeGroupRelayOrigin } from '@frank/cashweb/groups'
 import { accountSession } from '../../accounts/session'
 import { messagingState } from '../../utils/messaging-state'
@@ -275,6 +278,9 @@ export default defineComponent({
           baseUrl: installedHome,
           fetch: (...args) => fetch(...args),
           signal: discovery.signal,
+          // A home relay on loopback HTTP is a local setup (the lab, a dev relay); its own
+          // origin and peers are loopback too. A public home keeps HTTPS public hints only.
+          allowLoopbackHttp: isLoopbackHttpOrigin(installedHome),
         })
         if (currentHome())
           relayOptions.value = Array.from(new Set([installedHome, ...hints]))

@@ -1,4 +1,8 @@
-import { discoverRelayOrigins, relayDiscoveryOrigin } from './relay-discovery'
+import {
+  discoverRelayOrigins,
+  isLoopbackHttpOrigin,
+  relayDiscoveryOrigin,
+} from './relay-discovery'
 
 const request = (payload: unknown) =>
   jest.fn(
@@ -45,6 +49,14 @@ test('loopback HTTP requires an explicit fixture option', async () => {
       allowLoopbackHttp: true,
     }),
   ).resolves.toEqual(['http://127.0.0.1:9001'])
+})
+
+test('a loopback HTTP origin is recognised; a public or HTTPS one is not', () => {
+  expect(isLoopbackHttpOrigin('http://127.0.0.1:8080')).toBe(true)
+  expect(isLoopbackHttpOrigin('http://localhost:8080')).toBe(true)
+  expect(isLoopbackHttpOrigin('https://127.0.0.1')).toBe(false)
+  expect(isLoopbackHttpOrigin('http://relay.example')).toBe(false)
+  expect(isLoopbackHttpOrigin('not a url')).toBe(false)
 })
 
 it.each([

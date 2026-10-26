@@ -468,6 +468,58 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     wrapper.unmount()
   })
 
+  it('scans persona slots in batches the relay accepts, so a slot past the first batch is still found', async () => {
+    const { discoverUsedPersonasOnChain } = await import(
+      './DappBridgePanel.vue'
+    )
+    // The app scans eleven slots (0..10): 22 calls, over the relay's default batch limit.
+    const slotAddresses = Array.from(
+      { length: 11 },
+      (_, slot) =>
+        deriveDappPersona(testMaster, { kind: 'shared', slot }).address,
+    )
+    const lastSlot = slotAddresses[10].toLowerCase()
+    const batchSizes: number[] = []
+    // Answers as the relay does (cashweb-registry evm_rpc.rs validate_body): a batch over
+    // max_batch_len (default 20) is refused whole with 400 rpc_batch_limit.
+    const relayFetch = jest.fn(async (_url: string, init?: RequestInit) => {
+      const batch = JSON.parse(String(init?.body ?? '[]')) as Array<{
+        id: number
+        method: string
+        params: [string, string]
+      }>
+      batchSizes.push(batch.length)
+      if (batch.length > 20) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 'rpc_batch_limit' }),
+        } as unknown as Response
+      }
+      const response = batch.map(item => ({
+        jsonrpc: '2.0',
+        id: item.id,
+        result:
+          item.params[0].toLowerCase() === lastSlot &&
+          item.method === 'eth_getTransactionCount'
+            ? '0x1'
+            : '0x0',
+      }))
+      return { ok: true, json: async () => response } as unknown as Response
+    })
+
+    const discovered = await discoverUsedPersonasOnChain(slotAddresses, {
+      rpcUrl: RPC,
+      fetchImpl: relayFetch as unknown as typeof fetch,
+      knownMaxIndex: 10,
+    })
+
+    expect(batchSizes.every(size => size <= 20)).toBe(true)
+    expect(batchSizes.reduce((a, b) => a + b, 0)).toBe(22)
+    expect(discovered.find(item => item.index === 10)?.used).toBe(true)
+    expect(discovered.find(item => item.index === 0)).toBeDefined()
+  })
+
   it('automatically discovers used burner personas on-chain and provides a dropdown selector', async () => {
     const { discoverUsedPersonasOnChain } = await import(
       './DappBridgePanel.vue'

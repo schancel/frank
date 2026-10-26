@@ -94,6 +94,12 @@ type RelayFetch = (
 
 const MAX_RELAY_CAPABILITY_RESPONSE_BYTES = 64 * 1024;
 const MAX_RELAY_RPC_RESPONSE_BYTES = 64 * 1024 * 1024;
+/**
+ * The most calls one JSON-RPC batch sent to a relay may hold: the relay's default
+ * `max_batch_len` (backend/cashweb/cashweb-config, `default_rpc_batch_len`). A larger batch is
+ * refused whole with 400 `rpc_batch_limit`.
+ */
+export const RELAY_RPC_MAX_BATCH_CALLS = 20;
 
 async function readBoundedRelayResponse(
   response: RelayFetchResponse,
@@ -1022,7 +1028,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
       // the stale value and sign a second transaction with the nonce it just used.
       cacheTimeout: providerOptions.cacheTimeout ?? -1,
       batchStallTime: providerOptions.batchStallTime ?? 10,
-      batchMaxCount: providerOptions.batchMaxCount ?? 20,
+      batchMaxCount: providerOptions.batchMaxCount ?? RELAY_RPC_MAX_BATCH_CALLS,
       batchMaxSize: providerOptions.batchMaxSize ?? 256 * 1024,
       staticNetwork: true,
     });

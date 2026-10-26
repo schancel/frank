@@ -14,6 +14,16 @@ function loopback(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
 }
 
+/** Whether `value` is an `http:` origin on loopback: a local relay (a lab or dev relay). */
+export function isLoopbackHttpOrigin(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' && loopback(url.hostname)
+  } catch {
+    return false
+  }
+}
+
 /** Canonical bare origin. This validates syntax, not DNS resolution or relay identity. */
 export function relayDiscoveryOrigin(
   value: string,

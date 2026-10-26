@@ -96,7 +96,13 @@ export async function reviewStealthPayment({
     recipientSpendPublicKey,
     amountAtomic: request.amountAtomic,
   }
-  const quote = await payments.quote(intent)
+  // A combined stamp is quoted with the payment: the wallet keeps it back as the payment's
+  // construction will, so the reviewed fee is exactly what the payment and its stamp pay.
+  const quote = await payments.quote(
+    combinedStamp
+      ? { ...intent, messageStamp: { amountAtomic: stampValue } }
+      : intent,
+  )
   await binding.assertCurrent()
   await assertCurrent()
   if (
@@ -194,13 +200,18 @@ export async function reviewStealthPayment({
     return stamp
   }
   const stampQuote = await quoteStamp()
+  const stampFeeAtomic = combinedStamp
+    ? quote.messageStampFeeAtomic
+    : stampQuote.maximumNativeFeeAtomic
+  if (stampFeeAtomic === undefined || stampFeeAtomic < 0n)
+    throw new Error('Payment quote does not include its message stamp fee')
   if (
     combinedStamp &&
     quote.nativeBalanceAtomic <
       quote.amountAtomic +
         quote.estimatedNativeFeeAtomic +
         stampValue +
-        stampQuote.maximumNativeFeeAtomic
+        stampFeeAtomic
   )
     throw new Error(
       'Insufficient funds for the payment, message stamp, and their fees',
@@ -212,7 +223,7 @@ export async function reviewStealthPayment({
       ? {
           messageStamp: {
             amountAtomic: stampValue,
-            maxNativeFeeAtomic: stampQuote.maximumNativeFeeAtomic,
+            maxNativeFeeAtomic: stampFeeAtomic,
           },
         }
       : {}),
@@ -234,7 +245,7 @@ export async function reviewStealthPayment({
       ephemeralPublicKey: quote.ephemeralPublicKey.slice(),
     },
     stampValue,
-    stampFeeAtomic: stampQuote.maximumNativeFeeAtomic,
+    stampFeeAtomic,
     maxNativeFeeAtomic: approved.maxNativeFeeAtomic,
     messagingWallet,
     assertCurrent,

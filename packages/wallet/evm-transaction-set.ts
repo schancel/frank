@@ -987,26 +987,7 @@ export class EvmTransactionSetPreparer {
     const rules = rulesFor(amountWei!)
     const paymentFee = rules.context(0).gas * policy.gasPriceWei
     const single = coins.planTransactionSetSources(rules.selection(false))
-    if (single) {
-      const fee = this.independentFee(single, amountWei!, undefined, policy, rules.context, carve?.reserveWei)
-      if (!carve) { const { carved: _carved, ...quote } = fee; return { amountWei: amountWei!, ...quote } }
-      let changeFeeWei = fee.changeFeeWei, inputCount = fee.inputCount
-      if (!fee.carved) {
-        // As construction: one other coin that covers the reserve alone moves it to its own
-        // fresh account, and what it holds beyond it is split as change.
-        const taken = new Set(single.map(part => part.coin.account))
-        const selection = rules.selection(false, { deficit: carve.reserveWei, maxCoins: 1 })
-        const extra = coins.planTransactionSetSources({ ...selection,
-          canSelect: coin => !taken.has(coin.account) && (selection.canSelect?.(coin) ?? true) })
-        if (!extra) return insufficient()
-        const outputs = this.changeOutputs(policy, extra[0]!.coin.valueWei - carve.reserveWei - changeFee, amountWei!,
-          policy.maxChangeOutputs - 1)
-        changeFeeWei += BigInt(1 + outputs.length) * changeFee
-        inputCount++
-      }
-      return { amountWei: amountWei!, inputCount, consolidationFeeWei: 0n, deliveryFeeWei: fee.deliveryFeeWei,
-        changeFeeWei, feeWei: fee.deliveryFeeWei + changeFeeWei + carve.feeWei }
-    }
+    if (single) return { amountWei: amountWei!, ...this.continuedFee(single, amountWei!, undefined, policy, rules, carve) }
     const parts = coins.planTransactionSetSources(rules.selection(true))
     if (!parts) return insufficient()
     const balance = parts.reduce((sum, part) => sum + part.coin.valueWei - changeFee, 0n)
@@ -1073,14 +1054,18 @@ export class EvmTransactionSetPreparer {
    * What a transaction set paying `amountWei` to `kdf`'s recipients (a contact or stealth
    * payment) would pay now: the coins the same selection would take, the same per-source
    * payments and change split, and so the exact fee of every transaction it would sign. Only
-   * the inputs this amount needs are counted. Nothing is reserved, derived or signed; value
-   * kept back for a continuation (`reserveForContinuationWei`) is authorized and quoted by
-   * that continuation, so it is not part of this fee.
+   * the inputs this amount needs are counted. Nothing is reserved, derived or signed. With a
+   * one-transfer continuation (`reserveForContinuationWei` and `continuationFeeWei`), its
+   * reserve is kept as construction keeps it and its transfer is counted: construction under
+   * `maxFeeWei: feeWei` then makes the same decision.
    */
-  async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts' | 'minimumPaymentWei'>): Promise<EvmTransactionSetQuote> {
+  async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts' | 'minimumPaymentWei' | 'reserveForContinuationWei' | 'continuationFeeWei'>): Promise<EvmTransactionSetQuote> {
     const { journal, coins } = this.options
     const quoteRequest: ConstructEvmTransactionSetRequest = { ...request, operationId: 'quote' }
     this.validateRequest(quoteRequest)
+    const carve = this.continuationCarve(quoteRequest)
+    if (!carve && (request.reserveForContinuationWei ?? 0n) > 0n)
+      throw new Error('Only a one-transfer continuation is quoted with its payment')
     const admittedInput = await journal.captureInputSelection?.()
     const policy = this.options.policy()
     const rules = this.selectionRules(quoteRequest, policy, false, undefined, admittedInput)
@@ -1089,8 +1074,38 @@ export class EvmTransactionSetPreparer {
       this.options.assertFundingObserved?.()
       throw new EvmTransactionSetInsufficientFundsError()
     }
-    const { carved: _carved, ...fee } = this.independentFee(parts, request.amountWei, request.calldata, policy, rules.context)
-    return { amountWei: request.amountWei, ...fee }
+    return { amountWei: request.amountWei, ...this.continuedFee(parts, request.amountWei, request.calldata, policy, rules, carve) }
+  }
+
+  /** The fee of paying `amountWei` from `parts` (`independentFee`) and, for a one-transfer
+   * continuation (`carve`), keeping its reserve as construction keeps it: from the first part
+   * whose residual holds it, else moved by one other coin that covers it alone (what that coin
+   * holds beyond it split as change); and the continuation's own transfer. */
+  private continuedFee(
+    parts: readonly CoinPart[], amountWei: bigint, calldata: string | undefined,
+    policy: EvmTransactionSetPolicy, rules: ReturnType<EvmTransactionSetPreparer['selectionRules']>,
+    carve: { reserveWei: bigint; feeWei: bigint } | undefined,
+  ): Omit<EvmTransactionSetQuote, 'amountWei'> {
+    const { carved, ...fee } = this.independentFee(parts, amountWei, calldata, policy, rules.context, carve?.reserveWei)
+    if (!carve) return fee
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    let changeFeeWei = fee.changeFeeWei, inputCount = fee.inputCount
+    if (!carved) {
+      const taken = new Set(parts.map(part => part.coin.account))
+      const selection = rules.selection(false, { deficit: carve.reserveWei, maxCoins: 1 })
+      const extra = this.options.coins.planTransactionSetSources({ ...selection,
+        canSelect: coin => !taken.has(coin.account) && (selection.canSelect?.(coin) ?? true) })
+      if (!extra) {
+        this.options.assertFundingObserved?.()
+        throw new EvmTransactionSetInsufficientFundsError()
+      }
+      const outputs = this.changeOutputs(policy, extra[0]!.coin.valueWei - carve.reserveWei - changeFee, amountWei,
+        policy.maxChangeOutputs - 1)
+      changeFeeWei += BigInt(1 + outputs.length) * changeFee
+      inputCount++
+    }
+    return { inputCount, consolidationFeeWei: fee.consolidationFeeWei, deliveryFeeWei: fee.deliveryFeeWei,
+      changeFeeWei, feeWei: fee.deliveryFeeWei + changeFeeWei + carve.feeWei }
   }
 
   /** The fee of paying `amountWei` from these sources, each paying its share directly, split

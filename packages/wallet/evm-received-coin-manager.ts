@@ -2068,7 +2068,7 @@ export function createEvmReceivedCoinAndContactManager(
         if (!preparer) throw new Error("Shared native transaction preparation is unavailable");
         return preparer.transactionSetPolicy().dustWei;
       },
-      quoteNative: async (amountWei, recipientAddress, minimumPaymentWei) => {
+      quoteNative: async (amountWei, recipientAddress, minimumPaymentWei, stampWei) => {
         await wallet.refreshTransactionSetInventory?.();
         assertFinancialActive();
         const preparer = wallet.transactionSetPreparer;
@@ -2081,10 +2081,17 @@ export function createEvmReceivedCoinAndContactManager(
           return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: 0n };
         // The fee of the inputs this amount needs, from the selection the payment itself makes
         // (the same arguments `constructNativePayment` receives from the stealth owner).
+        // A combined stamp, kept back as `prepare` keeps it: one fresh account of the stamp and
+        // the fee of the one transfer that pays it.
+        const stampFeeWei = stampWei === undefined ? undefined : policy.paymentGasLimit("0x") * policy.gasPriceWei;
         const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
-          ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei }) });
+          ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei }),
+          ...(stampFeeWei === undefined ? {} : {
+            reserveForContinuationWei: stampWei! + stampFeeWei, continuationFeeWei: stampFeeWei }) });
         assertFinancialActive();
-        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: quote.feeWei };
+        return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance,
+          estimatedNativeFeeAtomic: quote.feeWei - (stampFeeWei ?? 0n),
+          ...(stampFeeWei === undefined ? {} : { messageStampFeeAtomic: stampFeeWei }) };
       },
       constructNativePayment: async (request) => {
         const preparer = wallet.transactionSetPreparer;

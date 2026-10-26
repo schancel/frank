@@ -105,11 +105,15 @@ export interface EvmStealthPaymentDriver {
    * classified by (`chain/payment-floor.ts`). */
   paymentFloorWei(): Promise<bigint>
   /** Balance, and the fee of paying `amountWei` to `recipientAddress` (0 when no amount is
-   * given: the balance alone is asked for), each part at least `minimumPaymentWei`. */
-  quoteNative(amountWei: bigint, recipientAddress?: string, minimumPaymentWei?: bigint): Promise<{
+   * given: the balance alone is asked for), each part at least `minimumPaymentWei`. With
+   * `stampWei`, a combined stamp kept back as `prepare` keeps it (one fresh account paid by one
+   * transfer): `estimatedNativeFeeAtomic` counts keeping it, `messageStampFeeAtomic` is that
+   * transfer's fee. */
+  quoteNative(amountWei: bigint, recipientAddress?: string, minimumPaymentWei?: bigint, stampWei?: bigint): Promise<{
     nativeBalanceAtomic: bigint
     assetBalanceAtomic: bigint
     estimatedNativeFeeAtomic: bigint
+    messageStampFeeAtomic?: bigint
   }>
   constructNativePayment(
     params: ConstructEvmTransactionSetRequest,
@@ -632,11 +636,15 @@ export function createEvmStealthPayments(
       return driver.tokenAvailable(asset.contractAddress)
     },
     quote: (input) => {
+      const { messageStamp, ...rest } = input
       const intent = {
-        ...input,
+        ...rest,
         asset: { ...input.asset },
         recipientSpendPublicKey: new Uint8Array(input.recipientSpendPublicKey),
       }
+      if (messageStamp !== undefined && (input.asset.kind !== 'native' ||
+          messageStamp.amountAtomic <= 0n || messageStamp.amountAtomic >= 1n << 256n))
+        throw new Error('Invalid combined message stamp')
       return exclusive(intent.operationId, async () => {
         const intentRow = await ensureIntent(intent)
         const row = await ensureAllocation(intentRow)
@@ -652,7 +660,8 @@ export function createEvmStealthPayments(
             ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
             sources: [],
             ...await driver.quoteNative(BigInt(row.amountAtomic), row.recipientAddress,
-              row.minimumPaymentWei === undefined ? undefined : BigInt(row.minimumPaymentWei)),
+              row.minimumPaymentWei === undefined ? undefined : BigInt(row.minimumPaymentWei),
+              messageStamp?.amountAtomic),
           } satisfies StealthPaymentQuote
         const sources = row.allocation!.sources.map((source) => ({
           sourceAddress: source.sourceAddress,
@@ -767,8 +776,14 @@ export function createEvmStealthPayments(
                     minimumPaymentWei: BigInt(row.minimumPaymentWei) }),
                   kdf: () => row.recipientAddress,
                   maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
-                  ...(intent.messageStamp ? { reserveForContinuationWei:
-                    intent.messageStamp.amountAtomic + intent.messageStamp.maxNativeFeeAtomic } : {}),
+                  // The stamp is kept back as one fresh account its one transfer spends, and
+                  // that transfer's fee is part of the bound: a stamp that would not fit is
+                  // refused here, before anything is signed.
+                  ...(intent.messageStamp ? {
+                    reserveForContinuationWei:
+                      intent.messageStamp.amountAtomic + intent.messageStamp.maxNativeFeeAtomic,
+                    continuationFeeWei: intent.messageStamp.maxNativeFeeAtomic,
+                  } : {}),
                 })
               : await driver.signIndependentPayment({
                   preparationId: `stealth-payment:${intent.operationId}`,

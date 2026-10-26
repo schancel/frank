@@ -4,8 +4,23 @@ import type {
 } from '@frank/cashweb/types/messages'
 import type {
   DirectMessageAttemptStatus,
+  DirectMessageEnd,
   WalletHandle,
 } from '@frank/wallet/chain'
+import type { OutgoingFailureReason } from '@frank/cashweb/types/messages'
+
+/** What a message the wallet reports `dead` shows: why the wallet says it ended. Only an end
+ * the relay gave is "rejected"; one the wallet ended itself over the approved fee, before
+ * anything was signed or handed out, says so (nothing was paid, its funds are back). A wallet
+ * that cannot say (no `endOf`) leaves the relay's answer. (`outgoing-execution.ts` makes the
+ * same mapping; its boundary admits no runtime import from here.) */
+function failureOfEnd(
+  end: DirectMessageEnd | undefined,
+): OutgoingFailureReason {
+  if (end?.reason === 'fee-exceeded') return 'fee-exceeded'
+  if (end?.reason === 'discarded') return 'error'
+  return 'rejected'
+}
 
 export interface RecoveryMessage {
   outbound: boolean
@@ -32,6 +47,11 @@ export interface RecoveryContext {
     wallet: WalletHandle,
     payloadDigests: string[],
   ): Promise<Record<string, DirectMessageAttemptStatus>>
+  /** Why a `dead` attempt ended, as the wallet records it (`DirectMessageClient.endOf`). */
+  endOf?(
+    wallet: WalletHandle,
+    payloadDigest: string,
+  ): Promise<DirectMessageEnd | undefined>
 }
 export interface OutgoingRecoveryPorts<M extends RecoveryMessage> {
   message(id: string): M | undefined
@@ -357,7 +377,13 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
                   {
                     attemptDigest: entry.digest,
                     failureReason:
-                      applied === 'dead' ? 'rejected' : 'unverified',
+                      applied === 'dead'
+                        ? failureOfEnd(
+                            await context
+                              .endOf?.(wallet, entry.digest as string)
+                              .catch(() => undefined),
+                          )
+                        : 'unverified',
                   },
                   { assertCurrent: entry.assertCurrent },
                 )

@@ -179,6 +179,7 @@ export type {
   ChainFamily,
   ChainTransaction,
   DirectMessageAttemptStatus,
+  DirectMessageEnd,
   DirectMessagePaymentSummary,
   DirectMessageClient,
   DirectMessageStampQuote,

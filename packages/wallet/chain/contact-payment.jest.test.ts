@@ -53,6 +53,9 @@ import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '../evm-transaction-set-types'
 import { evmPaymentFloorWei } from './payment-floor'
+import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
+import { EvmTransactionSetFeeExceededError } from '../evm-transaction-set'
+import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/stealth-asset/from-prepared'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -635,14 +638,21 @@ describe('a payment to a contact', () => {
       // The network's price doubles between the payment and its stamp: the stamp's transfer no
       // longer fits under the approved fee, and is refused before it is signed.
       policyGasPriceWei = 2n
+      const messageId = '33333333-4444-4555-8666-777777777777'
       await expect(
         f.chain.directMessages.send({
           wallet: alice,
           recipient: bob.identity.address,
+          messageId,
           items: [prepared.item],
           stampValue: prepared.stampValue,
         }),
       ).rejects.toBeInstanceOf(NativeFeeExceededError)
+      // Asked later (a Retry's reconciliation), the wallet says why it ended: over the fee.
+      const attempt = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId })
+      expect(
+        await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: attempt!.payloadDigest }),
+      ).toEqual({ reason: 'fee-exceeded' })
       // The message learned of the payment, but nothing of either was handed to anyone: the
       // payment is released, its coins free, and every view says so.
       expect(node.broadcasts).toEqual([])
@@ -654,6 +664,80 @@ describe('a payment to a contact', () => {
       expect(
         coinsOf(alice).filter(coin => coin.spendable).map(coin => coin.amountWei).sort(),
       ).toEqual([...RECEIVED].sort())
+    })
+
+    describe('a chat stealth payment with its stamp', () => {
+      const intentFor = (operationId: string) => ({
+        operationId,
+        chainIdentifier: 'monad-testnet',
+        asset: { kind: 'native' as const },
+        recipientSpendPublicKey: bob.identity.compressedPubKey,
+        amountAtomic: VALUE,
+      })
+
+      it('the first attempt is built from the selection its review quoted, and pays exactly the reviewed fee', async () => {
+        const intent = intentFor('stealth-lab-shaped')
+        const quote = await alice.stealthPayments!.quote!({
+          ...intent,
+          messageStamp: { amountAtomic: STAMP_HERE },
+        })
+        const prepared = await alice.stealthPayments!.prepare({
+          ...intent,
+          maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+          messageStamp: { amountAtomic: STAMP_HERE, maxNativeFeeAtomic: TRANSFER },
+        })
+        let attempt: string | undefined
+        await f.chain.directMessages
+          .send({
+            wallet: alice,
+            recipient: bob.identity.address,
+            messageId: '22222222-3333-4444-8555-666666666666',
+            paymentOperationId: intent.operationId,
+            stampValue: STAMP_HERE,
+            items: [recipientAssetPaymentFromPrepared(prepared)],
+            onAttemptCreated: digest => {
+              attempt = digest
+            },
+            onEnvelopeDurable: digest =>
+              alice.stealthPayments!.expose({ operationId: intent.operationId, payloadDigest: digest }),
+          })
+          .catch(error => {
+            expect(error).toBeInstanceOf(MonadStampPendingAttemptError)
+          })
+        for (let pass = 0; pass < 5 && attempt !== undefined; pass++)
+          await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [attempt] })
+        expect(bobMailbox).toHaveLength(1)
+        const operation = alice.getNativeOperations!().find(row =>
+          row.preparationId === `evm-transaction-set:${evmStealthTransactionSetOperationId(intent.operationId)}`)!
+        const raws = operation.members.map(member => member.signed!.rawTransaction)
+        // Every transaction of the payment and its stamp, under the fee the review showed.
+        expect(feeOf(raws)).toBe(quote.estimatedNativeFeeAtomic + TRANSFER)
+        const paid = operation.members
+          .filter(member => member.transactionSet?.role === 'payment')
+          .reduce((sum, member) => sum + Transaction.from(member.signed!.rawTransaction).value, 0n)
+        expect(paid).toBe(VALUE + STAMP_HERE)
+        // The stamp is paid by one transfer, kept back by the payment's own construction.
+        expect(quote.messageStampFeeAtomic).toBe(TRANSFER)
+      })
+
+      it('a stamp that would not fit under the approved fee is refused before anything is signed, and nothing is held', async () => {
+        const intent = intentFor('stealth-over-bound')
+        // Room for the payment's transfer and one more, and the stamp's transfer: not for the
+        // transfer that keeps the stamp's account as well. Refused at the payment.
+        await expect(
+          alice.stealthPayments!.prepare({
+            ...intent,
+            maxNativeFeeAtomic: 2n * TRANSFER - 1n,
+            messageStamp: { amountAtomic: STAMP_HERE, maxNativeFeeAtomic: TRANSFER },
+          }),
+        ).rejects.toBeInstanceOf(EvmTransactionSetFeeExceededError)
+        expect(alice.getNativeOperations!().filter(row => !row.cancelled)).toEqual([])
+        expect(node.broadcasts).toEqual([])
+        expect(bobMailbox).toEqual([])
+        expect(
+          coinsOf(alice).filter(coin => coin.spendable).map(coin => coin.amountWei).sort(),
+        ).toEqual([...RECEIVED].sort())
+      })
     })
 
     it('a held payment whose set left the wallet is failed and holds nothing once the chain shows every coin of it spent by other transactions', async () => {

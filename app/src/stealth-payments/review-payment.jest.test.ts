@@ -431,7 +431,11 @@ function combinedNativeQuote(balance = 119n) {
     sourceAddress: undefined,
     sources: [],
   })
-  mockQuote.mockImplementation(async intent => observed(intent.operationId))
+  // The wallet quotes a combined stamp with the payment: the one transfer paying it.
+  mockQuote.mockImplementation(async intent => ({
+    ...observed(intent.operationId),
+    ...(intent.messageStamp ? { messageStampFeeAtomic: 2n } : {}),
+  }))
   mockPrepare.mockImplementation(async intent => ({
     ...observed(intent.operationId),
     members: [
@@ -452,6 +456,10 @@ test('reviews one shared native operation including its stamp budget without exc
     isCurrent: () => true,
   })
   expect(mockPrepare).not.toHaveBeenCalled()
+  // The stamp is quoted with the payment, by the wallet that builds them both.
+  expect(mockQuote).toHaveBeenCalledWith(
+    expect.objectContaining({ messageStamp: { amountAtomic: 7n } }),
+  )
   expect(mockStampQuote).toHaveBeenCalledWith({
     wallet: mockWallet,
     stampValue: 7n,

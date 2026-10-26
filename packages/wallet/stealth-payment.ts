@@ -101,6 +101,11 @@ export interface StealthPaymentQuote {
   readonly nativeBalanceAtomic: bigint
   readonly assetBalanceAtomic: bigint
   readonly estimatedNativeFeeAtomic: bigint
+  /** Quoted with a combined same-chain stamp (`messageStamp` of the quoted intent): the fee of
+   * the one transfer that pays the stamp, the stamp's `maxNativeFeeAtomic` to approve.
+   * `estimatedNativeFeeAtomic` then already counts what the payment does to keep the stamp
+   * back, so the two together are exactly what the prepared payment and its stamp pay. */
+  readonly messageStampFeeAtomic?: bigint
 }
 
 /** The payment would need more owned accounts than one operation may sign (16). Funds may be
@@ -121,7 +126,11 @@ export interface StealthPaymentCapability {
   /** Read-only chain observation; retains the operation's unsigned intent/derivation.
    * Does not sign, expose, submit, reserve funds, or authorize a fee ceiling. */
   quote?(
-    intent: Omit<StealthPaymentIntent, 'maxNativeFeeAtomic'>,
+    intent: Omit<StealthPaymentIntent, 'maxNativeFeeAtomic' | 'messageStamp'> & {
+      /** A combined same-chain stamp (`supportsCombinedStamp`, native only) to quote with the
+       * payment; see `StealthPaymentQuote.messageStampFeeAtomic`. */
+      readonly messageStamp?: { readonly amountAtomic: bigint }
+    },
   ): Promise<StealthPaymentQuote>
   /** Reserves inputs and durably saves signed bytes without submitting them. */
   prepare(intent: StealthPaymentIntent): Promise<PreparedStealthPayment>

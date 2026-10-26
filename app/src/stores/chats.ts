@@ -2570,6 +2570,9 @@ function createChatOutgoingRecovery(owner: RecoveryOwner) {
             payloadDigests,
             maxPutAttempts: 1,
           }),
+        endOf: (wallet, payloadDigest) =>
+          messagingChain.directMessages.endOf?.({ wallet, payloadDigest }) ??
+          Promise.resolve(undefined),
       }
     },
     resultAssertion: (wallet, id, message, digest, current) =>

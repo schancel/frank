@@ -426,10 +426,13 @@ export interface NativeWalletHandle {
   }>;
   /**
    * When each of these blocks was made (epoch ms), read from the chain, for dating transactions
-   * the journal saw included. Keyed by block hash; a block the node does not return is left out.
-   * Read only, never rejects for a block it cannot read; rejects only for a closed wallet.
+   * the journal saw included. Keyed by block hash; a block the node does not return, or whose
+   * hash at that height is another, is left out. Read only, never rejects for a block it cannot
+   * read; rejects only for a closed wallet.
    */
-  readBlockTimes?(blockHashes: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  readBlockTimes?(
+    blocks: readonly { blockNumber: number; blockHash: string }[]
+  ): Promise<ReadonlyMap<string, number>>;
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;

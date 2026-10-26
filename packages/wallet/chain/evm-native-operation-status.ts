@@ -49,11 +49,14 @@ export interface EvmNativeOperationStatus {
   }[];
   readonly observedFeeWei: string;
   readonly feeCoverage: "complete" | "partial" | "unknown";
-  /** The note that tells the account's other devices about this operation: `shared` once the
-   * relay took it for every member, `failed` when this session's last attempt did not get through
-   * (it is tried again), `not-shared` otherwise. Information only, never the payment's outcome,
-   * and not a confirmation that another device applied it. */
-  readonly sharing: "shared" | "not-shared" | "failed";
+  /** The note that tells the account's other devices about this operation. Only a member
+   * included with success has one (a reverted, replaced, cancelled or unsent member is never
+   * shared). `shared` once the relay took it for every such member, `failed` when this session's
+   * last attempt did not get through (it is tried again), `not-shared` otherwise, and `none` while
+   * no member has landed (nothing to share; a transfer that never lands never has any).
+   * Information only, never the payment's outcome, and not a confirmation that another device
+   * applied it. */
+  readonly sharing: "shared" | "not-shared" | "failed" | "none";
 }
 
 /** Pure projection of validated owner rows; never exposes signing bytes or derivation material. */
@@ -156,7 +159,15 @@ export function summarizeEvmNativeOperation(
         : observed.length
         ? "partial"
         : "unknown",
-    sharing: row.members.every((member) => member.syncApplied)
+    sharing: !row.members.some(
+      (member) => member.observation.state === "included-success"
+    )
+      ? "none"
+      : row.members.every(
+          (member) =>
+            member.observation.state !== "included-success" ||
+            member.syncApplied
+        )
       ? "shared"
       : syncFailed
       ? "failed"

@@ -286,8 +286,10 @@ export interface CanonicalMessagingOwner {
     /** Gives back the coins of the payment operation `id` (a message's `paymentOperationId`)
      * through the owner of that payment, which itself proves that nothing of it was exposed.
      * True once it is released (also when it already was); false: it may have been exposed
-     * and stays held. */
-    releasePaymentOperation?: (id: string) => Promise<boolean>
+     * and stays held. `endedMessage` is the digest of the message that ended without being
+     * signed or handed to anyone: the payment's owner may release a payment that learned that
+     * message's digest, since that message is now proved never to have left the wallet. */
+    releasePaymentOperation?: (id: string, endedMessage: string) => Promise<boolean>
     sendTransaction: (prepared: import('../evm-transaction-set-types').PreparedEvmTransactionSet) => Promise<import('../transaction-set').TransactionSetSubmission>
   }
   signDigest(digest: Uint8Array): Uint8Array
@@ -1079,7 +1081,7 @@ async function releaseEndedPayment(
 ): Promise<void> {
   if (row.outcome !== 'dead' || !unconstructed(row) || !row.paymentOperationId || row.paymentReleased)
     return
-  if (!(await owner.transactionSets?.releasePaymentOperation?.(row.paymentOperationId))) {
+  if (!(await owner.transactionSets?.releasePaymentOperation?.(row.paymentOperationId, row.digest))) {
     console.warn(
       `[monad-canonical-dm] the payment of ended message ${row.digest} was not released: it may have been exposed, so its coins stay held.`,
     )

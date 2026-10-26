@@ -548,6 +548,10 @@ export interface ContactPayment {
   readonly txHash?: string
   readonly payloadDigest?: string
   readonly failure?: string
+  /** `failed` because the chain shows every transaction of its signed set unable to land: each
+   * one's nonce was used by another transaction (another device spent its coins). Nothing of it
+   * can be paid any more, so it holds nothing. */
+  readonly spentElsewhere?: true
   readonly createdAtMs: number
 }
 

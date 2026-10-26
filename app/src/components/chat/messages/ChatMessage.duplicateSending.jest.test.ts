@@ -344,3 +344,53 @@ it('associates each rendered stealth item with its own transaction group, even w
     wrapper.unmount()
   }
 })
+
+it('shows a Send to Contact payment another device of the account sent as the chain shows it, not as not checked', async () => {
+  const { outgoingStealthPayments } = await import(
+    '../../../utils/outgoing-stealth-payments'
+  )
+  const hash = '0x' + 'cc'.repeat(32)
+  const digest = 'dd'.repeat(32)
+  // This device holds no contact payment record of it; the chain showed its transfer landed.
+  mockSentPayments.value = []
+  outgoingStealthPayments.set(digest, [
+    {
+      chainIdentifier: 'monad-testnet',
+      operationId: `chain:${digest}`,
+      status: {
+        status: 'succeeded',
+        intendedAmountAtomic: 1n,
+        verifiedReceivedAmountAtomic: 1n,
+        submitted: true,
+        members: [{ txHash: hash, recipientAmountAtomic: 1n, state: 'landed' }],
+      },
+    },
+  ])
+  const wrapper = mountOutgoing('confirmed', enUS, { attemptDigest: digest })
+  try {
+    const original = wrapper.props('message')
+    await wrapper.setProps({
+      message: {
+        ...original,
+        items: [
+          {
+            type: 'stealth' as const,
+            amount: 1,
+            amountWei: '1',
+            ephemeralPubKey: '02cc',
+            networkTag: 'MONT',
+            transactions: [hash],
+          },
+        ],
+      },
+    })
+    expect(
+      wrapper
+        .findAll('[data-testid="stealth-item-owner"]')
+        .map(card => card.text()),
+    ).toEqual(['paid'])
+  } finally {
+    outgoingStealthPayments.clear()
+    wrapper.unmount()
+  }
+})

@@ -666,7 +666,7 @@ export default defineComponent({
                 )
               : 'unknown',
         }))
-        const state =
+        const recorded =
           this.message.outbound && chain?.id === activeChain.chainIdentifier
             ? contactPaymentState(
                 this.sentContactPayments,
@@ -674,6 +674,23 @@ export default defineComponent({
                 transactions.map(tx => tx.txHash),
               )
             : 'unknown'
+        // No record of it here (another device of the account sent it): what the chain shows
+        // of its transfers, as a payment in a chat sent from another device reads.
+        const digest = (
+          this.message.delivery?.attemptDigest ?? this.message.payloadDigest
+        )?.toLowerCase()
+        const state =
+          recorded === 'unknown' &&
+          this.message.outbound &&
+          chain &&
+          digest !== undefined
+            ? sentStealthAssetDetail(outgoingStealthPayments.get(digest), {
+                transfers: transactions.map(tx => ({
+                  chainIdentifier: chain.id,
+                  txId: tx.txHash,
+                })),
+              }).state
+            : recorded
         return [
           {
             itemIndex,

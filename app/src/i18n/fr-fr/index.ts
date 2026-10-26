@@ -1586,6 +1586,7 @@ export const rawFrFR = {
       'group-write': "Frais d'écriture dans un groupe",
       'transfer': 'À',
     },
+    stamp: 'Timbre de message {amount} {unit}',
     fee: 'Frais de réseau {amount} {unit}',
     noted: 'Lu dans les notes que vos appareils partagent entre eux.',
     receivedPayment: 'Paiement reçu',

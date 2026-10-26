@@ -191,3 +191,97 @@ test('messages without a stealth payment, received ones, and wallets that cannot
   ).toBe(1)
   expect(shown().state).toBe('unsent')
 })
+
+test('a payment whose transfers landed before its fee was known is read again until the fee is known', async () => {
+  const journal = {
+    now: status({
+      status: 'succeeded',
+      submitted: true,
+      verifiedReceivedAmountAtomic: 2000n,
+      states: ['landed', 'landed'],
+    }) as StealthPaymentStatus | undefined,
+  }
+  const { wallet, asked } = owner(journal)
+  const messages = [sentMessage()]
+  // The transfers landed; their change has not yet, so the fee is not known.
+  expect(await refreshOutgoingStealthPayments([wallet], messages)).toBe(1)
+  expect(shown().payment?.nativeFeeAtomic).toBeUndefined()
+  journal.now = { ...journal.now!, nativeFeeAtomic: 42000n }
+  asked.length = 0
+  expect(await refreshOutgoingStealthPayments([wallet], messages)).toBe(0)
+  expect(asked).toEqual(['op-1'])
+  expect(shown().payment?.nativeFeeAtomic).toBe(42000n)
+})
+
+test('a Send to Contact payment another device sent reads as the chain shows it, with the fee its operation paid', async () => {
+  const { Wallet } = await import('ethers')
+  const { resolveChainIdentifier } = await import(
+    '@frank/wallet/chain/chains-registry'
+  )
+  const chain = resolveChainIdentifier('monad-regtest')!
+  const signer = Wallet.createRandom()
+  const to = '0x' + '5c'.repeat(20)
+  const rawTx = await signer.signTransaction({
+    type: 2,
+    chainId: 20143n, // monad-regtest (docs/protocol/chains/v1.json)
+    nonce: 0,
+    to,
+    value: 500n,
+    gasLimit: 21000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  })
+  const { Transaction } = await import('ethers')
+  const txHash = Transaction.from(rawTx).hash!.toLowerCase()
+  const operation = { id: 'evm-transaction-set:contact-' + 'ab'.repeat(16) }
+  const noted = (hash: string, feeWei: string, stage?: string) => ({
+    txHash: hash,
+    from: signer.address.toLowerCase(),
+    nonce: 0,
+    to,
+    valueWei: '1',
+    call: false,
+    purpose: 'contact-payment' as const,
+    operation: stage ? { ...operation, stage } : operation,
+    noteIndex: 0,
+    notedAtMs: 1,
+    state: 'included' as const,
+    inclusion: {
+      status: 'success' as const,
+      blockNumber: 1,
+      blockHash: '0x' + '01'.repeat(32),
+      feeWei,
+    },
+  })
+  const notes = [
+    noted(txHash, '30'),
+    // Its change, and the message's stamp appended to it (not the payment's fee).
+    noted('0x' + 'c1'.repeat(32), '12'),
+    noted('0x' + 'c2'.repeat(32), '99', 'stamp-' + 'ab'.repeat(16)),
+  ]
+  const other: StealthPaymentOwner = {
+    chainIdentifier: chain.id,
+    // This device's journal has no record of it.
+    stealthPayments: { list: async () => [], status: async () => undefined },
+    evmReader: {
+      getTransactionReceipt: async hash =>
+        hash.toLowerCase() === txHash ? { to, status: 1 } : null,
+    },
+    getNotedSends: async () => notes,
+  }
+  const message = sentMessage({
+    items: [
+      {
+        type: 'stealth',
+        networkTag: chain.id,
+        transactions: [rawTx.slice(2)],
+      },
+    ],
+  })
+  expect(await refreshOutgoingStealthPayments([other], [message])).toBe(0)
+  const detail = sentStealthAssetDetail(outgoingStealthPayments.get(DIGEST), {
+    transfers: [{ chainIdentifier: chain.id, txId: txHash }],
+  })
+  expect(detail.state).toBe('paid')
+  expect(detail.payment?.nativeFeeAtomic).toBe(42n)
+})

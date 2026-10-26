@@ -23,6 +23,7 @@ import { join } from 'path'
 
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import {
+  ContactPaymentBelowFloorError,
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
   type ReceivedPayment,
@@ -456,6 +457,80 @@ describe('a payment to a contact', () => {
     } finally {
       await restored.close()
     }
+  })
+
+  it('a payment below the payment floor is refused before anything is signed, saved or sent', async () => {
+    // Ten moves of 21,000 gas at this node's price of 1: what the contact must be able to move.
+    const floor = evmPaymentFloorWei(1n)
+    expect(await f.chain.directMessages.minimumStamp!({ wallet: alice })).toBe(floor)
+    const below = { recipient: bob.identity.address, value: floor - 1n, stampValue: 0n }
+    for (const attempt of [
+      () => alice.prepareContactPayment!(below),
+      () => alice.sendToContact!(below),
+      () => alice.quoteContactPayment!(below),
+    ]) {
+      const refused = await attempt().catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(ContactPaymentBelowFloorError)
+      expect(refused).toMatchObject({ valueWei: floor - 1n, floorWei: floor })
+    }
+    expect(alice.getContactPayments!()).toEqual([])
+    expect(alice.getNativeOperations!()).toEqual([])
+    expect(node.broadcasts).toEqual([])
+    expect(bobMailbox).toEqual([])
+
+    // At the floor it is a payment like any other.
+    const sent = await sendContact({ recipient: bob.identity.address, value: floor })
+    expect(node.broadcasts.find(tx => tx.hash === sent.txHash)!.value).toBe(floor)
+  })
+
+  it('the quote names the payment, the stamp and the network fee of both, and their total', async () => {
+    const quote = await alice.quoteContactPayment!({
+      recipient: bob.identity.address,
+      value: VALUE,
+      stampValue: STAMP,
+    })
+    const paymentFee = (
+      await alice.estimateLegacyFee!({ recipient: bob.identity.address, value: VALUE })
+    ).totalFee
+    // The stamp is one more transfer of 21,000 gas at price 1.
+    expect(quote).toEqual({
+      valueWei: VALUE,
+      stampWei: STAMP,
+      networkFeeWei: paymentFee + 21_000n,
+      totalWei: VALUE + STAMP + paymentFee + 21_000n,
+      floorWei: evmPaymentFloorWei(1n),
+    })
+    // Nothing was taken or signed to quote it.
+    expect(alice.getContactPayments!()).toEqual([])
+    expect(node.broadcasts).toEqual([])
+  })
+
+  it('a received payment below the floor is too small to move, by the same test as the balance', async () => {
+    const sent = await sendContact({ recipient: bob.identity.address, value: VALUE })
+    await poll(bob)
+    await settle(bob)
+    const coin = () =>
+      coinsOf(bob).find(c => c.address === sent.stealthAddress.toLowerCase())!
+    expect(coin()).toMatchObject({ status: 'received', spendable: true })
+    expect(coin().tooSmall).toBeUndefined()
+    const before = await bob.getBalanceParts!()
+    expect(before.tooSmall).toBe(0n)
+
+    // The gas price rises: ten moves now cost more than the coin holds.
+    policyGasPriceWei = 1_000n
+    bob.invalidateBalanceCache!()
+    const parts = await bob.getBalanceParts!()
+    expect(coin()).toMatchObject({ status: 'received', spendable: true, tooSmall: true })
+    // The balance holds it back too: listed as too small, not counted.
+    const tooSmall = bob.getReceivedPayments!().filter(p => p.tooSmall)
+    expect(parts.tooSmall).toBe(tooSmall.reduce((sum, p) => sum + p.amountWei, 0n))
+    expect(parts.tooSmallCount).toBe(tooSmall.length)
+    expect(parts.received).toBe(before.received - parts.tooSmall)
+    // And the balance's observation carries these very parts.
+    expect(bob.getBalanceObservation!()).toMatchObject({
+      balance: await bob.getBalance(),
+      parts,
+    })
   })
 
   it('a relay failure retains the original payment and message while unrelated inputs remain usable', async () => {

@@ -252,7 +252,12 @@ export interface NativeWalletHandle {
   getBalance(): Promise<bigint>;
   /** Display-only last complete observation, with current reservations excluded. Undefined
    * until observed; age and refresh failures must remain visible. Never authorizes spending. */
-  getBalanceObservation?(): { balance: bigint; observedAt: number } | undefined;
+  /** The last balance read: `balance` (what `getBalance` answered) and, when it was read in
+   * this session, the `parts` it is the sum of. A screen that shows the balance and its
+   * breakdown shows both from this one read, so they never disagree. */
+  getBalanceObservation?():
+    | { balance: bigint; observedAt: number; parts?: WalletBalanceParts }
+    | undefined;
   /** Optional financial adapter. Message construction and transport remain with the host. */
   readonly stealthPayments?: import("../stealth-payment").StealthPaymentCapability;
   /** Recipient derivation/chain verification, distinct from outgoing wallet synchronization. */
@@ -272,15 +277,7 @@ export interface NativeWalletHandle {
    * floor right now (`chain/payment-floor.ts`: ten times what moving one costs). They are held,
    * not spendable money. Zero when the gas price is not known yet.
    */
-  getBalanceParts?(): Promise<{
-    main: bigint;
-    profile: bigint;
-    received: bigint;
-    receivedCount: number;
-    sending: bigint;
-    tooSmall: bigint;
-    tooSmallCount: number;
-  }>;
+  getBalanceParts?(): Promise<WalletBalanceParts>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
   getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
   /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */
@@ -318,6 +315,13 @@ export interface NativeWalletHandle {
   prepareContactPayment?(
     params: ContactSendParams
   ): Promise<PreparedContactPayment>;
+  /** What a payment to a contact will cost, for review, without taking or signing anything:
+   * the payment, the message's stamp and the network fee of both, each apart, and their total.
+   * Refuses a payment below the payment floor (`ContactPaymentBelowFloorError`), as
+   * `prepareContactPayment` does. */
+  quoteContactPayment?(
+    params: Pick<ContactSendParams, "recipient" | "value" | "stampValue">
+  ): Promise<ContactPaymentQuote>;
   /** Finishes every payment to a contact whose message is not delivered yet. A mailbox read does
    * this by itself; it never signs or pays anything new and never rejects. */
   resumeContactPayments?(): Promise<void>;
@@ -422,10 +426,13 @@ export interface NativeWalletHandle {
   }>;
   /**
    * When each of these blocks was made (epoch ms), read from the chain, for dating transactions
-   * the journal saw included. Keyed by block hash; a block the node does not return is left out.
-   * Read only, never rejects for a block it cannot read; rejects only for a closed wallet.
+   * the journal saw included. Keyed by block hash; a block the node does not return, or whose
+   * hash at that height is another, is left out. Read only, never rejects for a block it cannot
+   * read; rejects only for a closed wallet.
    */
-  readBlockTimes?(blockHashes: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  readBlockTimes?(
+    blocks: readonly { blockNumber: number; blockHash: string }[]
+  ): Promise<ReadonlyMap<string, number>>;
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;
@@ -615,6 +622,36 @@ export interface PreparedContactPayment {
   value: bigint;
 }
 
+/** What a payment to a contact costs its sender, each part apart (`quoteContactPayment`). */
+export interface ContactPaymentQuote {
+  /** What the contact receives. */
+  valueWei: bigint;
+  /** The message's stamp, paid to the contact apart from the payment. */
+  stampWei: bigint;
+  /** The network fee of the payment's transfers and of the stamp's. */
+  networkFeeWei: bigint;
+  /** Everything taken from the wallet: payment, stamp and network fee. */
+  totalWei: bigint;
+  /** The smallest payment the wallet makes right now (the payment floor). */
+  floorWei: bigint;
+}
+
+/** Where a wallet's balance is (`getBalanceParts`). The balance is `balanceOfParts` of it. */
+export interface WalletBalanceParts {
+  main: bigint;
+  profile: bigint;
+  received: bigint;
+  receivedCount: number;
+  sending: bigint;
+  tooSmall: bigint;
+  tooSmallCount: number;
+}
+
+/** The balance the parts make: everything a send can draw on, never `tooSmall`. */
+export function balanceOfParts(parts: WalletBalanceParts): bigint {
+  return parts.main + parts.profile + parts.received + parts.sending;
+}
+
 /** A payment to a contact: a transfer to a one-time address only the contact can spend from, and
  * the message that tells the contact's wallet where it is. */
 export interface ContactSendParams {
@@ -730,6 +767,18 @@ export class ContactPaymentTooLargeError extends RangeError {
   constructor(message: string) {
     super(message);
     this.name = "ContactPaymentTooLargeError";
+  }
+}
+
+/** Refused before anything is signed: the amount is below the payment floor
+ * (`chain/payment-floor.ts`), so the recipient could not move the coin it makes for less than a
+ * tenth of its value. The wallet never creates such a payment to another Frank account. */
+export class ContactPaymentBelowFloorError extends RangeError {
+  constructor(readonly valueWei: bigint, readonly floorWei: bigint) {
+    super(
+      `A payment of ${valueWei} wei is below the payment floor of ${floorWei} wei (ten times what the chain charges its recipient to move it). Nothing was signed or sent: pay at least ${floorWei} wei.`
+    );
+    this.name = "ContactPaymentBelowFloorError";
   }
 }
 

@@ -304,6 +304,7 @@
                   </div>
                 </details>
                 <p
+                  v-if="entry.operation.sharing !== 'none'"
                   class="text-caption text-grey-7"
                   data-testid="wallet-native-operation-sync"
                 >
@@ -319,9 +320,8 @@
                 </p>
                 <p
                   v-if="
-                    entry.operation.payment !== 'included' &&
-                    entry.operation.payment !== 'pending' &&
-                    entry.operation.payment !== 'missing'
+                    entry.operation.payment === 'unknown' ||
+                    entry.operation.payment === 'partial'
                   "
                   data-testid="wallet-native-operation-recovery"
                 >

@@ -591,6 +591,27 @@ describe('modernized chat input interface (#1003)', () => {
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
   })
 
+  it('shows the chosen stamp shortened for reading, never with eighteen decimals', () => {
+    mockDecimals = true
+    try {
+      const wrapper = mount(ChatInput, {
+        props: {
+          defaultStampWei: 50_000_000_000_000_000n,
+          minimumStampWei: 21_420_000_000_000_000n,
+          stampAmount: '0.070710678118654752',
+        },
+        global: globalOptions,
+      })
+      const label = wrapper
+        .get('[data-testid="chat-input-stamp-selection"]')
+        .text()
+      expect(label).toBe('≈1.4142× default (0.07071 MON)')
+      expect(label).not.toContain('0.070710678118654752')
+    } finally {
+      mockDecimals = false
+    }
+  })
+
   it('retains the live paid floor, explicit free choice, and no slider when the quote is unavailable', async () => {
     const wrapper = mount(ChatInput, {
       props: {

@@ -398,6 +398,24 @@ export class EvmLegacyConsolidator {
       if (wanted && !wanted()) return
       account = await this.account(member.source.address, wanted)
       if (wanted && !wanted()) return
+      // The node knew neither the transfer nor a receipt, and the account is now past its
+      // nonce. Our own transfer may have taken that nonce in a block made after the reads above
+      // (a node need not serve a transaction before its block; Monad's does not). Only a receipt
+      // read after the nonce was seen consumed can tell: with none, another transaction (or an
+      // inclusion the node no longer keeps) took its place.
+      if (
+        transaction === null &&
+        receipt === null &&
+        account.nonce > expected.nonce
+      ) {
+        receipt = await evidenceRead(
+          () => provider.getTransactionReceipt(hash),
+          wanted,
+        )
+        if (wanted && !wanted()) return
+        if (receipt !== null) transaction = await provider.getTransaction(hash)
+        if (wanted && !wanted()) return
+      }
       if (transaction === null && receipt === null)
         observation = { state: 'missing' }
       else if (

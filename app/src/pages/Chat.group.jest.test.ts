@@ -768,3 +768,129 @@ describe('group decision persistence in mounted UI', () => {
     },
   )
 })
+
+describe('group info and a removed member, in mounted UI', () => {
+  // A dialog shows its content only while open, as Quasar's does.
+  const DialogStub = defineComponent({
+    props: ['modelValue'],
+    setup:
+      (props, { slots }) =>
+      () =>
+        props.modelValue ? h('div', slots.default?.()) : null,
+  })
+  function makeAdminGroup(chats: ReturnType<typeof useChatStore>) {
+    const conv = chats.conversations[CONVERSATION]
+    conv.kind = 'group'
+    conv.name = 'Core'
+    conv.membershipStatus = 'joined'
+    conv.participants = [mockOwn, ALICE, BOB]
+    conv.groupState = {
+      epoch: 1,
+      groupSecretKeyHex: 'aa'.repeat(32),
+      roster: [
+        { address: mockOwn, role: 'admin', index: 0 },
+        { address: ALICE, role: 'member', index: 1 },
+        { address: BOB, role: 'member', index: 2 },
+      ],
+    } as never
+    return conv
+  }
+  function mountInfo() {
+    const GroupInfoDialog =
+      require('../components/chat/GroupInfoDialog.vue').default
+    return mount(GroupInfoDialog, {
+      props: { modelValue: true, conversationId: CONVERSATION },
+      global: {
+        plugins: [getActivePinia()!],
+        components: { ...stubs, QDialog: DialogStub },
+        mocks: { $t: translator(en) },
+      },
+    })
+  }
+
+  it("names the administrator's own row by its profile or address, never the Loading placeholder", async () => {
+    const { wrapper: chat, chats } = await openConversation()
+    makeAdminGroup(chats)
+    // A contact entry for one's own address still waiting for its profile.
+    const { pendingRelayData } = require('../stores/contacts')
+    useContactStore().addContact({
+      address: mockOwn,
+      contact: pendingRelayData,
+    })
+    const wrapper = mountInfo()
+    const rows = wrapper.findAll('[data-test="group-member-row"]')
+    expect(rows).toHaveLength(3)
+    expect(wrapper.text()).not.toContain('Loading...')
+    const own = rows.find(row => row.text().includes(en.groupChat.youSuffix))!
+    expect(own.text()).toContain('0x1a1A')
+    const { useProfileStore } = require('../stores/my-profile')
+    useProfileStore().profile = { name: 'Admin Me' }
+    await flushPromises()
+    expect(wrapper.text()).toContain('Admin Me')
+    wrapper.unmount()
+    chat.unmount()
+  })
+
+  it('asks in an in-app dialog before removing a member, and removes only on Remove', async () => {
+    const { wrapper: chat, chats } = await openConversation()
+    makeAdminGroup(chats)
+    const remove = jest
+      .spyOn(chats, 'removeMemberFromGroup')
+      .mockResolvedValue(chats.conversations[CONVERSATION])
+    const browserConfirm = jest.fn(() => true)
+    window.confirm = browserConfirm
+    const wrapper = mountInfo()
+    const removeButtons = wrapper.findAll(
+      '[data-test="remove-group-member-btn"]',
+    )
+    expect(removeButtons).toHaveLength(2)
+    expect(wrapper.find('[data-test="remove-member-confirm"]').exists()).toBe(
+      false,
+    )
+    await removeButtons[1].trigger('click')
+    expect(remove).not.toHaveBeenCalled()
+    const dialog = wrapper.get('[data-test="remove-member-confirm"]')
+    expect(dialog.text()).toContain('Bob')
+    expect(dialog.text()).toContain('Core')
+    await wrapper.get('[data-test="remove-member-cancel"]').trigger('click')
+    expect(wrapper.find('[data-test="remove-member-confirm"]').exists()).toBe(
+      false,
+    )
+    expect(remove).not.toHaveBeenCalled()
+
+    await removeButtons[1].trigger('click')
+    await wrapper
+      .get('[data-test="remove-member-confirm-btn"]')
+      .trigger('click')
+    await flushPromises()
+    expect(remove).toHaveBeenCalledWith({
+      conversationId: CONVERSATION,
+      memberAddress: BOB,
+    })
+    expect(browserConfirm).not.toHaveBeenCalled()
+    wrapper.unmount()
+    chat.unmount()
+  })
+
+  it('a member removed from the group sees so, with no failure to retry and no composer', async () => {
+    const { wrapper, chats } = await openConversation()
+    const conv = makeAdminGroup(chats)
+    conv.groupState!.groupSecretKeyHex = undefined
+    conv.groupState!.syncFailed = true
+    await flushPromises()
+    expect(wrapper.find('[data-testid="group-sync-failure"]').exists()).toBe(
+      true,
+    )
+    conv.membershipStatus = 'removed'
+    conv.groupState!.syncFailed = false
+    await flushPromises()
+    expect(wrapper.get('[data-testid="group-removed-banner"]').text()).toBe(
+      en.groupChat.removedBanner,
+    )
+    expect(wrapper.find('[data-testid="group-sync-failure"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('.chat-input-bar').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})

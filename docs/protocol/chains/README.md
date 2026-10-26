@@ -67,8 +67,11 @@ Who applies it:
   `directMessages.minimumStamp` the app and bots read). Every stamp payment, and so every stamp,
   is at least that (0.02142 MON at 102 gwei); a default or suggested stamp is raised to it and an
   explicit smaller one is refused (`DirectMessageStampBelowFeeError`). Bot stakes, payouts and
-  refunds go through the same check. No change output is made below it either (`dustWei` in
-  `evm-transaction-set-policy.ts`).
+  refunds go through the same check. A payment to another Frank account (`prepareContactPayment`,
+  `sendToContact`, `quoteContactPayment`) below it is refused before anything is signed
+  (`ContactPaymentBelowFloorError`), and Send to Contact names the minimum before review. No
+  change output is made below it either (`dustWei` in `evm-transaction-set-policy.ts`). A legacy
+  send to an external address (`sendLegacy`) has no floor: whether it should is not decided.
 - **Relay (deterministic).** `cashweb_config::protocol_payment_floor_wei(network)` is the
   multiple at `min_gas_price_wei`: 0.021 MON on every Monad network. The relay refuses, before
   anything is stored or broadcast, a direct message any of whose stamp payments is below it
@@ -79,7 +82,9 @@ Who applies it:
   group write) are never moved and have no floor.
 - **Recipient.** A received coin below the wallet's current floor is shown on the Wallet page's
   balance breakdown as "Too small to move" and is not counted in the balance
-  (`getBalanceParts().tooSmall`).
+  (`getBalanceParts().tooSmall`). The received payment says the same (`ReceivedPayment.tooSmall`,
+  the same `belowPaymentFloor` test on the same floor), so its chat card never calls it
+  spendable. A wallet that has not read the gas price yet reads it before it classifies.
 
 Checks: `cargo test -p cashweb-config payment_floor` and
 `yarn --cwd packages/wallet test --runTestsByPath chain/payment-floor.jest.test.ts`.

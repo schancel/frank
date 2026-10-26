@@ -24,6 +24,7 @@ import {
   EVM_COIN_NAMESPACE,
   LevelRecordStore,
   MemoryRecordStore,
+  belowPaymentFloor,
   spendableCoinTotal,
   spendableCoins,
   type ContactPayment,
@@ -243,6 +244,7 @@ export {
 } from "./canonical-dm";
 import {
   ChainFamily,
+  balanceOfParts,
   type ReceivedCoinSweep,
   ContactPaymentFailedError,
   ContactPaymentPendingError,
@@ -270,6 +272,7 @@ import {
   LevelStampAttemptJournal,
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
+import { readEvmBlockTimes } from "./evm-block-times";
 import {
   ChainUnreachableError,
   isChainUnreachableError,
@@ -711,8 +714,6 @@ async function reconcileNativeAdmission(
 // One typed economic owner per EVM account/network in this runtime, across chain factories.
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
 const openTypedEvmAccounts = new Set<string>();
-/** Most distinct blocks one `readBlockTimes` call reads. */
-const MAX_BLOCK_TIME_READS = 256;
 
 function requireOpenWallet(wallet: EvmChainWalletHandle): void {
   if (evmWalletInternals(wallet).closed)
@@ -2322,7 +2323,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
               : undefined;
           let lastBalanceObservation:
-            | { balance: bigint; observedAt: number }
+            | { balance: bigint; observedAt: number; parts?: BalanceParts }
             | undefined = (() => {
             if (!balanceObsStorageKey) return undefined;
             try {
@@ -2362,6 +2363,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             pool.invalidateDisplayBalanceCache();
           };
 
+          // The payment floor received coins are classified by (`belowPaymentFloor`), for the
+          // balance and for each received payment alike: the transaction-set policy's, the same
+          // floor no change output goes below. Zero while no gas price has been read.
+          const receivedCoinFloorWei = (): bigint => {
+            try {
+              return transactionSetRuntime.transactionSetPolicy.snapshot().dustWei;
+            } catch {
+              return 0n;
+            }
+          };
           const coinAndContactManager = createEvmReceivedCoinAndContactManager({
             chainIdentifier,
             chainId: config.chainId,
@@ -2391,6 +2402,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             requireOpenWallet,
             canonicalMessagingFor,
             directMessages,
+            receivedCoinFloorWei,
             runWalletExclusive,
             runMainAccountExclusive,
           });
@@ -2487,15 +2499,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               ]);
               // A received coin below the payment floor (ten moves of it, at the gas price the
               // wallet last read) is held, not spendable: it is shown apart and not counted.
-              let floorWei = 0n;
-              try {
-                floorWei = transactionSetRuntime.transactionSetPolicy.snapshot().dustWei;
-              } catch {
-                // No fee read yet: every received coin is counted, as before.
+              // The gas price is read first when none is known yet: otherwise a device that
+              // just opened counted every received coin, and disagreed with one that had read it.
+              let floorWei = receivedCoinFloorWei();
+              if (floorWei === 0n) {
+                await transactionSetRuntime.transactionSetPolicy
+                  .refresh()
+                  .catch(() => undefined);
+                // Still unknown (no fee quote from the node): every received coin is counted.
+                floorWei = receivedCoinFloorWei();
               }
               const funded = spendableCoins(coinStore.all());
               const received = funded.filter(
-                (coin) => BigInt(coin.amountWei) >= floorWei
+                (coin) => !belowPaymentFloor(coin, floorWei)
               );
               const receivedTotal = received.reduce(
                 (sum, coin) => sum + BigInt(coin.amountWei),
@@ -2505,11 +2521,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 spendableCoinTotal(coinStore.all()) - receivedTotal;
               const sending = poolSending + changeBalance;
               const observedAt = Date.now();
-              const totalBalance =
-                mainBalance + identityBalance + receivedTotal + sending;
+              const parts: BalanceParts = {
+                main: mainBalance,
+                profile: identityBalance,
+                received: receivedTotal,
+                receivedCount: received.length,
+                sending,
+                tooSmall: tooSmallTotal,
+                tooSmallCount: funded.length - received.length,
+              };
+              const totalBalance = balanceOfParts(parts);
+              // The balance and the parts it is the sum of, from this one read.
               lastBalanceObservation = {
                 balance: totalBalance,
                 observedAt,
+                parts,
               };
               if (balanceObsStorageKey) {
                 try {
@@ -2524,15 +2550,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // Ignore localStorage quota/access errors
                 }
               }
-              return {
-                main: mainBalance,
-                profile: identityBalance,
-                received: receivedTotal,
-                receivedCount: received.length,
-                sending,
-                tooSmall: tooSmallTotal,
-                tooSmallCount: funded.length - received.length,
-              };
+              return parts;
             } catch (error) {
               if (isChainUnreachableError(error)) {
                 throw error instanceof ChainUnreachableError
@@ -2581,10 +2599,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { raw: mainAccount.address };
             },
             async getBalance() {
-              const parts = await wallet.getBalanceParts!();
-              return (
-                parts.main + parts.profile + parts.received + parts.sending
-              );
+              return balanceOfParts(await wallet.getBalanceParts!());
             },
             getBalanceObservation() {
               return lastBalanceObservation;
@@ -2659,6 +2674,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             getContactPayments: coinAndContactManager.getContactPayments,
             sendToContact: coinAndContactManager.sendToContact,
             prepareContactPayment: coinAndContactManager.prepareContactPayment,
+            quoteContactPayment: coinAndContactManager.quoteContactPayment,
             resumeContactPayments: coinAndContactManager.resumeContactPayments,
             settleContactPayment: coinAndContactManager.settleContactPayment,
             retryContactPayment: coinAndContactManager.retryContactPayment,
@@ -2678,33 +2694,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             getNativeOperations() {
               return nativeOperationOwner(wallet).listOperations();
             },
-            async readBlockTimes(blockHashes) {
+            async readBlockTimes(blocks) {
               requireOpenWallet(wallet);
-              const wanted = [...new Set(blockHashes)]
-                .filter((hash) => /^0x[0-9a-fA-F]{64}$/.test(hash))
-                .slice(0, MAX_BLOCK_TIME_READS);
-              const times = new Map<string, number>();
-              for (let start = 0; start < wanted.length; start += 8) {
-                await Promise.all(
-                  wanted.slice(start, start + 8).map(async (hash) => {
-                    const known = blockTimes.get(hash);
-                    if (known !== undefined) {
-                      times.set(hash, known);
-                      return;
-                    }
-                    try {
-                      const block = await provider.getBlock(hash);
-                      if (block?.hash?.toLowerCase() !== hash.toLowerCase()) return;
-                      // A block's time never changes: remember it for the wallet's lifetime.
-                      blockTimes.set(hash, block.timestamp * 1000);
-                      times.set(hash, block.timestamp * 1000);
-                    } catch {
-                      // Unread: the caller shows the transaction undated.
-                    }
-                  })
-                );
-              }
-              return times;
+              return readEvmBlockTimes(provider, blocks, blockTimes);
             },
             nativeOperationSyncFailed(operationId) {
               return nativeOperationOwner(wallet).syncTransportFailed(

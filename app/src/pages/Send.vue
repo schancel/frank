@@ -274,8 +274,10 @@
                 $t('nativeOperation.block', { block: member.blockNumber })
               }}</span>
             </p>
-            <!-- Information, not an outcome: the payment line above is the outcome. -->
+            <!-- Information, not an outcome: the payment line above is the outcome. Nothing is
+                 shared while no transfer has landed: a transfer that never lands never is. -->
             <p
+              v-if="operation.sharing !== 'none'"
               class="text-caption text-grey-7"
               data-test="native-operation-sync"
             >
@@ -295,7 +297,16 @@
             {{ $t('nativeOperation.watching') }}
           </p>
           <template v-else-if="operation?.payment !== 'included'">
-            <p data-test="native-operation-recovery">
+            <!-- Only while the outcome is still open. A transfer that reverted, was replaced or
+                 was cancelled is final, and its line above says so. -->
+            <p
+              v-if="
+                operation === undefined ||
+                operation.payment === 'unknown' ||
+                operation.payment === 'partial'
+              "
+              data-test="native-operation-recovery"
+            >
               {{ $t('nativeOperation.recoveryUnavailable') }}
             </p>
             <p>{{ $t('nativeOperation.reviewHeld') }}</p>

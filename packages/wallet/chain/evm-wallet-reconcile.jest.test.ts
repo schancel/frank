@@ -265,7 +265,7 @@ function mailbox(messages: DirectMessageReceived[]) {
 }
 
 test("finds a stealth-asset payment the wallet missed, signs and sends nothing, and a second run finds nothing new", async () => {
-  const payment = await stealthSend([600n, 400n]);
+  const payment = await stealthSend([600_000n, 400_000n]);
   for (const raw of payment.raws) state.mine(raw);
   const message = received([payment.item()], "f6".repeat(32));
   const reads = mailbox([
@@ -289,7 +289,7 @@ test("finds a stealth-asset payment the wallet missed, signs and sends nothing, 
     failures: [],
   });
   expect(summary.receivedCoinsAdded).toEqual([
-    expect.objectContaining({ address: payment.address, claimedAmountWei: "1000" }),
+    expect.objectContaining({ address: payment.address, claimedAmountWei: "1000000" }),
   ]);
   expect(new Set(steps)).toEqual(new Set(["mailbox", "seed", "operations"]));
   expect(
@@ -314,8 +314,9 @@ test("finds a stealth-asset payment the wallet missed, signs and sends nothing, 
   ).toHaveLength(1);
   expect(state.broadcast).not.toHaveBeenCalled();
 
-  // The ordinary wallet then counts it once the chain shows it, as for any received payment.
-  expect((await wallet.getBalanceParts!()).received).toBe(1000n);
+  // The ordinary wallet then counts it once the chain shows it, as for any received payment
+  // above the payment floor (210,000 at the node's price of 1).
+  expect((await wallet.getBalanceParts!()).received).toBe(1_000_000n);
 });
 
 test("concurrent calls share one run, and a failing mailbox read is reported while the other steps still run", async () => {
@@ -339,20 +340,21 @@ test("concurrent calls share one run, and a failing mailbox read is reported whi
 });
 
 test("reads a signed operation from the chain and records it, without broadcasting it", async () => {
-  const payment = await stealthSend([30000n, 30000n]);
+  const payment = await stealthSend([30_000_000n, 30_000_000n]);
   for (const raw of payment.raws) state.mine(raw);
   mailbox([received([payment.item()], "c3".repeat(32))]);
   await reconcileEvmWallet(wallet);
   // The ordinary balance read verifies the found coins on chain before they can be spent.
-  expect((await wallet.getBalanceParts!()).received).toBe(60000n);
+  expect((await wallet.getBalanceParts!()).received).toBe(60_000_000n);
   // Signed here and never handed to anyone: the pass must not broadcast it.
   await wallet.stealthPayments!.prepare({
     operationId: "spend-received",
     chainIdentifier: "monad-testnet",
     asset: { kind: "native" },
     recipientSpendPublicKey: getBytes(contact.signingKey.compressedPublicKey),
-    amountAtomic: 5000n,
-    maxNativeFeeAtomic: 42000n,
+    amountAtomic: 5_000_000n,
+    // The payment and up to four change outputs (`maxChangeOutputs`), 21,000 gas each at 1.
+    maxNativeFeeAtomic: 105_000n,
   });
   const signedOperations = () =>
     wallet.getNativeOperations!().filter(
@@ -367,9 +369,12 @@ test("reads a signed operation from the chain and records it, without broadcasti
   // Read, not sent: a member that never left the wallet is "not yet sent", so nothing changes
   // and it is not exposed.
   expect(summary.operationsChanged).toEqual([]);
+  // Every member (the payment and its change) is unread and unexposed.
+  const members = signedOperations()[0]!.members;
+  expect(members.length).toBeGreaterThan(0);
   expect(
-    signedOperations()[0]!.members.map((member) => [member.observation.state, member.exposed ?? false])
-  ).toEqual([["unknown", false]]);
+    members.map((member) => [member.observation.state, member.exposed ?? false])
+  ).toEqual(members.map(() => ["unknown", false]));
   expect(state.broadcast.mock.calls.length).toBe(broadcasts);
   // Its reservation stands: the pass released nothing.
   expect(signedOperations()).toHaveLength(1);

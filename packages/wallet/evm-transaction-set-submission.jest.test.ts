@@ -231,6 +231,48 @@ test('the public wrapper alone submits recipient and all owned change after dura
   }
 })
 
+test('a fresh set is never recorded missing: the node is asked about a member only after its broadcast', async () => {
+  const chain = node(),
+    f = await fixture(location, chain)
+  try {
+    const prepared = await f.construct('fresh')
+    const members = [...prepared.bundle, ...prepared.otherTransactions]
+    expect(members.length).toBeGreaterThan(1)
+    // Broadcast and not yet in a block when the wallet looks: they all land together later.
+    chain.automine(false)
+    const recorded: string[] = []
+    const record = f.preparer.recordObservation.bind(f.preparer)
+    jest
+      .spyOn(f.preparer, 'recordObservation')
+      .mockImplementation((id, index, observation, account) => {
+        recorded.push(observation.state)
+        return record(id, index, observation, account)
+      })
+    const askedBeforeBroadcast: string[] = []
+    const receipt = chain.provider.getTransactionReceipt.getMockImplementation()!
+    chain.provider.getTransactionReceipt.mockImplementation(async (hash: string) => {
+      if (!chain.raws.some(raw => Transaction.from(raw).hash === hash))
+        askedBeforeBroadcast.push(hash)
+      return receipt(hash)
+    })
+    const result = await f.submission.sendTransaction(prepared)
+    expect(result.status).toBe('pending')
+    expect(askedBeforeBroadcast).toEqual([])
+    expect(recorded).not.toContain('missing')
+    expect(f.preparer.getOperation('fresh')!.members.map(member => member.observation.state)).toEqual(
+      members.map(() => 'pending'),
+    )
+    // They land in one block; the next look sees every one of them included.
+    for (const raw of chain.raws) chain.mine(raw)
+    await f.submission.reconcileAuthorized()
+    expect(f.preparer.getOperation('fresh')!.members.map(member => member.observation.state)).toEqual(
+      members.map(() => 'included-success'),
+    )
+  } finally {
+    await f.close()
+  }
+})
+
 test.each([
   'missing-change',
   'duplicate-change',

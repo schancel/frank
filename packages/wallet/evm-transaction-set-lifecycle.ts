@@ -125,12 +125,18 @@ export class EvmTransactionSetLifecycle {
     if (failures.length) throw failures[0]
   }
 
-  /** Read one canonical block's account state; never update inventory from relay answers. */
-  async observe(id: string, provider: Provider): Promise<void> {
+  /** Read one canonical block's account state; never update inventory from relay answers.
+   * `exposedOnly`: look only at members whose bytes have left the wallet. A member never exposed
+   * cannot be on any node, so a look before its first broadcast could only record it `missing`
+   * (a submission's first look, before replay, would otherwise mark every member of a fresh set
+   * missing although they all land moments later); replay broadcasts it, and the look after
+   * replay observes it. */
+  async observe(id: string, provider: Provider, options: { exposedOnly?: boolean } = {}): Promise<void> {
     const row = this.validateOperation(await this.options.authority.readOperation(id))
     for (let index = 0; index < row.members.length; index++) {
       const member = row.members[index]!,
         signed = member.signed!
+      if (options.exposedOnly && !member.exposed) continue
       // Terminal history must never be fed through inventory observation again.
       if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
       const receipt = await provider.getTransactionReceipt(
@@ -182,9 +188,17 @@ export class EvmTransactionSetLifecycle {
             ).toString(),
           }
         : {
-            state: (await provider.getTransaction(signed.transactionHash))
-              ? 'pending'
-              : 'missing',
+            // Missing means no node has it. A member this wallet has exposed whose nonce is
+            // still unconsumed is submitted and awaiting a block, even when the node does not
+            // show it: a node need not serve transactions outside a block (Monad's does not), so
+            // a look between the broadcast and the block would otherwise record every member of
+            // a set missing though they all land in the next block. Only a consumed nonce with no
+            // receipt of ours is evidence the member will not land (`nativeMemberSuperseded`).
+            state:
+              (await provider.getTransaction(signed.transactionHash)) ||
+              (member.exposed && nonce <= Transaction.from(signed.rawTransaction).nonce)
+                ? 'pending'
+                : 'missing',
           }
       await this.options.authority.recordObservation(
         id,

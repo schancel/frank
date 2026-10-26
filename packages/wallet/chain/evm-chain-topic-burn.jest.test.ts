@@ -1268,8 +1268,10 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
     const member = wallet.getNativeOperations!()[0]!.members[0]!
     // A coin of the one coin list: X's deterministic account at nonce 0.
     expect(member.source).toEqual({ kind: 'coin', address: xAddress })
+    // Lost reply: exposed, its nonce unconsumed, the node not showing it. Submitted and not in a
+    // block (it may yet land), never `missing`: that needs its nonce taken by something else.
     expect(member.observation.state).toBe(
-      window === 'pending' ? 'missing' : 'included-success',
+      window === 'pending' ? 'pending' : 'included-success',
     )
     expect(nativeBroadcasts.map(tx => tx.from!.toLowerCase())).toEqual([
       xAddress,

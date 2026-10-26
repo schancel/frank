@@ -4420,6 +4420,12 @@ describe('two typed wallets on the open directory', () => {
       })
       // Submitted to Alice's own relay, sealed to the key in Bob's entry on the other relay.
       inboxRecordForMessage(sent.payloadDigest, 1)
+      // The wallet-sync notes go out from the consolidator's own transport queue, which runs
+      // after the send has resolved: wait for them rather than assume the send outlasts it.
+      const isSync = (request: (typeof f.requests)[number]) =>
+        restoreCanonicalRequest(request).identity.payload_hash !== sent.payloadDigest
+      for (let waited = 0; !f.requests.some(isSync) && waited < 5_000; waited += 10)
+        await new Promise(resolve => setTimeout(resolve, 10))
       const submissions = f.requests.map(request =>
         restoreCanonicalRequest(request),
       )

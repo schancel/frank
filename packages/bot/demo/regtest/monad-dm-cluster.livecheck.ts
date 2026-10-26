@@ -123,14 +123,14 @@ class Lab {
     proxy.alive.add(relay)
   }
 
-  /** The objects MinIO holds under one direct-message request's digest
-   * (`lab/messages/sha256/<hex>/<upload>`), each with the SHA-256 of its content. */
-  async messageObjects(sha256Hex: string): Promise<Array<{ key: string; sha256: string }>> {
+  /** Every direct-message object MinIO holds (`lab/messages/sha256/<hex>/<upload>`), each with
+   * the SHA-256 of its content. */
+  async messageObjects(): Promise<Array<{ key: string; sha256: string }>> {
     const script = [
       'set -e',
       'auth="--user $(cat /secrets/minio-root-user):$(cat /secrets/minio-root-password) --aws-sigv4 aws:amz:us-east-1:s3"',
       'base=http://127.0.0.1:9000/frank-lab-blobs',
-      `for key in $(curl -sf $auth "$base?list-type=2&prefix=lab/messages/sha256/${sha256Hex}/" | grep -o '<Key>[^<]*</Key>' | sed 's/<[^>]*>//g'); do`,
+      `for key in $(curl -sf $auth "$base?list-type=2&prefix=lab%2Fmessages%2Fsha256%2F" | grep -o '<Key>[^<]*</Key>' | sed 's/<[^>]*>//g'); do`,
       '  printf "%s %s\\n" "$key" "$(curl -sf $auth "$base/$key" | sha256sum | cut -d" " -f1)"',
       'done',
     ].join('\n')
@@ -590,39 +590,52 @@ async function main() {
       // A text item holds at most 256 KiB, so the message is many of them.
       const tag = randomBytes(8).toString('hex')
       const texts = Array.from({ length: Math.ceil(LARGE_TEXT_BYTES / 200_000) }, (_, i) => `${tag} ${i} ` + 'x'.repeat(200_000))
-      let admitted: Captured | undefined
+      // Every request A answered with success; the wallet may resend (a fresh quote reseals the
+      // message), so the stored one is whichever the replicas read back.
+      const puts: Array<{ request: Captured; status: number }> = []
       let readFrom: Relay = 'b'
       const reads: Array<{ relay: Relay; body: Buffer }> = []
       proxy.intercept = async request => {
         const relay = isPut(request) ? 'a' : readFrom
         const answer = await forward(relay, request)
         proxy.served.push({ relay, method: request.method, url: request.url, status: answer.status })
-        if (isPut(request) && answer.status < 300) admitted = request
-        if (request.method === 'GET') reads.push({ relay, body: answer.body })
+        if (isPut(request)) puts.push({ request, status: answer.status })
+        else reads.push({ relay, body: answer.body })
         return answer
       }
       const digest = await alice.send(bob.address, texts.map(text => ({ type: 'text' as const, text })), 0n)
-      assert.ok(admitted, 'relay A admitted the request')
-      const delivery = deliveryPart(admitted)
       const got = await bob.receive(message => message.payloadDigest === digest, 60_000)
-      const items = got.items.flatMap(item => (item.type === 'text' ? [item.text] : []))
-      assert.deepEqual(items, texts, 'the large message reads back on B')
-      readFrom = 'c'
-      const scan = await bob.chain.directMessages.scanAuthenticatedMailbox!({ wallet: bob.handle, sinceMs: 0 })
-      const onC = scan.records.find(record => record.payloadDigest === digest)
-      assert.deepEqual(onC?.items.flatMap(item => (item.type === 'text' ? [item.text] : [])), texts, 'the large message reads back on C')
-      for (const relay of ['b', 'c'] as const)
-        assert.ok(
-          reads.some(read => read.relay === relay && read.body.includes(delivery)),
-          `relay ${relay} answered the exact delivery frame A admitted`,
+      const textsOf = (items: readonly (typeof got.items)[number][]) => items.flatMap(item => (item.type === 'text' ? [item.text] : []))
+      assert.deepEqual(textsOf(got.items), texts, 'bob received the large message')
+      // The push may have come over the websocket; read the mailbox from B, then from C.
+      for (const relay of ['b', 'c'] as const) {
+        readFrom = relay
+        const scan = await bob.chain.directMessages.scanAuthenticatedMailbox!({ wallet: bob.handle, sinceMs: 0 })
+        const record = scan.records.find(r => r.payloadDigest === digest)
+        assert.deepEqual(record && textsOf(record.items), texts, `the large message reads back on ${relay.toUpperCase()}`)
+      }
+      // The request A admitted is the one whose exact delivery frame B and C both answered.
+      const admitted = puts
+        .filter(put => put.status < 300)
+        .map(put => put.request)
+        .find(request =>
+          (['b', 'c'] as const).every(relay => reads.some(read => read.relay === relay && read.body.includes(deliveryPart(request)))),
         )
+      assert.ok(
+        admitted,
+        `B and C answered the exact delivery frame of a request A admitted (A answered ${puts.map(put => put.status).join(', ')})`,
+      )
       const sha256 = createHash('sha256').update(admitted.body).digest('hex')
-      const objects = await lab.messageObjects(sha256)
-      assert.ok(objects.length >= 1, `an object under lab/messages/sha256/${sha256}/ in MinIO`)
+      const all = await lab.messageObjects()
+      const objects = all.filter(object => object.key.startsWith(`lab/messages/sha256/${sha256}/`))
+      assert.ok(
+        objects.length >= 1,
+        `an object under lab/messages/sha256/${sha256}/ in MinIO; it holds ${all.map(o => `${o.key} (${o.sha256})`).join(', ') || 'none'}`,
+      )
       for (const object of objects) assert.equal(object.sha256, sha256, `${object.key} holds the request`)
       const bytes = texts.reduce((sum, text) => sum + text.length, 0)
       console.log(
-        `7. a message of ${texts.length} text items, ${bytes} bytes (request ${admitted.body.length} bytes) admitted on A ` +
+        `7. a message of ${texts.length} text items, ${bytes} bytes (request ${admitted.body.length} bytes; A answered ${puts.map(put => put.status).join(', ')}) admitted on A ` +
           `read back unchanged on B and C; MinIO holds it at ${objects.map(o => o.key).join(', ')}`,
       )
       proxy.reset()

@@ -38,6 +38,11 @@ const mockCreateConversation = jest.fn((opts: any) => ({
   id: 'created-conversation-id',
   ...opts,
 }))
+const mockOpenDirectConversation = jest.fn((address: string) => ({
+  id: 'created-conversation-id',
+  kind: 'direct',
+  address,
+}))
 const mockSetActiveConversation = jest.fn()
 import { setDirectoryLookup } from 'src/utils/directory-peer'
 let mockExistingContacts: Record<string, any> = {}
@@ -58,6 +63,7 @@ jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
     createEmailConversation: mockCreateEmailConversation,
     createConversation: mockCreateConversation,
+    openDirectConversation: mockOpenDirectConversation,
     setActiveConversation: mockSetActiveConversation,
     activeChatAddr: null,
     getSortedChatOrder: [],
@@ -269,6 +275,7 @@ describe('AddContact latest lookup', () => {
     mockCreateEmailConversation.mockReset()
     mockSetActiveConversation.mockReset()
     mockCreateConversation.mockClear()
+    mockOpenDirectConversation.mockClear()
     chain.parseAddress.mockReset()
     chain.formatAddress.mockReset()
     chain.fetchProfile.mockReset()
@@ -934,9 +941,9 @@ describe('AddContact latest lookup', () => {
         .find('[data-test="start-conversation-btn"]')
         .trigger('click')
       expect(mockCreateEmailConversation).not.toHaveBeenCalled()
-      expect(mockCreateConversation).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'direct', address: ADDRESS_A }),
-      )
+      // No subject: the peer's default thread.
+      expect(mockOpenDirectConversation).toHaveBeenCalledWith(ADDRESS_A)
+      expect(mockCreateConversation).not.toHaveBeenCalled()
     })
     it('never offers email on a failed DNS or relay lookup', async () => {
       mockDiscoverFrankDomain.mockRejectedValue(new Error('CORS or timeout'))
@@ -994,9 +1001,9 @@ describe('AddContact latest lookup', () => {
       await wrapper
         .find('[data-test="start-conversation-btn"]')
         .trigger('click')
-      expect(mockCreateConversation).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: 'direct', address: ADDRESS_A }),
-      )
+      // No subject: the peer's default thread.
+      expect(mockOpenDirectConversation).toHaveBeenCalledWith(ADDRESS_A)
+      expect(mockCreateConversation).not.toHaveBeenCalled()
     })
     it('keeps signed directory refusal visible even after a username was resolved', async () => {
       mockDiscoverFrankDomain.mockResolvedValue([
@@ -1157,6 +1164,7 @@ describe('AddContact latest lookup', () => {
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
       await typeAndFire(wrapper, 'a')
       mockOpenChat.mockClear()
+      wrapper.vm.topic = 'Plans'
       mockCreateConversation.mockImplementationOnce(() => {
         throw new Error('Conversation creation unavailable')
       })
@@ -1219,12 +1227,9 @@ describe('AddContact latest lookup', () => {
         address: ADDRESS_A,
         contact: expect.anything(),
       })
-      expect(mockCreateConversation).toHaveBeenCalledWith({
-        kind: 'direct',
-        name: undefined,
-        participants: [ADDRESS_A],
-        address: ADDRESS_A,
-      })
+      // No subject: the peer's one default thread, the same on every device.
+      expect(mockOpenDirectConversation).toHaveBeenCalledWith(ADDRESS_A)
+      expect(mockCreateConversation).not.toHaveBeenCalled()
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'created-conversation-id',

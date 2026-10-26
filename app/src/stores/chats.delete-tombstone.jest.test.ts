@@ -274,12 +274,10 @@ describe('deleting messages leaves tombstones and asks the wallet nothing', () =
       address: PEER,
       contact: { profile: { name: 'Alice' } } as never,
     })
-    // A second thread with the peer is one the user names; a blank one is the default.
     const independent = chats.createConversation({
       address: PEER,
       participants: [OWN, PEER],
       kind: 'direct',
-      name: 'Project plan',
     })
     const original = chats.deleteConversation.bind(chats)
     const deletion = jest

@@ -4401,18 +4401,6 @@ export const useChatStore = defineStore('chats', {
       address?: string
       verifiedGateway?: boolean
     }): Conversation {
-      // A direct conversation with one peer and no subject is the peer's one default thread,
-      // the same on every device: only a conversation the user gives a subject is a new one.
-      if (
-        kind === 'direct' &&
-        !conversationId &&
-        usableSubject(name ?? topic) === undefined
-      ) {
-        const peer =
-          address || (participants.length === 1 ? participants[0] : undefined)
-        if (peer && isChainAddress(peer))
-          return this.openDirectConversation(peer)
-      }
       const id = conversationId
         ? canonicalConversationId(conversationId)
         : freshConversationId()

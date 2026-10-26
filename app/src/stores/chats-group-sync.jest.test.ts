@@ -2133,32 +2133,6 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         ),
       ).toEqual(['group-welcome'])
     })
-
-    it('a conversation started without a subject is the peer’s default thread, where the invitation goes', async () => {
-      const { chats } = await makeGroup()
-      const started = chats.createConversation({
-        kind: 'direct',
-        participants: [BOB],
-        address: BOB,
-      })
-      // Started twice, or on another device: the same thread.
-      expect(
-        chats.createConversation({
-          kind: 'direct',
-          participants: [BOB],
-          address: BOB,
-        }).id,
-      ).toBe(started.id)
-      expect(chats.openDirectConversation(BOB).id).toBe(started.id)
-      // A conversation the user gives a subject is a new one.
-      const named = chats.createConversation({
-        kind: 'direct',
-        name: 'Plans',
-        participants: [BOB],
-        address: BOB,
-      })
-      expect(named.id).not.toBe(started.id)
-    })
   })
 })
 

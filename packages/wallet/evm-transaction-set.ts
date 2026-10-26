@@ -5,6 +5,7 @@ import type {
   CoinPart,
   EvmListCoin,
   EvmCoinAccountProjection,
+  TransactionSetSelection,
 } from './evm-coin-list'
 import type {
   EvmNativeMemberPlan,
@@ -41,6 +42,30 @@ interface PaymentContext {
 interface LocalMember {
   plan: EvmNativeMemberPlan
   raw: string
+}
+
+/** See `EvmTransactionSetPreparer.quoteTransactionSet`. All fees in wei. */
+export interface EvmTransactionSetQuote {
+  readonly amountWei: bigint
+  /** Coins the transfer draws on. */
+  readonly inputCount: number
+  /** Moving several coins to one fresh account first (0 when one coin pays directly). */
+  readonly consolidationFeeWei: bigint
+  /** The transfer to the recipient. */
+  readonly deliveryFeeWei: bigint
+  /** Splitting what is left over into fresh change accounts. */
+  readonly changeFeeWei: bigint
+  /** Everything the transfer pays: the sum of the three. */
+  readonly feeWei: bigint
+}
+
+/** The set would pay more than the fee it was authorized with. Nothing was signed or kept;
+ * `feeWei` is what it would pay now. */
+export class EvmTransactionSetFeeExceededError extends Error {
+  constructor(readonly feeWei: bigint) {
+    super('Transaction-set fee exceeds authorized bound')
+    this.name = 'EvmTransactionSetFeeExceededError'
+  }
 }
 
 export class EvmTransactionSetSourceHeldError extends Error {
@@ -594,53 +619,16 @@ export class EvmTransactionSetPreparer {
       throw new Error('Cannot append to an exposed or unavailable operation')
     const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
     const minimum = request.minimumPaymentWei ?? 0n
-    if (minimum < 0n || request.amountWei < minimum) throw new Error('Invalid transaction-set minimum payment')
-    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
-        request.amountWei + reserve >= 1n << 256n || (request.amountWei === 0n && data === '0x')) throw new Error('Invalid transaction-set payment')
+    this.validateRequest(request)
     // This operation has been proved non-cancelled before taking any other cancelled
     // operation's queue, preserving append/release ordering without cross-queue cycles.
     await this.recoverCancelledOperations(request.operationId)
     const admittedInput = await journal.captureInputSelection?.()
-    const policy = this.options.policy(), contexts = new Map<number, PaymentContext>()
-    const context = (index: number): PaymentContext => {
-      const known = contexts.get(index)
-      if (known) return known
-      const destination = getAddress(request.kdf(index)).toLowerCase(), gas = policy.paymentGasLimit(data, destination)
-      this.validatePolicy(policy, gas, data)
-      const feeIsExact = typeof policy.paymentFeeIsExact === 'function' ? policy.paymentFeeIsExact(destination, data) : policy.paymentFeeIsExact
-      if (typeof feeIsExact !== 'boolean') throw new Error('Invalid reviewed fee semantics')
-      const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
-    }
-    context(0)
-    const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
-    const eligible = (coin: EvmListCoin) =>
-      (admittedInput?.(coin.account, coin.nonce) ?? true) &&
-      journal.canSelect(coin.account, coin.nonce) &&
-      (this.options.canSelectCoin?.(coin) ?? true) &&
-      this.dependencyReady(coin, policy)
-    const capacityWei = (fanIn: boolean, continuation?: unknown) => (coin: EvmListCoin, fee: bigint) => {
-      const capacity = coin.valueWei - fee, rule = policy.spendRule
-      if (continuation && capacity < policy.dustWei) return 0n
-      if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
-      // Fan-in and change-only continuation move the complete source; partial capacity is insufficient.
-      if (fanIn || continuation) return 0n
-      return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
-    }
-    const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) => coins.reserveTransactionSetSources({
-      holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
-      // Independent selection funds recipients only. Actual private change determines the
-      // later continuation deficit; reserve-only inputs use full-source eligibility there.
-      amountWei: continuation?.deficit ?? (request.amountWei + (fanIn ? reserve + context(0).gas * policy.gasPriceWei : 0n)),
-      minimumPaymentWei: fanIn || continuation ? undefined : minimum,
-      feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
-      head: policy.head, sourceOrder: policy.sourceOrder,
-      // Every selected source requires at least one member. Fan-in also needs its
-      // final recipient transaction; actual change members are checked after planning.
-      maxCoins: Math.min(remainingMemberBudget - (fanIn ? 1 : 0),
-        continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts ?? remainingMemberBudget)),
-      canSelect: eligible,
-      capacityWei: capacityWei(fanIn, continuation),
-    })
+    const policy = this.options.policy()
+    const { context, eligible, capacityWei, selection } =
+      this.selectionRules(request, policy, legacy, existing, admittedInput)
+    const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }) =>
+      coins.reserveTransactionSetSources(selection(fanIn, continuation))
     const beforeSelection = coins.all()
     let parts = select(false), fanIn = false
     if (!parts && legacy) { parts = select(true); fanIn = true }
@@ -711,7 +699,7 @@ export class EvmTransactionSetPreparer {
         if (meta.role !== 'payment') incoming.set(tx.to!.toLowerCase(), [...(incoming.get(tx.to!.toLowerCase()) ?? []), index])
       })
       const totalFee = all.reduce((sum, member) => { const tx = Transaction.from(member.plan.unsignedTransaction); return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!) }, 0n)
-      if ((request.maxFeeWei !== undefined && totalFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && totalFee > BigInt(stage.maxFeeWei))) throw new Error('Transaction-set fee exceeds authorized bound')
+      if ((request.maxFeeWei !== undefined && totalFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && totalFee > BigInt(stage.maxFeeWei))) throw new EvmTransactionSetFeeExceededError(totalFee)
       if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
       if (members.filter(member => member.plan.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.raw).value, 0n) < reserve) throw new Error('Insufficient private change for continuation')
     } catch (error) {
@@ -746,6 +734,200 @@ export class EvmTransactionSetPreparer {
     this.restoreRow(row)
     await coins.checkpointTransactionSetReservations(request.operationId)
     return this.result(row, stageId)
+  }
+
+  private validateRequest(request: ConstructEvmTransactionSetRequest): void {
+    const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
+    const minimum = request.minimumPaymentWei ?? 0n
+    if (minimum < 0n || request.amountWei < minimum) throw new Error('Invalid transaction-set minimum payment')
+    if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(data) || request.amountWei < 0n || reserve < 0n ||
+        request.amountWei + reserve >= 1n << 256n || (request.amountWei === 0n && data === '0x')) throw new Error('Invalid transaction-set payment')
+  }
+
+  /** The rules one transaction set selects its coins by. Construction reserves with them and a
+   * quote only plans with them, so a quote is the construction's own decision. */
+  private selectionRules(
+    request: ConstructEvmTransactionSetRequest,
+    policy: EvmTransactionSetPolicy,
+    legacy: boolean,
+    existing: EvmNativeOperation | undefined,
+    admittedInput: ((source: string, nonce: number) => boolean) | undefined,
+  ) {
+    const { journal } = this.options
+    const data = request.calldata ?? '0x', reserve = request.reserveForContinuationWei ?? 0n
+    const minimum = request.minimumPaymentWei ?? 0n
+    const contexts = new Map<number, PaymentContext>()
+    const context = (index: number): PaymentContext => {
+      const known = contexts.get(index)
+      if (known) return known
+      const destination = getAddress(request.kdf(index)).toLowerCase(), gas = policy.paymentGasLimit(data, destination)
+      this.validatePolicy(policy, gas, data)
+      const feeIsExact = typeof policy.paymentFeeIsExact === 'function' ? policy.paymentFeeIsExact(destination, data) : policy.paymentFeeIsExact
+      if (typeof feeIsExact !== 'boolean') throw new Error('Invalid reviewed fee semantics')
+      const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
+    }
+    context(0)
+    const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
+    const eligible = (coin: EvmListCoin) =>
+      (admittedInput?.(coin.account, coin.nonce) ?? true) &&
+      journal.canSelect(coin.account, coin.nonce) &&
+      (this.options.canSelectCoin?.(coin) ?? true) &&
+      this.dependencyReady(coin, policy)
+    // The chain's spend rule (Monad: an account that sent within `waitBlocks` blocks may not go
+    // below `belowWei`) decides how much of a coin one more transaction may move.
+    const capacityWei = (fanIn: boolean, continuation?: unknown) => (coin: EvmListCoin, fee: bigint) => {
+      const capacity = coin.valueWei - fee, rule = policy.spendRule
+      if (continuation && capacity < policy.dustWei) return 0n
+      if (!rule?.waitBlocks || coin.nonce === 0 || (coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks)) return capacity
+      // Fan-in and change-only continuation move the complete source; partial capacity is insufficient.
+      if (fanIn || continuation) return 0n
+      return capacity > rule.belowWei ? capacity - rule.belowWei : 0n
+    }
+    const selection = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }): TransactionSetSelection => ({
+      holder: request.operationId, ownedCandidates: existing ? this.privateOutputs(existing) : undefined,
+      // Independent selection funds recipients only. Actual private change determines the
+      // later continuation deficit; reserve-only inputs use full-source eligibility there.
+      amountWei: continuation?.deficit ?? (request.amountWei + (fanIn ? reserve + context(0).gas * policy.gasPriceWei : 0n)),
+      minimumPaymentWei: fanIn || continuation ? undefined : minimum,
+      feeWei: index => (fanIn || continuation ? policy.changeGasLimit : context(index).gas) * policy.gasPriceWei,
+      head: policy.head, sourceOrder: policy.sourceOrder,
+      // Every selected source requires at least one member. Fan-in also needs its
+      // final recipient transaction; actual change members are checked after planning.
+      maxCoins: Math.min(remainingMemberBudget - (fanIn ? 1 : 0),
+        continuation?.maxCoins ?? (legacy && !fanIn ? 1 : request.maxPaymentParts ?? remainingMemberBudget)),
+      canSelect: eligible,
+      capacityWei: capacityWei(fanIn, continuation),
+    })
+    return { context, eligible, capacityWei, selection, remainingMemberBudget }
+  }
+
+  /** The fresh change outputs a source's residual is split into (none when the radix split
+   * cannot carry it: the residual then stays with the sender on the account's next nonce).
+   * How many there are depends only on the residual and the payment, never on the entropy. */
+  private changeOutputs(policy: EvmTransactionSetPolicy, remainder: bigint, recipientAmountWei: bigint): bigint[] {
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    if (remainder < policy.dustWei + changeFee) return []
+    try {
+      return computeGeometricRadixChangeSplits({
+        totalAvailableWei: remainder,
+        recipientAmountWei,
+        dustThresholdWei: policy.dustWei,
+        minFeePerTxWei: changeFee,
+        maxOutputs: policy.maxChangeOutputs,
+        radix: policy.radix,
+        jitterBps: policy.jitterBps,
+        random: () => this.entropy(),
+      })
+    } catch (error) {
+      // No partition satisfies the dust and magnitude limits (for example a residual
+      // just above dust whose only legal size would sit at the payment's magnitude).
+      // That is no reason to refuse the payment: keep the residual on the successor.
+      if (!(error instanceof RangeError)) throw error
+      return []
+    }
+  }
+
+  /**
+   * What a single-recipient (legacy) transfer to `destination` would pay now: the coins the same
+   * selection would take, the same change split, and so the exact fee of every transaction it
+   * would sign (`feeWei`). Nothing is reserved, derived or signed. With no `amountWei`, the
+   * transfer is the largest one transfer can send now: every coin selection can draw on, less
+   * the fees of moving it (`amountWei` in the answer). Construction with `maxFeeWei: feeWei`
+   * makes the same decision while the coin list is unchanged; if another payment took a coin
+   * meanwhile it refuses rather than pay more.
+   */
+  async quoteLegacyTransactionSet(request: { destination: string; amountWei?: bigint }): Promise<EvmTransactionSetQuote> {
+    const { journal, coins } = this.options
+    const destination = getAddress(request.destination).toLowerCase()
+    const admittedInput = await journal.captureInputSelection?.()
+    const policy = this.options.policy()
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    const rulesFor = (amountWei: bigint) => {
+      const quoteRequest: ConstructEvmTransactionSetRequest = { operationId: 'quote', amountWei, kdf: () => destination }
+      this.validateRequest(quoteRequest)
+      return this.selectionRules(quoteRequest, policy, true, undefined, admittedInput)
+    }
+    const insufficient = (): never => {
+      this.options.assertFundingObserved?.()
+      throw new EvmTransactionSetInsufficientFundsError()
+    }
+    let amountWei = request.amountWei
+    if (amountWei === undefined) {
+      const rules = rulesFor(1n), paymentFee = rules.context(0).gas * policy.gasPriceWei
+      const candidates = coins.transactionSetCandidates(rules.selection(true))
+      // One coin pays the recipient itself: what the best one can move after its fee.
+      const single = candidates.reduce((best, coin) => {
+        if (coin.valueWei < paymentFee) return best
+        const capacity = rules.capacityWei(false)(coin, paymentFee)
+        return capacity > best ? capacity : best
+      }, 0n)
+      // Or every coin moves to one fresh account, which pays the recipient: what they hold less
+      // a transfer fee each, and the payment's own fee. Selection walks them in this order.
+      const fanIn = candidates
+        .filter(coin => coin.valueWei >= changeFee && rules.capacityWei(true)(coin, changeFee) > 0n)
+        .slice(0, rules.remainingMemberBudget - 1)
+        .reduce((sum, coin) => sum + rules.capacityWei(true)(coin, changeFee), 0n) - paymentFee
+      amountWei = single > fanIn ? single : fanIn
+      if (amountWei <= 0n) insufficient()
+    }
+    const rules = rulesFor(amountWei!)
+    const paymentFee = rules.context(0).gas * policy.gasPriceWei
+    const single = coins.planTransactionSetSources(rules.selection(false))
+    if (single) return { amountWei: amountWei!, ...this.independentFee(single, amountWei!, undefined, policy, rules.context) }
+    const parts = coins.planTransactionSetSources(rules.selection(true))
+    if (!parts) return insufficient()
+    const balance = parts.reduce((sum, part) => sum + part.coin.valueWei - changeFee, 0n)
+    const outputs = this.changeOutputs(policy, balance - amountWei! - paymentFee, amountWei!)
+    if (parts.length + 1 + outputs.length > rules.remainingMemberBudget)
+      throw new Error('Transaction-set exceeds member capacity')
+    const consolidationFeeWei = BigInt(parts.length) * changeFee
+    return { amountWei: amountWei!, inputCount: parts.length, consolidationFeeWei, deliveryFeeWei: paymentFee,
+      changeFeeWei: BigInt(outputs.length) * changeFee,
+      feeWei: consolidationFeeWei + paymentFee + BigInt(outputs.length) * changeFee }
+  }
+
+  /**
+   * What a transaction set paying `amountWei` to `kdf`'s recipients (a contact or stealth
+   * payment) would pay now: the coins the same selection would take, the same per-source
+   * payments and change split, and so the exact fee of every transaction it would sign. Only
+   * the inputs this amount needs are counted. Nothing is reserved, derived or signed; value
+   * kept back for a continuation (`reserveForContinuationWei`) is authorized and quoted by
+   * that continuation, so it is not part of this fee.
+   */
+  async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts'>): Promise<EvmTransactionSetQuote> {
+    const { journal, coins } = this.options
+    const quoteRequest: ConstructEvmTransactionSetRequest = { ...request, operationId: 'quote' }
+    this.validateRequest(quoteRequest)
+    const admittedInput = await journal.captureInputSelection?.()
+    const policy = this.options.policy()
+    const rules = this.selectionRules(quoteRequest, policy, false, undefined, admittedInput)
+    const parts = coins.planTransactionSetSources(rules.selection(false))
+    if (!parts) {
+      this.options.assertFundingObserved?.()
+      throw new EvmTransactionSetInsufficientFundsError()
+    }
+    return { amountWei: request.amountWei, ...this.independentFee(parts, request.amountWei, request.calldata, policy, rules.context) }
+  }
+
+  /** The fee of paying `amountWei` from these sources, each paying its share directly, split
+   * exactly as construction splits it (see `construct` and `prepareSource`). */
+  private independentFee(
+    parts: readonly CoinPart[], amountWei: bigint, calldata: string | undefined,
+    policy: EvmTransactionSetPolicy, context: (index: number) => PaymentContext,
+  ): Omit<EvmTransactionSetQuote, 'amountWei'> {
+    const data = calldata ?? '0x', changeFee = policy.changeGasLimit * policy.gasPriceWei
+    let remaining = amountWei, paymentIndex = 0, deliveryFeeWei = 0n, outputs = 0
+    for (const part of parts) {
+      const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
+      remaining -= payment
+      const hasPayment = payment > 0n || (amountWei === 0n && paymentIndex === 0 && data !== '0x')
+      const fee = hasPayment ? context(paymentIndex).gas * policy.gasPriceWei : 0n
+      outputs += this.changeOutputs(policy, part.coin.valueWei - payment - fee, hasPayment ? payment : amountWei).length
+      deliveryFeeWei += fee
+      if (hasPayment) paymentIndex++
+    }
+    const changeFeeWei = BigInt(outputs) * changeFee
+    return { inputCount: parts.length, consolidationFeeWei: 0n, deliveryFeeWei, changeFeeWei, feeWei: deliveryFeeWei + changeFeeWei }
   }
 
   private async prepareFanIn(request: ConstructEvmTransactionSetRequest, policy: EvmTransactionSetPolicy, context: PaymentContext, parts: CoinPart[], yielder: CooperativeBatchYielder): Promise<LocalMember[]> {
@@ -897,27 +1079,7 @@ export class EvmTransactionSetPreparer {
       throw new EvmTransactionSetInsufficientFundsError()
     const remainder = part.coin.valueWei - payment - (hasPayment ? paymentFee : 0n)
     const destination = context.destination
-    let outputs: bigint[] = []
-    if (remainder >= policy.dustWei + changeFee) {
-      try {
-        outputs = computeGeometricRadixChangeSplits({
-          totalAvailableWei: remainder,
-          recipientAmountWei: hasPayment ? payment : request.amountWei,
-          dustThresholdWei: policy.dustWei,
-          minFeePerTxWei: changeFee,
-          maxOutputs: policy.maxChangeOutputs,
-          radix: policy.radix,
-          jitterBps: policy.jitterBps,
-          random: () => this.entropy(),
-        })
-      } catch (error) {
-        // No partition satisfies the dust and magnitude limits (for example a residual
-        // just above dust whose only legal size would sit at the payment's magnitude).
-        // That is no reason to refuse the payment: keep the residual on the successor.
-        if (!(error instanceof RangeError)) throw error
-        outputs = []
-      }
-    }
+    const outputs = this.changeOutputs(policy, remainder, hasPayment ? payment : request.amountWei)
     if (!hasPayment && !outputs.length) throw new Error('Insufficient private change for continuation')
     type Move = {
       role: 'payment' | 'change'

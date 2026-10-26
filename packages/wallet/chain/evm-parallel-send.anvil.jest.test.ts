@@ -23,14 +23,17 @@ import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import { evmWalletInternals } from '../evm-wallet'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
+import type { LegacySendResult } from './chain-wallet'
 import {
   fixture,
   mailboxes,
   offlineChain,
+  roots,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
+import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -562,6 +565,195 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       expect(second.nonce).toBe(first.nonce + 1)
       await mine()
       expect(await chain.getBalance(to)).toBe(18n)
+    } finally {
+      await automine(true)
+    }
+  })
+
+  // Send to an address (Send MONR) draws on the same coin list, selection and reservations as
+  // stamps and contact payments.
+  const coinAccounts = () => [
+    ...new Set(
+      evmWalletInternals(alice)
+        .coinList!.all()
+        .map(coin => coin.account.toLowerCase()),
+    ),
+  ]
+  const balances = async (accounts: readonly string[]) =>
+    (await Promise.all(accounts.map(account => chain.getBalance(account)))).reduce(
+      (sum, value) => sum + value,
+      0n,
+    )
+  const signedMembers = (operationId: string) =>
+    alice
+      .getNativeOperations!()
+      .find(row => row.operationId === operationId)!
+      .members.map(member => member.signed!.rawTransaction)
+  /** A transfer with a fan-in returns pending while its members land; the app's reconciler
+   * then finishes the same operation. This does the same, ticking until it is included. */
+  async function finished(transfer: Promise<LegacySendResult>) {
+    let operationId: string
+    try {
+      return await transfer
+    } catch (error) {
+      if (!(error instanceof LegacyTransactionSetPendingError)) throw error
+      operationId = error.operation.operationId
+    }
+    for (let pass = 0; pass < 200; pass++) {
+      try {
+        return await alice.resumeLegacySend!(operationId)
+      } catch (error) {
+        if (!(error instanceof LegacyTransactionSetPendingError)) throw error
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    }
+    throw new Error('transfer did not settle')
+  }
+  const spentInputs = (raws: readonly string[]) =>
+    raws.map(raw => {
+      const tx = Transaction.from(raw)
+      return `${tx.from!.toLowerCase()}:${tx.nonce}`
+    })
+
+  it('Send max after paid messages spends their change coins and leaves only dust that cannot pay its own gas', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    for (const n of [0, 1]) {
+      const message = await send(6, n)
+      await settle([message.payloadDigest])
+    }
+    const change = evmWalletInternals(alice)
+      .coinList!.all()
+      .filter(
+        coin =>
+          coin.origin === 'change' &&
+          coin.state === 'unspent' &&
+          coin.valueWei > 0n,
+      )
+    expect(change.length).toBeGreaterThan(0)
+    const accounts = coinAccounts()
+    const before = await balances(accounts)
+    const recipient = Wallet.createRandom().address
+    const max = await alice.estimateLegacyMax!({ recipient: { raw: recipient } })
+    const result = await finished(
+      alice.sendLegacy!({
+        recipient: { raw: recipient },
+        value: max.value,
+        maxFee: max.totalFee,
+      }),
+    )
+    expect(await chain.getBalance(recipient)).toBe(max.value)
+    const mined = await Promise.all(
+      [result.txHash, ...(result.intermediateTxHashes ?? [])].map(hash =>
+        chain.getTransaction(hash),
+      ),
+    )
+    const senders = new Set(mined.map(tx => tx!.from.toLowerCase()))
+    // Every change coin the messages left behind went into the transfer.
+    for (const coin of change)
+      expect(senders.has(coin.account.toLowerCase())).toBe(true)
+    // The wallet paid the quoted fee, no more, and kept nothing it could still spend.
+    const after = await balances([...new Set([...accounts, ...coinAccounts()])])
+    expect(before - after).toBe(max.value + max.totalFee)
+    const transferFee = 21_000n * (await chain.getFeeData()).gasPrice!
+    for (const account of coinAccounts())
+      // Anything left on an account is less than the gas of the transaction that would move
+      // it, so no transaction can spend it.
+      expect(await chain.getBalance(account)).toBeLessThan(transferFee)
+  })
+
+  it('a Send and a paid message started together reserve different coins and both land', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    const first = await send(7, 0)
+    await settle([first.payloadDigest])
+    const recipient = Wallet.createRandom().address
+    const value = 3n * STAMP
+    await automine(false)
+    let legacyHash: string | undefined
+    try {
+      const transfer = finished(
+        alice.sendLegacy!({
+          recipient: { raw: recipient },
+          value,
+          onSigned: async ({ txHash }) => {
+            legacyHash = txHash
+          },
+        }),
+      )
+      const message = await send(7, 1)
+      for (let pass = 0; pass < 200 && !legacyHash; pass++)
+        await new Promise(resolve => setTimeout(resolve, 25))
+      expect(legacyHash).toBeDefined()
+      const legacyRow = alice.getNativeOperations!().find(row =>
+        row.members.some(
+          member => member.signed?.transactionHash === legacyHash,
+        ),
+      )!
+      const stampRow = alice.getNativeOperations!().find(
+        row =>
+          row.preparationId?.endsWith(`stamp-${ID(7, 1).replace(/-/g, '')}`),
+      )!
+      const transferInputs = spentInputs(signedMembers(legacyRow.operationId))
+      const messageInputs = spentInputs(signedMembers(stampRow.operationId))
+      expect(transferInputs.filter(input => messageInputs.includes(input))).toEqual([])
+      await automine(true)
+      await mine()
+      const result = await transfer
+      await settle([message.payloadDigest])
+      expect((await chain.getTransactionReceipt(result.txHash))!.status).toBe(1)
+      expect(await chain.getBalance(recipient)).toBe(value)
+      expect(
+        (await onChain([message])).receipts.every(receipt => receipt?.status === 1),
+      ).toBe(true)
+    } finally {
+      await automine(true)
+    }
+  })
+
+  it('a Send interrupted after signing is finished by the same operation after a restart', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 17n })).wait()
+    const message = await send(8, 0)
+    await settle([message.payloadDigest])
+    const recipient = Wallet.createRandom().address
+    const value = 2n * STAMP
+    await automine(false)
+    try {
+      const interrupted = await alice
+        .sendLegacy!({
+          recipient: { raw: recipient },
+          value,
+          onSigned: async () => {
+            throw new Error('the app stopped here')
+          },
+        })
+        .catch((error: unknown) => error)
+      expect(interrupted).toBeInstanceOf(LegacyTransactionSetPendingError)
+      const [pending] = alice.getUnresolvedLegacySend!()
+      expect(pending).toBeDefined()
+      const originalBytes = signedMembers(pending!.operationId)
+      await alice.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      expect(alice.getUnresolvedLegacySend!().map(row => row.operationId)).toEqual([
+        pending!.operationId,
+      ])
+      await automine(true)
+      const result = await finished(alice.resumeLegacySend!(pending!.operationId))
+      expect(result.txHash).toBe(
+        (interrupted as LegacyTransactionSetPendingError).transaction.txHash,
+      )
+      expect(await chain.getBalance(recipient)).toBe(value)
+      expect(
+        (await alice.readNativeOperation!(pending!.operationId))!.members.map(
+          member => member.signed!.rawTransaction,
+        ),
+      ).toEqual(originalBytes)
+      // Resuming again pays nothing more.
+      expect((await alice.resumeLegacySend!(pending!.operationId)).txHash).toBe(
+        result.txHash,
+      )
+      expect(await chain.getBalance(recipient)).toBe(value)
     } finally {
       await automine(true)
     }

@@ -29,6 +29,9 @@ import type { PreparedIndependentPaymentParams } from './evm-legacy-consolidator
 import { listEvmSwapVenues } from './dex-deployments'
 import type { ConstructEvmTransactionSetRequest } from '../evm-transaction-set-types'
 
+/** The most sources one native stealth payment draws on; its quote selects with the same bound. */
+export const STEALTH_NATIVE_PAYMENT_PARTS = 16
+
 export const EVM_STEALTH_PREPARATION_NAMESPACE = 'evm-stealth-preparations-v1'
 export const evmStealthTransactionSetOperationId = (id: string): string =>
   `stealth-${keccak256(toUtf8Bytes(id)).slice(2)}`
@@ -90,7 +93,9 @@ export interface EvmStealthPaymentDriver {
     stealthAddress: string
     ephemeralPubKey: Uint8Array
   }
-  quoteNative(amountWei: bigint): Promise<{
+  /** Balance, and the fee of paying `amountWei` to `recipientAddress` (0 when no amount is
+   * given: the balance alone is asked for). */
+  quoteNative(amountWei: bigint, recipientAddress?: string): Promise<{
     nativeBalanceAtomic: bigint
     assetBalanceAtomic: bigint
     estimatedNativeFeeAtomic: bigint
@@ -621,7 +626,7 @@ export function createEvmStealthPayments(
             recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
             ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
             sources: [],
-            ...await driver.quoteNative(BigInt(row.amountAtomic)),
+            ...await driver.quoteNative(BigInt(row.amountAtomic), row.recipientAddress),
           } satisfies StealthPaymentQuote
         const sources = row.allocation!.sources.map((source) => ({
           sourceAddress: source.sourceAddress,
@@ -731,7 +736,7 @@ export function createEvmStealthPayments(
                     intent.operationId,
                   ),
                   amountWei: BigInt(row.amountAtomic),
-                  maxPaymentParts: 16,
+                  maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
                   kdf: () => row.recipientAddress,
                   maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
                   ...(intent.messageStamp ? { reserveForContinuationWei:

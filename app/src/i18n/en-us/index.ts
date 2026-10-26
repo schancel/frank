@@ -1594,6 +1594,8 @@ export const rawEnUS = {
       'The network fee went up. Nothing was sent. Check the new fee and confirm again.',
     maxTotal: 'Amount + network fee',
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
+    sendMax: 'Max',
+    sendMaxUnavailable: 'Cannot work out the most you can send: {reason}',
     irreversibleWarning:
       'Blockchain transactions are irreversible. Verify recipient and network before confirming.',
     editTransfer: 'Edit',

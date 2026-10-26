@@ -1,6 +1,10 @@
 /** User-requested single-recipient payments. The shared graph owns all signed funds. */
 import { hexlify, randomBytes, Transaction } from 'ethers'
-import type { EvmTransactionSetPreparer } from '../evm-transaction-set'
+import {
+  EvmTransactionSetFeeExceededError,
+  type EvmTransactionSetQuote,
+  type EvmTransactionSetPreparer,
+} from '../evm-transaction-set'
 import type { PreparedEvmTransactionSet } from '../evm-transaction-set-types'
 import type { TransactionSetSubmission } from '../transaction-set'
 import {
@@ -11,11 +15,12 @@ import {
   EvmNativeOperationPendingError,
   type SendLegacyParams,
 } from './evm-legacy-consolidator'
-import type { EvmListCoin } from '../evm-coin-list'
-import type {
-  ChainTransaction,
-  LegacyFeeEstimate,
-  LegacySendResult,
+import {
+  NativeFeeExceededError,
+  type ChainTransaction,
+  type LegacyFeeEstimate,
+  type LegacyMaxEstimate,
+  type LegacySendResult,
 } from './chain-wallet'
 
 const preparationPrefix = 'evm-transaction-set:legacy-'
@@ -50,6 +55,13 @@ export class LegacyTransactionSetPendingError extends EvmNativeOperationPendingE
   }
 }
 
+const feeEstimate = (quote: EvmTransactionSetQuote): LegacyFeeEstimate => ({
+  inputCount: quote.inputCount,
+  deliveryFee: quote.deliveryFeeWei,
+  consolidationFee: quote.consolidationFeeWei + quote.changeFeeWei,
+  totalFee: quote.feeWei,
+})
+
 export function createLegacyTransactionSetPayments(options: {
   preparer: EvmTransactionSetPreparer
   sendTransaction(
@@ -58,8 +70,6 @@ export function createLegacyTransactionSetPayments(options: {
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
   readOperation(operationId: string): Promise<EvmNativeOperation | undefined>
-  /** Snapshot already filtered by journal/owned staging admission. No key derivation. */
-  getCoins(): readonly EvmListCoin[]
 }) {
   const isSharedLegacy = (row: EvmNativeOperation | undefined): row is EvmNativeOperation =>
     row?.kind === 'transaction-set' && row.preparationId?.startsWith(preparationPrefix) === true
@@ -160,59 +170,31 @@ export function createLegacyTransactionSetPayments(options: {
       return getUnresolvedLegacySend()
     },
     resumeLegacySend,
-    /** Conservative reviewed-policy upper bound, not the exact eventual selected fee. */
+    /** The exact fee the transfer pays: the same selection, change split and member count the
+     * construction makes (`EvmTransactionSetPreparer.quoteLegacyTransactionSet`). */
     async estimateLegacyFee(
       params: Pick<SendLegacyParams, 'recipient' | 'value'>,
     ): Promise<LegacyFeeEstimate> {
       if (params.value <= 0n)
         throw new RangeError('Transfer value must be positive')
       await options.refresh()
-      const policy = options.preparer.transactionSetPolicy()
-      const deliveryFee =
-        policy.paymentGasLimit('0x', params.recipient.raw) * policy.gasPriceWei
-      const inputFee = policy.changeGasLimit * policy.gasPriceWei
-      const coins = options
-        .getCoins()
-        .filter(
-          coin =>
-            coin.state === 'unspent' &&
-            !coin.holder &&
-            (coin.spendableFromBlock === undefined ||
-              coin.spendableFromBlock <= policy.head),
-        )
-      // A sufficient existing account bypasses consolidation. Otherwise bound every potentially
-      // selected input; the constructor may choose fewer, but the quote never promises that.
-      const spendable = (coin: EvmListCoin) => {
-        const rule = policy.spendRule
-        return rule?.waitBlocks &&
-          coin.nonce > 0 &&
-          (coin.lastSpentInBlock === undefined ||
-            policy.head < coin.lastSpentInBlock + rule.waitBlocks)
-          ? coin.valueWei - rule.belowWei
-          : coin.valueWei
-      }
-      const sufficient = coins.some(
-        coin => spendable(coin) >= params.value + deliveryFee,
+      return feeEstimate(
+        await options.preparer.quoteLegacyTransactionSet({
+          destination: params.recipient.raw,
+          amountWei: params.value,
+        }),
       )
-      const funded = coins.filter(coin => spendable(coin) > inputFee)
-      const inputCount = sufficient ? 1 : Math.min(funded.length, 63)
-      if (
-        !inputCount ||
-        (!sufficient &&
-          funded.reduce((sum, coin) => sum + spendable(coin) - inputFee, 0n) <
-            params.value + deliveryFee)
-      )
-        throw new RangeError('Insufficient unreserved native funds')
-      const changeBound = BigInt(policy.maxChangeOutputs) * inputFee
-      const consolidationFee = sufficient
-        ? changeBound
-        : BigInt(inputCount) * (inputFee + changeBound) + changeBound
-      return {
-        inputCount,
-        deliveryFee,
-        consolidationFee,
-        totalFee: deliveryFee + consolidationFee,
-      }
+    },
+    /** The most one transfer can send now (every coin selection can draw on, less the fees of
+     * moving it) and the exact fee it pays. */
+    async estimateLegacyMax(
+      params: Pick<SendLegacyParams, 'recipient'>,
+    ): Promise<LegacyMaxEstimate> {
+      await options.refresh()
+      const quote = await options.preparer.quoteLegacyTransactionSet({
+        destination: params.recipient.raw,
+      })
+      return { value: quote.amountWei, ...feeEstimate(quote) }
     },
     async sendLegacy(
       params: Pick<
@@ -244,6 +226,9 @@ export function createLegacyTransactionSetPayments(options: {
         const retained = await options.preparer.readOperation(operationId)
         if (retained)
           throw new LegacyTransactionSetPendingError(retained, error)
+        // Nothing was signed: the reviewed fee no longer covers the transfer.
+        if (error instanceof EvmTransactionSetFeeExceededError)
+          throw new NativeFeeExceededError(error.feeWei)
         throw error
       }
       const row = await options.preparer.readOperation(operationId)

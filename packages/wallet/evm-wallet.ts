@@ -274,6 +274,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   getUnresolvedContractCalls!: EvmChainWalletHandle["getUnresolvedContractCalls"];
   fundMainAccount!: EvmChainWalletHandle["fundMainAccount"];
   estimateLegacyFee!: EvmChainWalletHandle["estimateLegacyFee"];
+  estimateLegacyMax!: EvmChainWalletHandle["estimateLegacyMax"];
   getUnresolvedLegacySend!: EvmChainWalletHandle["getUnresolvedLegacySend"];
   resumeLegacySend!: EvmChainWalletHandle["resumeLegacySend"];
   stealthPayments?: EvmChainWalletHandle["stealthPayments"];

@@ -726,7 +726,7 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
         nonce = 0
       },
       send: () =>
-        chain.nativeTransfers.send({ wallet, recipient, value: WEIGHT }),
+        wallet.sendNative({ recipient, value: WEIGHT }),
     }
   }
 
@@ -810,21 +810,17 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
     },
   )
 
-  it('another facade cannot replace the creator wallet native-operation owner', async () => {
+  // A second chain facade no longer reaches this owner: its `nativeTransfers.send` is the
+  // wallet's coin-list transaction set. What stays to pin is the owner itself.
+  it('a second native send cannot replace the creator wallet native-operation owner', async () => {
     const f = await open()
     await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
     const original = f.wallet.getNativeOperations!()[0]!
-    const otherStore = new InMemoryNativeTransactionAttemptStore()
-    const other = createEvmChain({
-      ...CONFIG,
-      nativeAttemptStore: otherStore,
-    })
     const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
     await expect(
-      other.nativeTransfers.send({
-        wallet: f.wallet,
+      f.wallet.sendNative({
         recipient,
         value: WEIGHT,
       }),
@@ -1099,8 +1095,7 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
     for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
       fake.balances.set(address, 0n)
     replyLost = window === 'pending'
-    const send = chain.nativeTransfers.send({
-      wallet,
+    const send = wallet.sendNative({
       recipient,
       value: WEIGHT / 2n,
     })

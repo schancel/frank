@@ -69,6 +69,9 @@ export function createNativeOnlyEvmChain(config: EvmChainConfig): NativeOnlyEvmC
     ...(chain.nativeTransfers.estimateLegacyFee
       ? { estimateLegacyFee: chain.nativeTransfers.estimateLegacyFee }
       : {}),
+    ...(chain.nativeTransfers.estimateLegacyMax
+      ? { estimateLegacyMax: chain.nativeTransfers.estimateLegacyMax }
+      : {}),
   };
   return {
     family: chain.family,

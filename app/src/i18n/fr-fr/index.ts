@@ -1630,6 +1630,8 @@ export const rawFrFR = {
       'Les frais de réseau ont augmenté. Rien n’a été envoyé. Vérifiez les nouveaux frais et confirmez à nouveau.',
     maxTotal: 'Montant + frais de réseau',
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
+    sendMax: 'Max',
+    sendMaxUnavailable: 'Impossible de calculer le montant maximal : {reason}',
     irreversibleWarning:
       'Les transactions sur la blockchain sont irréversibles. Vérifiez le destinataire et le réseau avant de confirmer.',
     editTransfer: 'Modifier',

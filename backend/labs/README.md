@@ -343,7 +343,9 @@ Solonet is shared with other labs, bots and workers, so funding expects a busy n
 admits a transaction against its sender's balance at its last committed block less the execution
 delay, which trails `eth_blockNumber` by a margin that grows with load: a freshly funded sender is
 refused ("Signer had insufficient balance") for a few blocks, and a burst may be refused as
-"overloaded, try again later". Each funding send is therefore retried a block later with other
+"overloaded, try again later" (sometimes while taking it after all: the next send at that
+nonce is then refused with "An existing transaction had higher priority", which counts as sent).
+Each funding send is therefore retried a block later with other
 bytes (the node keeps refusing bytes it once refused; only one transaction can land at a nonce,
 so nothing is paid twice) for up to three minutes, and then fails naming the signer, the nonce and
 its balance at the head and four blocks back. Funding ends with a probe account funded after

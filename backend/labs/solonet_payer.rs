@@ -72,6 +72,11 @@ impl RpcError {
         }
     }
 
+    /// The node already holds another transaction of the sender at this nonce.
+    fn nonce_held(&self) -> bool {
+        matches!(self, RpcError::Node(message) if message.contains("existing transaction"))
+    }
+
     /// The node does not (yet) see the sender holding the transaction's gas and value.
     fn insufficient_balance(&self) -> bool {
         matches!(self, RpcError::Node(message) if message.contains("insufficient balance"))
@@ -375,8 +380,14 @@ impl Solonet {
                 }
                 Err(error) => error,
             };
-            // A send whose answer was lost may still have reached the pool.
-            if self.pending_nonce(from.address).await > nonce {
+            // `from` is an account of this call, so a transaction of it held at this nonce is
+            // one of ours: a send answered "overloaded", or whose answer was lost, may still have
+            // reached the pool. The node then turns the next one down as a lower-priority
+            // replacement, and its pending nonce may not show it yet.
+            if error.nonce_held() || self.pending_nonce(from.address).await > nonce {
+                println!(
+                    "solonet: {signer} at nonce {nonce}: an earlier send of ours is held ({error})"
+                );
                 return;
             }
             let retryable = error.insufficient_balance() || error.busy();
@@ -402,10 +413,14 @@ impl Solonet {
     /// Pay `need` from the faucet into the fresh `treasury` and wait until it has landed. The
     /// faucet is shared: another user can take the nonce between the read and the send, or get
     /// its own transaction mined at that nonce after ours was accepted, so a refused or
-    /// superseded payment is signed again at the faucet's next nonce.
+    /// superseded payment is signed again at the faucet's next nonce. A node may also take a
+    /// transaction while answering "overloaded", so every payment this call has sent counts
+    /// when it waits: whichever lands funds the treasury, and a new one is signed only once the
+    /// nonce is used by none of them.
     async fn fund_treasury(&self, treasury: &Payer, need: u128) {
         let faucet = address(&self.faucet);
         let started = Instant::now();
+        let mut sent = Vec::new();
         for attempt in 0u128.. {
             let nonce = self.pending_nonce(faucet).await;
             let (raw, hash) = sign_eip1559(
@@ -419,16 +434,19 @@ impl Solonet {
                 need + attempt,
                 &[],
             );
-            let sent = self
+            sent.push(hash);
+            let answer = self
                 .try_call(
                     "eth_sendRawTransaction",
                     serde_json::json!([format!("0x{}", hex::encode(raw))]),
                 )
                 .await;
-            let outcome = match sent {
-                // The answer may be lost on a transaction that did reach the pool.
-                Ok(_) | Err(RpcError::Transport(_)) => {
-                    self.landed_or_superseded(&hash, faucet, nonce).await
+            let outcome = match answer {
+                // The transaction may be in the pool; or another of ours at this nonce is.
+                Ok(_) => self.landed_or_superseded(&sent, faucet, nonce).await,
+                Err(error) if error.busy() || error.nonce_held() => {
+                    println!("solonet: faucet payment at nonce {nonce}: {error}; waiting on it");
+                    self.landed_or_superseded(&sent, faucet, nonce).await
                 }
                 Err(error) => Err(error.to_string()),
             };
@@ -451,37 +469,43 @@ impl Solonet {
         }
     }
 
-    /// Wait until `hash`, sent by `sender` at `nonce`, has landed and succeeded (`Ok`), or
-    /// another transaction of `sender` has taken that nonce (`Err`).
+    /// Wait until one of `hashes`, sent by `sender`, has landed and succeeded (`Ok`), or
+    /// `sender`'s `nonce` is used and none of them landed (`Err`).
     async fn landed_or_superseded(
         &self,
-        hash: &[u8; 32],
+        hashes: &[[u8; 32]],
         sender: [u8; 20],
         nonce: u64,
     ) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
-            if let Some(receipt) = self.receipt(hash).await {
-                assert_eq!(
-                    receipt["status"],
-                    "0x1",
-                    "transaction 0x{} failed",
-                    hex::encode(hash)
-                );
-                return Ok(());
+            for hash in hashes {
+                if let Some(receipt) = self.receipt(hash).await {
+                    assert_eq!(
+                        receipt["status"],
+                        "0x1",
+                        "transaction 0x{} failed",
+                        hex::encode(hash)
+                    );
+                    return Ok(());
+                }
             }
             if self.latest_nonce(sender).await > nonce {
-                // The nonce is used; the receipt is read again in case it was ours after all.
+                // The nonce is used; the receipts are read again in case it was ours after all.
                 tokio::time::sleep(Duration::from_millis(500)).await;
-                if self.receipt(hash).await.is_some() {
+                let mut ours = false;
+                for hash in hashes {
+                    ours |= self.receipt(hash).await.is_some();
+                }
+                if ours {
                     continue;
                 }
                 return Err("another transaction took the nonce".into());
             }
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "0x{} not mined within 120 s (pending nonce {})",
-                    hex::encode(hash),
+                    "none of {} payments at nonce {nonce} mined within 120 s (pending nonce {})",
+                    hashes.len(),
                     self.pending_nonce(sender).await
                 ));
             }

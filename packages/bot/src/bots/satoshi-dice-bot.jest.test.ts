@@ -189,6 +189,31 @@ describe("SatoshiDiceBot", () => {
     expect(rejected).not.toHaveProperty("payoutWei");
   });
 
+  // F5: the card had no way to know the table limit, so it let a player send a bet the bot then
+  // refused (the player paid the fees). The limit now travels with every offer.
+  test("every offer states the table limit, across the wire, and a result states it for its next offer net of its own payout", async () => {
+    const h = harness();
+    const LIMIT = 480_000_000_000_000_000n; // 0.48 MON
+    const bot = new SatoshiDiceBot({ maxPayoutWei: LIMIT });
+    h.ctx.getBalance = async () => 10n ** 21n;
+    const { offer, bet } = await table(h, bot, "win");
+    expect(overTheWire([offer])[0]).toMatchObject({ action: "table", maxPayoutWei: LIMIT.toString() });
+    await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
+    const result = overTheWire(h.sent[0].items).find(
+      (i) => i.type === "dice" && i.action === "result"
+    ) as SatoshiDiceItem;
+    // The bank has far more than the limit, so the next offer's limit is still the ceiling.
+    expect(result.maxPayoutWei).toBe(LIMIT.toString());
+  });
+
+  test("an offer from a bank with less than the ceiling states what the bank can pay", async () => {
+    const h = harness();
+    const bot = new SatoshiDiceBot({ maxPayoutWei: 10n ** 18n });
+    h.ctx.getBalance = async () => 20_000_000_000_000_000n + 300_000_000_000_000_000n;
+    const { offer } = await table(h, bot);
+    expect(offer.maxPayoutWei).toBe(300_000_000_000_000_000n.toString());
+  });
+
   test("a payout that cannot be sent is kept and paid later, once", async () => {
     const h = harness();
     const bot = new SatoshiDiceBot();

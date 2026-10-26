@@ -205,4 +205,43 @@ describe("FaucetBot paid welcome", () => {
     expect(() => new FaucetBot({ amountWei: MAX_AMOUNT_WEI + 1n })).toThrow();
     expect(() => new FaucetBot({ amountWei: 0n })).toThrow();
   });
+  // F6: a new account the faucet was too low for at sign-up got nothing and heard nothing.
+  test("a new account the faucet is too low for is told, and granted once the faucet is topped up", async () => {
+    const f = harness();
+    let balance = AMOUNT + RESERVE - 1n;
+    f.ctx.getBalance = async () => balance;
+    const b = bot();
+    await b.onNewUser(user(), f.ctx);
+    expect(f.paidOut()).toBe(0n);
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]).toMatchObject({ to: PLAYER, valueWei: 0n });
+    expect(f.item("text").text).toMatch(/low right now.*as soon as the faucet is topped up/);
+    // Still low: the schedule keeps it waiting and says nothing more.
+    for (const schedule of b.schedules) await schedule.handler(f.ctx);
+    expect(f.sent).toHaveLength(1);
+    // Topped up: granted without the user asking, once.
+    balance = 10n * (AMOUNT + RESERVE);
+    for (const schedule of b.schedules) await schedule.handler(f.ctx);
+    for (const schedule of b.schedules) await schedule.handler(f.ctx);
+    expect(f.settlements()).toEqual([AMOUNT]);
+    expect(f.sent[1]).toMatchObject({ to: PLAYER, valueWei: AMOUNT });
+    // A restarted faucet does not pay it again.
+    const restarted = bot();
+    for (const schedule of restarted.schedules) await schedule.handler(f.ctx);
+    await restarted.onNewUser(user(), f.ctx);
+    expect(f.settlements()).toEqual([AMOUNT]);
+  });
+
+  test("a waiting account that asked by message meanwhile is granted only once", async () => {
+    const f = harness();
+    let balance = AMOUNT + RESERVE - 1n;
+    f.ctx.getBalance = async () => balance;
+    const b = bot();
+    await b.onNewUser(user(), f.ctx);
+    balance = 10n * (AMOUNT + RESERVE);
+    await b.onMessage(message(f), f.ctx);
+    for (const schedule of b.schedules) await schedule.handler(f.ctx);
+    expect(f.settlements()).toEqual([AMOUNT]);
+    expect(f.data.get("waiting_for_grant")).toBe("[]");
+  });
 });

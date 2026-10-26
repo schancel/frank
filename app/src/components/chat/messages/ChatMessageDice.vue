@@ -121,13 +121,21 @@
         <div
           v-if="payout"
           class="text-body2 q-mb-xs"
-          :class="payout.short ? 'text-negative' : 'text-grey-8'"
+          :class="
+            payout.short
+              ? 'text-negative'
+              : payout.verified
+              ? 'text-positive'
+              : 'text-grey-8'
+          "
           data-testid="dice-payout"
         >
           {{
             $t(
               payout.short
                 ? 'gameFairness.payoutMissing'
+                : payout.verified
+                ? 'gameFairness.payoutVerified'
                 : 'gameFairness.payoutClaimed',
               payout,
             )
@@ -251,6 +259,14 @@
             <strong class="text-positive">{{ estimatedPayout }}</strong
             >.
           </div>
+          <div
+            v-if="stakeError"
+            role="alert"
+            class="text-body2 text-negative q-mb-sm"
+            data-testid="dice-stake-error"
+          >
+            {{ stakeError }}
+          </div>
 
           <q-btn
             no-caps
@@ -264,7 +280,7 @@
             "
             data-testid="dice-roll-btn"
             :loading="rolling"
-            :disable="rolling || played"
+            :disable="rolling || played || !!stakeError"
             @click="rollDice"
           />
           <div
@@ -296,10 +312,7 @@ import {
 } from '@frank/wallet/message-item-plugins/dice/fair'
 import { useChatStore } from '../../../stores/chats'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
-import {
-  stakeAllowed,
-  stakeMinimumWei,
-} from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 import {
   BOT_ANSWER_WAIT_MS,
   chatGameItems,
@@ -309,8 +322,12 @@ import {
 } from '../../../utils/chat-game-items'
 import {
   PAYMENT_FLOOR_INJECTION,
+  payoutView,
   stakeChipsWei,
+  stakeProblem,
+  type PayoutView,
 } from '../../../utils/game-stakes'
+import { useStampReceipt } from '../../../composables/useStampReceipt'
 import { errorNotify } from '../../../utils/notifications'
 import {
   dealerDiceStepForRoll,
@@ -335,6 +352,21 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  setup(props) {
+    // The bot's result message carries the payout as its stamp: verified by the same wallet
+    // evidence the message footer shows (`useStampReceipt`), not by what the message says.
+    const payoutReceipt = useStampReceipt(() => {
+      if (props.item.action !== 'result' || props.outbound) return undefined
+      const entry = chatGameItems('dice', props.address).find(
+        other =>
+          !other.outbound &&
+          other.item.action === 'result' &&
+          other.item.rollId === props.item.rollId,
+      )
+      return entry && { ...entry, outbound: false }
+    })
+    return { payoutReceipt }
+  },
   inject: {
     /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
     paymentFloorWei: {
@@ -490,10 +522,10 @@ export default defineComponent({
         .map(entry => entry.item)
       return verifyDiceResult(this.item, bet, results)
     },
-    /** What the result says it pays, and what the wallet reports its message carried. The
-     * wallet's figure is not a chain check, so a payout is never shown as verified here: it is
-     * either short, or claimed. */
-    payout(): { amount: string; carried: string; short: boolean } | null {
+    /** What the result says it pays, and what its message carried: verified once the wallet
+     * saw the stamp land on chain (the evidence the footer uses), short if what it carried, or
+     * what landed, is less, and claimed until then. */
+    payout(): PayoutView | null {
       const owed = BigInt(this.item.payoutWei ?? '0')
       if (this.item.action !== 'result' || owed <= 0n || this.outbound)
         return null
@@ -504,11 +536,7 @@ export default defineComponent({
             entry.item.action === 'result' &&
             entry.item.rollId === this.item.rollId,
         )?.stampValueWei ?? 0n
-      return {
-        amount: formatDisplayAmount(activeChain, owed),
-        carried: formatDisplayAmount(activeChain, carried),
-        short: carried < owed,
-      }
+      return payoutView(owed, carried, this.payoutReceipt)
     },
     /** A terminal game answer, separate from any payment or refund settlement. */
     rejection(): SatoshiDiceItem | undefined {
@@ -549,13 +577,40 @@ export default defineComponent({
       }
     },
     estimatedPayout(): string {
-      const wager = parseWager(this.stakeText, a =>
-        activeChain.fromDisplayAmount(a),
-      )
       return formatDisplayAmount(
         activeChain,
-        dicePayoutWei(wager ?? 0n, this.target),
+        dicePayoutWei(this.wagerWei ?? 0n, this.target),
       )
+    },
+    wagerWei(): bigint | undefined {
+      return parseWager(this.stakeText, a => activeChain.fromDisplayAmount(a))
+    },
+    /** The most one roll on this offer pays, as the bot stated it with the offer; unknown for
+     * an offer that did not state it. */
+    tableLimitWei(): bigint | undefined {
+      const stated = this.outbound ? undefined : this.item.maxPayoutWei
+      if (!stated || !/^[0-9]{1,78}$/.test(stated)) return undefined
+      return BigInt(stated)
+    },
+    /** Why this bet cannot be sent, as the player is told it ('' when it can): the stake is not a
+     * number or is below the smallest stake, or a win would pay more than the table limit (the
+     * bot would refuse it, and the player would have paid the fees for nothing). */
+    stakeError(): string {
+      const problem = stakeProblem(
+        this.wagerWei,
+        this.minimumStake,
+        (key, params) => this.$t(key, params ?? {}),
+        wei => this.displayMon(wei.toString()),
+      )
+      if (problem || !this.wagerWei) return problem
+      const limit = this.tableLimitWei
+      const payout = dicePayoutWei(this.wagerWei, this.target)
+      return limit !== undefined && payout > limit
+        ? this.$t('gameFairness.diceAboveTableLimit', {
+            payout: this.displayMon(payout.toString()),
+            limit: this.displayMon(limit.toString()),
+          })
+        : ''
     },
   },
   methods: {
@@ -568,21 +623,11 @@ export default defineComponent({
     },
     rollDice() {
       if (this.rolling || !this.offer) return
-      const wager = parseWager(this.stakeText, a =>
-        activeChain.fromDisplayAmount(a),
-      )
-      if (wager === undefined) {
-        errorNotify(new Error('Enter the stake as a number.'))
-        return
-      }
-      if (!stakeAllowed(wager, this.minimumStake)) {
-        errorNotify(
-          new Error(
-            this.$t('gameFairness.stakeBelowMinimum', {
-              amount: this.displayMon(this.minimumStake.toString()),
-            }),
-          ),
-        )
+      const wager = this.wagerWei
+      if (this.stakeError || wager === undefined) {
+        errorNotify(new Error(this.stakeError), {
+          safeMessage: this.stakeError,
+        })
         return
       }
       this.rolling = true

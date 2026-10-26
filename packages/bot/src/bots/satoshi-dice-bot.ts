@@ -102,24 +102,33 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     }
   }
 
-  /** A fresh secret, saved before its hash is shown to anyone. */
-  private async offer(ctx: BotContext, peer: string): Promise<SatoshiDiceItem> {
+  /** A fresh secret, saved before its hash is shown to anyone, with the table limit as it is
+   * now (less `committingWei`, a payout about to be written down as owed), so the card can warn
+   * before a bet that could win more is sent. */
+  private async offer(
+    ctx: BotContext,
+    peer: string,
+    committingWei = 0n
+  ): Promise<SatoshiDiceItem> {
     const rollId = randomBytes(16).toString("hex");
     const secret = randomBytes(32).toString("hex");
     const offered: OfferedRoll = { secret, peer: peer.toLowerCase() };
     await ctx.state.put(`roll:${rollId}`, JSON.stringify(offered));
+    const limit = await this.limit(ctx, committingWei);
     return {
       type: "dice",
       action: "table",
       rollId,
       commitment: diceCommitment(secret),
+      maxPayoutWei: limit.toString(),
     };
   }
 
   /** The most one roll can pay right now: what the bank has available (`bankAvailableWei`),
    * and never more than the operator's own ceiling. */
-  private async limit(ctx: BotContext): Promise<bigint> {
-    const available = await bankAvailableWei(ctx, this.outbox);
+  private async limit(ctx: BotContext, committingWei = 0n): Promise<bigint> {
+    const bank = await bankAvailableWei(ctx, this.outbox);
+    const available = bank > committingWei ? bank - committingWei : 0n;
     return this.maxPayoutWei !== undefined && this.maxPayoutWei < available
       ? this.maxPayoutWei
       : available;
@@ -251,7 +260,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     const luckyNumber = diceRoll(offered.secret, clientSeed);
     const isWin = luckyNumber < target;
     const payoutWei = isWin ? dicePayoutWei(wagerWei, target) : 0n;
-    const next = await this.offer(ctx, peer);
+    const next = await this.offer(ctx, peer, payoutWei + excessWei);
     const result: SatoshiDiceItem = {
       type: "dice",
       action: "result",
@@ -267,6 +276,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       payoutWei: payoutWei.toString(),
       nextRollId: next.rollId,
       nextCommitment: next.commitment,
+      maxPayoutWei: next.maxPayoutWei,
     };
     const text =
       `Rolled ${luckyNumber} against a target below ${target}: ` +

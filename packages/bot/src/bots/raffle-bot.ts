@@ -103,12 +103,23 @@ export class RaffleBot implements FrankBotDefinition {
    * cannot be read is an error, never silently a new round: it may hold entrants' money. */
   private async round(ctx: BotContext): Promise<RaffleRoundState> {
     const raw = await ctx.state.get(ROUND);
-    if (raw !== undefined) return JSON.parse(raw) as RaffleRoundState;
+    if (raw !== undefined) {
+      const round = JSON.parse(raw) as RaffleRoundState;
+      if (!(await this.priceTooLow(ctx, round))) return round;
+      // An open round nobody has entered, whose price the fee floor has risen above: nobody
+      // can pay it, so it would never fill. It holds no money, so it is replaced by a round at
+      // today's price, under a fresh commitment. A round with entries is never repriced: its
+      // entrants paid the price it was opened at.
+      console.warn(
+        `[raffle] Round ${round.raffleId} is empty and its price ${round.entryPriceWei} wei is below the smallest price now; a new round opens in its place.`
+      );
+    }
     const serverSeed = randomBytes(32).toString("hex");
     const round: RaffleRoundState = {
       raffleId: randomBytes(16).toString("hex"),
       // A round's price is fixed when it opens: what was configured, and never less than the
-      // chain's fee floor then, so an entry can always be paid back and the pot paid out.
+      // smallest stake then (twice the fee floor), so an entry can always be paid back and the
+      // pot paid out. An empty round whose price falls below it is replaced (see above).
       entryPriceWei: (await tableMinimumWei(ctx, this.entryPriceWei)).toString(),
       maxEntries: this.maxEntries,
       serverSeed,
@@ -121,6 +132,18 @@ export class RaffleBot implements FrankBotDefinition {
     };
     await ctx.state.put(ROUND, JSON.stringify(round));
     return round;
+  }
+
+  /** Whether `round` is open, has nobody in it, and asks less than the smallest price now
+   * (`tableMinimumWei`). Such a round can be replaced; no other can. */
+  private async priceTooLow(
+    ctx: BotContext,
+    round: RaffleRoundState
+  ): Promise<boolean> {
+    if (round.status !== "open" || round.entrants.length > 0) return false;
+    return (
+      BigInt(round.entryPriceWei) < (await tableMinimumWei(ctx, this.entryPriceWei))
+    );
   }
 
   private status(
@@ -396,6 +419,10 @@ export class RaffleBot implements FrankBotDefinition {
 
     const raw = await ctx.state.get(ROUND);
     const round = raw === undefined ? undefined : (JSON.parse(raw) as RaffleRoundState);
+    // An empty round left at a price below today's minimum (by an earlier version, or before
+    // the fee floor rose) is replaced here too, at startup and every few seconds after, so it
+    // never waits for someone to message the bot.
+    if (round?.status === "open") await this.round(ctx);
     if (round?.status === "drawing") {
       const draw = this.draw(round);
       const pot = BigInt(draw.potWei);

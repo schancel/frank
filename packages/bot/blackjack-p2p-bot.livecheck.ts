@@ -1,5 +1,6 @@
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 /**
  * PARKED: not registered. Nothing in the bot set, `targets/`, the launcher or the demo starts
  * this (the `blackjack:p2p` package script is gone); the dealer that runs is
@@ -266,18 +267,24 @@ export async function main(deps: LauncherDeps = {}) {
       ? `challenging new accounts listed at ${feedUrl}`
       : 'no new-account listing configured: challenging only accounts that message this one',
   )
+  // The smallest stake every game takes (twice the payment floor), read from this wallet once
+  // at start: the game-owned amount of each paid message.
+  const stakeWei = stakeMinimumWei(
+    (await chain.directMessages.minimumStamp?.({ wallet: wallet as never })) ?? 0n,
+  )
+  if (stakeWei === 0n) throw new Error('The payment floor could not be read; nothing to stake.')
   const bot = new BlackjackP2pBot(
     walletBotAccount(chain as never, wallet as never),
     new FileBotStore(join(stateDir, 'bot-state.json')),
     {
       maxBetWei: BigInt(process.env.BLACKJACK_P2P_MAX_BET_WEI ?? 10n ** 17n),
-      playerBetWei: optionalWei('BLACKJACK_P2P_PLAYER_BET_WEI') ?? 10n * chain.minimumWagerValue,
+      playerBetWei: optionalWei('BLACKJACK_P2P_PLAYER_BET_WEI') ?? 10n * stakeWei,
       maxPlayerRiskWei: optionalWei('BLACKJACK_P2P_PLAYER_RISK_WEI'),
       maxOpenHands: process.env.BLACKJACK_P2P_MAX_OPEN_HANDS
         ? Number(process.env.BLACKJACK_P2P_MAX_OPEN_HANDS)
         : undefined,
       // Game-owned explicit amount; changing attention defaults must not change stakes.
-      stampWei: chain.minimumWagerValue,
+      stampWei: stakeWei,
       reserveWei: BET_MESSAGE_FEE_RESERVE_WEI,
       newAccounts,
       log,

@@ -108,6 +108,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import { activeChain } from '@frank/wallet/chain'
 import { useChatStore } from '../../../stores/chats'
 import { blockingMessage } from '../../../stores/chats-self-notes'
 import { messageItems } from '../../../utils/message-items'
@@ -193,7 +194,8 @@ export default defineComponent({
       default: '',
     },
     /** The failure's kept detail (`OutgoingDelivery.detail`): for `blocked`, the payload digest
-     * of the earlier message it waits for, which the tooltip names by its first words and time. */
+     * of the earlier message it waits for, which the tooltip names by its first words and time;
+     * for `stamp-below-fee`, the payment floor in wei, which the tooltip states. */
     failureDetail: {
       type: String,
       required: false,
@@ -326,6 +328,15 @@ export default defineComponent({
       keys.blocked = 'outgoing.reasonBlocked'
       const key = keys[this.failureReason]
       if (key === undefined) return ''
+      // A payment below the floor names the floor its failure kept (`errorDetail`).
+      if (
+        this.failureReason === 'stamp-below-fee' &&
+        /^[1-9]\d*$/.test(this.failureDetail)
+      )
+        return this.$t('outgoing.reasonStampBelowFeeAmount', {
+          amount: activeChain.toDisplayAmount(BigInt(this.failureDetail)),
+          unit: activeChain.unit,
+        })
       const blocking = this.blockingMessageText
       return blocking ? `${this.$t(key)} ${blocking}` : this.$t(key)
     },

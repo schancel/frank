@@ -28,6 +28,7 @@ import type {
   MessageItem,
   StampPaymentInfo,
 } from "@frank/bot-framework";
+import { stakeMinimumWei } from "@frank/wallet/message-item-plugins/shared/stake-minimum";
 
 export type Payment = {
   txHash: string;
@@ -656,15 +657,15 @@ export async function bankAvailableWei(
 }
 
 /** A table's smallest stake, or a shop's or raffle's price: what was configured, and never less
- * than TWICE the chain's fee floor. The floor moves with the gas price between a bet and its
- * refund or payout; at twice the floor an amount taken now can still be paid back after the
- * fee has risen by anything short of doubling. */
+ * than TWICE the chain's fee floor (`stakeMinimumWei`: the same rule the app's game cards use to
+ * choose the stakes they offer). The floor moves with the gas price between a bet and its refund
+ * or payout; at twice the floor an amount taken now can still be paid back after the fee has
+ * risen by anything short of doubling. */
 export async function tableMinimumWei(
   ctx: BotContext,
   configuredWei: bigint
 ): Promise<bigint> {
-  const minimum = 2n * (await feeFloorWei(ctx));
-  return minimum > configuredWei ? minimum : configuredWei;
+  return stakeMinimumWei(await feeFloorWei(ctx), configuredWei);
 }
 
 /** A message that did not pay for what it asked: says so at once, and returns what it is

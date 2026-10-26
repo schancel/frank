@@ -209,16 +209,16 @@
               v-for="chip in wagerChips"
               :key="chip.value"
               no-caps
-              :outline="wagerInput !== chip.value"
+              :outline="stakeText !== chip.value"
               color="primary"
               :label="chip.value ? chip.label : $t('gameFairness.dicePractice')"
               :data-testid="`dice-chip-${chip.value || 'free'}`"
-              @click="wagerInput = chip.value"
+              @click="stakeText = chip.value"
             />
           </div>
 
           <q-input
-            v-model="wagerInput"
+            v-model="stakeText"
             outlined
             label="Stake"
             :suffix="unit"
@@ -228,6 +228,17 @@
             style="max-width: 220px"
           />
 
+          <div
+            v-if="minimumStake > 0n"
+            class="text-body2 text-grey-9 q-mb-xs"
+            data-testid="dice-stake-minimum"
+          >
+            {{
+              $t('gameFairness.stakeMinimum', {
+                amount: displayMon(minimumStake.toString()),
+              })
+            }}
+          </div>
           <div
             v-if="practice"
             class="text-body2 text-grey-9 q-mb-sm"
@@ -286,12 +297,20 @@ import {
 import { useChatStore } from '../../../stores/chats'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
+  stakeAllowed,
+  stakeMinimumWei,
+} from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import {
   BOT_ANSWER_WAIT_MS,
   chatGameItems,
   type ChatGameItem,
   parseWager,
   randomHex,
 } from '../../../utils/chat-game-items'
+import {
+  PAYMENT_FLOOR_INJECTION,
+  stakeChipsWei,
+} from '../../../utils/game-stakes'
 import { errorNotify } from '../../../utils/notifications'
 import {
   dealerDiceStepForRoll,
@@ -316,6 +335,13 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  inject: {
+    /** The wallet's payment floor for this chain (`PAYMENT_FLOOR_INJECTION`), zero if unknown. */
+    paymentFloorWei: {
+      from: PAYMENT_FLOOR_INJECTION,
+      default: () => (): bigint => 0n,
+    },
+  },
   mounted() {
     // Only a card that is waiting for the bot keeps time.
     if (this.item.action === 'roll')
@@ -331,13 +357,8 @@ export default defineComponent({
       mountedAt: Date.now(),
       timer: undefined as ReturnType<typeof setInterval> | undefined,
       target: DICE_DEFAULT_TARGET,
-      wagerInput: '0.01',
-      wagerChips: [
-        { label: '', value: '' },
-        { label: '0.01', value: '0.01' },
-        { label: '0.05', value: '0.05' },
-        { label: '0.1', value: '0.1' },
-      ],
+      /** What the player typed or picked; `null` until then, when the stake is the minimum. */
+      wagerInput: null as string | null,
       presets: [64000, 32768, 16384, 6553, 655].map(target => ({
         target,
         label: `< ${target.toLocaleString('en-US')}`,
@@ -346,10 +367,40 @@ export default defineComponent({
     }
   },
   computed: {
+    /** The smallest stake the table takes: twice the payment floor (`stakeMinimumWei`, the rule
+     * the bot enforces). Zero while the floor is not known. */
+    minimumStake(): bigint {
+      return stakeMinimumWei(
+        (this.paymentFloorWei as unknown as () => bigint)(),
+      )
+    },
+    /** Practice, then the paid stakes the floor allows; never a stake below the minimum. */
+    wagerChips(): { label: string; value: string }[] {
+      return [
+        { label: '', value: '' },
+        ...stakeChipsWei(
+          (this.paymentFloorWei as unknown as () => bigint)(),
+        ).map(wei => {
+          const value = activeChain.toDisplayAmount(wei)
+          return { label: value, value }
+        }),
+      ]
+    },
+    /** The stake field: what the player chose, or the minimum until they choose. */
+    stakeText: {
+      get(): string {
+        if (this.wagerInput !== null) return this.wagerInput
+        return this.minimumStake > 0n
+          ? activeChain.toDisplayAmount(this.minimumStake)
+          : ''
+      },
+      set(value: string) {
+        this.wagerInput = value
+      },
+    },
     practice(): boolean {
       return (
-        parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a)) ===
-        0n
+        parseWager(this.stakeText, a => activeChain.fromDisplayAmount(a)) === 0n
       )
     },
     unit(): string {
@@ -498,7 +549,7 @@ export default defineComponent({
       }
     },
     estimatedPayout(): string {
-      const wager = parseWager(this.wagerInput, a =>
+      const wager = parseWager(this.stakeText, a =>
         activeChain.fromDisplayAmount(a),
       )
       return formatDisplayAmount(
@@ -517,11 +568,21 @@ export default defineComponent({
     },
     rollDice() {
       if (this.rolling || !this.offer) return
-      const wager = parseWager(this.wagerInput, a =>
+      const wager = parseWager(this.stakeText, a =>
         activeChain.fromDisplayAmount(a),
       )
       if (wager === undefined) {
         errorNotify(new Error('Enter the stake as a number.'))
+        return
+      }
+      if (!stakeAllowed(wager, this.minimumStake)) {
+        errorNotify(
+          new Error(
+            this.$t('gameFairness.stakeBelowMinimum', {
+              amount: this.displayMon(this.minimumStake.toString()),
+            }),
+          ),
+        )
         return
       }
       this.rolling = true

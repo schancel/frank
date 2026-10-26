@@ -64,9 +64,13 @@ const t = (key: string, params: Record<string, unknown> = {}) =>
     /\{(\w+)\}/g,
     (_, name) => String(params[name]),
   )
-const mountForm = () =>
+const mountForm = (floorWei = 0n) =>
   mount(BlackjackChallengeForm as never, {
-    global: { components: stubs, mocks: { $t: t } },
+    global: {
+      components: stubs,
+      mocks: { $t: t },
+      provide: { paymentFloorWei: () => floorWei },
+    },
   })
 const send = (w: ReturnType<typeof mountForm>) =>
   w.find('[data-testid="blackjack-challenge-send"]')
@@ -94,6 +98,16 @@ describe('BlackjackChallengeForm', () => {
     await w.find('[data-testid="blackjack-challenge-cancel"]').trigger('click')
     expect(w.emitted('cancel')).toHaveLength(1)
     w.unmount()
+  })
+
+  it('a max bet below twice the payment floor is refused, even above the configured minimum wager', async () => {
+    // Configured minimum wager 10; payment floor 300, so the smallest bet is 600.
+    const w = mountForm(300n)
+    await w.find('[data-testid="blackjack-challenge-max"]').setValue('599')
+    expect(error(w).text()).toContain('600 MON')
+    expect(send(w).attributes('disabled')).toBeDefined()
+    await w.find('[data-testid="blackjack-challenge-max"]').setValue('600')
+    expect(error(w).exists()).toBe(false)
   })
 
   it('starts on the player role, the one a dealer bot can answer', () => {

@@ -31,11 +31,13 @@ function translator(messages: unknown) {
     const value = key
       .split('.')
       .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], messages)
-    // Only the blocked-send line is filled in: the other tests compare with the raw template.
+    // Only the blocked-send and below-floor lines are filled in: the other tests compare with
+    // the raw template.
     return typeof value === 'string'
-      ? key === 'outgoing.blockedBy'
+      ? key === 'outgoing.blockedBy' ||
+        key === 'outgoing.reasonStampBelowFeeAmount'
         ? Object.entries(named).reduce(
-            (text, [name, part]) => text.replace(`{${name}}`, part),
+            (text, [name, part]) => text.split(`{${name}}`).join(part),
             value,
           )
         : value
@@ -111,6 +113,42 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     await wrapper.get('[data-testid="outgoing-discard"]').trigger('click')
     expect(wrapper.emitted('resendClick')).toHaveLength(1)
     expect(wrapper.emitted('discardClick')).toHaveLength(1)
+  })
+
+  it('a payment below the floor says it is below the minimum and states the minimum, not that the fee rose', () => {
+    const failed = mountSuffix({
+      status: 'error',
+      failureReason: 'stamp-below-fee',
+      // The floor the wallet refused it against (`errorDetail`), in wei: 0.02142.
+      failureDetail: '21420000000000000',
+    })
+    const details = failed
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
+    expect(details).toContain('below the minimum of 0.02142')
+    expect(details).toContain('Nothing was paid.')
+    expect(details).not.toContain('fee rose')
+
+    const fr = mountSuffix(
+      {
+        status: 'error',
+        failureReason: 'stamp-below-fee',
+        failureDetail: '21420000000000000',
+      },
+      frFR,
+    )
+    expect(fr.get('[data-testid="outgoing-failure-details"]').text()).toContain(
+      'inférieur au minimum de 0.02142',
+    )
+
+    // A failure saved without the floor still says it is below the minimum.
+    const bare = mountSuffix({
+      status: 'error',
+      failureReason: 'stamp-below-fee',
+    })
+    expect(
+      bare.get('[data-testid="outgoing-failure-details"]').text(),
+    ).toContain('below the minimum the network allows')
   })
 
   it('shows recipient-unregistered failure reason in English and French', () => {

@@ -23,6 +23,7 @@ import {
 import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
 import {
   classifySendFailure,
+  errorDetail,
   isInsufficientFundsError,
   isNoResponseError,
 } from './chats-self-notes'
@@ -146,4 +147,13 @@ it('contains hostile getters/prototype traps and retains original digest', () =>
     expect(isInsufficientFundsError(error)).toBe(false)
     expect(isNoResponseError(error)).toBe(false)
   }
+})
+
+it('a payment below the floor keeps the floor as its detail, for the bubble to state', () => {
+  const error = new DirectMessageStampBelowFeeError(
+    10_000_000_000_000_000n,
+    21_420_000_000_000_000n,
+  )
+  expect(classifySendFailure(error, own)).toEqual({ reason: 'stamp-below-fee' })
+  expect(errorDetail(error)).toBe('21420000000000000')
 })

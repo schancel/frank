@@ -21,6 +21,11 @@ const store: { activeConversation: { messages: any[] } } = reactive({
 })
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 
+const notified: Error[] = []
+jest.mock('../../../utils/notifications', () => ({
+  errorNotify: (error: Error) => notified.push(error),
+}))
+
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -117,10 +122,19 @@ const resolved: RpsItem = {
   outcome: 'win',
 }
 
-function mountCard(item: RpsItem) {
+/** The payment floor most tests run at: 0.025, so the smallest stake is 0.05. */
+const TEST_FLOOR = 25n * 10n ** 15n
+/** The floor in the lab on 2026-10-26: ten transfers at 102 gwei, 0.02142 MON. */
+const LAB_FLOOR = 10n * 21_000n * 102_000_000_000n
+
+function mountCard(item: RpsItem, floorWei: bigint = TEST_FLOOR) {
   return mount(ChatMessageRps, {
     props: { item, address: '0x123' },
-    global: { stubs: quasarStubs, mocks: { $t: t } },
+    global: {
+      stubs: quasarStubs,
+      mocks: { $t: t },
+      provide: { paymentFloorWei: () => floorWei },
+    },
   })
 }
 
@@ -165,6 +179,24 @@ describe('ChatMessageRps.vue', () => {
         playerMove: 'paper',
         wagerWei: (5n * 10n ** 16n).toString(),
       },
+    ])
+  })
+
+  test('a match offers no stake below twice the payment floor, and refuses a typed one', async () => {
+    notified.length = 0
+    const wrapper = mountCard(start, LAB_FLOOR)
+    const offered = wrapper
+      .findAll('[data-testid^="rps-chip-"]')
+      .map(chip => chip.attributes('data-testid')!.slice('rps-chip-'.length))
+    expect(offered).toEqual(['free', '0.04284', '0.08568', '0.2142'])
+    expect(wrapper.get('[data-testid="rps-stake-minimum"]').text()).toContain(
+      '0.04284 MON',
+    )
+    await wrapper.get('[data-testid="rps-wager-input"]').setValue('0.01')
+    await wrapper.find('[data-testid="rps-paper"]').trigger('click')
+    expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
+    expect(notified.map(error => error.message)).toEqual([
+      t('gameFairness.stakeBelowMinimum', { amount: '0.04284 MON' }),
     ])
   })
 

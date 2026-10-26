@@ -1,4 +1,5 @@
 import type { EvmNativeOperation } from "../storage/evm-native-operation-journal";
+import type { NotedSendStatus } from "../evm-noted-sends";
 /** Canonical address value passed across the application/chain boundary. */
 export interface ChainAddress {
   readonly raw: string;
@@ -429,6 +430,12 @@ export interface NativeWalletHandle {
   readBlockTimes?(
     blocks: readonly { blockNumber: number; blockHash: string }[]
   ): Promise<ReadonlyMap<string, number>>;
+  /**
+   * What the account sent from any of its devices, as its notes to itself report it, with what
+   * the chain shows of each transaction. Transfers to the wallet's own accounts are left out.
+   * A device restored from the seed has these once it has read the mailbox. Read only.
+   */
+  getNotedSends?(): Promise<NotedSendStatus[]>;
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;

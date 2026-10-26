@@ -172,6 +172,12 @@ import {
 } from "../evm-account-lease";
 import { MonadHttpClient } from "../evm-http";
 import {
+  EVM_NOTED_SENDS_NAMESPACE,
+  EvmNotedSends,
+  type NotedSend,
+} from "../evm-noted-sends";
+import { SEED_DISCOVERY_GAP } from "../evm-seed-discovery";
+import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
@@ -1938,6 +1944,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             contactPayments?.close(),
             coinListState?.close(),
             evmCoinListStore?.close(),
+            notedSendStore?.close(),
           ]);
         const pool = new EvmSubAccountPool({
           keyring,
@@ -1958,6 +1965,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           | RecordStore<{ complete: boolean; sinceMs: number }>
           | undefined;
         let evmCoinListStore: RecordStore<StoredEvmListCoin> | undefined;
+        let notedSendStore: RecordStore<NotedSend> | undefined;
         let topicOwnerWallet: EvmChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
@@ -2139,8 +2147,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               sinceMs: number;
             }>();
             evmCoinListStore = new MemoryRecordStore<StoredEvmListCoin>();
+            notedSendStore = new MemoryRecordStore<NotedSend>();
           } else {
-            [coins, preparations, contactPayments, coinListState, evmCoinListStore] =
+            [coins, preparations, contactPayments, coinListState, evmCoinListStore, notedSendStore] =
               await Promise.all([
                 LevelRecordStore.open<EvmCoin>(
                   storageLocation,
@@ -2162,10 +2171,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   storageLocation,
                   EVM_COIN_LIST_NAMESPACE
                 ),
+                LevelRecordStore.open<NotedSend>(
+                  storageLocation,
+                  EVM_NOTED_SENDS_NAMESPACE
+                ),
               ]);
           }
           const scanState = coinListState;
           const coinList = await EvmCoinList.open(evmCoinListStore);
+          // What the account sent, from its notes to itself: History's record of sends made on
+          // any device of the account, rebuilt by a restored device from the mailbox.
+          const notedSends = new EvmNotedSends(notedSendStore!, {
+            chainId: BigInt(config.chainId),
+            burnAddress: config.stampBurnAddress,
+          });
           const coinStore = coins;
           const transactionSetRuntime = installEvmTransactionSetRuntime({
             coinList,
@@ -2192,6 +2211,31 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             paymentPollIntervalMs: config.paymentPollIntervalMs,
             policy: config.transactionSetPolicy,
           });
+          // Whether an address is one of this wallet's own accounts: a coin-list source, a
+          // received coin's account, or a change account the seed derives up to the walk's
+          // window past the highest index known (another device may have gone further than
+          // this one has walked yet).
+          const ownChangeAccounts: string[] = [];
+          const isOwnAccount = (address: string): boolean => {
+            const key = address.toLowerCase();
+            if (
+              key === mainAccount.address.toLowerCase() ||
+              key === identity.address.raw.toLowerCase() ||
+              transactionSetRuntime.coinListSync.keyOf(key) !== undefined ||
+              coinStore.all().some((coin) => coin.address.toLowerCase() === key)
+            )
+              return true;
+            const window =
+              Math.max(changePool.nextUnusedIndex(), coinList.nextChangeIndex()) +
+              SEED_DISCOVERY_GAP;
+            while (ownChangeAccounts.length < window)
+              ownChangeAccounts.push(
+                changeKeyring
+                  .deriveChangeAccount(ownChangeAccounts.length)
+                  .address.toLowerCase()
+              );
+            return ownChangeAccounts.includes(key);
+          };
           const transactionOwner = topicOwner;
           // Delivery stays owned by the canonical/host outbox. This retires only the
           // wallet's settled inventory and successfully checkpointed self-sync work.
@@ -2680,6 +2724,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async readBlockTimes(blocks) {
               requireOpenWallet(wallet);
               return readEvmBlockTimes(provider, blocks, blockTimes);
+            },
+            // Sends made by any device of the account, from its notes to itself. Transfers to
+            // the wallet's own accounts (change, funding, its own receive address) are not
+            // sends and are left out.
+            async getNotedSends() {
+              requireOpenWallet(wallet);
+              const rows = await notedSends.read(provider);
+              return rows.filter(
+                (row) => row.to === undefined || !isOwnAccount(row.to)
+              );
             },
             nativeOperationSyncFailed(operationId) {
               return nativeOperationOwner(wallet).syncTransportFailed(
@@ -3331,6 +3385,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
           }
           walletInternals.material = material;
+          walletInternals.notedSends = notedSends;
           walletInternals.mainAccountAdmission = admission;
           if (material.canonicalRoles !== undefined)
             walletInternals.typed = true;

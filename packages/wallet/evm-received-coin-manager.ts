@@ -14,6 +14,7 @@ import {
 } from "ethers";
 import type {
   MessageItem,
+  OutboxMessageItem,
   ReceivedCoinItem,
   StealthItem,
   WalletSyncItem,
@@ -163,6 +164,69 @@ function selfNoteRefusalIsFinal(error: unknown): boolean {
   );
 }
 
+/** Hashes of the transactions a message's payment items carry (raw transactions or hashes). */
+function itemTransactionHashes(items: readonly MessageItem[] | undefined): Set<string> {
+  const hashes = new Set<string>();
+  const add = (value: string | undefined) => {
+    if (typeof value !== "string" || value.length === 0) return;
+    const hex = value.startsWith("0x") ? value : `0x${value}`;
+    if (/^0x[0-9a-fA-F]{64}$/.test(hex)) {
+      hashes.add(hex.toLowerCase());
+      return;
+    }
+    try {
+      const hash = Transaction.from(hex).hash;
+      if (hash) hashes.add(hash.toLowerCase());
+    } catch {
+      // Not a transaction: nothing to match.
+    }
+  };
+  for (const item of items ?? []) {
+    if (item.type === "stealth") {
+      for (const tx of item.transactions ?? []) add(tx);
+      add(item.rawTx);
+    } else if (item.type === "stealth-asset") {
+      for (const transfer of item.transfers) add(transfer.txId);
+    }
+  }
+  return hashes;
+}
+
+async function recordNotedSends(
+  internals: ReturnType<typeof evmWalletInternals>,
+  chainIdentifier: string,
+  message: DirectMessageReceived,
+  notes: readonly MessageItem[],
+  rest: DirectMessageReceived | undefined
+): Promise<void> {
+  const noted = internals.notedSends;
+  if (noted === undefined) return;
+  const items = notes as WalletSyncItem[];
+  const transactions = items.flatMap((item) =>
+    item.direction === "out" &&
+    item.chainIdentifier === chainIdentifier &&
+    typeof item.rawTx === "string"
+      ? [{ rawTx: item.rawTx, txHash: item.txHash }]
+      : []
+  );
+  if (transactions.length === 0) return;
+  const outbox = message.items.find(
+    (item): item is OutboxMessageItem => item.type === "outbox-message"
+  );
+  const stamped = items.find((item) => typeof item.timestamp === "number");
+  await noted.recordNote({
+    transactions,
+    itemTransactions: itemTransactionHashes(rest?.items),
+    carriesMessage: outbox !== undefined,
+    ...(message.payloadDigest ? { noteDigest: message.payloadDigest } : {}),
+    notedAtMs:
+      outbox?.sentAt ??
+      stamped?.timestamp ??
+      message.receivedTime ??
+      Date.now(),
+  });
+}
+
 export async function consumeEvmSelfNotes(
   wallet: EvmChainWalletHandle,
   message: DirectMessageReceived,
@@ -197,6 +261,10 @@ export async function consumeEvmSelfNotes(
   if (settled.has(digest)) return { kind: "consumed", rest };
   const waiting = internals.waitingSelfNotes;
   try {
+    // What the note says this account sent, recorded for History before its spends are applied
+    // (recording again changes nothing). A note to self is authenticated by decryption with the
+    // account's own keys, so its signed transactions are this account's sends.
+    await recordNotedSends(internals, wallet.chainIdentifier, message, notes, rest);
     for (const note of notes) {
       const item = note as WalletSyncItem;
       if (item.chainIdentifier === wallet.chainIdentifier) {

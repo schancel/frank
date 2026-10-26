@@ -11,6 +11,11 @@ export interface EvmNativeOperationStatus {
   /** `contract`: the recipient is a contract and the value is what the call carried, if any. */
   readonly kind: EvmNativeOperation["kind"];
   readonly recipient: string;
+  /** What the operation was for, from the identity the wallet gave it: a message's stamp, a
+   * payment to a contact, a forum post's burn, or a transfer (Send to Address, a contract call). */
+  readonly purpose: "stamp" | "contact-payment" | "forum" | "transfer";
+  /** The message a stamp or contact payment belongs to: its 32 hex digit ID. */
+  readonly messageId?: string;
   readonly intendedValueWei: string;
   readonly payment:
     | "included"
@@ -141,11 +146,27 @@ export function summarizeEvmNativeOperation(
       paymentMembers.every((member) => member.state === "superseded")
     ? "superseded"
     : "unknown";
+  const logical = row.preparationId?.startsWith("evm-transaction-set:")
+    ? row.preparationId.slice("evm-transaction-set:".length)
+    : undefined;
+  const labelled = /^(stamp|contact|forum)-([0-9a-f]+)$/.exec(logical ?? "");
+  const purpose =
+    labelled?.[1] === "stamp"
+      ? ("stamp" as const)
+      : labelled?.[1] === "contact"
+      ? ("contact-payment" as const)
+      : labelled?.[1] === "forum"
+      ? ("forum" as const)
+      : ("transfer" as const);
   return {
     operationId: row.operationId,
     chainIdentifier: row.binding.chainIdentifier,
     kind: row.kind,
     recipient: row.recipient,
+    purpose,
+    ...(labelled && labelled[1] !== "forum" && labelled[2].length === 32
+      ? { messageId: labelled[2] }
+      : {}),
     intendedValueWei: row.intendedValueWei,
     payment,
     finalTransactionHash: final.signed?.transactionHash,

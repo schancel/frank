@@ -117,12 +117,11 @@ export default defineComponent({
     return { role: 'player' as HandRole, maxBet: '' }
   },
   computed: {
-    /** The smallest bet: the chain's configured minimum wager, and never less than twice the
-     * payment floor (`stakeMinimumWei`, the rule every game shares). */
+    /** The smallest bet: twice the payment floor (`stakeMinimumWei`, the rule every game
+     * shares; the dealer bot applies the same rule and returns a smaller bet undealt). */
     minimumStake(): bigint {
       return stakeMinimumWei(
         (this.paymentFloorWei as unknown as () => bigint)(),
-        activeChain.minimumWagerValue,
       )
     },
     unit(): string {
@@ -151,7 +150,7 @@ export default defineComponent({
       if (this.maxBetWei === null || this.maxBetWei <= 0n)
         return this.$t('blackjackP2p.enterAmount')
       if (this.maxBetWei < this.minimumStake)
-        return this.$t('blackjackP2p.belowStamp', {
+        return this.$t('blackjackP2p.belowMinimumBet', {
           amount: formatDisplayAmount(activeChain, this.minimumStake),
         })
       if (this.maxBetWei > this.limitWei)

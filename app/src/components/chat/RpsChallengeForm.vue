@@ -50,6 +50,14 @@
     >
       {{ $t('gameFairness.stakeMinimum', { amount: minimumStakeText }) }}
     </div>
+    <div
+      v-if="stakeError"
+      role="alert"
+      class="text-caption text-negative q-mt-xs"
+      data-testid="rps-challenge-stake-error"
+    >
+      {{ stakeError }}
+    </div>
     <div class="q-mt-sm">
       <q-btn
         no-caps
@@ -57,7 +65,7 @@
         color="primary"
         data-testid="rps-challenge-send"
         :label="$t('gameFairness.rpsSendChallenge')"
-        :disable="busy"
+        :disable="busy || !!stakeError"
         :loading="busy"
         @click="submit"
       />
@@ -78,13 +86,14 @@
 import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import type { RpsMove } from '@frank/wallet/message-item-plugins/rps/fair'
-import {
-  stakeAllowed,
-  stakeMinimumWei,
-} from '@frank/wallet/message-item-plugins/shared/stake-minimum'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 import { formatDisplayAmount } from '../../utils/chain-amount'
 import { parseWager } from '../../utils/chat-game-items'
-import { PAYMENT_FLOOR_INJECTION, stakeChipsWei } from '../../utils/game-stakes'
+import {
+  PAYMENT_FLOOR_INJECTION,
+  stakeChipsWei,
+  stakeProblem,
+} from '../../utils/game-stakes'
 import { errorNotify } from '../../utils/notifications'
 
 export default defineComponent({
@@ -130,6 +139,18 @@ export default defineComponent({
         ).map(wei => ({ value: activeChain.toDisplayAmount(wei) })),
       ]
     },
+    wagerWei(): bigint | undefined {
+      return parseWager(this.stakeText, a => activeChain.fromDisplayAmount(a))
+    },
+    /** Why the stake cannot be sent, as the player is told it; '' when it can. */
+    stakeError(): string {
+      return stakeProblem(
+        this.wagerWei,
+        this.minimumStake,
+        (key, params) => this.$t(key, params ?? {}),
+        wei => formatDisplayAmount(activeChain, wei),
+      )
+    },
     /** The stake field: what the player chose, or the minimum until they choose. */
     stakeText: {
       get(): string {
@@ -146,21 +167,11 @@ export default defineComponent({
   methods: {
     submit() {
       if (this.busy) return
-      const wagerWei = parseWager(this.stakeText, a =>
-        activeChain.fromDisplayAmount(a),
-      )
-      if (wagerWei === undefined) {
-        errorNotify(new Error(this.$t('gameFairness.rpsInvalidStake')))
-        return
-      }
-      if (!stakeAllowed(wagerWei, this.minimumStake)) {
-        errorNotify(
-          new Error(
-            this.$t('gameFairness.stakeBelowMinimum', {
-              amount: this.minimumStakeText,
-            }),
-          ),
-        )
+      const wagerWei = this.wagerWei
+      if (this.stakeError || wagerWei === undefined) {
+        errorNotify(new Error(this.stakeError), {
+          safeMessage: this.stakeError,
+        })
         return
       }
       this.$emit('submit', { move: this.move, wagerWei })

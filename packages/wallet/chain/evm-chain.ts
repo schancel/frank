@@ -482,9 +482,6 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
-    // A wager is paid to a player who must move it: above the payment floor (0.02142 MON at
-    // Monad's ~102 gwei), with room for the gas price to double.
-    minimumWagerValueWei: 50_000_000_000_000_000n,
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
@@ -1778,7 +1775,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       stealthPayments: true,
       legacyConsolidation: "evm-staging",
     },
-    minimumWagerValue: config.minimumWagerValueWei ?? 50_000_000_000_000_000n,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {

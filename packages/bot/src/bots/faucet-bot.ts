@@ -8,12 +8,15 @@ import type {
 } from "@frank/bot-framework";
 import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_FAUCET } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, replyFree } from "./money";
+import { Outbox, replyFree, sendFree } from "./money";
 
 export const FAUCET_DEFAULT_AMOUNT_WEI = 50_000_000_000_000_000n; // 0.05 MON
 export const FAUCET_DEFAULT_MIN_RESERVE_WEI = 100_000_000_000_000_000n; // 0.1 MON
 /** The most one grant may be configured to: a misconfigured amount must not empty the wallet. */
 export const MAX_AMOUNT_WEI = 1_000_000_000_000_000_000n; // 1 MON
+
+/** State key of the new accounts the faucet was too low to grant at sign-up. */
+const WAITING = "waiting_for_grant";
 
 export interface FaucetBotOptions {
   /** What each profile is granted, once (`FAUCET_AMOUNT_WEI`). */
@@ -30,12 +33,30 @@ export class FaucetBot implements FrankBotDefinition {
     process.env.FAUCET_BOT_IDENTITY_JSON ?? "/tmp/faucet-bot-identity.json";
 
   private readonly outbox = new Outbox("faucet");
-  readonly schedules: BotScheduleDefinition[] = [this.outbox.schedule];
+  readonly schedules: BotScheduleDefinition[] = [
+    this.outbox.schedule,
+    {
+      // A new account the faucet was too low to grant at sign-up is granted here once the
+      // faucet has been topped up (`paidMessageFunding`), without it having to ask again.
+      id: "faucet-waiting",
+      intervalMs: 30_000,
+      runOnStartup: true,
+      handler: (ctx) => this.grantWaiting(ctx),
+    },
+  ];
 
   private readonly amountWei: bigint;
   private readonly minReserveWei: bigint;
   /** Grants are decided one at a time: two for one profile never both pass the check. */
   private turn: Promise<unknown> = Promise.resolve();
+  /** The waiting list changes one write at a time. */
+  private waitingTail: Promise<unknown> = Promise.resolve();
+
+  private waitingTurn<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.waitingTail.then(run, run);
+    this.waitingTail = next.catch(() => undefined);
+    return next;
+  }
 
   constructor(options?: FaucetBotOptions) {
     this.amountWei =
@@ -122,12 +143,62 @@ export class FaucetBot implements FrankBotDefinition {
     return next;
   }
 
+  /** New accounts waiting for a grant the faucet was too low to make when they signed up. */
+  private async waiting(ctx: BotContext): Promise<string[]> {
+    const raw = await ctx.state.get(WAITING);
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  }
+
+  private async setWaiting(ctx: BotContext, addresses: string[]): Promise<void> {
+    await ctx.state.put(WAITING, JSON.stringify(addresses));
+  }
+
+  /** Grants each waiting account that can be granted now; an account stays on the list only
+   * while the faucet is still too low for it. */
+  private grantWaiting(ctx: BotContext): Promise<void> {
+    return this.waitingTurn(() => this.grantWaitingNow(ctx));
+  }
+
+  private async grantWaitingNow(ctx: BotContext): Promise<void> {
+    const waiting = await this.waiting(ctx);
+    if (!waiting.length) return;
+    const still: string[] = [];
+    let queued = false;
+    for (const address of waiting) {
+      try {
+        const outcome = await this.grant(ctx, address);
+        if (outcome === "low") still.push(address);
+        if (outcome === "queued") queued = true;
+      } catch (err) {
+        still.push(address);
+        console.warn(`[faucet] Waiting grant for ${address} not queued yet:`, err);
+      }
+    }
+    await this.setWaiting(ctx, still);
+    if (queued) await this.outbox.settle(ctx);
+  }
+
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
       const outcome = await this.grant(ctx, user.address);
       if (outcome === "queued") await this.outbox.settle(ctx);
       if (outcome === "low" || outcome === "unresolved" || outcome === "failed")
         console.warn(`[faucet] Grant for ${user.address}: ${outcome}`);
+      if (outcome === "low") {
+        // Never silent: the new account is told, and granted once the faucet is topped up.
+        const address = user.address.toLowerCase();
+        await this.waitingTurn(async () => {
+          const waiting = await this.waiting(ctx);
+          if (!waiting.includes(address))
+            await this.setWaiting(ctx, [...waiting, address]);
+        });
+        await sendFree(ctx, user.address, [
+          {
+            type: "text",
+            text: "This is the Frank faucet. It is low right now, so your starter coins could not be sent yet. They are sent to you as soon as the faucet is topped up; you do not need to ask.",
+          },
+        ]);
+      }
     } catch (err) {
       console.error(
         `[faucet] Failed to queue welcome for ${user.address}:`,

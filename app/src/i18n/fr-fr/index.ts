@@ -307,6 +307,8 @@ export const rawFrFR = {
       'La mise minimale est de {amount} : deux fois le paiement minimal du réseau, pour qu’un gain ou un remboursement puisse toujours être payé.',
     stakeBelowMinimum:
       'Cette mise est inférieure à la mise minimale de {amount}. Misez au moins {amount}, ou jouez gratuitement.',
+    diceAboveTableLimit:
+      'Un gain paierait {payout}, plus que la limite de {limit} par lancer de cette table : le bot refuserait la mise. Baissez la mise ou choisissez une cible plus haute.',
     dicePracticeDescription:
       'Mise nulle, aucun gain. L’entraînement utilise les mêmes règles de tirage sans miser de fonds.',
     dicePracticeRoll: 'Lancer d’entraînement',
@@ -327,10 +329,14 @@ export const rawFrFR = {
       'Vérifié : le coup et le sel révélés par le bot correspondent à l’engagement envoyé avant votre coup.',
     rpsVerifiedPeer:
       'Vérifié : le coup et le sel révélés par votre adversaire correspondent à l’engagement envoyé avant votre coup.',
+    rpsVerifiedOwn:
+      'Vérifié : le coup et le sel que vous avez révélés correspondent à l’engagement que vous avez envoyé avant le coup de votre adversaire.',
     payoutClaimed:
       'Gain : {amount}. Le bot indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
     payoutClaimedPeer:
       'Gain : {amount}. Votre adversaire indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
+    payoutVerified:
+      'Gain : {amount}. Vérifié sur la chaîne : il est arrivé dans votre portefeuille.',
     payoutMissing:
       'Gain : {amount}, mais ce message transportait {carried}. Vous n’avez pas été payé en totalité.',
     awaiting: 'En attente de la révélation du bot ({seconds} s).',
@@ -445,8 +451,8 @@ export const rawFrFR = {
       'Ce défi dépasse ce que votre solde couvre. Rien n’a été envoyé.',
     balanceUnknown: 'Votre solde n’est pas encore chargé.',
     enterAmount: 'Saisissez un montant supérieur à zéro.',
-    belowStamp:
-      'Le montant ne peut pas être inférieur au timbre minimal ({amount}).',
+    belowMinimumBet:
+      'Une mise ne peut pas être inférieure à la plus petite mise de {amount}.',
     aboveOwnLimit:
       'C’est plus que ce que vous pouvez couvrir (au plus {amount}).',
     aboveMaxBet:

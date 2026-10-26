@@ -4784,7 +4784,7 @@ describe('stamp quote and send share chain-authoritative legacy inventory', () =
     const account = key.address.toLowerCase()
     await f.alice.refreshTransactionSetInventory!()
     expect(evmWalletInternals(f.alice).coinList!.all().filter(coin => coin.account === account)).toEqual([])
-    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 100_000n })
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: f.alice, stampValue: 500_000n })
     expect(quote.status).toBe('insufficient')
     expect(mockWalletBroadcasts).toHaveLength(0)
     expect(mockBalances.get(account)).toBe(1_000_000n)

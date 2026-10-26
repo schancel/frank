@@ -6,6 +6,7 @@
 import type {
   WalletSyncCreatedOutput,
   WalletSyncItem,
+  WalletSyncOperation,
   WalletSyncSpentInput,
 } from '@frank/cashweb/types/messages'
 
@@ -65,6 +66,12 @@ const transfer = struct<NonNullable<WalletSyncItem['transfer']>>({
   rawTx: opt(6, rawTransaction),
 })
 
+/** The sending wallet's operation identity (see `WalletSyncItem.operation`). */
+const operation = struct<WalletSyncOperation>({
+  id: req(0, token(192)),
+  stage: opt(1, token(160)),
+})
+
 const shape: Spec<Omit<WalletSyncItem, 'type'>> = {
   direction: req(0, oneOf('in', 'out')),
   // Exactly a canonical identifier from the protocol registry; no alias, no family name.
@@ -77,6 +84,7 @@ const shape: Spec<Omit<WalletSyncItem, 'type'>> = {
   transfer: opt(7, transfer),
   memo: opt(8, str(1024)),
   timestamp: opt(9, timestampMs),
+  operation: opt(10, operation),
 }
 
 export function walletSyncShapeCodec<T extends WalletSyncItem['type']>(

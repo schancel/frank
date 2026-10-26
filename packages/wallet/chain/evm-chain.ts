@@ -2740,12 +2740,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             // Sends made by any device of the account, from its notes to itself. Transfers to
             // the wallet's own accounts (change, funding, its own receive address) are not
-            // sends and are left out.
+            // sends: they are marked, so History counts their fees with the send they belong to
+            // and shows nothing else of them.
             async getNotedSends() {
               requireOpenWallet(wallet);
               const rows = await notedSends.read(provider);
-              return rows.filter(
-                (row) => row.to === undefined || !isOwnAccount(row.to)
+              return rows.map((row) =>
+                row.to !== undefined && isOwnAccount(row.to)
+                  ? { ...row, toOwnAccount: true }
+                  : row
               );
             },
             nativeOperationSyncFailed(operationId) {

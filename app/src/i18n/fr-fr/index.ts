@@ -923,8 +923,9 @@ export const rawFrFR = {
     sending: 'Envoi…',
     paymentPending:
       'Paiement en attente, nouvelle tentative automatique. Vous ne serez pas débité à nouveau.',
-    paymentQueued:
-      "En attente de la fin d'un message précédent. Celui-ci sera envoyé ensuite.",
+    paymentQueued: 'En attente. Il sera envoyé automatiquement.',
+    paymentQueuedUnreachable:
+      'En attente : le relais ou le réseau est injoignable. Il sera envoyé automatiquement.',
     paymentChecking: "Vérification de l'état du paiement…",
     waitingForPreviousPayment:
       'En attente de la confirmation du paiement précédent…',
@@ -1582,11 +1583,13 @@ export const rawFrFR = {
       'stamp': 'Timbre de message',
       'contact-payment': 'Paiement à un contact',
       'forum': 'Brûlage pour un message du forum',
+      'group-write': "Frais d'écriture dans un groupe",
       'transfer': 'À',
     },
+    fee: 'Frais de réseau {amount} {unit}',
     noted: 'Lu dans les notes que vos appareils partagent entre eux.',
     receivedPayment: 'Paiement reçu',
-    receivedStamp: 'Timbre de message reçu',
+    receivedStamp: 'Reçu',
     receivedClaimed:
       'Le montant indiqué par l’expéditeur. Il n’est pas encore confirmé sur le réseau.',
     receivedPartial:

@@ -1485,6 +1485,78 @@ describe('Wallet detail page (#570)', () => {
     }
   })
 
+  it('keeps History current while it is open: read again every 15 s, relative dates move on', async () => {
+    // Only the clock and intervals: the page's other timers run as they do.
+    jest.useFakeTimers({
+      now: Date.UTC(2026, 9, 26, 12, 0),
+      doNotFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setImmediate',
+        'clearImmediate',
+        'nextTick',
+        'queueMicrotask',
+        'performance',
+        'requestAnimationFrame',
+        'cancelAnimationFrame',
+      ],
+    })
+    const sentAt = Date.now()
+    const inspect = jest
+      .spyOn(walletHistory, 'loadWalletHistory')
+      .mockResolvedValue({
+        status: 'available',
+        operations: [],
+        received: [],
+        noted: [
+          {
+            txHash: '0x' + '61'.repeat(32),
+            from: '0x' + '01'.repeat(20),
+            nonce: 0,
+            to: '0x' + '02'.repeat(20),
+            valueWei: '10000000000000000',
+            call: false,
+            purpose: 'transfer',
+            noteIndex: 0,
+            notedAtMs: sentAt,
+            state: 'pending',
+          },
+        ],
+        contactPayments: [],
+        blockTimes: new Map(),
+      })
+    const wrapper = mountWallet()
+    try {
+      await flush()
+      wrapper.vm.activeTab = 'history'
+      await flush()
+      const reads = inspect.mock.calls.length
+      const date = () =>
+        wrapper
+          .get(
+            '[data-testid="wallet-history-panel"] [data-testid="wallet-activity-date"]',
+          )
+          .text()
+      expect(date()).toBe('Just now')
+      // Nine minutes on, with History still open: it was read again, and the date says so.
+      jest.advanceTimersByTime(9 * 60_000)
+      await flush()
+      expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(reads + 36)
+      expect(date()).toBe('9m ago')
+      // Closed, it is not read in the background.
+      wrapper.vm.activeTab = 'balance'
+      await flush()
+      const closed = inspect.mock.calls.length
+      jest.advanceTimersByTime(60_000)
+      await flush()
+      expect(inspect.mock.calls.length).toBe(closed)
+    } finally {
+      wrapper.unmount()
+      inspect.mockRestore()
+      jest.useRealTimers()
+    }
+  })
+
   it('reports capability absence for Solana without asking an EVM owner for history', async () => {
     mockRoute.value.query = { chain: 'solana' }
     const wrapper = mountWallet()

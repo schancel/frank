@@ -4,6 +4,56 @@ import {
   type EvmNativeOperation,
 } from "../storage/evm-native-operation-journal";
 
+/**
+ * What a send of the account was for. Every device names it the same way, from the operation
+ * identity the sending wallet gave it (`classifyEvmOperation`), which travels with each of its
+ * transactions in the account's notes to itself:
+ * - `stamp`: a message's stamp;
+ * - `contact-payment`: a payment to a contact (Send to Contact, or a payment in a chat);
+ * - `forum`: a forum post's or vote's burn;
+ * - `group-write`: the payment for a write to a group (creating it, or a message in it);
+ * - `transfer`: anything else (Send to Address, a contract call).
+ */
+export type EvmSendPurpose =
+  | "stamp"
+  | "contact-payment"
+  | "forum"
+  | "group-write"
+  | "transfer";
+
+/** The prefix of a shared transaction set's preparation identity. */
+const TRANSACTION_SET_PREFIX = "evm-transaction-set:";
+
+/**
+ * What an operation was for, from its identity: the journal's preparation identity
+ * (`evm-transaction-set:<logical id>` or `stealth-payment:<id>`) and, for a stage appended to
+ * it, the stage's identity. A message's stamp stage (`stamp-<message id>`) is a stamp whatever
+ * operation it was appended to. Pure; the same on every device.
+ */
+export function classifyEvmOperation(
+  preparationId: string | undefined,
+  stageId?: string
+): { purpose: EvmSendPurpose; messageId?: string } {
+  const stamp = (id: string | undefined) =>
+    /^stamp-([0-9a-f]{32})(?:-r[0-9]+)?$/.exec(id ?? "");
+  const staged = stamp(stageId);
+  if (staged) return { purpose: "stamp", messageId: staged[1]! };
+  if (preparationId?.startsWith("stealth-payment:"))
+    return { purpose: "contact-payment" };
+  const logical = preparationId?.startsWith(TRANSACTION_SET_PREFIX)
+    ? preparationId.slice(TRANSACTION_SET_PREFIX.length)
+    : undefined;
+  const stamped = stamp(logical);
+  if (stamped) return { purpose: "stamp", messageId: stamped[1]! };
+  const contact = /^contact-([0-9a-f]{32})$/.exec(logical ?? "");
+  if (contact) return { purpose: "contact-payment", messageId: contact[1]! };
+  if (/^stealth-[0-9a-f]+$/.test(logical ?? ""))
+    return { purpose: "contact-payment" };
+  if (/^forum-/.test(logical ?? "")) return { purpose: "forum" };
+  if (/^group-write-/.test(logical ?? "")) return { purpose: "group-write" };
+  return { purpose: "transfer" };
+}
+
 /** Public evidence only. The native journal remains the sole financial authority. */
 export interface EvmNativeOperationStatus {
   readonly operationId: string;
@@ -13,7 +63,7 @@ export interface EvmNativeOperationStatus {
   readonly recipient: string;
   /** What the operation was for, from the identity the wallet gave it: a message's stamp, a
    * payment to a contact, a forum post's burn, or a transfer (Send to Address, a contract call). */
-  readonly purpose: "stamp" | "contact-payment" | "forum" | "transfer";
+  readonly purpose: EvmSendPurpose;
   /** The message a stamp or contact payment belongs to: its 32 hex digit ID. */
   readonly messageId?: string;
   readonly intendedValueWei: string;
@@ -38,6 +88,13 @@ export interface EvmNativeOperationStatus {
      * `funding` gathers the sender's coins into the account that pays, `change` returns what
      * is left to the wallet's own accounts. Every member of a non-set operation is `payment`. */
     readonly role: "payment" | "funding" | "change";
+    /** The account that signs it and the nonce it takes there: what another transaction can
+     * take in its place. */
+    readonly account: string;
+    readonly nonce: number;
+    /** The stage of the operation it belongs to, when it was appended as one (a message's
+     * stamp after a payment). */
+    readonly stageId?: string;
     readonly transactionHash?: string;
     readonly state:
       | "unknown"
@@ -107,8 +164,14 @@ export function summarizeEvmNativeOperation(
       throw new Error(
         "Native operation observation does not match signed transaction"
       );
+    const unsigned = Transaction.from(member.unsignedTransaction);
     return {
       role: member.transactionSet?.role ?? "payment",
+      account: member.source.address.toLowerCase(),
+      nonce: unsigned.nonce,
+      ...(member.transactionSet?.stageId === undefined
+        ? {}
+        : { stageId: member.transactionSet.stageId }),
       transactionHash: member.signed?.transactionHash,
       state: stateOf(member),
       ...(included
@@ -146,27 +209,14 @@ export function summarizeEvmNativeOperation(
       paymentMembers.every((member) => member.state === "superseded")
     ? "superseded"
     : "unknown";
-  const logical = row.preparationId?.startsWith("evm-transaction-set:")
-    ? row.preparationId.slice("evm-transaction-set:".length)
-    : undefined;
-  const labelled = /^(stamp|contact|forum)-([0-9a-f]+)$/.exec(logical ?? "");
-  const purpose =
-    labelled?.[1] === "stamp"
-      ? ("stamp" as const)
-      : labelled?.[1] === "contact"
-      ? ("contact-payment" as const)
-      : labelled?.[1] === "forum"
-      ? ("forum" as const)
-      : ("transfer" as const);
+  const { purpose, messageId } = classifyEvmOperation(row.preparationId);
   return {
     operationId: row.operationId,
     chainIdentifier: row.binding.chainIdentifier,
     kind: row.kind,
     recipient: row.recipient,
     purpose,
-    ...(labelled && labelled[1] !== "forum" && labelled[2].length === 32
-      ? { messageId: labelled[2] }
-      : {}),
+    ...(messageId === undefined ? {} : { messageId }),
     intendedValueWei: row.intendedValueWei,
     payment,
     finalTransactionHash: final.signed?.transactionHash,
@@ -209,8 +259,9 @@ export function summarizeEvmNativeStampStages(
   if (row.kind !== "transaction-set") return [];
   const whole = summarizeEvmNativeOperation(row, syncFailed);
   return (row.transactionSetStages ?? []).flatMap((stage) => {
-    const labelled = /^stamp-([0-9a-f]+)$/.exec(stage.stageId ?? "");
-    if (!labelled) return [];
+    if (stage.stageId === undefined) return [];
+    const labelled = classifyEvmOperation(undefined, stage.stageId);
+    if (labelled.purpose !== "stamp") return [];
     const indexes = row.members.flatMap((member, index) =>
       member.transactionSet?.stageId === stage.stageId ? [index] : []
     );
@@ -248,7 +299,7 @@ export function summarizeEvmNativeStampStages(
         row.members[first]!.unsignedTransaction
       ).to!.toLowerCase(),
       purpose: "stamp",
-      ...(labelled[1].length === 32 ? { messageId: labelled[1] } : {}),
+      messageId: labelled.messageId!,
       intendedValueWei: stage.intendedValueWei,
       payment,
       finalTransactionHash:

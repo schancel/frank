@@ -155,8 +155,9 @@ export default defineComponent({
       type: Boolean,
       required: true,
     },
-    /** For `payment-pending`: `live` (the wallet confirmed the payment is still valid), `queued`
-     * (no payment of its own yet; waiting behind another message) or `checking`. */
+    /** For `payment-pending`: `live` (the wallet confirmed the payment is still valid),
+     * `unreachable` (no payment of its own yet; the relay or the network could not be reached),
+     * `queued` (no payment of its own yet) or `checking`. */
     paymentState: {
       type: String,
       required: false,
@@ -294,6 +295,8 @@ export default defineComponent({
     paymentText(): string {
       if (this.paymentState === 'live')
         return this.$t('outgoing.paymentPending')
+      if (this.paymentState === 'unreachable')
+        return this.$t('outgoing.paymentQueuedUnreachable')
       if (this.paymentState === 'queued')
         return this.$t('outgoing.paymentQueued')
       return this.$t('outgoing.paymentChecking')

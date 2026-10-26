@@ -606,7 +606,12 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
       // would reset the background backoff and make restart mistake it for a cut-off send.
       await setFirstSendState(
         message.status === 'payment-pending' ? 'payment-pending' : 'pending',
-        {},
+        // A queued message keeps saying why it is queued while it tries again.
+        message.status === 'payment-pending' &&
+          message.delivery?.attemptDigest === undefined &&
+          message.delivery?.failureReason === 'unreachable'
+          ? { failureReason: 'unreachable' }
+          : {},
       )
       if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
@@ -753,7 +758,11 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
             // Every rejected call explicitly did nothing. Retain this same message ID and
             // request for the existing background reconciliation queue, including after restart.
             // An absent digest alone never grants this authority.
-            await setFirstSendState('payment-pending', {})
+            // Why it waits, for the message to say: the relay or the network could not be
+            // reached (every call failed in transport and did nothing).
+            await setFirstSendState('payment-pending', {
+              failureReason: 'unreachable',
+            })
             return { state: 'payment-pending' }
           }
 

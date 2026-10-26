@@ -9,10 +9,12 @@
  * History is read the way the wallet page reads it: `loadWalletHistory`, then
  * `buildWalletHistoryGroups`.
  *
- * Device one sends a paid message (its stamp) and a Send to Address. Device two of the same
- * account was open the whole time and reads its mailbox. A third device is opened afterwards
- * from the account's root alone ("restored from the seed") and reads the mailbox. Every device
- * shows both sends with amount, recipient, time and status.
+ * Device one sends a paid message (its stamp), a Send to Address, and a payment in a chat (a
+ * stealth payment of several transactions with its message's stamp appended to it). Device two
+ * of the same account was open the whole time and reads its mailbox. A third device is opened
+ * afterwards from the account's root alone ("restored from the seed") and reads the mailbox.
+ * Every device shows each send as one row, with the same label, amount, recipient, fee, time
+ * and status.
  *
  * Runs only when FRANK_REGTEST_LIVE=1 (solonet must be up, see monad-regtest.ts; CASHWEBD_BIN
  * names a relay build, otherwise this worktree's Cargo build is used):
@@ -46,6 +48,7 @@ interface SendLine {
   recipient: string
   purpose: string
   status: string
+  feeWei: string
   timeMs: number | undefined
 }
 
@@ -59,6 +62,7 @@ function sendLines(rows: readonly WalletHistoryRow[]): SendLine[] {
               recipient: row.operation.recipient.toLowerCase(),
               purpose: row.operation.purpose,
               status: row.operation.payment,
+              feeWei: row.feeWei,
               timeMs: row.timeMs,
             },
           ]
@@ -69,12 +73,17 @@ function sendLines(rows: readonly WalletHistoryRow[]): SendLine[] {
               recipient: row.recipient ?? '',
               purpose: row.purpose,
               status: row.state,
+              feeWei: row.feeWei,
               timeMs: row.timeMs,
             },
           ]
         : [],
     )
-    .sort((a, b) => a.purpose.localeCompare(b.purpose))
+    .sort(
+      (a, b) =>
+        a.purpose.localeCompare(b.purpose) ||
+        a.amountWei.localeCompare(b.amountWei),
+    )
 }
 
 live('History on every device of one account (solonet, real relay)', () => {
@@ -248,14 +257,91 @@ live('History on every device of one account (solonet, real relay)', () => {
       await one.handle.getBalance().catch(() => undefined)
     }
 
-    // The sending device: both sends, each dated by its block.
+    // A payment in a chat: a stealth payment to the peer and its message's stamp, one
+    // transaction set, as the chat composer sends it.
+    const chatPaymentWei = 2n * 10n ** 17n
+    const { recipientAssetPaymentFromPrepared } = await import(
+      '../../../../packages/wallet/message-item-plugins/stealth-asset/from-prepared'
+    )
+    const intent0 = {
+      operationId: 'history-chat-payment',
+      chainIdentifier: CHAIN,
+      asset: { kind: 'native' as const },
+      recipientSpendPublicKey: peer.handle.identity.compressedPubKey,
+      amountAtomic: chatPaymentWei,
+    }
+    const quote = await one.handle.stealthPayments!.quote!(intent0)
+    const stampQuote = await one.chain.directMessages.quoteStamp!({
+      wallet: one.handle,
+      stampValue: stampWei,
+    })
+    if (stampQuote.status !== 'available')
+      throw new Error('stamp quote unavailable')
+    const intent = {
+      ...intent0,
+      maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+      messageStamp: {
+        amountAtomic: stampWei,
+        maxNativeFeeAtomic: stampQuote.maximumNativeFeeAtomic,
+      },
+    }
+    const prepared = await one.handle.stealthPayments!.prepare(intent)
+    let chatDigest: string | undefined
+    try {
+      chatDigest = (
+        await one.chain.directMessages.send({
+          wallet: one.handle,
+          recipient: peer.handle.identity.address,
+          messageId: '00000000-0000-4000-8000-0000000000a1',
+          paymentOperationId: intent.operationId,
+          stampValue: stampWei,
+          items: [recipientAssetPaymentFromPrepared(prepared)],
+          onEnvelopeDurable: payloadDigest =>
+            one.handle.stealthPayments!.expose({
+              operationId: intent.operationId,
+              payloadDigest,
+            }),
+        })
+      ).payloadDigest
+    } catch (error) {
+      const hashes = (error as { payloadHashes?: string[] }).payloadHashes
+      if (!hashes?.length) throw error
+      chatDigest = hashes[0]
+    }
+    for (let pass = 0; pass < 60; pass++) {
+      await one.chain.directMessages
+        .reconcileAttempts({
+          wallet: one.handle,
+          payloadDigests: [chatDigest!],
+        })
+        .catch(() => undefined)
+      await one.handle
+        .stealthPayments!.submit(intent.operationId)
+        .catch(() => undefined)
+      const paid = await one.handle.provider
+        .getBalance(prepared.recipientAddress)
+        .catch(() => 0n)
+      if (paid >= chatPaymentWei) break
+      await sleep(2000)
+    }
+
+    // The sending device: every send, each one row, dated by its block.
     // The app's mailbox poll re-observes the wallet's own transfers and shares them; so does
     // this loop.
-    const onOne = await settledHistory(one, 2, async () => {
+    const onOne = await settledHistory(one, 4, async () => {
       await one.handle.reobserveNativeOperations?.().catch(() => undefined)
       await one.handle.flushNativeSync?.().catch(() => undefined)
     })
     expect(onOne).toEqual([
+      expect.objectContaining({
+        purpose: 'contact-payment',
+        amountWei: chatPaymentWei.toString(),
+        recipient: prepared.recipientAddress.toLowerCase(),
+      }),
+      expect.objectContaining({
+        purpose: 'stamp',
+        amountWei: stampWei.toString(),
+      }),
       expect.objectContaining({
         purpose: 'stamp',
         amountWei: stampWei.toString(),
@@ -266,11 +352,12 @@ live('History on every device of one account (solonet, real relay)', () => {
         recipient: faucet,
       }),
     ])
+    for (const line of onOne) expect(BigInt(line.feeWei)).toBeGreaterThan(0n)
     for (const line of onOne)
       expect(Math.abs(line.timeMs! - Date.now())).toBeLessThan(10 * 60_000)
 
     // The other device of the account: the same sends, read from the account's notes to itself.
-    const onTwo = await settledHistory(two, 2, () => readMailbox(two))
+    const onTwo = await settledHistory(two, 4, () => readMailbox(two))
     expect(onTwo.map(({ timeMs: _t, ...line }) => line)).toEqual(
       onOne.map(({ timeMs: _t, ...line }) => line),
     )
@@ -279,15 +366,20 @@ live('History on every device of one account (solonet, real relay)', () => {
 
     // A device restored from the seed, opened after the sends: the same past sends.
     const restored = await openDevice('restored', 'one')
-    const onRestored = await settledHistory(restored, 2, () =>
+    const onRestored = await settledHistory(restored, 4, () =>
       readMailbox(restored),
     )
     expect(onRestored).toEqual(onTwo)
 
     // What the peer received goes back to the faucet with the rest.
     await peer.receive(message => message.payloadDigest === digest)
+    // The chat payment's coin, once its message reached the peer; the faucet sweep at the end
+    // takes back whatever is left either way.
+    await peer
+      .receive(message => message.payloadDigest === chatDigest, 30_000)
+      .catch(() => undefined)
     await peer.handle
-      .sweepReceivedCoins?.({ payloadDigests: [digest] })
+      .sweepReceivedCoins?.({ payloadDigests: [digest, chatDigest!] })
       .catch(() => undefined)
   })
 })

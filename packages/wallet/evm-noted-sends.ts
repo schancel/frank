@@ -10,21 +10,28 @@
  * this record is a derived view for History only. It holds nothing secret, never signs, and can
  * be rebuilt by reading the mailbox from the start.
  *
- * A row is keyed by transaction hash. Recording the same transaction again changes nothing but
- * an earlier note time. What the chain did with it is read with the transaction's receipt and
- * kept once the chain shows it in a block.
+ * A row is keyed by transaction hash. Each note adds what it says of the transaction: the
+ * operation its own journal member named (`WalletSyncItem.operation`), the message whose note
+ * carries it, an earlier note time. History groups and names the account's sends from those
+ * facts (`notedSendGroupKeys`, `notedSendPurpose`), as the sending device groups and names its
+ * journal's operations (`classifyEvmOperation`). What the chain did with it is read with the
+ * transaction's receipt and kept once the chain shows it in a block.
  */
 import { Transaction, type Provider } from 'ethers'
 import type { RecordStore } from './storage/evm-coin-store'
+import {
+  classifyEvmOperation,
+  type EvmSendPurpose,
+} from './chain/evm-native-operation-status'
 
 export const EVM_NOTED_SENDS_NAMESPACE = 'evm-noted-sends'
 
-/** What a sent transaction was for, as far as the note shows it.
- * - `stamp`: a message's stamp (a transaction of a sealed message's bundle that pays no item);
- * - `contact-payment`: a payment item of a message (a stealth payment to a contact);
- * - `forum`: a burn to the network's forum/stamp burn address;
- * - `transfer`: anything else (Send to Address, a contract call's value). */
-export type NotedSendPurpose = 'stamp' | 'contact-payment' | 'forum' | 'transfer'
+/** What a sent transaction was for (`EvmSendPurpose`), named from what its notes say of it. */
+export type NotedSendPurpose = EvmSendPurpose
+
+/** The calldata a group write's payment starts with: "GRPW" and version 1
+ * (`@frank/cashweb/groups/group-write-payment`). */
+const GROUP_WRITE_CALLDATA = '0x4752505701'
 
 export interface NotedSend {
   /** Lower-case 0x transaction hash. The key. */
@@ -38,9 +45,20 @@ export interface NotedSend {
   readonly valueWei: string
   /** True when the transaction carries call data (a contract call). */
   readonly call: boolean
+  /** What the transaction's own bytes show it was for: a group write's payment (its calldata),
+   * or a burn to the network's forum address. */
+  readonly shown?: 'group-write' | 'forum'
+  /** The sending wallet's operation, as the transaction's own note names it. */
+  readonly operation?: { readonly id: string; readonly stage?: string }
+  /** The sent message whose note carries the transaction: its payload digest, its message ID
+   * (32 hex digits) and whether the message pays it as an item (a payment) or as its stamp. */
+  readonly message?: {
+    readonly digest: string
+    readonly messageId?: string
+    readonly item: boolean
+  }
+  /** What it was for, from the facts above (`notedSendPurpose`). */
   readonly purpose: NotedSendPurpose
-  /** The note that reported it (its payload digest); transactions of one message share it. */
-  readonly noteDigest?: string
   /** Its place among the note's transactions (the order the sending device built them in). */
   readonly noteIndex: number
   /** When the note says it was sent (or when it was read), epoch ms. */
@@ -56,11 +74,56 @@ export interface NotedSend {
   }
 }
 
+/** What a noted transaction was for: what its operation's identity says, else its own bytes,
+ * else its message. The sending device names its journal's operations the same way. */
+export function notedSendPurpose(
+  row: Pick<NotedSend, 'operation' | 'message' | 'shown'>,
+): NotedSendPurpose {
+  const named = row.operation
+    ? classifyEvmOperation(row.operation.id, row.operation.stage).purpose
+    : 'transfer'
+  if (named !== 'transfer') return named
+  if (row.shown) return row.shown
+  if (row.message) return row.message.item ? 'contact-payment' : 'stamp'
+  return 'transfer'
+}
+
+/**
+ * The names of the one send a noted transaction belongs to; transactions sharing any name are
+ * one send. A message's stamp is named by its message, whatever operation paid it; another
+ * transaction by its operation and stage, and by the message that pays it as an item. A
+ * transaction no note relates to anything else is a send of its own.
+ */
+export function notedSendGroupKeys(
+  row: Pick<NotedSend, 'txHash' | 'operation' | 'message'>,
+): string[] {
+  const keys: string[] = []
+  if (row.operation) {
+    const named = classifyEvmOperation(row.operation.id, row.operation.stage)
+    keys.push(
+      named.purpose === 'stamp' && named.messageId !== undefined
+        ? `stamp:${named.messageId}`
+        : `operation:${row.operation.id}#${row.operation.stage ?? ''}`,
+    )
+  }
+  if (row.message)
+    keys.push(
+      !row.message.item && row.message.messageId !== undefined
+        ? `stamp:${row.message.messageId}`
+        : `message:${row.message.digest}:${row.message.item ? 'item' : 'stamp'}`,
+    )
+  if (keys.length === 0) keys.push(`tx:${row.txHash}`)
+  return keys
+}
+
 /** What History shows of one noted transaction now. */
 export interface NotedSendStatus extends NotedSend {
   /** `included` / `reverted` from the receipt; `pending` while the node shows none yet;
    * `unknown` while the chain could not be read. */
   readonly state: 'included' | 'reverted' | 'pending' | 'unknown'
+  /** Its destination is one of the wallet's own accounts (change, funding, its own receive
+   * address): not a send, but a part of one whose fee the account paid. Set by the wallet. */
+  readonly toOwnAccount?: boolean
 }
 
 /** The most receipts one read asks the node for. */
@@ -82,20 +145,27 @@ export class EvmNotedSends {
   /**
    * Records the signed transactions one note to self reports. Only transactions signed for this
    * chain whose bytes decode are taken; anything else is passed (the note's spend application
-   * decides about it on its own). Returns the hashes recorded or already known.
+   * decides about it on its own). What one note says of a transaction is added to what others
+   * said, in whatever order the notes are read, so every device ends with the same record.
+   * Returns the hashes recorded or already known.
    */
   async recordNote(note: {
-    readonly transactions: readonly { rawTx: string; txHash?: string }[]
+    readonly transactions: readonly {
+      rawTx: string
+      txHash?: string
+      /** The sending wallet's operation, as the transaction's own note names it. */
+      operation?: { id: string; stage?: string }
+    }[]
     /** Hashes of the transactions the note's message pays as items (stealth payments). */
     readonly itemTransactions: ReadonlySet<string>
-    /** Whether the note carries a sent message (then its other transactions are its stamp). */
-    readonly carriesMessage: boolean
-    readonly noteDigest?: string
+    /** The sent message the note carries, if it carries one (then its other transactions are
+     * its stamp): its payload digest and message ID. */
+    readonly message?: { readonly digest: string; readonly messageId?: string }
     readonly notedAtMs: number
   }): Promise<string[]> {
     const recorded: string[] = []
     const burn = this.config.burnAddress?.toLowerCase()
-    for (const [noteIndex, { rawTx, txHash }] of note.transactions.entries()) {
+    for (const [noteIndex, { rawTx, txHash, operation }] of note.transactions.entries()) {
       let tx: Transaction
       try {
         tx = Transaction.from(rawTx)
@@ -111,47 +181,59 @@ export class EvmNotedSends {
         continue
       const hash = tx.hash.toLowerCase()
       const to = tx.to?.toLowerCase()
-      const purpose: NotedSendPurpose =
-        to !== undefined && to === burn
-          ? 'forum'
-          : note.itemTransactions.has(hash)
-          ? 'contact-payment'
-          : note.carriesMessage
-          ? 'stamp'
-          : 'transfer'
+      const shown = tx.data.toLowerCase().startsWith(GROUP_WRITE_CALLDATA)
+        ? ('group-write' as const)
+        : to !== undefined && to === burn
+        ? ('forum' as const)
+        : undefined
+      const message =
+        note.message === undefined
+          ? undefined
+          : {
+              digest: note.message.digest,
+              ...(note.message.messageId === undefined
+                ? {}
+                : { messageId: note.message.messageId }),
+              item: note.itemTransactions.has(hash),
+            }
       const existing = this.store.get(hash)
-      if (existing !== undefined) {
-        recorded.push(hash)
-        // A message's own note says more than a bare transfer note about the same bytes.
-        const better =
-          existing.purpose === 'transfer' && purpose !== 'transfer'
-            ? purpose
-            : existing.purpose
-        if (note.notedAtMs >= existing.notedAtMs && better === existing.purpose)
-          continue
-        await this.store.put(hash, {
-          ...existing,
-          purpose: better,
-          notedAtMs: Math.min(existing.notedAtMs, note.notedAtMs),
-          ...(existing.noteDigest === undefined && note.noteDigest !== undefined
-            ? { noteDigest: note.noteDigest, noteIndex }
-            : {}),
-        })
-        continue
-      }
-      await this.store.put(hash, {
-        txHash: hash,
-        from: tx.from.toLowerCase(),
-        nonce: tx.nonce,
-        ...(to === undefined ? {} : { to }),
-        valueWei: tx.value.toString(),
-        call: tx.data !== '0x',
-        purpose,
-        ...(note.noteDigest === undefined ? {} : { noteDigest: note.noteDigest }),
-        noteIndex,
-        notedAtMs: note.notedAtMs,
-      })
       recorded.push(hash)
+      const facts = {
+        ...(shown === undefined ? {} : { shown }),
+        ...(existing?.operation ?? operation
+          ? { operation: existing?.operation ?? operation }
+          : {}),
+        ...(existing?.message ?? message
+          ? { message: existing?.message ?? message }
+          : {}),
+      }
+      const next: NotedSend = {
+        ...(existing ?? {
+          txHash: hash,
+          from: tx.from.toLowerCase(),
+          nonce: tx.nonce,
+          ...(to === undefined ? {} : { to }),
+          valueWei: tx.value.toString(),
+          call: tx.data !== '0x',
+          noteIndex,
+        }),
+        ...facts,
+        purpose: notedSendPurpose(facts),
+        notedAtMs: Math.min(existing?.notedAtMs ?? Infinity, note.notedAtMs),
+      }
+      const said = (row: NotedSend) =>
+        JSON.stringify([
+          row.shown,
+          row.operation?.id,
+          row.operation?.stage,
+          row.message?.digest,
+          row.message?.messageId,
+          row.message?.item,
+          row.purpose,
+          row.notedAtMs,
+        ])
+      if (existing !== undefined && said(existing) === said(next)) continue
+      await this.store.put(hash, next)
     }
     return recorded
   }

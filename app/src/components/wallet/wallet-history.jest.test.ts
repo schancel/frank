@@ -1,10 +1,15 @@
 import { includedNativeTransfer } from '../../../test/jest/utils/native-operation'
 import type { NativeWalletHandle } from '@frank/wallet/chain'
-import type {
-  EvmNativeOperationStatus,
-  NotedSendStatus,
+import {
+  notedSendPurpose,
+  type EvmNativeOperationStatus,
+  type NotedSendStatus,
 } from '@frank/wallet/chain'
-import { buildWalletHistoryGroups, loadWalletHistory } from './wallet-history'
+import {
+  buildWalletHistoryGroups,
+  loadWalletHistory,
+  type WalletHistoryRow,
+} from './wallet-history'
 
 describe('loadWalletHistory', () => {
   it('reads active and every page of completed history, once each, without effects', async () => {
@@ -169,14 +174,14 @@ describe('buildWalletHistoryGroups', () => {
           // One message's stamp, paid from two coins: one row.
           sent('0x' + 'b1'.repeat(32), {
             purpose: 'stamp',
-            noteDigest: 'm1',
+            message: { digest: 'm1', item: false },
             noteIndex: 1,
             to: '0x' + '05'.repeat(20),
             valueWei: '20',
           }),
           sent('0x' + 'b0'.repeat(32), {
             purpose: 'stamp',
-            noteDigest: 'm1',
+            message: { digest: 'm1', item: false },
             noteIndex: 0,
             to: '0x' + '04'.repeat(20),
             valueWei: '30',
@@ -191,7 +196,7 @@ describe('buildWalletHistoryGroups', () => {
           // The same message's payment to the contact: its own row.
           sent('0x' + 'c0'.repeat(32), {
             purpose: 'contact-payment',
-            noteDigest: 'm1',
+            message: { digest: 'm1', item: true },
             noteIndex: 2,
             valueWei: '500',
           }),
@@ -288,5 +293,236 @@ describe('buildWalletHistoryGroups', () => {
     const row = groups.flatMap(group => group.rows)[0]!
     expect(row.kind === 'native' && row.contactOutcome).toBe('failed')
     expect(groups.map(group => group.id)).toEqual(['activity'])
+  })
+
+  it('shows one send as one row with the same label, amount and fee on the device that sent it and on another device', () => {
+    const MESSAGE = '0123456789abcdef0123456789abcdef'
+    const OTHER = 'fedcba9876543210fedcba9876543210'
+    const chatPayment = `evm-transaction-set:stealth-${'ab'.repeat(32)}`
+    const groupWrite = `evm-transaction-set:group-write-${'cd'.repeat(32)}`
+    const contact = '0x' + '0c'.repeat(20)
+    const stampTo = '0x' + '0d'.repeat(20)
+    const dead = '0x000000000000000000000000000000000000dead'
+    const change = '0x' + '0e'.repeat(20)
+    const hash = (n: number) => '0x' + n.toString(16).padStart(64, '0')
+    const block = {
+      blockNumber: 9,
+      blockHash: '0x' + '09'.repeat(32),
+    }
+    /** One transaction of an operation, as the sending device's journal and the chain show it. */
+    interface Tx {
+      n: number
+      account: string
+      nonce: number
+      to: string
+      valueWei: string
+      role: 'payment' | 'change'
+      operation: { id: string; stage?: string }
+      own?: boolean
+    }
+    const txs: Tx[] = [
+      // A payment in a chat, from three coins, with its change and its message's stamp
+      // appended as a stage of two coins.
+      ...[1, 2, 3].map(
+        (n): Tx => ({
+          n,
+          account: '0x' + n.toString(16).padStart(40, '0'),
+          nonce: 0,
+          to: contact,
+          valueWei: String(n * 100),
+          role: 'payment',
+          operation: { id: chatPayment },
+        }),
+      ),
+      {
+        n: 4,
+        account: '0x' + '04'.repeat(20),
+        nonce: 0,
+        to: change,
+        valueWei: '7',
+        role: 'change',
+        operation: { id: chatPayment },
+        own: true,
+      },
+      ...[5, 6].map(
+        (n): Tx => ({
+          n,
+          account: '0x' + n.toString(16).padStart(40, '0'),
+          nonce: 1,
+          to: stampTo,
+          valueWei: '25',
+          role: 'payment',
+          operation: { id: chatPayment, stage: `stamp-${MESSAGE}` },
+        }),
+      ),
+      // Creating a group: its write's payment to the burn address.
+      {
+        n: 7,
+        account: '0x' + '07'.repeat(20),
+        nonce: 0,
+        to: dead,
+        valueWei: '1',
+        role: 'payment',
+        operation: { id: groupWrite },
+      },
+      // Another message's stamp, which won the race for its coin over the other device.
+      {
+        n: 8,
+        account: '0x' + '08'.repeat(20),
+        nonce: 3,
+        to: '0x' + '0f'.repeat(20),
+        valueWei: '50',
+        role: 'payment',
+        operation: { id: `evm-transaction-set:stamp-${OTHER}` },
+      },
+    ]
+    // The stamp appended to the chat payment landed a block later than the payment.
+    const later = { blockNumber: 10, blockHash: '0x' + '0a'.repeat(32) }
+    const blockOf = (tx: Tx) => (tx.operation.stage ? later : block)
+    const member = (tx: Tx) => ({
+      role: tx.role,
+      account: tx.account,
+      nonce: tx.nonce,
+      ...(tx.operation.stage ? { stageId: tx.operation.stage } : {}),
+      transactionHash: hash(tx.n),
+      state: 'included-success' as const,
+      ...blockOf(tx),
+      feeWei: '3',
+    })
+    const of = (id: string, stage?: string) =>
+      txs.filter(tx => tx.operation.id === id && tx.operation.stage === stage)
+    // The sending device: its journal's operations, as `loadWalletHistory` summarizes them.
+    const sender: EvmNativeOperationStatus[] = [
+      operation({
+        operationId: 'evm-native-v1:01',
+        purpose: 'contact-payment',
+        recipient: contact,
+        intendedValueWei: '600',
+        payment: 'included',
+        members: [
+          ...of(chatPayment),
+          ...of(chatPayment, `stamp-${MESSAGE}`),
+        ].map(member),
+      }),
+      operation({
+        operationId: `evm-native-v1:01:stamp-${MESSAGE}`,
+        purpose: 'stamp',
+        messageId: MESSAGE,
+        recipient: stampTo,
+        intendedValueWei: '50',
+        payment: 'included',
+        members: of(chatPayment, `stamp-${MESSAGE}`).map(member),
+      }),
+      operation({
+        operationId: 'evm-native-v1:02',
+        purpose: 'group-write',
+        recipient: dead,
+        intendedValueWei: '1',
+        payment: 'included',
+        members: of(groupWrite).map(member),
+      }),
+      operation({
+        operationId: 'evm-native-v1:03',
+        purpose: 'stamp',
+        messageId: OTHER,
+        recipient: '0x' + '0f'.repeat(20),
+        intendedValueWei: '50',
+        payment: 'included',
+        members: of(`evm-transaction-set:stamp-${OTHER}`).map(member),
+      }),
+    ]
+    // The other device: the same transactions, read from the notes each one's journal member
+    // sent; and its own attempt at the second stamp, whose nonce the sender's took.
+    const noted = txs.map(tx => {
+      const facts = { operation: tx.operation }
+      return sent(hash(tx.n), {
+        from: tx.account,
+        nonce: tx.nonce,
+        to: tx.to,
+        valueWei: tx.valueWei,
+        ...facts,
+        purpose: notedSendPurpose(facts),
+        inclusion: {
+          status: 'success',
+          ...blockOf(tx),
+          blockTimeMs: tx.operation.stage ? 7000 : 5000,
+          feeWei: '3',
+        },
+        ...(tx.own ? { toOwnAccount: true } : {}),
+      })
+    })
+    const lost = operation({
+      operationId: 'evm-native-v1:01',
+      purpose: 'stamp',
+      messageId: OTHER,
+      recipient: '0x' + '0f'.repeat(20),
+      intendedValueWei: '50',
+      payment: 'superseded',
+      members: [
+        {
+          role: 'payment',
+          account: '0x' + '08'.repeat(20),
+          nonce: 3,
+          transactionHash: hash(99),
+          state: 'superseded',
+        },
+      ],
+    })
+    const lines = (
+      operations: EvmNativeOperationStatus[],
+      notes: NotedSendStatus[],
+    ) =>
+      buildWalletHistoryGroups({
+        chainIdentifier: 'monad-regtest',
+        swaps: [],
+        load: {
+          status: 'available',
+          operations,
+          received: [],
+          noted: notes,
+          contactPayments: [],
+          blockTimes: new Map([
+            [block.blockHash, 5000],
+            [later.blockHash, 7000],
+          ]),
+        },
+      })
+        .flatMap(group => group.rows)
+        .flatMap((row: WalletHistoryRow) =>
+          row.kind === 'native'
+            ? [
+                [
+                  row.operation.purpose,
+                  row.operation.intendedValueWei,
+                  row.feeWei,
+                  row.operation.recipient,
+                  row.operation.payment,
+                  row.timeMs,
+                ],
+              ]
+            : row.kind === 'noted'
+            ? [
+                [
+                  row.purpose,
+                  row.valueWei,
+                  row.feeWei,
+                  row.recipient,
+                  row.state,
+                  row.timeMs,
+                ],
+              ]
+            : [],
+        )
+        .sort((a, b) => String(a).localeCompare(String(b)))
+    const onSender = lines(sender, [])
+    expect(onSender).toEqual([
+      ['contact-payment', '600', '12', contact, 'included', 5000],
+      ['group-write', '1', '3', dead, 'included', 5000],
+      ['stamp', '50', '3', '0x' + '0f'.repeat(20), 'included', 5000],
+      ['stamp', '50', '6', stampTo, 'included', 7000],
+    ])
+    // One row per send, the same label, amount and fee; the attempt that lost the race and
+    // never landed is no row.
+    expect(lines([lost], noted)).toEqual(onSender)
   })
 })

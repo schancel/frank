@@ -973,11 +973,104 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         delivery => delivery.items[0].epoch,
       ),
     ).toEqual([0, 1, 2])
-    expect(group.groupState.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
+    // The invitation never sent to Charlie is dropped; Charlie is only told of the removal.
+    expect(
+      group.groupState.pendingMemberDeliveries[CHARLIE].map(
+        delivery => delivery.items,
+      ),
+    ).toEqual([
+      [
+        expect.objectContaining({
+          type: 'group-control',
+          action: 'remove-member',
+          epoch: 2,
+          targetAddress: expect.stringMatching(new RegExp(`^${CHARLIE}$`, 'i')),
+        }),
+      ],
+    ])
+    expect(
+      group.groupState.pendingMemberDeliveries[CHARLIE][0].items[0],
+    ).not.toHaveProperty('epochSecretHex')
     const ids = group.groupState.pendingMemberDeliveries[BOB].map(
       delivery => delivery.operationId,
     )
     expect(new Set(ids).size).toBe(3)
+  })
+
+  it('a removed member is told: the group shows the removal and is no longer polled or retried', async () => {
+    const { chats: alice, group, client } = await makeGroup()
+    const { chats: bob } = await inviteBob(group, client)
+    const bobGroup = bob.conversations[group.id]
+    await bob.approveGroupInvite(group.id)
+    expect(bobGroup.membershipStatus).toBe('joined')
+
+    currentOwnAddress = ALICE
+    await alice.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: BOB,
+      relayClient: client,
+    })
+    const notice = group.groupState.pendingMemberDeliveries[BOB]
+    expect(notice).toHaveLength(1)
+    const noticeItem = notice[0].items[0] as GroupControlItem
+    // The notice never carries the epoch the member was left out of.
+    expect(noticeItem.epochSecretHex).toBeUndefined()
+
+    // Before the notice, Bob's poll finds an epoch it cannot open and fails, as before.
+    currentOwnAddress = BOB
+    await expect(
+      bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).rejects.toThrow(/membership update required/)
+    expect(bobGroup.groupState.syncFailed).toBe(true)
+
+    const deliver = (index: string, item: GroupControlItem, from = ALICE) =>
+      bob.receiveMessages(
+        [
+          {
+            index,
+            conversationId: '11111111-1111-4111-8111-111111111111',
+            outbound: false,
+            senderAddress: from,
+            copartyAddress: from,
+            copartyPubKey: {
+              toBuffer: () =>
+                GROUP_TEST_ACCOUNTS.find(a => a.address === from)!.publicKey,
+            },
+            stampValue: 0,
+            message: {
+              outbound: false,
+              status: 'confirmed',
+              senderAddress: from,
+              destinationAddress: BOB,
+              items: [item],
+              conversationId: '11111111-1111-4111-8111-111111111111',
+              serverTime: 5000,
+              receivedTime: 5000,
+              outpoints: [],
+            },
+          },
+        ],
+        BOB,
+      )
+    // A notice from anyone but the administrator changes nothing.
+    await deliver('forged-removal', noticeItem, CHARLIE)
+    expect(bobGroup.membershipStatus).toBe('joined')
+
+    await deliver('removal-notice', noticeItem)
+    expect(bobGroup.membershipStatus).toBe('removed')
+    expect(bobGroup.groupState.syncFailed).toBe(false)
+    expect(bobGroup.participants).not.toContain(BOB)
+    expect(bob.shouldPollGroupMailbox(group.id)).toBe(false)
+    // Polling stops: no more failed retries.
+    await expect(
+      bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).resolves.toBe(0)
   })
 
   it('does not advance the cursor when durable incoming receipt fails, then safely retries and reopens', async () => {

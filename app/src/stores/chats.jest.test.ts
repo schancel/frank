@@ -84,6 +84,7 @@ import { serializeMessageWrapper } from '@frank/cashweb/relay/storage/level-stor
 import { desktopNotify } from '../utils/notifications'
 import { InsufficientStampFundsError } from '@frank/wallet/evm-account-pool'
 import { useSettingsStore } from './settings'
+import { dismissScreenerConversation } from '../utils/screener-triage'
 const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
 
 jest.mock('../adapters/level-message-store', () => ({
@@ -5298,6 +5299,73 @@ describe('stores/chats.ts (ticket #42)', () => {
           threadOf(chats, 'first'),
         )
         expect(Object.keys(chats.conversations)).toHaveLength(1)
+      })
+
+      it('a peer thread dismissed from the Screener is still the peer thread: opening the peer again brings it back, on every device', async () => {
+        const chats = useChatStore()
+        await receive(chats, incoming('first from a stranger', THEIR_ID))
+        const thread = threadOf(chats, 'first from a stranger')!
+        expect(thread.id).toBe(THEIR_ID)
+        // "Dismiss & Keep Stamp": the thread is hidden (deleted with its messages).
+        await dismissScreenerConversation(thread, chats)
+        expect(thread.deletedAt).toBeDefined()
+        const cleared = thread.deletedAt!
+        // Start Conversation with the peer, blank subject: the same thread, not a new ID.
+        const reopened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        expect(reopened.id).toBe(THEIR_ID)
+        expect(reopened.deletedAt).toBeUndefined()
+        expect(reopened.messages).toHaveLength(0)
+        expect(chats.chats[RECIPIENT_ADDRESS]?.id).toBe(THEIR_ID)
+        // The peer replies in its thread: it lands in the one we reopened.
+        await receive(chats, incoming('reply in their thread', THEIR_ID))
+        expect(threadOf(chats, 'reply in their thread')).toBe(reopened)
+        expect(
+          Object.values(chats.conversations).filter(c => !c.deletedAt),
+        ).toHaveLength(1)
+
+        // The account's second device that saw the message, then the deletion note.
+        setActivePinia(createPinia())
+        const second = useChatStore()
+        await receive(second, incoming('first from a stranger', THEIR_ID))
+        await second.applyConversationStateExclusive(
+          {
+            type: 'conversation-state',
+            conversationId: THEIR_ID,
+            peer: RECIPIENT_ADDRESS,
+            clearedBefore: cleared,
+          },
+          SENDER_ADDRESS,
+        )
+        expect(second.openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
+          THEIR_ID,
+        )
+
+        // A device that learns of the deletion before (or without) the message.
+        setActivePinia(createPinia())
+        const third = useChatStore()
+        await third.applyConversationStateExclusive(
+          {
+            type: 'conversation-state',
+            conversationId: THEIR_ID,
+            peer: RECIPIENT_ADDRESS,
+            clearedBefore: cleared,
+          },
+          SENDER_ADDRESS,
+        )
+        expect(third.openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
+          THEIR_ID,
+        )
+      })
+
+      it('deleting a chat that never held a message leaves no thread behind', async () => {
+        const chats = useChatStore()
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        await chats.deleteConversation(opened.id)
+        // The peer's first message, in its own conversation, is the peer's thread.
+        await receive(chats, incoming('their first', THEIR_ID))
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
+          THEIR_ID,
+        )
       })
 
       it('an explicitly created conversation stays separate, also with an equal subject', async () => {

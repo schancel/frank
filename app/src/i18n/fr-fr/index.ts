@@ -2584,6 +2584,19 @@ export const rawFrFR = {
     removeMemberBtn: 'Retirer',
     leaveGroupBtn: 'Ne plus suivre le groupe',
     syncGroupBtn: 'Synchroniser le groupe',
+    removedBanner:
+      'Vous avez été retiré de ce groupe. Ses messages précédents restent ici.',
+    removedHeader: 'Vous avez été retiré',
+    removeMemberConfirmTitle: 'Retirer ce membre ?',
+    removeMemberConfirmBody:
+      'Retirer {member} de « {group} » ? Ce membre ne pourra plus lire ni envoyer de messages dans ce groupe.',
+    removeMemberConfirmBtn: 'Retirer',
+    unnamedGroup: 'Groupe',
+    systemInviteSent: 'Invitation au groupe « {group} » envoyée',
+    systemInviteReceived: 'Invitation au groupe « {group} »',
+    systemMembershipUpdate: 'Groupe « {group} » : membres modifiés',
+    systemRemovalSent: 'Retrait du groupe « {group} » notifié',
+    systemRemovalReceived: 'Vous avez été retiré du groupe « {group} »',
   },
   close: 'Fermer',
 }

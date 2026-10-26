@@ -2507,6 +2507,19 @@ export const rawEnUS = {
     removeMemberBtn: 'Remove',
     leaveGroupBtn: 'Stop Following Group',
     syncGroupBtn: 'Sync Group',
+    removedBanner:
+      'You were removed from this group. Its earlier messages stay here.',
+    removedHeader: 'You were removed',
+    removeMemberConfirmTitle: 'Remove member?',
+    removeMemberConfirmBody:
+      'Remove {member} from "{group}"? They will no longer read or send messages in this group.',
+    removeMemberConfirmBtn: 'Remove',
+    unnamedGroup: 'Group',
+    systemInviteSent: 'Invitation to the group "{group}" sent',
+    systemInviteReceived: 'Invitation to the group "{group}"',
+    systemMembershipUpdate: 'Group "{group}": members changed',
+    systemRemovalSent: 'Told them they were removed from the group "{group}"',
+    systemRemovalReceived: 'You were removed from the group "{group}"',
   },
   close: 'Close',
 }

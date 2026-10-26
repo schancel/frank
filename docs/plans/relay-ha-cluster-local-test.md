@@ -36,8 +36,7 @@ The app, in another terminal from `app/` (once per checkout: `yarn install` and
 
 ```sh
 QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:18180 QCLI_MONAD_RPC_CHAIN=monad-regtest \
-  QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD \
-  QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000 yarn dev:browser
+  QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD yarn dev:browser
 ```
 
 Open `http://localhost:8080`. When you create each account, open **Advanced options** and set the

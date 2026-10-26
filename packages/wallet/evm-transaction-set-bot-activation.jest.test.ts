@@ -105,10 +105,11 @@ it('activates shared wallet observations before a funded ordinary bot accepts pa
         f.bob.identity.address.raw,
         [{ type: 'text', text: 'first paid bot reply' }],
         undefined,
-        { stampValueWei: 100_000n },
+        // Above the payment floor at price 1 (ten moves of 21,000 gas = 210,000 wei).
+        { stampValueWei: 1_000_000n },
       ),
     ).resolves.toMatchObject({
-      stampValueWei: 100_000n,
+      stampValueWei: 1_000_000n,
     })
   } finally {
     await host.stop()

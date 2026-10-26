@@ -75,6 +75,9 @@ export function harness(
    * its attempt, and the relay ends it. */
   /** What the chain charges to move a stamp, as the wallet reports it. Zero: nothing is dust. */
   let floorWei = 0n;
+  /** Refuse a nonzero stamp below `floorWei` before any attempt, as the real wallet does
+   * (`DirectMessageStampBelowFeeError`), settlements included. Off: any amount is accepted. */
+  let enforceFloor = false;
   let mode: "deliver" | "refuse" | "live" | "dead" = "deliver";
   let refusal = new Error("refused");
 
@@ -92,6 +95,12 @@ export function harness(
         payloadDigest: earlier.digest,
       });
     if (mode === "refuse") throw refusal;
+    const value = options?.stampValueWei ?? 0n;
+    if (enforceFloor && value > 0n && value < floorWei)
+      throw Object.assign(
+        new Error(`A stamp of ${value} wei is below the payment floor of ${floorWei} wei`),
+        { name: "DirectMessageStampBelowFeeError", stampValueWei: value, floorWei }
+      );
     const payloadDigest = hash().slice(2);
     const message: Sent = {
       to,
@@ -196,6 +205,10 @@ export function harness(
     /** Sets the chain's fee floor for a stamp, as `BotContext.minimumStampWei` reports it. */
     feeFloor(wei: bigint) {
       floorWei = wei;
+    },
+    /** From now on the wallet refuses a nonzero stamp below the floor, as the real one does. */
+    enforceFloor() {
+      enforceFloor = true;
     },
     /** How the wallet treats sends from now on; see `mode` above. */
     wallet(next: "deliver" | "refuse" | "live" | "dead") {

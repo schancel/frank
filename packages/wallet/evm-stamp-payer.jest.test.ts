@@ -19,6 +19,8 @@ const GWEI = 10n ** 9n
 const MON = 10n ** 18n
 /** Monad testnet's shape: charged 102 gwei, cap 202 gwei. */
 const CHARGED = 21_000n * 102n * GWEI
+/** The payment floor at that price: ten moves (`chain/payment-floor.ts`). */
+const FLOOR = 10n * CHARGED
 const RESERVE = 21_000n * 202n * GWEI
 const CHAIN_ID = 10143n
 const key = (n: number) => '0x' + n.toString(16).padStart(64, '0')
@@ -186,12 +188,12 @@ function mine(node: Node, rawTx: string, block: number) {
 }
 
 describe('which coins pay a stamp', () => {
-  it('no one coin covers it: several pay it together, each a part worth its transfer; the parts add up to the stamp', async () => {
+  it('no one coin covers it: several pay it together, each a part at least the payment floor; the parts add up to the stamp', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON / 100n)
-    f.node.balances.set(at(received[0]!), (3n * MON) / 100n)
-    f.node.balances.set(at(received[1]!), (2n * MON) / 100n)
-    const stamp = (4n * MON) / 100n
+    f.node.balances.set(at(received[0]!), (6n * MON) / 100n)
+    f.node.balances.set(at(received[1]!), (5n * MON) / 100n)
+    const stamp = (10n * MON) / 100n
     const claim = await f.payer.claim({ holder: 'message', stampValueWei: stamp })
     // The Stamp wallet's rule: spread over the coins, none paying more than it holds after its
     // own fee.
@@ -202,7 +204,7 @@ describe('which coins pay a stamp', () => {
       )
     expect(claim.accounts.reduce((sum, a) => sum + a.paymentValueWei, 0n)).toBe(stamp)
     for (const account of claim.accounts)
-      expect(account.paymentValueWei).toBeGreaterThanOrEqual(CHARGED)
+      expect(account.paymentValueWei).toBeGreaterThanOrEqual(FLOOR)
     // Taken in the list and mirrored in the pool's claims.
     const taken = claim.accounts.map(account => account.address)
     expect(f.list.heldBy('message').map(coin => coin.account).sort()).toEqual(
@@ -212,6 +214,19 @@ describe('which coins pay a stamp', () => {
     // One signed transfer per coin, each from the key the coin carries.
     const signed = await f.payer.sign(claim, CHAIN_ID, () => DESTINATION)
     expect(signed.map(p => Transaction.from(p.rawTx).from!.toLowerCase())).toEqual(taken)
+  })
+
+  it('coins that cover it together only in parts below the payment floor are refused at once, and nothing stays taken', async () => {
+    const f = await make()
+    // 0.03 + 0.02 MON cover 0.04 together, but any split leaves a part under 0.02142 MON and
+    // neither covers it alone. Nothing another payment holds could change that: no waiting.
+    f.node.balances.set(at(main), MON / 100n)
+    f.node.balances.set(at(received[0]!), (3n * MON) / 100n)
+    f.node.balances.set(at(received[1]!), (2n * MON) / 100n)
+    await expect(
+      f.payer.claim({ holder: 'message', stampValueWei: (4n * MON) / 100n }),
+    ).rejects.toBeInstanceOf(InsufficientStampFundsError)
+    expect(f.list.heldBy('message')).toEqual([])
   })
 
   it('coins that do not cover it together are refused, and nothing stays taken', async () => {
@@ -227,12 +242,13 @@ describe('which coins pay a stamp', () => {
 
   it('two payments built at the same moment take different coins; once the list knows the coins, a payment reads nothing from the node to take them', async () => {
     const f = await make({ poolRows: 4 })
-    for (const row of f.pool.records()) f.node.balances.set(row.address.toLowerCase(), MON / 50n)
+    // Each sub-account can carry one stamp at the payment floor (0.025 MON against 0.02142).
+    for (const row of f.pool.records()) f.node.balances.set(row.address.toLowerCase(), MON / 20n)
     await f.sync.refresh()
     f.node.calls.length = 0
     const [a, b] = await Promise.all([
-      f.payer.claim({ holder: 'a', stampValueWei: MON / 100n, sources: ['pool'] }),
-      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+      f.payer.claim({ holder: 'a', stampValueWei: MON / 40n, sources: ['pool'] }),
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 40n, sources: ['pool'] }),
     ])
     const accounts = [...a.accounts, ...b.accounts].map(account => account.address)
     expect(new Set(accounts).size).toBe(accounts.length)
@@ -320,10 +336,10 @@ describe('what holds a coin, and what lets it go', () => {
   it('a sub-account another payment holds is not waited for: it never comes back', async () => {
     const f = await make({ poolRows: 1 })
     const row = f.pool.records()[0]!
-    f.node.balances.set(row.address.toLowerCase(), MON / 50n)
-    await f.payer.claim({ holder: 'a', stampValueWei: MON / 100n, sources: ['pool'] })
+    f.node.balances.set(row.address.toLowerCase(), MON / 20n)
+    await f.payer.claim({ holder: 'a', stampValueWei: MON / 40n, sources: ['pool'] })
     await expect(
-      f.payer.claim({ holder: 'b', stampValueWei: MON / 100n, sources: ['pool'] }),
+      f.payer.claim({ holder: 'b', stampValueWei: MON / 40n, sources: ['pool'] }),
     ).rejects.toBeInstanceOf(InsufficientStampFundsError)
   })
 })

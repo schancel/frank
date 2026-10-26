@@ -1199,6 +1199,9 @@ export const rawFrFR = {
     other: 'Comptes d’envoi',
     otherNote:
       'Mis de côté par le portefeuille dans ses propres comptes pour payer vos prochains messages. Compris dans le solde ci-dessus.',
+    tooSmall: 'Trop petits pour être déplacés ({count})',
+    tooSmallNote:
+      'Paiements reçus valant moins de dix fois les frais de réseau pour les déplacer. Non compris dans le solde ci-dessus.',
     total: 'Solde',
     yours:
       'Votre compte principal, votre adresse de profil et vos comptes d’envoi se retrouvent tous avec votre phrase de récupération.',

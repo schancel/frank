@@ -336,10 +336,9 @@ export function messageStampPrice(message: {
 }) {
   if (message.stampValueWei !== undefined) {
     // Wei -> plain number for sort/badge purposes only, matching Lotus's own pre-existing
-    // sort-value use of `stampPrice` (satoshis as a plain number). Default stamp values
-    // (CASHWEB_STAMP_MIN_BURN_VALUE_WEI, e.g. 1e12) are far below Number.MAX_SAFE_INTEGER
-    // (~9e15), so this is lossless in practice; a pathologically large payment would only ever
-    // affect display sort order, never a financial computation.
+    // sort-value use of `stampPrice` (satoshis as a plain number). A stamp at the Monad payment
+    // floor (2.1e16 wei) is above Number.MAX_SAFE_INTEGER (~9e15), so the number is rounded; that
+    // only ever affects display sort order, never a financial computation.
     return Number(message.stampValueWei)
   }
   return stampPrice(message.outpoints)

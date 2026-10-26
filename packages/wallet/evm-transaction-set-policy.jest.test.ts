@@ -1,4 +1,9 @@
+import { Wallet } from 'ethers'
 import { EvmTransactionSetPolicyCache } from './evm-transaction-set-policy'
+import { EvmCoinList } from './evm-coin-list'
+import { EvmTransactionSetPreparer } from './evm-transaction-set'
+import { MemoryRecordStore } from './storage/evm-coin-store'
+import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 
 it.each(['ethereum', 'monad'])(
   'uses one cached fixed price for %s with economical dust and exact intrinsic calldata gas',
@@ -17,6 +22,7 @@ it.each(['ethereum', 'monad'])(
     const policy = cache.snapshot()
     expect(policy.gasPriceWei).toBe(3n)
     expect(policy.dustWei).toBe(630_000n)
+    expect(policy.maxChangeOutputs).toBe(4)
     expect(
       policy.paymentGasLimit(
         '0x0001',
@@ -192,6 +198,63 @@ it('uses the supported Monad calldata floor and conserves value across the signe
       ),
     ).toBe(sourceValue)
     expect(signed.every(tx => tx.gasPrice === 3n)).toBe(true)
+  } finally {
+    await journal.Close()
+  }
+})
+
+it('splits a large residual into at most four change transactions under the production Monad policy', async () => {
+  // A 0.01 MON payment from a 20 MON coin at Monad's 102 gwei: the residual is about 2,000 times
+  // the payment floor, yet at most four change outputs come out of this one payment.
+  const cache = new EvmTransactionSetPolicyCache({
+    provider: {
+      getFeeData: async () => ({ gasPrice: 102_000_000_000n }),
+      getBlockNumber: async () => 100,
+    } as never,
+    kind: 'monad',
+    knownNoCodeAddress: '0x000000000000000000000000000000000000dead',
+  })
+  await cache.refresh()
+  const source = new Wallet('0x' + '44'.repeat(32))
+  const recipient = new Wallet('0x' + '55'.repeat(32))
+  const coins = await EvmCoinList.open(new MemoryRecordStore())
+  await coins.put({
+    account: source.address,
+    privateKey: source.privateKey,
+    nonce: 0,
+    origin: 'stealth',
+    valueWei: 20n * 10n ** 18n,
+  })
+  const journal = new EvmNativeOperationJournal({
+    testOnlyEphemeral: true,
+    binding: {
+      chainIdentifier: 'monad-testnet',
+      nativeChainId: '10143',
+      publicTuple: 'change-cap',
+    },
+  })
+  await journal.Open()
+  try {
+    const preparer = new EvmTransactionSetPreparer({
+      coins,
+      journal,
+      policy: () => cache.snapshot(),
+      deriveChange: index => {
+        const child = new Wallet('0x' + (100 + index).toString(16).padStart(64, '0'))
+        return { account: child.address, privateKey: child.privateKey, changeIndex: index }
+      },
+    })
+    const result = await preparer.constructTransactionSet({
+      operationId: 'change-cap',
+      amountWei: 10n ** 16n,
+      kdf: () => recipient.address,
+    })
+    expect(result.bundle.map(member => member.valueWei)).toEqual([10n ** 16n])
+    expect(result.otherTransactions.length).toBeGreaterThan(0)
+    expect(result.otherTransactions.length).toBeLessThanOrEqual(4)
+    // Every change output is itself at least the payment floor.
+    for (const change of result.otherTransactions)
+      expect(change.valueWei).toBeGreaterThanOrEqual(cache.snapshot().dustWei)
   } finally {
     await journal.Close()
   }

@@ -11,7 +11,8 @@ use crate::monad_evm_tx::DecodedSignedTransaction;
 use std::sync::Mutex;
 
 const JOINED_CLOCK_SECONDS: &str = "1700000100";
-const JOINED_STAMP_VALUE_WEI: u128 = 1500;
+/// Two payments, each above monad-testnet's payment floor (0.021 MON): 0.03 + 0.025 MON.
+const JOINED_STAMP_VALUE_WEI: u128 = 55_000_000_000_000_000;
 const JOINED_TEXT: &str = "joined wallet to native relay";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,9 +63,9 @@ impl JoinedChain {
         };
         Ok(match method {
             "eth_chainId" => serde_json::json!("0x279f"),
-            // Plain transfers reserve 21000 gas x 3 wei: a 64000 wei balance leaves
-            // 1000 wei of capacity per disposable account, so 1500 wei needs two members.
-            "eth_getBalance" => serde_json::json!("0xfa00"),
+            // Plain transfers reserve 21000 gas x 3 wei: a 0.03 MON + 63000 wei balance leaves
+            // 0.03 MON of capacity per disposable account, so 0.055 MON needs two members.
+            "eth_getBalance" => serde_json::json!("0x6a94d74f43f618"),
             "eth_getTransactionCount" => serde_json::json!("0x0"),
             "eth_estimateGas" => serde_json::json!("0xc350"),
             "eth_gasPrice" => serde_json::json!("0x2"),
@@ -201,7 +202,15 @@ impl Joined {
         let chain = JoinedChain::new(mode);
         let (rpc_url, rpc_stop, rpc_task) = serve_http(chain.router()).await;
         let (url, http_stop, http_task) = serve_http(
-            server(&fixture, &rpc_url).into_router_with_directory(Some(fixture.directory.clone())),
+            // The network's own payment floor, exactly as `cashwebd` builds the mailbox.
+            server_with_floor(
+                &fixture,
+                &rpc_url,
+                1,
+                std::time::Duration::from_secs(10),
+                None,
+            )
+            .into_router_with_directory(Some(fixture.directory.clone())),
         )
         .await;
         // Each account publishes its own signed entry over the public route, as a wallet does.
@@ -293,6 +302,8 @@ impl Joined {
             "monad-testnet",
             10143,
             1,
+            // The real wallet's payments meet the network's floor, as production checks it.
+            cashweb_config::protocol_payment_floor_wei("monad-testnet").unwrap(),
         )
         .map(|_| ())
         .expect("wallet signed members must pass native financial CPU admission");
@@ -331,7 +342,7 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
             .iter()
             .map(|member| member["value"].as_str().unwrap().parse::<u128>().unwrap())
             .collect();
-        assert_eq!(values, [1000, 500]);
+        assert_eq!(values, [30_000_000_000_000_000, 25_000_000_000_000_000]);
         let total: u128 = values.iter().sum();
         assert_eq!(total, JOINED_STAMP_VALUE_WEI);
 

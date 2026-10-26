@@ -410,6 +410,10 @@ async fn serve_http(
 fn server(fixture: &NativeDirectoryFixture, rpc: &str) -> super::super::server::RegistryServer {
     server_with(fixture, rpc, 1, std::time::Duration::from_secs(10))
 }
+/// The per-payment floor of the relays these tests start: none. Their offline-signed fixtures
+/// pay token amounts (one wei a payment) and were made before the payment floor; a relay as
+/// production builds it (the network's protocol floor) is [`server_with_floor`] with `None`.
+const FIXTURE_PAYMENT_FLOOR_WEI: Option<u128> = Some(0);
 /// A relay requiring `min_value_wei` per paid message and giving its node `rpc_timeout` to
 /// answer one call.
 fn server_with(
@@ -418,9 +422,49 @@ fn server_with(
     min_value_wei: u128,
     rpc_timeout: std::time::Duration,
 ) -> super::super::server::RegistryServer {
+    server_with_floor(
+        fixture,
+        rpc,
+        min_value_wei,
+        rpc_timeout,
+        FIXTURE_PAYMENT_FLOOR_WEI,
+    )
+}
+/// [`server_with`] whose per-payment floor is `payment_floor_wei`, or, with `None`, the
+/// network's protocol floor exactly as `cashwebd` builds the mailbox.
+pub(super) fn server_with_floor(
+    fixture: &NativeDirectoryFixture,
+    rpc: &str,
+    min_value_wei: u128,
+    rpc_timeout: std::time::Duration,
+    payment_floor_wei: Option<u128>,
+) -> super::super::server::RegistryServer {
     let config = crate::monad_mailbox::MailboxConfig {
         rpc_timeout,
         ..Default::default()
+    };
+    let chain = std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
+        "monad-testnet",
+        vec![rpc.parse().unwrap()],
+    ));
+    let session = crate::monad_mailbox::SessionSecret::random();
+    let vapid = crate::store::notification_policy::VapidKeyPair::generate();
+    let monad_mailbox = match payment_floor_wei {
+        None => crate::monad_mailbox::MonadMailboxRuntime::enabled(
+            chain,
+            config,
+            min_value_wei,
+            &session,
+            vapid,
+        ),
+        Some(floor) => crate::monad_mailbox::MonadMailboxRuntime::enabled_with_payment_floor(
+            chain,
+            config,
+            min_value_wei,
+            floor,
+            &session,
+            vapid,
+        ),
     };
     super::super::server::RegistryServer {
         registry: fixture.registry.clone(),
@@ -432,16 +476,7 @@ fn server_with(
             &crate::test_instance::placeholder_pop_conf(),
         )),
         curated_defaults: Arc::new(vec![]),
-        monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::enabled(
-            std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
-                "monad-testnet",
-                vec![rpc.parse().unwrap()],
-            )),
-            config,
-            min_value_wei,
-            &crate::monad_mailbox::SessionSecret::random(),
-            crate::store::notification_policy::VapidKeyPair::generate(),
-        ),
+        monad_mailbox,
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
@@ -1005,6 +1040,7 @@ async fn admitted_input(
         "monad-testnet",
         10143,
         1,
+        FIXTURE_PAYMENT_FLOOR_WEI.unwrap(),
     )
 }
 

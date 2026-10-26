@@ -38,7 +38,8 @@ LAB_DIR=${FRANK_LAB_DIR:-$HOME/.frank-lab-cluster/$COMPOSE_PROJECT_NAME}
 ORIGIN=http://127.0.0.1:$FRANK_LAB_CLUSTER_PORT
 SOLONET_HOST_RPC=http://127.0.0.1:48080
 BURN=0x000000000000000000000000000000000000dEaD
-MIN_STAMP_WEI=1000000000000
+# The relays' message minimum: the monad-regtest payment floor (10 x 21000 gas x 100 gwei).
+MIN_STAMP_WEI=21000000000000000
 FAUCET_WEI=1000000000000000000
 COMPOSE=(docker compose -f "$ROOT/backend/labs/compose.cluster.yml")
 BOT_KEY_FILE=$LAB_DIR/bot-funding-key.json
@@ -111,7 +112,7 @@ App (another terminal, from the repository root; once per checkout: yarn install
 yarn --cwd app prepare:packages). The dev server is http://localhost:8080:
 
   cd app && QCLI_MONAD_RELAY_BASE_URL=$ORIGIN QCLI_MONAD_RPC_CHAIN=monad-regtest \\
-    QCLI_MONAD_STAMP_BURN_ADDRESS=$BURN QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=$MIN_STAMP_WEI \\
+    QCLI_MONAD_STAMP_BURN_ADDRESS=$BURN \\
     yarn dev:browser
 
   When you create each account, open "Advanced options" and set the relay server to

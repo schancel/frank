@@ -22,7 +22,7 @@ it("uses the real native EVM adapter unit basis without opening a wallet", () =>
   expect(chain.fromDisplayAmount("1")).toBe(
     10n ** BigInt(ASSET_DECIMALS.monad)
   );
-  expect(chain.minimumWagerValue).toBe(10_000_000_000_000_000n);
+  expect(chain.minimumWagerValue).toBe(50_000_000_000_000_000n);
 });
 
 it("refuses a token transfer asset even when the display adapter still reports native decimals", async () => {

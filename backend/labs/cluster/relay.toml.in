@@ -91,10 +91,13 @@ checkpoint_block_hash = "@SOLONET_CHECKPOINT_HASH@"
 max_get_logs_range = 10
 
 # Direct messages, shared by all three replicas through FoundationDB (HA step 6). Stamps are
-# verified and broadcast through the solonet row above. 1000000000000 wei = 0.000001 MON.
+# verified and broadcast through the solonet row above.
+# The least a paid message carries, in wei: at or above the network's payment floor, which the
+# relay enforces on every payment and refuses to start below (docs/protocol/chains/README.md,
+# "Payment floor"). On Monad: 10 x 21000 gas x 100 gwei = 21000000000000000 wei = 0.021 MON.
 [registry.monad_mailbox]
 enabled = true
-min_value_wei = "1000000000000"
+min_value_wei = "21000000000000000"
 
 # The forum (`/topics`): every post and vote burns to this address on solonet. Its posts, votes
 # and burn records are shared by all three replicas through FoundationDB (HA step 9), with frames

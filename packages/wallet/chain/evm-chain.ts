@@ -84,8 +84,7 @@ import {
  * through (`./index.ts`'s `activeChain`), the same role `qwen-bot-common.ts`/the
  * `*.livecheck.ts` scripts already play for their own one-off demos, just wired once for the whole
  * app instead of per script. `loadMonadChainConfigFromEnv` reads the public relay and chain ID,
- * never a secret-bearing upstream RPC URL, plus `MONAD_STAMP_BURN_ADDRESS`,
- * `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`), falling back to permissive localhost/testnet-adjacent
+ * never a secret-bearing upstream RPC URL, plus `MONAD_STAMP_BURN_ADDRESS`), falling back to permissive localhost/testnet-adjacent
  * defaults (matching `qwen-bot.livecheck.ts`'s own `E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'`
  * precedent) rather than hard-failing on a missing var, so importing this module (e.g. from a jest
  * test, or from `chain/index.ts` in a dev environment with no `.env` configured yet) never throws
@@ -483,17 +482,19 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
-    minimumWagerValueWei: 10_000_000_000_000_000n,
+    // A wager is paid to a player who must move it: above the payment floor (0.02142 MON at
+    // Monad's ~102 gwei), with room for the gas price to double.
+    minimumWagerValueWei: 50_000_000_000_000_000n,
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
     reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
       getChainRegistryEntry(rpcChain)?.reserveBalanceWei
     ),
+    // A vote is burned, never moved, so the payment floor does not apply to it; it is not the
+    // relay's message minimum either.
     defaultTopicVoteValueWei: BigInt(
-      readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ??
-        readEnv("CASHWEB_STAMP_MIN_BURN_VALUE_WEI") ??
-        "1000000000000"
+      readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ?? "1000000000000"
     ),
     subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
     // The base only: each wallet's location adds its canonical network and owner
@@ -1777,7 +1778,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       stealthPayments: true,
       legacyConsolidation: "evm-staging",
     },
-    minimumWagerValue: config.minimumWagerValueWei ?? 10_000_000_000_000_000n,
+    minimumWagerValue: config.minimumWagerValueWei ?? 50_000_000_000_000_000n,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {
@@ -2484,8 +2485,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   PRIMARY_BALANCE_CACHE_TTL_MS
                 ),
               ]);
-              const received = spendableCoins(coinStore.all());
-              const receivedTotal = spendableCoinTotal(coinStore.all());
+              // A received coin below the payment floor (ten moves of it, at the gas price the
+              // wallet last read) is held, not spendable: it is shown apart and not counted.
+              let floorWei = 0n;
+              try {
+                floorWei = transactionSetRuntime.transactionSetPolicy.snapshot().dustWei;
+              } catch {
+                // No fee read yet: every received coin is counted, as before.
+              }
+              const funded = spendableCoins(coinStore.all());
+              const received = funded.filter(
+                (coin) => BigInt(coin.amountWei) >= floorWei
+              );
+              const receivedTotal = received.reduce(
+                (sum, coin) => sum + BigInt(coin.amountWei),
+                0n
+              );
+              const tooSmallTotal =
+                spendableCoinTotal(coinStore.all()) - receivedTotal;
               const sending = poolSending + changeBalance;
               const observedAt = Date.now();
               const totalBalance =
@@ -2513,6 +2530,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 received: receivedTotal,
                 receivedCount: received.length,
                 sending,
+                tooSmall: tooSmallTotal,
+                tooSmallCount: funded.length - received.length,
               };
             } catch (error) {
               if (isChainUnreachableError(error)) {

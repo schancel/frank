@@ -127,8 +127,12 @@ export default defineComponent({
     return {
       state,
       rows,
-      countedRows: computed(() => rows.value.filter(r => r.id !== 'other')),
-      otherRows: computed(() => rows.value.filter(r => r.id === 'other')),
+      countedRows: computed(() =>
+        rows.value.filter(r => r.id !== 'other' && r.id !== 'tooSmall'),
+      ),
+      otherRows: computed(() =>
+        rows.value.filter(r => r.id === 'other' || r.id === 'tooSmall'),
+      ),
       total,
       shortAddress,
       display: (amount: bigint) => formatDisplayAmount(activeChain, amount),

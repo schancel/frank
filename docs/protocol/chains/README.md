@@ -46,6 +46,44 @@ data; only regtest checkpoints are operator data because those chains are create
 row in `v1.json` carries a required non-null, unique `caip2` string (`eip155:<native_chain_id>` for
 EVM, `solana:<genesis_prefix>` for Solana, and `bip122:<reference>` for Bitcoin-family networks).
 
+## Payment floor
+
+Owner rule (2026-10-25): a stamp "should be at least 10x the gas required to move it". A coin
+worth less than a few moves of it is dust its owner can never usefully spend, so the protocol
+never makes one for someone else to move.
+
+- `payment_floor_multiple` (top level, `10`) is the one place the factor is written. The
+  payment floor is `payment_floor_multiple x (gas of one plain transfer) x (gas price)`. On EVM a
+  plain transfer is 21,000 gas.
+- `min_gas_price_wei` (EVM rows, decimal wei) is the least gas price the network charges: its
+  minimum base fee. Monad's is 100 gwei; observed on 2026-10-25 as the base fee of the latest
+  block on monad-mainnet, monad-testnet and a local solonet (`eth_gasPrice` 102 gwei on all three:
+  base fee plus a 2 gwei tip). A row without it has no protocol floor.
+
+Who applies it:
+
+- **Sender (live).** The wallet's floor is the multiple at the node's current `eth_gasPrice`
+  (`packages/wallet/chain/payment-floor.ts`; read through `EvmStampPayer.minimumPaymentWei`, the
+  `directMessages.minimumStamp` the app and bots read). Every stamp payment, and so every stamp,
+  is at least that (0.02142 MON at 102 gwei); a default or suggested stamp is raised to it and an
+  explicit smaller one is refused (`DirectMessageStampBelowFeeError`). Bot stakes, payouts and
+  refunds go through the same check. No change output is made below it either (`dustWei` in
+  `evm-transaction-set-policy.ts`).
+- **Relay (deterministic).** `cashweb_config::protocol_payment_floor_wei(network)` is the
+  multiple at `min_gas_price_wei`: 0.021 MON on every Monad network. The relay refuses, before
+  anything is stored or broadcast, a direct message any of whose stamp payments is below it
+  (`monad_dm_payment.rs`), and refuses to start with `[registry.monad_mailbox] min_value_wei` or a
+  non-burn `[registry.group_writes] price_wei` below it. It reads no chain for this, so every
+  replica decides the same. Because a node's gas price is never below the network's minimum, a
+  payment at the sender's floor always passes the relay's. Burns (forum posts and votes, a burned
+  group write) are never moved and have no floor.
+- **Recipient.** A received coin below the wallet's current floor is shown on the Wallet page's
+  balance breakdown as "Too small to move" and is not counted in the balance
+  (`getBalanceParts().tooSmall`).
+
+Checks: `cargo test -p cashweb-config payment_floor` and
+`yarn --cwd packages/wallet test --runTestsByPath chain/payment-floor.jest.test.ts`.
+
 ## Unified `ChainAdapter` and Configuration Ownership
 
 `v1.json` owns protocol identifiers, identity requirements and permitted capabilities. The Rust

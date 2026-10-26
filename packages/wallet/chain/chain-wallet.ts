@@ -267,6 +267,10 @@ export interface NativeWalletHandle {
    * - `sending`: single-use sending accounts the wallet has funded and not yet used.
    * What is left behind in a sending account after its one payment is not in any of them: no
    * send can draw on it.
+   *
+   * `tooSmall` (`tooSmallCount` coins) is NOT in the balance: received coins below the payment
+   * floor right now (`chain/payment-floor.ts`: ten times what moving one costs). They are held,
+   * not spendable money. Zero when the gas price is not known yet.
    */
   getBalanceParts?(): Promise<{
     main: bigint;
@@ -274,6 +278,8 @@ export interface NativeWalletHandle {
     received: bigint;
     receivedCount: number;
     sending: bigint;
+    tooSmall: bigint;
+    tooSmallCount: number;
   }>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
   getUnresolvedNativeTransaction?(): ChainTransaction | undefined;

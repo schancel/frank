@@ -103,6 +103,7 @@ pub(crate) async fn handle_put(
                 network,
                 evm_chain_id,
                 runtime.min_value_wei(),
+                runtime.payment_floor_wei(),
             )?;
             // A payment the node can never take is refused here, before anything is stored or
             // delivered, so the sender learns it while nothing has happened yet.

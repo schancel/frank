@@ -38,8 +38,9 @@ import { RegtestChain, sleep } from './regtest-chain'
 export const MONAD_REGTEST_CHAIN = 'monad-regtest'
 export const MONAD_REGTEST_CHAIN_ID = 20143n
 export const MONAD_REGTEST_NETWORK_TAG = 'MONR'
-/** The relay's minimum stamp on this network, the same as the local testnet config. */
-export const MONAD_REGTEST_MIN_STAMP_WEI = 1_000_000_000_000n
+/** The relay's minimum stamp on this network, the same as the local testnet config: the payment
+ * floor, 10 x 21000 gas x 100 gwei (docs/protocol/chains/README.md). */
+export const MONAD_REGTEST_MIN_STAMP_WEI = 21_000_000_000_000_000n
 /**
  * Account 0 of the standard dev-node mnemonic ("test test ... junk"), which solonet's genesis
  * funds. Publicly known: it is a faucet for a local chain and nothing else.

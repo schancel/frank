@@ -2184,8 +2184,9 @@ async function send(
     }
     if (stampValueWei !== undefined && (stampValueWei <= 0n || stampValueWei >= 1n << 256n))
       throw new Error('canonical-wallet:economics-invalid')
-    // A paid stamp is never smaller than what the chain charges to move it. The wallet's own
-    // default is raised to that; an amount the caller chose is refused, not changed.
+    // A paid stamp is never below the payment floor (ten times what the chain charges to
+    // move it). The wallet's own default is raised to that; an amount the caller chose is
+    // refused, not changed.
     let requestedWei = stampValueWei
     const sharedSets = owner.transactionSets
     if (!sharedSets)
@@ -3253,7 +3254,8 @@ export function canonicalDirectMessages(
       }
       return owner.lifetime(() => resolveDefaultStamp(floor))
     },
-    /** The smallest paid stamp right now: one transfer's fee at the node's gas price. */
+    /** The smallest paid stamp right now: the payment floor (`payment-floor.ts`), ten
+     * transfers' fees at the node's gas price, so its recipient can always move it. */
     minimumStamp: () => owner.lifetime(async () => {
       await owner.transactionSets?.refresh()
       return owner.payer().minimumPaymentWei()

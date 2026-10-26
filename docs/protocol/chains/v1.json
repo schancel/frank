@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "payment_floor_multiple": 10,
   "chains": [
     {
       "id": "monad-mainnet",
@@ -7,6 +8,7 @@
       "network": "mainnet",
       "caip2": "eip155:143",
       "native_chain_id": "143",
+      "min_gas_price_wei": "100000000000",
       "allowed_proxy_capabilities": ["json-rpc"],
       "identity_probes": [
         { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "143" },
@@ -24,6 +26,7 @@
       "network": "testnet",
       "caip2": "eip155:10143",
       "native_chain_id": "10143",
+      "min_gas_price_wei": "100000000000",
       "allowed_proxy_capabilities": ["json-rpc"],
       "identity_probes": [
         {
@@ -45,6 +48,7 @@
       "network": "regtest",
       "caip2": "eip155:20143",
       "native_chain_id": "20143",
+      "min_gas_price_wei": "100000000000",
       "allowed_proxy_capabilities": ["json-rpc"],
       "identity_probes": [
         {

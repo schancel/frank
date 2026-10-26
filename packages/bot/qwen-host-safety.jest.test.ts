@@ -139,8 +139,9 @@ jest.mock("@frank/wallet/evm-provider", () => {
           return null;
         if (request.method === "getBlockNumber") return 1;
         if (request.method === "estimateGas") return 50_000n;
-        // A real, nonzero price per gas: the fee floor of a stamp here is 21,000 x 2 = 42,000
-        // wei, and the tests on the real wallet pay a reply stamp above it (`REPLY_STAMP_WEI`).
+        // A real, nonzero price per gas: the payment floor of a stamp here is ten moves of
+        // 21,000 x 2 = 420,000 wei, and the tests on the real wallet pay a reply stamp above it
+        // (`REPLY_STAMP_WEI`).
         if (request.method === "getGasPrice") return 2n;
         if (request.method === "getPriorityFee") return 1n;
         if (request.method === "getBlock")
@@ -1313,9 +1314,9 @@ describe("with the real canonical wallet", () => {
     };
   };
   const closers: (() => Promise<unknown>)[] = [];
-  /** The bot's reply stamp in these tests: above the chain's fee floor for a stamp (42,000 wei
+  /** The bot's reply stamp in these tests: above the payment floor for a stamp (420,000 wei
    * at this node's gas price of 2), so the reply is a PAID message, as on a real chain. */
-  const REPLY_STAMP_WEI = 100_000n;
+  const REPLY_STAMP_WEI = 1_000_000n;
   const openPaying = () => open(undefined, { stampValueWei: REPLY_STAMP_WEI });
   beforeEach(() => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1330,7 +1331,7 @@ describe("with the real canonical wallet", () => {
   /** Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded. */
   const fund = async (wallet: EvmChainWalletHandle) => {
     for (const record of wallet.pool.ensureSize(4))
-      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n);
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 1_200_000n);
     await wallet.pool.flush();
   };
   const setUp = async (funded: boolean) => {
@@ -1695,7 +1696,7 @@ describe("with the real canonical wallet", () => {
 
   it("retains an owed amount below the wallet fee floor without inflating it or marking it delivered", async () => {
     const { chain, botWallet, prompt, submitted } = await setUp(true);
-    expect(await chain.directMessages.minimumStamp!({ wallet: botWallet })).toBe(42_000n);
+    expect(await chain.directMessages.minimumStamp!({ wallet: botWallet })).toBe(420_000n);
     const ctx = qwen().context;
     const outbox = new Outbox("fee-floor-debt");
     await outbox.owe(ctx, "refund", {

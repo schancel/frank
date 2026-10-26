@@ -55,7 +55,8 @@ it.each(['source residual', 'owned change'] as const)(
         account: signer(1).address,
         privateKey: signer(1).privateKey,
         nonce: 0,
-        valueWei: scenario === 'source residual' ? 121000n : 100000000n,
+        // Small enough that one of at most four change outputs is below the reserve.
+        valueWei: scenario === 'source residual' ? 121000n : 3000000n,
         origin: 'stealth',
       })
       const initial = new EvmTransactionSetPreparer({

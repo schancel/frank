@@ -9,12 +9,15 @@ export const DEFAULT_STAMP_TARGET_AVU = "0.1";
 /** Fixed native-coin amount used by EVM hosts only while AVU conversion is unavailable. */
 export const DEFAULT_EVM_STAMP_FALLBACK_COIN = "0.01";
 
-/** Static fallback amount per network in native coin units, used whenever dynamic quote is unavailable. */
+/** Static fallback amount per network in native coin units, used whenever dynamic quote is
+ * unavailable. A quote never goes below the wallet's live payment floor whatever this says; the
+ * Monad amounts sit above that floor (10 x 21000 gas x ~102 gwei = 0.02142 MON) with room for
+ * the gas price to double. */
 export const DEFAULT_CHAIN_STATIC_STAMP_COIN: Readonly<Record<string, string>> =
   Object.freeze({
-    "monad-testnet": "0.01",
-    "monad-mainnet": "0.01",
-    "monad-regtest": "0.01",
+    "monad-testnet": "0.05",
+    "monad-mainnet": "0.05",
+    "monad-regtest": "0.05",
     "hyperliquid-testnet": "0.01",
     "hyperliquid-mainnet": "0.01",
     "tempo-testnet": "0.01",

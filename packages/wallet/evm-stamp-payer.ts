@@ -21,6 +21,7 @@
  */
 import { getAddress, Transaction, type Provider } from 'ethers'
 import { selectStampAccounts } from './evm-stamp-account-selection'
+import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import {
   InsufficientStampFundsError,
@@ -438,13 +439,14 @@ export class EvmStampPayer {
   }
 
   /**
-   * The smallest value worth paying in one stamp payment: what the chain charges to move it.
-   * One plain transfer as this wallet builds it, 21,000 gas, at the node's current gas price
-   * (a chain that charges the gas limit, as Monad does, charges exactly this). Read from the
-   * node with a short cache; never a constant.
+   * The smallest value one stamp payment may carry: the payment floor (`chain/payment-floor.ts`),
+   * the registry's multiple of what the chain charges its recipient to move it. One plain
+   * transfer as this wallet builds it, 21,000 gas, at the node's current gas price (a chain
+   * that charges the gas limit, as Monad does, charges exactly this). Read from the node with a
+   * short cache; never a constant.
    */
   async minimumPaymentWei(): Promise<bigint> {
-    return STAMP_GAS_LIMIT * (await this.read(() => this.currentFee())).chargedPerGas
+    return evmPaymentFloorWei((await this.read(() => this.currentFee())).chargedPerGas)
   }
 
   /** Snapshot of what the wallet's coins can pay, without taking anything, signing or waiting.
@@ -485,7 +487,7 @@ export class EvmStampPayer {
       this.lastFullQuoteReadAt = Date.now()
     }
     const reserve = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
-    const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
+    const smallest = evmPaymentFloorWei(fee.chargedPerGas)
     const head = this.watcher.latest()
     const usable = this.config.coins
       .all()
@@ -578,7 +580,7 @@ export class EvmStampPayer {
     if (input.signal?.aborted) throw new ChainWaitCancelledError()
     const fee = await this.read(() => this.currentFee(), input.signal)
     const feeReserveWei = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
-    const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
+    const smallest = evmPaymentFloorWei(fee.chargedPerGas)
     // What the list may be out of date about is read before falling back: first the accounts
     // it does not know or was told changed (so a sub-account funded a moment ago is preferred
     // to the main account), then, when still not covered, every account it holds a free coin of
@@ -599,7 +601,9 @@ export class EvmStampPayer {
       }
       const usable = (coin: EvmListCoin) =>
         this.eligible(coin, allowed, seen) &&
-        this.spendableNow(coin, head, input.stampValueWei, feeReserveWei)
+        this.spendableNow(coin, head, input.stampValueWei, feeReserveWei) &&
+        // A coin that cannot carry a part at the payment floor is never one of the parts.
+        (input.allowBelowFee === true || coin.valueWei - feeReserveWei >= smallest)
       const selectFrom = (
         filter: (coin: EvmListCoin) => boolean,
         maxCoins: number,
@@ -692,7 +696,13 @@ export class EvmStampPayer {
       )
       const could =
         sum(ready) + sum(notYet) + sum(heldByOthers) + sum(claimedOutside)
-      if (could < input.stampValueWei) {
+      // Nothing to wait for: no coin another operation holds or the chain does not allow yet.
+      // The free coins were just offered and no split of them pays it (a part would fall below
+      // the payment floor, or it needs more coins than one payment set carries); waiting
+      // changes none of that.
+      const nothingComing =
+        notYet.length === 0 && heldByOthers.length === 0 && claimedOutside.length === 0
+      if (could < input.stampValueWei || nothingComing) {
         // Coins of accounts the list must read again before offering them: another spender of
         // the account (a funding pass, a native send) has just let it go, and its last transfer
         // may still be on its way into a block. That is not "no funds": the accounts are read

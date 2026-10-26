@@ -273,6 +273,8 @@ pub struct EnabledMonadMailboxRuntime {
     config: MailboxConfig,
     private_read_permits: Arc<Semaphore>,
     min_value_wei: u128,
+    /// The least each stamp payment carries: the network's protocol payment floor.
+    payment_floor_wei: u128,
     auth: MailboxAuthState,
     /// Signs the relay's blind WebPush wakeups. The same key on every replica.
     vapid: crate::store::notification_policy::VapidKeyPair,
@@ -424,11 +426,53 @@ impl MailboxAuthState {
 }
 
 impl MonadMailboxRuntime {
-    /// The mailbox of the relay network `chain`, after configuration validation.
+    /// The mailbox of the relay network `chain`, after configuration validation. Every stamp
+    /// payment it admits is at least the network's payment floor
+    /// ([`cashweb_config::protocol_payment_floor_wei`]); it is not configurable.
     pub fn enabled(
         chain: Arc<EvmChainAdapter>,
         config: MailboxConfig,
         min_value_wei: u128,
+        session: &SessionSecret,
+        vapid: crate::store::notification_policy::VapidKeyPair,
+    ) -> Self {
+        let payment_floor_wei = cashweb_config::protocol_payment_floor_wei(chain.id()).unwrap_or(0);
+        Self::with_payment_floor(
+            chain,
+            config,
+            min_value_wei,
+            payment_floor_wei,
+            session,
+            vapid,
+        )
+    }
+
+    /// [`Self::enabled`] with another per-payment floor: for tests whose offline-signed
+    /// fixtures carry token amounts (one wei). Production always derives the floor.
+    #[cfg(test)]
+    pub(crate) fn enabled_with_payment_floor(
+        chain: Arc<EvmChainAdapter>,
+        config: MailboxConfig,
+        min_value_wei: u128,
+        payment_floor_wei: u128,
+        session: &SessionSecret,
+        vapid: crate::store::notification_policy::VapidKeyPair,
+    ) -> Self {
+        Self::with_payment_floor(
+            chain,
+            config,
+            min_value_wei,
+            payment_floor_wei,
+            session,
+            vapid,
+        )
+    }
+
+    fn with_payment_floor(
+        chain: Arc<EvmChainAdapter>,
+        config: MailboxConfig,
+        min_value_wei: u128,
+        payment_floor_wei: u128,
         session: &SessionSecret,
         vapid: crate::store::notification_policy::VapidKeyPair,
     ) -> Self {
@@ -437,6 +481,7 @@ impl MonadMailboxRuntime {
             private_read_permits: Arc::new(Semaphore::new(config.private_read_concurrency.max(1))),
             config,
             min_value_wei,
+            payment_floor_wei,
             auth: MailboxAuthState::new(session),
             vapid,
         }))
@@ -476,6 +521,11 @@ impl EnabledMonadMailboxRuntime {
     /// Minimum total a paid message must carry.
     pub fn min_value_wei(&self) -> u128 {
         self.min_value_wei
+    }
+
+    /// Minimum each stamp payment of a paid message must carry: the network's payment floor.
+    pub fn payment_floor_wei(&self) -> u128 {
+        self.payment_floor_wei
     }
 
     /// The relay's WebPush (VAPID) key.

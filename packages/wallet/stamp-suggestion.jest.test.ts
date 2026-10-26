@@ -6,6 +6,7 @@ import {
   getMessageStampWei,
   getVerifiedReceivedMessageStampWei,
 } from "./stamp-suggestion";
+import { evmPaymentFloorWei } from "./chain/payment-floor";
 
 describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", () => {
   const ONE_MON = 1_000_000_000_000_000_000n; // 10^18 wei
@@ -309,5 +310,35 @@ describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", (
       ).toBe(3n * DEFAULT_STAMP);
     });
   });
-});
 
+  describe("the payment floor (ten moves of the stamp)", () => {
+    // What `directMessages.minimumStamp` reports at solonet's 102 gwei: 0.02142 MON.
+    const FLOOR = evmPaymentFloorWei(102_000_000_000n);
+    // The stamp the owner saw received and unspendable.
+    const DUST = 2_100_000_000_000_000n;
+
+    it("never suggests below the floor, however small both sides' history is", () => {
+      const messages = [
+        { outbound: true, stampValueWei: DUST, status: "confirmed" },
+        { outbound: false, stampValueWei: DUST, verifiedStampValueWei: DUST, status: "confirmed" },
+        { outbound: false, stampValueWei: DUST, verifiedStampValueWei: DUST, status: "confirmed" },
+      ];
+      const result = computePeerStampSuggestion({
+        messages,
+        defaultStampWei: DUST,
+        minimumStampWei: FLOOR,
+      });
+      expect(result.suggestedStampWei).toBe(FLOOR);
+      expect(result.suggestedStampWei).toBeGreaterThanOrEqual(10n * 21_000n * 102_000_000_000n);
+    });
+
+    it("a default below the floor is raised to it; one above stays", () => {
+      expect(
+        computeGeometricStampSuggestion({ defaultStampWei: DUST, minimumStampWei: FLOOR })
+      ).toBe(FLOOR);
+      expect(
+        computeGeometricStampSuggestion({ defaultStampWei: 3n * FLOOR, minimumStampWei: FLOOR })
+      ).toBe(3n * FLOOR);
+    });
+  });
+});

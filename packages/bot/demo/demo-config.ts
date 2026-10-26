@@ -235,8 +235,8 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
     scope: 'relay',
-    default: '1000000000000',
-    description: 'Minimum wei a message stamp must pay (0.000001 MON).',
+    default: '21000000000000000',
+    description: "Minimum wei the stamp payments of one message carry: at or above the network's payment floor (10 x 21000 gas x 100 gwei = 0.021 MON on Monad), which the relay refuses to start below.",
   },
   {
     name: 'FRANK_DM_DEFAULT_STAMP_AVU',
@@ -706,7 +706,7 @@ export function resolveDemoConfig(params: {
   const minStampWei = wei(
     'CASHWEB_STAMP_MIN_BURN_VALUE_WEI',
     merged.CASHWEB_STAMP_MIN_BURN_VALUE_WEI,
-    '1000000000000',
+    '21000000000000000',
     problems,
   )
 

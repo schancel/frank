@@ -17,7 +17,7 @@ import type { Provider } from 'ethers'
 import { READS_AT_ONCE } from './evm-rpc-read-budget'
 
 /** Unused indices after the last used one before the walk stops. The wallet allocates up to
- * `maxChangeOutputs` (20) change accounts per spent input, and a build that fails after
+ * `maxChangeOutputs` (4 in the production policy) change accounts per spent input, and a build that fails after
  * allocating keeps its indices, so the window is wider than BIP-44's 20. */
 export const SEED_DISCOVERY_GAP = 50
 

@@ -181,7 +181,8 @@ connection; HTTP `/chain-rpc/:chain/rpc` refuses Electrum methods.
 Direct messages (`PUT /message` and the signed inbox and mailbox reads under `/message/`) are
 **enabled by default** in both shipped configs (`backend/cashweb/cashwebd.local.toml`,
 `backend/docker/cashwebd.toml`) via `[registry.monad_mailbox]`: `enabled = true`,
-`min_value_wei = "1000000000000"`, together with `[registry.directory]`, without which there are no
+`min_value_wei = "21000000000000000"` (the Monad payment floor, 10 x 21000 gas x 100 gwei; the
+relay refuses to start below it, see `docs/protocol/chains/README.md`), together with `[registry.directory]`, without which there are no
 message routes at all. A relay with the mailbox disabled answers 404 on every `/message` route, so a
 disabled default would leave the app unable to send or receive direct messages. The forum
 (`/topics`) runs when `[registry.forum] burn_address` is set.
@@ -213,7 +214,7 @@ Copy-paste local recipe (from the repository root):
 ```bash
 export MONAD_TESTNET_HTTP_RPC_URL="https://<your-monad-testnet-rpc>"   # your own endpoint
 export FRANK_RELAY_NETWORK=monad-testnet                               # optional, or monad-mainnet
-export CASHWEB_STAMP_MIN_BURN_VALUE_WEI=1000000000000                  # optional, default shown
+export CASHWEB_STAMP_MIN_BURN_VALUE_WEI=21000000000000000              # optional, default shown
 backend/cashweb/run-local-monad.sh   # prints the effective non-secret values, then serves :8098
 ```
 

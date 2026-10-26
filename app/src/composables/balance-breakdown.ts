@@ -11,22 +11,30 @@
  *   for messages from, and change). The wallet reports one figure for everything outside the
  *   main account (`getContractCallFunds().otherBalance`); the profile address and the received
  *   payments, which have rows of their own, are taken out of it. A wallet that does not report
- *   that figure, or reports nothing beyond those two, has no such row.
+ *   that figure, or reports nothing beyond those two, has no such row;
+ * - `tooSmall`: received coins below the payment floor (ten times what moving one costs right
+ *   now). They are listed under the total and never part of it: they are held, not money a send
+ *   can use.
  */
-export type BalanceBreakdownRowId = 'main' | 'profile' | 'received' | 'other'
+export type BalanceBreakdownRowId =
+  | 'main'
+  | 'profile'
+  | 'received'
+  | 'other'
+  | 'tooSmall'
 
 export interface BalanceBreakdownRow {
   readonly id: BalanceBreakdownRowId
   readonly amount: bigint
   /** The account's address, for the rows that are one account. */
   readonly address?: string
-  /** How many payments, for `received`. */
+  /** How many payments, for `received` and `tooSmall`. */
   readonly count?: number
 }
 
 export interface BalanceBreakdown {
   readonly rows: readonly BalanceBreakdownRow[]
-  /** The sum of the rows that make up the shown balance: every row but `other`. */
+  /** The sum of the rows that make up the shown balance: never `tooSmall`. */
   readonly total: bigint
 }
 
@@ -43,6 +51,8 @@ interface BreakdownWallet {
     received: bigint
     receivedCount: number
     sending: bigint
+    tooSmall?: bigint
+    tooSmallCount?: number
   }>
   getReceivedPayments?(): readonly { spendable: boolean; amountWei: bigint }[]
   getContractCallFunds?(): Promise<{
@@ -79,7 +89,15 @@ export async function readBalanceBreakdown(
         count: parts.receivedCount,
       })
     if (parts.sending > 0n) rows.push({ id: 'other', amount: parts.sending })
-    return { rows, total: rows.reduce((sum, row) => sum + row.amount, 0n) }
+    const total = rows.reduce((sum, row) => sum + row.amount, 0n)
+    const tooSmall = parts.tooSmall ?? 0n
+    if (tooSmall > 0n)
+      rows.push({
+        id: 'tooSmall',
+        amount: tooSmall,
+        count: parts.tooSmallCount ?? 0,
+      })
+    return { rows, total }
   }
   const balanceAt = (address: string): Promise<bigint> | undefined =>
     typeof wallet.evmReader?.getBalance === 'function'

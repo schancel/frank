@@ -81,6 +81,36 @@ describe('BalanceBreakdown', () => {
     expect(wrapper.text()).not.toMatch(/cordon/i)
   })
 
+  it('shows received coins too small to move under the total, not in it', async () => {
+    mockUseActiveWallet.mockResolvedValue({
+      getReceiveAddress: async () => ({ raw: MAIN }),
+      getBalanceParts: async () => ({
+        main: parseEther('0.04'),
+        profile: 0n,
+        received: parseEther('0.05'),
+        receivedCount: 1,
+        sending: 0n,
+        // Two 0.0021 MON stamps: below ten times the fee of moving one.
+        tooSmall: parseEther('0.0042'),
+        tooSmallCount: 2,
+      }),
+    })
+    const wrapper = mountBreakdown()
+    await flushPromises()
+    const row = (id: string) =>
+      wrapper.get(`[data-testid="balance-breakdown-${id}"]`).text()
+    expect(row('tooSmall')).toContain('balanceBreakdown.tooSmall')
+    expect(row('tooSmall')).toContain('balanceBreakdown.tooSmallNote')
+    expect(row('tooSmall')).toContain('0.0042 MONT')
+    expect(row('total')).toContain('0.09 MONT')
+    const order = wrapper
+      .findAll('[data-testid^="balance-breakdown-"]')
+      .map(el => el.attributes('data-testid'))
+    expect(order.indexOf('balance-breakdown-tooSmall')).toBeGreaterThan(
+      order.indexOf('balance-breakdown-total'),
+    )
+  })
+
   it('says so when the wallet cannot be read, instead of showing an empty list', async () => {
     mockUseActiveWallet.mockRejectedValue(new Error('locked'))
     const wrapper = mountBreakdown()

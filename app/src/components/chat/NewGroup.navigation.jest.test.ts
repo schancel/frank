@@ -21,6 +21,7 @@ import NewGroup from '../../pages/NewGroup.vue'
 import NewGroupForm from './NewGroupForm.vue'
 const mockDiscover = jest.fn(async () => ['https://foreign.example'])
 jest.mock('@frank/cashweb/relay/relay-discovery', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/relay-discovery'),
   discoverRelayOrigins: (...args: unknown[]) => mockDiscover(...args),
 }))
 
@@ -320,6 +321,58 @@ it('prefers the installed home, offers discovered hosts, and selecting a foreign
     )
   } finally {
     wrapper.unmount()
+  }
+})
+
+it('loads other relays from a home relay on loopback HTTP (a local lab)', async () => {
+  const { discoverRelayOrigins } = jest.requireActual(
+    '@frank/cashweb/relay/relay-discovery',
+  )
+  // The lab relay's `GET /peers` answer (jsdom has no fetch Response).
+  const peersBody = new TextEncoder().encode(
+    JSON.stringify({ relays: ['http://127.0.0.1:18180'] }),
+  )
+  const peersFetch = jest.fn(async () => {
+    let read = false
+    return {
+      ok: true,
+      url: '',
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () =>
+            read
+              ? { done: true, value: undefined }
+              : ((read = true), { done: false, value: peersBody }),
+          cancel: async () => undefined,
+        }),
+      },
+    } as unknown as Response
+  })
+  // The real discovery, against the lab's `/peers` answer.
+  mockDiscover.mockImplementationOnce((options: object) =>
+    discoverRelayOrigins({ ...options, fetch: peersFetch }),
+  )
+  mockRelay.mockReturnValue('http://127.0.0.1:8080')
+  const { wrapper } = await start('/new-group')
+  try {
+    const form = wrapper.getComponent(NewGroupForm)
+    // The real discovery reads the response body as a stream.
+    for (let i = 0; i < 10; i += 1) await flushPromises()
+    expect(peersFetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8080/peers',
+      expect.anything(),
+    )
+    expect(form.vm.relayOptions).toEqual([
+      'http://127.0.0.1:8080',
+      'http://127.0.0.1:18180',
+    ])
+    expect(
+      wrapper.find('[data-test="group-relay-discovery-error"]').exists(),
+    ).toBe(false)
+  } finally {
+    wrapper.unmount()
+    mockRelay.mockReturnValue('https://relay.example')
   }
 })
 

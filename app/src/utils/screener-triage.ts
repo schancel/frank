@@ -591,28 +591,29 @@ export function approveScreenerConversation(
   if (contactAddr && contactStore) {
     const alreadyContact = contactStore.isContact?.(contactAddr) ?? false
     if (!alreadyContact && !contactAddr.includes('@')) {
-      if (typeof contactStore.addDefaultContact === 'function') {
-        contactStore.addDefaultContact(contactAddr)
+      const displayName =
+        conversation.name && !conversation.name.includes('@')
+          ? conversation.name
+          : null
+      const contact = {
+        lastUpdateTime: Date.now(),
+        notify: true,
+        relayURL: null,
+        profile: {
+          name: displayName,
+          bio: null,
+          avatar: null,
+          pubKey: null,
+        },
+        inbox: {},
+      }
+      // The sender becomes an ordinary contact whose signed profile is then looked up
+      // (`fetchAndAddContact`). Not `addDefaultContact`: that takes a relay-curated
+      // `{ address, name }` entry and marks it a bot.
+      if (typeof contactStore.fetchAndAddContact === 'function') {
+        void contactStore.fetchAndAddContact({ address: contactAddr, contact })
       } else if (typeof contactStore.addContact === 'function') {
-        const displayName =
-          conversation.name && !conversation.name.includes('@')
-            ? conversation.name
-            : null
-        contactStore.addContact({
-          address: contactAddr,
-          contact: {
-            lastUpdateTime: Date.now(),
-            notify: true,
-            relayURL: null,
-            profile: {
-              name: displayName,
-              bio: null,
-              avatar: null,
-              pubKey: null,
-            },
-            inbox: {},
-          },
-        })
+        contactStore.addContact({ address: contactAddr, contact })
       }
     }
   }

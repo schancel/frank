@@ -28,6 +28,8 @@
  *      replica (split rows in FoundationDB: direct messages do not use the S3 store yet;
  *      FRANK_DM_LAB_LARGE=0 skips it).
  *
+ * Every wallet's funds go back to the faucet at the end, also after a failure (`returnToFaucet`).
+ *
  * FRANK_DM_LAB_BURST (default 60) sets step 2's burst; keep it moderate, every message there is
  * checked against solonet.
  */
@@ -40,11 +42,11 @@ import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 
-import { parseEther } from 'ethers'
+import { formatEther, parseEther } from 'ethers'
 
 import type { RealWallet } from '../real-stack'
 import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest, startMonadRegtest } from './monad-regtest'
-import { openMonadWallet } from './monad-wallets'
+import { openMonadWallet, returnToFaucet } from './monad-wallets'
 import type { RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
@@ -316,6 +318,15 @@ async function main() {
   const lab = new Lab(stateDir)
   const proxy = new Proxy()
   const wallets: RealWallet[] = []
+  const stack: RegtestStack = {
+    relayUrl: ENDPOINT,
+    // One relay as far as the wallets can tell: the proxy in front of A, B and C.
+    relayUrls: [ENDPOINT],
+    chains: { [monad.chainIdentifier]: monad },
+    stateDir,
+    relayLogPath: '',
+    stop: async () => {},
+  }
   let failed = false
   // A wallet library can throw outside any promise; the lab is still removed.
   process.once('uncaughtException', err => {
@@ -337,15 +348,6 @@ async function main() {
     )
     assert.ok(vapidKeys.every(key => key === vapidKeys[0]), `one VAPID key: ${vapidKeys.join(' | ')}`)
     console.log(`lab up: relays A, B, C on ${ALL.map(r => RELAYS[r]).join(', ')} sharing FDB and NATS (project ${PROJECT}); proxy ${ENDPOINT}`)
-    const stack: RegtestStack = {
-      relayUrl: ENDPOINT,
-      // One relay as far as the wallets can tell: the proxy in front of A, B and C.
-      relayUrls: [ENDPOINT],
-      chains: { [monad.chainIdentifier]: monad },
-      stateDir,
-      relayLogPath: '',
-      stop: async () => {},
-    }
     let stamp = MONAD_REGTEST_MIN_STAMP_WEI
     const floor = evmPaymentFloorWei(BigInt(await monad.provider.send('eth_gasPrice', [])))
     if (floor > stamp) stamp = floor
@@ -575,6 +577,16 @@ async function main() {
     throw err
   } finally {
     for (const wallet of wallets) await wallet.close().catch(() => undefined)
+    // The faucet's money comes back, also after a failure, before the keys go with the state
+    // directory. Received stamp coins hold about one transfer fee each: not worth moving.
+    const swept = await returnToFaucet(stack).catch(err => {
+      console.error(`could not return the wallets' funds to the faucet: ${err}`)
+      return undefined
+    })
+    if (swept)
+      console.log(
+        `   returned ${formatEther(swept.returnedWei)} MON to the faucet; ${formatEther(swept.leftWei)} MON left (dust)`,
+      )
     if (failed || process.env.FRANK_DM_LAB_LOGS === '1') {
       const logs = await lab.logs().catch(err => String(err))
       const path = join(stateDir, '..', `${PROJECT}-relays.log`)

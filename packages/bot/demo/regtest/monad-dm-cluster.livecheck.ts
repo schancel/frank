@@ -47,6 +47,7 @@ import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest, startMonadRegtest } from './
 import { openMonadWallet } from './monad-wallets'
 import type { RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
+import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const LABS = join(REPO_ROOT, 'backend', 'labs')
@@ -346,7 +347,7 @@ async function main() {
       stop: async () => {},
     }
     let stamp = MONAD_REGTEST_MIN_STAMP_WEI
-    const floor = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
+    const floor = evmPaymentFloorWei(BigInt(await monad.provider.send('eth_gasPrice', [])))
     if (floor > stamp) stamp = floor
 
     const open = async (label: string) => {

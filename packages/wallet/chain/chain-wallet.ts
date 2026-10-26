@@ -669,6 +669,10 @@ export interface ContactSendParams {
   conversationId?: string;
   /** The message's stamp. The payment itself is `value`, never part of the stamp. */
   stampValue?: bigint;
+  /** The network fee the user approved (`quoteContactPayment`'s `networkFeeWei`). The payment
+   * and its stamp together never pay more; a set that would is refused before it is signed.
+   * Absent, the fee a quote gives now bounds them. */
+  maxFeeWei?: bigint;
   onProgress?: (progress: ContactSendProgress) => void;
 }
 

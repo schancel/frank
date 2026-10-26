@@ -1247,6 +1247,27 @@ export function createEvmReceivedCoinAndContactManager(
     return quote.amount;
   };
 
+  /** The network fee of a contact payment and its stamp: the payment's own transfers as the
+   * payment selects and splits them (`estimateLegacyFee`), and the stamp's one transfer, the
+   * continuation `payContact` reserves for it. `payContact` constructs under this fee as its
+   * bound, so the stamp stage plans fresh change only from what the payment leaves of it: the
+   * built set pays exactly this, or is refused before anything is exposed. */
+  const contactNetworkFeeWei = async (
+    wallet: EvmChainWalletHandle,
+    recipient: ContactSendParams["recipient"],
+    value: bigint,
+    stampWei: bigint
+  ): Promise<bigint> => {
+    if (!wallet.estimateLegacyFee) {
+      throw new Error("This wallet cannot quote a contact payment's fee");
+    }
+    const payment = await wallet.estimateLegacyFee({ recipient, value });
+    const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+    const stampFeeWei =
+      stampWei > 0n ? policy.paymentGasLimit("0x") * policy.gasPriceWei : 0n;
+    return payment.totalFee + stampFeeWei;
+  };
+
   const quoteContactPayment = async (
     quoteParams: Pick<ContactSendParams, "recipient" | "value" | "stampValue">
   ): Promise<ContactPaymentQuote> => {
@@ -1260,19 +1281,12 @@ export function createEvmReceivedCoinAndContactManager(
       quoteParams.value
     );
     const stampWei = await contactStampWei(wallet, quoteParams.stampValue);
-    if (!wallet.estimateLegacyFee) {
-      throw new Error("This wallet cannot quote a contact payment's fee");
-    }
-    // The payment's own transfers, as the payment selects them...
-    const payment = await wallet.estimateLegacyFee({
-      recipient: quoteParams.recipient,
-      value: quoteParams.value,
-    });
-    // ...and the stamp's one transfer, the continuation `payContact` reserves for it.
-    const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
-    const stampFeeWei =
-      stampWei > 0n ? policy.paymentGasLimit("0x") * policy.gasPriceWei : 0n;
-    const networkFeeWei = payment.totalFee + stampFeeWei;
+    const networkFeeWei = await contactNetworkFeeWei(
+      wallet,
+      quoteParams.recipient,
+      quoteParams.value,
+      stampWei
+    );
     return {
       valueWei: quoteParams.value,
       stampWei,
@@ -1374,10 +1388,21 @@ export function createEvmReceivedCoinAndContactManager(
       contactParams.onProgress?.({ stage: "signing" });
       try {
         await wallet.refreshTransactionSetInventory!();
+        // The fee the user approved bounds the payment and its stamp stage together; without
+        // one, the fee a review would show now does.
+        const maxFeeWei =
+          contactParams.maxFeeWei ??
+          (await contactNetworkFeeWei(
+            wallet,
+            contactParams.recipient,
+            contactParams.value,
+            stampWei
+          ));
         const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
         await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
           operationId: transactionSetOperationId,
           amountWei: contactParams.value,
+          maxFeeWei,
           kdf: () => stealthAddress,
           ...(stampWei! > 0n ? { reserveForContinuationWei:
             stampWei! + policy.paymentGasLimit("0x") * policy.gasPriceWei } : {}),

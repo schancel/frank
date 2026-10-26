@@ -240,3 +240,38 @@ test.each([false, true])('contact resume completes original delivery after the p
     expect(f.alice.getNativeOperations!().find(row => row.operationId === graph.operationId)!.members.map(member => member.signed!.rawTransaction)).toEqual(bytes)
   } finally { await f.close() }
 })
+
+test.each([true, false])('Send to Contact from one large coin pays exactly the network fee its review quoted, the stamp included (approved fee passed=%s)', async approved => {
+  offlineChain.reset(); mockBalances.clear(); useProviderStandIns()
+  offlineChain.relayBroadcasts = false
+  const f = await fixture({ transactionSetPolicy: () => policy, spendSpacingBlocks: undefined, reserveBalanceWei: undefined })
+  try {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    // One coin forty times the payment (20 MON paying 0.5): its residual, and the residual of
+    // the change the stamp is paid from, are each large enough for the full change split.
+    mockBalances.set(f.alice.mainAccount!.address.toLowerCase(), 12000000n)
+    await f.alice.refreshTransactionSetInventory!()
+    const quote = await f.alice.quoteContactPayment!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
+    const prepared = await f.alice.prepareContactPayment!({ recipient: f.bob.identity.address, value: 300000n,
+      stampValue: quote.stampWei, ...(approved ? { maxFeeWei: quote.networkFeeWei } : {}) })
+    const send = jest.spyOn(f.alice.transactionSetSubmission!, 'sendTransaction')
+    let digest: string | undefined
+    await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address,
+      messageId, stampValue: prepared.stampValue, items: [prepared.item],
+      onAttemptCreated: async value => { digest = value },
+    }).catch(error => { expect(error).toBeInstanceOf(MonadStampPendingAttemptError) })
+    for (let i = 0; i < 6; i++) await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [digest!], maxPutAttempts: 1 })
+    const graph = f.alice.transactionSetPreparer!.getOperation(send.mock.calls[0]![0].operationId)!
+    // The payment and the stamp were both built into this one operation.
+    expect(graph.members.filter(member => member.transactionSet!.role === 'payment')).toHaveLength(2)
+    const fee = graph.members.reduce((sum, member) => {
+      const tx = Transaction.from(member.signed!.rawTransaction)
+      return sum + tx.gasLimit * tx.gasPrice!
+    }, 0n)
+    expect(fee).toBe(quote.networkFeeWei)
+    // What left the wallet is the total the review showed.
+    const sent = graph.members.reduce((sum, member) => member.transactionSet!.role === 'payment'
+      ? sum + Transaction.from(member.signed!.rawTransaction).value : sum, 0n)
+    expect(sent + fee).toBe(quote.totalWei)
+  } finally { await f.close() }
+})

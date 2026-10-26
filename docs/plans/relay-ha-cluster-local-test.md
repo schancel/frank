@@ -83,36 +83,56 @@ FRANK_DM_LAB_BURST=60 yarn --cwd packages/bot regtest:monad-dm-cluster
 
 ## Test accounts and funding (solonet only)
 
-These accounts were used for the browser test on 2026-10-25 and are left funded for testing by
-hand. Their browser profiles are on this machine.
+Make fresh accounts in the app and fund each with `scripts/lab-cluster-app.sh fund <receive
+address> 20`; the faucet bot also grants 1 MONR to each new account. The accounts used in the
+2026-10-25 and 2026-10-26 browser rounds (Alice, Bob and the QA personas) were all swept back to 0.
+The bot funding wallet is `0xe4fe02Bf7A379fab94AD3654482d905052484149`.
 
-| Account | Profile address | Receive address |
-| --- | --- | --- |
-| Alice | `0xB754191B32b15Eb667D4d3F24De8EabA368d472C` | `0xe1F404D87Ea86E2cf6b13165B4b064f9d37d49E7` |
-| Bob ("Bob Lab") | `0xbAbBD90B089a96CAE453900D07623E7673a680d8` | `0x239243E946F77F69610eeD586B50ad0cdAf5Ae62` |
-| Bot funding wallet | `0xe4fe02Bf7A379fab94AD3654482d905052484149` (about 197 MON) | |
+When you're done, use Send max to return each app account's balance to the faucet,
+`0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`. Repeat while change comes back, until only dust below
+the payment floor (about 0.0214 MONR) remains. Then stop the bots and run
+`scripts/lab-cluster-app.sh sweep`. The DM livecheck returns its own wallets' funds at the end of
+every run, including a failed one.
 
-Each app account got 20 MON from the faucet. When you're done, send each app account's balance to
-the faucet, `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`, from the app, and run
-`scripts/lab-cluster-app.sh sweep` for the bots.
+The smallest payment or stamp is ten times the gas to move it: about 0.0214 MONR at solonet's gas
+price. The app refuses anything smaller before signing and names the minimum.
 
 ## What was verified
 
-- **Cluster contract:** 13 of 13 passed.
-- **DM livecheck:**
+Final run, 2026-10-26, on main `bab076ccb`. The later commits up to `4301de2bf` change only app
+display and the wallet's fee summary.
+
+- **Cluster contract:** 16 of 16 passed.
+- **DM livecheck** (`FRANK_DM_LAB_BURST=300`):
   - A paid DM admitted on relay A was pushed over a websocket held on relay B.
-  - 60 concurrent DMs got strictly increasing times.
-  - One request sent to A and B at once was stored once.
+  - 300 concurrent DMs to one recipient, through A, B and C, got strictly increasing times.
+  - One request sent to A and B at once was stored once, with one mined payment.
   - A challenge issued on A and replayed was refused.
   - Killing A mid-admission, both before it answered and after it committed, left one row and one
     payment.
   - With NATS down, the reader caught up from its cursor.
-  - A 400 kB message read back unchanged.
-- **In a real browser (Chrome):**
-  - Alice and Bob exchanged sealed, paid DMs both ways at a 0.01 MONR stamp, and Bob's balance
-    went up by 0.01.
-  - Alice created a group, Bob accepted, and each saw the other's posts.
-- **Bots:** they sent welcome DMs, and Qwen answered within 4 seconds.
+  - A 400 kB message read back unchanged. Its note to self now reaches the sender's other devices
+    (#1860 fixed).
+  - All 7 wallets' funds went back to the faucet.
+- **In a real browser (Chrome),** in several QA rounds with fresh accounts:
+  - **Messages:** sealed paid DMs both ways; groups (create, accept, post, remove a member); the
+    Screener.
+  - **Payments:**
+    - Send to Contact and chat stealth payments cost exactly what their review showed, on the first
+      attempt.
+    - An over-fee send is refused before signing and offers the new fee.
+    - Payments below the floor are refused with the minimum named.
+  - **Two devices of one account:**
+    - History is one row per send on both, with the same amounts, stamp and fee.
+    - Both devices sending at the same moment pay each message once.
+    - A 100 KB message reaches the second device.
+  - **Games:** dice, blackjack and raffle at the minimum stake, with wins verified on chain.
+- **All relays down:** with relays a, b and c stopped:
+  - nothing was signed or broadcast;
+  - the app said the server couldn't be reached;
+  - queued DMs were delivered once, with one stamp each, within about 15 s of restart;
+  - with only relay-c up, DMs worked both ways.
+- **Bots** answered after the outage. Dice answers "help" within a second.
 
 ## Shared across replicas, and replica-local
 
@@ -135,16 +155,29 @@ Not stored in S3: direct messages over 100 kB are split across FoundationDB valu
   different relays. Only the envelope format has landed. See
   [Messages to a recipient on another relay are refused: forwarding is not wired (#1348)](https://github.com/schancel/frank/issues/1348).
   It needs the owner decisions in [#89](https://github.com/schancel/frank/issues/89).
-- [A sealed send with an item over 64 KiB never delivers its note to self (#1860)](https://github.com/schancel/frank/issues/1860).
-  Avoid attachments over 64 KiB in sealed DMs while testing.
 - [A second device's 'existing' answer makes it broadcast its own group-write payment (#1862)](https://github.com/schancel/frank/issues/1862).
-- [The wallet sometimes pays a DM stamp about 10x the stamp price (#1853)](https://github.com/schancel/frank/issues/1853).
 - [The app's websocket advances its cursor before storing the record (#1854)](https://github.com/schancel/frank/issues/1854).
+- **A wallet holding one coin can't pay a message plus its stamp.** The stamp waits for change that
+  only appears after the message is stored, so the send stays pending. Fund with more than one
+  coin (the faucet bot's grant arrives as several), or see owner question 8.
+  `packages/wallet/chain/received-payments.anvil.integration.ts` fails for this reason and is not
+  in CI yet.
+- **History doesn't list external deposits.** The `fund` script's deposit (the faucet's 20 MON)
+  never appears; the faucet bot's grant does.
+- **A sealed message within about 200 bytes of the largest DM is refused** before anything is paid,
+  because its note to self wouldn't fit. The same message unsealed goes through.
+- **Format break:** notes to self written before #1916 read as unsupported. Start the
+  deployment's wallets and bots from fresh stores.
 - **App:** unless the relay server is set by hand, the dev server's origin becomes a group's home
   relay. This also affects `yarn demo`.
-- **App:** group messages show "0.00 XPI".
+- **App:** the chat stealth payment dialog shows no fee or total before sending, and names the
+  minimum only after a refusal.
+- **App:** right after Send max, a spent received payment can count in the balance for about a
+  minute.
 - **App:** after a reload, a stale "Unsupported message" preview can show for an old group invite.
 - **App:** `/metadata` returns 404 in the browser.
+- **Tests:** in a full parallel run, `wallet-performance-simulation`, `webpush-sync` and a few
+  app suites sometimes time out; each passes alone.
 
 ## Owner questions
 
@@ -162,6 +195,37 @@ Not stored in S3: direct messages over 100 kB are split across FoundationDB valu
    coin only after a chain read?
 7. **Relay-to-relay forwarding (#1348).** It needs the #89 decisions: how relays authenticate each
    other, who may retry, and how fees are kept separate from the recipient's payment.
+8. **One-coin wallet and its stamp** ([held: #1894](https://github.com/schancel/frank/pull/1894)).
+   - A: split the coin with a payment to itself first (recommended).
+   - B or C: as described in the PR.
+9. **Send to Address below the floor** to an external address: refuse it, or allow it there?
+10. **External deposits in History** need a relay-side index or full block reads. Which one?
+11. **Cross-device rebuild (#1907) gaps:**
+    - a nonce taken by a transaction with a different value;
+    - a partial collision;
+    - combined operations;
+    - a message the relay already stored.
+12. **Operator blackjack minimum on the wire.** Should the dealer advertise it?
+13. **Background coin consolidation** (approved 2026-10-26, not built yet). Proposed defaults:
+    - run only when idle, and never touch claimed coins;
+    - start above about 8 spendable coins, merging into one fresh account;
+    - skip coins that cost more to move than they're worth.
+
+## Before deploying this main
+
+These are not done. The owner decides the redeploy.
+
+- **Deploy everything from one main commit:** relay, app, extensions and bots together.
+  - This main changes client formats: dice field 14, `wallet-sync.operation`, and the
+    note-to-self frames.
+  - An older client refuses the new fields.
+- **Fresh stores:**
+  - Start the bot and gateway wallet stores fresh. Wallet database names now include the network
+    (`FRANK_WALLET_STORAGE_LOCATION`).
+  - Reset the forum stores to the v2 marker.
+- **Configuration:** set the stamp floor and the payment floor multiple (10, from
+  `docs/protocol/chains/v1.json`) in the relay and bot configs.
+- **Never reset the bot custody or create replacement bot identities.**
 
 ## Merged for this lab (2026-10-25)
 
@@ -182,3 +246,61 @@ Not stored in S3: direct messages over 100 kB are split across FoundationDB valu
 - [Wallet waits for a fresh deposit to be spendable (#1863)](https://github.com/schancel/frank/pull/1863)
 - [Paid group writes verified by the hosting relay (#1847)](https://github.com/schancel/frank/pull/1847)
 - [App, bots, DMs and the directory through the three-relay cluster (#1865)](https://github.com/schancel/frank/pull/1865)
+
+## Merged in the QA hardening rounds (2026-10-25 to 2026-10-26)
+
+- [Key the evidence cache with toHex, not Node's Buffer (#1867)](https://github.com/schancel/frank/pull/1867)
+- [Backend and app workflows can be run by hand (#1868)](https://github.com/schancel/frank/pull/1868)
+- [An unanswered profile lookup no longer blocks opening the account (#1869)](https://github.com/schancel/frank/pull/1869)
+- [Run every bot and grant 1 MONR from the faucet (#1870)](https://github.com/schancel/frank/pull/1870)
+- [Mobile chat header and wallet dApp cards; group bubbles show no XPI amount (#1871)](https://github.com/schancel/frank/pull/1871)
+- [Stealth send: retry throttled reads, honest failure messages, usable on a phone (#1872)](https://github.com/schancel/frank/pull/1872)
+- [A payment carries exactly its amount; residual stays with the sender (#1873)](https://github.com/schancel/frank/pull/1873)
+- [Wallet page history, top-up, explorer links and units (#1874)](https://github.com/schancel/frank/pull/1874)
+- [Open monad-regtest wallets with the relay's operator checkpoint (#1875)](https://github.com/schancel/frank/pull/1875)
+- [Game moves pay only what the game says; bot money, payouts and chat layout (#1876)](https://github.com/schancel/frank/pull/1876)
+- [Contacts, onboarding, identity and mobile QA fixes (#1877)](https://github.com/schancel/frank/pull/1877)
+- [A contact payment reaches paid after its transaction set is retired (#1878)](https://github.com/schancel/frank/pull/1878)
+- [A restored device finds every account its seed controls (#1879)](https://github.com/schancel/frank/pull/1879)
+- [The forum on the shared transaction store (HA step 9) (#1880)](https://github.com/schancel/frank/pull/1880)
+- [Count received stealth payments in the recipient's coin list (#1881)](https://github.com/schancel/frank/pull/1881)
+- [Devices of one account agree on contacts, profile, invites and threads (#1882)](https://github.com/schancel/frank/pull/1882)
+- [A sent stealth payment shows what the chain did with it (#1883)](https://github.com/schancel/frank/pull/1883)
+- [Send to an address spends the whole coin list, and every quote is the fee paid (#1884)](https://github.com/schancel/frank/pull/1884)
+- [A saved account that fails to open lands on Setup, not the signup page (#1885)](https://github.com/schancel/frank/pull/1885)
+- [Votes and posts pay like stamps, with a set of burns, and never hang (#1886)](https://github.com/schancel/frank/pull/1886)
+- [A running relay keeps its regtest checkpoint inside the node's history (#1887)](https://github.com/schancel/frank/pull/1887)
+- [One spending path — swap funding and received-coin sweeps go through the coin list (#1888)](https://github.com/schancel/frank/pull/1888)
+- [Cluster-contract solonet funding survives a busy shared node (#1889)](https://github.com/schancel/frank/pull/1889)
+- [Unverified coins, missing observations, the seed walk and send latency; run the budgets in CI (#1890)](https://github.com/schancel/frank/pull/1890)
+- [Wallet state names its canonical network once; a hidden, user-run Reconcile wallet replaces the automatic mailbox rescan (#1891)](https://github.com/schancel/frank/pull/1891)
+- [Count posts and votes once the node accepts every burn (#1892)](https://github.com/schancel/frank/pull/1892)
+- [A steady paid DM send does about half the work (#1893)](https://github.com/schancel/frank/pull/1893)
+- [Every stamp and payment is at least ten times the gas to move it (#1895)](https://github.com/schancel/frank/pull/1895)
+- [Regenerate the WASM package for the current chain registry (#1896)](https://github.com/schancel/frank/pull/1896)
+- [A Send whose payment the node forgot finishes; Send max never counts a coin the chain has passed (#1897)](https://github.com/schancel/frank/pull/1897)
+- [Fix two web app errors seen in the HA lab: persona scan batch too large, New Group relay list (#1898)](https://github.com/schancel/frank/pull/1898)
+- [Approve & Add Contact in the Screener adds the sender to contacts (#1899)](https://github.com/schancel/frank/pull/1899)
+- [A game card never offers a stake below the payment floor; a refused low payment names the minimum (#1900)](https://github.com/schancel/frank/pull/1900)
+- [A Send's change comes back seconds apart, not one transfer a minute (#1901)](https://github.com/schancel/frank/pull/1901)
+- [A Retry never changes the amount of a bet, a purchase or a stamp the sender set (#1902)](https://github.com/schancel/frank/pull/1902)
+- [The Monad livechecks stamp at the payment floor, not one transfer's gas (#1903)](https://github.com/schancel/frank/pull/1903)
+- [A landed transfer reads Sent with its block, never "replaced"; other devices check a sent payment; History reads blocks the relay serves (#1904)](https://github.com/schancel/frank/pull/1904)
+- [Games: raffle rounds stay enterable, app and dealer agree on the smallest bet, refused stakes name the minimum, payouts verify on chain (#1905)](https://github.com/schancel/frank/pull/1905)
+- [A contact payment below the payment floor is refused; Send to Contact names the minimum and shows the stamp; a too-small coin is never called spendable (#1906)](https://github.com/schancel/frank/pull/1906)
+- [A message whose coin another device spent at the same moment is paid from other coins and delivered (#1907)](https://github.com/schancel/frank/pull/1907)
+- [History shows the account's sends on every device (#1908)](https://github.com/schancel/frank/pull/1908)
+- [A dismissed peer thread comes back on Start Conversation; a removed group member is told (#1909)](https://github.com/schancel/frank/pull/1909)
+- [A stealth payment and its stamp stay within the fee the user approved; an unsigned message gives its coins back (#1910)](https://github.com/schancel/frank/pull/1910)
+- [A re-read of an account no longer hides its coin from a payment selecting meanwhile (#1911)](https://github.com/schancel/frank/pull/1911)
+- [A received payment once verified stays received when the node no longer serves its transactions (#1912)](https://github.com/schancel/frank/pull/1912)
+- [Send to Contact pays no more network fee than its review showed, the stamp included (#1913)](https://github.com/schancel/frank/pull/1913)
+- [A chat stealth payment below the payment floor is refused, and no part of a split one is below it (#1914)](https://github.com/schancel/frank/pull/1914)
+- [One send is one row with the same label and fee on every device (#1915)](https://github.com/schancel/frank/pull/1915)
+- [A sealed message with items over 64 KiB reaches the account's other devices (#1916)](https://github.com/schancel/frank/pull/1916)
+- [History shows a payment and its message's stamp as one row on every device (#1917)](https://github.com/schancel/frank/pull/1917)
+- [Send to Contact quotes and builds its stamp the same way, refuses over the fee before signing, and gives back a payment nothing of which left the wallet (#1918)](https://github.com/schancel/frank/pull/1918)
+- [The DM cluster livecheck returns its wallets' funds to the faucet, also after a failure (#1919)](https://github.com/schancel/frank/pull/1919)
+- [A bot passes its own notes to self quietly, and logs a refused inbound message once (#1920)](https://github.com/schancel/frank/pull/1920)
+- [Chat stealth payments with a stamp quote what they build and refuse an over-bound stamp before signing; a message ended over the fee says so (#1921)](https://github.com/schancel/frank/pull/1921)
+- [Send to Contact says when the fee rose and shows the new one; contact payment cards show the fee breakdown; a card's network fee is the one History shows (#1922)](https://github.com/schancel/frank/pull/1922)

@@ -1381,6 +1381,8 @@ export default defineComponent({
         this.conversation?.kind === 'group'
           ? 0n
           : activeChain.fromDisplayAmount(this.stampAmount)
+      // The composer's default stamp is only the delivery fee; a stamp the user set is theirs.
+      const stampIsDeliveryFee = this.isDefaultStampMode
       if (
         this.availableBalanceWei !== undefined &&
         stampValue > 0n &&
@@ -1461,6 +1463,7 @@ export default defineComponent({
           conversationId: this.conversation?.id,
           items,
           stampValue,
+          stampIsDeliveryFee,
           onPreparationProgress: (
             progress: DirectMessagePreparationProgress,
           ) => {
@@ -1529,6 +1532,8 @@ export default defineComponent({
         return
       }
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      // The composer's default stamp is only the delivery fee; a stamp the user set is theirs.
+      const stampIsDeliveryFee = this.isDefaultStampMode
       if (
         this.availableBalanceWei !== undefined &&
         stampValue > 0n &&
@@ -1588,6 +1593,7 @@ export default defineComponent({
           conversationId: conversation.id,
           items: payload.items,
           stampValue,
+          stampIsDeliveryFee,
           onPreparationProgress: (
             progress: DirectMessagePreparationProgress,
           ) => {
@@ -1907,6 +1913,10 @@ export default defineComponent({
         const stampValue = groupConversation
           ? 0n
           : stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+        // Content a person writes is stamped like typed text: at the composer's default, only
+        // the delivery fee. An amount the renderer or game names is the message's own.
+        const stampIsDeliveryFee =
+          stampValueWei === undefined && this.isDefaultStampMode
         const capturedItems = items.slice()
         const contextCurrent = () =>
           revision === accountStatus.revision &&
@@ -1949,6 +1959,7 @@ export default defineComponent({
           conversationId,
           items: capturedItems,
           stampValue,
+          stampIsDeliveryFee,
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {

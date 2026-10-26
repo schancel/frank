@@ -973,6 +973,12 @@ export interface Message {
    * additively alongside `outpoints` rather than replace it. Always `undefined` for Lotus-origin
    * messages (`outpoints` is authoritative for those). */
   stampValueWei?: bigint
+  /** Outgoing only, local: `stampValueWei` is just the delivery fee the composer chose for the
+   * sender (its default stamp), not an amount the sender typed or the message states (a bet, a
+   * purchase, a payment). Only such a stamp may be raised to the wallet's minimum by a manual
+   * Retry after the chain fee rose past it. Absent: the amount is the message's own and a Retry
+   * never changes it. */
+  stampIsDeliveryFee?: true
   /** Transaction details backing a non-UTXO chain's stamp payment. */
   stampPayments?: Array<{
     txHash: string

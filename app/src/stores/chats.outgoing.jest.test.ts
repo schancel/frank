@@ -49,7 +49,7 @@ import {
 } from '@frank/wallet/evm-stamp-client'
 import { MonadRpcError } from '@frank/wallet/evm-http'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/mailbox-client'
-import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import type { MessageItem, MessageWrapper } from '@frank/cashweb/types/messages'
 import {
   deserializeMessageWrapper,
   serializeMessageWrapper,
@@ -1208,7 +1208,7 @@ describe('outgoing direct messages (#269, #270)', () => {
     )
   })
 
-  it('ordinary chat manual retry still raises a stamp below the current fee', async () => {
+  it('ordinary chat manual retry still raises a default (delivery-fee) stamp below the current fee', async () => {
     const { DirectMessageStampBelowFeeError } = require('@frank/wallet/chain')
     const send = jest
       .spyOn(activeChain.directMessages, 'send')
@@ -1223,6 +1223,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       address: PEER,
       items: TEXT,
       stampValue: 1000n,
+      stampIsDeliveryFee: true,
     })
     const row = only(chats)[0]
     expect(row.delivery?.failureReason).toBe('stamp-below-fee')
@@ -1238,6 +1239,87 @@ describe('outgoing direct messages (#269, #270)', () => {
     expect(minimum).toHaveBeenCalled()
     expect(send.mock.calls[1][0].stampValue).toBe(5000n)
   })
+
+  it('a default stamp stays raisable after a reload: the mark is saved with the message', async () => {
+    const { DirectMessageStampBelowFeeError } = require('@frank/wallet/chain')
+    jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValueOnce(new DirectMessageStampBelowFeeError(1000n, 5000n))
+    const chats = useChatStore()
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 1000n,
+      stampIsDeliveryFee: true,
+    })
+    const row = only(chats)[0]
+    const stored = [...(await durable()).values()].map(value =>
+      JSON.parse(value),
+    )
+    expect(stored).toHaveLength(1)
+    expect(stored[0].message.stampIsDeliveryFee).toBe(true)
+    expect(row.stampIsDeliveryFee).toBe(true)
+  })
+
+  // A stake, a price or a stated payment is the message's meaning: Retry never pays another
+  // amount than the item states. It sends the same amount again (and fails again while that is
+  // below the minimum); the sender makes a new bet at a valid stake.
+  it.each([
+    [
+      'a dice bet',
+      [
+        {
+          type: 'dice' as const,
+          action: 'roll' as const,
+          rollId: 'cd'.repeat(16),
+          commitment: 'ef'.repeat(32),
+          clientSeed: '01'.repeat(16),
+          target: 32768,
+          wagerWei: '1000',
+        },
+      ],
+    ],
+    ['typed text with a stamp the sender set', TEXT],
+  ])(
+    'a manual Retry of %s refused below the floor never changes its amount',
+    async (_name, items) => {
+      const { DirectMessageStampBelowFeeError } = require('@frank/wallet/chain')
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          throw new DirectMessageStampBelowFeeError(params.stampValue!, 5000n)
+        })
+      const minimum = jest
+        .spyOn(activeChain.directMessages, 'minimumStamp')
+        .mockResolvedValue(5000n)
+      const chats = useChatStore()
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: items as MessageItem[],
+        stampValue: 1000n,
+      })
+      const row = only(chats)[0]
+      expect(row.delivery?.failureReason).toBe('stamp-below-fee')
+      expect(row.stampIsDeliveryFee).toBeUndefined()
+      expect(
+        await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: row.payloadDigest,
+        }),
+      ).toEqual({ state: 'failed', reason: 'stamp-below-fee' })
+      expect(send).toHaveBeenCalledTimes(2)
+      expect(send.mock.calls[1][0].stampValue).toBe(1000n)
+      expect(minimum).not.toHaveBeenCalled()
+      const after = only(chats)[0]
+      expect(after.stampValueWei).toBe(1000n)
+      // The bubble names the minimum it fell short of.
+      expect(after.delivery?.failureReason).toBe('stamp-below-fee')
+      expect(after.delivery?.detail).toBe('5000')
+    },
+  )
 
   it('queues a throttled retained intent and recovers the same message after restart', async () => {
     const unavailable = recordEvmRpcFailure(

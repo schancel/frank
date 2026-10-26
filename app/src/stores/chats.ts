@@ -172,6 +172,8 @@ export type ChatMessage = {
   /** See this file's header decision note: additive Monad-side value field, alongside
    * `outpoints` rather than replacing it (ticket #42). */
   stampValueWei?: bigint
+  /** See `Message.stampIsDeliveryFee`. */
+  stampIsDeliveryFee?: true
   stampPayments?: Array<{
     txHash: string
     destinationAddress: string
@@ -3209,6 +3211,7 @@ export const useChatStore = defineStore('chats', {
       items,
       outpoints = [],
       stampValueWei,
+      stampIsDeliveryFee,
       stampPayments,
       status = 'pending',
       previousHash = null,
@@ -3229,6 +3232,7 @@ export const useChatStore = defineStore('chats', {
       /** See this file's header decision note (ticket #42) -- additive Monad-side value,
        * alongside `outpoints`. `undefined` for Lotus-origin sends. */
       stampValueWei?: bigint
+      stampIsDeliveryFee?: true
       stampPayments?: Array<{
         txHash: string
         destinationAddress: string
@@ -3267,6 +3271,7 @@ export const useChatStore = defineStore('chats', {
         receivedTime: timestamp,
         outpoints,
         stampValueWei,
+        ...(stampIsDeliveryFee ? { stampIsDeliveryFee } : {}),
         stampPayments,
         senderAddress,
         destinationAddress: displayAddress,
@@ -3508,6 +3513,7 @@ export const useChatStore = defineStore('chats', {
       conversationId,
       items,
       stampValue,
+      stampIsDeliveryFee,
       onPreparationProgress,
       financialOperations,
       operationId,
@@ -3519,6 +3525,11 @@ export const useChatStore = defineStore('chats', {
       financialOperations?: OutgoingFinancialOperation[]
       operationId?: string
       stampValue?: bigint
+      /** True only when `stampValue` is the composer's default stamp, chosen for the sender:
+       * the delivery fee, which a manual Retry may raise to the wallet's minimum. Any amount the
+       * sender typed or the items state (a bet, a purchase, a payment) leaves it unset, and a
+       * Retry never changes it. */
+      stampIsDeliveryFee?: boolean
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
@@ -3603,6 +3614,11 @@ export const useChatStore = defineStore('chats', {
         items,
         outpoints: [],
         stampValueWei: stampValue,
+        ...(stampIsDeliveryFee === true &&
+        stampValue !== undefined &&
+        !financialOperations?.length
+          ? { stampIsDeliveryFee: true as const }
+          : {}),
         status: 'pending',
         previousHash: null,
         timestamp,
@@ -4022,6 +4038,7 @@ export const useChatStore = defineStore('chats', {
         items,
         outpoints: [],
         stampValueWei: value,
+        stampIsDeliveryFee: message.stampIsDeliveryFee,
         stampPayments: payments,
         status: 'confirmed',
         previousHash: id,

@@ -28,6 +28,8 @@ import {
   ContactPaymentFailedError,
   ContactPaymentNotSettledError,
   ContactPaymentPendingError,
+  ContactPaymentBelowFloorError,
+  type ContactPaymentQuote,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
   MAX_STEALTH_ITEM_AMOUNT,
@@ -350,6 +352,9 @@ export interface EvmReceivedCoinAndContactManagerParams {
   readonly requireOpenWallet: (wallet: EvmChainWalletHandle) => void;
   readonly canonicalMessagingFor: (wallet: EvmChainWalletHandle) => unknown;
   readonly directMessages: DirectMessageClient;
+  /** The payment floor the balance classifies received coins by, as last read (zero while no
+   * gas price is known). A received payment's `tooSmall` uses the same one. */
+  readonly receivedCoinFloorWei: () => bigint;
   readonly runWalletExclusive: <T>(
     wallet: EvmChainWalletHandle,
     task: (admission?: EvmWalletOperationAdmission) => Promise<T>,
@@ -395,6 +400,7 @@ export function createEvmReceivedCoinAndContactManager(
     requireOpenWallet,
     canonicalMessagingFor,
     directMessages,
+    receivedCoinFloorWei,
     runWalletExclusive,
     runMainAccountExclusive,
   } = params;
@@ -1087,6 +1093,71 @@ export function createEvmReceivedCoinAndContactManager(
     return broadcastContactTransfer(payment);
   };
 
+  /** The recipient must move the coin a contact payment makes: never one below the payment
+   * floor (`chain/payment-floor.ts`), the `minimumStamp` the app shows as the minimum. Returns
+   * the floor. */
+  const requireContactPaymentAtFloor = async (
+    wallet: EvmChainWalletHandle,
+    valueWei: bigint
+  ): Promise<bigint> => {
+    if (!directMessages.minimumStamp) {
+      throw new Error("This wallet cannot read the payment floor");
+    }
+    const floorWei = await directMessages.minimumStamp({ wallet });
+    if (valueWei < floorWei) {
+      throw new ContactPaymentBelowFloorError(valueWei, floorWei);
+    }
+    return floorWei;
+  };
+
+  /** The stamp of a contact payment's message: the one named, else the default quote. */
+  const contactStampWei = async (
+    wallet: EvmChainWalletHandle,
+    stampValue: bigint | undefined
+  ): Promise<bigint> => {
+    if (stampValue !== undefined) return stampValue;
+    const quote = await directMessages.defaultStampQuote!({ wallet });
+    if (quote.status === "unavailable") {
+      throw new DefaultStampUnavailableError(quote);
+    }
+    return quote.amount;
+  };
+
+  const quoteContactPayment = async (
+    quoteParams: Pick<ContactSendParams, "recipient" | "value" | "stampValue">
+  ): Promise<ContactPaymentQuote> => {
+    const wallet = getWallet();
+    requireOpenWallet(wallet);
+    if (quoteParams.value <= 0n) {
+      throw new RangeError("Transfer value must be positive");
+    }
+    const floorWei = await requireContactPaymentAtFloor(
+      wallet,
+      quoteParams.value
+    );
+    const stampWei = await contactStampWei(wallet, quoteParams.stampValue);
+    if (!wallet.estimateLegacyFee) {
+      throw new Error("This wallet cannot quote a contact payment's fee");
+    }
+    // The payment's own transfers, as the payment selects them...
+    const payment = await wallet.estimateLegacyFee({
+      recipient: quoteParams.recipient,
+      value: quoteParams.value,
+    });
+    // ...and the stamp's one transfer, the continuation `payContact` reserves for it.
+    const policy = wallet.transactionSetPreparer!.transactionSetPolicy();
+    const stampFeeWei =
+      stampWei > 0n ? policy.paymentGasLimit("0x") * policy.gasPriceWei : 0n;
+    const networkFeeWei = payment.totalFee + stampFeeWei;
+    return {
+      valueWei: quoteParams.value,
+      stampWei,
+      networkFeeWei,
+      totalWei: quoteParams.value + stampWei + networkFeeWei,
+      floorWei,
+    };
+  };
+
   const payContact = async (
     contactParams: ContactSendParams,
     hostDelivers: boolean
@@ -1109,6 +1180,7 @@ export function createEvmReceivedCoinAndContactManager(
         ).slice(0, 4)} ${unit}); send it in parts`
       );
     }
+    await requireContactPaymentAtFloor(wallet, contactParams.value);
     const recipientAddress = getAddress(
       contactParams.recipient.raw
     ).toLowerCase();
@@ -1144,14 +1216,7 @@ export function createEvmReceivedCoinAndContactManager(
     ) {
       throw new Error("The contact has no published key for this address");
     }
-    let stampWei = contactParams.stampValue;
-    if (stampWei === undefined) {
-      const quote = await directMessages.defaultStampQuote!({ wallet });
-      if (quote.status === "unavailable") {
-        throw new DefaultStampUnavailableError(quote);
-      }
-      stampWei = quote.amount;
-    }
+    const stampWei = await contactStampWei(wallet, contactParams.stampValue);
     if ((await wallet.getBalance()) < contactParams.value + stampWei) {
       throw new RangeError(
         "Insufficient funds for the payment and its message stamp"
@@ -2463,12 +2528,19 @@ export function createEvmReceivedCoinAndContactManager(
     heldForItsMessage,
     holdsItsSource,
     installStealthAndContactOwners,
-    getReceivedPayments: () =>
-      coinStore.all().map((coin) => receivedPaymentOf(coin)),
+    getReceivedPayments: () => {
+      const floorWei = receivedCoinFloorWei();
+      return coinStore
+        .all()
+        .map((coin) => receivedPaymentOf(coin, Date.now(), floorWei));
+    },
     refreshReceivedPayments: async () => {
       requireOpenWallet(getWallet());
       await readCoins();
-      return coinStore.all().map((coin) => receivedPaymentOf(coin));
+      const floorWei = receivedCoinFloorWei();
+      return coinStore
+        .all()
+        .map((coin) => receivedPaymentOf(coin, Date.now(), floorWei));
     },
     getMessagePayment: (payloadDigest: string) =>
       messagePaymentOf(coinStore.all(), payloadDigest),
@@ -2508,6 +2580,7 @@ export function createEvmReceivedCoinAndContactManager(
       payContact(sendParams, false) as Promise<ContactSendResult>,
     prepareContactPayment: (sendParams: ContactSendParams) =>
       payContact(sendParams, true) as Promise<PreparedContactPayment>,
+    quoteContactPayment,
     resumeContactPayments,
     settleContactPayment,
     retryContactPayment,

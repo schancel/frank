@@ -143,6 +143,22 @@
           >
             {{ tooLargeText }}
           </div>
+          <!-- The payment floor: the contact must be able to move what they receive. -->
+          <div
+            v-else-if="belowFloor"
+            class="text-negative text-caption q-mt-xs"
+            role="alert"
+            data-test="send-contact-below-floor"
+          >
+            {{ belowFloorText }}
+          </div>
+          <div
+            v-else-if="floorWei > 0n"
+            class="text-caption text-grey-7 q-mt-xs"
+            data-test="send-contact-minimum"
+          >
+            {{ minimumText }}
+          </div>
         </q-card-section>
 
         <q-card-section class="q-pt-none">
@@ -217,6 +233,16 @@
               <span class="text-body2" data-test="review-memo">{{ memo }}</span>
             </div>
 
+            <!-- The message's stamp: paid to the contact beside the payment, never part of it. -->
+            <div class="row justify-between items-center q-py-xs">
+              <span class="text-caption text-grey-7">{{
+                $t('sendContactDialog.stamp')
+              }}</span>
+              <span class="text-grey-7 text-right" data-test="review-stamp">
+                {{ stampText }}
+              </span>
+            </div>
+
             <div class="row justify-between items-center q-py-xs">
               <span class="text-caption text-grey-7">{{
                 $t('sendAddressDialog.estimatedFee')
@@ -230,7 +256,7 @@
 
             <div class="row justify-between items-center q-py-xs">
               <span class="text-subtitle2">{{
-                $t('sendAddressDialog.maxTotal')
+                $t('sendContactDialog.total')
               }}</span>
               <span
                 class="text-subtitle1 text-weight-bold"
@@ -279,9 +305,13 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { activeChain, MAX_STEALTH_ITEM_AMOUNT } from '@frank/wallet/chain'
+import {
+  activeChain,
+  MAX_STEALTH_ITEM_AMOUNT,
+  type ContactPaymentQuote,
+} from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
 import { useMonadWallet } from 'src/utils/clients'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -312,12 +342,25 @@ export default defineComponent({
     const amount = ref('')
     const memo = ref('')
     const isReviewing = ref(false)
-    // The wallet's own quote for this payment, shown before the user confirms.
-    const fee = ref<
+    // The wallet's own quote for this payment, shown before the user confirms: the payment,
+    // the message's stamp and the network fee of both, each apart.
+    const quote = ref<
       | { state: 'estimating' }
-      | { state: 'known'; wei: bigint }
+      | { state: 'known'; quote: ContactPaymentQuote }
       | { state: 'unavailable'; reason: string }
     >({ state: 'estimating' })
+    // The smallest payment the wallet makes (its `minimumStamp`, the payment floor); zero while
+    // it is not known. The wallet refuses less itself; this says so before review.
+    const floorWei = ref(0n)
+    onMounted(async () => {
+      try {
+        const wallet = await useActiveWallet()
+        floorWei.value =
+          (await activeChain.directMessages?.minimumStamp?.({ wallet })) ?? 0n
+      } catch {
+        // Not known yet: the wallet still refuses a payment below it.
+      }
+    })
     let feeRequest = 0
     const sending = ref(false)
 
@@ -381,38 +424,65 @@ export default defineComponent({
         unit: activeChain.unit,
       }),
     )
+    /** Below the payment floor: said before review, as a game card does for a stake. */
+    const belowFloor = computed(
+      () =>
+        parsedValue.value !== undefined &&
+        floorWei.value > 0n &&
+        parsedValue.value < floorWei.value,
+    )
+    const floorAmount = computed(
+      () =>
+        `${activeChain.toDisplayAmount(floorWei.value)} ${activeChain.unit}`,
+    )
+    const minimumText = computed(() =>
+      $t('sendContactDialog.minimum', { amount: floorAmount.value }),
+    )
+    const belowFloorText = computed(() =>
+      $t('sendContactDialog.belowMinimum', { amount: floorAmount.value }),
+    )
     const isValid = computed(() => {
       return (
         Boolean(selectedContactAddress.value) &&
         parsedValue.value !== undefined &&
         parsedValue.value > 0n &&
-        !tooLarge.value
+        !tooLarge.value &&
+        !belowFloor.value
       )
     })
 
+    const display = (wei: bigint) =>
+      `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`
+    const pendingText = () =>
+      quote.value.state === 'unavailable'
+        ? $t('sendAddressDialog.feeUnavailableBecause', {
+            reason: quote.value.reason,
+          })
+        : $t('sendAddressDialog.feeEstimating')
     const feeText = computed(() =>
-      fee.value.state === 'known'
-        ? `${activeChain.toDisplayAmount(fee.value.wei)} ${activeChain.unit}`
-        : fee.value.state === 'estimating'
-        ? $t('sendAddressDialog.feeEstimating')
-        : $t('sendAddressDialog.feeUnavailableBecause', {
-            reason: fee.value.reason,
-          }),
+      quote.value.state === 'known'
+        ? display(quote.value.quote.networkFeeWei)
+        : pendingText(),
+    )
+    const stampText = computed(() =>
+      quote.value.state === 'known'
+        ? display(quote.value.quote.stampWei)
+        : pendingText(),
     )
     const totalText = computed(() =>
-      fee.value.state === 'known' && parsedValue.value !== undefined
-        ? `${activeChain.toDisplayAmount(parsedValue.value + fee.value.wei)} ${
-            activeChain.unit
-          }`
-        : $t('sendAddressDialog.maxTotalWithFee', {
-            amount: amount.value,
-            unit: activeChain.unit,
-          }),
+      quote.value.state === 'known'
+        ? display(quote.value.quote.totalWei)
+        : pendingText(),
     )
 
     return {
       feeText,
+      stampText,
       totalText,
+      floorWei,
+      belowFloor,
+      minimumText,
+      belowFloorText,
       search,
       selectedContactAddress,
       selectedContactName,
@@ -444,6 +514,12 @@ export default defineComponent({
           })
           return
         }
+        if (belowFloor.value) {
+          errorNotify(new Error(belowFloorText.value), {
+            safeMessage: belowFloorText.value,
+          })
+          return
+        }
         if (!isValid.value) {
           errorNotify(new Error('Invalid transfer details'), {
             fallbackKey: 'sendContactDialog.invalidAmount',
@@ -452,22 +528,26 @@ export default defineComponent({
         }
         isReviewing.value = true
         const request = ++feeRequest
-        fee.value = { state: 'estimating' }
+        quote.value = { state: 'estimating' }
         const value = parsedValue.value!
+        // The message carries the stamp chosen for the conversation with this contact, as a
+        // payment sent from the chat itself does (the wallet's default when none is chosen).
+        const stampValue = chatStore.getStampWei(selectedContactAddress.value)
         void (async () => {
           try {
             const wallet = await useActiveWallet()
-            if (!wallet.estimateLegacyFee)
+            if (!wallet.quoteContactPayment)
               throw new Error($t('sendContactDialog.noFeeQuote'))
-            const estimate = await wallet.estimateLegacyFee({
+            const quoted = await wallet.quoteContactPayment({
               recipient: { raw: selectedContactAddress.value },
               value,
+              stampValue,
             })
             if (request === feeRequest)
-              fee.value = { state: 'known', wei: estimate.totalFee }
+              quote.value = { state: 'known', quote: quoted }
           } catch (err) {
             if (request === feeRequest)
-              fee.value = {
+              quote.value = {
                 state: 'unavailable',
                 reason:
                   err instanceof Error && err.message
@@ -507,9 +587,13 @@ export default defineComponent({
           // conversation's ordinary send, so it shows in the chat with the contact, with its
           // pending state and Retry; the wallet broadcasts the transfer once the relay has
           // stored that message.
-          // The message carries the stamp chosen for the conversation with this contact, as
-          // a payment sent from the chat itself does; the amount is the payment's own.
-          const stampValue = chatStore.getStampWei(selectedContactAddress.value)
+          // The message carries the stamp the review showed (the one chosen for the
+          // conversation with this contact); the amount is the payment's own.
+          const reviewed = quote.value
+          const stampValue =
+            reviewed.state === 'known'
+              ? reviewed.quote.stampWei
+              : chatStore.getStampWei(selectedContactAddress.value)
           const prepared = await wallet.prepareContactPayment({
             recipient: { raw: selectedContactAddress.value },
             value: parsedValue.value!,

@@ -1218,6 +1218,9 @@ export interface ReceivedPayment {
   /** Member transaction hashes confirmed failed/reverted on-chain. */
   readonly failedTransactions?: readonly string[]
   readonly spendable: boolean
+  /** Unspent, but below the payment floor (`belowPaymentFloor`): held, not in the balance. The
+   * balance breakdown's "too small to move" is the same test on the same floor. */
+  readonly tooSmall?: true
   readonly payloadDigest?: string
   /** A stealth payment: the ephemeral key of the item it came from, bare lower-case hex. */
   readonly ephemeralPubKey?: string
@@ -1226,9 +1229,21 @@ export interface ReceivedPayment {
   readonly discoveredAtMs: number
 }
 
+/**
+ * A funded, unspent received coin below the payment floor (`chain/payment-floor.ts`): moving it
+ * would cost more than a tenth of it, so it is held and not counted as spendable. The one test
+ * for both the balance (`getBalanceParts().tooSmall`) and a received payment's `tooSmall`. A
+ * floor of zero (no gas price read yet) holds nothing back.
+ */
+export function belowPaymentFloor(coin: EvmCoin, floorWei: bigint): boolean {
+  const amount = BigInt(coin.amountWei)
+  return coin.state === 'unspent' && amount > 0n && amount < floorWei
+}
+
 export function receivedPaymentOf(
   coin: EvmCoin,
   nowMs: number = Date.now(),
+  floorWei: bigint = 0n,
 ): ReceivedPayment {
   const receivedVal =
     coin.receivedAmountWei !== undefined ? BigInt(coin.receivedAmountWei) : 0n
@@ -1294,6 +1309,7 @@ export function receivedPaymentOf(
       ? { failedTransactions: coin.failedTransactions }
       : {}),
     spendable: coin.state === 'unspent',
+    ...(belowPaymentFloor(coin, floorWei) ? { tooSmall: true as const } : {}),
     discoveredAtMs: coin.discoveredAtMs,
     ...(coin.payloadDigest === undefined
       ? {}

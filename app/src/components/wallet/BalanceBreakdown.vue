@@ -98,32 +98,73 @@ import { computed, defineComponent, onMounted, ref } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import {
+  breakdownFromParts,
   readBalanceBreakdown,
-  type BalanceBreakdownRow,
+  type BalanceBreakdown,
 } from 'src/composables/balance-breakdown'
+import { useBalance } from 'src/composables/useBalance'
 import { formatDisplayAmount, formatRawAmount } from 'src/utils/chain-amount'
 import { shortAddress } from 'src/utils/short-address'
 
 /**
- * The balance, taken apart: shown when the user opens it from the balance on the Wallet page,
- * read once then. It only reads the wallet (`readBalanceBreakdown`).
+ * The balance, taken apart: shown when the user opens it from the balance on the Wallet page.
+ * A wallet that reports where its balance is (`getBalanceParts`) is shown from the shared balance
+ * read (`useBalance().parts`): the same read as the balance above it, kept up to date with it, so
+ * the two never disagree. Another wallet is read once (`readBalanceBreakdown`).
  */
 export default defineComponent({
   name: 'BalanceBreakdown',
   setup() {
-    const state = ref<'loading' | 'ready' | 'unavailable'>('loading')
-    const rows = ref<readonly BalanceBreakdownRow[]>([])
-    const total = ref(0n)
+    const { parts, refresh } = useBalance()
+    const source = ref<
+      | { kind: 'loading' }
+      | { kind: 'balance'; addresses: { main?: string; profile?: string } }
+      | { kind: 'read'; breakdown: BalanceBreakdown }
+      | { kind: 'unavailable' }
+    >({ kind: 'loading' })
     onMounted(async () => {
       try {
-        const breakdown = await readBalanceBreakdown(await useActiveWallet())
-        rows.value = breakdown.rows
-        total.value = breakdown.total
-        state.value = breakdown.rows.length > 0 ? 'ready' : 'unavailable'
+        const wallet = (await useActiveWallet()) as {
+          getBalanceParts?: unknown
+          getReceiveAddress?(): Promise<{ raw: string }>
+          identity?: { address?: { raw?: string } }
+        }
+        if (typeof wallet.getBalanceParts === 'function') {
+          const main =
+            typeof wallet.getReceiveAddress === 'function'
+              ? (await wallet.getReceiveAddress()).raw
+              : undefined
+          // Read now, for the balance above and these rows at once.
+          await refresh()
+          source.value = {
+            kind: 'balance',
+            addresses: { main, profile: wallet.identity?.address?.raw },
+          }
+          return
+        }
+        source.value = {
+          kind: 'read',
+          breakdown: await readBalanceBreakdown(wallet),
+        }
       } catch {
-        state.value = 'unavailable'
+        source.value = { kind: 'unavailable' }
       }
     })
+    const breakdown = computed((): BalanceBreakdown | undefined => {
+      const current = source.value
+      if (current.kind === 'read') return current.breakdown
+      if (current.kind === 'balance' && parts.value)
+        return breakdownFromParts(parts.value, current.addresses)
+      return undefined
+    })
+    const rows = computed(() => breakdown.value?.rows ?? [])
+    const state = computed<'loading' | 'ready' | 'unavailable'>(() =>
+      source.value.kind === 'loading'
+        ? 'loading'
+        : rows.value.length > 0
+        ? 'ready'
+        : 'unavailable',
+    )
     return {
       state,
       rows,
@@ -133,7 +174,7 @@ export default defineComponent({
       otherRows: computed(() =>
         rows.value.filter(r => r.id === 'other' || r.id === 'tooSmall'),
       ),
-      total,
+      total: computed(() => breakdown.value?.total ?? 0n),
       shortAddress,
       display: (amount: bigint) => formatDisplayAmount(activeChain, amount),
       exact: (amount: bigint) => formatRawAmount(activeChain, amount),

@@ -383,6 +383,9 @@ it.each([true, false])(
       'sealed',
       'sealed',
     ])
+    // A queued message records why it waits: the relay or the network could not be reached.
+    if (labelled)
+      expect(f.row.delivery).toEqual({ failureReason: 'unreachable' })
     expect(f.ports.delay).toHaveBeenNthCalledWith(1, 500)
     expect(f.ports.delay).toHaveBeenNthCalledWith(2, 1000)
     expect(f.ports.presentation.wakeupItems).toHaveBeenCalledTimes(3)

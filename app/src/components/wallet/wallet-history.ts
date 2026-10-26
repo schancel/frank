@@ -1,4 +1,5 @@
 import {
+  notedSendGroupKeys,
   summarizeEvmNativeOperation,
   summarizeEvmNativeStampStages,
   type ContactPaymentInfo,
@@ -22,7 +23,11 @@ import type { SwapActivityRow } from 'src/swap/useSwapActivity'
  * - sends made on any device of the account: the account's notes to itself
  *   (`getNotedSends`). Every device reads them from the account's mailbox, and a device restored
  *   from the seed reads them again, so every device shows the account's sends. A transaction this
- *   device's journal also has is shown once, from the journal;
+ *   device's journal also has is shown once, from the journal. Each send is one row on every
+ *   device, grouped and named from the operation its transactions' notes name, as the sending
+ *   device's journal groups and names it, with the network fee of all its transactions;
+ * - an attempt of this device that never landed because another device's transaction took its
+ *   nonce (the chain shows that transaction): no row, since it moved nothing and cost nothing;
  * - a contact payment's own outcome: the wallet's contact payments (`getContactPayments`), the
  *   same record the chat's payment card reads;
  * - received payments: the wallet's coin list (`getReceivedPayments`). The coins one message
@@ -52,6 +57,8 @@ export type WalletHistoryRow =
       contactOutcome?: 'failed' | 'released'
       /** The time of the block that included the payment; absent until it is in one. */
       timeMs?: number
+      /** Network fees the chain charged for this send's transactions so far, wei. */
+      feeWei: string
     }
   | {
       kind: 'noted'
@@ -61,8 +68,11 @@ export type WalletHistoryRow =
       recipient?: string
       /** What the transactions carried to the recipient, wei. */
       valueWei: string
-      /** The transactions of this send, as noted. */
+      /** The transactions of this send, as noted: those to the recipient. */
       sends: readonly NotedSendStatus[]
+      /** Network fees the chain charged for all of its transactions (with those that moved
+       * value between the wallet's own accounts), wei. */
+      feeWei: string
       state: 'included' | 'reverted' | 'partial' | 'pending' | 'unknown'
       /** The latest block time among its transactions, else when it was noted. */
       timeMs: number
@@ -208,13 +218,18 @@ export function observedFees(members: EvmNativeOperationStatus['members']): {
   }
 }
 
-/** When the operation's payment was included: the latest block among its payment members. */
+/** When the operation's payment was included: the latest block among the transactions that
+ * paid its recipient (not those of a stamp appended to it, which is a row of its own; not those
+ * that moved value between the wallet's own accounts). Another device dates the same send by
+ * the same transactions. */
 function operationTime(
   operation: EvmNativeOperationStatus,
   blockTimes: ReadonlyMap<string, number>,
 ): number | undefined {
   let time: number | undefined
-  for (const member of paymentMembers(operation)) {
+  for (const member of ownMembers(operation).filter(
+    member => member.role === 'payment',
+  )) {
     const at = member.blockHash
       ? blockTimes.get(member.blockHash.toLowerCase())
       : undefined
@@ -284,6 +299,48 @@ function notedState(
   return 'unknown'
 }
 
+/** What one send of several noted transactions was for: the most specific any of them says. */
+function notedGroupPurpose(
+  sends: readonly NotedSendStatus[],
+): NotedSendPurpose {
+  return sends.find(send => send.purpose !== 'transfer')?.purpose ?? 'transfer'
+}
+
+/**
+ * The members whose fees belong to this row: a payment's own transactions, without the stamp
+ * stages appended to it (each is a row of its own, with its own fee).
+ */
+function ownMembers(operation: EvmNativeOperationStatus) {
+  const unstaged = operation.members.filter(
+    member => member.stageId === undefined || !/^stamp-/.test(member.stageId),
+  )
+  // A stamp stage's own row: every member is the stage's.
+  return unstaged.length ? unstaged : operation.members
+}
+
+/**
+ * An attempt that never landed and took nothing: the chain gave every one of its payment
+ * transactions' nonces to another transaction of the account (another device's, which won the
+ * race for the same coin). It moved no money and charged no fee, so it is no row of History.
+ */
+function lostToAnother(
+  operation: EvmNativeOperationStatus,
+  included: ReadonlyMap<string, string>,
+): boolean {
+  if (operation.payment !== 'superseded') return false
+  return (
+    operation.members.length > 0 &&
+    operation.members.every(member => {
+      const taker = included.get(`${member.account}:${member.nonce}`)
+      return (
+        member.state === 'superseded' &&
+        taker !== undefined &&
+        taker !== member.transactionHash?.toLowerCase()
+      )
+    })
+  )
+}
+
 /**
  * The rows History shows for one network, newest first: what is still unresolved, then
  * everything else. A swap and the transfer that carried it are one row.
@@ -326,8 +383,28 @@ export function buildWalletHistoryGroups(input: {
         : [],
     ),
   )
+  const noted = load.status === 'available' ? load.noted : []
+  // Who took each account's nonce, of the transactions the chain included.
+  const included = new Map<string, string>()
+  for (const send of noted)
+    if (send.state === 'included' || send.state === 'reverted')
+      included.set(`${send.from}:${send.nonce}`, send.txHash.toLowerCase())
   for (const operation of operations)
-    if (!attached.has(operation.operationId)) {
+    for (const member of operation.members)
+      if (
+        member.transactionHash &&
+        (member.state === 'included-success' ||
+          member.state === 'included-revert')
+      )
+        included.set(
+          `${member.account}:${member.nonce}`,
+          member.transactionHash.toLowerCase(),
+        )
+  for (const operation of operations)
+    if (
+      !attached.has(operation.operationId) &&
+      !lostToAnother(operation, included)
+    ) {
       // The chain's answer stands once it showed the payment; before that, a contact payment
       // that ended without paying reads as the chat's card does.
       const outcome =
@@ -345,6 +422,7 @@ export function buildWalletHistoryGroups(input: {
           ? { contactOutcome: outcome }
           : {}),
         timeMs: operationTime(operation, blockTimes),
+        feeWei: observedFees(ownMembers(operation)).feeWei,
       })
     }
   if (load.status === 'available') {
@@ -356,22 +434,44 @@ export function buildWalletHistoryGroups(input: {
           shown.add(member.transactionHash.toLowerCase())
     for (const swap of input.swaps)
       if (swap.txHash) shown.add(swap.txHash.toLowerCase())
-    // The transactions one note reported for one purpose are one send: a message's stamp
-    // paid from several coins is one stamp, as the sending device's journal shows it.
-    const sends = new Map<string, NotedSendStatus[]>()
-    const ordered = [...load.noted].sort(
-      (a, b) =>
-        (a.noteDigest ?? a.txHash).localeCompare(b.noteDigest ?? b.txHash) ||
-        a.noteIndex - b.noteIndex,
+    // One send of the account is one row on every device: its transactions are grouped by the
+    // operation and message their notes name (`notedSendGroupKeys`), as the sending device's
+    // journal groups them.
+    const parent = new Map<string, string>()
+    const root = (key: string): string => {
+      let at = key
+      while (parent.get(at) !== at) at = parent.get(at)!
+      return at
+    }
+    const ordered = [...noted]
+      .filter(send => !shown.has(send.txHash.toLowerCase()))
+      .sort(
+        (a, b) =>
+          a.notedAtMs - b.notedAtMs ||
+          a.noteIndex - b.noteIndex ||
+          a.txHash.localeCompare(b.txHash),
+      )
+    const keysOf = new Map(
+      ordered.map(send => [send.txHash, notedSendGroupKeys(send)]),
     )
+    for (const keys of keysOf.values())
+      for (const key of keys) if (!parent.has(key)) parent.set(key, key)
+    for (const keys of keysOf.values())
+      for (const key of keys.slice(1)) {
+        const [a, b] = [root(keys[0]!), root(key)].sort()
+        parent.set(b!, a!)
+      }
+    const sends = new Map<string, NotedSendStatus[]>()
     for (const send of ordered) {
-      if (shown.has(send.txHash.toLowerCase())) continue
-      const key = `${send.noteDigest ?? send.txHash}:${send.purpose}`
+      const key = root(keysOf.get(send.txHash)![0]!)
       const group = sends.get(key)
       if (group) group.push(send)
       else sends.set(key, [send])
     }
-    for (const [key, group] of sends) {
+    for (const [key, all] of sends) {
+      // What moved between the wallet's own accounts is no send of its own: only its fee is.
+      const group = all.filter(send => !send.toOwnAccount)
+      if (group.length === 0) continue
       const times = group.flatMap(send =>
         send.inclusion?.blockTimeMs !== undefined
           ? [send.inclusion.blockTimeMs]
@@ -380,12 +480,18 @@ export function buildWalletHistoryGroups(input: {
       rows.push({
         kind: 'noted',
         id: `noted:${key}`,
-        purpose: group[0]!.purpose,
+        purpose: notedGroupPurpose(group),
         ...(group[0]!.to === undefined ? {} : { recipient: group[0]!.to }),
         valueWei: group
           .reduce((total, send) => total + BigInt(send.valueWei), 0n)
           .toString(),
         sends: group,
+        feeWei: all
+          .reduce(
+            (total, send) => total + BigInt(send.inclusion?.feeWei ?? '0'),
+            0n,
+          )
+          .toString(),
         state: notedState(group),
         timeMs: times.length
           ? Math.max(...times)

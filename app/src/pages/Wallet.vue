@@ -732,6 +732,9 @@ import { viewportPageStyle } from 'src/utils/layout'
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
+/** How often History is read again while it is open. */
+const HISTORY_REFRESH_MS = 15_000
+
 export default defineComponent({
   components: {
     QrcodeVue,
@@ -943,11 +946,34 @@ export default defineComponent({
         evmTokens.value.length,
     )
     // Coming back from the swap tab, the token balances are read again at once.
-    watch(activeTab, tab => {
-      if (tab === 'balance') void refreshEvmTokens()
-      // History is read again from its owners each time it is opened.
-      if (tab === 'history') reloadHistory?.()
-    })
+    // Re-reads History for the wallet the address watcher captured; unset while there is none.
+    let reloadHistory: (() => void) | undefined
+    // The time relative dates are read against; it moves while History is open.
+    const now = ref(Date.now())
+    let historyTimer: ReturnType<typeof setInterval> | undefined
+    const stopHistoryRefresh = () => {
+      if (historyTimer !== undefined) clearInterval(historyTimer)
+      historyTimer = undefined
+    }
+    watch(
+      activeTab,
+      tab => {
+        if (tab === 'balance') void refreshEvmTokens()
+        stopHistoryRefresh()
+        if (tab !== 'history') return
+        // History is read again from its owners when it is opened, and again every
+        // HISTORY_REFRESH_MS while it stays open: a send from another device, a payment that
+        // arrived, a block that included a send all show without a reload.
+        now.value = Date.now()
+        reloadHistory?.()
+        historyTimer = setInterval(() => {
+          now.value = Date.now()
+          reloadHistory?.()
+        }, HISTORY_REFRESH_MS)
+      },
+      { immediate: true },
+    )
+    onBeforeUnmount(stopHistoryRefresh)
 
     // The account's swaps on this network, as its own notes record them, with what each did
     // read from the chain.
@@ -955,7 +981,7 @@ export default defineComponent({
 
     const formatSwapTime = (timestamp: number) => {
       try {
-        const diff = Date.now() - timestamp
+        const diff = now.value - timestamp
         if (diff < 60_000) return 'Just now'
         if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
         if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
@@ -971,8 +997,6 @@ export default defineComponent({
     const nativeOperations = shallowRef<WalletHistoryLoad>({
       status: 'unsupported',
     })
-    // Re-reads History for the wallet the address watcher captured; unset while there is none.
-    let reloadHistory: (() => void) | undefined
     // A derived view only: see wallet-history.ts for the owners it reads and when it is rebuilt.
     const historyGroups = computed(() =>
       buildWalletHistoryGroups({

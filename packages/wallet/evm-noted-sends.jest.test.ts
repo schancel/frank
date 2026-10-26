@@ -1,5 +1,9 @@
 import { Wallet, parseEther } from 'ethers'
-import { EvmNotedSends, type NotedSend } from './evm-noted-sends'
+import {
+  EvmNotedSends,
+  notedSendGroupKeys,
+  type NotedSend,
+} from './evm-noted-sends'
 import { MemoryRecordStore } from './storage/evm-coin-store'
 
 const CHAIN_ID = 20143n
@@ -34,29 +38,25 @@ describe('EvmNotedSends', () => {
     await noted.recordNote({
       transactions: [stamp, payment, burn, foreign].map(rawTx => ({ rawTx })),
       itemTransactions: new Set([hashOf(payment)]),
-      carriesMessage: true,
-      noteDigest: 'aa',
+      message: { digest: 'aa' },
       notedAtMs: 2000,
     })
     await noted.recordNote({
       transactions: [{ rawTx: transfer, txHash: hashOf(transfer) }],
       itemTransactions: new Set(),
-      carriesMessage: false,
       notedAtMs: 3000,
     })
     // The same bytes again, from a later read of the mailbox: nothing changes.
     await noted.recordNote({
       transactions: [{ rawTx: stamp }],
       itemTransactions: new Set(),
-      carriesMessage: true,
-      noteDigest: 'aa',
+      message: { digest: 'aa' },
       notedAtMs: 9000,
     })
     // A note whose hash does not match its bytes is not taken.
     await noted.recordNote({
       transactions: [{ rawTx: transfer, txHash: '0x' + '00'.repeat(32) }],
       itemTransactions: new Set(),
-      carriesMessage: false,
       notedAtMs: 1,
     })
 
@@ -66,7 +66,7 @@ describe('EvmNotedSends', () => {
     expect(byHash.get(hashOf(stamp))).toMatchObject({
       purpose: 'stamp',
       valueWei: parseEther('0.03').toString(),
-      noteDigest: 'aa',
+      message: { digest: 'aa', item: false },
       noteIndex: 0,
       notedAtMs: 2000,
       from: signer.address.toLowerCase(),
@@ -79,5 +79,81 @@ describe('EvmNotedSends', () => {
       to: '0x' + '33'.repeat(20),
       notedAtMs: 3000,
     })
+  })
+
+  it('names and groups one send the same way whatever notes report it and in whatever order', async () => {
+    const { Transaction } = await import('ethers')
+    const hashOf = (raw: string) => Transaction.from(raw).hash!.toLowerCase()
+    const messageId = '0123456789abcdef0123456789abcdef'
+    const recipient = '0x' + '55'.repeat(20)
+    // An in-chat payment from three coins, and its message's stamp appended as a stage.
+    const payments = await Promise.all(
+      [0, 1, 2].map(nonce => signed(recipient, parseEther('0.3'), nonce)),
+    )
+    const stamps = await Promise.all(
+      [3, 4].map(nonce => signed('0x' + '66'.repeat(20), parseEther('0.025'), nonce)),
+    )
+    const groupWrite = await signer.signTransaction({
+      type: 2,
+      chainId: CHAIN_ID,
+      nonce: 5,
+      to: BURN,
+      value: 1_000_000_000_000n,
+      data: '0x4752505701' + '00'.repeat(32),
+      gasLimit: 50_000n,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+    })
+    const operation = { id: 'evm-transaction-set:stealth-' + 'ab'.repeat(32) }
+    const memberNotes = [
+      ...payments.map(rawTx => ({ transactions: [{ rawTx, operation }] })),
+      ...stamps.map(rawTx => ({
+        transactions: [{ rawTx, operation: { ...operation, stage: `stamp-${messageId}` } }],
+      })),
+      { transactions: [{ rawTx: groupWrite }] },
+    ]
+    const messageNote = {
+      transactions: stamps.map(rawTx => ({ rawTx })),
+      itemTransactions: new Set(payments.map(hashOf)),
+      message: { digest: 'dd', messageId },
+    }
+    const read = async (order: 'members-first' | 'message-first') => {
+      const noted = new EvmNotedSends(new MemoryRecordStore<NotedSend>(), {
+        chainId: CHAIN_ID,
+        burnAddress: BURN,
+      })
+      const record = (note: (typeof memberNotes)[number]) =>
+        noted.recordNote({ ...note, itemTransactions: new Set(), notedAtMs: 1000 })
+      if (order === 'message-first')
+        await noted.recordNote({ ...messageNote, notedAtMs: 1000 })
+      for (const note of memberNotes) await record(note)
+      if (order === 'members-first')
+        await noted.recordNote({ ...messageNote, notedAtMs: 1000 })
+      return new Map(noted.all().map(row => [row.txHash, row]))
+    }
+    const first = await read('members-first')
+    const second = await read('message-first')
+    for (const [hash, row] of first) {
+      expect(second.get(hash)?.purpose).toBe(row.purpose)
+      expect(notedSendGroupKeys(second.get(hash)!)[0]).toBe(
+        notedSendGroupKeys(row)[0],
+      )
+    }
+    // The payment's coins are one payment to a contact, the stamp one stamp of its message.
+    for (const rawTx of payments) {
+      expect(first.get(hashOf(rawTx))?.purpose).toBe('contact-payment')
+      expect(notedSendGroupKeys(first.get(hashOf(rawTx))!)[0]).toBe(
+        `operation:${operation.id}#`,
+      )
+    }
+    for (const rawTx of stamps) {
+      expect(first.get(hashOf(rawTx))?.purpose).toBe('stamp')
+      expect(notedSendGroupKeys(first.get(hashOf(rawTx))!)).toEqual([
+        `stamp:${messageId}`,
+        `stamp:${messageId}`,
+      ])
+    }
+    // A group write's payment is named by its own calldata, though it goes to the burn address.
+    expect(first.get(hashOf(groupWrite))?.purpose).toBe('group-write')
   })
 })

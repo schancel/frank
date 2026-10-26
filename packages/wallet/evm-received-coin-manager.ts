@@ -208,7 +208,13 @@ async function recordNotedSends(
     item.direction === "out" &&
     item.chainIdentifier === chainIdentifier &&
     typeof item.rawTx === "string"
-      ? [{ rawTx: item.rawTx, txHash: item.txHash }]
+      ? [
+          {
+            rawTx: item.rawTx,
+            txHash: item.txHash,
+            ...(item.operation === undefined ? {} : { operation: item.operation }),
+          },
+        ]
       : []
   );
   if (transactions.length === 0) return;
@@ -219,8 +225,20 @@ async function recordNotedSends(
   await noted.recordNote({
     transactions,
     itemTransactions: itemTransactionHashes(rest?.items),
-    carriesMessage: outbox !== undefined,
-    ...(message.payloadDigest ? { noteDigest: message.payloadDigest } : {}),
+    ...(outbox === undefined
+      ? {}
+      : {
+          message: {
+            digest: (outbox.payloadDigest || message.payloadDigest)
+              .replace(/^0x/, "")
+              .toLowerCase(),
+            ...(/^[0-9a-f]{32}$/.test(
+              (outbox.messageId ?? "").replace(/-/g, "").toLowerCase()
+            )
+              ? { messageId: outbox.messageId!.replace(/-/g, "").toLowerCase() }
+              : {}),
+          },
+        }),
     notedAtMs:
       outbox?.sentAt ??
       stamped?.timestamp ??

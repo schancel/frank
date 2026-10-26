@@ -230,6 +230,7 @@ export type {
   NotedSendPurpose,
   NotedSendStatus,
 } from "../evm-noted-sends";
+export { notedSendGroupKeys, notedSendPurpose } from "../evm-noted-sends";
 
 export {
   deriveEvmStealthAddress,
@@ -288,8 +289,12 @@ export {
   summarizeEvmNativeOperation,
   summarizeEvmNativeStampStages,
   findEvmNativeOperationStatus,
+  classifyEvmOperation,
 } from "./evm-native-operation-status";
-export type { EvmNativeOperationStatus } from "./evm-native-operation-status";
+export type {
+  EvmNativeOperationStatus,
+  EvmSendPurpose,
+} from "./evm-native-operation-status";
 export {
   ChainUnreachableError,
   ChainWaitCancelledError,

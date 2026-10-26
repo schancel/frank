@@ -21,6 +21,7 @@ import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import type {
   SwapRecordItem,
   WalletSyncItem,
+  WalletSyncOperation,
 } from '@frank/cashweb/types/messages'
 import {
   EvmNativeOperationJournal,
@@ -172,6 +173,26 @@ export function swapRecordItemOf(
     ...(route !== undefined && route.length <= 1024 ? { route } : {}),
     timestamp: Date.now(),
   }
+}
+
+/**
+ * The operation identity a member's note carries to the account's other devices: what they
+ * group the account's sends by and name them from (`classifyEvmOperation`). The journal's own
+ * operation ID is this device's sequence number, so another device could hold the same one for a
+ * different operation: the preparation identity, or else the first transaction's hash, is used.
+ */
+export function syncOperationOf(
+  row: EvmNativeOperation,
+  member: EvmNativeOperation['members'][number],
+): WalletSyncOperation | undefined {
+  const id =
+    row.preparationId ??
+    (row.members[0]?.signed?.transactionHash
+      ? `tx-${row.members[0].signed.transactionHash.toLowerCase()}`
+      : undefined)
+  if (id === undefined) return undefined
+  const stage = member.transactionSet?.stageId
+  return stage === undefined ? { id } : { id, stage }
 }
 
 export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
@@ -1190,6 +1211,7 @@ export class EvmLegacyConsolidator {
                 { address: tx.to!, valueWei: tx.value.toString() },
               ],
               timestamp: Date.now(),
+              operation: syncOperationOf(row, member),
             },
             swapRecordItemOf(row),
           )

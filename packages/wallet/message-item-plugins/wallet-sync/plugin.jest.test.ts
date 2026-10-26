@@ -42,6 +42,14 @@ const outgoing = {
   txHash: '0xfedcba0987654321',
   createdOutputs: [{ address: '0xB', valueWei: '100' }],
 }
+// The sending wallet's operation, which the account's other devices group its sends by.
+const outgoingOfOperation = {
+  ...outgoing,
+  operation: {
+    id: 'evm-transaction-set:contact-0123456789abcdef0123456789abcdef',
+    stage: 'stamp-0123456789abcdef0123456789abcdef',
+  },
+}
 
 describePluginContract({
   type: 'wallet-sync',
@@ -53,6 +61,10 @@ describePluginContract({
     },
     {
       item: outgoing,
+      preview: 'Wallet sync: Sent tx 0xfedcba09... on monad-testnet',
+    },
+    {
+      item: outgoingOfOperation,
       preview: 'Wallet sync: Sent tx 0xfedcba09... on monad-testnet',
     },
   ],

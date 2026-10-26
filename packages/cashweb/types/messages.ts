@@ -699,6 +699,20 @@ export interface WalletSyncItem {
   }
   memo?: string
   timestamp?: number
+  /**
+   * The sending wallet's operation this transaction belongs to: its preparation identity (for
+   * example `evm-transaction-set:contact-<message id>`) or, for an operation without one,
+   * `tx-<hash of its first transaction>`; and the stage of it the transaction is in, when one
+   * was appended (a message's stamp, `stamp-<message id>`). Every device of the account groups
+   * the account's sends by it and names what each was for from it, as the sending device does.
+   * Presentation only: never a spend or custody fact.
+   */
+  operation?: WalletSyncOperation
+}
+
+export interface WalletSyncOperation {
+  id: string
+  stage?: string
 }
 
 export type PaymentTransferItem = WalletSyncItem
@@ -938,7 +952,8 @@ export interface OutgoingDelivery {
    * before that set is first submitted. While this attempt is live, a retry re-sends the same
    * bytes and never builds a new payment. Absent until a payment set exists. */
   attemptDigest?: string
-  /** Set on `status: 'error'`. */
+  /** Why it failed, on `status: 'error'`; on `status: 'payment-pending'` without an attempt,
+   * why it is queued (`unreachable`: the relay or the network could not be reached). */
   failureReason?: OutgoingFailureReason
   /** Short technical detail for the failure (not localized). */
   detail?: string

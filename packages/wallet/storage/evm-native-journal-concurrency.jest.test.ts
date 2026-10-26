@@ -79,7 +79,8 @@ it('an RPC observation cannot overwrite exposure committed by another wrapper', 
       journal: b,
       provider,
       transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => [],
+      mainSource: { kind: 'main', address: '0x' + '00'.repeat(20) },
+      ownedSource: () => undefined,
       sign: async () => {
         throw Error('must not sign')
       },

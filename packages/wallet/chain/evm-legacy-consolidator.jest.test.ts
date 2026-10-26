@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm } from 'fs/promises'
+import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  Interface,
+  HDNodeWallet,
   Transaction,
   Wallet,
   keccak256,
@@ -14,7 +14,6 @@ import {
 } from './evm-legacy-consolidator'
 import {
   NativeEvmTransactionBuilder,
-  Tip20TransactionBuilder,
   type EvmTransactionBuilder,
 } from './evm-transaction-builder'
 import {
@@ -22,11 +21,8 @@ import {
   type EvmNativeSource,
 } from '../storage/evm-native-operation-journal'
 import {
-  canonicalAdmissionPool,
   createEvmInputAdmission,
-  EvmInputAdmissionError,
   nativeJournalReader,
-  poolSpendAdmission,
   type WalletOperationLifetime,
 } from '../evm-input-admission'
 import { MonadHdKeyring } from '../secp256k1-hd-keyring'
@@ -40,6 +36,10 @@ import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journa
 import { validateMonadWalletState } from '../storage/evm-wallet-state-validator'
 import * as durability from '../storage/level-durability'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
+import { EvmCoinList } from '../evm-coin-list'
+import { MemoryRecordStore } from '../storage/evm-coin-store'
+import { EvmTransactionSetPreparer } from '../evm-transaction-set'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '../evm-transaction-set-types'
 
 const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
 const wallets = [1, 2, 3].map(
@@ -161,10 +161,6 @@ describe('wallet-lifetime EVM native operations', () => {
     options: {
       sources?: EvmNativeSource[]
       builder?: EvmTransactionBuilder
-      /** This fixture has no pool. `true` says so the way composition would have to: a local
-       * callback that reports every member as having no pool row. Without it the executor has
-       * no local result for any member and transports nothing (the fail-closed default). */
-      noPoolRows?: boolean
     } = {},
   ) {
     const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
@@ -173,16 +169,17 @@ describe('wallet-lifetime EVM native operations', () => {
       )!
       return wallet.signTransaction(Transaction.from(raw))
     })
-    const sync = jest.fn(async () => undefined)
+    const sync = jest.fn(async (): Promise<void> => undefined)
     const executor = new EvmLegacyConsolidator({
       journal,
       provider: state.provider as unknown as Provider,
       transactionBuilder: options.builder ?? new NativeEvmTransactionBuilder(),
-      getSources: async () => options.sources ?? sources(),
+      mainSource: { kind: 'main', address: wallets[0]!.address.toLowerCase() },
+      ownedSource: address =>
+        (options.sources ?? sources()).find(
+          source => source.address === address.toLowerCase(),
+        ),
       sign,
-      ...(options.noPoolRows
-        ? { applyLocalMember: async () => ({ kind: 'no-pool-row' as const }) }
-        : {}),
       onSyncTransaction: sync,
     })
     return { executor, sign, sync }
@@ -209,6 +206,34 @@ describe('wallet-lifetime EVM native operations', () => {
       .slice(0, 2)
       .map(source => ({ sourceAddress: source.address, value: 1000n })),
   })
+  let payments = 0
+  /** One native transfer of `value` from one named account, the way a token or stealth payment
+   * is made now: an independent payment of one member, signed, then handed to the network. */
+  async function pay(
+    executor: EvmLegacyConsolidator,
+    options: {
+      source?: number | string
+      value?: bigint
+      lifetime?: WalletOperationLifetime
+      to?: string
+    } = {},
+  ) {
+    const sourceAddress =
+      typeof options.source === 'string'
+        ? options.source
+        : wallets[options.source ?? 0]!.address.toLowerCase()
+    const row = await executor.signIndependentPayment(
+      {
+        kind: 'native',
+        preparationId: `stealth-payment:pay-${++payments}`,
+        recipient: { raw: options.to ?? recipient },
+        maxNativeFeeWei: fee * 10n,
+        members: [{ sourceAddress, value: options.value ?? 1000n }],
+      },
+      options.lifetime,
+    )
+    return executor.resumeOperation(row.operationId, options.lifetime)
+  }
   it('reserves the entire independent set before signing and reopens original bytes', async () => {
     const state = chain([50000n, 50000n]),
       { executor, sign } = owner(state)
@@ -304,7 +329,7 @@ describe('wallet-lifetime EVM native operations', () => {
   })
   it('tries every independent original after an uncertain sibling and preserves individual retirement', async () => {
     const state = chain([50000n, 50000n]),
-      { executor } = owner(state, { noPoolRows: true })
+      { executor } = owner(state)
     const row = await executor.signIndependentPayment(independent())
     state.provider.broadcastTransaction.mockImplementationOnce(async raw => {
       state.raws.push(raw)
@@ -475,13 +500,15 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(state.raws).toEqual([row.members[1]!.signed!.rawTransaction])
     expect(journal.get(row.operationId).members[0]!.exposed).toBe(false)
   })
-  it('does not expose a direct payment before its recovery checkpoint and callback', async () => {
+  it('does not expose a contract call before its recovery checkpoint and callback; a call that was never exposed is ended', async () => {
     const state = chain([200000n])
     const { executor } = owner(state)
     await expect(
-      executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100000n,
+      executor.sendContractCall({
+        to: { raw: recipient },
+        data: '0x12345678',
+        value: 0n,
+        gasLimit: 21000n,
         onSigned: async transaction => {
           const record = journal.list()[0]!
           expect(record.members[0]!.signed!.transactionHash).toBe(
@@ -493,35 +520,29 @@ describe('wallet-lifetime EVM native operations', () => {
       }),
     ).rejects.toThrow('caller checkpoint failed')
     expect(state.provider.broadcastTransaction.mock.calls.length).toBe(0)
+    // Without its caller's record the call may never be sent later: it is ended, and the main
+    // account is free for the next call.
     await reopen()
-    expect(journal.list()[0]!.members[0]!.signed).not.toBeNull()
+    expect(journal.list()[0]!.cancelled).toBe(true)
+    expect(journal.canSelect(wallets[0]!.address.toLowerCase(), 0)).toBe(true)
   })
   it('replays direct lost-response bytes after Level reopen without a fresh payment', async () => {
     const state = chain([200000n])
     state.setMode('lost')
     const first = owner(state)
     await expect(
-      first.executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
+      pay(first.executor, { value: 100000n }),
     ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
     const original = journal.list()[0]!
     expect(original.members[0]!.exposed).toBe(true)
     await reopen()
-    // #1235 Stage C changed this fixture on purpose. It used to configure neither local callback
-    // and still expect `sync` to be called once: with no callback the executor recorded every
-    // included member as locally applied, so transport ran, and the member was marked
-    // sync-applied, with nothing having been recorded anywhere. That default now fails closed
-    // (see "with neither local callback configured" below), so the fixture states what it
-    // means: this executor's members have no pool row.
-    const second = owner(state, { sources: [], noPoolRows: true })
+    const second = owner(state, { sources: [] })
     state.setMode('mine')
-    const result = await second.executor.resumeLegacySend(original.operationId)
-    await second.executor.resumeLegacySend(original.operationId)
+    await second.executor.resumeOperation(original.operationId)
+    await second.executor.lookAtOperation(original.operationId)
+    await second.executor.resumeOperation(original.operationId)
     await second.executor.flushSync()
     await second.executor.flushSync()
-    expect(result.totalValueSent).toBe(100000n)
     expect(state.raws).toEqual([
       original.members[0]!.signed!.rawTransaction,
       original.members[0]!.signed!.rawTransaction,
@@ -532,173 +553,24 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(journal.list()).toHaveLength(1)
     expect(journal.canSelect(wallets[0]!.address.toLowerCase(), 0)).toBe(false)
   })
-  it('retains partial fan-in and finishes the exact original drain once after restart', async () => {
-    const state = chain([80000n, 70000n])
-    state.setMode('lost')
-    await expect(
-      owner(state).executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
-    const row = journal.list()[0]!
-    expect(row.members).toHaveLength(2)
-    expect(row.members.every(m => m.signed !== null)).toBe(true)
-    state.mine(row.members[0]!.signed!.rawTransaction)
-    await reopen()
-    state.provider.getFeeData.mockResolvedValue({
-      maxFeePerGas: 999n,
-      maxPriorityFeePerGas: 999n,
-      gasPrice: 999n,
-    })
-    state.setMode('mine')
-    const recovered = owner(state, { sources: [] })
-    const result = await recovered.executor.resumeLegacySend(row.operationId)
-    await recovered.executor.resumeLegacySend(row.operationId)
-    expect(result.totalValueSent).toBe(100000n)
-    expect(state.raws).toEqual([
-      row.members[0]!.signed!.rawTransaction,
-      row.members[1]!.signed!.rawTransaction,
-    ])
-    expect(recovered.sign).not.toHaveBeenCalled()
-    expect(state.balances.get(recipient)).toBe(100000n)
-  })
-  it.each(['missing', 'mismatched'] as const)(
-    'holds provisional leader funds across foreign nonce advance with %s drain',
-    async kind => {
-      const state = chain([80000n, 70000n])
-      state.setMode('lost')
-      await expect(
-        owner(state).executor.sendLegacy({
-          recipient: { raw: recipient },
-          value: 100000n,
-        }),
-      ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
-      const row = journal.list()[0]!
-      state.mine(row.members[0]!.signed!.rawTransaction)
-      const leader = row.members[1]!.source.address
-      state.nonces.set(leader, 1)
-      if (kind === 'mismatched')
-        state.receipts.set(row.members[1]!.signed!.transactionHash, {
-          hash: '0x' + '00'.repeat(32),
-          status: 1,
-        })
-      await reopen()
-      const recovered = owner(state)
-      await expect(
-        recovered.executor.sendNative({
-          recipient: { raw: recipient },
-          value: 1000n,
-        }),
-      ).rejects.toThrow('Insufficient')
-      expect(recovered.sign).not.toHaveBeenCalled()
-      state.balances.set(wallets[2]!.address.toLowerCase(), 100000n)
-      state.setMode('mine')
-      await recovered.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 1000n,
-      })
-      expect(
-        recovered.sign.mock.calls.every(
-          ([source]) => source.address === wallets[2]!.address.toLowerCase(),
-        ),
-      ).toBe(true)
-    },
-  )
   it('permits observed residual at next nonce but never reuses the retained old pair', async () => {
     const state = chain([300000n])
     const current = owner(state)
-    await current.executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 100000n,
-    })
-    await current.executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 50000n,
-    })
+    const first = await pay(current.executor, { value: 100000n })
+    // Seen included: the account's next nonce is free for the next payment.
+    await current.executor.lookAtOperation(first.operationId)
+    await pay(current.executor, { value: 50000n })
     expect(state.raws.map(raw => Transaction.from(raw).nonce)).toEqual([0, 1])
     expect(state.balances.get(wallets[0]!.address.toLowerCase())).toBe(108000n)
     state.nonces.set(wallets[0]!.address.toLowerCase(), 0)
-    await expect(
-      current.executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 1000n,
-      }),
-    ).rejects.toThrow('Insufficient')
+    await expect(pay(current.executor)).rejects.toThrow('reserved')
     expect(journal.list()).toHaveLength(2)
-  })
-  it('keeps disjoint operations while serializing conflicting selection', async () => {
-    const state = chain([200000n, 200000n])
-    state.setMode('lost')
-    const current = owner(state)
-    await Promise.allSettled(
-      [1, 2].map(() =>
-        current.executor.sendNative({
-          recipient: { raw: recipient },
-          value: 100000n,
-        }),
-      ),
-    )
-    expect(journal.list()).toHaveLength(2)
-    expect(
-      new Set(journal.list().map(r => r.members[0]!.source.address)).size,
-    ).toBe(2)
-    await reopen()
-    expect(journal.list()).toHaveLength(2)
-  })
-  it('freezes calldata builder semantics and rejects unsupported consolidation before signing', async () => {
-    const state = chain([200000n])
-    state.setMode('lost')
-    const builder = new NativeEvmTransactionBuilder()
-    Object.defineProperty(builder, 'supportsNativeConsolidation', {
-      value: false,
-    })
-    const destination = wallets[2]!.address
-    jest.spyOn(builder, 'buildTransfer').mockImplementation(async params => ({
-      to: destination,
-      data: '0x12345678',
-      value: 0n,
-      nonce: params.overrides!.nonce,
-      gasLimit: 21000n,
-    }))
-    const current = owner(state, { builder })
-    await expect(
-      current.executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).rejects.toThrow('does not support')
-    expect(current.sign).not.toHaveBeenCalled()
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
-    const row = journal.list()[0]!
-    const tx = Transaction.from(row.members[0]!.signed!.rawTransaction)
-    expect(tx.to).toBe(destination)
-    expect(tx.value).toBe(0n)
-    expect(tx.data).toBe('0x12345678')
-    expect(row.recipient).toBe(recipient)
-    expect(row.intendedValueWei).toBe('100000')
-    await reopen()
-    state.setMode('mine')
-    const recovered = owner(state, { builder, sources: [] })
-    await recovered.executor.resumeOperation(row.operationId)
-    expect(recovered.sign).not.toHaveBeenCalled()
-    expect(state.raws[1]).toBe(state.raws[0])
   })
   it('deduplicates concurrent resume and retains reverted evidence without releasing claims', async () => {
     const state = chain([200000n])
     state.setMode('lost')
     const current = owner(state)
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).rejects.toThrow()
+    await expect(pay(current.executor, { value: 100000n })).rejects.toThrow()
     const row = journal.list()[0]!
     state.mine(row.members[0]!.signed!.rawTransaction, 0)
     const first = current.executor.resumeOperation(row.operationId)
@@ -718,93 +590,10 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(journal.canSelect(row.members[0]!.source.address, 0)).toBe(false)
     expect(state.balances.get(recipient)).toBeUndefined()
   })
-  it('sends a TIP-20 direct payment using token fee balance with zero native balance', async () => {
-    const tempoJournal = {
-      location: join(location, 'tempo'),
-      binding: {
-        ...binding,
-        chainIdentifier: 'tempo-mainnet',
-        nativeChainId: '4217',
-      },
-    }
-    await journal.Close()
-    await mkdir(tempoJournal.location)
-    journal = new EvmNativeOperationJournal(tempoJournal)
-    await journal.Open()
-    const state = chain([0n])
-    state.setMode('retained')
-    const iface = new Interface([
-      'function balanceOf(address) view returns (uint256)',
-      'function transfer(address,uint256) returns (bool)',
-    ])
-    state.provider.call.mockResolvedValue(
-      iface.encodeFunctionResult('balanceOf', [165000n]),
-    )
-    const builder = new Tip20TransactionBuilder()
-    const current = owner(state, { builder, sources: [sources()[0]!] })
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).resolves.toHaveProperty('txHash')
-    const row = journal.list()[0]!
-    const tx = Transaction.from(row.members[0]!.signed!.rawTransaction)
-    expect(tx.chainId).toBe(4217n)
-    expect(tx.to!.toLowerCase()).toBe(builder.tokenAddress.toLowerCase())
-    expect(tx.value).toBe(0n)
-    expect(tx.data).toBe(
-      iface.encodeFunctionData('transfer', [recipient, 100000n]),
-    )
-    expect(row.intendedValueWei).toBe('100000')
-    expect(row.maximumFeeWei).toBe('65000')
-    await journal.Close()
-    journal = new EvmNativeOperationJournal(tempoJournal)
-    await journal.Open()
-    const recovered = owner(state, { builder, sources: [] })
-    await recovered.executor.resumeOperation(row.operationId)
-    expect(recovered.sign).not.toHaveBeenCalled()
-    expect(state.raws).toEqual([
-      row.members[0]!.signed!.rawTransaction,
-      row.members[0]!.signed!.rawTransaction,
-    ])
-  })
-  it.each(['native', 'token'])(
-    'refuses insufficient %s fee balance before signing',
-    async asset => {
-      const state = chain([asset === 'native' ? 120999n : 0n])
-      const iface = new Interface([
-        'function balanceOf(address) view returns (uint256)',
-      ])
-      state.provider.call.mockResolvedValue(
-        iface.encodeFunctionResult('balanceOf', [164999n]),
-      )
-      const current = owner(state, {
-        builder:
-          asset === 'native'
-            ? new NativeEvmTransactionBuilder()
-            : new Tip20TransactionBuilder(),
-        sources: [sources()[0]!],
-      })
-      await expect(
-        current.executor.sendNative({
-          recipient: { raw: recipient },
-          value: 100000n,
-        }),
-      ).rejects.toThrow('Insufficient')
-      expect(current.sign).not.toHaveBeenCalled()
-      expect(journal.list()).toEqual([])
-    },
-  )
-  it.each(
-    (['sendNative', 'sendLegacy'] as const).flatMap(method =>
-      ['queue', 'fee', 'builder'].map(boundary => ({ method, boundary })),
-    ),
-  )(
-    'snapshots $method authorization before $boundary await',
-    async ({ method, boundary }) => {
+  it.each(['queue', 'fee'] as const)(
+    'snapshots independent payment authorization before the %s await',
+    async boundary => {
       const state = chain([1000000n])
-      const builder = new NativeEvmTransactionBuilder()
       let entered!: () => void
       let release!: () => void
       const started = new Promise<void>(resolve => {
@@ -819,22 +608,18 @@ describe('wallet-lifetime EVM native operations', () => {
           await wait
           return { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, gasPrice: 1n }
         })
-      if (boundary === 'builder') {
-        const build = builder.buildTransfer.bind(builder)
-        jest
-          .spyOn(builder, 'buildTransfer')
-          .mockImplementationOnce(async params => {
-            entered()
-            await wait
-            return build(params)
-          })
+      const current = owner(state)
+      const params = {
+        kind: 'native' as const,
+        preparationId: 'stealth-payment:snapshot',
+        recipient: { raw: recipient },
+        maxNativeFeeWei: fee * 2n,
+        members: [{ sourceAddress: sources()[0]!.address, value: 100000n }],
       }
-      const current = owner(state, { builder })
-      const params = { recipient: { raw: recipient }, value: 100000n }
-      const send = current.executor[method](params)
+      const send = current.executor.signIndependentPayment(params)
       if (boundary !== 'queue') await started
       params.recipient.raw = wallets[2]!.address
-      params.value = 150000n
+      params.members[0]!.value = 150000n
       release?.()
       await send
       const row = journal.list()[journal.list().length - 1]!
@@ -851,12 +636,9 @@ describe('wallet-lifetime EVM native operations', () => {
     jest
       .spyOn(journal, 'markExposed')
       .mockRejectedValueOnce(new Error('storage barrier unavailable'))
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 1000n,
-      }),
-    ).rejects.toThrow('storage barrier unavailable')
+    await expect(pay(current.executor)).rejects.toThrow(
+      'storage barrier unavailable',
+    )
     expect(state.raws).toEqual([])
     expect(journal.list()[0]!.members[0]!.signed).not.toBeNull()
     expect(journal.list()[0]!.members[0]!.exposed).toBe(false)
@@ -867,32 +649,24 @@ describe('wallet-lifetime EVM native operations', () => {
     await journal.Open()
     const state = chain([200000n])
     const current = owner(state)
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 1000n,
-      }),
-    ).rejects.toMatchObject({ code: 'capacity' })
+    await expect(pay(current.executor)).rejects.toMatchObject({
+      code: 'capacity',
+    })
     expect(current.sign).not.toHaveBeenCalled()
     expect(state.raws).toEqual([])
   })
   it('a failed sync transport fails nothing: the member stays unmarked and a later flush sends it, without another payment', async () => {
     const state = chain([200000n])
-    // #1235 Stage C changed this fixture on purpose. With neither local callback configured the
-    // test expected `sync` to be attempted twice and the member to end sync-applied: that held
-    // only because the uncomposed default recorded the member as locally applied. The default
-    // now fails closed, so the fixture supplies the local result it relied on implicitly.
-    const current = owner(state, { noPoolRows: true })
-    await current.executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 1000n,
-    })
+    const current = owner(state)
+    const sent = await pay(current.executor)
+    await current.executor.lookAtOperation(sent.operationId)
     const row = journal.list()[0]!
+    expect(row.members[0]!.observation.state).toBe('included-success')
     current.sync.mockRejectedValueOnce(new Error('sync transport unavailable'))
     await current.executor.flushSync(row.operationId)
     expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(false)
     expect(current.executor.syncTransportFailed(row.operationId)).toBe(true)
-    await current.executor.resumeLegacySend(row.operationId)
+    await current.executor.resumeOperation(row.operationId)
     // Not waited for: the flush that starts a transport resolves before it has settled.
     let release!: () => void
     current.sync.mockImplementationOnce(
@@ -916,12 +690,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const state = chain([200000n])
     state.setMode('lost')
     const current = owner(state)
-    await expect(
-      current.executor.sendNative({
-        recipient: { raw: recipient },
-        value: 1000n,
-      }),
-    ).rejects.toThrow()
+    await expect(pay(current.executor)).rejects.toThrow()
     const row = journal.list()[0]!
     let release!: () => void
     let entered!: () => void
@@ -947,14 +716,10 @@ describe('wallet-lifetime EVM native operations', () => {
     )
   })
   // ---------------------------------------------------------------------------------------
-  // Stage 1 of #1235: the local pass and the transport-only flush.
-  //
-  // `composed` wires the executor the way composition does: a reader journal, the real input
-  // admission over a real Level pool store, and the two local callbacks going straight to
-  // `poolSpendAdmission`. Its pool rows are created by `ensureSize` and funded only in the
-  // simulated chain; the production-funded row is exercised in `monad-domain-wallet`.
-  // Unless a test says it is a pin, it fails on main 72631f36 because no pass exists there:
-  // the callbacks are never called and no row is ever marked.
+  // The executor wired the way composition wires it: a reader journal and the real input
+  // admission over a real Level pool store. Its pool rows are created by `ensureSize` and
+  // funded only in the simulated chain. The journal holds the source accounts of its
+  // operations; nothing here records a spend on a pool row.
   // ---------------------------------------------------------------------------------------
   const mnemonic = 'test test test test test test test test test test test junk'
   const stores: LevelSubAccountPoolStore[] = []
@@ -965,12 +730,6 @@ describe('wallet-lifetime EVM native operations', () => {
   async function composed(
     state: ReturnType<typeof chain>,
     balances: bigint[],
-    overrides: Partial<
-      Pick<
-        ConstructorParameters<typeof EvmLegacyConsolidator>[0],
-        'applyLocalMember' | 'classifyLocalMember'
-      >
-    > = {},
   ) {
     const keyring = MonadHdKeyring.fromMnemonic(mnemonic),
       changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
@@ -1011,31 +770,27 @@ describe('wallet-lifetime EVM native operations', () => {
     })
     const address = (index: number) =>
       keyring.deriveSubAccount(index).address.toLowerCase()
+    const source = (index: number): EvmNativeSource => ({
+      kind: 'spend',
+      index,
+      address: address(index),
+    })
+    // The main account, which makes contract calls; it is no pool account.
+    const main = wallets[2]!
+    const mainAddress = main.address.toLowerCase()
+    state.balances.set(mainAddress, 200000n)
     balances.forEach((value, index) =>
       state.balances.set(address(index), value),
     )
     const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
+      if (source.kind === 'main' && source.address === mainAddress)
+        return main.signTransaction(Transaction.from(raw))
       if (source.kind !== 'spend') throw new Error('fixture custody')
       return new Wallet(
         keyring.deriveSubAccount(source.index).privateKey,
       ).signTransaction(Transaction.from(raw))
     })
     const sync = jest.fn(async (_item: unknown) => undefined)
-    const apply = jest.fn(
-      overrides.applyLocalMember ??
-        ((id: string, i: number, token?: WalletOperationLifetime) =>
-          poolSpendAdmission(admission, token!).applyMember(id, i)),
-    )
-    const classify = jest.fn(
-      overrides.classifyLocalMember ??
-        ((
-          row: Parameters<
-            ReturnType<typeof poolSpendAdmission>['classifyMember']
-          >[0],
-          i: number,
-          token?: WalletOperationLifetime,
-        ) => poolSpendAdmission(admission, token!).classifyMember(row, i)),
-    )
     const executor = (
       extra: Partial<
         ConstructorParameters<typeof EvmLegacyConsolidator>[0]
@@ -1047,15 +802,12 @@ describe('wallet-lifetime EVM native operations', () => {
         runLifetime: operation => operation(lifetime),
         provider: state.provider as unknown as Provider,
         transactionBuilder: new NativeEvmTransactionBuilder(),
-        getSources: async () =>
-          balances.map((_, index) => ({
-            kind: 'spend' as const,
-            index,
-            address: address(index),
-          })),
+        mainSource: { kind: 'main', address: mainAddress },
+        ownedSource: (owned: string) =>
+          balances
+            .map((_, index) => source(index))
+            .find(candidate => candidate.address === owned.toLowerCase()),
         sign,
-        applyLocalMember: apply,
-        classifyLocalMember: classify,
         onSyncTransaction: sync,
         ...extra,
       })
@@ -1068,9 +820,8 @@ describe('wallet-lifetime EVM native operations', () => {
       lifetime,
       sign,
       sync,
-      apply,
-      classify,
       address,
+      main: mainAddress,
       inspect,
       projections: () => projected,
     }
@@ -1094,17 +845,43 @@ describe('wallet-lifetime EVM native operations', () => {
       (total, method) => total + method.mock.calls.length,
       0,
     )
-  const pending = (promise: Promise<unknown>) =>
-    promise.then(
-      () => {
-        throw new Error('expected a pending error')
-      },
-      (error: unknown) => {
-        expect(error).toBeInstanceOf(EvmNativeOperationPendingError)
-        return error as EvmNativeOperationPendingError
-      },
-    )
 
+  /** One native transfer from pool account `index` of a composed session, observed once more
+   * after its broadcast so a transfer the node mined is recorded included. */
+  const cpay = async (
+    c: Awaited<ReturnType<typeof composed>>,
+    options: {
+      index?: number
+      value?: bigint
+      executor?: EvmLegacyConsolidator
+      look?: boolean
+    } = {},
+  ) => {
+    const executor = options.executor ?? c.executor
+    const row = await pay(executor, {
+      source: c.address(options.index ?? 0),
+      value: options.value ?? 1000n,
+      lifetime: c.lifetime,
+    })
+    if (options.look !== false) await executor.lookAtOperation(row.operationId)
+    return journal.get(row.operationId)
+  }
+  /** One contract call from the composed session's main account. */
+  const call = (
+    c: Awaited<ReturnType<typeof composed>>,
+    executor: EvmLegacyConsolidator = c.executor,
+    onSigned?: () => Promise<void>,
+  ) =>
+    executor.sendContractCall(
+      {
+        to,
+        data: '0x12345678',
+        value: 0n,
+        gasLimit: 21000n,
+        ...(onSigned ? { onSigned } : {}),
+      },
+      c.lifetime,
+    )
   it('retries completion after a durable sync checkpoint without transporting the note again', async () => {
     const c = await composed(chain([]), [200000n])
     let failCompletion = true
@@ -1113,8 +890,8 @@ describe('wallet-lifetime EVM native operations', () => {
         throw new Error('completion storage unavailable')
     })
     const executor = c.another({ onSyncCheckpoint: checkpoint })
-    await executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    const row = journal.list()[0]!
+    const row = await cpay(c, { value: 100000n, executor })
+    expect(row.members[0]!.observation.state).toBe('included-success')
     await executor.flushSync(row.operationId)
     expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(true)
     expect(executor.syncTransportFailed(row.operationId)).toBe(true)
@@ -1127,516 +904,15 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(checkpoint).toHaveBeenCalled()
   })
 
-  it('in-call inclusion: the pass records the row spent with the member checkpoint inside the send, with no signature and no provider call of its own', async () => {
-    const state = chain([])
-    const c = await composed(state, [200000n, 0n])
-    const atBodyEnd = { provider: 0, sign: 0, status: '' }
-    const result = await c.executor.sendLegacy(
-      {
-        recipient: to,
-        value: 100000n,
-        onProgress: progress => {
-          if (progress.status.stage !== 'confirmed') return
-          // The last thing the send body does: everything after this is the pass.
-          atBodyEnd.provider = providerCalls(state)
-          atBodyEnd.sign = c.sign.mock.calls.length
-          atBodyEnd.status = c.pool.getRecord(0)!.status
-        },
-      },
-      c.lifetime,
-    )
-    const row = journal.list()[0]!
-    const raw = row.members[0]!.signed!.rawTransaction
-    expect(atBodyEnd.status).not.toBe('spent')
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: {
-        spend: { rawTx: raw, txHash: result.txHash, valueWei: '100000' },
-      },
-    })
-    // A non-zero fee was observed, and it is not part of the checkpoint value.
-    expect(result.totalFeePaid).toBe(21000n)
-    expect(c.apply).toHaveBeenCalledTimes(1)
-    expect(c.apply).toHaveBeenCalledWith(row.operationId, 0, c.lifetime)
-    expect(providerCalls(state)).toBe(atBodyEnd.provider)
-    expect(c.sign.mock.calls.length).toBe(atBodyEnd.sign)
-    expect(c.sign).toHaveBeenCalledTimes(1)
-    expect(state.raws).toEqual([raw])
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-    // A later pass finds it applied from the snapshot alone.
-    await c.executor.resumeLegacySend(row.operationId, c.lifetime)
-    expect(c.apply).toHaveBeenCalledTimes(1)
-    expect(c.classify).toHaveLastReturnedWith('applied')
-  })
 
-  // Pin: what a caller of the send sees is what it saw on main.
-  it('pin: the result of sendLegacy and of sendNative, and the progress events, are the same with and without the local pass', async () => {
-    const plain = chain([200000n])
-    const base = owner(plain)
-    const stages: string[] = []
-    const legacy = await base.executor.sendLegacy({
-      recipient: to,
-      value: 100000n,
-      onProgress: p => void stages.push(p.status.stage),
-    })
-    const native = await base.executor.sendNative({
-      recipient: to,
-      value: 1000n,
-    })
-    await journal.Close()
-    await rm(location, { recursive: true, force: true })
-    location = await mkdtemp(join(tmpdir(), 'frank-native-owner-'))
-    journal = new EvmNativeOperationJournal({ location, binding })
-    await journal.Open()
-    const state = chain([])
-    const c = await composed(state, [200000n])
-    const composedStages: string[] = []
-    const composedLegacy = await c.executor.sendLegacy(
-      {
-        recipient: to,
-        value: 100000n,
-        onProgress: p => void composedStages.push(p.status.stage),
-      },
-      c.lifetime,
-    )
-    const composedNative = await c.executor.sendNative(
-      { recipient: to, value: 1000n },
-      c.lifetime,
-    )
-    expect(Object.keys(composedLegacy).sort()).toEqual(
-      Object.keys(legacy).sort(),
-    )
-    expect({ ...composedLegacy, txHash: '' }).toEqual({
-      ...legacy,
-      txHash: '',
-    })
-    expect(composedLegacy).toEqual({
-      txHash: journal.list()[0]!.members[0]!.signed!.transactionHash,
-      intermediateTxHashes: [],
-      totalValueSent: 100000n,
-      totalFeePaid: 21000n,
-    })
-    expect(Object.keys(composedNative)).toEqual(Object.keys(native))
-    expect(composedNative).toEqual({
-      txHash: journal.list()[1]!.members[0]!.signed!.transactionHash,
-    })
-    expect(composedStages).toEqual(stages)
-    expect(stages).toEqual(['planning', 'confirmed'])
-  })
 
-  it('path 2a: a member pending in its own call is applied by a LATER send, whose result names only the later operation', async () => {
-    const state = chain([])
-    const c = await composed(state, [200000n, 150000n])
-    state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
-      announce(state, raw),
-    )
-    const first = await pending(
-      c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime),
-    )
-    const earlier = first.operation
-    expect(earlier.members[0]!.observation.state).toBe('pending')
-    expect(earlier.members[0]!.source).toMatchObject({ index: 0 })
-    expect(c.apply).not.toHaveBeenCalled()
-    expect(c.classify).not.toHaveBeenCalled()
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    // The receipt appears; nothing observes it until the next send plans.
-    state.mine(earlier.members[0]!.signed!.rawTransaction)
-    const later = await c.executor.sendLegacy(
-      { recipient: to, value: 120000n },
-      c.lifetime,
-    )
-    const rows = journal.list()
-    expect(rows).toHaveLength(2)
-    expect(rows[1]!.members[0]!.source).toMatchObject({ index: 1 })
-    expect(later).toEqual({
-      txHash: rows[1]!.members[0]!.signed!.transactionHash,
-      intermediateTxHashes: [],
-      totalValueSent: 120000n,
-      totalFeePaid: 21000n,
-    })
-    expect(c.pool.getRecord(0)!.lifecycle!.spend!.rawTx).toBe(
-      earlier.members[0]!.signed!.rawTransaction,
-    )
-    expect(c.pool.getRecord(1)!.lifecycle!.spend!.rawTx).toBe(
-      rows[1]!.members[0]!.signed!.rawTransaction,
-    )
-    expect(c.pool.getRecord(0)!.status).toBe('spent')
-    expect(c.pool.getRecord(1)!.status).toBe('spent')
-    expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
-      earlier.operationId,
-      rows[1]!.operationId,
-    ])
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
 
-  it('fan-in with two pool peers and a pool leader: the pass applies all three inside the send, the leader with the drain transaction, and transport carries each complete transaction', async () => {
-    const state = chain([])
-    const c = await composed(state, [100000n, 50000n, 45000n])
-    const result = await c.executor.sendLegacy(
-      { recipient: to, value: 110000n },
-      c.lifetime,
-    )
-    const row = journal.list()[0]!
-    expect(row.members.map(m => m.source)).toMatchObject([
-      { index: 1 },
-      { index: 2 },
-      { index: 0 },
-    ])
-    expect(result.intermediateTxHashes).toHaveLength(2)
-    for (const member of row.members) {
-      if (member.source.kind !== 'spend') throw new Error('fixture')
-      expect(c.pool.getRecord(member.source.index)).toMatchObject({
-        status: 'spent',
-        lifecycle: { spend: { rawTx: member.signed!.rawTransaction } },
-      })
-    }
-    const drain = Transaction.from(c.pool.getRecord(0)!.lifecycle!.spend!.rawTx)
-    expect(drain.to!.toLowerCase()).toBe(recipient)
-    expect(drain.value).toBe(110000n)
-    expect(c.apply).toHaveBeenCalledTimes(3)
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-    expect(c.sync).not.toHaveBeenCalled()
-    await c.executor.flushSync(row.operationId)
-    expect(c.sync.mock.calls.map(([item]) => item)).toEqual(
-      row.members.map(member => {
-        const tx = Transaction.from(member.signed!.rawTransaction)
-        return {
-          type: 'wallet-sync',
-          direction: 'out',
-          chainIdentifier: 'monad-testnet',
-          txHash: member.signed!.transactionHash,
-          rawTx: member.signed!.rawTransaction,
-          // SYNC-ITEM-DEBIT, unchanged: the input is value plus the fee paid.
-          spentInputs: [
-            {
-              address: member.source.address,
-              nonce: tx.nonce,
-              valueWei: (tx.value + 21000n).toString(),
-            },
-          ],
-          createdOutputs: [{ address: tx.to, valueWei: tx.value.toString() }],
-          timestamp: expect.any(Number),
-        }
-      }),
-    )
-    expect(journal.list()[0]!.members.map(m => m.syncApplied)).toEqual([
-      true,
-      true,
-      true,
-    ])
-  })
 
-  it('fan-in with the peers included and the drain pending: only the included members are applied, and only they are transported', async () => {
-    const state = chain([])
-    const c = await composed(state, [100000n, 50000n, 45000n])
-    const mined = state.provider.broadcastTransaction.getMockImplementation()!
-    let broadcasts = 0
-    state.provider.broadcastTransaction.mockImplementation(async raw =>
-      ++broadcasts === 3 ? announce(state, raw) : mined(raw),
-    )
-    const error = await pending(
-      c.executor.sendLegacy({ recipient: to, value: 110000n }, c.lifetime),
-    )
-    const row = journal.get(error.operation.operationId)
-    expect(row.members.map(m => m.observation.state)).toEqual([
-      'included-success',
-      'included-success',
-      'pending',
-    ])
-    expect(c.apply.mock.calls.map(([, i]) => i)).toEqual([0, 1])
-    expect(c.pool.getRecord(1)!.status).toBe('spent')
-    expect(c.pool.getRecord(2)!.status).toBe('spent')
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    expect(c.pool.getRecord(0)!.lifecycle?.spend).toBeUndefined()
-    await c.executor.flushSync(row.operationId)
-    expect(
-      c.sync.mock.calls.map(([item]) => (item as { rawTx: string }).rawTx),
-    ).toEqual([
-      row.members[0]!.signed!.rawTransaction,
-      row.members[1]!.signed!.rawTransaction,
-    ])
-    expect(journal.list()[0]!.members.map(m => m.syncApplied)).toEqual([
-      true,
-      true,
-      false,
-    ])
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
 
-  it('transport is gated per member: a held member is never sent or marked, the other members are, and the error names the operation that holds', async () => {
-    const state = chain([])
-    const held = new Set<string>()
-    let real!: (id: string, i: number) => Promise<unknown>
-    const c = await composed(state, [0n, 0n, 0n, 30000n], {
-      applyLocalMember: async (id, i) => {
-        if (held.has(`${id}:${i}`)) throw new Error('fixture: held')
-        return real(id, i) as never
-      },
-    })
-    real = (id, i) =>
-      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-    // Operation A: one member, held.
-    held.add('evm-native-v1:0000000000000001:0')
-    await c.executor.sendLegacy({ recipient: to, value: 5000n }, c.lifetime)
-    const a = journal.list()[0]!
-    expect(a.members[0]!.source).toMatchObject({ index: 3 })
-    // Operation B: a three-member fan-in whose member 0 is held.
-    for (const [index, value] of [100000n, 50000n, 45000n].entries())
-      state.balances.set(c.address(index), value)
-    held.add('evm-native-v1:0000000000000002:0')
-    await c.executor.sendLegacy({ recipient: to, value: 110000n }, c.lifetime)
-    const b = journal.list()[1]!
-    expect(b.members).toHaveLength(3)
-    const marked = jest.spyOn(journal, 'markSyncApplied')
-    // All operations: continues past held A, transports B's applied members, names A.
-    const all = await pending(c.executor.flushSync())
-    expect(all.operation.operationId).toBe(a.operationId)
-    expect(
-      c.sync.mock.calls.map(([item]) => (item as { txHash: string }).txHash),
-    ).toEqual([
-      b.members[1]!.signed!.transactionHash,
-      b.members[2]!.signed!.transactionHash,
-    ])
-    expect(marked.mock.calls.map(([id, i]) => `${id}:${i}`)).toEqual([
-      `${b.operationId}:1`,
-      `${b.operationId}:2`,
-    ])
-    // One operation: only that operation is considered and named.
-    const one = await pending(c.executor.flushSync(b.operationId))
-    expect(one.operation.operationId).toBe(b.operationId)
-    expect(c.sync).toHaveBeenCalledTimes(2)
-    expect(journal.list().map(r => r.members.map(m => m.syncApplied))).toEqual([
-      [false],
-      [false, true, true],
-    ])
-    // Once the hold clears, the next pass applies and the member is transported.
-    held.clear()
-    await c.executor.resumeLegacySend(b.operationId, c.lifetime)
-    await c.executor.flushSync()
-    expect(c.sync).toHaveBeenCalledTimes(4)
-    expect(
-      journal.list().flatMap(r => r.members.map(m => m.syncApplied)),
-    ).toEqual([true, true, true, true])
-  })
 
-  it('a member can never be marked sync-applied without this session local record: a fresh executor transports nothing until its own pass has run', async () => {
-    const state = chain([])
-    const c = await composed(state, [200000n])
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    const row = journal.list()[0]!
-    // A new session's executor over the same journal: included member, no pass yet.
-    const fresh = c.another()
-    const marked = jest.spyOn(journal, 'markSyncApplied')
-    const error = await pending(fresh.flushSync())
-    expect(error.operation.operationId).toBe(row.operationId)
-    expect(String(error.reason)).toContain('no local spend record')
-    await pending(fresh.flushSync(row.operationId))
-    expect(c.sync).not.toHaveBeenCalled()
-    expect(marked).not.toHaveBeenCalled()
-    expect(journal.list()[0]!.members[0]!.syncApplied).toBe(false)
-    await fresh.resumeLegacySend(row.operationId, c.lifetime)
-    await fresh.flushSync()
-    expect(c.sync).toHaveBeenCalledTimes(1)
-    expect(marked).toHaveBeenCalledTimes(1)
-    expect(journal.list()[0]!.members[0]!.syncApplied).toBe(true)
-  })
 
-  it.each(['the callbacks throw', 'the journal is unreadable'] as const)(
-    'the pass cannot replace the outcome when %s: a successful send returns its result and a failing send throws its own error',
-    async fault => {
-      const state = chain([])
-      let unreadable = false
-      const c = await composed(
-        state,
-        [200000n, 150000n],
-        fault === 'the callbacks throw'
-          ? {
-              classifyLocalMember: () => {
-                throw new Error('fixture: classify failed')
-              },
-              applyLocalMember: () => {
-                throw new Error('fixture: apply failed')
-              },
-            }
-          : {},
-      )
-      const list = journal.list.bind(journal)
-      const listed = jest.spyOn(journal, 'list').mockImplementation(() => {
-        if (unreadable) throw new Error('fixture: journal unreadable')
-        return list()
-      })
-      const result = await c.executor.sendLegacy(
-        {
-          recipient: to,
-          value: 100000n,
-          onProgress: progress => {
-            if (
-              fault === 'the journal is unreadable' &&
-              progress.status.stage === 'confirmed'
-            )
-              unreadable = true
-          },
-        },
-        c.lifetime,
-      )
-      const passReads = listed.mock.results.filter(r => r.type === 'throw')
-      unreadable = false
-      expect(result).toEqual({
-        txHash: journal.list()[0]!.members[0]!.signed!.transactionHash,
-        intermediateTxHashes: [],
-        totalValueSent: 100000n,
-        totalFeePaid: 21000n,
-      })
-      if (fault === 'the callbacks throw')
-        expect(c.classify).toHaveBeenCalledTimes(1)
-      else expect(passReads).toHaveLength(1)
-      // A failing send: the reply to its broadcast is lost.
-      state.setMode('lost')
-      const broadcast =
-        state.provider.broadcastTransaction.getMockImplementation()!
-      state.provider.broadcastTransaction.mockImplementation(async raw => {
-        if (fault === 'the journal is unreadable') unreadable = true
-        return broadcast(raw)
-      })
-      const error = await pending(
-        c.executor.sendLegacy({ recipient: to, value: 120000n }, c.lifetime),
-      )
-      unreadable = false
-      expect(String(error.reason)).toContain('lost response')
-      expect(error.operation.operationId).toBe(journal.list()[1]!.operationId)
-      if (fault === 'the callbacks throw')
-        expect(c.classify).toHaveBeenCalledTimes(2)
-      expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    },
-  )
 
-  it('eligibility: a member that is pending, missing, never observed, reverted, unsigned or cancelled gets no classification and no apply', async () => {
-    const state = chain([])
-    const c = await composed(state, [
-      90000n,
-      80000n,
-      70000n,
-      60000n,
-      50000n,
-      40000n,
-    ])
-    const send = (value: bigint, onSigned?: () => Promise<void>) =>
-      c.executor
-        .sendLegacy({ recipient: to, value, onSigned }, c.lifetime)
-        .catch(() => undefined)
-    state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
-      announce(state, raw),
-    )
-    await send(60000n) // row 0: pending
-    state.setMode('lost')
-    await send(50000n) // row 1: looked for before the broadcast, missing
-    await send(40000n) // row 2: will revert
-    state.mine(journal.list()[2]!.members[0]!.signed!.rawTransaction, 0)
-    await c.executor
-      .resumeOperation(journal.list()[2]!.operationId, c.lifetime)
-      .catch(() => undefined)
-    // #1235 Stage C changed how rows 3 and 4 are built, not what is asserted. A send whose
-    // signing fails is now cancelled by that send, so it can no longer leave an unsigned,
-    // uncancelled plan behind; that state is what a crash between the journal write and the
-    // first signature leaves, written here the way the crash leaves it.
-    await journal.prepare({
-      kind: 'legacy',
-      recipient,
-      intendedValueWei: '20000',
-      members: [
-        {
-          source: { kind: 'spend', index: 3, address: c.address(3) },
-          dependencies: [],
-          unsignedTransaction: Transaction.from({
-            type: 2,
-            chainId: 10143n,
-            nonce: 0,
-            to: recipient,
-            value: 20000n,
-            gasLimit: 21000n,
-            maxFeePerGas: 1n,
-            maxPriorityFeePerGas: 1n,
-          }).unsignedSerialized,
-        },
-      ],
-    }) // row 3: unsigned
-    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
-    await send(19000n) // row 4: never signed, cancelled by its own send
-    // Last, because the next send's planning would observe it: signed, never looked for.
-    await send(18000n, async () => {
-      throw new Error('fixture: never exposed')
-    })
-    const states = journal
-      .list()
-      .map(r =>
-        r.cancelled
-          ? 'cancelled'
-          : r.members[0]!.signed
-          ? r.members[0]!.observation.state
-          : 'unsigned',
-      )
-    expect(states).toEqual([
-      'pending',
-      'missing',
-      'included-revert',
-      'unsigned',
-      'cancelled',
-      'unknown',
-    ])
-    // Every one of those sends ran the pass; so does one more resume.
-    await c.executor
-      .resumeOperation(journal.list()[0]!.operationId, c.lifetime)
-      .catch(() => undefined)
-    expect(c.classify).not.toHaveBeenCalled()
-    expect(c.apply).not.toHaveBeenCalled()
-    expect(c.pool.records().every(r => r.status !== 'spent')).toBe(true)
-  })
 
-  it('native then native from one row: the first member is held while the second is pending, applies once it is included, and the second is then held-terminal without another apply', async () => {
-    const state = chain([])
-    const c = await composed(state, [300000n, 50000n])
-    // sendNative returns after the broadcast: neither member is observed in its own call.
-    await c.executor.sendNative({ recipient: to, value: 100000n }, c.lifetime)
-    await c.executor.sendNative({ recipient: to, value: 50000n }, c.lifetime)
-    const [first, second] = journal.list()
-    expect([first!, second!].map(r => r.members[0]!.source)).toMatchObject([
-      { index: 0 },
-      { index: 0 },
-    ])
-    // The second send's planning saw the first included; its pass tried and was refused, because
-    // the second member is pending on the same address (stricter than the projection).
-    expect(c.apply.mock.calls).toEqual([[first!.operationId, 0, c.lifetime]])
-    await expect(c.apply.mock.results[0]!.value).rejects.toMatchObject({
-      reason: 'conflicting-authorization',
-    })
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-    // A third send, from another row, sees the second included: now the first applies.
-    state.balances.set(c.address(1), 400000n)
-    await c.executor.sendNative({ recipient: to, value: 350000n }, c.lifetime)
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: {
-        spend: { rawTx: first!.members[0]!.signed!.rawTransaction },
-      },
-    })
-    expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
-      first!.operationId,
-      first!.operationId,
-    ])
-    expect(c.classify.mock.results.map(r => r.value)).toEqual([
-      'needs-apply',
-      'needs-apply',
-      'held-terminal',
-    ])
-    // Every later pass: the first is applied, the second is held-terminal; neither is applied again.
-    await c.executor.resumeOperation(second!.operationId, c.lifetime)
-    expect(c.apply).toHaveBeenCalledTimes(2)
-    const error = await pending(c.executor.flushSync(second!.operationId))
-    expect(error.operation.operationId).toBe(second!.operationId)
-    expect(c.sync).not.toHaveBeenCalled()
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
   // ---------------------------------------------------------------------------------------
   // Stage C of #1235: a plan that never signed is cancelled; held members are not re-projected.
   // Each test names what it reproduces on main e8d87c2d, or says it is a pin.
@@ -1668,65 +944,62 @@ describe('wallet-lifetime EVM native operations', () => {
         },
       ],
     })
-  const calls = (c: Awaited<ReturnType<typeof composed>>) => ({
-    classify: c.classify.mock.calls.length,
-    apply: c.apply.mock.calls.length,
-  })
 
   // On main e8d87c2d the plan stays unsigned and uncancelled, its account is frozen by
   // `canSelect`, and the second send fails: "Insufficient unreserved native funds".
-  it.each(['sendNative', 'sendLegacy'] as const)(
-    'a %s whose signing fails is cancelled by that send: its own error is thrown, the row is retained, the account is released and sends again',
-    async method => {
-      const state = chain([])
-      const c = await composed(state, [200000n])
-      c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
-      await expect(
-        c.executor[method]({ recipient: to, value: 1000n }, c.lifetime),
-      ).rejects.toThrow('fixture: custody refused')
-      // The state the failing call left, read before anything else runs.
-      const [failed] = journal.list()
-      const afterFailure = {
-        selectable: journal.canSelect(c.address(0), 0),
-        reserved: journal.referencesSpendIndex(0),
-        admission: c.inspect(),
-        broadcasts: state.raws.length,
-      }
-      // Asked first, so that main e8d87c2d fails here with its own refusal.
-      const sent = await c.executor.sendNative(
-        { recipient: to, value: 1000n },
-        c.lifetime,
-      )
-      expect(failed).toMatchObject({
-        cancelled: true,
-        intendedValueWei: '1000',
-        members: [{ signed: null, exposed: false, source: { index: 0 } }],
-      })
-      expect(afterFailure).toMatchObject({
-        selectable: true,
-        reserved: false,
-        admission: { status: 'ready', obligations: [] },
-        broadcasts: 0,
-      })
-      const rows = journal.list()
-      expect(rows).toHaveLength(2)
-      // Retained, not deleted, and not touched by the send that followed it.
-      expect(rows[0]).toEqual(failed)
-      expect(sent.txHash).toBe(rows[1]!.members[0]!.signed!.transactionHash)
-      expect(Transaction.from(state.raws[0]!).nonce).toBe(0)
-      await reopen()
-      expect(journal.list()[0]).toEqual(failed)
-    },
-  )
+  it('a contract call whose signing fails is cancelled by that call: its own error is thrown, the row is retained, the account is released and calls again', async () => {
+    const state = chain([])
+    const c = await composed(state, [200000n])
+    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
+    await expect(call(c)).rejects.toThrow('fixture: custody refused')
+    // The state the failing call left, read before anything else runs.
+    const [failed] = journal.list()
+    const afterFailure = {
+      selectable: journal.canSelect(c.main, 0),
+      admission: c.inspect(),
+      broadcasts: state.raws.length,
+    }
+    const sent = await call(c)
+    expect(failed).toMatchObject({
+      kind: 'contract',
+      cancelled: true,
+      members: [{ signed: null, exposed: false, source: { kind: 'main' } }],
+    })
+    expect(afterFailure).toMatchObject({
+      selectable: true,
+      admission: { status: 'ready', obligations: [] },
+      broadcasts: 0,
+    })
+    const rows = journal.list()
+    expect(rows).toHaveLength(2)
+    // Retained, not deleted, and not touched by the call that followed it.
+    expect(rows[0]).toEqual(failed)
+    expect(sent.txHash).toBe(rows[1]!.members[0]!.signed!.transactionHash)
+    expect(Transaction.from(state.raws[0]!).nonce).toBe(0)
+    await reopen()
+    expect(journal.list()[0]).toEqual(failed)
+  })
 
   // Pin of the limit. `cancelUnsignedOperations` does not exist on main e8d87c2d.
-  it('pin: a fan-in with one member signed and the next unsigned is never cancelled, by the failed send or by the open-time cancel', async () => {
+  it('pin: an independent payment with one member signed and the next unsigned is never cancelled, by the failed signing or by the open-time cancel', async () => {
     const state = chain([])
     const c = await composed(state, [100000n, 50000n, 45000n])
     c.sign.mockImplementationOnce(c.sign.getMockImplementation()!)
     c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
     await expect(
-      c.executor.sendLegacy({ recipient: to, value: 110000n }, c.lifetime),
+      c.executor.signIndependentPayment(
+        {
+          kind: 'native',
+          preparationId: 'stealth-payment:partial',
+          recipient: to,
+          maxNativeFeeWei: fee * 3n,
+          members: [0, 1, 2].map(index => ({
+            sourceAddress: c.address(index),
+            value: 1000n,
+          })),
+        },
+        c.lifetime,
+      ),
     ).rejects.toThrow('fixture: custody refused')
     const partial = journal.list()[0]!
     expect(partial.members.map(m => m.signed !== null)).toEqual([
@@ -1752,29 +1025,27 @@ describe('wallet-lifetime EVM native operations', () => {
   })
 
   // On main e8d87c2d nothing cancels the crashed plan: the method does not exist.
-  it('the open-time cancel releases every never-signed plan and nothing else, with no provider call, no signature and no local pass; a second run writes nothing', async () => {
+  it('the open-time cancel releases every never-signed plan and ends every unexposed contract call, and nothing else, with no provider call and no signature; a second run writes nothing', async () => {
     const state = chain([])
     const c = await composed(state, [200000n, 150000n, 100000n, 50000n])
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime) // row 0: included
-    await c.executor
-      .sendLegacy(
-        {
-          recipient: to,
-          value: 100000n,
-          onSigned: async () => {
-            throw new Error('fixture: never exposed')
-          },
-        },
-        c.lifetime,
-      )
-      .catch(() => undefined) // row 1: signed, never exposed
+    await cpay(c, { index: 1, value: 100000n }) // row 0: included
+    const unexposed = await c.executor.signIndependentPayment(
+      {
+        kind: 'native',
+        preparationId: 'stealth-payment:unexposed',
+        recipient: to,
+        maxNativeFeeWei: fee,
+        members: [{ sourceAddress: c.address(0), value: 1000n }],
+      },
+      c.lifetime,
+    ) // row 1: signed, never exposed, kept for its own resume
     await crashedPlan(c, 2)
     await crashedPlan(c, 3)
     const before = journal.list()
     expect(before.map(r => r.cancelled)).toEqual([false, false, false, false])
+    expect(before[1]!.operationId).toBe(unexposed.operationId)
     const provider = providerCalls(state)
     const signatures = c.sign.mock.calls.length
-    const local = calls(c)
     const cancel = jest.spyOn(journal, 'cancelUnsigned')
     await c.executor.cancelUnsignedOperations(c.lifetime)
     expect(journal.list()).toEqual([
@@ -1786,11 +1057,10 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(cancel).toHaveBeenCalledTimes(2)
     expect(providerCalls(state)).toBe(provider)
     expect(c.sign.mock.calls.length).toBe(signatures)
-    expect(calls(c)).toEqual(local)
     expect(state.raws).toHaveLength(1)
     expect(journal.canSelect(c.address(2), 0)).toBe(true)
     expect(journal.referencesSpendIndex(3)).toBe(false)
-    expect(journal.canSelect(c.address(1), 0)).toBe(false)
+    expect(journal.canSelect(c.address(0), 0)).toBe(false)
     await c.executor.cancelUnsignedOperations(c.lifetime)
     expect(cancel).toHaveBeenCalledTimes(2)
   })
@@ -1803,9 +1073,7 @@ describe('wallet-lifetime EVM native operations', () => {
       .spyOn(journal, 'cancelUnsigned')
       .mockRejectedValueOnce(new Error('fixture: cancel failed'))
     c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
-    await expect(
-      c.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime),
-    ).rejects.toThrow('fixture: custody refused')
+    await expect(call(c)).rejects.toThrow('fixture: custody refused')
     expect(cancel).toHaveBeenCalledTimes(1)
     const id = journal.list()[0]!.operationId
     expect(journal.list()[0]!.cancelled).toBe(false)
@@ -1836,439 +1104,13 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(state.raws).toEqual([])
   })
 
-  // On main e8d87c2d an executor with neither local callback records the member as applied:
-  // `sync` is called and the member is marked sync-applied with nothing recorded anywhere.
-  it('with neither local callback configured a member has no local result: it is held, never transported and never marked', async () => {
-    const state = chain([200000n])
-    const current = owner(state)
-    await current.executor.sendLegacy({ recipient: to, value: 1000n })
-    const row = journal.list()[0]!
-    expect(row.members[0]!.observation.state).toBe('included-success')
-    const marked = jest.spyOn(journal, 'markSyncApplied')
-    const one = await pending(current.executor.flushSync(row.operationId))
-    expect(one.operation.operationId).toBe(row.operationId)
-    expect(String(one.reason)).toContain('no local spend record')
-    await current.executor.resumeLegacySend(row.operationId)
-    await pending(current.executor.flushSync())
-    expect(current.sync).not.toHaveBeenCalled()
-    expect(marked).not.toHaveBeenCalled()
-    expect(journal.list()[0]!.members[0]!.syncApplied).toBe(false)
-  })
 
-  // Coordinator item 1(a). On main e8d87c2d every pass classifies and applies the held member
-  // again: `apply` is called once per resume below, each one a mutation section and two
-  // projections.
-  it('a member held behind a later member on its address costs nothing on later passes, and is applied by the first pass after that member resolves', async () => {
-    const state = chain([])
-    const c = await composed(state, [300000n, 50000n])
-    // Both from row 0. The first is mined at its broadcast; the node then keeps the second's
-    // broadcast without mining it. The second send's planning saw the first included, and its
-    // pass was refused: the second member holds the address.
-    await c.executor.sendNative({ recipient: to, value: 100000n }, c.lifetime)
-    state.setMode('retained')
-    await c.executor.sendNative({ recipient: to, value: 50000n }, c.lifetime)
-    const [first, second] = journal.list()
-    expect(c.apply.mock.calls).toEqual([[first!.operationId, 0, c.lifetime]])
-    await expect(c.apply.mock.results[0]!.value).rejects.toMatchObject({
-      reason: 'conflicting-authorization',
-    })
-    expect(journal.get(second!.operationId).members[0]!.observation.state).toBe(
-      'missing',
-    )
-    // Repeated passes with nothing changed for that address: a resume of the second operation
-    // looks for its transaction again and still does not find it. The pass reaches the admission
-    // only through the two callbacks, so no call is no projection and no mutation section.
-    for (let pass = 0; pass < 5; pass++) {
-      await c.executor.resumeOperation(second!.operationId, c.lifetime)
-      expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    }
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    await pending(c.executor.flushSync(first!.operationId))
-    // The blocker resolves: the second transaction is mined, and a send from another row
-    // observes it. The journal state of row 0's address changed, so that same send's pass
-    // applies the first member.
-    state.mine(second!.members[0]!.signed!.rawTransaction)
-    state.setMode('mine')
-    state.balances.set(c.address(1), 400000n)
-    await c.executor.sendNative({ recipient: to, value: 350000n }, c.lifetime)
-    expect(journal.get(second!.operationId).members[0]!.observation.state).toBe(
-      'included-success',
-    )
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: {
-        spend: { rawTx: first!.members[0]!.signed!.rawTransaction },
-      },
-    })
-    expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
-      first!.operationId,
-      first!.operationId,
-    ])
-    // The second member is now held for good, from the snapshot alone.
-    expect(c.classify).toHaveLastReturnedWith('held-terminal')
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
 
-  // Coordinator item 1(b)/(c): a blocker the journal does not show. On main e8d87c2d `apply` is
-  // called by every pass, and the member is applied by the first pass after the blocker clears.
-  it('a refusal the journal cannot explain is remembered for 16 passes and then tried once: the hold outlives its cause by at most that, and is never remembered as applied', async () => {
-    const state = chain([])
-    let blocked = true
-    let real!: (id: string, i: number) => Promise<unknown>
-    const c = await composed(state, [200000n], {
-      applyLocalMember: async (id, i) => {
-        if (blocked)
-          throw new EvmInputAdmissionError('conflicting-authorization')
-        return real(id, i) as never
-      },
-    })
-    real = (id, i) =>
-      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    const row = journal.list()[0]!
-    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    // The cause ends at once, in a way the consolidator cannot see.
-    blocked = false
-    for (let pass = 0; pass < 16; pass++) {
-      await c.executor.resumeLegacySend(row.operationId, c.lifetime)
-      expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    }
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    // Still held, so still not transported.
-    await pending(c.executor.flushSync(row.operationId))
-    expect(c.sync).not.toHaveBeenCalled()
-    await c.executor.resumeLegacySend(row.operationId, c.lifetime)
-    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: { spend: { rawTx: row.members[0]!.signed!.rawTransaction } },
-    })
-    await c.executor.flushSync(row.operationId)
-    expect(c.sync).toHaveBeenCalledTimes(1)
-  })
 
-  // Coordinator item 1(d). On main e8d87c2d classification answers `needs-apply` under a
-  // conflicting projection and every pass, also after a refused resume, enters the admission.
-  it("hand-built: under an already-conflicting admission the pass does nothing and cannot replace the failing call's error; once the never-signed plan is cancelled the next pass applies the member", async () => {
-    const state = chain([])
-    let transient = true
-    let real!: (id: string, i: number) => Promise<unknown>
-    const c = await composed(state, [200000n, 150000n], {
-      applyLocalMember: async (id, i) => {
-        if (transient) {
-          transient = false
-          throw new Error('fixture: transient failure')
-        }
-        return real(id, i) as never
-      },
-    })
-    real = (id, i) =>
-      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-    // Included in its own call, and left unapplied by an unexplained failure (not remembered).
-    const result = await c.executor.sendLegacy(
-      { recipient: to, value: 100000n },
-      c.lifetime,
-    )
-    const a = journal.list()[0]!
-    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    // Hand-built conflict: a never-signed plan on row 1, whose row is then terminal with no
-    // checkpoint.
-    const plan = await crashedPlan(c, 1)
-    c.pool.setStatus(1, 'in-use')
-    c.pool.setStatus(1, 'spent')
-    await c.pool.flush()
-    expect(c.inspect()).toMatchObject({ reason: 'conflicting-authorization' })
-    const refused = async () => {
-      const before = c.projections()
-      await expect(
-        c.executor.resumeLegacySend(a.operationId, c.lifetime),
-      ).rejects.toMatchObject({
-        name: 'EvmInputAdmissionError',
-        reason: 'conflicting-authorization',
-      })
-      return c.projections() - before
-    }
-    // The first pass asks once (one projection, in classification) and enters no section.
-    const first = await refused()
-    expect(c.classify).toHaveLastReturnedWith('not-eligible')
-    expect(calls(c)).toEqual({ classify: 2, apply: 1 })
-    // Every later pass: nothing. The resume's own refusal is its one projection.
-    for (let pass = 0; pass < 5; pass++) {
-      expect(await refused()).toBe(first - 1)
-      expect(calls(c)).toEqual({ classify: 2, apply: 1 })
-    }
-    expect(first - 1).toBe(1)
-    // A failed resume never cancels an operation that signed.
-    expect(journal.get(a.operationId).cancelled).toBe(false)
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    // What wallet open does. The journal changed, so the next pass looks again.
-    await c.executor.cancelUnsignedOperations(c.lifetime)
-    expect(journal.get(plan.operationId).cancelled).toBe(true)
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-    expect(
-      await c.executor.resumeLegacySend(a.operationId, c.lifetime),
-    ).toEqual(result)
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: { spend: { rawTx: a.members[0]!.signed!.rawTransaction } },
-    })
-    expect(calls(c)).toEqual({ classify: 3, apply: 2 })
-  })
 
-  // Coordinator item 1(c). On main e8d87c2d classification answers `needs-apply` for the leased
-  // row and every pass enters the admission, where the pool refuses (`held`).
-  it('hand-built: a native member whose row is in-use under a live lease is not applied and costs nothing per pass; released unused, it is applied by the next native send', async () => {
-    const state = chain([])
-    let transient = true
-    let real!: (id: string, i: number) => Promise<unknown>
-    const c = await composed(state, [200000n, 150000n], {
-      applyLocalMember: async (id, i) => {
-        if (transient) {
-          transient = false
-          throw new Error('fixture: transient failure')
-        }
-        return real(id, i) as never
-      },
-    })
-    real = (id, i) =>
-      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-    // Hand-built: the row is made `available` so that a lease can be taken on it afterwards.
-    c.pool.setStatus(0, 'available')
-    await c.pool.flush()
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    const a = journal.list()[0]!
-    expect(a.members[0]!.source).toMatchObject({ index: 0 })
-    const leases = canonicalAdmissionPool(c.admission, c.lifetime)
-    const lease = await leases.acquire(0)
-    expect(c.pool.getRecord(0)!.status).toBe('in-use')
-    const held = calls(c)
-    for (let pass = 0; pass < 4; pass++) {
-      await c.executor
-        .resumeLegacySend(a.operationId, c.lifetime)
-        .catch(() => undefined)
-      // Asked once, by the first of these passes; never applied.
-      expect(calls(c)).toEqual({
-        classify: held.classify + 1,
-        apply: held.apply,
-      })
-    }
-    expect(c.classify).toHaveLastReturnedWith('not-eligible')
-    expect(c.pool.getRecord(0)).toMatchObject({ status: 'in-use' })
-    expect(c.pool.getRecord(0)!.lifecycle?.spend).toBeUndefined()
-    await leases.release(lease, 'unused')
-    expect(c.pool.getRecord(0)!.status).toBe('available')
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-    await c.executor.sendLegacy({ recipient: to, value: 120000n }, c.lifetime)
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: { spend: { rawTx: a.members[0]!.signed!.rawTransaction } },
-    })
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
 
-  // ---------------------------------------------------------------------------------------
-  // #1235 Stage 2: the pass that wallet open runs once, `applyRecordedEvidence`. A fresh
-  // executor over the same journal and pool stands for the next session. The method does not
-  // exist on main c32dd683, so every test below fails there at its first call of it.
-  // ---------------------------------------------------------------------------------------
-  it('the open-time pass applies exactly the members already recorded as included, with no provider call, no signature and no transport; later runs write nothing, and a pending member waits for a send to observe it', async () => {
-    const state = chain([])
-    const c = await composed(state, [200000n, 150000n, 100000n, 50000n])
-    // Three sends the node keeps without a receipt: each is `pending` in its own call.
-    const send = async (value: bigint) => {
-      state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
-        announce(state, raw),
-      )
-      await pending(c.executor.sendLegacy({ recipient: to, value }, c.lifetime))
-    }
-    await send(100000n) // row 0: will be included
-    await send(100000n) // row 1: stays pending
-    await send(60000n) // row 2: will revert
-    const [a, b, r] = journal.list()
-    expect([a, b, r].map(row => row!.members[0]!.source)).toMatchObject([
-      { index: 0 },
-      { index: 1 },
-      { index: 2 },
-    ])
-    state.mine(a!.members[0]!.signed!.rawTransaction)
-    state.mine(r!.members[0]!.signed!.rawTransaction, 0)
-    // A fee estimate records what the node now says, and runs no pass: the crash window.
-    await c.executor.estimateLegacyFee(to, 1n, c.lifetime)
-    const recorded = journal.list()
-    expect(recorded.map(row => row.members[0]!.observation.state)).toEqual([
-      'included-success',
-      'pending',
-      'included-revert',
-    ])
-    expect(calls(c)).toEqual({ classify: 0, apply: 0 })
-    expect(c.pool.records().every(row => row.status !== 'spent')).toBe(true)
 
-    const session = c.another()
-    const provider = providerCalls(state)
-    const signatures = c.sign.mock.calls.length
-    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
-    await expect(
-      session.applyRecordedEvidence(c.lifetime),
-    ).resolves.toBeUndefined()
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: {
-        spend: {
-          rawTx: a!.members[0]!.signed!.rawTransaction,
-          txHash: a!.members[0]!.signed!.transactionHash,
-          valueWei: '100000',
-        },
-      },
-    })
-    // Pending and reverted members: not classified, not applied, rows untouched.
-    expect(
-      c.classify.mock.calls.map(([row, i]) => [row.operationId, i]),
-    ).toEqual([[a!.operationId, 0]])
-    expect(c.apply.mock.calls).toEqual([[a!.operationId, 0, c.lifetime]])
-    for (const index of [1, 2, 3]) {
-      expect(c.pool.getRecord(index)!.status).not.toBe('spent')
-      expect(c.pool.getRecord(index)!.lifecycle?.spend).toBeUndefined()
-    }
-    expect(putMany).toHaveBeenCalledTimes(1)
-    // No request, no signature, nothing broadcast or transported, and the journal as it was:
-    // nothing was observed again and nothing was marked sync-applied.
-    expect(providerCalls(state)).toBe(provider)
-    expect(c.sign.mock.calls.length).toBe(signatures)
-    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(3)
-    expect(c.sync).not.toHaveBeenCalled()
-    expect(journal.list()).toEqual(recorded)
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
 
-    // Again in the same session, and in the session after it: one comparison, no write.
-    await session.applyRecordedEvidence(c.lifetime)
-    expect(c.classify).toHaveLastReturnedWith('applied')
-    await c.another().applyRecordedEvidence(c.lifetime)
-    expect(c.classify).toHaveLastReturnedWith('applied')
-    expect(calls(c)).toEqual({ classify: 3, apply: 1 })
-    expect(putMany).toHaveBeenCalledTimes(1)
-    expect(providerCalls(state)).toBe(provider)
-    expect(c.sync).not.toHaveBeenCalled()
-
-    // The item for a member applied at open is emitted only when something flushes that
-    // operation's sync; the open-time pass itself never does.
-    await session.flushSync(a!.operationId)
-    expect(c.sync).toHaveBeenCalledTimes(1)
-    expect(c.sync.mock.calls[0]![0]).toMatchObject({
-      rawTx: a!.members[0]!.signed!.rawTransaction,
-    })
-
-    // The pending member lands. Open does not look: only a send's planning does.
-    state.mine(b!.members[0]!.signed!.rawTransaction)
-    const before = providerCalls(state)
-    await c.another().applyRecordedEvidence(c.lifetime)
-    expect(providerCalls(state)).toBe(before)
-    expect(c.pool.getRecord(1)!.status).not.toBe('spent')
-    expect(journal.list()[1]!.members[0]!.observation.state).toBe('pending')
-    await session.sendNative({ recipient: to, value: 1000n }, c.lifetime)
-    expect(c.pool.getRecord(1)).toMatchObject({
-      status: 'spent',
-      lifecycle: { spend: { rawTx: b!.members[0]!.signed!.rawTransaction } },
-    })
-    expect(c.pool.getRecord(2)!.lifecycle?.spend).toBeUndefined()
-  })
-
-  it("the open-time pass never throws: a refused member is held under the pass's own rules, a member whose apply threw is applied by the next pass, and an unreadable journal changes nothing", async () => {
-    const state = chain([])
-    let mode: 'throw' | 'refuse' | 'real' = 'throw'
-    let real!: (id: string, i: number) => Promise<unknown>
-    const c = await composed(state, [200000n], {
-      applyLocalMember: async (id, i) => {
-        if (mode === 'throw') throw new Error('fixture: untyped failure')
-        if (mode === 'refuse')
-          throw new EvmInputAdmissionError('conflicting-authorization')
-        return real(id, i) as never
-      },
-    })
-    real = (id, i) =>
-      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-    // Included in its own call; its own pass's apply fails: recorded included, never applied.
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    const row = journal.list()[0]!
-    expect(row.members[0]!.observation.state).toBe('included-success')
-    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    const unspent = () => expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    unspent()
-
-    // An unreadable journal.
-    const list = jest.spyOn(journal, 'list').mockImplementationOnce(() => {
-      throw new Error('fixture: journal unreadable')
-    })
-    const unreadable = c.another()
-    await expect(
-      unreadable.applyRecordedEvidence(c.lifetime),
-    ).resolves.toBeUndefined()
-    list.mockRestore()
-    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
-    unspent()
-
-    // A typed refusal: held, not transported, and not tried again by the next pass.
-    mode = 'refuse'
-    const refused = c.another()
-    await expect(
-      refused.applyRecordedEvidence(c.lifetime),
-    ).resolves.toBeUndefined()
-    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
-    unspent()
-    await pending(refused.flushSync(row.operationId))
-    expect(c.sync).not.toHaveBeenCalled()
-    mode = 'real'
-    await refused.applyRecordedEvidence(c.lifetime)
-    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
-    unspent()
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-
-    // An untyped throw: not remembered. The same session's next pass applies it.
-    mode = 'throw'
-    const thrown = c.another()
-    await expect(
-      thrown.applyRecordedEvidence(c.lifetime),
-    ).resolves.toBeUndefined()
-    expect(calls(c)).toEqual({ classify: 3, apply: 3 })
-    unspent()
-    mode = 'real'
-    await thrown.applyRecordedEvidence(c.lifetime)
-    expect(calls(c)).toEqual({ classify: 4, apply: 4 })
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: { spend: { rawTx: row.members[0]!.signed!.rawTransaction } },
-    })
-    expect(state.raws).toHaveLength(1)
-    expect(c.sign).toHaveBeenCalledTimes(1)
-  })
-
-  it('the open-time pass waits its turn on the executor queue: it runs after a send already in flight, never inside it', async () => {
-    const state = chain([])
-    const c = await composed(state, [200000n])
-    const order: string[] = []
-    const sending = c.executor
-      .sendLegacy(
-        {
-          recipient: to,
-          value: 100000n,
-          onProgress: p => void order.push(p.status.stage),
-        },
-        c.lifetime,
-      )
-      .then(() => order.push('send returned'))
-    const pass = c.executor
-      .applyRecordedEvidence(c.lifetime)
-      .then(() => order.push('open-time pass returned'))
-    await Promise.all([sending, pass])
-    expect(order).toEqual([
-      'planning',
-      'confirmed',
-      'send returned',
-      'open-time pass returned',
-    ])
-    // The send's own pass applied the member; the queued one found it applied.
-    expect(calls(c)).toEqual({ classify: 2, apply: 1 })
-    expect(c.classify).toHaveLastReturnedWith('applied')
-  })
 
   // ---------------------------------------------------------------------------------------
   // Stage 3 of #1235: bounded re-observation of broadcast members nothing has seen confirm.
@@ -2287,13 +1129,19 @@ describe('wallet-lifetime EVM native operations', () => {
   ) => {
     let now = 1_700_000_000_000
     const executor = c.another({ now: () => now, ...extra })
-    const applied = jest.fn(() => executor.applyRecordedEvidence(c.lifetime))
     return {
       executor,
-      applied,
       advance: (ms: number) => void (now += ms),
-      tick: () => executor.reobservePending(applied),
+      tick: () => executor.reobservePending(),
     }
+  }
+  /** The first pool account of the session that no journal row has spent from. */
+  const freeIndex = (c: Composed) => {
+    const used = new Set(
+      journal.list().flatMap(row => row.members.map(m => m.source.address)),
+    )
+    for (let index = 0; ; index++)
+      if (!used.has(c.address(index))) return index
   }
   /** One send the node keeps without a receipt. Native: returned as soon as it is broadcast. */
   const broadcastNative = async (
@@ -2304,8 +1152,7 @@ describe('wallet-lifetime EVM native operations', () => {
     state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
       announce(state, raw),
     )
-    await executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
-    return journal.list().slice(-1)[0]!
+    return cpay(c, { index: freeIndex(c), executor, look: false })
   }
   /** One legacy send the node keeps without a receipt: observed `pending` in its own call. */
   const broadcastLegacy = async (
@@ -2313,14 +1160,13 @@ describe('wallet-lifetime EVM native operations', () => {
     state: ReturnType<typeof chain>,
     value: bigint,
     executor = c.executor,
+    index = freeIndex(c),
   ) => {
     state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
       announce(state, raw),
     )
-    const error = await pending(
-      executor.sendLegacy({ recipient: to, value }, c.lifetime),
-    )
-    const row = journal.get(error.operation.operationId)
+    const sent = await cpay(c, { index, value, executor })
+    const row = journal.get(sent.operationId)
     expect(row.members[0]).toMatchObject({
       exposed: true,
       observation: { state: 'pending' },
@@ -2333,10 +1179,6 @@ describe('wallet-lifetime EVM native operations', () => {
     members: { signed: { transactionHash: string } | null }[]
   }) => row.members[0]!.signed!.transactionHash
   const settle = () => new Promise(resolve => setImmediate(resolve))
-  const spent = (raw: string) => ({
-    status: 'spent',
-    lifecycle: { spend: { rawTx: raw } },
-  })
 
   it('nothing to look up means no request at all: an empty journal, then unsigned, cancelled, signed-but-unexposed, included and reverted members, over many ticks; one broadcast member then costs exactly one receipt request', async () => {
     const state = chain([])
@@ -2355,25 +1197,23 @@ describe('wallet-lifetime EVM native operations', () => {
     await ticks(50)
     expect(providerCalls(state)).toBe(untouched)
 
-    // Included in its own call.
-    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
-    // Broadcast, then reverted, and recorded so by a fee estimate.
+    // Included, and seen so by the look after its broadcast.
+    await cpay(c, { index: freeIndex(c), value: 100000n })
+    // Broadcast, then reverted, and recorded so by one look at it.
     const reverted = await broadcastLegacy(c, state, 50000n)
     state.mine(reverted.members[0]!.signed!.rawTransaction, 0)
-    await c.executor.estimateLegacyFee(to, 1n, c.lifetime)
-    // Signed, and never exposed: the recovery callback refused before any broadcast.
-    await expect(
-      c.executor.sendLegacy(
-        {
-          recipient: to,
-          value: 1000n,
-          onSigned: async () => {
-            throw new Error('fixture: checkpoint refused')
-          },
-        },
-        c.lifetime,
-      ),
-    ).rejects.toThrow('fixture: checkpoint refused')
+    await c.executor.lookAtOperation(reverted.operationId)
+    // Signed, and never exposed: signed and not yet handed to the network.
+    await c.executor.signIndependentPayment(
+      {
+        kind: 'native',
+        preparationId: 'stealth-payment:signed-only',
+        recipient: to,
+        maxNativeFeeWei: fee,
+        members: [{ sourceAddress: c.address(freeIndex(c)), value: 1000n }],
+      },
+      c.lifetime,
+    )
     // Two plans that never signed, on rows no send used; the first is cancelled.
     const used = new Set(
       journal
@@ -2419,7 +1259,6 @@ describe('wallet-lifetime EVM native operations', () => {
     await Promise.all(Array.from({ length: 20 }, () => r.tick()))
     expect(providerCalls(state)).toBe(before)
     expect(journal.list()).toEqual(recorded)
-    expect(r.applied).not.toHaveBeenCalled()
 
     // The positive control: the same counter moves, by one, for one broadcast member.
     const live = await broadcastNative(c, state)
@@ -2434,14 +1273,10 @@ describe('wallet-lifetime EVM native operations', () => {
     await ticks(1)
     expect(providerCalls(state)).toBe(control + 1)
     expect(probed(state).slice(receipts)).toEqual([hashOf(live)])
-    // That send's planning observed the signed, unexposed member too (`missing`): it is still
-    // not a candidate, and the one request above was not for it.
+    // The signed, unexposed member is still not a candidate: the one request above was not
+    // for it.
     expect(shape()).toEqual([
-      ...settledShape.map(member =>
-        member.signed && !member.exposed
-          ? { ...member, state: 'missing' }
-          : member,
-      ),
+      ...settledShape,
       { cancelled: false, signed: true, exposed: true, state: 'missing' },
     ])
     expect(c.sign.mock.calls.length).toBe(signatures)
@@ -2490,7 +1325,6 @@ describe('wallet-lifetime EVM native operations', () => {
       expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
       expect(capture).not.toHaveBeenCalled()
       expect(putMany).not.toHaveBeenCalled()
-      expect(r.applied).not.toHaveBeenCalled()
       expect(c.pool.getRecord(0)!.status).not.toBe('spent')
       expect(c.sign).toHaveBeenCalledTimes(1)
       expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(1)
@@ -2498,7 +1332,7 @@ describe('wallet-lifetime EVM native operations', () => {
     },
   )
 
-  it('the receipt appears: the next due probe runs the existing observation (one probe and seven reads), records the inclusion, and the local pass marks the pool row spent with the member bytes; nothing is signed, broadcast or transported, and later ticks cost nothing', async () => {
+  it('the receipt appears: the next due probe runs the existing observation (one probe and seven reads) and records the inclusion; no pool row is written, nothing is signed, broadcast or transported, and later ticks cost nothing', async () => {
     const state = chain([])
     const c = await composed(state, [121000n, 50000n])
     const r = reobserver(c)
@@ -2522,32 +1356,26 @@ describe('wallet-lifetime EVM native operations', () => {
       transactionHash: hashOf(row),
       feeWei: '21000',
     })
-    expect(r.applied).toHaveBeenCalledTimes(1)
-    expect(c.apply.mock.calls).toEqual([[row.operationId, 0, c.lifetime]])
-    expect(c.pool.getRecord(0)).toMatchObject({
-      status: 'spent',
-      lifecycle: {
-        spend: { rawTx: raw, txHash: hashOf(row), valueWei: '100000' },
-      },
-    })
-    expect(putMany).toHaveBeenCalledTimes(1)
+    // The journal holds the account until the coin list reads it again; the pool row is not
+    // a second record of this spend.
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    expect(putMany).not.toHaveBeenCalled()
     expect(c.inspect()).toMatchObject({ status: 'ready' })
-    // Terminal: never looked up again, and the local pass is not run again.
+    // Terminal: never looked up again.
     before = providerCalls(state)
     for (let i = 0; i < 50; i++) {
       r.advance(600 * SECOND)
       await r.tick()
     }
     expect(providerCalls(state)).toBe(before)
-    expect(r.applied).toHaveBeenCalledTimes(1)
-    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(putMany).not.toHaveBeenCalled()
     expect(c.sign).toHaveBeenCalledTimes(1)
     expect(state.provider.broadcastTransaction.mock.calls).toEqual([[raw]])
     expect(c.sync).not.toHaveBeenCalled()
     expect(journal.list()[0]!.members[0]!.syncApplied).toBe(false)
   })
 
-  it('a reverted receipt is recorded as the existing observation records it, the pool row is left exactly as it was, no local pass runs, and the member is never looked up again', async () => {
+  it('a reverted receipt is recorded as the existing observation records it, the pool row is left exactly as it was, and the member is never looked up again', async () => {
     const state = chain([])
     const c = await composed(state, [121000n])
     const r = reobserver(c)
@@ -2561,8 +1389,6 @@ describe('wallet-lifetime EVM native operations', () => {
       transactionHash: hashOf(row),
     })
     expect(c.pool.getRecord(0)).toEqual(rowBefore)
-    expect(r.applied).not.toHaveBeenCalled()
-    expect(calls(c)).toEqual({ classify: 0, apply: 0 })
     expect(putMany).not.toHaveBeenCalled()
     const before = providerCalls(state)
     for (let i = 0; i < 20; i++) {
@@ -2619,11 +1445,6 @@ describe('wallet-lifetime EVM native operations', () => {
         i === 12 ? 'included-success' : row.members[0]!.observation.state,
       ),
     )
-    expect(
-      c.pool.getRecord(
-        (recorded[12]!.members[0]!.source as { index: number }).index,
-      ),
-    ).toMatchObject(spent(recorded[12]!.members[0]!.signed!.rawTransaction))
     expect(c.sign).toHaveBeenCalledTimes(20)
     expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(20)
   }, 60_000)
@@ -2784,15 +1605,8 @@ describe('wallet-lifetime EVM native operations', () => {
         expect(
           journal.get(first.operationId).members[0]!.observation.state,
         ).toBe('included-success')
-        expect(
-          c.pool.getRecord(
-            (first.members[0]!.source as { index: number }).index,
-          )!.status,
-        ).toBe('spent')
-        const applied = r.applied.mock.calls.length
         r.advance(600_000)
         await r.tick()
-        expect(r.applied).toHaveBeenCalledTimes(applied)
         expect(c.sign).toHaveBeenCalledTimes(signatures)
         expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(
           broadcasts,
@@ -2957,7 +1771,7 @@ describe('wallet-lifetime EVM native operations', () => {
   )
 
   it.each(['complete', 'superseded', 'closed'] as const)(
-    'an admitted durable inclusion completing after timeout preserves capture ordering and local application (%s)',
+    'an admitted durable inclusion completing after timeout preserves capture ordering (%s)',
     async mode => {
       const close = mode === 'closed'
       const state = chain([])
@@ -2991,7 +1805,6 @@ describe('wallet-lifetime EVM native operations', () => {
         expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
           'pending',
         )
-        expect(r.applied).not.toHaveBeenCalled()
         // A newer capture does not cancel already admitted durability. Its own queued write
         // wins afterwards, and the old completion must not invent a different final result.
         const newer =
@@ -3015,14 +1828,11 @@ describe('wallet-lifetime EVM native operations', () => {
         r.advance(600_000)
         await r.tick()
         if (close) {
-          expect(r.applied).not.toHaveBeenCalled()
           expect(c.pool.getRecord(0)!.status).not.toBe('spent')
         } else {
           expect(
             journal.get(row.operationId).members[0]!.observation.state,
           ).toBe('included-success')
-          expect(c.pool.getRecord(0)!.status).toBe('spent')
-          expect(r.applied).toHaveBeenCalledTimes(1)
           if (mode === 'complete') expect(providerCalls(state)).toBe(before)
         }
         expect(jest.getTimerCount()).toBe(0)
@@ -3115,7 +1925,6 @@ describe('wallet-lifetime EVM native operations', () => {
         expect(journal.list()).toEqual(recorded)
         expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
         expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-        expect(r.applied).not.toHaveBeenCalled()
         const before = providerCalls(state)
         r.advance(3600 * SECOND)
         await r.tick()
@@ -3132,48 +1941,8 @@ describe('wallet-lifetime EVM native operations', () => {
     }
   })
 
-  it('the local pass refused, as the wallet queue refuses it while a canonical pre-sign intent holds a row: nothing is thrown, the observation stays recorded, and a later tick applies it with no request', async () => {
-    const state = chain([])
-    const c = await composed(state, [121000n])
-    const r = reobserver(c)
-    const row = await broadcastLegacy(c, state, 100000n)
-    const raw = row.members[0]!.signed!.rawTransaction
-    state.mine(raw)
-    const refusal = new Error(
-      'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
-    )
-    r.applied.mockRejectedValueOnce(refusal).mockImplementationOnce(() => {
-      throw refusal
-    })
-    await expect(r.tick()).resolves.toBeUndefined()
-    expect(r.applied).toHaveBeenCalledTimes(1)
-    const recorded = journal.list()
-    expect(recorded[0]!.members[0]!.observation.state).toBe('included-success')
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    const before = providerCalls(state)
-    // Inside the floor it is not tried again.
-    await r.tick()
-    expect(r.applied).toHaveBeenCalledTimes(1)
-    // Refused again, this time by a synchronous throw (a closed wallet).
-    r.advance(15 * SECOND)
-    await expect(r.tick()).resolves.toBeUndefined()
-    expect(r.applied).toHaveBeenCalledTimes(2)
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-    r.advance(15 * SECOND)
-    await r.tick()
-    expect(r.applied).toHaveBeenCalledTimes(3)
-    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
-    // Applied once: nothing is owed after it.
-    r.advance(15 * SECOND)
-    await r.tick()
-    expect(r.applied).toHaveBeenCalledTimes(3)
-    expect(providerCalls(state)).toBe(before)
-    expect(journal.list()).toEqual(recorded)
-    // Left unapplied instead, the open-time pass of the next session applies it.
-    expect(c.inspect()).toMatchObject({ status: 'ready' })
-  })
 
-  it('a send that observes the same member while a re-observation is mid-observation: the later observer records, the earlier one is discarded, and the pool row is written once', async () => {
+  it('a look that observes the same member while a re-observation is mid-observation: the later observer records, the earlier one is discarded, and no pool row is written', async () => {
     const state = chain([])
     const c = await composed(state, [121000n, 50000n])
     const r = reobserver(c)
@@ -3193,22 +1962,18 @@ describe('wallet-lifetime EVM native operations', () => {
     const record = jest.spyOn(journal, 'recordObservation')
     const tick = r.tick()
     await settle()
-    // The send plans, observes the member included, and its own pass records the row.
-    await r.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    // A look at the operation observes the member included.
+    await r.executor.lookAtOperation(row.operationId)
     expect(journal.list()[0]!.members[0]!.observation.state).toBe(
       'included-success',
     )
-    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
     const recorded = journal.list()
     answer()
     await tick
     // The re-observation's own result was discarded by the journal's capture rule.
     expect(await record.mock.results.slice(-1)[0]!.value).toBe(false)
     expect(journal.list()).toEqual(recorded)
-    expect(
-      c.apply.mock.calls.filter(([id]) => id === row.operationId),
-    ).toHaveLength(1)
-    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(putMany).not.toHaveBeenCalled()
     expect(c.inspect()).toMatchObject({ status: 'ready' })
   })
 
@@ -3224,7 +1989,8 @@ describe('wallet-lifetime EVM native operations', () => {
       await r.tick()
       r.advance(wait * SECOND)
     }
-    // A send that has finished observing its sources and now waits for a fee quote.
+    // A contract call on the executor queue that has read its account and now waits for a
+    // fee quote.
     let quote!: () => void
     const held = new Promise<void>(resolve => {
       quote = resolve
@@ -3239,10 +2005,7 @@ describe('wallet-lifetime EVM native operations', () => {
       await held
       return fees()
     })
-    const sending = r.executor.sendNative(
-      { recipient: to, value: 1000n },
-      c.lifetime,
-    )
+    const sending = call(c, r.executor)
     await waiting
     state.mine(raw)
     const capture = jest.spyOn(journal, 'beginCapture')
@@ -3256,20 +2019,18 @@ describe('wallet-lifetime EVM native operations', () => {
     quote()
     await sending
     expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
-    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
     // Not counted as an empty probe: due again as soon as the floor allows.
     r.advance(15 * SECOND)
     await r.tick()
     expect(journal.list()[0]!.members[0]!.observation.state).toBe(
       'included-success',
     )
-    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
   })
 
   // Review of 09d2624a. There the pass checked the member before the probe only, so after a
   // slow probe it observed a member a send had recorded included meanwhile, and one failed read
   // wrote `unknown` over `included-success` and cleared `syncApplied`. Fails on 09d2624a.
-  it('a send records the member included and transported while the probe is unanswered: when the probe then returns a receipt the pass does not observe it, so a failing read cannot overwrite the record, clear syncApplied or touch the row', async () => {
+  it('a look records the member included and it is transported while the probe is unanswered: when the probe then returns a receipt the pass does not observe it, so a failing read cannot overwrite the record or clear syncApplied', async () => {
     const state = chain([])
     const c = await composed(state, [121000n, 50000n])
     const r = reobserver(c)
@@ -3287,10 +2048,11 @@ describe('wallet-lifetime EVM native operations', () => {
     const tick = r.tick()
     await settle()
     expect(probed(state).slice(-1)).toEqual([hashOf(row)])
-    // Meanwhile: the transaction lands, a send from the other account observes it, that send's
-    // pass marks the row spent, and the item is transported.
+    // Meanwhile: the transaction lands, a look observes it, the item is transported, and a
+    // payment from the other account is broadcast (and mined, unobserved).
     state.mine(raw)
-    await r.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    await r.executor.lookAtOperation(row.operationId)
+    await cpay(c, { index: 1, executor: r.executor, look: false })
     await r.executor.flushSync(row.operationId)
     const recorded = journal.list()
     expect(recorded[0]!.members[0]).toMatchObject({
@@ -3298,7 +2060,6 @@ describe('wallet-lifetime EVM native operations', () => {
       syncApplied: true,
     })
     const rowRecord = c.pool.getRecord(0)
-    expect(rowRecord).toMatchObject(spent(raw))
     // The next transaction read fails, once: what an observation begun now would hit.
     state.provider.getTransaction.mockRejectedValueOnce(
       new Error('fixture: one flaky read'),
@@ -3313,9 +2074,8 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(providerCalls(state)).toBe(before)
     expect(journal.list()).toEqual(recorded)
     expect(c.pool.getRecord(0)).toEqual(rowRecord)
-    expect(r.applied).not.toHaveBeenCalled()
-    // It is terminal: never looked up again. (The send above left its own member unconfirmed;
-    // that one is looked up, and it is the one that meets the failing read.)
+    // It is terminal: never looked up again. (The payment above left its own member
+    // unconfirmed; that one is looked up, and it is the one that meets the failing read.)
     const seen = probed(state).length
     r.advance(3600 * SECOND)
     await r.tick()
@@ -3327,73 +2087,6 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(c.pool.getRecord(0)).toEqual(rowRecord)
   })
 
-  // Review of 09d2624a. There "owed" was cleared whenever the local pass returned, and the pass
-  // never throws, so a member it failed on or held waited for the next send or the next open.
-  // The first two cases fail on 09d2624a (the row is never marked); the third is a pin.
-  it.each(['apply throws', 'apply refused', 'held-terminal'] as const)(
-    'the local pass ran and left the included member unapplied (%s): it stays owed and a later tick applies it with no request and no restart, except a member that can never apply, which is not asked about again',
-    async mode => {
-      const state = chain([])
-      let failing = true
-      let real!: (id: string, i: number) => Promise<unknown>
-      const c = await composed(state, [121000n], {
-        applyLocalMember: async (id, i) => {
-          if (failing)
-            throw mode === 'apply refused'
-              ? new EvmInputAdmissionError('conflicting-authorization')
-              : new Error('fixture: untyped failure')
-          return real(id, i) as never
-        },
-        ...(mode === 'held-terminal'
-          ? { classifyLocalMember: () => 'held-terminal' as const }
-          : {}),
-      })
-      real = (id, i) =>
-        poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
-      const r = reobserver(c)
-      const row = await broadcastLegacy(c, state, 100000n)
-      const raw = row.members[0]!.signed!.rawTransaction
-      state.mine(raw)
-      await r.tick()
-      expect(journal.list()[0]!.members[0]!.observation.state).toBe(
-        'included-success',
-      )
-      expect(r.applied).toHaveBeenCalledTimes(1)
-      expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-      const before = providerCalls(state)
-      const evaluate = async () => {
-        r.advance(15 * SECOND)
-        await r.tick()
-      }
-      if (mode === 'held-terminal') {
-        for (let i = 0; i < 20; i++) await evaluate()
-        expect(r.applied).toHaveBeenCalledTimes(1)
-        expect(c.apply).not.toHaveBeenCalled()
-      } else {
-        // Still failing: asked again by every evaluation, never inside the floor.
-        await r.tick()
-        expect(r.applied).toHaveBeenCalledTimes(1)
-        await evaluate()
-        expect(r.applied).toHaveBeenCalledTimes(2)
-        expect(c.pool.getRecord(0)!.status).not.toBe('spent')
-        failing = false
-        // An untyped failure is tried by the very next pass; a typed refusal is remembered
-        // as a hold and tried again after at most 16 skipped passes.
-        let evaluations = 0
-        while (c.pool.getRecord(0)!.status !== 'spent' && evaluations < 40) {
-          await evaluate()
-          evaluations++
-        }
-        expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
-        expect(evaluations).toBe(mode === 'apply throws' ? 1 : 16)
-        // Applied: nothing is owed any more.
-        const asked = r.applied.mock.calls.length
-        for (let i = 0; i < 5; i++) await evaluate()
-        expect(r.applied).toHaveBeenCalledTimes(asked)
-      }
-      expect(providerCalls(state)).toBe(before)
-    },
-  )
 
   it('an unreadable journal or a wallet lifetime that has ended: no request, nothing thrown', async () => {
     const state = chain([])
@@ -3412,15 +2105,10 @@ describe('wallet-lifetime EVM native operations', () => {
     })
     await expect(ended.tick()).resolves.toBeUndefined()
     expect(providerCalls(state)).toBe(before)
-    expect(unreadable.applied).not.toHaveBeenCalled()
-    expect(ended.applied).not.toHaveBeenCalled()
   })
 
   // ---------------------------------------------------------------------------------------
-  // A transfer is watched until the chain shows it. Seen in the browser on Monad testnet: the
-  // Send page said "outcome is unresolved, funds may have moved" for a transfer that was mined
-  // (status 1) a block later, because the send looked at the chain once, the instant after its
-  // broadcast, and nothing looked again.
+  // A transfer handed to the network is looked at again until the chain shows it.
   // ---------------------------------------------------------------------------------------
   /** As a node holds a transaction it has not mined: known by its hash, in no block. */
   const inMempool = (state: ReturnType<typeof chain>, raw: string) => {
@@ -3434,63 +2122,17 @@ describe('wallet-lifetime EVM native operations', () => {
       }) as never,
     )
   }
-  it('a transfer mined a block after its broadcast: the send watches at each look of the block watcher and resolves with the block and fee', async () => {
-    const state = chain([200000n])
-    state.setMode('retained')
-    let looks = 0
-    const executor = new EvmLegacyConsolidator({
-      journal,
-      provider: state.provider as unknown as Provider,
-      transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => sources(),
-      sign: async (source, raw) =>
-        wallets
-          .find(w => w.address.toLowerCase() === source.address)!
-          .signTransaction(Transaction.from(raw)),
-      // The wallet's block watcher: the first look finds it in the mempool, the second mined.
-      nextLook: async () => {
-        looks++
-        if (looks === 1) inMempool(state, state.raws[0]!)
-        else state.mine(state.raws[0]!)
-      },
-    })
-    const result = await executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 100000n,
-    })
-    expect(looks).toBe(2)
-    // The same bytes, handed over once: nothing was signed or sent again while it waited.
-    expect(state.raws).toHaveLength(1)
-    const [row] = journal.list()
-    expect(result.txHash).toBe(row!.members[0]!.signed!.transactionHash)
-    expect(row!.members[0]!.observation).toMatchObject({
-      state: 'included-success',
-      blockNumber: 1,
-      feeWei: '21000',
-    })
-    expect(summarizeEvmNativeOperation(row!)).toMatchObject({
-      payment: 'included',
-      feeCoverage: 'complete',
-      observedFeeWei: '21000',
-      members: [{ state: 'included-success', blockNumber: 1 }],
-    })
-  })
-  it('after the send gave up watching and the wallet was reopened: one look at the operation records the mined transfer; a transfer the node does not know is "missing", never "unknown", and is offered again on the second such look', async () => {
+  it('after the payment was handed over and the wallet was reopened: one look at the operation records the mined transfer; a transfer the node does not know is "missing", never "unknown", and is offered again on the second such look', async () => {
     const state = chain([200000n])
     state.setMode('retained')
     const first = owner(state)
-    await expect(
-      first.executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100000n,
-      }),
-    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    await pay(first.executor, { value: 100000n })
     const id = journal.list()[0]!.operationId
     const raw = journal.list()[0]!.members[0]!.signed!.rawTransaction
     // The node answers and has never heard of it.
     expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
     await reopen()
-    const second = owner(state, { sources: [], noPoolRows: true })
+    const second = owner(state, { sources: [] })
     await second.executor.lookAtOperation(id)
     expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
     expect(state.raws).toEqual([raw])
@@ -3519,9 +2161,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const state = chain([200000n])
     state.setMode('retained')
     const { executor } = owner(state)
-    await expect(
-      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
-    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    await pay(executor, { value: 100000n })
     const row = journal.list()[0]!
     const raw = row.members[0]!.signed!.rawTransaction
     state.mine(raw)
@@ -3545,30 +2185,17 @@ describe('wallet-lifetime EVM native operations', () => {
   // Rule: Monad charges the gas LIMIT, and a transfer to an address with code needs more than
   // 21,000 (measured: 49,413 for a small contract; sent with 21,000 it was mined, reverted, and
   // charged in full). The recipient of a native send is whatever the user typed.
-  it("a transfer to the address the user entered carries the node's gas estimate for that address; the transfers that fund it between the wallet's own accounts stay at exactly 21,000", async () => {
-    const state = chain([80000n, 70000n])
+  it("a transfer to the address the user entered carries the node's gas estimate for that address", async () => {
+    const state = chain([200000n])
     state.provider.estimateGas.mockImplementation(async () => 49413n)
     const { executor } = owner(state)
-    const estimate = await executor.estimateLegacyFee(
-      { raw: recipient },
-      40000n,
-    )
-    expect(estimate.deliveryFee).toBe(49413n)
-    await executor
-      .sendLegacy({ recipient: { raw: recipient }, value: 40000n })
-      .catch(() => undefined)
-    const members = journal
+    await pay(executor, { value: 40000n })
+    const [toRecipient] = journal
       .list()[0]!
       .members.map(member => Transaction.from(member.unsignedTransaction))
-    // One account funds the other, which then pays the recipient.
-    expect(members).toHaveLength(2)
-    const [funding, toRecipient] = members as [Transaction, Transaction]
-    expect(funding.to!.toLowerCase()).not.toBe(recipient)
-    expect(funding.gasLimit).toBe(21000n)
-    expect(toRecipient.to!.toLowerCase()).toBe(recipient)
-    expect(toRecipient.gasLimit).toBe(49413n)
-    expect(toRecipient.type).toBe(2)
-    expect(funding.type).toBe(2)
+    expect(toRecipient!.to!.toLowerCase()).toBe(recipient)
+    expect(toRecipient!.gasLimit).toBe(49413n)
+    expect(toRecipient!.type).toBe(2)
     expect(state.provider.estimateGas).toHaveBeenCalledWith(
       expect.objectContaining({ to: recipient, value: 40000n }),
     )
@@ -3579,9 +2206,9 @@ describe('wallet-lifetime EVM native operations', () => {
       new Error('execution reverted'),
     )
     const { executor, sign } = owner(state)
-    await expect(
-      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
-    ).rejects.toThrow('execution reverted')
+    await expect(pay(executor, { value: 100000n })).rejects.toThrow(
+      'execution reverted',
+    )
     expect(sign).not.toHaveBeenCalled()
     expect(journal.list()).toHaveLength(0)
     expect(state.raws).toHaveLength(0)
@@ -3591,33 +2218,32 @@ describe('wallet-lifetime EVM native operations', () => {
   // The transfer funding the paying account was mined; the payment out of it, offered to the
   // node at once, was refused (the node admits a transaction against the balance of a few
   // blocks ago) and was never sent: "unknown to the node" eight minutes later.
-  it('the payment out of an account this operation has just funded is handed to the network only once that funding is old enough for the node to count it', async () => {
-    const state = chain([80000n, 70000n])
+  it('a payment out of an account that was just funded is handed to the network only once that funding is old enough for the node to count it', async () => {
+    const state = chain([200000n])
     let head = 10
-    let fundedAt: number | undefined
-    const leader = wallets[0]!.address.toLowerCase()
-    const offeredAt: { to: string; head: number }[] = []
+    // The paying account was funded at block 10; before that it held 80,000.
+    const fundedAt = 10
+    const payer = wallets[0]!.address.toLowerCase()
+    const offeredAt: number[] = []
     const provider = state.provider as unknown as Record<string, unknown>
     provider.getBlockNumber = jest.fn(async () => head)
+    state.provider.getBlock.mockImplementation((async () => ({
+      hash: '0x' + 'ab'.repeat(32),
+      number: head,
+    })) as never)
     const latest = state.provider.getBalance.getMockImplementation()!
     state.provider.getBalance.mockImplementation((async (
       address: string,
       block?: number,
     ) =>
-      // Before its funding the paying account held only its own 80,000.
-      block !== undefined &&
-      fundedAt !== undefined &&
-      block < fundedAt &&
-      address.toLowerCase() === leader
+      block !== undefined && block < fundedAt && address.toLowerCase() === payer
         ? 80000n
         : latest(address)) as never)
     const broadcast =
       state.provider.broadcastTransaction.getMockImplementation()!
     state.provider.broadcastTransaction.mockImplementation(
       async (raw: string) => {
-        const tx = Transaction.from(raw)
-        offeredAt.push({ to: tx.to!.toLowerCase(), head })
-        if (tx.to!.toLowerCase() === leader) fundedAt = head
+        offeredAt.push(head)
         return broadcast(raw)
       },
     )
@@ -3626,7 +2252,9 @@ describe('wallet-lifetime EVM native operations', () => {
       journal,
       provider: state.provider as unknown as Provider,
       transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => sources().slice(0, 2),
+      mainSource: sources()[0]!,
+      ownedSource: address =>
+        sources().find(source => source.address === address.toLowerCase()),
       sign: async (source, raw) =>
         wallets
           .find(w => w.address.toLowerCase() === source.address)!
@@ -3634,39 +2262,15 @@ describe('wallet-lifetime EVM native operations', () => {
       nextLook,
       fundsSettleBlocks: 4,
     })
-    const result = await executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 100000n,
-    })
-    expect(result.intermediateTxHashes).toHaveLength(1)
-    expect(offeredAt.map(offer => offer.to)).toEqual([leader, recipient])
-    // The funding went out at once; the payment waited until block fundedAt + 4.
-    expect(offeredAt[0]!.head).toBe(10)
-    expect(offeredAt[1]!.head).toBe(14)
+    await pay(executor, { value: 100000n })
+    // It waited until block fundedAt + 4.
+    expect(offeredAt).toEqual([14])
     expect(state.balances.get(recipient)).toBe(100000n)
-    expect(state.raws).toHaveLength(2)
-  })
-  it("the fee quoted for a transfer is what it will be charged (the node's price times the gas limit), not the fee cap", async () => {
-    const state = chain([10_000_000n])
-    // Monad testnet's shape: the cap is about twice what is charged.
-    state.provider.getFeeData.mockResolvedValue({
-      gasPrice: 102n,
-      maxFeePerGas: 202n,
-      maxPriorityFeePerGas: 2n,
-    } as never)
-    const { executor } = owner(state, { sources: sources().slice(0, 1) })
-    expect(
-      await executor.estimateLegacyFee({ raw: recipient }, 1000n),
-    ).toMatchObject({
-      inputCount: 1,
-      deliveryFee: 21000n * 102n,
-      consolidationFee: 0n,
-      totalFee: 21000n * 102n,
-    })
+    expect(state.raws).toHaveLength(1)
   })
 
-  // Seen on a local Monad chain: a send that needed two accounts failed "Native account block
-  // changed" before it signed anything. Monad's newest block is only proposed and is often
+  // Seen on a local Monad chain: a send failed "Native account block changed" before it
+  // signed anything. Monad's newest block is only proposed and is often
   // replaced a moment later.
   it('the newest block being replaced between two reads is read again, not an error; a chain that never settles still ends in the error', async () => {
     const state = chain([200000n])
@@ -3677,11 +2281,8 @@ describe('wallet-lifetime EVM native operations', () => {
     state.provider.getBlock
       .mockResolvedValueOnce(replaced as never)
       .mockResolvedValue(settled as never)
-    const result = await executor.sendLegacy({
-      recipient: { raw: recipient },
-      value: 100000n,
-    })
-    expect(result.totalValueSent).toBe(100000n)
+    await pay(executor, { value: 100000n })
+    expect(state.balances.get(recipient)).toBe(100000n)
     expect(state.raws).toHaveLength(1)
     // Never the same block twice: the read gives up, having signed nothing more.
     let n = 0
@@ -3689,166 +2290,118 @@ describe('wallet-lifetime EVM native operations', () => {
       hash: '0x' + (n++).toString(16).padStart(64, '0'),
       number: 1,
     })) as never)
-    await expect(
-      executor.sendLegacy({ recipient: { raw: recipient }, value: 1000n }),
-    ).rejects.toThrow('Native account block changed')
+    await expect(pay(executor, { source: 1 })).rejects.toThrow(
+      'Native account block changed',
+    )
     expect(state.raws).toHaveLength(1)
   })
 
-  it('executes 1-account direct fast-path with zero intermediate hops and never creates a random staging wallet (#1203)', async () => {
-    const createRandomSpy = jest.spyOn(Wallet, 'createRandom')
-    try {
-      const state = chain([30_000n, 200_000n, 40_000n])
-      const { executor } = owner(state)
-      const result = await executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 100_000n,
-      })
-      expect(createRandomSpy).not.toHaveBeenCalled()
-      expect(result.intermediateTxHashes).toEqual([])
-      expect(result.totalValueSent).toBe(100_000n)
-      expect(result.totalFeePaid).toBe(fee)
-      expect(state.raws).toHaveLength(1)
-      const tx = Transaction.from(state.raws[0]!)
-      expect(tx.from?.toLowerCase()).toBe(wallets[1]!.address.toLowerCase())
-      expect(tx.to?.toLowerCase()).toBe(recipient)
-      expect(tx.value).toBe(100_000n)
-    } finally {
-      createRandomSpy.mockRestore()
-    }
-  })
 
-  it('selects the largest in-set account as leader for multi-account fan-in without creating an ephemeral staging wallet (#1203)', async () => {
-    const createRandomSpy = jest.spyOn(Wallet, 'createRandom')
-    try {
-      // Wallet 0: 50,000, Wallet 1: 90,000 (largest -> leader), Wallet 2: 70,000
-      const state = chain([50_000n, 90_000n, 70_000n])
-      const { executor } = owner(state)
-      const result = await executor.sendLegacy({
-        recipient: { raw: recipient },
-        value: 110_000n,
-      })
-      expect(createRandomSpy).not.toHaveBeenCalled()
-      // Only 1 peer (Wallet 2: 70,000 - 21,000 = 49,000 net) needed to top up Leader (Wallet 1: 90,000) to 139,000 >= 110,000 + 21,000
-      expect(result.intermediateTxHashes).toHaveLength(1)
-      expect(result.totalValueSent).toBe(110_000n)
-      expect(result.totalFeePaid).toBe(fee * 2n)
-      expect(state.raws).toHaveLength(2)
 
-      const fanInTx = Transaction.from(state.raws[0]!)
-      const drainTx = Transaction.from(state.raws[1]!)
-      const leaderAddress = wallets[1]!.address.toLowerCase()
-      const peerAddress = wallets[2]!.address.toLowerCase()
 
-      expect(fanInTx.from?.toLowerCase()).toBe(peerAddress)
-      expect(fanInTx.to?.toLowerCase()).toBe(leaderAddress)
-      expect(drainTx.from?.toLowerCase()).toBe(leaderAddress)
-      expect(drainTx.to?.toLowerCase()).toBe(recipient)
-      expect(drainTx.value).toBe(110_000n)
-    } finally {
-      createRandomSpy.mockRestore()
-    }
-  })
-
-  it('dispatches Phase 1 peer fan-in broadcasts asynchronously without blocking on multi-block waits and completes Phase 2 leader drain once confirmed (#1217)', async () => {
-    // 3 accounts: Wallet 0 (90,000 -> leader), Wallet 1 (60,000 -> peer 1), Wallet 2 (55,000 -> peer 2)
-    // Target: 140,000 (needs leader + both peers: 90,000 + (60,000 - 21,000) + (55,000 - 21,000) = 163,000 >= 140,000 + 21,000)
-    const state = chain([90_000n, 60_000n, 55_000n])
-    state.setMode('retained') // Transactions stay unconfirmed in mempool until mined
-
-    const nextLook = jest.fn(async () => {
-      throw new Error('nextLook must not be awaited during non-blocking dispatchFanIn')
+  // ---------------------------------------------------------------------------------------
+  // The transport gate. A contract call or token payment has no local record to wait for: once
+  // included it is transported. A transaction set is transported only after its own inventory
+  // projection has applied the member.
+  // ---------------------------------------------------------------------------------------
+  it('a contract call is transported once it is included, with no local callback, and only once', async () => {
+    const state = chain([200000n])
+    const current = owner(state)
+    const result = await current.executor.sendContractCall({
+      to: { raw: recipient },
+      data: '0x12345678',
+      value: 0n,
+      gasLimit: 21000n,
     })
-    const executor = new EvmLegacyConsolidator({
+    // Handed to the network, not yet seen in a block: nothing to transport.
+    await current.executor.flushSync(result.operationId)
+    expect(current.sync).not.toHaveBeenCalled()
+    await current.executor.lookAtOperation(result.operationId)
+    expect(
+      journal.get(result.operationId).members[0]!.observation.state,
+    ).toBe('included-success')
+    await current.executor.flushSync(result.operationId)
+    await current.executor.flushSync()
+    expect(current.sync).toHaveBeenCalledTimes(1)
+    expect((current.sync.mock.calls[0] as unknown[])[0]).toMatchObject({
+      type: 'wallet-sync',
+      direction: 'out',
+      chainIdentifier: binding.chainIdentifier,
+      txHash: result.txHash,
+    })
+    expect(journal.get(result.operationId).members[0]!.syncApplied).toBe(true)
+  })
+
+  it('a transaction set is not transported until its inventory projection has applied each included member; then each is transported once', async () => {
+    const state = chain([1000000n])
+    const current = owner(state)
+    const coins = await EvmCoinList.open(new MemoryRecordStore())
+    const source = wallets[0]!
+    await coins.put({
+      account: source.address,
+      privateKey: source.privateKey,
+      nonce: 0,
+      valueWei: 1000000n,
+      origin: 'root',
+    })
+    const change = HDNodeWallet.fromSeed('0x' + '03'.repeat(32))
+    const deriveChange = (index: number) => {
+      const key = change.deriveChild(index)
+      return { account: key.address, privateKey: key.privateKey, changeIndex: index }
+    }
+    const preparer = new EvmTransactionSetPreparer({
+      coins,
       journal,
-      provider: state.provider as unknown as Provider,
-      transactionBuilder: new NativeEvmTransactionBuilder(),
-      getSources: async () => sources(),
-      sign: async (source, raw) =>
-        wallets
-          .find(w => w.address.toLowerCase() === source.address)!
-          .signTransaction(Transaction.from(raw)),
-      nextLook,
+      random: () => 0.5,
+      deriveChange,
+      reserveChange: async (_operation, index) => deriveChange(index),
+      policy: () => ({
+        sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+        gasPriceWei: 1n,
+        paymentGasLimit: () => 21000n,
+        changeGasLimit: 21000n,
+        paymentFeeIsExact: true,
+        dustWei: 1000n,
+        radix: 2,
+        jitterBps: 1500,
+        maxChangeOutputs: 4,
+        head: 1,
+      }),
     })
-
-    const stages: string[] = []
-    const handle = await executor.dispatchFanIn({
-      recipient: { raw: recipient },
-      value: 140_000n,
-      onProgress: p => stages.push(p.status.stage),
+    await preparer.constructTransactionSet({
+      operationId: 'gate',
+      amountWei: 100000n,
+      kdf: () => recipient,
     })
-
-    // Phase 1 returned immediately without calling nextLook or blocking on inclusion
-    expect(nextLook).not.toHaveBeenCalled()
-    expect(handle.phase).toBe('fan-in-pending')
-    expect(handle.fanInTxHashes).toHaveLength(2)
-    expect(stages).toEqual(['planning', 'consolidating'])
-
-    // Both peer fan-in txs were broadcast in Phase 1, while leader drain tx was signed & persisted but NOT broadcast yet
-    expect(state.raws).toHaveLength(2)
-    const persisted = journal.get(handle.operationId)
-    expect(persisted.members).toHaveLength(3)
-    expect(persisted.members[0]!.exposed).toBe(true)
-    expect(persisted.members[1]!.exposed).toBe(true)
-    expect(persisted.members[2]!.exposed).toBe(false)
-    expect(persisted.members[2]!.signed).not.toBeNull()
-
-    // Put peer fan-in txs in mempool (still unconfirmed) and call resumePendingConsolidation
-    inMempool(state, state.raws[0]!)
-    inMempool(state, state.raws[1]!)
-    const stillFanIn = await executor.resumePendingConsolidation(handle.operationId)
-    expect(stillFanIn.phase).toBe('fan-in-pending')
-    expect(state.raws).toHaveLength(2) // Leader drain still not broadcast
-
-    // Mine only the first peer fan-in tx -> second peer still unconfirmed -> stays in fan-in-pending
-    state.mine(state.raws[0]!)
-    const partialFanIn = await executor.resumePendingConsolidation(handle.operationId)
-    expect(partialFanIn.phase).toBe('fan-in-pending')
-    expect(state.raws).toHaveLength(2)
-
-    // Mine the second peer fan-in tx and reopen journal to verify persistence across restarts
-    state.mine(state.raws[1]!)
-    await reopen()
-    const recovered = owner(state, { sources: [], noPoolRows: true })
-
-    // Now all fan-in peers are confirmed -> resumePendingConsolidation broadcasts Phase 2 leader drain!
-    // Since mode is 'retained', the drain tx is broadcast to mempool and returns 'drain-pending' without blocking
-    const drainDispatched = await recovered.executor.resumePendingConsolidation(handle.operationId)
-    expect(drainDispatched.phase).toBe('drain-pending')
-    expect(state.raws).toHaveLength(3)
-    expect(recovered.sign).not.toHaveBeenCalled()
-
-    // Mine the Phase 2 leader drain tx and reconcile
-    state.mine(state.raws[2]!)
-    const [completed] = await recovered.executor.reconcilePendingConsolidations()
-    expect(completed!.phase).toBe('completed')
-    expect(completed!.result).toEqual({
-      txHash: persisted.members[2]!.signed!.transactionHash,
-      intermediateTxHashes: handle.fanInTxHashes,
-      totalValueSent: 140_000n,
-      totalFeePaid: fee * 3n,
+    const set = journal.list().find(row => row.kind === 'transaction-set')!
+    await journal.authorizeTransactionSet(set.operationId)
+    for (let i = 0; i < set.members.length; i++) {
+      // A member that spends a change output of this same set is mined after its parent.
+      state.balances.set(
+        Transaction.from(set.members[i]!.signed!.rawTransaction).from!.toLowerCase(),
+        10n ** 18n,
+      )
+      await journal.markExposed(set.operationId, i)
+      state.mine(set.members[i]!.signed!.rawTransaction)
+      await current.executor.observe(set.operationId, i)
+    }
+    expect(
+      journal
+        .get(set.operationId)
+        .members.every(m => m.observation.state === 'included-success'),
+    ).toBe(true)
+    // Included, but not yet applied to the coin list: held, and the error names the set.
+    await expect(current.executor.flushSync(set.operationId)).rejects.toMatchObject({
+      operation: { operationId: set.operationId },
     })
-    expect(state.balances.get(recipient)).toBe(140_000n)
-    expect(recovered.executor.getUnresolvedLegacySend()).toEqual([])
-  })
-
-  it('supports executeAsync for both multi-account fan-in and single-account direct fast-path (#1217)', async () => {
-    const state = chain([50_000n, 90_000n, 70_000n])
-    const { executor } = owner(state, { noPoolRows: true })
-
-    // 1. Multi-account via executeAsync: Phase 1 broadcasts fan-in, Phase 2 resumes drain
-    const phase1 = await executor.executeAsync({
-      recipient: { raw: recipient },
-      value: 110_000n,
-    })
-    expect(phase1.phase).toBe('fan-in-pending')
-    expect(phase1.fanInTxHashes).toHaveLength(1)
-    expect(state.raws).toHaveLength(1)
-
-    const phase2 = await executor.executeAsync(phase1.operationId)
-    expect(phase2.phase).toBe('completed')
-    expect(phase2.totalValueSent).toBe(110_000n)
-    expect(phase2.totalFeePaid).toBe(fee * 2n)
-    expect(state.raws).toHaveLength(2)
+    expect(current.sync).not.toHaveBeenCalled()
+    for (let i = 0; i < set.members.length; i++)
+      await journal.markTransactionSetInventoryApplied(set.operationId, i)
+    await current.executor.flushSync(set.operationId)
+    await current.executor.flushSync(set.operationId)
+    expect(current.sync).toHaveBeenCalledTimes(set.members.length)
+    expect(
+      journal.get(set.operationId).members.every(m => m.syncApplied),
+    ).toBe(true)
   })
 })

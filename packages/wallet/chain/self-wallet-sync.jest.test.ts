@@ -48,6 +48,10 @@ import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
 import { SubAccountSpendRefusedError } from '../evm-account-pool'
 import { evmWalletInternals } from '../evm-wallet'
+import {
+  EVM_TRANSACTION_SET_SOURCE_ORDER,
+  type EvmTransactionSetPolicy,
+} from '../evm-transaction-set-types'
 
 jest.mock('../evm-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -574,8 +578,19 @@ describe("a wallet's sync note to itself", () => {
       stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
       defaultTopicVoteValueWei: 1n,
       subAccountPoolSize: 1,
-      nativeInclusionWaitMs: 0,
       walletStorageLocation: false,
+      transactionSetPolicy: (): EvmTransactionSetPolicy => ({
+        sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+        gasPriceWei: 3n,
+        paymentGasLimit: () => 21_000n,
+        changeGasLimit: 21_000n,
+        paymentFeeIsExact: true,
+        dustWei: 21_000n,
+        radix: 2,
+        jitterBps: 1_500,
+        maxChangeOutputs: 20,
+        head: 100,
+      }),
       emitWalletSync: (item, record, messageId) => one.chain.directMessages.send({
         wallet: one.alice,
         recipient: one.alice.identity.address,
@@ -592,14 +607,16 @@ describe("a wallet's sync note to itself", () => {
       mockBalances.set(source.address.toLowerCase(), 10n ** 17n)
       minesNativeTransfers(sender)
       one.setMailbox(mailbox)
-      const sent = await sender.sendNative({
+      const sent = await sender.sendLegacy!({
         recipient: { raw: one.bob.identity.address.raw },
         value: 1_000n,
       })
       await sender.reobserveNativeOperations!()
       await sender.flushNativeSync!()
-      expect(mailbox).toHaveLength(1)
-      expect((await operationForTransaction(sender, sent.txHash)).members[0]!.signed!.transactionHash).toBe(sent.txHash)
+      // One note per transaction of the transfer's set: the payment and each change split.
+      const operation = await operationForTransaction(sender, sent.txHash)
+      expect(mailbox).toHaveLength(operation.members.length)
+      expect(operation.members.map(member => member.signed!.transactionHash)).toContain(sent.txHash)
       one.setMailbox(undefined)
       await sender.close()
       const other = await otherDevice()

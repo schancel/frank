@@ -92,7 +92,7 @@ it("uses the same native-only boundary for Hyperliquid Testnet", () => {
   });
 });
 
-it("refuses a peer native send before signing when its sync delivery is absent", async () => {
+it("refuses a peer transfer before signing when its sync delivery is absent", async () => {
   const chain = createNativeOnlyEvmChain({
     ...config,
     networkId: "ethereum-sepolia",
@@ -111,7 +111,7 @@ it("refuses a peer native send before signing when its sync delivery is absent",
     authentication: root("identity-authentication", 52),
     messaging: root("messaging-encryption", 53),
   });
-  const sign = jest.spyOn(wallet, "sendNative");
+  const sign = jest.spyOn(wallet, "sendLegacy");
   try {
     await expect(chain.nativeTransfers.send({
       wallet,
@@ -119,7 +119,7 @@ it("refuses a peer native send before signing when its sync delivery is absent",
       value: 1n,
     })).rejects.toThrow("sync delivery is unavailable");
     expect(sign).not.toHaveBeenCalled();
-    await expect(wallet.sendNative({
+    await expect(wallet.sendLegacy!({
       recipient: { raw: "0x000000000000000000000000000000000000dEaD" },
       value: 1n,
     })).rejects.toThrow("sync delivery is unavailable");

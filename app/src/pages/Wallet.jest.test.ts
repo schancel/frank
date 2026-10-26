@@ -1236,7 +1236,6 @@ describe('Wallet detail page (#570)', () => {
         getUnresolvedLegacySend: forbidden,
         resumeNativeOperation: forbidden,
         sendLegacy: forbidden,
-        sendNative: forbidden,
         getBalance: forbidden,
       })
       const translate = (key: string, params: Record<string, unknown> = {}) => {
@@ -1346,7 +1345,6 @@ describe('Wallet detail page (#570)', () => {
         ],
         resumeNativeOperation: forbidden,
         sendLegacy: forbidden,
-        sendNative: forbidden,
       })
       const wrapper = mountWallet()
       try {

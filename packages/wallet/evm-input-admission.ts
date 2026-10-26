@@ -1074,15 +1074,6 @@ export type PoolSpendApplication =
   | { readonly kind: 'committed'; readonly poolIndex: number }
   | { readonly kind: 'already-applied'; readonly poolIndex: number }
   | { readonly kind: 'no-pool-row' }
-/** `applied` and `no-pool-row` need nothing. `needs-apply` is worth one `applyMember`.
- * `held-terminal` can never apply: the row's state is final and is not this member's.
- * `not-eligible`: nothing may be applied for it now. */
-export type PoolSpendMemberClass =
-  | 'applied'
-  | 'no-pool-row'
-  | 'needs-apply'
-  | 'held-terminal'
-  | 'not-eligible'
 /**
  * Records "pool account X was spent by transaction T" on the pool row, under the admission. The
  * row is a derived copy of what the native journal (or, at the sync boundary, a transaction this
@@ -1103,16 +1094,6 @@ export function poolSpendAdmission(
     chainIdentifier: string,
     expected?: { index: number; address: string },
   ): Promise<PoolSpendApplication>
-  /** Caller A, this device's own send: the member is read from the bound journal, never passed. */
-  applyMember(
-    operationId: string,
-    memberIndex: number,
-  ): Promise<PoolSpendApplication>
-  /** Read-only, from the caller's journal snapshot. It grants nothing: `applyMember` reads again. */
-  classifyMember(
-    row: EvmNativeOperation,
-    memberIndex: number,
-  ): PoolSpendMemberClass
 } {
   const owner = ownerOf(admission),
     { pool, native: journal, binding } = owner.owners
@@ -1232,60 +1213,6 @@ export function poolSpendAdmission(
       owner.mutate(lifetime, () =>
         finish(stage(rawTx, chainIdentifier, expected)),
       ),
-    applyMember: async (operationId, memberIndex) =>
-      owner.mutate(lifetime, () => {
-        const row = journal.get(operationId)
-        const member = row.members[memberIndex]
-        if (!member) invalid()
-        if (
-          row.cancelled ||
-          !member.signed ||
-          member.observation.state !== 'included-success'
-        )
-          conflict()
-        if (member.source.kind !== 'spend')
-          return Promise.resolve<PoolSpendApplication>({ kind: 'no-pool-row' })
-        return finish(
-          stage(member.signed.rawTransaction, binding.chainIdentifier, {
-            index: member.source.index,
-            address: member.source.address,
-          }),
-        )
-      }),
-    classifyMember: (row, memberIndex) => {
-      const member = row.members[memberIndex]
-      if (
-        owner.uncertain ||
-        !member ||
-        row.cancelled ||
-        !member.signed ||
-        member.observation.state !== 'included-success'
-      )
-        return 'not-eligible'
-      if (member.source.kind !== 'spend') return 'no-pool-row'
-      const index = member.source.index
-      const record = pool.getRecord(index)
-      if (!record)
-        return pool.terminalCheckpoints().some(entry => entry.index === index)
-          ? 'held-terminal'
-          : 'no-pool-row'
-      if (record.status === 'retired') return 'held-terminal'
-      if (record.status === 'spent')
-        return record.lifecycle?.spend?.rawTx ===
-          member.signed.rawTransaction &&
-          record.lifecycle.legacyTerminal === undefined
-          ? 'applied'
-          : 'held-terminal'
-      // Worth an apply only if the projection is ready: `applyMember` projects before it writes
-      // and would refuse every member alike under a conflicting or invalid one. Asked last, so
-      // only a member that would otherwise be applied costs a projection.
-      try {
-        owner.project()
-      } catch {
-        return 'not-eligible'
-      }
-      return 'needs-apply'
-    },
   }
 }
 export type CanonicalExecutionJournal = CanonicalJournalReader &

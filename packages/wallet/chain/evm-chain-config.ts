@@ -47,10 +47,6 @@ export interface EvmChainConfig {
   paymentPollIntervalMs?: number;
   /** Optional pre-reviewed transaction policy, primarily for deterministic local fixtures. */
   transactionSetPolicy?: () => EvmTransactionSetPolicy;
-  /** How long a native send watches the transfer it just broadcast for its block before it
-   * returns it as pending (it is then watched from outside). Default 30 s. Tests on a stub
-   * node that never mines set 0: one look. */
-  nativeInclusionWaitMs?: number;
   /** Default value, in wei, burned for a topic post or vote. */
   defaultTopicVoteValueWei: bigint;
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */

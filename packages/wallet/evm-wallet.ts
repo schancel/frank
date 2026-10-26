@@ -1,6 +1,6 @@
 import type { Provider, Wallet } from "ethers";
 import type { EvmChainWalletHandle, EvmWalletHandle } from "./evm-wallet-handle";
-import type { EvmSpendPool, EvmSpendPoolFundingCandidate } from "./evm-spend-pool";
+import type { EvmNativeSources } from "./evm-native-sources";
 import type { EvmSubAccountPool as MonadSubAccountPool } from "./evm-account-pool";
 import type { SubAccountLeaseManager } from "./evm-account-lease";
 import type { MonadTxSubmitter } from "./evm-account-tx";
@@ -113,7 +113,6 @@ export class EvmWalletInternals {
   typed = false;
   enclosingTopicAdmission = false;
   material?: MonadWalletMaterial;
-  fundingCandidates?: () => readonly EvmSpendPoolFundingCandidate[];
   sendQueue: Promise<void> = Promise.resolve();
   privateTopicWallet?: EvmWalletHandle;
   installedCanonicalDescriptor?: {
@@ -192,22 +191,22 @@ export type EvmWalletDeps = Omit<
   EvmChainWalletHandle,
   "family" | "mainPrivateKey" | "evmReader"
 > & {
-  readonly spendPool: EvmSpendPool;
+  readonly nativeSources: EvmNativeSources;
   readonly mainAccount: Wallet;
   readonly mainPrivateKey?: string;
   readonly evmReader?: Provider;
 };
 
 /**
- * Concrete EVM chain wallet instance instantiated per chain with injected dependencies and its
- * own unified `EvmSpendPool`.
+ * Concrete EVM chain wallet instance instantiated per chain with injected dependencies. Its money
+ * is one coin list (`EvmCoinList`); every payment is built from it.
  */
 export class EvmWallet implements EvmChainWalletHandle {
   readonly family = "evm" as const;
   readonly chainIdentifier!: string;
   readonly networkId!: string;
   readonly identity!: MonadIdentity;
-  readonly spendPool!: EvmSpendPool;
+  readonly nativeSources!: EvmNativeSources;
   readonly transactionSetSubmission!: EvmChainWalletHandle["transactionSetSubmission"];
   readonly constructTransactionSet!: EvmChainWalletHandle["constructTransactionSet"];
   readonly sendTransaction!: EvmChainWalletHandle["sendTransaction"];
@@ -261,9 +260,6 @@ export class EvmWallet implements EvmChainWalletHandle {
   cancelUnsignedNativeOperation!: EvmChainWalletHandle["cancelUnsignedNativeOperation"];
   reobserveNativeOperations!: EvmChainWalletHandle["reobserveNativeOperations"];
   watchNativeOperation!: EvmChainWalletHandle["watchNativeOperation"];
-  getUnresolvedNativeTransaction!: EvmChainWalletHandle["getUnresolvedNativeTransaction"];
-  retryUnresolvedNativeTransaction!: EvmChainWalletHandle["retryUnresolvedNativeTransaction"];
-  sendNative!: EvmChainWalletHandle["sendNative"];
   sendLegacy!: EvmChainWalletHandle["sendLegacy"];
   ensureLegacySubAccount!: EvmChainWalletHandle["ensureLegacySubAccount"];
   reconcileLegacySubAccountAttempt!: EvmChainWalletHandle["reconcileLegacySubAccountAttempt"];

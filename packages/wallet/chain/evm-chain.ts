@@ -5,10 +5,7 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import {
-  nativeMemberSuperseded,
-  type EvmNativeSource,
-} from "../storage/evm-native-operation-journal";
+import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
@@ -40,6 +37,7 @@ import {
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 import { createLegacyTransactionSetPayments } from "./evm-legacy-transaction-set";
 import { createEvmTransactionSetSubmission } from "../evm-transaction-set-submission";
+import { EvmTransactionSetInsufficientFundsError } from "../evm-transaction-set-types";
 import { evmTransactionSetCapability } from "../evm-transaction-set-public";
 import {
   EVM_COIN_LIST_NAMESPACE,
@@ -162,7 +160,7 @@ import type {
 import type { HDSeed } from "./active-chain";
 import { EvmChangePool } from "../evm-change-pool";
 import { EvmSubAccountPool } from "../evm-account-pool";
-import { EvmSpendPool } from "../evm-spend-pool";
+import { EvmNativeSources } from "../evm-native-sources";
 import { deriveDappPersona } from "../dapp-bridge/persona-keys";
 import {
   EvmWallet,
@@ -182,7 +180,6 @@ import {
 import type { EvmWalletHandle } from "../evm-wallet-handle";
 
 import {
-  hasUncorrelatedCanonicalPreSignIntent,
   openExistingPoolEvmWalletBundle,
   type EvmWalletPersistenceBundle,
 } from "../storage/evm-wallet-bundle";
@@ -957,7 +954,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
    */
   const holdMainAccounts = async (
     wallet: EvmChainWalletHandle,
-    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
+    options: MainAccountWait = {}
   ): Promise<void> => {
     const pool = wallet.pool;
     const internals = evmWalletInternals(wallet);
@@ -974,10 +971,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ),
           ]
         : mainAccountAddresses(wallet);
-    // Inventory-based sends may use other accounts while a shared construction owns a root.
-    // Opaque own-transfers still require the complete requested root claim.
-    const addresses = rootAddresses.filter(address =>
-      !options.unreservedRootsOnly || !internals.coinList?.isAccountReserved(address));
+    const addresses = rootAddresses;
     const others = () =>
       addresses.filter((address) => {
         const claimant = pool.accountClaimedBy(address);
@@ -1091,7 +1085,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const runMainAccountExclusive = <T>(
     wallet: EvmChainWalletHandle,
     task: () => Promise<T>,
-    options: MainAccountWait & { unreservedRootsOnly?: boolean } = {}
+    options: MainAccountWait = {}
   ): Promise<T> => {
     const internals = evmWalletInternals(wallet);
     let admission = internals.mainAccountAdmission;
@@ -2208,26 +2202,45 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             operations: () => transactionOwner.nativeJournal!.list(),
             readOperation: id => transactionOwner.nativeJournal!.readOperation(id),
           });
+          // One transfer to one address through the coin list: Send, and funding the main
+          // account. The move notes itself to the account's other devices.
+          const sendLegacyTransfer = async (
+            params: Parameters<typeof legacyTransactions.sendLegacy>[0]
+          ) => {
+            requirePeerSyncDelivery();
+            const owner = nativeOperationOwner(wallet);
+            try {
+              const result = await transactionOwner.runLifetime(() => legacyTransactions.sendLegacy(params));
+              if (!evmWalletInternals(wallet).closed) {
+                const operation = transactionOwner.nativeJournal!.list().find(row => row.members.some(member => member.signed?.transactionHash === result.txHash));
+                if (operation) retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
+              }
+              return result;
+            } finally { invalidateBalanceRead(); }
+          };
           const paymentStore = contactPayments;
-          const spendPool = new EvmSpendPool({
+          const nativeSources = new EvmNativeSources({
             identity,
             mainAccount,
             keyring,
             changeKeyring,
             pool,
-            changePool,
             coinStore,
-            nativeJournal: () => topicOwner?.nativeJournal,
             isAccountReserved: address => coinList.isAccountReserved(address),
-            holdsSource: (address) =>
-              evmWalletInternals(wallet).nativeOperationOwner?.holdsSource(address) === true,
           });
           const resolveSource = (source: EvmNativeSource): Wallet =>
-            spendPool.resolveSource(source);
-          const coinSource = (coin: EvmCoin): EvmNativeSource =>
-            spendPool.coinSource(coin);
-          const getSources = (): Promise<EvmNativeSource[]> =>
-            spendPool.getSources();
+            nativeSources.resolveSource(source);
+          // The accounts a token payment can draw on: the main and identity accounts and every
+          // received coin (tokens are not in the coin list; the chain says what each holds).
+          const tokenSources = (): EvmNativeSource[] => [
+            { kind: "main", address: mainAccount.address.toLowerCase() },
+            {
+              kind: "identity",
+              address: identity.address.raw.toLowerCase(),
+              identityPublicKey: nativeSources.identityPublicKey,
+            },
+            ...coinStore.all().map((coin) => nativeSources.coinSource(coin)),
+          ];
 
           let primaryBalanceCache:
             | {
@@ -2305,8 +2318,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             preparations,
             getWallet: () => wallet,
             getTopicOwner: () => topicOwner!,
-            getSources,
-            coinSource,
+            tokenSources,
+            sweepToOwnAccount: (sweep) =>
+              transactionOwner.runLifetime(() =>
+                legacyTransactions.sweepToOwnAccount(sweep)
+              ),
             invalidateBalanceRead,
             requireOpenWallet,
             canonicalMessagingFor,
@@ -2450,7 +2466,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             chainIdentifier,
             networkId: config.networkId,
             identity,
-            spendPool,
+            nativeSources,
             transactionSetSubmission,
             constructTransactionSet: request => {
               const input = { ...request,
@@ -2688,9 +2704,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             // Bounded re-observation of broadcast members nothing has seen confirm. Called from
             // the hosts' existing polls, never at open. The network reads run under the wallet
-            // lifetime only (inside the consolidator), outside this wallet's queue; only the
-            // local pass that follows a newly recorded inclusion enters the queue, where the
-            // queue's own guard may refuse it. A refusal leaves the observation recorded.
+            // lifetime only (inside the consolidator), outside this wallet's queue.
             reobserveNativeOperations() {
               const internals = evmWalletInternals(wallet);
               const owner = internals.nativeOperationOwner;
@@ -2698,11 +2712,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // A contract call the node was seen not to know is handed to it again (the same
               // signed bytes), so a lost broadcast cannot hold the main account for good.
               return owner
-                .reobservePending(() =>
-                  runWalletExclusive(wallet, (admission) =>
-                    owner.applyRecordedEvidence(admission)
-                  )
-                )
+                .reobservePending()
                 .then(() => owner.resendMissingContractCalls())
                 .then(() => transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()))
                 .then(() => internals.recoverStampFunding?.())
@@ -2735,96 +2745,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // What the look showed frees the main account for whoever waits for it.
               await releaseSettledMainAccounts(wallet, false);
             },
-            getUnresolvedNativeTransaction() {
-              requireOpenWallet(wallet);
-              const unsupported = nativeAttemptStore.get(nativeAttemptKey);
-              if (unsupported) return unsupported;
-              const row = nativeOperationOwner(wallet)
-                .listOperations()
-                .find(
-                  (r) =>
-                    r.kind === "native" &&
-                    !r.cancelled &&
-                    !coinAndContactManager.heldForItsMessage(r.operationId) &&
-                    r.members.some(
-                      (m) =>
-                        m.signed &&
-                        m.observation.state !== "included-success" &&
-                        // Its nonce went to another transaction: failed for good, nothing
-                        // left to resolve or retry.
-                        !nativeMemberSuperseded(m)
-                    )
-                );
-              return row?.members[0]?.signed
-                ? { txHash: row.members[0].signed.transactionHash }
-                : undefined;
-            },
-            async retryUnresolvedNativeTransaction() {
-              const rows = nativeOperationOwner(wallet)
-                .listOperations()
-                .filter(
-                  (r) =>
-                    r.kind === "native" &&
-                    !r.cancelled &&
-                    !coinAndContactManager.heldForItsMessage(r.operationId) &&
-                    r.members.some(
-                      (m) =>
-                        m.signed &&
-                        m.observation.state !== "included-success" &&
-                        // Its nonce went to another transaction: failed for good, nothing
-                        // left to resolve or retry.
-                        !nativeMemberSuperseded(m)
-                    )
-                );
-              if (rows.length !== 1)
-                throw new Error(
-                  "Select the original native operation by operationId"
-                );
-              const row = await wallet.resumeNativeOperation!(
-                rows[0]!.operationId
-              );
-              return { txHash: row.members[0]!.signed!.transactionHash };
-            },
-            async sendNative(params) {
-              requirePeerSyncDelivery();
-              params = { ...params, recipient: { ...params.recipient } };
-              const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(
-                  wallet,
-                  () => owner.sendNative(params, admission),
-                  { waitMs: params.mainAccountWaitMs, unreservedRootsOnly: true }
-                )
-              );
-              invalidateBalanceRead();
-              if (!evmWalletInternals(wallet).closed) {
-                {
-                  const noteOf = 
-                  owner
-                    .listOperations()
-                    .find(
-                      (row) =>
-                        row.members[row.members.length - 1]?.signed
-                          ?.transactionHash === result.txHash
-                    )!.operationId
-                ;
-                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
-                }
-              }
-              return result;
-            },
-            async sendLegacy(params) {
-              requirePeerSyncDelivery();
-              const owner = nativeOperationOwner(wallet);
-              try {
-                const result = await transactionOwner.runLifetime(() => legacyTransactions.sendLegacy({ ...params, recipient: { ...params.recipient } }));
-                if (!evmWalletInternals(wallet).closed) {
-                  const operation = transactionOwner.nativeJournal!.list().find(row => row.members.some(member => member.signed?.transactionHash === result.txHash));
-                  if (operation) retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
-                }
-                return result;
-              } finally { invalidateBalanceRead(); }
-            },
+            sendLegacy: (params) =>
+              sendLegacyTransfer({ ...params, recipient: { ...params.recipient } }),
             async ensureLegacySubAccount(ref) {
               return transactionOwner.runLifetime(async () => {
               requireOpenWallet(wallet);
@@ -2944,52 +2866,68 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             runOwnTransfer: (sign, options) =>
               runUnjournalledTransfer(wallet, sign, options?.mainAccountWaitMs),
-            getContractCallFunds: () =>
-              nativeOperationOwner(wallet).contractCallFunds(),
+            // What a contract call from the main account can spend: what it holds, and the most
+            // the wallet's other coins can move into it (`fundMainAccount`), from the coin list.
+            async getContractCallFunds() {
+              requireOpenWallet(wallet);
+              const main = mainAccount.address.toLowerCase();
+              // What the chain says of the main account's own unresolved calls, first.
+              await topicOwner!.runLifetime((lifetime) =>
+                nativeOperationOwner(wallet).observeMainAccount(lifetime)
+              );
+              const [mainBalance, other] = await Promise.all([
+                provider.getBalance(main),
+                transactionOwner.runLifetime(() =>
+                  legacyTransactions.estimateLegacyMax({
+                    recipient: { raw: main },
+                    excludedSourceAccounts: [main],
+                  })
+                ).then(
+                  (max) => max.value,
+                  (error) => {
+                    if (error instanceof EvmTransactionSetInsufficientFundsError) return 0n;
+                    throw error;
+                  }
+                ),
+              ]);
+              const coin = coinList.latestOf(main);
+              return {
+                mainAddress: main,
+                mainBalance,
+                otherBalance: other,
+                mainBusy:
+                  coinList.isAccountReserved(main) ||
+                  (coin !== undefined && coin.state !== "unspent") ||
+                  nativeOperationOwner(wallet).holdsSource(main),
+              };
+            },
             getUnresolvedContractCalls: () =>
               nativeOperationOwner(wallet).unresolvedContractCalls(),
             evmReader: provider,
+            // A contract call that needs more than the main account holds: the wallet's other
+            // coins move into it first, as one ordinary transfer to an owned account through the
+            // coin list (the same consolidation Send uses: one coin pays directly, or every coin
+            // moves to one fresh account that then pays). It never pays out of the main account.
             async fundMainAccount(params) {
-              const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(
-                  wallet,
-                  () => owner.fundMainAccount({ ...params }, admission),
-                  { waitMs: params.mainAccountWaitMs }
-                )
-              );
-              invalidateBalanceRead();
-              // The move is an ordinary legacy send to one of this wallet's own accounts: it
-              // notes itself to the account's other devices exactly as `sendLegacy` does.
-              if (!evmWalletInternals(wallet).closed) {
-                const operation = owner
-                  .listOperations()
-                  .find(
-                    (row) =>
-                      row.members[row.members.length - 1]?.signed
-                        ?.transactionHash === result.txHash
-                  );
-                if (operation)
-                  retryEarlierNotes(
-                    owner,
-                    operation.operationId,
-                    await owner.startSync(operation.operationId)
-                  );
-              }
+              const main = mainAccount.address.toLowerCase();
+              const result = await sendLegacyTransfer({
+                recipient: { raw: main },
+                value: params.value,
+                ...(params.onProgress ? { onProgress: params.onProgress } : {}),
+                ...(params.onSigned ? { onSigned: params.onSigned } : {}),
+                excludedSourceAccounts: [main],
+              });
+              // What the main account holds now is read from the chain into its coin.
+              await transactionSetRuntime.coinListSync.refreshAccounts([main]).catch(() => undefined);
               return result;
             },
             estimateLegacyFee: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyFee(params)),
             estimateLegacyMax: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyMax(params)),
-            getUnresolvedLegacySend: () => [...new Map([
-              ...nativeOperationOwner(wallet).getUnresolvedLegacySend(), ...legacyTransactions.getUnresolvedLegacySend(),
-            ].map(row => [row.operationId, row])).values()],
+            getUnresolvedLegacySend: () => [...legacyTransactions.getUnresolvedLegacySend()],
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);
               try {
-                const shared = await transactionOwner.runLifetime(() => legacyTransactions.isSharedLegacyOperation(operationId));
-                const result = shared
-                  ? await transactionOwner.runLifetime(() => legacyTransactions.resumeLegacySend(operationId))
-                  : await runWalletExclusive(wallet, admission => runMainAccountExclusive(wallet, () => owner.resumeLegacySend(operationId, admission)));
+                const result = await transactionOwner.runLifetime(() => legacyTransactions.resumeLegacySend(operationId));
                 if (!evmWalletInternals(wallet).closed && transactionOwner.nativeJournal!.list().some(row => row.operationId === operationId))
                   retryEarlierNotes(owner, operationId, await owner.startSync(operationId));
                 return result;
@@ -3086,44 +3024,27 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               nextLook: () =>
                 evmWalletInternals(wallet).blockWatcher?.next() ??
                 new Promise((resolve) => setTimeout(resolve, 500)),
-              inclusionWaitMs: config.nativeInclusionWaitMs,
               // The node admits a transaction against the balance of spacing + 1 blocks ago.
               fundsSettleBlocks:
                 config.spendSpacingBlocks === undefined
                   ? undefined
                   : config.spendSpacingBlocks + 1,
               transactionBuilder,
-              getSources,
+              mainSource: { kind: "main", address: mainAccount.address.toLowerCase() },
+              ownedSource: (address) => {
+                const key = address.toLowerCase();
+                return tokenSources().find((source) => source.address === key);
+              },
               sourceHeld: (source) =>
-                spendPool.sourceHeld(source, mainAccountHolder(wallet)),
+                nativeSources.sourceHeld(source, mainAccountHolder(wallet)),
               claimSources: (sources) =>
-                spendPool.claimSources(sources, mainAccountHolder(wallet)),
+                nativeSources.claimSources(sources, mainAccountHolder(wallet)),
               sign: async (source, unsignedTransaction) => {
                 return resolveSource(source).signTransaction(
                   Transaction.from(unsignedTransaction)
                 );
               },
-              // Caller A, this device's own send. The consolidator calls these at the end of a
-              // native send or resume, INSIDE the wallet queue that call holds: they go to the
-              // admission directly. Routing them through `applyWalletSyncItem` would enter
-              // `runWalletExclusive` again, which is not re-entrant, and wait for itself.
-              applyLocalMember: (operationId, memberIndex, lifetime) => {
-                if (lifetime === undefined)
-                  throw new Error("Native operation lifetime is unavailable");
-                return poolSpendAdmission(
-                  topicOwner!.inputAdmission,
-                  lifetime
-                ).applyMember(operationId, memberIndex);
-              },
-              classifyLocalMember: (row, memberIndex, lifetime) => {
-                if (lifetime === undefined)
-                  throw new Error("Native operation lifetime is unavailable");
-                return poolSpendAdmission(
-                  topicOwner!.inputAdmission,
-                  lifetime
-                ).classifyMember(row, memberIndex);
-              },
-              // After a native send, the account's other devices are told through a note this
+              // After a contract call or token payment, the account's other devices are told through a note this
               // wallet writes to itself: a FREE message (no stamp), carrying only the sync item.
               // It creates no payment attempt, funds and reserves nothing, and is not held by a
               // pending paid message. Its message identity is fixed by the transaction it
@@ -3159,34 +3080,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // Wallet open, native operations. Local only: nothing in this block may make a network
           // request, ask for a signature or fail the open, and each step stands alone.
           // A plan that never signed (a crash or failure between the journal write and the first
-          // signature) is cancelled here. That ends its reservation of its pool accounts and its
-          // freeze of its source address; the journal row is retained, cancelled.
+          // signature) is cancelled here. That ends its hold on its source account; the journal
+          // row is retained, cancelled.
           await topicOwner
             .runLifetime((lifetime) =>
               walletInternals.nativeOperationOwner!.cancelUnsignedOperations(lifetime)
             )
-            .catch(() => undefined);
-          // A pool account whose native spend the journal already records as included, and whose
-          // row was never marked (a crash or a close between the observation and the local pass),
-          // is marked spent here, through the same admission writer a send's own pass uses. Only
-          // observations already in the journal count: a pending member is not looked up. It runs
-          // after the cancel above (an unsigned plan can hold an address against an included
-          // member) and before the wallet is published, so nothing else can be in the queue.
-          // Skipped entirely under the wallet queue's own guard (`runWalletExclusive`): a retained
-          // canonical pre-sign intent on an available row. A failure leaves the member unmarked
-          // for the next native send or the next open; a failed pool write leaves this session
-          // unable to sign, as it would in a send.
-          await topicOwner
-            .runLifetime(async (lifetime) => {
-              if (
-                hasUncorrelatedCanonicalPreSignIntent(
-                  topicOwner!.canonicalRetained,
-                  pool
-                )
-              )
-                return;
-              await walletInternals.nativeOperationOwner!.applyRecordedEvidence(lifetime);
-            })
             .catch(() => undefined);
           // A native send, contract call or consolidation that was handed to the network and
           // that the chain has not answered for holds its main or identity account again, in
@@ -3337,8 +3236,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
           walletInternals.material = material;
           walletInternals.mainAccountAdmission = admission;
-          walletInternals.fundingCandidates = () =>
-            spendPool.fundingCandidates();
           if (material.canonicalRoles !== undefined)
             walletInternals.typed = true;
           return wallet;

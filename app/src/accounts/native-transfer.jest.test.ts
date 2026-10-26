@@ -264,7 +264,6 @@ it('inspects only the captured compatible owner and makes capability absence exp
     family: 'evm',
     chainIdentifier: 'monad-testnet',
     getNativeOperations: jest.fn(() => []),
-    sendNative: effects,
     resumeNativeOperation: effects,
   } as unknown as import('@frank/wallet/chain').NativeWalletHandle
   expect(inspectNativeTransferOperations(wallet, 'monad-testnet')).toEqual({
@@ -371,7 +370,6 @@ it('reads only the captured operation ID without opening custody, enumerating hi
     chainIdentifier: 'monad-testnet',
     readNativeOperation,
     getNativeOperations: effects,
-    sendNative: effects,
     resumeNativeOperation: effects,
   } as unknown as import('@frank/wallet/chain').NativeWalletHandle
   await expect(

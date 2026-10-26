@@ -166,8 +166,6 @@ const TEST_CONFIG: EvmChainConfig = {
   resolveDefaultStamp: fixedStampDefault(1_000_000_000_000n),
   defaultTopicVoteValueWei: 1_000_000_000_000n,
   subAccountPoolSize: 3,
-  // The stub node never mines on its own: a native send looks once and returns.
-  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 };
 
@@ -624,8 +622,13 @@ describe("createEvmChain: createWallet", () => {
           "getTransactionReceipt"
         )
         .mockResolvedValue({ status: 1 } as never);
+      // A contract call from the main account is what still takes the main account's turn.
       await expect(
-        wallet.sendNative({ recipient: wallet.identity.address, value: 1n })
+        (wallet as EvmChainWalletHandle).sendContractCall!({
+          to: { raw: "0x000000000000000000000000000000000000dEaD" },
+          data: "0x12345678",
+          value: 0n,
+        })
       ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
       expect(nativeAttemptStore.get(key)).toEqual(retained);
       expect(receipt).not.toHaveBeenCalled();

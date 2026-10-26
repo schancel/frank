@@ -1704,7 +1704,7 @@ describe('parallel paid messages', () => {
     },
   )
 
-  it('a sub-account\'s leftover coin (its next nonce) pays a stamp while a native send runs: never one nonce signed twice', async () => {
+  it('a sub-account\'s leftover coin (its next nonce) pays a stamp while a Send runs: never one nonce signed twice', async () => {
     const [sub] = await fundAccounts(1)
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
@@ -1719,7 +1719,7 @@ describe('parallel paid messages', () => {
     expect(successor.state).toBe('unspent')
     expect(successor.nonce).toBeGreaterThan(0)
     const [native, message] = await Promise.allSettled([
-      alice.sendNative({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n }),
+      alice.sendLegacy!({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n }),
       send(2),
     ])
     expect(native.status).toBe('fulfilled')
@@ -1738,7 +1738,7 @@ describe('parallel paid messages', () => {
     expect(signed.some(tx => tx.from!.toLowerCase() === sub.address.toLowerCase() && tx.nonce === successor.nonce)).toBe(true)
   })
 
-  it('a pending quiet-window graph keeps its inputs reserved against both native sends and messages', async () => {
+  it('a pending quiet-window graph keeps its inputs reserved against both Sends and messages', async () => {
     await alice.close()
     await f.close()
     offlineChain.reset()
@@ -1765,7 +1765,7 @@ describe('parallel paid messages', () => {
     expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
     expect(alice.getNativeOperations!()[0].members.some(member => member.transactionSet?.predecessorWaitBlocks === 3)).toBe(true)
     await expect(constructOnly('quiet-window-message')).rejects.toThrow('Insufficient available EVM coins')
-    await expect(alice.sendNative({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n })).rejects.toThrow()
+    await expect(alice.sendLegacy!({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n })).rejects.toThrow()
     expect(graphBytes()).toEqual(original)
     expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
     head = 5

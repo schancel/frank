@@ -268,7 +268,7 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // B spends it in an ordinary send. He has no other money.
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendNative({
+    const spent = await bob.sendLegacy!({
       recipient: { raw: carol },
       value: VALUE / 2n,
     })
@@ -351,11 +351,11 @@ describe('payments between two wallets on a real EVM node', () => {
     // is refused, and the transfer cannot be
     // pushed out by hand.
     await expect(
-      alice.sendNative({
+      alice.sendLegacy!({
         recipient: { raw: Wallet.createRandom().address },
         value: parseEther('0.5'),
       }),
-    ).rejects.toThrow('Insufficient unreserved native funds')
+    ).rejects.toThrow('Insufficient available EVM coins')
     await expect(alice.resumeNativeOperation!(operation.operationId)).rejects.toThrow(
       'is broadcast once its message is delivered',
     )
@@ -505,11 +505,11 @@ describe('payments between two wallets on a real EVM node', () => {
       holdsFunds: true,
     })
     await expect(
-      alice.sendNative({
+      alice.sendLegacy!({
         recipient: { raw: Wallet.createRandom().address },
         value: parseEther('0.5'),
       }),
-    ).rejects.toThrow('Insufficient unreserved native funds')
+    ).rejects.toThrow('Insufficient available EVM coins')
 
     // The outgoing message is deleted before it was ever sent.
     expect(await alice.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
@@ -521,7 +521,7 @@ describe('payments between two wallets on a real EVM node', () => {
     })
     // The account is free: an ordinary send goes out at the nonce the cancelled transfer had.
     const carol = Wallet.createRandom().address
-    const spent = await alice.sendNative({
+    const spent = await alice.sendLegacy!({
       recipient: { raw: carol },
       value: parseEther('0.5'),
     })
@@ -870,7 +870,7 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // Spent by an ordinary send (B has no other money).
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendNative({ recipient: { raw: carol }, value: STAMP / 4n })
+    const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n })
     expect((await node.waitForTransaction(spent.txHash))!.status).toBe(1)
     expect(await node.getBalance(carol)).toBe(STAMP / 4n)
     await settled(bob)
@@ -982,7 +982,7 @@ describe('payments between two wallets on a real EVM node', () => {
 
     // The deleted message's coin is spent by an ordinary send (B has no other money).
     const carol = Wallet.createRandom().address
-    const spent = await bob.sendNative({ recipient: { raw: carol }, value: STAMP / 4n })
+    const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: STAMP / 4n })
     const spend = await node.waitForTransaction(spent.txHash)
     expect(spend!.status).toBe(1)
     expect(addresses).toContain(spend!.from.toLowerCase())
@@ -1016,7 +1016,7 @@ describe('payments between two wallets on a real EVM node', () => {
 
       // And it can SPEND them: the key it derived from the note signs for the money.
       const dave = Wallet.createRandom().address
-      const again = await secondDevice.sendNative({
+      const again = await secondDevice.sendLegacy!({
         recipient: { raw: dave },
         value: STAMP / 2n,
       })

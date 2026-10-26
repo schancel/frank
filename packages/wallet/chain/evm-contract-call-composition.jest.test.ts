@@ -40,8 +40,6 @@ const config: EvmChainConfig = {
   resolveDefaultStamp: fixedStampDefault(1n),
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
-  // The stub node never mines on its own: a native send looks once and returns.
-  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
 /** The main account the frozen domain-root vector 0 derives (see monad-domain-wallet tests). */
@@ -368,8 +366,30 @@ test('a sign-only call retains the composed main claim and blocks an unjournalle
     // real wallet admission/main-account claim; planning, signing and persistence stay real.
     jest
       .spyOn(EvmLegacyConsolidator.prototype, 'sendContractCall')
-      .mockImplementationOnce(async function (params, lifetime) {
-        const row = await this.signContractCall(params, lifetime)
+      .mockImplementationOnce(async function (
+        this: EvmLegacyConsolidator,
+        params,
+        lifetime,
+      ) {
+        const row = await this.signIndependentPayment(
+          {
+            kind: 'contract',
+            recipient: params.to,
+            members: [
+              {
+                sourceAddress: MAIN,
+                value: 0n,
+                data: params.data,
+                ...(params.gasLimit !== undefined
+                  ? { gasLimit: params.gasLimit }
+                  : {}),
+              },
+            ],
+            preparationId: 'stealth-payment:sign-only',
+            maxNativeFeeWei: 10n ** 18n,
+          },
+          lifetime,
+        )
         return {
           operationId: row.operationId,
           txHash: row.members[0]!.signed!.transactionHash,
@@ -465,8 +485,10 @@ test('the wallet handle sends a contract call from its main account and reports 
     expect(tx.value).toBe(5_000n)
     expect(tx.gasLimit).toBe(250_000n)
     expect(tx.chainId).toBe(10143n)
-    // A contract call is not a native transfer awaiting resolution in the Send page's sense.
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
+    // A contract call is not a Send awaiting resolution, and an EVM wallet has no other
+    // native transfer to resolve.
+    expect(wallet.getUnresolvedLegacySend!()).toEqual([])
+    expect(wallet.getUnresolvedNativeTransaction).toBeUndefined()
     expect(wallet.evmReader).toBe(wallet.provider)
   } finally {
     await wallet.close()
@@ -528,7 +550,7 @@ test('a contract call whose broadcast reply was lost is resent byte for byte aft
   }
 })
 
-test('the background poll re-sends a lost contract call, and once it lands the main account sends natively again', async () => {
+test('the background poll re-sends a lost contract call, and once it lands the main account calls again', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
   const wallet = (await createEvmChain({
     ...config,
@@ -551,8 +573,15 @@ test('the background poll re-sends a lost contract call, and once it lands the m
         txHash: failure.transaction.txHash,
       },
     ])
+    // The main account is held by the unresolved call: no second call is built over it.
     await expect(
-      wallet.sendNative({ recipient: { raw: ROUTER }, value: 1n }),
+      wallet.sendContractCall!({
+        to: { raw: ROUTER },
+        data: CALLDATA,
+        value: 0n,
+        gasLimit: 100_000n,
+        mainAccountWaitMs: 0,
+      } as never),
     ).rejects.toThrow()
 
     // The poll every host already runs: no user action, no new signature.
@@ -565,11 +594,13 @@ test('the background poll re-sends a lost contract call, and once it lands the m
     )!.members[0]!.signed!.rawTransaction
     expect(node.broadcast).toHaveBeenCalledWith(raw)
 
-    expect((await wallet.getContractCallFunds!()).mainBusy).toBe(false)
-    expect(wallet.getUnresolvedContractCalls!()).toEqual([])
-    const sent = await wallet.sendNative({
-      recipient: { raw: ROUTER },
-      value: 1n,
+    // The next call looks at the main account's signed transactions first: the resent one has
+    // landed, so it is built at the next nonce.
+    const sent = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 0n,
+      gasLimit: 100_000n,
     })
     expect(
       Transaction.from(node.broadcast.mock.calls[1]![0] as string),
@@ -578,13 +609,17 @@ test('the background poll re-sends a lost contract call, and once it lands the m
       from: MAIN,
       nonce: 1,
     })
+    // The lost call is resolved; only the new one waits for its block.
+    expect(
+      wallet.getUnresolvedContractCalls!().map(call => call.operationId),
+    ).not.toContain(lost[0]!.operationId)
   } finally {
     await wallet.close()
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('a native send whose nonce was consumed by another transaction has failed for good: the main account sends again', async () => {
+test('a contract call whose nonce was consumed by another transaction has failed for good: the main account calls again', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
   const wallet = (await createEvmChain({
     ...config,
@@ -593,25 +628,24 @@ test('a native send whose nonce was consumed by another transaction has failed f
   }).createWallet(roots())) as EvmChainWalletHandle
   try {
     const node = stubNode(wallet, 1_000_000n)
-    // The transfer is signed and handed over, and never reaches the node.
+    // The call is signed and handed over, and never reaches the node.
     node.loseReplies(true)
-    await expect(
-      wallet.sendNative({ recipient: { raw: ROUTER }, value: 1n }),
-    ).rejects.toThrow(/outcome is unknown/)
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeDefined()
+    const call = {
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 0n,
+      gasLimit: 100_000n,
+    }
+    await expect(wallet.sendContractCall!(call)).rejects.toThrow()
+    expect(wallet.getUnresolvedContractCalls!()).toHaveLength(1)
     expect((await wallet.getContractCallFunds!()).mainBusy).toBe(true)
     // Another transaction of this account (signed elsewhere with the same key) takes nonce 0.
     jest.spyOn(wallet.provider, 'getTransactionCount').mockResolvedValue(1)
     node.loseReplies(false)
     node.broadcast.mockClear()
-    // One look shows it: the node knows neither the transfer nor a receipt, and the nonce is
-    // gone. Nothing is left to resolve, and the account is free.
-    expect((await wallet.getContractCallFunds!()).mainBusy).toBe(false)
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
-    const sent = await wallet.sendNative({
-      recipient: { raw: ROUTER },
-      value: 1n,
-    })
+    // The next call looks first: the node knows neither the lost call nor a receipt, and the
+    // nonce is gone. Nothing is left to resolve, and the account calls again.
+    const sent = await wallet.sendContractCall!(call)
     expect(
       Transaction.from(node.broadcast.mock.calls[0]![0] as string),
     ).toMatchObject({ hash: sent.txHash, from: MAIN, nonce: 1 })
@@ -786,7 +820,7 @@ test('a note that cannot be sent leaves the swap as it was and is owed, not repe
   }
 })
 
-test('the move into the main account notes itself like any legacy send', async () => {
+test('the move into the main account notes each of its transactions like any Send', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
   const chain = createEvmChain({
     ...config,
@@ -803,18 +837,30 @@ test('the move into the main account notes itself like any legacy send', async (
     stubNode(wallet, 0n, { [identity]: 1_000_000n })
     const moved = await wallet.fundMainAccount!({ value: 400_000n })
     await notesSettled()
-    expect(transport).toHaveBeenCalledTimes(1)
-    const [note] = transport.mock.calls[0]!
-    expect(note.stampValue).toBe(0n)
-    expect(note.recipient.raw.toLowerCase()).toBe(identity.toLowerCase())
-    // An ordinary transfer: its transaction, and no swap record.
-    expect(note.items).toEqual([
+    // One free note to this account's own mailbox per transaction of the set: the payment to the
+    // main account and the change of the coin it spent. No swap record.
+    expect(transport).toHaveBeenCalledTimes(2)
+    const notes = transport.mock.calls.map(([note]) => note)
+    for (const note of notes) {
+      expect(note.stampValue).toBe(0n)
+      expect(note.recipient.raw.toLowerCase()).toBe(identity.toLowerCase())
+      expect(note.items).toHaveLength(1)
+      expect(note.items[0]).toMatchObject({ type: 'wallet-sync' })
+      // Never paid out of the main account.
+      expect(
+        (note.items[0] as { spentInputs: { address: string }[] }).spentInputs.map(
+          input => input.address.toLowerCase(),
+        ),
+      ).not.toContain(MAIN.toLowerCase())
+    }
+    expect(notes.map(note => note.items[0])).toContainEqual(
       expect.objectContaining({
-        type: 'wallet-sync',
         txHash: moved.txHash,
-        createdOutputs: [expect.objectContaining({ valueWei: '400000' })],
+        createdOutputs: [
+          expect.objectContaining({ address: MAIN, valueWei: '400000' }),
+        ],
       }),
-    ])
+    )
     expect((await wallet.getContractCallFunds!()).mainBalance).toBe(400_000n)
   } finally {
     await wallet.close()
@@ -874,6 +920,125 @@ test('production CHOMP adapter journals through the composed wallet', async () =
     )
   } finally {
     await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('swap funding moves the other coins into the main account, fanning in when no one coin suffices, and never spends the main coin', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const identity = wallet.identity.address.raw
+    const pooled = wallet.pool.records()[0]!.address
+    const node = stubNode(wallet, 5_000_000n, {
+      [identity]: 300_000n,
+      [pooled]: 300_000n,
+    })
+    wallet.invalidateBalanceCache?.()
+    const before = await wallet.getContractCallFunds!()
+    expect(before).toMatchObject({
+      mainAddress: MAIN.toLowerCase(),
+      mainBalance: 5_000_000n,
+      mainBusy: false,
+    })
+    // What the two other coins can move, after the fees of moving them: less than they hold,
+    // and more than either one alone.
+    expect(before.otherBalance).toBeLessThan(600_000n)
+    expect(before.otherBalance).toBeGreaterThan(300_000n)
+    // The §3 consolidation: both coins move to one fresh owned account, and that account pays
+    // the main account once the chain lets it spend what arrived. Until then it is pending, and
+    // the same operation is finished, never a second one started.
+    const pending = await wallet
+      .fundMainAccount!({ value: 500_000n })
+      .catch(error => error)
+    const operationId = pending.operation?.operationId as string
+    expect(operationId).toBeDefined()
+    expect(wallet.getUnresolvedLegacySend!().map(row => row.operationId)).toEqual([
+      operationId,
+    ])
+    jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(10_000)
+    await wallet.resumeLegacySend!(operationId)
+    const sent = node.broadcast.mock.calls.map(([raw]) => Transaction.from(raw as string))
+    expect(sent.some(tx => tx.from === MAIN)).toBe(false)
+    expect(new Set(sent.map(tx => tx.from!.toLowerCase()))).toEqual(
+      new Set([identity.toLowerCase(), pooled.toLowerCase()].concat(
+        // the fan-in account that pays the main account
+        sent.filter(tx => tx.to === MAIN).map(tx => tx.from!.toLowerCase()),
+      )),
+    )
+    const payment = sent.filter(tx => tx.to === MAIN)
+    expect(payment).toHaveLength(1)
+    expect(payment[0]!.value).toBe(500_000n)
+    expect([identity, pooled].map(a => a.toLowerCase())).not.toContain(
+      payment[0]!.from!.toLowerCase(),
+    )
+    expect((await wallet.getContractCallFunds!()).mainBalance).toBe(5_500_000n)
+    // The main account's own coin can never fund itself: with nothing else, funding refuses.
+    node.broadcast.mockClear()
+    await expect(wallet.fundMainAccount!({ value: 5_000_000n })).rejects.toThrow(
+      /Insufficient/,
+    )
+    expect(node.broadcast).not.toHaveBeenCalled()
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('swap funding whose reply was lost resumes the same transaction set after the wallet reopens, never a second payment', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const first = (await createEvmChain(cfg).createWallet(
+    roots(),
+  )) as EvmChainWalletHandle
+  let second: EvmChainWalletHandle | undefined
+  try {
+    const identity = first.identity.address.raw
+    const node = stubNode(first, 0n, { [identity]: 1_000_000n })
+    node.loseReplies(true)
+    const failure = await first
+      .fundMainAccount!({ value: 400_000n })
+      .catch(error => error)
+    const operationId = failure.operation?.operationId as string
+    expect(operationId).toBeDefined()
+    const signed = node.broadcast.mock.calls.map(([raw]) => raw as string)
+    expect(signed.length).toBeGreaterThan(0)
+    const pending = first.getUnresolvedLegacySend!()
+    expect(pending.map(row => row.operationId)).toEqual([operationId])
+    expect(pending[0]!.kind).toBe('transaction-set')
+    await first.close()
+
+    second = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    const again = stubNode(second, 0n, { [identity]: 1_000_000n })
+    expect(second.getUnresolvedLegacySend!().map(row => row.operationId)).toEqual([
+      operationId,
+    ])
+    const result = await second.resumeLegacySend!(operationId)
+    // The same signed bytes, handed to the node again; nothing new is planned.
+    const resent = again.broadcast.mock.calls.map(([raw]) => raw as string)
+    expect(resent.length).toBeGreaterThan(0)
+    for (const raw of resent) expect(signed).toContain(raw)
+    expect(
+      resent.map(raw => Transaction.from(raw)).find(tx => tx.to === MAIN)?.hash,
+    ).toBe(result.txHash)
+    expect(second.getUnresolvedLegacySend!()).toEqual([])
+    // A repeated resume of the finished operation sends nothing more.
+    again.broadcast.mockClear()
+    await second.resumeLegacySend!(operationId).catch(() => undefined)
+    expect(again.broadcast).not.toHaveBeenCalled()
+  } finally {
+    await second?.close()
+    await first.close().catch(() => undefined)
     await rm(dir, { recursive: true, force: true })
   }
 })

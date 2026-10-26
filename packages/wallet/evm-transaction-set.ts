@@ -768,7 +768,11 @@ export class EvmTransactionSetPreparer {
     }
     context(0)
     const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
+    const only = request.sourceAccounts === undefined ? undefined
+      : new Set(request.sourceAccounts.map(account => getAddress(account).toLowerCase()))
+    const excluded = new Set((request.excludedSourceAccounts ?? []).map(account => getAddress(account).toLowerCase()))
     const eligible = (coin: EvmListCoin) =>
+      (only === undefined || only.has(coin.account)) && !excluded.has(coin.account) &&
       (admittedInput?.(coin.account, coin.nonce) ?? true) &&
       journal.canSelect(coin.account, coin.nonce) &&
       (this.options.canSelectCoin?.(coin) ?? true) &&
@@ -836,14 +840,21 @@ export class EvmTransactionSetPreparer {
    * makes the same decision while the coin list is unchanged; if another payment took a coin
    * meanwhile it refuses rather than pay more.
    */
-  async quoteLegacyTransactionSet(request: { destination: string; amountWei?: bigint }): Promise<EvmTransactionSetQuote> {
+  async quoteLegacyTransactionSet(request: {
+    destination: string
+    amountWei?: bigint
+    excludedSourceAccounts?: readonly string[]
+  }): Promise<EvmTransactionSetQuote> {
     const { journal, coins } = this.options
     const destination = getAddress(request.destination).toLowerCase()
     const admittedInput = await journal.captureInputSelection?.()
     const policy = this.options.policy()
     const changeFee = policy.changeGasLimit * policy.gasPriceWei
     const rulesFor = (amountWei: bigint) => {
-      const quoteRequest: ConstructEvmTransactionSetRequest = { operationId: 'quote', amountWei, kdf: () => destination }
+      const quoteRequest: ConstructEvmTransactionSetRequest = {
+        operationId: 'quote', amountWei, kdf: () => destination,
+        ...(request.excludedSourceAccounts ? { excludedSourceAccounts: request.excludedSourceAccounts } : {}),
+      }
       this.validateRequest(quoteRequest)
       return this.selectionRules(quoteRequest, policy, true, undefined, admittedInput)
     }
@@ -884,6 +895,54 @@ export class EvmTransactionSetPreparer {
     return { amountWei: amountWei!, inputCount: parts.length, consolidationFeeWei, deliveryFeeWei: paymentFee,
       changeFeeWei: BigInt(outputs.length) * changeFee,
       feeWei: consolidationFeeWei + paymentFee + BigInt(outputs.length) * changeFee }
+  }
+
+  /**
+   * What moving everything the coins of `sourceAccounts` hold to `destination` (an account of
+   * this wallet) would move and pay now: each coin one transfer of its whole value less that
+   * transfer's fee, and no change. A coin whose transfer would cost as much as it moves, one
+   * another operation holds, and one the chain's spend rule keeps (Monad: an account that sent
+   * within the last blocks) is not counted, and is not in `sourceAccounts` of the answer.
+   * Constructing `amountWei` with the answer's `sourceAccounts`, `maxPaymentParts` of their
+   * count and `maxFeeWei: feeWei` makes the same decision while the coin list is unchanged.
+   * Nothing is reserved, derived or signed.
+   */
+  async quoteSweepTransactionSet(request: {
+    destination: string
+    sourceAccounts: readonly string[]
+  }): Promise<EvmTransactionSetQuote & { readonly sourceAccounts: readonly string[] }> {
+    const { journal, coins } = this.options
+    const destination = getAddress(request.destination).toLowerCase()
+    const admittedInput = await journal.captureInputSelection?.()
+    const policy = this.options.policy()
+    const quoteRequest: ConstructEvmTransactionSetRequest = {
+      operationId: 'quote', amountWei: 1n, kdf: () => destination,
+      sourceAccounts: request.sourceAccounts,
+    }
+    this.validateRequest(quoteRequest)
+    const rules = this.selectionRules(quoteRequest, policy, false, undefined, admittedInput)
+    const fee = rules.context(0).gas * policy.gasPriceWei
+    const seen = new Set<string>()
+    const moved: { account: string; value: bigint }[] = []
+    for (const coin of coins.transactionSetCandidates(rules.selection(false))) {
+      if (seen.has(coin.account) || coin.account === destination) continue
+      seen.add(coin.account)
+      if (coin.valueWei < fee) continue
+      const capacity = rules.capacityWei(false)(coin, fee)
+      // Only a coin that moves more than its own transfer costs is worth moving.
+      if (capacity > fee && capacity === coin.valueWei - fee)
+        moved.push({ account: coin.account, value: capacity })
+    }
+    if (moved.length === 0 || moved.length > rules.remainingMemberBudget) {
+      this.options.assertFundingObserved?.()
+      throw new EvmTransactionSetInsufficientFundsError()
+    }
+    const feeWei = BigInt(moved.length) * fee
+    return {
+      amountWei: moved.reduce((sum, coin) => sum + coin.value, 0n),
+      inputCount: moved.length, consolidationFeeWei: 0n, deliveryFeeWei: feeWei,
+      changeFeeWei: 0n, feeWei, sourceAccounts: moved.map(coin => coin.account),
+    }
   }
 
   /**

@@ -260,7 +260,10 @@ it('retries the real EVM journal owner with identical signed bytes after ambiguo
   })
   await journal.Open()
   const broadcast = jest.fn(async (raw: string) => ({ hash: keccak256(raw) }))
-  broadcast.mockRejectedValueOnce(new Error('lost response'))
+  // The call's own submission and the first recovery's are both lost.
+  broadcast
+    .mockRejectedValueOnce(new Error('lost response'))
+    .mockRejectedValueOnce(new Error('lost response'))
   const provider = {
     getBlock: async () => ({ hash: '0x' + 'aa'.repeat(32), number: 1 }),
     getBalance: async () => 1_000_000n,
@@ -279,16 +282,19 @@ it('retries the real EVM journal owner with identical signed bytes after ambiguo
     journal,
     provider,
     transactionBuilder: new NativeEvmTransactionBuilder(),
-    getSources: async () => [
-      { kind: 'main', address: signer.address.toLowerCase() },
-    ],
+    mainSource: { kind: 'main', address: signer.address.toLowerCase() },
+    ownedSource: () => undefined,
     sign: async (_source, raw) => signer.signTransaction(Transaction.from(raw)),
   })
   try {
-    const prepared = await owner.signNative({
-      recipient: { raw: recipient.address },
-      value: 1n,
-    })
+    await expect(
+      owner.sendContractCall({
+        to: { raw: recipient.address },
+        data: '0x12345678',
+        value: 0n,
+      }),
+    ).rejects.toThrow()
+    const prepared = journal.list()[0]!
     const member = prepared.members[0]
     if (!member?.signed) throw new Error('Expected a signed journal member')
     const original = member.signed.rawTransaction
@@ -324,7 +330,7 @@ it('retries the real EVM journal owner with identical signed bytes after ambiguo
     )
     expect(journal.get(prepared.operationId).cancelled).toBe(false)
     await recovery.tick()
-    expect(broadcast.mock.calls).toEqual([[original], [original]])
+    expect(broadcast.mock.calls).toEqual([[original], [original], [original]])
     expect(journal.get(prepared.operationId).members[0]).toMatchObject({
       signed: { rawTransaction: original },
     })

@@ -34,6 +34,10 @@ export interface ConstructEvmTransactionSetRequest {
   readonly maxPaymentParts?: number
   /** Captured minimum for each recipient transaction; never recomputed during replay. */
   readonly minimumPaymentWei?: bigint
+  /** Spend only coins of these accounts (a sweep of named coins). */
+  readonly sourceAccounts?: readonly string[]
+  /** Never spend coins of these accounts (funding the main account never pays out of it). */
+  readonly excludedSourceAccounts?: readonly string[]
 }
 /** One approved transaction from an owned legacy subaccount. Its source is never in ordinary
  * bundle selection; the wallet reserves exactly this account and nonce. */

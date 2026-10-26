@@ -366,8 +366,6 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     }),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
-    // The stub node never mines on its own: a native send looks once and returns.
-    nativeInclusionWaitMs: 0,
     walletStorageLocation: join(directory, 'wallet'),
     ...overrides,
   }

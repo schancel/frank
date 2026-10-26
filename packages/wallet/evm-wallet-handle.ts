@@ -16,7 +16,7 @@ import type { StealthItem } from "@frank/cashweb/types/messages";
 import type { MonadIdentity } from "./evm-identity";
 import type { AccountHygieneEngine } from "./account-hygiene";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
-import type { EvmSpendPool } from "./evm-spend-pool";
+import type { EvmNativeSources } from "./evm-native-sources";
 import type { WalletHandle, NativeWalletHandle } from "./chain/active-chain";
 import type { Timestamp, RelayBinding } from "@frank/codec";
 import type { RolePoint } from "../role-keys/src";
@@ -44,8 +44,9 @@ export interface EvmWalletHandle {
   walletOperationAdmission?: MonadWalletOperationAdmission;
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
   hygieneEngine?: AccountHygieneEngine<string>;
-  /** Per-wallet unified spend pool over all owned account origins on this chain. */
-  spendPool?: EvmSpendPool;
+  /** Signers and claims for the sources native-journal operations record (not a pool: the
+   * wallet's money is its one coin list). */
+  nativeSources?: EvmNativeSources;
   /** Invalidate in-memory cached balances across primary and stealth accounts. */
   invalidateBalanceCache?(networkTag?: string): void;
   pool: MonadSubAccountPool;

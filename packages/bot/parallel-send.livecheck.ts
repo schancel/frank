@@ -311,9 +311,9 @@ async function seenBy(bob: RealWallet, digests: string[], sinceMs: number) {
   }
 }
 
-/** A native send that reports a failure instead of throwing: what the wallet said and why
+/** A transfer from the coin list (`sendLegacy`) that reports a failure instead of throwing: what the wallet said and why
  * (the node's own words when it gave any), and what the chain shows of the transaction. */
-async function sendNativeReported(
+async function sendTransferReported(
   stack: RealStack,
   wallet: RealWallet,
   to: string,
@@ -324,7 +324,7 @@ async function sendNativeReported(
   let error: string | undefined;
   try {
     txHash = (
-      await wallet.handle.sendNative({ recipient: { raw: to }, value: valueWei })
+      await wallet.handle.sendLegacy!({ recipient: { raw: to }, value: valueWei })
     ).txHash;
   } catch (caught) {
     const failure = caught as Error & {
@@ -554,7 +554,7 @@ async function main() {
       await sleep(2500);
       const nativeStarted = Date.now();
       const nonceAtNative = await mainNonce(stack, alice);
-      const native = await sendNativeReported(
+      const native = await sendTransferReported(
         stack,
         alice,
         bob.mainAccount,
@@ -726,7 +726,7 @@ async function main() {
       const started = Date.now();
       const paid = await sendPaid(alice, bob.address, `${label} ${started}`);
       const paidMs = Date.now() - started;
-      const native = await sendNativeReported(
+      const native = await sendTransferReported(
         stack,
         alice,
         bob.mainAccount,

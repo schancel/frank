@@ -339,8 +339,6 @@ async function fixture(funded = true) {
     resolveDefaultStamp: fixedStampDefault(1_000n),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
-    // The stub node never mines on its own: a native send looks once and returns.
-    nativeInclusionWaitMs: 0,
     walletStorageLocation: join(directory, 'wallet'),
   }
   const chain = withDefaultMessageItems(createEvmChain(config))
@@ -4475,12 +4473,12 @@ describe('two typed wallets on the open directory', () => {
 /**
  * #1235 Stage R, at the canonical boundary: typed wallets, real journals, pool and admission. Two
  * stamp accounts receive external deposits for a stamp that needs both, so
- * a send that may select the reserved one does. A native send then spends from the larger one, X,
- * because main cannot pay. `pending`: the broadcast reply is lost, so the member is signed and
- * exposed but unobserved. `included`: it is mined and observed only by a fee estimate. In both,
- * nothing has recorded X as spent.
+ * a send that may select the reserved one does. A Send of the coin list then spends from one of
+ * them, X, because main cannot pay. `pending`: the broadcast reply is lost, so the member is
+ * signed and exposed but unobserved. `included`: it is mined and observed by the Send itself.
+ * The coin list, not the pool row, records X's coin.
  */
-describe('a stamp account a native send spends from (#1235)', () => {
+describe('a stamp account a coin-list Send spends from (#1235)', () => {
   const STAMP = 1_000_000n
   const blockHash = '0x' + '11'.repeat(32)
   let f: Awaited<ReturnType<typeof fixture>>
@@ -4536,13 +4534,6 @@ describe('a stamp account a native send spends from (#1235)', () => {
       .records()
       .filter(record => record.status === 'available')
     expect(funded).toHaveLength(2)
-    const x = funded.reduce((a, b) =>
-      mockBalances.get(a.address.toLowerCase())! >=
-      mockBalances.get(b.address.toLowerCase())!
-        ? a
-        : b,
-    )
-    const xAddress = x.address.toLowerCase()
     const recipient = { raw: (await f.bob.getReceiveAddress()).raw }
 
     const mined = new Map<string, Transaction>()
@@ -4610,29 +4601,27 @@ describe('a stamp account a native send spends from (#1235)', () => {
 
     mockBalances.set(main, 0n)
     replyLost = window === 'pending'
-    const send = f.alice.sendNative({ recipient, value: 100n })
+    const send = f.alice.sendLegacy!({ recipient, value: 100n })
     if (window === 'pending') await expect(send).rejects.toThrow()
     else await send
     replyLost = false
     mockBalances.set(main, 10n ** 18n)
-    if (window === 'included')
-      // Observe the old native owner without its local application pass. The public legacy
-      // quote now reads the separate shared inventory and does not observe native rows.
-      await evmWalletInternals(f.alice).nativeOperationOwner!.estimateLegacyFee(
-        recipient,
-        1n,
-      )
     const operation = f.alice.getNativeOperations!()[0]!
-    const member = operation.members[0]!
-    expect(member.source).toEqual({
-      kind: 'spend',
-      address: xAddress,
-      index: x.index,
-    })
+    // The coin list's Send: a transaction set whose input is one stamp account's coin.
+    expect(operation.kind).toBe('transaction-set')
+    const inputs = [
+      ...new Set(operation.members.map(member => member.source.address)),
+    ].filter(address => funded.some(r => r.address.toLowerCase() === address))
+    expect(inputs).toHaveLength(1)
+    const x = funded.find(r => r.address.toLowerCase() === inputs[0])!
+    const xAddress = x.address.toLowerCase()
+    const member = operation.members.find(m => m.source.address === xAddress)!
+    expect(member.source).toEqual({ kind: 'coin', address: xAddress })
     expect(member.exposed).toBe(true)
-    expect(member.observation.state).toBe(
-      window === 'pending' ? 'missing' : 'included-success',
-    )
+    if (window === 'included')
+      expect(member.observation.state).toBe('included-success')
+    else expect(member.observation.state).not.toBe('included-success')
+    // The pool row is not the record of a coin-list spend: it stays as it was.
     expect(f.alice.pool.getRecord(x.index)!.status).toBe('available')
     expect(await admission()).toMatchObject({ status: 'ready' })
     mockFunded.length = 0
@@ -4712,8 +4701,8 @@ describe('a stamp account a native send spends from (#1235)', () => {
         payloadDigests: [sent.payloadDigest],
       })
       r.broadcasts.length = 0
-      await f.alice.sendNative({ recipient: r.recipient, value: 1n })
-      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).toEqual([r.main])
+      await f.alice.sendLegacy!({ recipient: r.recipient, value: 1n })
+      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).not.toContain(r.xAddress)
       expect(await admission()).toMatchObject({ status: 'ready' })
 
       await f.alice.close()
@@ -4722,29 +4711,16 @@ describe('a stamp account a native send spends from (#1235)', () => {
       r.installRpc(f.alice)
       expect(bundles).toHaveLength(3)
       expect(await admission()).toMatchObject({ status: 'ready' })
-      // Stage 1 of #1235 changed this assertion on purpose. It was `available` for both windows:
-      // nothing recorded the spend. The native send from main above now ends with the local pass,
-      // which records every member the journal has observed included, so in the `included` window
-      // the account is `spent` with that member's own transaction. Pending: nothing to record.
-      expect(f.alice.pool.getRecord(r.x.index)).toEqual(
-        window === 'included'
-          ? {
-              index: r.x.index,
-              address: r.x.address,
-              status: 'spent',
-              lifecycle: {
-                spend: {
-                  rawTx: r.operation.members[0]!.signed!.rawTransaction,
-                  txHash: r.operation.members[0]!.signed!.transactionHash,
-                  valueWei: Transaction.from(
-                    r.operation.members[0]!.signed!.rawTransaction,
-                  ).value.toString(),
-                },
-              },
-            }
-          : { index: r.x.index, address: r.x.address, status: 'available' },
-      )
-      expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(true)
+      // A coin-list spend is recorded in the coin list, not on the pool row: the row stays as
+      // it was in both windows, and the coin is out of every selection either way.
+      expect(f.alice.pool.getRecord(r.x.index)).toEqual({
+        index: r.x.index,
+        address: r.x.address,
+        status: 'available',
+      })
+      // Pending: the coin list still holds X's coin for its Send. Included: that coin is spent and
+      // X is free again at its next nonce.
+      expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(window === 'pending')
       const independent = f.alice.pool.ensureSize(
         f.alice.pool.records().length + 1,
       ).at(-1)!
@@ -4761,8 +4737,8 @@ describe('a stamp account a native send spends from (#1235)', () => {
         payloadDigests: [again.payloadDigest],
       })
       r.broadcasts.length = 0
-      await f.alice.sendNative({ recipient: r.recipient, value: 1n })
-      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).toEqual([r.main])
+      await f.alice.sendLegacy!({ recipient: r.recipient, value: 1n })
+      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).not.toContain(r.xAddress)
       expect(await admission()).toMatchObject({ status: 'ready' })
     },
   )

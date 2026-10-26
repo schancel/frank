@@ -2124,7 +2124,6 @@ function peerEvmConfig(network = 'monad-mainnet'): EvmChainConfig {
     defaultTopicVoteValueWei: 1n,
     subAccountPoolSize: 0,
     walletStorageLocation: false,
-    nativeInclusionWaitMs: 0,
   }
 }
 function peerCheckpoint(network = 'monad-mainnet') {

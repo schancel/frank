@@ -175,7 +175,6 @@ beforeEach(async () => {
     resolveDefaultStamp: fixedStampDefault(1n),
     defaultTopicVoteValueWei: 1n,
     subAccountPoolSize: 2,
-    nativeInclusionWaitMs: 0,
     walletStorageLocation: join(root, 'wallet'),
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   }

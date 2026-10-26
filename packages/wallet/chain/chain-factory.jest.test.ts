@@ -611,7 +611,7 @@ describe("createChain", () => {
         await sepoliaWallet.getReceiveAddress()
       );
       expect(monadWallet.pool).not.toBe(sepoliaWallet.pool);
-      expect(monadWallet.spendPool).not.toBe(sepoliaWallet.spendPool);
+      expect(monadWallet.nativeSources).not.toBe(sepoliaWallet.nativeSources);
 
       // Pool state mutations on one chain do not bleed into the other chain
       monadWallet.pool.setStatus(0, "retired");

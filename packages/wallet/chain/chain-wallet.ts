@@ -284,7 +284,9 @@ export interface NativeWalletHandle {
     transaction: ChainTransaction;
     outcome: "submitted" | "not-submitted";
   }): Promise<void>;
-  sendNative(params: {
+  /** A plain native transfer from the family's own wallet (UTXO, Solana). An EVM wallet has
+   * none: its one transfer to an address is `sendLegacy`, through the coin list. */
+  sendNative?(params: {
     recipient: ChainAddress;
     value: bigint;
     /** The fee the user reviewed, as a ceiling; wallets that support it throw NativeFeeExceededError. */
@@ -472,15 +474,13 @@ export interface NativeWalletHandle {
   getUnresolvedContractCalls?(): ContractCallHandle[];
   /** Read-only node access for this handle's own EVM chain. It cannot sign or submit. */
   readonly evmReader?: EvmChainReader;
-  /** Consolidates `value` from the wallet's other accounts into the main account. */
+  /** Moves `value` into the main account (before a contract call such as a swap): a Send to the
+   * main account over the one coin list that never spends the main account's own coin. One coin
+   * that suffices pays it directly; otherwise the coins fan in to one fresh account first. */
   fundMainAccount?(params: {
     value: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
-    /** While an earlier payment from the main account has not been seen on chain this send
-     * waits its turn, however long that takes. With this it gives up after so many
-     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
-    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 }
 

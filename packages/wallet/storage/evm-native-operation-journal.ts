@@ -827,6 +827,11 @@ export interface EvmNativeCapture {
 export class EvmNativeOperationJournal {
   private database?: LevelDB
   private rows = new Map<string, EvmNativeOperation>()
+  /** The exact stored text each active row was last validated from. Every mutation reloads the
+   * durable rows (another tab may have written them); a row whose bytes are unchanged is the
+   * same validated row, so only rows that changed are validated again. Rows held here are never
+   * mutated: readers get clones. */
+  private validatedTexts = new Map<string, { text: string; row: EvmNativeOperation }>()
   private nextSequence = 1
   private archivedCount = 0
   /** Test-only backing storage. Production history stays on disk, never in a hot map. */
@@ -893,6 +898,7 @@ export class EvmNativeOperationJournal {
   private async reloadRows(initialize: boolean): Promise<void> {
     if (!this.database) return
     const rows = new Map<string, EvmNativeOperation>()
+    const validated = new Map<string, { text: string; row: EvmNativeOperation }>()
     const yielder = validationYielder()
     const manifestText = await this.stored('manifest')
     const manifest: unknown = manifestText === undefined ? undefined : JSON.parse(manifestText)
@@ -901,9 +907,13 @@ export class EvmNativeOperationJournal {
     for await (const [key, value] of this.database.iterator({ gte: 'operation:', lt: 'operation;' })) {
       const name = String(key), text = String(value)
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
-      const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures, yielder)
+      const known = this.validatedTexts.get(name)
+      const row = known?.text === text
+        ? known.row
+        : await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures, yielder)
       if (name !== `operation:${row.operationId}` || rows.has(row.operationId)) fail()
       rows.set(row.operationId, row)
+      validated.set(name, { text, row })
     }
     let nextSequence = 1
     if (manifest !== undefined) {
@@ -946,6 +956,7 @@ export class EvmNativeOperationJournal {
     )
       fail('capacity')
     this.rows = rows
+    this.validatedTexts = validated
     this.nextSequence = nextSequence
     if (manifest === undefined)
       await durablePut(
@@ -1635,6 +1646,8 @@ export class EvmNativeOperationJournal {
     await this.tail
     this.lifecycle = 'closed'
     this.signatures.clear()
+    // A reopen validates every stored row again, as it does every signature.
+    this.validatedTexts.clear()
     await this.database?.close()
     this.database = undefined
   }

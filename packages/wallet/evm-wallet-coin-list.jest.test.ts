@@ -50,7 +50,7 @@ it('registers root, identity, deterministic, received and change sources without
       address: account.address,
       privateKey: account.privateKey,
       state: (['unspent', 'pending', 'failed', 'spent'] as const)[index],
-      origin: index === 2 ? 'stamp' : 'stealth',
+      origin: index === 0 ? 'stamp' : 'stealth',
     } as EvmCoin)
   const coinList = await EvmCoinList.open(new MemoryRecordStore())
   const provider = {
@@ -74,8 +74,10 @@ it('registers root, identity, deterministic, received and change sources without
   expect(new Set(coinList.all().map(coin => coin.origin))).toEqual(
     new Set(['root', 'identity', 'deterministic', 'stealth', 'stamp', 'change']),
   )
+  // Only received coins the chain verified are watched: a pending or failed claim's account
+  // is never listed, whatever money sits there.
   expect(received.map(account => coinList.latestOf(account.address)?.valueWei)).toEqual([
-    1000000n, 1000000n, 1000000n, 1000000n,
+    1000000n, undefined, undefined, 1000000n,
   ])
   expect(legacy.map(record => coinList.latestOf(record.address)?.valueWei)).toEqual([
     1000000n, 1000000n, 1000000n, 1000000n, 1000000n, 1000000n,

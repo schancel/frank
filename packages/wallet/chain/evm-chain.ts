@@ -248,6 +248,7 @@ import {
 } from "./chain-wallet";
 import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
 import { LevelChangePoolStore } from "../storage/level-change-pool-store";
+import { SEED_REWALK_MS } from "../evm-coin-list-sync";
 import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
@@ -2251,8 +2252,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
             | undefined;
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
-          // Another device's new change accounts are found by walking the seed again.
-          const SEED_REWALK_MS = 60_000;
           const balanceObsStorageKey =
             storageLocation !== undefined
               ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`

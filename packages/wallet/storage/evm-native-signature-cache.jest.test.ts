@@ -131,6 +131,10 @@ it('durable reload shares its work budget across cheap rows and yields to the ho
     const { input, raws } = await signedPlan(1, i)
     rows.push(await journal.prepare(input, raws))
   }
+  // A reload validates every row whose stored bytes this instance has not validated: here all of
+  // them, as on reopen (or after another tab rewrote them). Rows it already validated, with the
+  // same bytes, are not validated again by each mutation's reload.
+  await journal.Close()
   let clock = 0
   jest.spyOn(performance, 'now').mockImplementation(() => (clock += 4))
   let hostTurns = 0
@@ -138,7 +142,12 @@ it('durable reload shares its work budget across cheap rows and yields to the ho
     hostTurns++
     resolve()
   }, 0)))
-  await journal.markExposed(rows[0]!.operationId, 0)
+  await journal.Open()
   expect(hostTurns).toBeGreaterThan(0)
+  expect(journal.list()).toHaveLength(8)
+  hostTurns = 0
+  await journal.markExposed(rows[0]!.operationId, 0)
+  expect(hostTurns).toBe(0)
+  expect(journal.get(rows[0]!.operationId).members[0]!.exposed).toBe(true)
   expect(journal.list()).toHaveLength(8)
 })

@@ -86,6 +86,10 @@ export interface ChangePoolStore {
   getAll(): ChangeAccountRecord[]
   putRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void
   getRecoveredAccounts(): RecoveredChangeAccount[]
+  /** When the seed's branches were last walked on chain for the accounts they control (epoch
+   * ms), or undefined when this store has never completed a walk (a new or restored device). */
+  getSeedWalkedAtMs(): number | undefined
+  setSeedWalkedAtMs(atMs: number): void
   getPendingIntent(): ChangeSweepIntent | undefined
   setPendingIntent(intent: ChangeSweepIntent): void
   clearPendingIntent(): void
@@ -98,6 +102,11 @@ export interface ChangePoolStore {
   /** Wait until every preceding mutation is durable. */
   flush(): Promise<void>
   clear(): Promise<void>
+}
+
+export function assertWalkTime(atMs: number): void {
+  if (!Number.isSafeInteger(atMs) || atMs < 0)
+    throw new Error(`Seed walk time must be a non-negative integer, got ${atMs}`)
 }
 
 function assertValidIndex(index: number, label: string): void {
@@ -114,9 +123,19 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   private recordsBySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private pendingIntent?: ChangeSweepIntent
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
+  private seedWalkedAtMs?: number
 
   getNextIndex(): number {
     return this.nextIndex
+  }
+
+  getSeedWalkedAtMs(): number | undefined {
+    return this.seedWalkedAtMs
+  }
+
+  setSeedWalkedAtMs(atMs: number): void {
+    assertWalkTime(atMs)
+    this.seedWalkedAtMs = atMs
   }
 
   setNextIndex(index: number): void {
@@ -202,6 +221,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
     this.recordsBySourceBurnIndex.clear()
     this.pendingIntent = undefined
     this.recoveredAccountsByIndex.clear()
+    this.seedWalkedAtMs = undefined
   }
 }
 

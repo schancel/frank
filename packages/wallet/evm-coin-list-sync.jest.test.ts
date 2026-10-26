@@ -1,7 +1,7 @@
 /** Scheduling tests: scripted provider responses exercise the real sync/list, not chain conformance. */
 import { Wallet, type Provider } from 'ethers'
 import { EvmCoinList } from './evm-coin-list'
-import { EvmCoinListSync, type CoinListSource } from './evm-coin-list-sync'
+import { EvmCoinListSync, SEED_REWALK_MS, type CoinListSource } from './evm-coin-list-sync'
 import { EvmBlockWatcher } from './evm-block-watcher'
 import { MemoryRecordStore } from './storage/evm-coin-store'
 
@@ -238,4 +238,69 @@ it.each([429, 'NETWORK_ERROR'])('keeps a failed read observable when invalidated
     warn.mockRestore()
     await f.sync.stop()
   }
+})
+
+describe('the seed walk', () => {
+  async function walking(options: { walkedAtMs?: number; found?: string[] } = {}) {
+    const f = await fixture()
+    const walks: ('all' | 'change')[] = []
+    const recorded: number[] = []
+    let walkedAtMs = options.walkedAtMs
+    const sync = new EvmCoinListSync({
+      list: f.list,
+      provider: f.provider as unknown as Provider,
+      watcher: new EvmBlockWatcher({ provider: f.provider }),
+      sources: () => f.sources,
+      discover: async (_stopped, scope) => {
+        walks.push(scope)
+        return scope === 'all' ? options.found ?? [] : []
+      },
+      lastDiscoveredAtMs: () => walkedAtMs,
+      recordDiscovered: async atMs => {
+        recorded.push(atMs)
+        walkedAtMs = atMs
+      },
+    })
+    return { ...f, sync, walks, recorded }
+  }
+
+  it('runs once for a store never walked, shared by concurrent callers, and not on every full pass', async () => {
+    let now = 50_000
+    jest.spyOn(Date, 'now').mockImplementation(() => now)
+    const f = await walking()
+    await Promise.all([f.sync.seedDiscovered(), f.sync.seedDiscovered(), f.sync.refresh({ all: true })])
+    expect(f.walks).toEqual(['all'])
+    expect(f.recorded).toEqual([50_000])
+    expect(f.sync.seedDiscovered()).toBeUndefined()
+    // A send or quote the list does not cover reads every account again, never the seed.
+    await f.sync.refresh({ all: true })
+    await f.sync.refresh({ all: true })
+    expect(f.walks).toEqual(['all'])
+    // Once the walk is old, a full pass starts the change branch's walk in the background.
+    now += SEED_REWALK_MS
+    await f.sync.refresh({ all: true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(f.walks).toEqual(['all', 'change'])
+  })
+
+  it('a store the walk was recorded in is not walked before its first read', async () => {
+    jest.spyOn(Date, 'now').mockImplementation(() => 60_000)
+    const f = await walking({ walkedAtMs: 59_000 })
+    expect(f.sync.seedDiscovered()).toBeUndefined()
+    await f.sync.refresh({ all: true })
+    expect(f.walks).toEqual([])
+  })
+
+  it('records the walk only once the accounts it found are coins of the list', async () => {
+    // The fixture's first source: an account the walk found holding money.
+    const account = new Wallet('0x' + '01'.padStart(64, '0')).address.toLowerCase()
+    const f = await walking({ found: [account] })
+    f.provider.getBalance.mockRejectedValueOnce(new Error('node unreachable'))
+    await f.sync.seedDiscovered()
+    expect(f.walks).toEqual(['all'])
+    expect(f.recorded).toEqual([])
+    // Not recorded: the next session walks again. This one reads the account on its next pass.
+    await f.sync.refresh()
+    expect(f.list.latestOf(account)).toBeDefined()
+  })
 })

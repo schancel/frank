@@ -596,12 +596,10 @@ function freezePaidMessage(
   sealed: { payload: Uint8Array; context: Uint8Array },
   digest: Uint8Array,
   rawTransactions: readonly string[],
-  stableBoundary?: string,
+  stableBoundary: string | undefined,
+  /** What `inspectCanonicalPreparedEnvelope` found in exactly these `sealed` bytes. */
+  inspected: ReturnType<typeof inspectCanonicalPreparedEnvelope>,
 ) {
-  const inspected = inspectCanonicalPreparedEnvelope(
-    sealed.payload,
-    sealed.context,
-  )
   const payments = rawTransactions.map((rawTx, i) => {
     const tx = Transaction.from(rawTx)
     const M = PAYMENT_MEMBER
@@ -1103,9 +1101,11 @@ async function finishSharedConstruction(
   const prepared = waitForSpendable
     ? await constructWhenSpendable(construct, shared)
     : await construct()
+  // `inspected` is of these same sealed bytes (verified above): its stamp proof is not checked
+  // a second time.
   const frozenRequest = freezePaidMessage(
     intent.network, sealed, fromHex(row.digest),
-    prepared.bundle.map(payment => payment.rawTransaction), intent.boundary,
+    prepared.bundle.map(payment => payment.rawTransaction), intent.boundary, inspected,
   )
   const next: StoredMessage = {
     ...row,

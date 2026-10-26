@@ -80,7 +80,7 @@ export function installEvmWalletCoinList(params: {
     }
     // Deterministic branch: nothing allocates here any more, but accounts an older wallet used
     // still belong to the seed. Only full walks look here; the periodic one is for change.
-    if (scope !== 'all') return
+    if (scope !== 'all') return []
     const knownDeterministic = new Set<number>(
       pool.records().map(record => record.index),
     )
@@ -95,12 +95,25 @@ export function installEvmWalletCoinList(params: {
       gap,
       stopped,
     })
-    for (const found of deterministic)
-      if (found.balanceWei > 0n)
-        discoveredDeterministic.set(found.index, found.account)
+    const funded = deterministic.filter(found => found.balanceWei > 0n)
+    for (const found of funded)
+      discoveredDeterministic.set(found.index, found.account)
+    // Not yet coins of the list: read before the walk is recorded as done.
+    return funded.map(found => found.account)
   })
   const sync = new EvmCoinListSync({
     discover,
+    // The change pool keeps the time of the last completed walk with what it found, so a
+    // reopened store is not walked again before its first balance read.
+    ...(params.seedDiscovery
+      ? {
+          lastDiscoveredAtMs: () => changePool.seedWalkedAtMs(),
+          recordDiscovered: async (atMs: number) => {
+            changePool.recordSeedWalk(atMs)
+            await changePool.flush()
+          },
+        }
+      : {}),
     list: coinList,
     provider: params.provider,
     watcher: params.watcher,
@@ -131,10 +144,22 @@ export function installEvmWalletCoinList(params: {
           privateKey: () => pool.privateKeyOf(record.index),
         })
       }
+      // A received coin is an input only once the wallet has verified on chain that its
+      // transfer landed: the native transfer (`unspent`, or `spent` after that), or a token
+      // transfer whose Transfer log the wallet read from its receipt. A coin with neither is a
+      // sender's claim: its account is not watched, so whatever money sits there is never
+      // listed, spent or swept, and the balance (which counts only verified coins) is what Send
+      // can spend. Once verified, its account is read like any other.
+      const unverified = new Set<string>()
       for (const coin of coinStore.all()) {
-        // Legacy receipt rows are key ownership evidence even while their old state is
-        // pending/spent/failed. The current nonce and balance come from chain observation;
-        // the old state must not hide a still-funded account from migration.
+        if (
+          coin.state !== 'unspent' &&
+          coin.state !== 'spent' &&
+          !coin.erc20Positions?.some(position => position.receipts.length > 0)
+        ) {
+          unverified.add(coin.address.toLowerCase())
+          continue
+        }
         add({
           account: coin.address,
           origin: coin.origin,
@@ -162,13 +187,15 @@ export function installEvmWalletCoinList(params: {
           })
       // New-format destinations are owned by the list/journal before legacy pool audit records
       // exist. Reopen must keep watching them, including successors at a later nonce.
-      for (const coin of coinList.all())
+      for (const coin of coinList.all()) {
+        if (unverified.has(coin.account)) continue
         add({
           account: coin.account,
           origin: coin.origin,
           changeIndex: coin.changeIndex,
           privateKey: () => coin.privateKey,
         })
+      }
       return [...sources.values()]
     },
   })

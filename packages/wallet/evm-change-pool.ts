@@ -233,6 +233,17 @@ export class EvmChangePool {
     await this.store.flush()
   }
 
+  /** When the seed's branches were last walked on chain (epoch ms); undefined on a store that
+   * never completed a walk. */
+  seedWalkedAtMs(): number | undefined {
+    return this.store.getSeedWalkedAtMs()
+  }
+
+  /** Records a completed walk; durable after `flush`. */
+  recordSeedWalk(atMs: number): void {
+    this.store.setSeedWalkedAtMs(atMs)
+  }
+
   /** Persists a complete chain-scanned restore snapshot before the root is bound. */
   applyRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
     this.store.putRecoveredAccounts(records)

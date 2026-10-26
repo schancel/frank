@@ -2,8 +2,8 @@
  * The hosted CI job names the wallet's payment suites one by one. Jest treats each name as a
  * filter, so a name that matches no file runs nothing and the job stays green with the coverage
  * gone (it happened when the send rewrite renamed four suites). Every `.jest.test.ts` name the
- * workflow gives to this package must be a file here, and the suites of the send path must be
- * among them.
+ * workflow gives to this package (and every `.anvil.integration.ts` one, named by --testMatch)
+ * must be a file here, and the suites of the send path must be among them.
  */
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -15,7 +15,8 @@ const workflow = readFileSync(
 const named = workflow
   .split('\n')
   .filter(line => line.includes('yarn workspace @frank/wallet test'))
-  .flatMap(line => line.match(/[\w./-]+\.jest\.test\.ts/g) ?? [])
+  .flatMap(line => line.match(/[\w./-]+\.(jest\.test|anvil\.integration)\.ts/g) ?? [])
+  .map(name => name.replace(/^\//, ''))
 
 describe('the wallet suites hosted CI names', () => {
   it('names some', () => {
@@ -44,6 +45,7 @@ describe('the wallet suites hosted CI names', () => {
     'evm-provider.jest.test.ts',
     'evm-transaction-set-runtime.jest.test.ts',
     'utxo-wallet.jest.test.ts',
+    'wallet-performance-simulation.integration.jest.test.ts',
   ])('the send path suite %s is run', name => {
     expect(named).toContain(name)
   })

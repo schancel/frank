@@ -108,11 +108,11 @@ export class EvmTransactionSetLifecycle {
       if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
       const signed = member.signed!
       try {
-        if (await this.options.provider.getTransaction(signed.transactionHash)) {
-          await this.options.authority.markExposed(id, index)
-          continue
-        }
-        await this.options.authority.markExposed(id, index)
+        // Only a member that has left the wallet can already be on a node; one never exposed is
+        // marked exposed (durably, before its bytes leave) and broadcast without asking first.
+        if (member.exposed) {
+          if (await this.options.provider.getTransaction(signed.transactionHash)) continue
+        } else await this.options.authority.markExposed(id, index)
         try {
           const response = await this.options.provider.broadcastTransaction(signed.rawTransaction)
           if (response.hash.toLowerCase() !== signed.transactionHash.toLowerCase()) throw new Error('Unexpected transaction-set broadcast hash')
@@ -169,6 +169,17 @@ export class EvmTransactionSetLifecycle {
         (await provider.getTransactionReceipt(signed.transactionHash))
       )
         continue
+      // A member whose bytes have not left the wallet cannot be on any node. With no receipt and
+      // its nonce still free there is nothing to record: it is not missing, it is not yet sent
+      // (a submission's look before its first replay would otherwise record every member of a
+      // fresh set missing, although they all land moments later). A consumed nonce is still
+      // recorded, as evidence the member can never land.
+      if (
+        !receipt &&
+        !member.exposed &&
+        nonce <= Transaction.from(signed.rawTransaction).nonce
+      )
+        continue
       const observation: EvmNativeObservation = receipt
         ? {
             state:
@@ -182,9 +193,17 @@ export class EvmTransactionSetLifecycle {
             ).toString(),
           }
         : {
-            state: (await provider.getTransaction(signed.transactionHash))
-              ? 'pending'
-              : 'missing',
+            // Missing means no node has it. A member this wallet has exposed whose nonce is
+            // still unconsumed is submitted and awaiting a block, even when the node does not
+            // show it: a node need not serve transactions outside a block (Monad's does not), so
+            // a look between the broadcast and the block would otherwise record every member of
+            // a set missing though they all land in the next block. Only a consumed nonce with no
+            // receipt of ours is evidence the member will not land (`nativeMemberSuperseded`).
+            state:
+              (await provider.getTransaction(signed.transactionHash)) ||
+              (member.exposed && nonce <= Transaction.from(signed.rawTransaction).nonce)
+                ? 'pending'
+                : 'missing',
           }
       await this.options.authority.recordObservation(
         id,

@@ -8,6 +8,7 @@ import {
   ChangeSweepIntent,
   RecoveredChangeAccount,
   assertFinalizedIntent,
+  assertWalkTime,
 } from './change-pool-storage'
 import {
   durableBatch,
@@ -25,6 +26,7 @@ const PENDING_INTENT_KEY = '__pending_sweep_intent__'
 const WALLET_BINDING_KEY = '__wallet_binding__'
 const BY_SOURCE_PREFIX = '__by_source__:'
 const RECOVERED_PREFIX = '__recovered_change__:'
+const SEED_WALKED_AT_KEY = '__seed_walked_at__'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -46,6 +48,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private nextIndex = 0
   private pendingIntent?: ChangeSweepIntent
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
+  private seedWalkedAtMs?: number
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
@@ -115,6 +118,12 @@ export class LevelChangePoolStore implements ChangePoolStore {
       }
       if (key === PENDING_INTENT_KEY) {
         this.pendingIntent = JSON.parse(value)
+        continue
+      }
+      if (key === SEED_WALKED_AT_KEY) {
+        const atMs = JSON.parse(value)
+        assertWalkTime(atMs)
+        this.seedWalkedAtMs = atMs
         continue
       }
       if (key.startsWith(BY_SOURCE_PREFIX)) {
@@ -296,6 +305,20 @@ export class LevelChangePoolStore implements ChangePoolStore {
     }
   }
 
+  getSeedWalkedAtMs(): number | undefined {
+    this.assertLoaded()
+    return this.seedWalkedAtMs
+  }
+
+  setSeedWalkedAtMs(atMs: number): void {
+    this.assertMutationAllowed()
+    assertWalkTime(atMs)
+    this.seedWalkedAtMs = atMs
+    this.pendingWrites.push(
+      durablePut(this.db, SEED_WALKED_AT_KEY, JSON.stringify(atMs)),
+    )
+  }
+
   getRecoveredAccounts(): RecoveredChangeAccount[] {
     this.assertLoaded()
     return Array.from(this.recoveredAccountsByIndex.values())
@@ -377,6 +400,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
     this.nextIndex = 0
     this.pendingIntent = undefined
+    this.seedWalkedAtMs = undefined
     await durableClear(this.db)
   }
 }

@@ -631,6 +631,48 @@ function reobserveNativeOperations(wallet: WalletHandle): void {
   }
 }
 
+/** The wallet's submitted transaction sets that are not finished, read from its own journal (no
+ * request), and how far along they are. A Send's payment can be in a block while the money it
+ * kept back (its change, split into transfers from one account a few blocks apart) is still on
+ * its way: each of those transfers goes out only when a tick asks the wallet to look again
+ * (`reobserveNativeOperations`). Until they are all done that money is in the balance but no new
+ * Send can use it, so such a set is as much a reason for the short pauses as a message, and each
+ * step it takes restarts them. */
+function unfinishedTransactionSets(wallet: WalletHandle): {
+  count: number
+  progress: string
+} {
+  try {
+    const operations = (
+      (
+        wallet as WalletHandle & Pick<NativeWalletHandle, 'getNativeOperations'>
+      ).getNativeOperations?.() ?? []
+    ).filter(
+      operation =>
+        operation.kind === 'transaction-set' &&
+        operation.submissionAuthorized === true &&
+        !operation.cancelled,
+    )
+    return {
+      count: operations.length,
+      progress: operations
+        .map(
+          operation =>
+            `${operation.operationId}:${(operation.members ?? [])
+              .map(
+                member =>
+                  `${member.exposed ? 'x' : ''}${member.observation?.state}`,
+              )
+              .join(',')}`,
+        )
+        .join(';'),
+    }
+  } catch {
+    // A closed wallet has nothing left for this tick to hurry.
+    return { count: 0, progress: '' }
+  }
+}
+
 /**
  * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
  * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
@@ -796,6 +838,7 @@ export function startOutgoingReconciliation({
   let unsettled = new Set<string>()
   const finished = new Set<string>()
   let unsettledBefore = 0
+  let setsProgressBefore = ''
   /**
    * The tick's one question to the wallet when no message asks one. Either form makes the wallet
    * retry every unresolved payment it holds, as the same exact bytes and never as a new payment,
@@ -922,6 +965,12 @@ export function startOutgoingReconciliation({
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
     }
+    // The wallet's own unfinished sends keep the short pauses too, so the transfers that bring
+    // their change back go out seconds apart instead of one a minute.
+    const sets = stopped
+      ? { count: 0, progress: '' }
+      : unfinishedTransactionSets(wallet)
+    walletUnsettled += sets.count
     pending += stealthOpen
     // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
     // again, within its own request bound (none when nothing is pending). It runs whether or
@@ -960,6 +1009,11 @@ export function startOutgoingReconciliation({
     // ladder, as a message that newly becomes pending does.
     if (walletUnsettled > 0 && unsettledBefore === 0) delayMs = intervalMs
     unsettledBefore = walletUnsettled
+    // A transaction set that moved on since the last tick has its next transfer due a few
+    // blocks from now, not after a pause doubled while it waited for the one before.
+    if (sets.count > 0 && sets.progress !== setsProgressBefore)
+      delayMs = intervalMs
+    setsProgressBefore = sets.progress
     pending += walletUnsettled
     delayMs =
       pending > 0 && !resetRequested

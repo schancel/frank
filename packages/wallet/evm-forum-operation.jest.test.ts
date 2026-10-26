@@ -29,6 +29,7 @@ import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import {
   bindForumAuthority,
+  ForumOperationDroppedError,
   reconcileForumOperations,
   submitForumOperation,
 } from './evm-forum-operation'
@@ -222,9 +223,15 @@ async function fixture(location?: string) {
       [10, 0n],
       [11, new Uint8Array(16)],
     ])
-    for (const [key, value] of changes) fields.set(key, value)
+    for (const [key, value] of changes)
+      if (value === undefined) fields.delete(key)
+      else fields.set(key, value)
     return encodeFrame(
-      { typeId: TYPE_FORUM_OPERATION_STATUS, schemaVersion: 1, minReaderVersion: 1 },
+      {
+        typeId: TYPE_FORUM_OPERATION_STATUS,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
       fields as never,
     )
   }
@@ -320,6 +327,68 @@ test.each(['funder', 'raw', 'amount', 'network'] as const)(
     }
   },
 )
+
+/** The relay counted it on acceptance: state 4, no inclusion position. */
+const COUNTED: readonly [number, unknown][] = [
+  [7, 4],
+  [8, undefined],
+  [9, undefined],
+]
+
+test('a post the relay counted on acceptance is posted at once, before any block', async () => {
+  const f = await fixture()
+  try {
+    // Nothing is mined: the relay answers counted as soon as the node took the burn.
+    http.mockImplementation(
+      async () => response(f.status(f.retained(), COUNTED)) as never,
+    )
+    const result = await submitForumOperation(f.wallet, f.params)
+    expect(result.status.state).toBe(4)
+    expect(result.status.block).toBeUndefined()
+    // Its coins are not settled yet, so the operation stays retained for settlement.
+    expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
+    // Once the burns land, a reconciliation pass sees it confirmed and settles it.
+    http.mockImplementation(async () => {
+      f.mine()
+      return response(f.status()) as never
+    })
+    await reconcileForumOperations(f.wallet, 'post')
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
+  } finally {
+    await f.close()
+  }
+})
+
+test('a post the relay dropped is reported as not counted and never paid again', async () => {
+  const f = await fixture()
+  try {
+    http.mockImplementation(
+      async () =>
+        response(
+          f.status(f.retained(), [
+            [7, 5],
+            [8, undefined],
+            [9, undefined],
+          ]),
+        ) as never,
+    )
+    await expect(
+      submitForumOperation(f.wallet, f.params),
+    ).rejects.toBeInstanceOf(ForumOperationDroppedError)
+    const signed = f.retained().rawTransactions
+    // Reconciliation takes the relay's answer as final and only settles the wallet's coins:
+    // it neither throws nor signs anything new.
+    const calls = http.mock.calls.length
+    await reconcileForumOperations(f.wallet, 'post')
+    expect(http.mock.calls.length).toBe(calls + 1)
+    expect(f.retained().rawTransactions).toEqual(signed)
+    f.mine()
+    await reconcileForumOperations(f.wallet, 'post')
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
+  } finally {
+    await f.close()
+  }
+})
 
 test('one missing member receipt prevents completion even when another signed burn succeeded', async () => {
   const f = await fixture()
@@ -635,47 +704,70 @@ test('initial shared Forum submission retains diagnostic cause and the complete 
   }
 })
 
-
 test('insufficient funds after durable intent stays pending through the generic client and restart recovers only that burn', async () => {
   const location = await mkdtemp(join(tmpdir(), 'forum-intent-recovery-'))
   let f = await fixture(location)
-  const clientFor = () => new TopicPostClient({
-    chainIdentifier: 'monad-testnet', topicOperations: createEvmTopicOperations(f.wallet),
-  })
+  const clientFor = () =>
+    new TopicPostClient({
+      chainIdentifier: 'monad-testnet',
+      topicOperations: createEvmTopicOperations(f.wallet),
+    })
   try {
     const originalCoins = f.coins.all()
-    for (const coin of originalCoins) await f.coins.put({ ...coin, valueWei: 1n })
-    const error = await clientFor().submitTopicPost({
-      topic: 'test', entries: [{ kind: 'post', message: 'hello' }],
-      direction: 'up', amountAtomic: 1000000n, timestampMs: 0,
-    }).catch(error => error)
+    for (const coin of originalCoins)
+      await f.coins.put({ ...coin, valueWei: 1n })
+    const error = await clientFor()
+      .submitTopicPost({
+        topic: 'test',
+        entries: [{ kind: 'post', message: 'hello' }],
+        direction: 'up',
+        amountAtomic: 1000000n,
+        timestampMs: 0,
+      })
+      .catch(error => error)
     expect(error).toBeInstanceOf(TopicPostAbandonedError)
     expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
     const original = f.retained()
     expect(original.construction).toBeDefined()
-    expect(error.payloadHashHex).toBe(original.kind === 'post' && original.payloadHashHex)
+    expect(error.payloadHashHex).toBe(
+      original.kind === 'post' && original.payloadHashHex,
+    )
     expect(f.provider.broadcastTransaction).not.toHaveBeenCalled()
     expect(http).not.toHaveBeenCalled()
     for (const coin of originalCoins) await f.coins.put(coin)
     await f.close()
     f = await fixture(location)
     http.mockRejectedValue(new Error('relay offline'))
-    await clientFor().resumePendingOperations().catch(() => undefined)
+    await clientFor()
+      .resumePendingOperations()
+      .catch(() => undefined)
     const recovered = f.retained()
-    expect(recovered.transactionSetOperationId).toBe(original.transactionSetOperationId)
+    expect(recovered.transactionSetOperationId).toBe(
+      original.transactionSetOperationId,
+    )
     expect(recovered.construction).toBeUndefined()
     expect(recovered.rawTransactions).toHaveLength(1)
-    expect(recovered.kind === 'post' && recovered.payloadHashHex)
-      .toBe(original.kind === 'post' && original.payloadHashHex)
+    expect(recovered.kind === 'post' && recovered.payloadHashHex).toBe(
+      original.kind === 'post' && original.payloadHashHex,
+    )
     const raw = recovered.rawTransactions[0]
     expect(Transaction.from(raw).to?.toLowerCase()).toBe(burn.toLowerCase())
-    await clientFor().resumePendingOperations().catch(() => undefined)
+    await clientFor()
+      .resumePendingOperations()
+      .catch(() => undefined)
     expect(f.bundle.topicOperationJournal.getAll()).toEqual([recovered])
-    expect(f.preparer.getOperation(original.transactionSetOperationId)?.members
-      .filter(member => member.transactionSet?.role === 'payment')
-      .map(member => member.signed?.rawTransaction)).toEqual([raw])
+    expect(
+      f.preparer
+        .getOperation(original.transactionSetOperationId)
+        ?.members.filter(member => member.transactionSet?.role === 'payment')
+        .map(member => member.signed?.rawTransaction),
+    ).toEqual([raw])
     const burnBytes = f.provider.broadcastTransaction.mock.calls
-      .map(([bytes]) => bytes).filter(bytes => Transaction.from(bytes).to?.toLowerCase() === burn.toLowerCase())
+      .map(([bytes]) => bytes)
+      .filter(
+        bytes =>
+          Transaction.from(bytes).to?.toLowerCase() === burn.toLowerCase(),
+      )
     expect(burnBytes.length).toBeGreaterThan(0)
     expect(new Set(burnBytes)).toEqual(new Set([raw]))
   } finally {
@@ -687,18 +779,32 @@ test('insufficient funds after durable intent stays pending through the generic 
 test('an intent write that commits then rejects is pending to the generic client', async () => {
   const f = await fixture()
   try {
-    const put = f.bundle.topicOperationJournal.put.bind(f.bundle.topicOperationJournal)
-    jest.spyOn(f.bundle.topicOperationJournal, 'put').mockImplementationOnce(async operation => {
-      await put(operation)
-      throw new Error('commit acknowledgement lost')
+    const put = f.bundle.topicOperationJournal.put.bind(
+      f.bundle.topicOperationJournal,
+    )
+    jest
+      .spyOn(f.bundle.topicOperationJournal, 'put')
+      .mockImplementationOnce(async operation => {
+        await put(operation)
+        throw new Error('commit acknowledgement lost')
+      })
+    const client = new TopicPostClient({
+      chainIdentifier: 'monad-testnet',
+      topicOperations: createEvmTopicOperations(f.wallet),
     })
-    const client = new TopicPostClient({ chainIdentifier: 'monad-testnet',
-      topicOperations: createEvmTopicOperations(f.wallet) })
-    await expect(client.submitTopicPost({ topic: 'test', entries: [{ kind: 'post', message: 'hello' }],
-      direction: 'up', amountAtomic: 1000000n, timestampMs: 0 }))
-      .rejects.toBeInstanceOf(TopicPostAbandonedError)
+    await expect(
+      client.submitTopicPost({
+        topic: 'test',
+        entries: [{ kind: 'post', message: 'hello' }],
+        direction: 'up',
+        amountAtomic: 1000000n,
+        timestampMs: 0,
+      }),
+    ).rejects.toBeInstanceOf(TopicPostAbandonedError)
     expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
     expect(f.retained().construction).toBeDefined()
     expect(f.provider.broadcastTransaction).not.toHaveBeenCalled()
-  } finally { await f.close() }
+  } finally {
+    await f.close()
+  }
 })

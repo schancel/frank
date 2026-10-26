@@ -140,7 +140,7 @@ pub(crate) fn observation_of(frame: &[u8]) -> Observation {
             seconds: 100,
             nanoseconds: 1,
         },
-        confirmed: None,
+        phase: Phase::Pending,
     }
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn optional_observation(nonce: u64) -> Observation {
         event,
         checked,
         first_seen: base.first_seen,
-        confirmed: None,
+        phase: Phase::Pending,
     }
 }
 
@@ -327,7 +327,7 @@ fn exact_pending_survives_reopen_and_publication_is_once_only() {
         .read(|tx| Store::retained(tx, &original))
         .unwrap()
         .unwrap();
-    assert!(retained.confirmed.is_none());
+    assert_eq!(retained.phase, Phase::Pending);
     assert!(post_of(&store, &target).unwrap().visible.is_none());
     assert_eq!(store.stored_post_count().unwrap(), 0);
     store
@@ -343,12 +343,26 @@ fn exact_pending_survives_reopen_and_publication_is_once_only() {
     assert_eq!(post.visible, Some(at(200)));
     assert_eq!(post.author, Some(hash));
     assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(7));
-    // A second burn of the same post, earlier on chain, becomes its author; visibility stays.
+    // A second burn of the same post: the one admitted first (ties by lead hash) is its author;
+    // visibility stays.
     let second = observation(1, None, false);
     publish(&store, &second, 0, at(50));
     let post = post_of(&store, &target).unwrap();
     assert_eq!(post.visible, Some(at(200)));
-    assert_eq!(post.author, Some(second.hash()));
+    let author = if (
+        original.first_seen.seconds,
+        original.first_seen.nanoseconds,
+        hash,
+    ) <= (
+        second.first_seen.seconds,
+        second.first_seen.nanoseconds,
+        second.hash(),
+    ) {
+        hash
+    } else {
+        second.hash()
+    };
+    assert_eq!(post.author, Some(author));
     assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(14));
     let vote = observation(2, Some(target), true);
     store.admit(vote.clone()).unwrap();
@@ -358,7 +372,7 @@ fn exact_pending_survives_reopen_and_publication_is_once_only() {
     drop(store);
     let store = backend.open();
     let post = post_of(&store, &target).unwrap();
-    assert_eq!(post.author, Some(second.hash()));
+    assert_eq!(post.author, Some(author));
     assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(7));
     assert_eq!(topics(&store), vec![("test.topic".into(), 1, at(200))]);
     assert_eq!(store.stored_post_count().unwrap(), 1);
@@ -706,11 +720,11 @@ fn an_unknown_commit_outcome_is_settled_and_counts_the_burn_once() {
         // The admission's answer is lost; then its confirmation's.
         lost.plan.lock().unwrap().push_back(Some(committed));
         let admitted = store.admit(op.clone()).unwrap();
-        assert!(admitted.confirmed.is_none());
+        assert_eq!(admitted.phase, Phase::Pending);
         assert_eq!(store.pending_accounting().unwrap().0, 1, "{committed}");
         lost.plan.lock().unwrap().push_back(Some(committed));
         let confirmed = store.confirm(&op, &facts(&op, 3, 0), at(200)).unwrap();
-        assert!(confirmed.confirmed.is_some());
+        assert!(matches!(confirmed.phase, Phase::Confirmed { .. }));
         assert_eq!(store.pending_accounting().unwrap(), (0, 0));
         let post = post_of(&store, op.event.target_hash()).unwrap();
         assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(7));
@@ -810,7 +824,7 @@ fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
         .read(|tx| Store::retained(tx, &vote))
         .unwrap()
         .unwrap();
-    assert!(retained.confirmed.is_none());
+    assert_eq!(retained.phase, Phase::Pending);
     assert_eq!(
         post_of(&store, &target).unwrap().aggregate.magnitude,
         Magnitude::from_u64(7)
@@ -818,15 +832,9 @@ fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
     // Every burn confirmed: the set's total is counted once, at the set's inclusion watermark
     // (the latest burn's position, not the lead's or the last listed).
     let confirmed = store.confirm(&vote, &all, at(300)).unwrap();
-    assert_eq!(
-        confirmed.confirmed.map(|(block, index, _)| (block, index)),
-        Some((3, 1))
-    );
+    assert_eq!(confirmed.phase.position(), Some((3, 1)));
     store.confirm(&vote, &all, at(400)).unwrap();
-    assert_eq!(
-        store.admit(vote.clone()).unwrap().confirmed,
-        confirmed.confirmed
-    );
+    assert_eq!(store.admit(vote.clone()).unwrap().phase, confirmed.phase);
     let counted = post_of(&store, &target).unwrap();
     assert_eq!(counted.aggregate.magnitude, Magnitude::from_u64(67));
     assert_eq!(counted.reserved_up, Magnitude::default());
@@ -860,4 +868,154 @@ fn a_burn_set_counts_once_and_each_burn_pays_for_one_event() {
         Magnitude::from_u64(67)
     );
     assert_eq!(store.pending_accounting().unwrap(), (0, 0));
+}
+
+#[test]
+fn an_event_counts_on_acceptance_and_landing_only_records_its_position() {
+    let backend = Backend::new();
+    let store = backend.open();
+    let post = observation(0, None, false);
+    let target = *post.event.target_hash();
+    store.admit(post.clone()).unwrap();
+    assert_eq!(store.unsettled(None, 10).unwrap(), vec![post.hash()]);
+    let counted = store.count(&post, at(200)).unwrap();
+    assert_eq!(counted.phase, Phase::Counted { visible: at(200) });
+    // Visible and counted at once, on another replica too, before any block.
+    let other = backend.open();
+    let row = post_of(&other, &target).unwrap();
+    assert_eq!(row.visible, Some(at(200)));
+    assert_eq!(row.aggregate.magnitude, Magnitude::from_u64(7));
+    assert_eq!(row.reserved_up, Magnitude::default());
+    assert_eq!(topics(&other), vec![("test.topic".into(), 1, at(200))]);
+    assert_eq!(other.stored_post_count().unwrap(), 1);
+    // Still unsettled until its burns land.
+    assert_eq!(other.pending_accounting().unwrap().0, 1);
+    // A repeat changes nothing.
+    let revision = store.read(|tx| Store::revision(tx)).unwrap();
+    assert_eq!(store.count(&post, at(300)).unwrap().phase, counted.phase);
+    assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), revision);
+    // Landing records the position; the weight is already counted.
+    let confirmed = store.confirm(&post, &facts(&post, 9, 4), at(400)).unwrap();
+    assert_eq!(
+        confirmed.phase,
+        Phase::Confirmed {
+            block: 9,
+            index: 4,
+            visible: at(200)
+        }
+    );
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.aggregate.magnitude, Magnitude::from_u64(7));
+    assert_eq!(row.visible, Some(at(200)));
+    assert_eq!(store.pending_accounting().unwrap(), (0, 0));
+    assert!(store.unsettled(None, 10).unwrap().is_empty());
+    // A confirmed event is final: it is never dropped.
+    assert_eq!(store.drop_event(&post).unwrap().phase, confirmed.phase);
+    assert_eq!(
+        post_of(&store, &target).unwrap().aggregate.magnitude,
+        Magnitude::from_u64(7)
+    );
+}
+
+#[test]
+fn a_counted_vote_whose_burns_never_land_is_taken_back_once() {
+    let backend = Backend::new();
+    let store = backend.open();
+    let post = observation(0, None, false);
+    let target = *post.event.target_hash();
+    publish(&store, &post, 1, at(100));
+    let vote = observation(1, Some(target), true);
+    store.admit(vote.clone()).unwrap();
+    store.count(&vote, at(200)).unwrap();
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.aggregate, Aggregate::default());
+    let dropped = store.drop_event(&vote).unwrap();
+    assert_eq!(dropped.phase, Phase::Dropped);
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.aggregate.magnitude, Magnitude::from_u64(7));
+    assert!(!row.aggregate.negative);
+    assert_eq!(store.pending_accounting().unwrap(), (0, 0));
+    assert!(store.unsettled(None, 10).unwrap().is_empty());
+    // Repeats, a late count and a late confirmation change nothing.
+    let revision = store.read(|tx| Store::revision(tx)).unwrap();
+    store.drop_event(&vote).unwrap();
+    assert_eq!(store.count(&vote, at(300)).unwrap().phase, Phase::Dropped);
+    assert_eq!(
+        store
+            .confirm(&vote, &facts(&vote, 5, 0), at(300))
+            .unwrap()
+            .phase,
+        Phase::Dropped
+    );
+    assert_eq!(store.admit(vote.clone()).unwrap().phase, Phase::Dropped);
+    assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), revision);
+    assert_eq!(
+        post_of(&store, &target).unwrap().aggregate.magnitude,
+        Magnitude::from_u64(7)
+    );
+    // A pending vote dropped before it counted releases only its reservation.
+    let pending = observation(2, Some(target), false);
+    store.admit(pending.clone()).unwrap();
+    assert_eq!(
+        post_of(&store, &target).unwrap().reserved_up,
+        Magnitude::from_u64(7)
+    );
+    store.drop_event(&pending).unwrap();
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.reserved_up, Magnitude::default());
+    assert_eq!(row.aggregate.magnitude, Magnitude::from_u64(7));
+}
+
+#[test]
+fn a_dropped_author_passes_the_post_to_another_counted_burn_or_hides_it() {
+    let backend = Backend::new();
+    let store = backend.open();
+    let first = observation(0, None, false);
+    let second = observation(1, None, false);
+    let target = *first.event.target_hash();
+    assert_eq!(&target, second.event.target_hash());
+    for op in [&first, &second] {
+        store.admit(op.clone()).unwrap();
+        store.count(op, at(200)).unwrap();
+    }
+    let author = post_of(&store, &target).unwrap().author.unwrap();
+    let (author_op, other_op) = if author == first.hash() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    store.drop_event(author_op).unwrap();
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.author, Some(other_op.hash()));
+    assert_eq!(row.visible, Some(at(200)));
+    assert_eq!(row.aggregate.magnitude, Magnitude::from_u64(7));
+    assert!(store
+        .read(|tx| Store::stored_row(tx, &target))
+        .unwrap()
+        .is_some());
+    // No counted burn pays for it any more: hidden from its topic, discovery and the count.
+    store.drop_event(other_op).unwrap();
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!((row.author, row.visible), (None, None));
+    assert_eq!(row.aggregate, Aggregate::default());
+    assert!(topics(&store).is_empty());
+    assert_eq!(store.stored_post_count().unwrap(), 0);
+    assert!(store
+        .read(|tx| Store::stored_row(tx, &target))
+        .unwrap()
+        .is_none());
+    // A vote on a hidden post is refused, as on an unknown one.
+    assert!(matches!(
+        store.admit(observation(5, Some(target), false)),
+        Err(ForumError::NotFound)
+    ));
+    // Another burn of the same post that counts shows it again.
+    let third = observation(2, None, false);
+    store.admit(third.clone()).unwrap();
+    store.count(&third, at(500)).unwrap();
+    let row = post_of(&store, &target).unwrap();
+    assert_eq!(row.author, Some(third.hash()));
+    assert_eq!(row.visible, Some(at(500)));
+    assert_eq!(topics(&store), vec![("test.topic".into(), 1, at(500))]);
+    assert_eq!(store.stored_post_count().unwrap(), 1);
 }

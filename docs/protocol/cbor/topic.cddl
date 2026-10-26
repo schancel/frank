@@ -80,8 +80,10 @@ forum-cursor-bytes = bstr .size (1..2048)
 ; batches (holding up to 128 verified post observation frames), not HTML web pages.
 forum-single-view = { ; complete frame <=2MiB
   0: network-tag, 1: framed-object, 2: forum-address, 3: forum-raw-burn,
-  4: digest-32, 5: timestamp, 6: forum-u64, 7: forum-u64, 8: forum-aggregate,
+  4: digest-32, 5: timestamp, ? 6: forum-u64, ? 7: forum-u64, 8: forum-aggregate,
   9: forum-u64, 10: forum-epoch, * uint => frank-value }
+; A post is visible once every burn of its author's set was accepted by the node. Positions
+; 6/7 (the author set's inclusion watermark) are present together once every burn landed.
 forum-topic-page = { ; complete frame <=4MiB; field 4 requires type-43 children
   0: network-tag, 1: tstr .size (1..512), 2: timestamp,
   3: forum-u64, 4: [*128 framed-object], ? 5: forum-cursor-bytes, 6: forum-epoch,
@@ -93,10 +95,13 @@ forum-discovery-entry = { 0: tstr .size (1..512), 1: forum-u64, 2: timestamp,
   * uint => frank-value }
 forum-operation-status = { ; complete frame <=2MiB; field 1 requires type 41 or 42
   0: network-tag, 1: framed-object, 2: digest-32, 3: digest-32,
-  4: forum-address, 5: 0..1, 6: forum-u64, 7: 0..3, ? 8: forum-u64, ? 9: forum-u64,
+  4: forum-address, 5: 0..1, 6: forum-u64, 7: 0..5, ? 8: forum-u64, ? 9: forum-u64,
   10: forum-u64, 11: forum-epoch, * uint => frank-value }
 ; Position 8/9 both present iff state 2. States 0/3 are unverified request echoes.
-; States 1/2 are relay-observed; individual admitted value remains 1..i64::MAX.
+; States 1/2/4/5 are relay-observed; individual admitted value remains 1..i64::MAX.
+; 1 pending: admitted, not every burn accepted by the node; 4 counted: every burn accepted,
+; the event counts; 2 confirmed: counted and every burn landed; 5 dropped: a burn failed or
+; never landed, and the event no longer counts.
 forum-topic-cursor = { 0: network-tag, 1: 44, 2: forum-u64, 3: forum-epoch,
   4: { 0: timestamp, 1: digest-32 }, 5: tstr .size (1..512), 6: timestamp,
   7: forum-u64 }

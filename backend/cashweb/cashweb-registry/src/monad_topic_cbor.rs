@@ -47,7 +47,7 @@ use crate::{
     monad_topic_relay::TopicVoteRelayOutcome,
     monad_topic_verify::{
         parse_topic_calldata_versioned, ExpectedTopicBurn, TopicCalldataError,
-        TopicCalldataVersion, VoteDirection,
+        TopicCalldataVersion, TopicVoteBurnVerification, VoteDirection,
     },
 };
 
@@ -558,16 +558,7 @@ pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
     policy: &TopicBurnPolicy,
     poll: PollConfig,
 ) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
-    broadcast_topic_event(transport, event, policy, poll, false).await
-}
-
-pub(crate) async fn broadcast_and_verify_forum_event<T: JsonRpcTransport + Clone>(
-    transport: &T,
-    event: &TopicEvent,
-    policy: &TopicBurnPolicy,
-    poll: PollConfig,
-) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
-    broadcast_topic_event(transport, event, policy, poll, true).await
+    broadcast_topic_event(transport, event, policy, poll).await
 }
 
 async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
@@ -575,7 +566,6 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
     event: &TopicEvent,
     policy: &TopicBurnPolicy,
     poll: PollConfig,
-    exact_rpc: bool,
 ) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
     let checked = check_topic_burn_before_broadcast(event, policy)?;
     let expected = ExpectedTopicBurn {
@@ -596,8 +586,7 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
         sent.push((i, hash));
     }
     sent.sort_by_key(|(i, _)| *i);
-    let outcomes = futures::future::join_all(sent.into_iter().map(|(i, hash)| {
-        let member = &checked.members[i];
+    let outcomes = futures::future::join_all(sent.into_iter().map(|(_, hash)| {
         let expected = &expected;
         async move {
             match hash {
@@ -607,7 +596,7 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
                         tx_hash,
                         expected,
                         TopicCalldataVersion::Cbor,
-                        exact_rpc.then_some(member.sender),
+                        None,
                         poll,
                     )
                     .await
@@ -629,6 +618,139 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
         verified.push(verified_member(member, checked.direction, outcome).map_err(member_error)?);
     }
     Ok(verified)
+}
+
+/// What the node said when one burn of a forum event was handed to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Handoff {
+    /// The node took the transaction, already held it, or it has already landed.
+    Accepted,
+    /// The node definitively refused it (for example, insufficient funds).
+    Refused(String),
+    /// No definite answer (a timeout, an ambiguous error, or a nonce already used): the burn
+    /// may or may not be with the node.
+    Unknown(String),
+}
+
+/// Hand every burn of a checked forum event to the node, account by account in nonce order (a
+/// stacked nonce reaches the node after its predecessor), and say what the node did with each,
+/// in the event's order. One refusal never stops the others being sent. A burn the node gave
+/// no definite answer for is accepted when its receipt is already on chain. Nothing waits for
+/// a block. Each call to the node is bounded by `wait`.
+pub(crate) async fn hand_forum_event_to_node<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    event: &TopicEvent,
+    checked: &CheckedTopicBurn,
+    policy: &TopicBurnPolicy,
+    wait: std::time::Duration,
+) -> Vec<Handoff> {
+    let client = crate::monad_http::MonadHttpClient::with_transport(transport.clone());
+    let mut order: Vec<usize> = (0..checked.members.len()).collect();
+    order.sort_by_key(|&i| (checked.members[i].sender.0, checked.members[i].nonce));
+    let mut handoffs = vec![Handoff::Unknown(String::new()); order.len()];
+    for i in order {
+        let member = &checked.members[i];
+        let sent = tokio::time::timeout(wait, client.send_raw_transaction(&event.burn_txs()[i]));
+        handoffs[i] = match sent.await {
+            Ok(Ok(submitted)) if submitted.tx_hash == member.tx_hash => Handoff::Accepted,
+            Ok(Ok(submitted)) => Handoff::Unknown(format!(
+                "the node named a different hash {}",
+                submitted.tx_hash
+            )),
+            Ok(Err(error)) if error.says_tx_already_held() => Handoff::Accepted,
+            Ok(Err(error @ crate::monad_http::MonadRpcError::NonceTooLow { .. })) => {
+                Handoff::Unknown(error.to_string())
+            }
+            Ok(Err(error)) if error.definitively_rejected_send() => {
+                Handoff::Refused(error.to_string())
+            }
+            Ok(Err(error)) => Handoff::Unknown(error.to_string()),
+            Err(_) => Handoff::Unknown("no answer from the node in time".to_owned()),
+        };
+    }
+    // A repeat of an event whose burn already landed finds the nonce used: its receipt says so.
+    let expected = ExpectedTopicBurn {
+        commitment: Sha256::new(*event.commitment()),
+        burn_address: policy.burn_address,
+    };
+    for (i, handoff) in handoffs.iter_mut().enumerate() {
+        if matches!(handoff, Handoff::Accepted) {
+            continue;
+        }
+        let member = &checked.members[i];
+        if let Ok(Ok(LandedBurn::Landed(_))) = tokio::time::timeout(
+            wait,
+            probe_forum_burn(transport, member, checked.direction, &expected),
+        )
+        .await
+        {
+            *handoff = Handoff::Accepted;
+        }
+    }
+    handoffs
+}
+
+/// Where one burn of a counted forum event stands on chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LandedBurn {
+    /// A successful receipt that verifies against the signed transaction.
+    Landed(VerifiedTopicBurn),
+    /// It can never pay: its receipt failed verification (reverted, for example).
+    Failed(String),
+    /// No receipt, but the sender's nonce is already used: another transaction took it, or
+    /// the receipt is not visible on this upstream yet.
+    NonceUsed,
+    /// Not on chain yet.
+    NotYet,
+}
+
+/// Read one burn's chain state, without waiting for a block. The sender's nonce is read before
+/// the receipt, so a burn that lands between the two reads is not mistaken for a replaced one.
+pub(crate) async fn probe_forum_burn<T: JsonRpcTransport + Clone>(
+    transport: &T,
+    member: &DecodedSignedTransaction,
+    direction: VoteDirection,
+    expected: &ExpectedTopicBurn,
+) -> Result<LandedBurn, crate::monad_http::MonadRpcError> {
+    let client = crate::monad_http::MonadHttpClient::with_transport(transport.clone());
+    let nonce = client
+        .get_transaction_count(member.sender, crate::monad_http::BlockTag::Latest)
+        .await?;
+    let outcome = crate::monad_topic_verify::verify_topic_burn_checked(
+        transport,
+        member.tx_hash,
+        expected,
+        TopicCalldataVersion::Cbor,
+        Some(member.sender),
+    )
+    .await
+    .map_err(|error| crate::monad_http::MonadRpcError::InvalidResponse {
+        method: "eth_getTransactionReceipt".to_owned(),
+        reason: error.to_string(),
+    })?;
+    Ok(match outcome {
+        TopicVoteBurnVerification::TxNotConfirmed if nonce > member.nonce => LandedBurn::NonceUsed,
+        TopicVoteBurnVerification::TxNotConfirmed => LandedBurn::NotYet,
+        TopicVoteBurnVerification::Verified {
+            value_wei,
+            direction: landed,
+            block_number,
+            transaction_index,
+        } if value_wei == member.value_wei && landed == direction => {
+            LandedBurn::Landed(VerifiedTopicBurn {
+                sender: member.sender,
+                tx_hash: member.tx_hash,
+                value_wei,
+                direction,
+                block_number,
+                transaction_index,
+            })
+        }
+        TopicVoteBurnVerification::Verified { .. } => LandedBurn::Failed(
+            "the chain's value or direction differs from the signed transaction".to_owned(),
+        ),
+        other => LandedBurn::Failed(format!("{other:?}")),
+    })
 }
 
 fn verified_member(

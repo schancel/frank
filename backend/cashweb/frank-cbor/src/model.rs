@@ -104,10 +104,11 @@ pub struct ForumView<F> {
     pub transaction_hash: Vec<u8>,
     /// Relay-observed first-visible time for ordering.
     pub first_visible: Timestamp,
-    /// Relay-observed block position.
-    pub block: u64,
-    /// Relay-observed transaction position within its block.
-    pub transaction_index: u64,
+    /// Relay-observed inclusion watermark of the author's burns, once every one landed. A post
+    /// is visible as soon as its burns were accepted by the node, before this is known.
+    pub block: Option<u64>,
+    /// Relay-observed transaction position within that block, with `block`.
+    pub transaction_index: Option<u64>,
     /// Exact signed magnitude, not narrowed to a host integer.
     pub aggregate: ForumAggregate,
     /// Relay observation or snapshot revision.
@@ -176,8 +177,12 @@ pub enum ForumOperationEvidence {
     UnknownRequest,
     /// State 3. Does not establish absence from any chain or other relay.
     RejectedRequest,
-    /// State 1. A nonterminal relay observation.
+    /// State 1. A nonterminal relay observation: admitted, not every burn accepted yet.
     Pending,
+    /// State 4. Every burn was accepted by the node and the event counts; not yet landed.
+    Counted,
+    /// State 5. A burn failed or never landed: the event no longer counts.
+    Dropped,
     /// State 2. Relay-observed confirmation, not independently established finality.
     Confirmed {
         /// Relay-observed block position.

@@ -409,8 +409,10 @@ export interface ForumView<F> {
   authorBurnTx: Uint8Array
   transactionHash: Uint8Array
   firstVisible: Timestamp
-  block: bigint
-  transactionIndex: bigint
+  /** The author set's inclusion watermark, once every burn landed. A post is visible as soon
+   * as its burns were accepted by the node, before this is known. */
+  block?: bigint
+  transactionIndex?: bigint
   aggregate: ForumAggregate
   revision: bigint
   epoch: Uint8Array
@@ -467,7 +469,9 @@ export type ForumOperationStatus<F> = ForumOperationCommon<F> &
         transactionIndex?: never
       }
     | {
-        state: 1
+        /** 1 pending: not every burn accepted yet. 4 counted: every burn accepted by the
+         * node, the event counts. 5 dropped: a burn failed or never landed; it no longer counts. */
+        state: 1 | 4 | 5
         evidence: 'relay-observed'
         block?: never
         transactionIndex?: never

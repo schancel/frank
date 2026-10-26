@@ -158,6 +158,8 @@ export const rawFrFR = {
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
     voteOutcomeUnknown:
       'Votre vote n’a pas été confirmé. Votre portefeuille le garde en attente et il peut encore compter. Rechargez plus tard pour vérifier. Ne votez pas à nouveau.',
+    forumNotCounted:
+      'Ceci n’a pas été compté : son paiement n’est pas arrivé sur la chaîne. Vérifiez votre solde avant de recommencer.',
     voteSlow:
       'Vote toujours en cours. Le réseau est lent ; votre vote est conservé et sera envoyé.',
     postSlow:

@@ -1,5 +1,6 @@
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
 import { TopicVoteAbandonedError } from '@frank/wallet/topic-vote-client'
+import { TopicOperationDroppedError } from '@frank/wallet/topic-operations'
 import { errorNotify, infoNotify } from './notifications'
 
 /**
@@ -49,6 +50,11 @@ export function notifyBurnFailure(err: unknown, t: Translate): void {
   }
   // The wallet keeps the original signed operation: a relay refusal does not prove the burn
   // cannot land, so the notice must not invite a second burn. The relay's text stays in the log.
+  // Counted on acceptance, then taken back because the payment did not land: say so plainly.
+  if (err instanceof TopicOperationDroppedError) {
+    errorNotify(err, { fallbackKey: 'stampPreparation.forumNotCounted' })
+    return
+  }
   if (err instanceof TopicVoteAbandonedError) {
     errorNotify(err, { fallbackKey: 'stampPreparation.voteOutcomeUnknown' })
     return

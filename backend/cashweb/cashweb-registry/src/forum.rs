@@ -27,15 +27,15 @@ use frank_cbor::{
 
 use crate::{
     monad_http::{Address, JsonRpcTransport},
-    monad_stamp_relay::PollConfig,
     monad_topic_cbor::{
-        check_topic_burn_before_broadcast, parse_topic_event, TopicBurnPolicy, TopicEvent,
+        check_topic_burn_before_broadcast, hand_forum_event_to_node, parse_topic_event, Handoff,
+        TopicBurnPolicy, TopicEvent,
     },
     monad_topic_verify::VoteDirection,
     store::{
         forum::{
-            invalid, time_key, time_value, ForumError, Observation, Result, Row, Store, StoredRow,
-            STORE_SUFFIX,
+            invalid, time_key, time_value, ForumError, Observation, Phase, Result, Row, Store,
+            StoredRow, LAND_BOUND, STORE_SUFFIX,
         },
         kv_store::{key_after, prefix_end, RelayKvStore, RocksDbKvStore},
         large_values::{ObjectStore, SweepReport},
@@ -312,13 +312,16 @@ impl Owner {
         )
     }
 
+    /// Admit an event and hand its burns to the node. It counts (a post is visible, a vote is
+    /// in the tally) as soon as the node has accepted every burn of its set; the chain is not
+    /// waited for. A set the node has not wholly accepted stays pending, and the background
+    /// pass ([`Owner::reconcile`]) hands it over again.
     pub(crate) async fn submit<T: JsonRpcTransport + Clone>(
         &self,
         network: &str,
         policy: TopicBurnPolicy,
         frame: &[u8],
         transport: &T,
-        poll: PollConfig,
     ) -> Result<Vec<u8>> {
         let request = request(network, policy, frame)?;
         if request.checked.value_wei > i64::MAX as u128 {
@@ -336,22 +339,98 @@ impl Owner {
             let revision = blocking(|| store.read(|tx| Store::revision(tx)))?;
             status_frame(network, &epoch, revision, op, true)
         };
-        if op.confirmed.is_some() {
+        if op.phase != Phase::Pending {
             return status(&op);
         }
-        // The durable reservation exists; every subsequent failure is indeterminate. Once any
-        // burn of the set may have been broadcast the event is never refused: a set that is
-        // only partly confirmed stays pending, and a repeat of the same request asks the chain
-        // again. No transaction is open while network confirmation is awaited, so a second
-        // replica given the same set broadcasts the same bytes and confirms it at most once.
-        let verified = crate::monad_topic_cbor::broadcast_and_verify_forum_event(
-            transport, &op.event, &policy, poll,
-        )
-        .await
-        .map_err(|e| ForumError::OutcomeUnknown(e.to_string()))?;
-        let confirmed = blocking(|| store.confirm(&op, &verified, now()))
-            .map_err(|e| ForumError::OutcomeUnknown(e.to_string()))?;
-        status(&confirmed).map_err(|e| ForumError::OutcomeUnknown(e.to_string()))
+        // The durable reservation exists, so from here the event is never refused: a set the
+        // node did not wholly take stays pending and is handed over again in the background.
+        // No transaction is open while the node is asked, so a second replica given the same
+        // set hands over the same bytes and counts it at most once.
+        let handoffs =
+            hand_forum_event_to_node(transport, &op.event, &op.checked, &policy, HANDOFF_WAIT)
+                .await;
+        if handoffs.iter().all(|h| *h == Handoff::Accepted) {
+            let counted = blocking(|| store.count(&op, now()))?;
+            return status(&counted);
+        }
+        for (index, handoff) in handoffs.iter().enumerate() {
+            if let Handoff::Refused(reason) | Handoff::Unknown(reason) = handoff {
+                tracing::warn!(
+                    tx_hash = %hex::encode(op.checked.members[index].tx_hash.0),
+                    %reason,
+                    "Forum burn not accepted by the node; the event stays pending"
+                );
+            }
+        }
+        if handoffs.iter().all(|h| matches!(h, Handoff::Refused(_))) {
+            // The node took none of them: say why, as a direct message's payments would.
+            let reasons: Vec<_> = handoffs
+                .iter()
+                .filter_map(|h| match h {
+                    Handoff::Refused(reason) => Some(reason.as_str()),
+                    _ => None,
+                })
+                .collect();
+            return Err(ForumError::Refused(reasons.join("; ")));
+        }
+        status(&op)
+    }
+
+    /// One background pass over the events not yet confirmed or dropped. For each, the chain
+    /// is read once: when every burn landed the event is confirmed; when one reverted, or its
+    /// nonce was taken by another transaction, or its burns have not all landed within
+    /// [`LAND_BOUND`] of admission, it is dropped and its weight taken back (a post no counted
+    /// burn pays for any more is hidden). Otherwise its burns are handed to the node again, and
+    /// a pending event the node now wholly holds is counted. An event whose chain state cannot
+    /// be read is left for the next pass. Any replica may run it; every change is one
+    /// transaction that happens once.
+    pub(crate) async fn reconcile<T: JsonRpcTransport + Clone>(
+        &self,
+        network: &str,
+        policy: TopicBurnPolicy,
+        transport: &T,
+        now: Timestamp,
+    ) -> Result<ReconcileReport> {
+        let mut report = ReconcileReport::default();
+        let Some(store) = self.store(network, policy, false)? else {
+            return Ok(report);
+        };
+        let mut after = None;
+        loop {
+            let batch = blocking(|| store.unsettled(after.as_ref(), RECONCILE_BATCH))?;
+            for hash in &batch {
+                let Some(op) = blocking(|| store.load(hash))? else {
+                    continue;
+                };
+                if op.phase.settled() {
+                    continue;
+                }
+                // Another replica may have made the same change first: only this pass's own
+                // changes are reported.
+                let moved = reconcile_one(&store, &op, &policy, transport, now)
+                    .await
+                    .map(|phase| phase.filter(|phase| *phase != op.phase));
+                match moved {
+                    Ok(Some(Phase::Counted { .. })) => report.counted += 1,
+                    Ok(Some(Phase::Confirmed { .. })) => report.confirmed += 1,
+                    Ok(Some(Phase::Dropped)) => report.dropped += 1,
+                    Ok(_) => report.waiting += 1,
+                    Err(error) => {
+                        report.waiting += 1;
+                        tracing::warn!(
+                            tx_hash = %hex::encode(hash),
+                            %error,
+                            "Forum reconciliation of an event failed; it is retried next pass"
+                        );
+                    }
+                }
+            }
+            if batch.len() < RECONCILE_BATCH {
+                break;
+            }
+            after = batch.last().copied();
+        }
+        Ok(report)
     }
 
     pub(crate) fn page(
@@ -366,7 +445,7 @@ impl Owner {
         blocking(|| page(store.as_deref(), network, &epoch, query, cursor))
     }
 
-    /// Confirmed visible Forum posts, when this replica has opened the store. Metrics never
+    /// Visible Forum posts, when this replica has opened the store. Metrics never
     /// open or create it.
     pub(crate) fn stored_post_count(&self) -> Result<Option<u64>> {
         let Some(store) = self
@@ -395,6 +474,95 @@ impl Owner {
     }
 }
 
+/// What one [`Owner::reconcile`] pass changed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReconcileReport {
+    pub(crate) counted: usize,
+    pub(crate) confirmed: usize,
+    pub(crate) dropped: usize,
+    /// Events left for a later pass.
+    pub(crate) waiting: usize,
+}
+
+/// Events one pass reads per store transaction.
+const RECONCILE_BATCH: usize = 64;
+/// Longest the relay waits on the node for one call before going on.
+const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// A burn without a receipt whose sender's nonce is already used is dropped only once the
+/// event is this old: a receipt can show up on one upstream a little after the nonce moved on
+/// another.
+const NONCE_USED_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn older_than(first_seen: Timestamp, now: Timestamp, age: std::time::Duration) -> bool {
+    let elapsed = (now.seconds as i128 - first_seen.seconds as i128) * 1_000_000_000
+        + (now.nanoseconds as i128 - first_seen.nanoseconds as i128);
+    elapsed > age.as_nanos() as i128
+}
+
+/// Settle or advance one unsettled event; `Some` names the phase it moved to.
+async fn reconcile_one<T: JsonRpcTransport + Clone>(
+    store: &Store,
+    op: &Observation,
+    policy: &TopicBurnPolicy,
+    transport: &T,
+    now: Timestamp,
+) -> Result<Option<Phase>> {
+    use crate::monad_topic_cbor::{probe_forum_burn, LandedBurn};
+    let expected = crate::monad_topic_verify::ExpectedTopicBurn {
+        commitment: bitcoinsuite_core::Sha256::new(*op.event.commitment()),
+        burn_address: policy.burn_address,
+    };
+    let probes = futures::future::join_all(op.checked.members.iter().map(|member| {
+        tokio::time::timeout(
+            HANDOFF_WAIT,
+            probe_forum_burn(transport, member, op.checked.direction, &expected),
+        )
+    }))
+    .await;
+    let mut landed = Vec::with_capacity(probes.len());
+    let mut nonce_used = false;
+    for probe in probes {
+        match probe {
+            Ok(Ok(LandedBurn::Landed(fact))) => landed.push(fact),
+            Ok(Ok(LandedBurn::Failed(reason))) => {
+                tracing::warn!(
+                    tx_hash = %hex::encode(op.hash()),
+                    %reason,
+                    "A forum burn cannot pay; the event is dropped"
+                );
+                return blocking(|| store.drop_event(op)).map(|op| Some(op.phase));
+            }
+            Ok(Ok(LandedBurn::NonceUsed)) => nonce_used = true,
+            Ok(Ok(LandedBurn::NotYet)) => {}
+            // The chain could not be read: nothing is decided this pass.
+            Ok(Err(error)) => return Err(ForumError::OutcomeUnknown(error.to_string())),
+            Err(_) => {
+                return Err(ForumError::OutcomeUnknown(
+                    "no answer from the node in time".to_owned(),
+                ))
+            }
+        }
+    }
+    if landed.len() == op.checked.members.len() {
+        return blocking(|| store.confirm(op, &landed, now)).map(|op| Some(op.phase));
+    }
+    if older_than(op.first_seen, now, LAND_BOUND)
+        || (nonce_used && older_than(op.first_seen, now, NONCE_USED_GRACE))
+    {
+        tracing::warn!(
+            tx_hash = %hex::encode(op.hash()),
+            "A forum event's burns did not all land; the event is dropped"
+        );
+        return blocking(|| store.drop_event(op)).map(|op| Some(op.phase));
+    }
+    let handoffs =
+        hand_forum_event_to_node(transport, &op.event, &op.checked, policy, HANDOFF_WAIT).await;
+    if op.phase == Phase::Pending && handoffs.iter().all(|h| *h == Handoff::Accepted) {
+        return blocking(|| store.count(op, now)).map(|op| Some(op.phase));
+    }
+    Ok(None)
+}
+
 fn request(network: &str, policy: TopicBurnPolicy, frame: &[u8]) -> Result<Observation> {
     let event = parse_topic_event(frame, network).map_err(invalid)?;
     let checked = check_topic_burn_before_broadcast(&event, &policy).map_err(invalid)?;
@@ -403,13 +571,12 @@ fn request(network: &str, policy: TopicBurnPolicy, frame: &[u8]) -> Result<Obser
         event,
         checked,
         first_seen: now(),
-        confirmed: None,
+        phase: Phase::Pending,
     })
 }
 
 fn view_row(network: &str, row: &Row, epoch: &[u8], revision: u64) -> Result<Vec<u8>> {
     let author = &row.author;
-    let (block, index, _) = author.confirmed.ok_or(ForumError::Unavailable)?;
     let TopicEvent::Post(author_post) = &author.event else {
         return Err(ForumError::Unavailable);
     };
@@ -417,46 +584,60 @@ fn view_row(network: &str, row: &Row, epoch: &[u8], revision: u64) -> Result<Vec
     use forum_single_view as V;
     encode_forum_read_frame(
         TYPE_FORUM_VIEW,
-        &cbor_map(vec![
-            (V::NETWORK, CborValue::Text(network.to_owned())),
-            (
-                V::POST_FRAME,
-                CborValue::Bytes(author_post.post_frame.clone()),
-            ),
-            (
-                V::AUTHOR,
-                CborValue::Bytes(author.checked.lead().sender.0.to_vec()),
-            ),
-            (
-                V::AUTHOR_BURN_TX,
-                CborValue::Bytes(author.event.lead_burn_tx().to_vec()),
-            ),
-            (
-                V::TRANSACTION_HASH,
-                CborValue::Bytes(author.checked.lead().tx_hash.0.to_vec()),
-            ),
-            (
-                V::FIRST_VISIBLE,
-                time_value(post.visible.ok_or(ForumError::Unavailable)?),
-            ),
-            (V::BLOCK, CborValue::Int(block.into())),
-            (V::TRANSACTION_INDEX, CborValue::Int(index.into())),
-            (
-                V::AGGREGATE,
-                cbor_map(vec![
-                    (
-                        forum_aggregate::NEGATIVE,
-                        CborValue::Bool(post.aggregate.negative),
-                    ),
-                    (
-                        forum_aggregate::MAGNITUDE,
-                        CborValue::Bytes(post.aggregate.magnitude.0.to_vec()),
-                    ),
-                ]),
-            ),
-            (V::REVISION, CborValue::Int(revision.into())),
-            (V::EPOCH, CborValue::Bytes(epoch.to_vec())),
-        ]),
+        &cbor_map(
+            vec![
+                (V::NETWORK, CborValue::Text(network.to_owned())),
+                (
+                    V::POST_FRAME,
+                    CborValue::Bytes(author_post.post_frame.clone()),
+                ),
+                (
+                    V::AUTHOR,
+                    CborValue::Bytes(author.checked.lead().sender.0.to_vec()),
+                ),
+                (
+                    V::AUTHOR_BURN_TX,
+                    CborValue::Bytes(author.event.lead_burn_tx().to_vec()),
+                ),
+                (
+                    V::TRANSACTION_HASH,
+                    CborValue::Bytes(author.checked.lead().tx_hash.0.to_vec()),
+                ),
+                (
+                    V::FIRST_VISIBLE,
+                    time_value(post.visible.ok_or(ForumError::Unavailable)?),
+                ),
+                (
+                    V::AGGREGATE,
+                    cbor_map(vec![
+                        (
+                            forum_aggregate::NEGATIVE,
+                            CborValue::Bool(post.aggregate.negative),
+                        ),
+                        (
+                            forum_aggregate::MAGNITUDE,
+                            CborValue::Bytes(post.aggregate.magnitude.0.to_vec()),
+                        ),
+                    ]),
+                ),
+                (V::REVISION, CborValue::Int(revision.into())),
+                (V::EPOCH, CborValue::Bytes(epoch.to_vec())),
+            ]
+            .into_iter()
+            .chain(
+                author
+                    .phase
+                    .position()
+                    .into_iter()
+                    .flat_map(|(block, index)| {
+                        [
+                            (V::BLOCK, CborValue::Int(block.into())),
+                            (V::TRANSACTION_INDEX, CborValue::Int(index.into())),
+                        ]
+                    }),
+            )
+            .collect(),
+        ),
     )
     .map_err(|_| ForumError::Unavailable)
 }
@@ -504,10 +685,13 @@ fn status_frame(
             CborValue::Int(
                 if !retained {
                     forum_operation_state::UNKNOWN
-                } else if op.confirmed.is_some() {
-                    forum_operation_state::CONFIRMED
                 } else {
-                    forum_operation_state::PENDING
+                    match op.phase {
+                        Phase::Pending => forum_operation_state::PENDING,
+                        Phase::Counted { .. } => forum_operation_state::COUNTED,
+                        Phase::Confirmed { .. } => forum_operation_state::CONFIRMED,
+                        Phase::Dropped => forum_operation_state::DROPPED,
+                    }
                 }
                 .into(),
             ),
@@ -516,7 +700,7 @@ fn status_frame(
         (S::EPOCH, CborValue::Bytes(epoch.to_vec())),
     ];
     if retained {
-        if let Some((block, index, _)) = op.confirmed {
+        if let Some((block, index)) = op.phase.position() {
             fields.extend([
                 (S::BLOCK, CborValue::Int(block.into())),
                 (S::TRANSACTION_INDEX, CborValue::Int(index.into())),

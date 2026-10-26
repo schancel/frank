@@ -1,4 +1,5 @@
 import enUS from 'src/i18n/en-us'
+import { TopicOperationDroppedError } from '@frank/wallet/topic-operations'
 import frFR from 'src/i18n/fr-fr'
 import {
   BurnRefreshError,
@@ -73,6 +74,18 @@ describe('notifyBurnFailure', () => {
       expect(infoNotify).not.toHaveBeenCalled()
     },
   )
+
+  it('a post or vote the relay counted and then took back says it was not counted', () => {
+    const err = new TopicOperationDroppedError(
+      'The relay no longer counts this operation: its burns did not all land',
+      new Error('relay'),
+    )
+    notifyBurnFailure(err, t)
+    expect(errorNotify).toHaveBeenCalledWith(err, {
+      fallbackKey: 'stampPreparation.forumNotCounted',
+    })
+    expect(infoNotify).not.toHaveBeenCalled()
+  })
 
   it('reports any other failure as an error', () => {
     const err = new Error('nothing was sent')

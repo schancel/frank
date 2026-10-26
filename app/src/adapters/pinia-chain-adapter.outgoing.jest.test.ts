@@ -656,6 +656,94 @@ describe('startOutgoingReconciliation (#270)', () => {
       expect(console.warn).not.toHaveBeenCalled()
       polling.stop()
     })
+
+    // sendmax-leftover. A Send max whose payment is in a block can still hold change it is
+    // moving back to the wallet: transfers from one account, each a few blocks after the last,
+    // and each sent only when a tick asks the wallet to look again. On main 517d720b7 no message
+    // is pending, so the tick waits its idle minute between them: the lab wallet showed 0.141
+    // MONR for minutes that Send max could not use. Fails there (one look in the first 59 s).
+    it('keeps the short pauses while a submitted transaction set of the wallet is unfinished, and goes idle once it is done', async () => {
+      const reobserve = jest.fn(async () => undefined)
+      let operations: unknown[] = [
+        {
+          operationId: 'evm-native-v1:0000000000000002',
+          kind: 'transaction-set',
+          submissionAuthorized: true,
+          cancelled: false,
+        },
+        // Neither a set nobody authorized to send nor a cancelled one is the wallet's to finish.
+        {
+          operationId: 'evm-native-v1:0000000000000003',
+          kind: 'transaction-set',
+          cancelled: false,
+        },
+        {
+          operationId: 'evm-native-v1:0000000000000004',
+          kind: 'transaction-set',
+          submissionAuthorized: true,
+          cancelled: true,
+        },
+      ]
+      const polling = startOutgoingReconciliation({
+        wallet: {
+          ...wallet,
+          reobserveNativeOperations: reobserve,
+          getNativeOperations: () => operations,
+        } as unknown as WalletHandle,
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reobserve).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(
+        IDLE_OUTGOING_RECONCILE_INTERVAL_MS - 1_000,
+      )
+      // 2 s, then 4, 8, 15, 15, 15: six more looks inside the minute.
+      expect(reobserve.mock.calls.length).toBeGreaterThanOrEqual(6)
+      // The set is finished (it went to history): the next pause is the idle one.
+      operations = operations.slice(1)
+      const before = reobserve.mock.calls.length
+      while (reobserve.mock.calls.length === before)
+        await jest.advanceTimersByTimeAsync(1)
+      const looks = reobserve.mock.calls.length
+      await jest.advanceTimersByTimeAsync(
+        IDLE_OUTGOING_RECONCILE_INTERVAL_MS - 1,
+      )
+      expect(reobserve).toHaveBeenCalledTimes(looks)
+      await jest.advanceTimersByTimeAsync(1)
+      expect(reobserve).toHaveBeenCalledTimes(looks + 1)
+      polling.stop()
+    })
+
+    it('restarts the short pauses each time an unfinished transaction set takes a step', async () => {
+      // Each look sends the next change transfer and the one before lands.
+      const members: { exposed: boolean; observation: { state: string } }[] = []
+      const reobserve = jest.fn(async () => {
+        members.forEach(
+          member => (member.observation.state = 'included-success'),
+        )
+        members.push({ exposed: true, observation: { state: 'pending' } })
+      })
+      const polling = startOutgoingReconciliation({
+        wallet: {
+          ...wallet,
+          reobserveNativeOperations: reobserve,
+          getNativeOperations: () => [
+            {
+              operationId: 'evm-native-v1:0000000000000002',
+              kind: 'transaction-set',
+              submissionAuthorized: true,
+              cancelled: false,
+              members,
+            },
+          ],
+        } as unknown as WalletHandle,
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      // Without the restart the pauses double to 15 s: 2, 4, 8, 15, 15 s is five looks in
+      // 45 s. Moving on at every look, it is looked at every 2 * 2 s.
+      await jest.advanceTimersByTimeAsync(45_000)
+      expect(reobserve.mock.calls.length).toBeGreaterThanOrEqual(10)
+      polling.stop()
+    })
   })
 
   // #1236 Q3. On main 1715ec7c a tick asks the wallet only about payments a message here still

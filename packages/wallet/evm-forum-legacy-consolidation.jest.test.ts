@@ -1,11 +1,11 @@
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
-/** Fragmented Forum funding keeps one burn and one durable operation across network waits/reopen. */
+/** Forum burns gather fragmented coins as a burn set, never a consolidation; legacy sends still consolidate. */
 import axios from 'axios'
 import level from 'level'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Wallet, Transaction, getBytes, type Provider } from 'ethers'
+import { Wallet, Transaction, getBytes, hexlify, type Provider } from 'ethers'
 import {
   encodeForumPost,
   topicBurnCommitment,
@@ -233,85 +233,65 @@ const request = {
 }
 afterEach(() => jest.clearAllMocks())
 
-test('all funding must confirm and mature before one Forum burn leaves the wallet; reopen preserves original bytes', async () => {
+test('a Forum burn no single coin covers is paid by a set of burns from several coins, nothing consolidated first; reopen replays the same bytes', async () => {
+  // Forum burns take the direct-message stamp construction: value is gathered across coins
+  // as independent payments, each straight to the burn address, and the event carries them
+  // all. Nothing is fanned into a consolidation account first.
   const location = await mkdtemp(join(tmpdir(), 'forum-fragmented-'))
   const chain = network()
   let f = await fixture(location, chain)
   try {
+    http.mockRejectedValue(new Error('ambiguous relay response'))
     await expect(submitForumOperation(f.wallet, request)).rejects.toThrow(
-      /funding.*pending/i,
+      'ambiguous relay response',
     )
-    expect(http).not.toHaveBeenCalled()
     const original = f.preparer.getOperation(request.operationId)!
     const bytes = original.members.map(member => member.signed!.rawTransaction)
-    const funding = original.members.filter(
-      member => member.transactionSet?.role === 'funding',
-    )
-    expect(funding.length).toBeGreaterThan(1)
-    const payment = original.members.filter(
-      member => member.transactionSet?.role === 'payment',
-    )
-    expect(payment).toHaveLength(1)
+    expect(
+      original.members.filter(member => member.transactionSet?.role === 'funding'),
+    ).toEqual([])
+    const payments = original.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed!.rawTransaction)
+    expect(payments.length).toBeGreaterThan(1)
     const retained = f.topicJournal.getAll()[0]!
     const parsed = validateFrame(Uint8Array.from(retained.requestBytes))
-    expect(parsed.kind).toBe('parsed')
     if (
       parsed.kind !== 'parsed' ||
       parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION
     )
-      throw new Error('Expected unchanged Forum post submission')
-    expect(getBytes(payment[0]!.signed!.rawTransaction)).toEqual(
-      parsed.typed.burnTx,
+      throw new Error('Expected a Forum post submission')
+    const set = parsed.typed.burnTxs.map(raw => Transaction.from(hexlify(raw)))
+    expect(set.map(tx => tx.serialized).sort()).toEqual([...payments].sort())
+    expect(set.every(tx => tx.to === burn)).toBe(true)
+    expect(set.reduce((sum, tx) => sum + tx.value, 0n)).toBeGreaterThanOrEqual(
+      request.value,
     )
-    const withheldSource = funding.at(-1)!.source.address
-    const ordered = [...original.members].sort(
-      (a, b) =>
-        a.source.address.localeCompare(b.source.address) ||
-        Transaction.from(a.signed!.rawTransaction).nonce -
-          Transaction.from(b.signed!.rawTransaction).nonce,
-    )
-    for (const member of ordered.filter(
-      member =>
-        member.source.address !== withheldSource &&
-        member.source.address !== payment[0]!.source.address,
-    ))
-      chain.mine(member.signed!.rawTransaction)
-    chain.advance(20)
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      /funding.*pending/i,
-    )
-    expect(http).not.toHaveBeenCalled()
-    for (const member of ordered.filter(
-      member => member.source.address === withheldSource,
-    ))
-      chain.mine(member.signed!.rawTransaction)
-    await f.close()
-    f = await fixture(location, chain)
-    chain.advance(22)
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      /funding.*pending/i,
-    )
-    expect(http).not.toHaveBeenCalled()
-    expect(chain.broadcasts).not.toContain(payment[0]!.signed!.rawTransaction)
-    chain.advance(23)
-    http.mockRejectedValue(new Error('ambiguous relay response'))
-    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
-      'ambiguous relay response',
-    )
-    expect(http).toHaveBeenCalled()
+    const sources = [key(1), key(2)].map(k => k.address.toLowerCase())
+    expect(set.every(tx => sources.includes(tx.from!.toLowerCase()))).toBe(true)
+    // The relay was handed the complete set, exactly as retained.
     const submitted = http.mock.calls.map(
       call => new Uint8Array(call[0]!.data as Uint8Array),
     )
+    expect(submitted.length).toBeGreaterThan(0)
     for (const body of submitted)
       expect(body).toEqual(Uint8Array.from(retained.requestBytes))
+    // Restart: recovery hands the relay the same request; nothing is signed again.
+    await f.close()
+    f = await fixture(location, chain)
+    http.mockClear()
+    await expect(reconcileForumOperations(f.wallet, 'post')).rejects.toThrow(
+      'ambiguous relay response',
+    )
+    for (const call of http.mock.calls)
+      expect(new Uint8Array(call[0]!.data as Uint8Array)).toEqual(
+        Uint8Array.from(retained.requestBytes),
+      )
     expect(
       f.preparer
         .getOperation(request.operationId)!
         .members.map(member => member.signed!.rawTransaction),
     ).toEqual(bytes)
-    expect(f.journal.list()).toHaveLength(1)
-    expect(chain.broadcasts).toContain(payment[0]!.signed!.rawTransaction)
-    expect(f.coins.isAccountReserved(payment[0]!.source.address)).toBe(true)
   } finally {
     await f.close()
     await rm(location, { recursive: true, force: true })

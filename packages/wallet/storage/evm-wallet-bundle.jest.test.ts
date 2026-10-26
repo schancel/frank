@@ -774,6 +774,59 @@ describe('existing-pool private topic owner', () => {
       await owner.close()
     }
   })
+  it('writes a Forum operation record outside the wallet-wide queue, durably and one write at a time', async () => {
+    // A vote or post records its intent the way a direct message records its row. A native send
+    // waiting in the wallet queue for the main account must not hold it (the forum vote hang).
+    const location = mkdtempSync(join(tmpdir(), 'forum-journal-outside-queue-'))
+    const params = {
+      ...readyParams(),
+      location,
+      assertEnclosingAdmission: () => {
+        throw Error('outside wallet queue')
+      },
+    }
+    const intent = (id: string): OutgoingTopicOperation =>
+      ({
+        version: 2,
+        kind: 'vote',
+        writeFormat: 'forum-cbor',
+        requestBytes: [],
+        transactionSetOperationId: id,
+        construction: { burnAddress: '0x000000000000000000000000000000000000dEaD' },
+        funders: [],
+        rawTransactions: [],
+        transactionSetHash: '',
+        intendedValueWei: '1000',
+        valueWei: '1000',
+        direction: 'up',
+        targetPayloadHashHex: id.endsWith('a') ? 'aa'.repeat(32) : 'bb'.repeat(32),
+      }) as OutgoingTopicOperation
+    let owner = await openExistingPoolMonadTopicOwner(params)
+    try {
+      await expect(owner.runOperation(async () => undefined)).rejects.toThrow(
+        'outside wallet queue',
+      )
+      await Promise.all([
+        owner.topicOperationJournal.put(intent('forum-a')),
+        owner.topicOperationJournal.put(intent('forum-b')),
+      ])
+      expect(
+        owner.topicOperationJournal.getAll().map(row => row.transactionSetOperationId).sort(),
+      ).toEqual(['forum-a', 'forum-b'])
+      await owner.close()
+      owner = await openExistingPoolMonadTopicOwner(params)
+      expect(
+        owner.topicOperationJournal.getAll().map(row => row.transactionSetOperationId).sort(),
+      ).toEqual(['forum-a', 'forum-b'])
+      await owner.topicOperationJournal.delete(
+        owner.topicOperationJournal.getAll().find(row => row.transactionSetOperationId === 'forum-a')!,
+      )
+      expect(owner.topicOperationJournal.getAll()).toHaveLength(1)
+    } finally {
+      await owner.close()
+      rmSync(location, { recursive: true, force: true })
+    }
+  })
   it('also refuses pools owned by a real original bundle without touching that owner', async () => {
     const original = createInMemoryMonadWalletBundle({
       mnemonic: TEST_MNEMONIC,

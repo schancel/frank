@@ -76,6 +76,12 @@ function requireBytes(v: unknown, name: string): Uint8Array {
   }
 }
 
+function requireBurns(v: unknown): Uint8Array[] {
+  if (!Array.isArray(v) || v.length === 0)
+    throw refuse('burnTxs must be a non-empty array of Uint8Array', 'burnTxs')
+  return v.map((tx, i) => requireBytes(tx, `burnTxs[${i}]`))
+}
+
 function requireText(v: unknown, name: string): string {
   if (typeof v !== 'string') throw refuse(`${name} must be a string`, name)
   requireWellFormed(v, name)
@@ -222,20 +228,21 @@ export function topicPostBurnCalldata(commitment: Uint8Array): Uint8Array {
 }
 
 /**
- * Encodes a type-41 submission: the exact `postFrame` plus the signed burn transaction. The
- * network is the post's, so S11 holds by construction.
+ * Encodes a type-41 submission: the exact `postFrame` plus the signed burn transactions, the
+ * way a direct message carries its stamp payments. The first is the lead: its hash names the
+ * event and its sender is the author. The network is the post's, so S11 holds by construction.
  *
- * `burnTx` is opaque here: this writer does not decode it or check that its calldata carries the
+ * Each burn is opaque here: this writer does not decode it or check that its calldata carries the
  * post's T7 commitment, that it is up-vote (`01`), or that it is signed at all. A relay checks
  * all of that and rejects a mismatch before broadcasting; build the calldata with
  * `topicBurnCalldata` and sign the transaction for it first.
  */
 export function encodeTopicPostSubmission(
   postFrame: Uint8Array,
-  burnTx: Uint8Array,
+  burnTxs: readonly Uint8Array[],
 ): Uint8Array {
   const post = requireBytes(postFrame, 'postFrame')
-  const tx = requireBytes(burnTx, 'burnTx')
+  const txs = requireBurns(burnTxs)
   const { network } = topicBurnCommitment(post)
   const frame = encodeFrame(
     {
@@ -246,7 +253,7 @@ export function encodeTopicPostSubmission(
     new Map<number, Encodable>([
       [TOPIC_POST_SUBMISSION.network, network],
       [TOPIC_POST_SUBMISSION.postFrame, post],
-      [TOPIC_POST_SUBMISSION.burnTx, tx],
+      [TOPIC_POST_SUBMISSION.burnTxs, txs],
     ]),
   )
   validated(frame, TYPE_TOPIC_POST_SUBMISSION)
@@ -254,14 +261,14 @@ export function encodeTopicPostSubmission(
 }
 
 /**
- * Encodes a type-42 vote on the post whose T1 hash is `targetHash`. As with the submission,
- * `burnTx` is opaque: the writer does not check that its calldata carries
+ * Encodes a type-42 vote on the post whose T1 hash is `targetHash`, paid by `burnTxs` (lead
+ * first). As with the submission, each burn is opaque: the writer does not check that its calldata carries
  * `topicVoteCommitment(network, targetHash)`.
  */
 export function encodeTopicVote(
   network: string,
   targetHash: Uint8Array,
-  burnTx: Uint8Array,
+  burnTxs: readonly Uint8Array[],
 ): Uint8Array {
   const frame = encodeFrame(
     {
@@ -275,7 +282,7 @@ export function encodeTopicVote(
         TOPIC_VOTE_SUBMISSION.targetHash,
         requireBytes(targetHash, 'targetHash'),
       ],
-      [TOPIC_VOTE_SUBMISSION.burnTx, requireBytes(burnTx, 'burnTx')],
+      [TOPIC_VOTE_SUBMISSION.burnTxs, requireBurns(burnTxs)],
     ]),
   )
   validated(frame, TYPE_TOPIC_VOTE_SUBMISSION)

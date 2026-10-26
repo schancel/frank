@@ -7,8 +7,9 @@
 //! |---|---|---|
 //! | `format` | [`FORMAT`] | the store's format; anything else stops with the reset path |
 //! | `h` | `forum-store-header` | the network, chain id and burn address the store is bound to |
-//! | `e/` tx hash | stored frame | the exact submitted post or vote frame (authority, immutable) |
-//! | `o/` tx hash | `forum-observation-row` | that burn's state: pending, or confirmed at block/index |
+//! | `e/` lead tx hash | stored frame | the exact submitted post or vote frame (authority, immutable) |
+//! | `o/` lead tx hash | `forum-observation-row` | that event's state: pending, or confirmed at the latest block/index of its burns |
+//! | `m/` tx hash | lead tx hash | every burn of an event's set, naming the event it pays for |
 //! | `p/` post hash | `forum-post-row` | the post's topic, author burn, first visibility, aggregate and pending reservations |
 //! | `t/` sha256(topic) time post hash | post hash | a topic's visible posts in first-visible order |
 //! | `d/` topic | `forum-discovery-row` | the topic's visible post count and last activity |
@@ -21,15 +22,20 @@
 //! composition passes in, named `forum/sha256/<hex>/<upload>`, whose reference commits in the
 //! admission transaction. Frames never change, so a vote never re-uploads its post.
 //!
-//! Only `e/` and `o/` are authority. `p/`, `t/`, `d/`, `q`, `r` and `n` are derived from them,
+//! An event (a post or a vote) is paid by a set of burns, the way a direct message is paid by a
+//! set of stamp payments. The first burn listed is the lead: its hash keys the event.
+//!
+//! Only `e/`, `o/` and `m/` are authority. `p/`, `t/`, `d/`, `q`, `r` and `n` are derived from them,
 //! and every admission or confirmation writes the authority and everything derived from it in
 //! one transaction, so they never disagree and nothing is rebuilt on open. A derived row that
 //! does not match its authority is a corrupt store: reads fail closed (`Unavailable`), and
 //! nothing is repaired or reset.
 //!
-//! Exactly-once burn accounting: a burn is keyed by its transaction hash. Admission reserves
-//! its value on the post once (a repeat finds `o/` and changes nothing), and confirmation moves
-//! the reservation into the aggregate once (a repeat finds the burn confirmed). Two replicas
+//! Exactly-once burn accounting: every burn's transaction hash belongs to one event (`m/`), so a
+//! burn submitted again inside another event's set is a conflict, refused before anything is
+//! broadcast. Admission reserves the set's total on the post once (a repeat finds `o/` and
+//! changes nothing), and confirmation of every burn of the set moves the reservation into the
+//! aggregate once (a repeat finds the event confirmed). Two replicas
 //! racing on one burn conflict on `o/` and `q`, so one commits and the other sees its row.
 //! A commit whose outcome is unknown is settled by a fence: one transaction that rewrites `q`
 //! unchanged, which the first attempt read, so once the fence commits that attempt either
@@ -126,6 +132,7 @@ pub(crate) const OBJECT_NAMESPACE: &str = "forum";
 const HEADER: &[u8] = b"h";
 const FRAMES: &[u8] = b"e/";
 const STATES: &[u8] = b"o/";
+const MEMBERS: &[u8] = b"m/";
 const POSTS: &[u8] = b"p/";
 const TOPIC_INDEX: &[u8] = b"t/";
 const DISCOVERY: &[u8] = b"d/";
@@ -294,8 +301,9 @@ impl Observation {
             TopicEvent::Vote(vote) => &vote.frame,
         }
     }
+    /// The lead burn's hash: the event's key.
     pub(crate) fn hash(&self) -> [u8; 32] {
-        self.checked.decoded.tx_hash.0
+        self.checked.lead().tx_hash.0
     }
     fn state_value(&self) -> CborValue {
         use forum_observation_row as R;
@@ -782,7 +790,7 @@ impl Store {
     }
 
     pub(crate) fn reserve(observation: &Observation, mut post: Post) -> Result<Post> {
-        let amount = Magnitude::from_u64(observation.checked.decoded.value_wei as u64);
+        let amount = Magnitude::from_u64(observation.checked.value_wei as u64);
         let negative = observation.checked.direction == VoteDirection::Down;
         let reserved = if negative {
             &mut post.reserved_down
@@ -910,6 +918,15 @@ impl Store {
                 Admission::Existing(op)
             });
         }
+        // A burn pays for one event: one already in another event's set is refused here,
+        // before this relay broadcasts anything.
+        for member in &observation.checked.members {
+            if let Some(owner) = tx.get(&key(MEMBERS, &member.tx_hash.0))? {
+                if owner.as_slice() != hash.as_slice() {
+                    return Err(ForumError::Conflict);
+                }
+            }
+        }
         let post = Self::pending_post(tx, observation)?;
         let (count, bytes) = Self::pending(tx)?;
         if matches!(observation.event, TopicEvent::Post(_)) && post.visible.is_none() {
@@ -950,6 +967,9 @@ impl Store {
         };
         tx.set(&frame_key, &stored.encode())?;
         tx.set(&key(STATES, &hash), &encode(&observation.state_value())?)?;
+        for member in &observation.checked.members {
+            tx.set(&key(MEMBERS, &member.tx_hash.0), &hash)?;
+        }
         tx.set(
             &key(POSTS, observation.event.target_hash()),
             &encode(&post.value())?,
@@ -959,12 +979,13 @@ impl Store {
         Ok(Admission::New(observation.clone()))
     }
 
-    /// Record the chain's confirmation of an admitted burn, once: its reservation moves into
-    /// the post's aggregate and a post's first confirmation makes it visible.
+    /// Record the chain's confirmation of every burn of an admitted event, once: its
+    /// reservation moves into the post's aggregate and a post's first confirmation makes it
+    /// visible. `facts` are the burns' chain facts in the event's order, lead first.
     pub(crate) fn confirm(
         &self,
         request: &Observation,
-        facts: &VerifiedTopicBurn,
+        facts: &[VerifiedTopicBurn],
         now: Timestamp,
     ) -> Result<Observation> {
         let mut attempts = 0;
@@ -994,7 +1015,7 @@ impl Store {
     fn confirm_body(
         tx: &mut dyn KvTransaction,
         request: &Observation,
-        facts: &VerifiedTopicBurn,
+        facts: &[VerifiedTopicBurn],
         now: Timestamp,
     ) -> Result<Observation> {
         let hash = request.hash();
@@ -1002,26 +1023,36 @@ impl Store {
         if op.confirmed.is_some() {
             return Ok(op);
         }
-        if facts.tx_hash.0 != hash
-            || facts.sender != op.checked.decoded.sender
-            || facts.value_wei != op.checked.decoded.value_wei
-            || facts.direction != op.checked.direction
+        if facts.len() != op.checked.members.len()
+            || facts.iter().zip(&op.checked.members).any(|(fact, member)| {
+                fact.tx_hash != member.tx_hash
+                    || fact.sender != member.sender
+                    || fact.value_wei != member.value_wei
+                    || fact.direction != op.checked.direction
+            })
         {
             return Err(ForumError::Unavailable);
         }
+        // The event is paid when its last burn is included: that position (the set's inclusion
+        // watermark) orders it, and the author's wallet checks the status against it.
+        let (block, index) = facts
+            .iter()
+            .map(|fact| (fact.block_number, fact.transaction_index))
+            .max()
+            .ok_or(ForumError::Unavailable)?;
         let mut post = Self::post(tx, op.event.target_hash())?.ok_or(ForumError::Unavailable)?;
         let reserved = if op.checked.direction == VoteDirection::Down {
             &mut post.reserved_down
         } else {
             &mut post.reserved_up
         };
-        *reserved = reserved.sub(Magnitude::from_u64(facts.value_wei as u64))?;
+        *reserved = reserved.sub(Magnitude::from_u64(op.checked.value_wei as u64))?;
         let visible = if matches!(op.event, TopicEvent::Post(_)) {
             post.visible.unwrap_or(now)
         } else {
             now
         };
-        op.confirmed = Some((facts.block_number, facts.transaction_index, visible));
+        op.confirmed = Some((block, index, visible));
         let (count, bytes) = Self::pending(tx)?;
         let count = count.checked_sub(1).ok_or(ForumError::Unavailable)?;
         let bytes = bytes
@@ -1050,7 +1081,7 @@ impl Store {
         mut post: Post,
     ) -> Result<()> {
         let (block, index, visible) = op.confirmed.ok_or(ForumError::Unavailable)?;
-        let amount = Magnitude::from_u64(op.checked.decoded.value_wei as u64);
+        let amount = Magnitude::from_u64(op.checked.value_wei as u64);
         post.aggregate = post
             .aggregate
             .add(op.checked.direction == VoteDirection::Down, amount)?;
@@ -1157,9 +1188,7 @@ impl Store {
         }
         let checked = check_topic_burn_before_broadcast(&event, &self.policy)
             .map_err(|_| ForumError::Unavailable)?;
-        if checked.decoded.tx_hash.0.as_slice() != hash
-            || checked.decoded.value_wei > i64::MAX as u128
-        {
+        if checked.lead().tx_hash.0.as_slice() != hash || checked.value_wei > i64::MAX as u128 {
             return Err(ForumError::Unavailable);
         }
         let (first_seen, confirmed) = decode_state(state)?;

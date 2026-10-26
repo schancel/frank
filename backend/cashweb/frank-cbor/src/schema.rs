@@ -215,6 +215,25 @@ fn as_list<'a>(
     }
 }
 
+/// Most burn transactions one topic post or vote may carry.
+pub(crate) const MAX_TOPIC_BURNS: usize = 16;
+
+/// A topic event's burn set (types 41 and 42): 1..[`MAX_TOPIC_BURNS`] distinct raw
+/// transactions of 1..16384 bytes each.
+fn burn_set(v: Option<&CborValue>, path: &str) -> Result<Vec<Vec<u8>>, CodecError> {
+    let items = as_list(v, path, 1, MAX_TOPIC_BURNS)?;
+    let mut burns: Vec<Vec<u8>> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let item_path = format!("{path}[{i}]");
+        let burn = bstr(Some(item), &item_path, 1, 16_384)?;
+        if burns.contains(&burn) {
+            return Err(bad(&item_path, "repeated burn transaction"));
+        }
+        burns.push(burn);
+    }
+    Ok(burns)
+}
+
 fn declared(key: u64, required: &[u64], optional: &[u64]) -> bool {
     required.contains(&key) || optional.contains(&key)
 }
@@ -692,13 +711,13 @@ pub(crate) enum Draft {
     TopicPostSubmission {
         network: String,
         post_frame: Vec<u8>,
-        burn_tx: Vec<u8>,
+        burn_txs: Vec<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
     },
     TopicVoteSubmission {
         network: String,
         target_hash: Vec<u8>,
-        burn_tx: Vec<u8>,
+        burn_txs: Vec<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
     },
     ForumView(ForumView<Vec<u8>>),
@@ -1836,7 +1855,7 @@ pub(crate) fn parse_draft(
             Ok(Draft::TopicPostSubmission {
                 network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
                 post_frame: framed(map.get(k::POST_FRAME), &at(path, k::POST_FRAME))?,
-                burn_tx: bstr(map.get(k::BURN_TX), &at(path, k::BURN_TX), 1, 16_384)?,
+                burn_txs: burn_set(map.get(k::BURN_TXS), &at(path, k::BURN_TXS))?,
                 unknown: map.unknown,
             })
         }
@@ -1846,7 +1865,7 @@ pub(crate) fn parse_draft(
             Ok(Draft::TopicVoteSubmission {
                 network: network_tag(map.get(k::NETWORK), &at(path, k::NETWORK))?,
                 target_hash: bstr(map.get(k::TARGET_HASH), &at(path, k::TARGET_HASH), 32, 32)?,
-                burn_tx: bstr(map.get(k::BURN_TX), &at(path, k::BURN_TX), 1, 16_384)?,
+                burn_txs: burn_set(map.get(k::BURN_TXS), &at(path, k::BURN_TXS))?,
                 unknown: map.unknown,
             })
         }

@@ -311,7 +311,10 @@ pub fn topic_post_submission_frame() -> Vec<u8> {
         &cbor_map(vec![
             (post_sub::NETWORK, CborValue::Text(NET.to_string())),
             (post_sub::POST_FRAME, CborValue::Bytes(topic_post_frame())),
-            (post_sub::BURN_TX, CborValue::Bytes(bytes_of(110, 31))),
+            (
+                post_sub::BURN_TXS,
+                CborValue::Array(vec![CborValue::Bytes(bytes_of(110, 31))]),
+            ),
         ]),
     )
 }
@@ -331,7 +334,10 @@ pub fn topic_vote_frame() -> Vec<u8> {
         &cbor_map(vec![
             (vote::NETWORK, CborValue::Text(NET.to_string())),
             (vote::TARGET_HASH, CborValue::Bytes(topic_post_hash())),
-            (vote::BURN_TX, CborValue::Bytes(bytes_of(110, 32))),
+            (
+                vote::BURN_TXS,
+                CborValue::Array(vec![CborValue::Bytes(bytes_of(110, 32))]),
+            ),
         ]),
     )
 }

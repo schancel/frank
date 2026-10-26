@@ -74,9 +74,9 @@ pub struct TopicPostEvent {
     pub parent_hash: Option<[u8; 32]>,
     /// The opaque post body.
     pub body: Vec<u8>,
-    /// The raw signed burn transaction.
-    pub burn_tx: Vec<u8>,
-    /// The T7 commitment the burn must carry, derived here from the frame.
+    /// The raw signed burn transactions, lead first (README T7, T8).
+    pub burn_txs: Vec<Vec<u8>>,
+    /// The T7 commitment every burn must carry, derived here from the frame.
     pub commitment: [u8; 32],
 }
 
@@ -89,9 +89,9 @@ pub struct TopicVoteEvent {
     pub frame: Vec<u8>,
     /// The T1 hash of the post voted on.
     pub target_hash: [u8; 32],
-    /// The raw signed burn transaction.
-    pub burn_tx: Vec<u8>,
-    /// The T7 commitment the burn must carry, derived here from the frame.
+    /// The raw signed burn transactions, lead first (README T7, T8).
+    pub burn_txs: Vec<Vec<u8>>,
+    /// The T7 commitment every burn must carry, derived here from the frame.
     pub commitment: [u8; 32],
 }
 
@@ -105,12 +105,17 @@ pub enum TopicEvent {
 }
 
 impl TopicEvent {
-    /// The raw signed burn transaction.
-    pub fn burn_tx(&self) -> &[u8] {
+    /// The raw signed burn transactions, lead first.
+    pub fn burn_txs(&self) -> &[Vec<u8>] {
         match self {
-            TopicEvent::Post(post) => &post.burn_tx,
-            TopicEvent::Vote(vote) => &vote.burn_tx,
+            TopicEvent::Post(post) => &post.burn_txs,
+            TopicEvent::Vote(vote) => &vote.burn_txs,
         }
+    }
+
+    /// The lead burn: its hash names the event and its sender is the author.
+    pub fn lead_burn_tx(&self) -> &[u8] {
+        &self.burn_txs()[0]
     }
 
     /// The T7 commitment the burn must carry.
@@ -232,11 +237,11 @@ pub fn parse_topic_event(
             })
         }
     };
-    match typed {
+    let event = match typed {
         TypedPayload::TopicPostSubmission {
             network,
             post_frame,
-            burn_tx,
+            burn_txs,
             ..
         } => {
             check_network(network)?;
@@ -266,14 +271,14 @@ pub fn parse_topic_event(
                 topic: topic.clone(),
                 parent_hash,
                 body: body.clone(),
-                burn_tx: burn_tx.clone(),
+                burn_txs: burn_txs.clone(),
                 commitment,
             }))
         }
         TypedPayload::TopicVoteSubmission {
             network,
             target_hash,
-            burn_tx,
+            burn_txs,
             ..
         } => {
             check_network(network)?;
@@ -284,12 +289,16 @@ pub fn parse_topic_event(
                 network: network.clone(),
                 frame: bytes.to_vec(),
                 target_hash,
-                burn_tx: burn_tx.clone(),
+                burn_txs: burn_txs.clone(),
                 commitment,
             }))
         }
         _ => Err(TopicEventError::UnexpectedRoot(parsed.type_id)),
+    }?;
+    if event.burn_txs().is_empty() {
+        return Err(internal("the codec admitted an empty burn set"));
     }
+    Ok(event)
 }
 
 /// Revalidate an authoritative stored type-40 frame before admitting a vote against it.
@@ -378,6 +387,20 @@ pub enum TopicBurnError {
     /// The calldata commits to something other than this event.
     #[error("the burn calldata commits to another event")]
     WrongCommitment,
+    /// The burns of one set do not all vote the same direction.
+    #[error("the burns of one event vote in different directions")]
+    MixedDirections,
+    /// The set's total value does not fit a vote weight (1..i64::MAX).
+    #[error("the burns of one event total more than i64::MAX")]
+    TotalTooLarge,
+    /// Burn `index` of the set was refused; `reason` says why.
+    #[error("burn {index} of the set: {reason}")]
+    Member {
+        /// Position of the burn in the set.
+        index: usize,
+        /// Why that burn was refused.
+        reason: Box<TopicBurnError>,
+    },
     /// The broadcast, confirmation, or on-chain verification did not succeed.
     #[error("the burn was not verified: {0:?}")]
     Rejected(TopicVoteRelayOutcome),
@@ -396,29 +419,84 @@ pub enum TopicBurnError {
     Infrastructure(Report),
 }
 
-/// The pre-broadcast facts of a burn that passed [`check_topic_burn_before_broadcast`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckedTopicBurn {
-    /// The decoded signed transaction (sender, hash, value, calldata).
-    pub decoded: DecodedSignedTransaction,
-    /// The direction the calldata declares.
-    pub direction: VoteDirection,
+impl TopicBurnError {
+    /// The refusal itself, without the position of the burn that caused it.
+    pub fn into_cause(self) -> TopicBurnError {
+        match self {
+            TopicBurnError::Member { reason, .. } => reason.into_cause(),
+            other => other,
+        }
+    }
 }
 
-/// Decode the event's signed burn transaction and check everything that does not need the chain,
-/// before anything is broadcast (T8): chain identity, destination, a nonzero value, and calldata
-/// that carries exactly the event's T7 commitment under the CBOR version byte.
+/// The pre-broadcast facts of a burn set that passed [`check_topic_burn_before_broadcast`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedTopicBurn {
+    /// Every decoded signed transaction of the set, in the order the event lists them; the
+    /// first is the lead.
+    pub members: Vec<DecodedSignedTransaction>,
+    /// The direction every burn's calldata declares.
+    pub direction: VoteDirection,
+    /// The sum of the members' signed values: the event's weight.
+    pub value_wei: u128,
+}
+
+impl CheckedTopicBurn {
+    /// The lead burn: its hash names the event (and keys it in storage), its sender is the
+    /// author, and its confirmed position orders a post.
+    pub fn lead(&self) -> &DecodedSignedTransaction {
+        &self.members[0]
+    }
+}
+
+/// Decode every signed burn transaction of the event and check everything that does not need
+/// the chain, before anything is broadcast (T8): for each, chain identity, destination, a
+/// nonzero value, and calldata that carries exactly the event's T7 commitment under the CBOR
+/// version byte. All burns vote one direction and their total fits a vote weight. One bad
+/// member refuses the whole set, so a set is never partly broadcast by the relay.
 pub fn check_topic_burn_before_broadcast(
     event: &TopicEvent,
     policy: &TopicBurnPolicy,
 ) -> Result<CheckedTopicBurn, TopicBurnError> {
-    if !has_no_trailing_bytes(event.burn_tx()) {
+    let mut members = Vec::with_capacity(event.burn_txs().len());
+    let mut direction = None;
+    let mut value_wei: u128 = 0;
+    for (index, raw) in event.burn_txs().iter().enumerate() {
+        let member = |reason| TopicBurnError::Member {
+            index,
+            reason: Box::new(reason),
+        };
+        let (decoded, member_direction) = check_one_burn(raw, event, policy).map_err(member)?;
+        if *direction.get_or_insert(member_direction) != member_direction {
+            return Err(TopicBurnError::MixedDirections);
+        }
+        value_wei = value_wei
+            .checked_add(decoded.value_wei)
+            .filter(|total| *total <= i64::MAX as u128)
+            .ok_or(TopicBurnError::TotalTooLarge)?;
+        members.push(decoded);
+    }
+    let direction = direction.ok_or_else(|| {
+        TopicBurnError::Infrastructure(Report::msg("a topic event carries no burn"))
+    })?;
+    Ok(CheckedTopicBurn {
+        members,
+        direction,
+        value_wei,
+    })
+}
+
+fn check_one_burn(
+    raw: &[u8],
+    event: &TopicEvent,
+    policy: &TopicBurnPolicy,
+) -> Result<(DecodedSignedTransaction, VoteDirection), TopicBurnError> {
+    if !has_no_trailing_bytes(raw) {
         // An empty or unsupported first byte falls through to the decoder's precise error.
-        decode_signed_transaction(event.burn_tx()).map_err(TopicBurnError::Undecodable)?;
+        decode_signed_transaction(raw).map_err(TopicBurnError::Undecodable)?;
         return Err(TopicBurnError::TrailingBytes);
     }
-    let decoded =
-        decode_signed_transaction(event.burn_tx()).map_err(TopicBurnError::Undecodable)?;
+    let decoded = decode_signed_transaction(raw).map_err(TopicBurnError::Undecodable)?;
     if decoded.chain_id != Some(policy.expected_chain_id) {
         return Err(TopicBurnError::WrongChainId {
             expected: policy.expected_chain_id,
@@ -442,7 +520,7 @@ pub fn check_topic_burn_before_broadcast(
     if matches!(event, TopicEvent::Post(_)) && direction != VoteDirection::Up {
         return Err(TopicBurnError::PostBurnNotUp);
     }
-    Ok(CheckedTopicBurn { decoded, direction })
+    Ok((decoded, direction))
 }
 
 /// A burn that was checked, broadcast, confirmed, and verified on chain for one event.
@@ -462,19 +540,24 @@ pub struct VerifiedTopicBurn {
     pub transaction_index: u64,
 }
 
-/// Check, broadcast, confirm, and verify the burn of `event`.
+/// Check, broadcast, confirm, and verify every burn of `event`, returning each burn's chain
+/// facts in the order the event lists them.
 ///
-/// The transaction is decoded and checked first ([`check_topic_burn_before_broadcast`]), so a
-/// transaction that cannot verify is never broadcast. The on-chain verification then requires the
-/// receipt to succeed, the recipient to be the burn address, and the calldata to carry the T7
-/// commitment under the CBOR version byte. Finally the confirmed hash must be the hash of the
-/// signed bytes that were checked, and the on-chain value must equal the signed value.
+/// The set is decoded and checked first ([`check_topic_burn_before_broadcast`]), so a set with
+/// any burn that cannot verify is never broadcast. Every burn is then handed to the node,
+/// account by account in nonce order (a stacked nonce reaches the node after its predecessor),
+/// before any confirmation is awaited, and a refusal of one never stops the others being sent.
+/// The on-chain verification requires each receipt to succeed, the recipient to be the burn
+/// address, and the calldata to carry the T7 commitment under the CBOR version byte. Each
+/// confirmed hash must be the hash of the signed bytes that were checked, and each on-chain
+/// value must equal the signed value. Any burn not verified is an error naming it; the caller
+/// keeps the event and asks again.
 pub async fn broadcast_and_verify_topic_event<T: JsonRpcTransport + Clone>(
     transport: &T,
     event: &TopicEvent,
     policy: &TopicBurnPolicy,
     poll: PollConfig,
-) -> Result<VerifiedTopicBurn, TopicBurnError> {
+) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
     broadcast_topic_event(transport, event, policy, poll, false).await
 }
 
@@ -483,7 +566,7 @@ pub(crate) async fn broadcast_and_verify_forum_event<T: JsonRpcTransport + Clone
     event: &TopicEvent,
     policy: &TopicBurnPolicy,
     poll: PollConfig,
-) -> Result<VerifiedTopicBurn, TopicBurnError> {
+) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
     broadcast_topic_event(transport, event, policy, poll, true).await
 }
 
@@ -493,23 +576,66 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
     policy: &TopicBurnPolicy,
     poll: PollConfig,
     exact_rpc: bool,
-) -> Result<VerifiedTopicBurn, TopicBurnError> {
+) -> Result<Vec<VerifiedTopicBurn>, TopicBurnError> {
     let checked = check_topic_burn_before_broadcast(event, policy)?;
     let expected = ExpectedTopicBurn {
         commitment: Sha256::new(*event.commitment()),
         burn_address: policy.burn_address,
     };
-    let outcome = crate::monad_topic_relay::broadcast_and_verify_topic_burn_checked(
-        transport,
-        event.burn_tx(),
-        &expected,
-        TopicCalldataVersion::Cbor,
-        Some(checked.decoded.tx_hash),
-        exact_rpc.then_some(checked.decoded.sender),
-        poll,
-    )
-    .await
-    .map_err(TopicBurnError::Infrastructure)?;
+    let mut order: Vec<usize> = (0..checked.members.len()).collect();
+    order.sort_by_key(|&i| (checked.members[i].sender.0, checked.members[i].nonce));
+    let mut sent = Vec::with_capacity(order.len());
+    for i in order {
+        let member = &checked.members[i];
+        let hash = crate::monad_topic_relay::broadcast_topic_burn(
+            transport,
+            &event.burn_txs()[i],
+            Some(member.tx_hash),
+        )
+        .await;
+        sent.push((i, hash));
+    }
+    sent.sort_by_key(|(i, _)| *i);
+    let outcomes = futures::future::join_all(sent.into_iter().map(|(i, hash)| {
+        let member = &checked.members[i];
+        let expected = &expected;
+        async move {
+            match hash {
+                Ok(tx_hash) => {
+                    crate::monad_topic_relay::confirm_topic_burn(
+                        transport,
+                        tx_hash,
+                        expected,
+                        TopicCalldataVersion::Cbor,
+                        exact_rpc.then_some(member.sender),
+                        poll,
+                    )
+                    .await
+                }
+                Err(outcome) => Ok(outcome),
+            }
+        }
+    }))
+    .await;
+    let mut verified = Vec::with_capacity(outcomes.len());
+    for (index, (member, outcome)) in checked.members.iter().zip(outcomes).enumerate() {
+        let member_error = |reason| TopicBurnError::Member {
+            index,
+            reason: Box::new(reason),
+        };
+        let outcome = outcome
+            .map_err(TopicBurnError::Infrastructure)
+            .map_err(member_error)?;
+        verified.push(verified_member(member, checked.direction, outcome).map_err(member_error)?);
+    }
+    Ok(verified)
+}
+
+fn verified_member(
+    member: &DecodedSignedTransaction,
+    signed_direction: VoteDirection,
+    outcome: TopicVoteRelayOutcome,
+) -> Result<VerifiedTopicBurn, TopicBurnError> {
     match outcome {
         TopicVoteRelayOutcome::Verified {
             tx_hash,
@@ -518,19 +644,19 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
             block_number,
             transaction_index,
         } => {
-            if tx_hash != checked.decoded.tx_hash {
+            if tx_hash != member.tx_hash {
                 return Err(TopicBurnError::TxHashMismatch {
-                    signed: checked.decoded.tx_hash,
+                    signed: member.tx_hash,
                     returned: tx_hash,
                 });
             }
-            if value_wei != checked.decoded.value_wei || direction != checked.direction {
+            if value_wei != member.value_wei || direction != signed_direction {
                 return Err(TopicBurnError::Infrastructure(Report::msg(
                     "the chain's value or direction differs from the signed transaction",
                 )));
             }
             Ok(VerifiedTopicBurn {
-                sender: checked.decoded.sender,
+                sender: member.sender,
                 tx_hash,
                 value_wei,
                 direction,
@@ -616,7 +742,11 @@ mod tests {
     fn submission_frame(net: &str, post: &[u8], burn_tx: &[u8]) -> Vec<u8> {
         frame(
             TYPE_TOPIC_POST_SUBMISSION,
-            &cbor_map(vec![(0, text(net)), (1, bytes(post)), (2, bytes(burn_tx))]),
+            &cbor_map(vec![
+                (0, text(net)),
+                (1, bytes(post)),
+                (2, CborValue::Array(vec![bytes(burn_tx)])),
+            ]),
         )
     }
 
@@ -626,7 +756,7 @@ mod tests {
             &cbor_map(vec![
                 (0, text(net)),
                 (1, bytes(target)),
-                (2, bytes(burn_tx)),
+                (2, CborValue::Array(vec![bytes(burn_tx)])),
             ]),
         )
     }
@@ -677,7 +807,7 @@ mod tests {
         assert_eq!(event.topic, "frank.demo");
         assert_eq!(event.parent_hash, None);
         assert_eq!(event.body, b"hello, topic");
-        assert_eq!(event.burn_tx, [1, 2, 3]);
+        assert_eq!(event.burn_txs, vec![vec![1, 2, 3]]);
         assert_eq!(event.post_frame, post_frame(NET, "frank.demo", None));
         assert_eq!(
             event.commitment,
@@ -852,7 +982,7 @@ mod tests {
             &cbor_map(vec![
                 (0, text(NET)),
                 (1, bytes(&[1; 32])),
-                (2, bytes(&[1])),
+                (2, CborValue::Array(vec![bytes(&[1])])),
                 (3, CborValue::Int(1)),
             ]),
         );
@@ -970,8 +1100,8 @@ mod tests {
         let (raw, sender) = cbor_burn(&fixture_post_event(&[1]).commitment, 0x01);
         let event = event_with_burn(|_| raw.clone());
         let checked = check_topic_burn_before_broadcast(&event, &policy()).unwrap();
-        assert_eq!(checked.decoded.sender, sender);
-        assert_eq!(checked.decoded.value_wei, 25_000);
+        assert_eq!(checked.lead().sender, sender);
+        assert_eq!(checked.lead().value_wei, 25_000);
         assert_eq!(checked.direction, VoteDirection::Up);
         // A vote may go either way.
         let target = fixture_post_event(&[1]).post_hash;
@@ -992,7 +1122,8 @@ mod tests {
         let (down, _) = cbor_burn(&commitment, 0x00);
         let error =
             check_topic_burn_before_broadcast(&event_with_burn(|_| down.clone()), &policy())
-                .unwrap_err();
+                .unwrap_err()
+                .into_cause();
         assert!(matches!(error, TopicBurnError::PostBurnNotUp), "{error:?}");
     }
 
@@ -1014,7 +1145,8 @@ mod tests {
             padded.push(0x00);
             let error =
                 check_topic_burn_before_broadcast(&event_with_burn(|_| padded.clone()), &policy())
-                    .unwrap_err();
+                    .unwrap_err()
+                    .into_cause();
             // The unprotected legacy tx is refused for its chain identity first; the EIP-1559 one
             // is refused for its trailing byte.
             assert!(
@@ -1042,7 +1174,8 @@ mod tests {
                     check_topic_burn_before_broadcast(
                         &event_with_burn(|_| padded.clone()),
                         &policy()
-                    ),
+                    )
+                    .map_err(TopicBurnError::into_cause),
                     Err(TopicBurnError::TrailingBytes | TopicBurnError::Undecodable(_))
                 ),
                 "{suffix:?}"
@@ -1057,7 +1190,8 @@ mod tests {
             input.push(0xff);
             burn(CHAIN_ID, BURN, 1, &input).0
         })
-        .unwrap_err();
+        .unwrap_err()
+        .into_cause();
         assert!(
             matches!(
                 error,
@@ -1078,7 +1212,8 @@ mod tests {
             )
             .0
         })
-        .unwrap_err();
+        .unwrap_err()
+        .into_cause();
         assert!(
             matches!(
                 error,
@@ -1125,7 +1260,9 @@ mod tests {
             other_network,
             <[u8; 32]>::try_from(legacy.as_slice()).unwrap(),
         ] {
-            let error = check(|_| cbor_burn(&wrong, 0x01).0).unwrap_err();
+            let error = check(|_| cbor_burn(&wrong, 0x01).0)
+                .unwrap_err()
+                .into_cause();
             assert!(
                 matches!(error, TopicBurnError::WrongCommitment),
                 "{error:?}"
@@ -1136,7 +1273,9 @@ mod tests {
     #[test]
     fn the_wrong_chain_destination_or_a_zero_value_is_rejected_before_broadcast() {
         let good = |commitment: &[u8; 32]| calldata(0x02, 0x01, commitment);
-        let wrong_chain = check(|c| burn(1, BURN, 1, &good(c)).0).unwrap_err();
+        let wrong_chain = check(|c| burn(1, BURN, 1, &good(c)).0)
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(
             wrong_chain,
             TopicBurnError::WrongChainId {
@@ -1144,9 +1283,13 @@ mod tests {
                 actual: Some(1)
             }
         ));
-        let wrong_to = check(|c| burn(CHAIN_ID, Address([0x45; 20]), 1, &good(c)).0).unwrap_err();
+        let wrong_to = check(|c| burn(CHAIN_ID, Address([0x45; 20]), 1, &good(c)).0)
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(wrong_to, TopicBurnError::WrongDestination { .. }));
-        let zero = check(|c| burn(CHAIN_ID, BURN, 0, &good(c)).0).unwrap_err();
+        let zero = check(|c| burn(CHAIN_ID, BURN, 0, &good(c)).0)
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(zero, TopicBurnError::ZeroValue));
     }
 
@@ -1155,7 +1298,8 @@ mod tests {
         let error = check(|c| {
             signed_unprotected_legacy_tx(&secret(7), 0, BURN, 25_000, &calldata(0x02, 1, c))
         })
-        .unwrap_err();
+        .unwrap_err()
+        .into_cause();
         assert!(
             matches!(error, TopicBurnError::WrongChainId { actual: None, .. }),
             "{error:?}"
@@ -1165,22 +1309,26 @@ mod tests {
     #[test]
     fn garbage_and_truncated_transactions_are_undecodable() {
         assert!(matches!(
-            check(|_| vec![0xde, 0xad]).unwrap_err(),
+            check(|_| vec![0xde, 0xad]).unwrap_err().into_cause(),
             TopicBurnError::Undecodable(_)
         ));
         let (mut raw, _) = cbor_burn(&fixture_post_event(&[1]).commitment, 1);
         raw.truncate(raw.len() - 5);
         assert!(matches!(
-            check(|_| raw.clone()).unwrap_err(),
+            check(|_| raw.clone()).unwrap_err().into_cause(),
             TopicBurnError::Undecodable(_)
         ));
     }
 
     #[test]
     fn malformed_calldata_is_rejected() {
-        let error = check(|_| burn(CHAIN_ID, BURN, 1, b"TPIC").0).unwrap_err();
+        let error = check(|_| burn(CHAIN_ID, BURN, 1, b"TPIC").0)
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(error, TopicBurnError::Calldata(_)), "{error:?}");
-        let error = check(|c| burn(CHAIN_ID, BURN, 1, &calldata(0x02, 0x07, c)).0).unwrap_err();
+        let error = check(|c| burn(CHAIN_ID, BURN, 1, &calldata(0x02, 0x07, c)).0)
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(
             error,
             TopicBurnError::Calldata(TopicCalldataError::InvalidDirection { actual: 7 })
@@ -1306,6 +1454,9 @@ mod tests {
         let verified = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
             .unwrap();
+        let [verified] = verified.as_slice() else {
+            panic!("one burn, one fact: {verified:?}")
+        };
         assert_eq!(verified.sender, decoded.sender);
         assert_eq!(verified.tx_hash, decoded.tx_hash);
         assert_eq!(verified.value_wei, 25_000);
@@ -1320,7 +1471,8 @@ mod tests {
         let transport = chain(&other, &BURN, 25_000, &decoded.input);
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         match error {
             TopicBurnError::TxHashMismatch { signed, returned } => {
                 assert_eq!(signed, decoded.tx_hash);
@@ -1341,7 +1493,8 @@ mod tests {
         transport.set("eth_getTransactionReceipt", receipt);
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         assert!(
             matches!(
                 error,
@@ -1362,7 +1515,8 @@ mod tests {
         let transport = MockTransport::default();
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(error, TopicBurnError::ZeroValue));
         assert_eq!(transport.count("eth_sendRawTransaction"), 0);
     }
@@ -1375,7 +1529,8 @@ mod tests {
         let transport = chain(&decoded.tx_hash, &BURN, 25_000, &legacy);
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(error, TopicBurnError::Rejected(_)), "{error:?}");
     }
 
@@ -1385,7 +1540,8 @@ mod tests {
         let transport = chain(&decoded.tx_hash, &BURN, 1, &decoded.input);
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         assert!(
             matches!(error, TopicBurnError::Infrastructure(_)),
             "{error:?}"
@@ -1399,10 +1555,272 @@ mod tests {
         transport.set("eth_getTransactionReceipt", Value::Null);
         let error = broadcast_and_verify_topic_event(&transport, &event, &policy(), fast_poll())
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .into_cause();
         assert!(matches!(
             error,
             TopicBurnError::Rejected(TopicVoteRelayOutcome::ConfirmationTimedOut { .. })
         ));
+    }
+
+    // ---- burn sets ------------------------------------------------------------------------
+
+    /// A vote paid by one burn per `(key byte, nonce, value)`, all with `direction`.
+    fn set_vote(
+        burns: &[(u8, u64, u128)],
+        direction: u8,
+    ) -> (TopicEvent, Vec<DecodedSignedTransaction>) {
+        let target = fixture_post_event(&[1]).post_hash;
+        let commitment = topic_vote_commitment(NET, &target).unwrap();
+        let raws: Vec<Vec<u8>> = burns
+            .iter()
+            .map(|&(key, nonce, value)| {
+                signed_eip1559_tx(
+                    &secret(key),
+                    CHAIN_ID,
+                    nonce,
+                    BURN,
+                    value,
+                    &calldata(0x02, direction, &commitment),
+                )
+                .0
+            })
+            .collect();
+        let frame = frame(
+            TYPE_TOPIC_VOTE_SUBMISSION,
+            &cbor_map(vec![
+                (0, text(NET)),
+                (1, bytes(&target)),
+                (
+                    2,
+                    CborValue::Array(raws.iter().map(|raw| bytes(raw)).collect()),
+                ),
+            ]),
+        );
+        let decoded = raws
+            .iter()
+            .map(|raw| decode_signed_transaction(raw).unwrap())
+            .collect();
+        (parse_topic_event(&frame, NET).unwrap(), decoded)
+    }
+
+    /// A chain that knows each transaction by hash: it confirms every member of `confirmed`,
+    /// refuses to accept any raw transaction in `refused`, and records the order of sends.
+    #[derive(Clone, Default)]
+    struct SetChain {
+        txs: Arc<Mutex<HashMap<String, (u128, Vec<u8>, u64)>>>,
+        refused: Arc<Mutex<Vec<String>>>,
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl fmt::Debug for SetChain {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("SetChain").finish()
+        }
+    }
+
+    impl SetChain {
+        fn confirm(&self, tx: &DecodedSignedTransaction, index: u64) {
+            self.txs.lock().unwrap().insert(
+                hex_hash(&tx.tx_hash),
+                (tx.value_wei, tx.input.clone(), index),
+            );
+        }
+        fn refuse(&self, tx: &DecodedSignedTransaction) {
+            self.refused.lock().unwrap().push(hex_hash(&tx.tx_hash));
+        }
+    }
+
+    #[async_trait]
+    impl JsonRpcTransport for SetChain {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+            let arg = params[0].as_str().unwrap_or_default().to_string();
+            match method {
+                "eth_sendRawTransaction" => {
+                    let raw = hex::decode(arg.trim_start_matches("0x")).unwrap();
+                    let hash = hex_hash(&decode_signed_transaction(&raw).unwrap().tx_hash);
+                    self.sent.lock().unwrap().push(hash.clone());
+                    if self.refused.lock().unwrap().contains(&hash) {
+                        return Err(MonadRpcError::InsufficientFunds {
+                            method: method.to_string(),
+                            message: "insufficient funds for gas * price + value".to_string(),
+                        });
+                    }
+                    Ok(Value::String(hash))
+                }
+                "eth_getTransactionReceipt" => Ok(match self.txs.lock().unwrap().get(&arg) {
+                    Some((_, _, index)) => serde_json::json!({
+                        "transactionHash": arg,
+                        "blockHash": format!("0x{}", hex::encode([0x22u8; 32])),
+                        "blockNumber": "0x2a",
+                        "transactionIndex": format!("0x{index:x}"),
+                        "from": format!("0x{}", hex::encode([0x33u8; 20])),
+                        "to": format!("0x{}", hex::encode(BURN.0)),
+                        "contractAddress": null,
+                        "gasUsed": "0x5208",
+                        "status": "0x1",
+                        "logs": [],
+                    }),
+                    None => Value::Null,
+                }),
+                "eth_getTransactionByHash" => Ok(match self.txs.lock().unwrap().get(&arg) {
+                    Some((value, input, _)) => serde_json::json!({
+                        "hash": arg,
+                        "to": format!("0x{}", hex::encode(BURN.0)),
+                        "value": format!("0x{value:x}"),
+                        "input": format!("0x{}", hex::encode(input)),
+                        "from": format!("0x{}", hex::encode([0x33u8; 20])),
+                    }),
+                    None => Value::Null,
+                }),
+                other => Err(MonadRpcError::InvalidResponse {
+                    method: other.to_string(),
+                    reason: "no mock response".to_string(),
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn a_burn_set_is_checked_whole_and_weighs_the_sum_of_its_burns() {
+        let (event, decoded) = set_vote(&[(7, 0, 25_000), (8, 3, 1_000), (7, 1, 5)], 0x00);
+        let checked = check_topic_burn_before_broadcast(&event, &policy()).unwrap();
+        assert_eq!(checked.members, decoded);
+        assert_eq!(checked.lead(), &decoded[0]);
+        assert_eq!(checked.value_wei, 26_005);
+        assert_eq!(checked.direction, VoteDirection::Down);
+    }
+
+    #[test]
+    fn one_bad_burn_refuses_the_whole_set_and_names_it() {
+        let target = fixture_post_event(&[1]).post_hash;
+        let commitment = topic_vote_commitment(NET, &target).unwrap();
+        let good = signed_eip1559_tx(
+            &secret(7),
+            CHAIN_ID,
+            0,
+            BURN,
+            9,
+            &calldata(0x02, 1, &commitment),
+        )
+        .0;
+        let elsewhere = signed_eip1559_tx(
+            &secret(8),
+            CHAIN_ID,
+            0,
+            Address([9; 20]),
+            9,
+            &calldata(0x02, 1, &commitment),
+        )
+        .0;
+        let frame = frame(
+            TYPE_TOPIC_VOTE_SUBMISSION,
+            &cbor_map(vec![
+                (0, text(NET)),
+                (1, bytes(&target)),
+                (2, CborValue::Array(vec![bytes(&good), bytes(&elsewhere)])),
+            ]),
+        );
+        let event = parse_topic_event(&frame, NET).unwrap();
+        let error = check_topic_burn_before_broadcast(&event, &policy()).unwrap_err();
+        assert!(
+            matches!(&error, TopicBurnError::Member { index: 1, reason } if matches!(**reason, TopicBurnError::WrongDestination { .. })),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_set_that_votes_both_ways_or_totals_past_i64_max_is_refused() {
+        let target = fixture_post_event(&[1]).post_hash;
+        let commitment = topic_vote_commitment(NET, &target).unwrap();
+        let up = signed_eip1559_tx(
+            &secret(7),
+            CHAIN_ID,
+            0,
+            BURN,
+            9,
+            &calldata(0x02, 1, &commitment),
+        )
+        .0;
+        let down = signed_eip1559_tx(
+            &secret(8),
+            CHAIN_ID,
+            0,
+            BURN,
+            9,
+            &calldata(0x02, 0, &commitment),
+        )
+        .0;
+        let mixed = frame(
+            TYPE_TOPIC_VOTE_SUBMISSION,
+            &cbor_map(vec![
+                (0, text(NET)),
+                (1, bytes(&target)),
+                (2, CborValue::Array(vec![bytes(&up), bytes(&down)])),
+            ]),
+        );
+        let event = parse_topic_event(&mixed, NET).unwrap();
+        assert!(matches!(
+            check_topic_burn_before_broadcast(&event, &policy()),
+            Err(TopicBurnError::MixedDirections)
+        ));
+        let half = i64::MAX as u128 / 2 + 1;
+        let (event, _) = set_vote(&[(7, 0, half), (8, 0, half)], 0x01);
+        assert!(matches!(
+            check_topic_burn_before_broadcast(&event, &policy()),
+            Err(TopicBurnError::TotalTooLarge)
+        ));
+        let (event, _) = set_vote(&[(7, 0, half), (8, 0, half - 1)], 0x01);
+        assert_eq!(
+            check_topic_burn_before_broadcast(&event, &policy())
+                .unwrap()
+                .value_wei,
+            i64::MAX as u128
+        );
+    }
+
+    #[tokio::test]
+    async fn every_burn_of_a_set_is_sent_in_nonce_order_and_confirmed() {
+        let (event, decoded) = set_vote(&[(7, 1, 30), (8, 0, 20), (7, 0, 10)], 0x01);
+        let chain = SetChain::default();
+        for (index, tx) in decoded.iter().enumerate() {
+            chain.confirm(tx, index as u64);
+        }
+        let verified = broadcast_and_verify_topic_event(&chain, &event, &policy(), fast_poll())
+            .await
+            .unwrap();
+        assert_eq!(
+            verified.iter().map(|fact| fact.tx_hash).collect::<Vec<_>>(),
+            decoded.iter().map(|tx| tx.tx_hash).collect::<Vec<_>>()
+        );
+        assert_eq!(verified.iter().map(|fact| fact.value_wei).sum::<u128>(), 60);
+        // Account by account, each account's nonces in order.
+        let sent = chain.sent.lock().unwrap().clone();
+        let position = |tx: &DecodedSignedTransaction| {
+            sent.iter()
+                .position(|hash| hash == &hex_hash(&tx.tx_hash))
+                .unwrap()
+        };
+        assert_eq!(sent.len(), 3);
+        assert!(position(&decoded[2]) < position(&decoded[0]));
+    }
+
+    #[tokio::test]
+    async fn a_refused_burn_never_stops_the_rest_of_the_set_being_sent() {
+        let (event, decoded) = set_vote(&[(7, 0, 30), (8, 0, 20), (9, 0, 10)], 0x01);
+        let chain = SetChain::default();
+        chain.refuse(&decoded[0]);
+        chain.confirm(&decoded[1], 0);
+        chain.confirm(&decoded[2], 1);
+        let error = broadcast_and_verify_topic_event(&chain, &event, &policy(), fast_poll())
+            .await
+            .unwrap_err();
+        // Every burn reached the node; the refused one is named, and nothing is reported as
+        // verified for the event.
+        assert_eq!(chain.sent.lock().unwrap().len(), 3);
+        assert!(
+            matches!(&error, TopicBurnError::Member { index: 0, reason } if matches!(**reason, TopicBurnError::Rejected(TopicVoteRelayOutcome::BroadcastFailed(_)))),
+            "{error:?}"
+        );
     }
 }

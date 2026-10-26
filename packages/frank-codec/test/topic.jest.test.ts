@@ -72,19 +72,21 @@ describe('topic event projections', () => {
 
   it('opens the type-40 post inside a type-41 submission and keeps the burn bytes exact', () => {
     const post = topicPostFrame()
-    const sub = parsed(topicSubmissionFrame({ post, burnTx: burnTx(7) })).typed
+    const sub = parsed(
+      topicSubmissionFrame({ post, burnTxs: [burnTx(7)] }),
+    ).typed
     if (sub?.type !== TYPE_TOPIC_POST_SUBMISSION)
       throw new Error('not a submission')
     expect(sub.postFrame.frame).toEqual(post)
     expect(sub.postFrame.typed?.type).toBe(TYPE_TOPIC_POST)
-    expect(sub.burnTx).toEqual(burnTx(7))
+    expect(sub.burnTxs).toEqual([burnTx(7)])
   })
 
   it('projects a type-42 vote with no direction, weight, or sender field', () => {
     const t = parsed(topicVoteFrame({ target: bytesOf(32, 3) })).typed
     if (t?.type !== TYPE_TOPIC_VOTE_SUBMISSION) throw new Error('not a vote')
     expect(Object.keys(t).sort()).toEqual(
-      ['burnTx', 'network', 'targetHash', 'type', 'unknownFields'].sort(),
+      ['burnTxs', 'network', 'targetHash', 'type', 'unknownFields'].sort(),
     )
   })
 
@@ -124,7 +126,7 @@ describe('R6 limits', () => {
     // A 1 MiB + 1 frame: the body is within R6 but the wrapper frame is not.
     const wrapper = topicSubmissionFrame({
       post: big,
-      burnTx: burnTx(1, 16_384),
+      burnTxs: [burnTx(1, 16_384)],
     })
     expect(wrapper.length).toBeLessThanOrEqual(1_048_576)
     const padded = fr(
@@ -133,7 +135,7 @@ describe('R6 limits', () => {
         ...(M([
           [TOPIC_POST_SUBMISSION.network, 'frank-test'],
           [TOPIC_POST_SUBMISSION.postFrame, big],
-          [TOPIC_POST_SUBMISSION.burnTx, burnTx()],
+          [TOPIC_POST_SUBMISSION.burnTxs, [burnTx()]],
         ]) as Map<number, unknown>),
         // raw-cbor-key: key 9 is undeclared: padding past the frame ceiling
         [9, new Uint8Array(1_048_576 - big.length)],
@@ -150,7 +152,7 @@ describe('R6 limits', () => {
         ...(M([
           [TOPIC_VOTE_SUBMISSION.network, 'frank-test'],
           [TOPIC_VOTE_SUBMISSION.targetHash, bytesOf(32, 1)],
-          [TOPIC_VOTE_SUBMISSION.burnTx, burnTx()],
+          [TOPIC_VOTE_SUBMISSION.burnTxs, [burnTx()]],
         ]) as Map<number, unknown>),
         // raw-cbor-key: key 9 is undeclared: padding past the frame ceiling
         [9, new Uint8Array(65_536)],

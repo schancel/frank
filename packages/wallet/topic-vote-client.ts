@@ -12,7 +12,12 @@ import type {
 } from './topic-operations'
 
 export class TopicVoteAbandonedError extends Error {
-  constructor(message: string, readonly targetPayloadHashHex: string) {
+  constructor(
+    message: string,
+    readonly targetPayloadHashHex: string,
+    /** Why the operation is retained (the wallet or relay error), for a plain-words reason. */
+    readonly cause?: unknown,
+  ) {
     super(message)
     this.name = 'TopicVoteAbandonedError'
   }
@@ -44,7 +49,7 @@ export class TopicVoteClient {
       })
     } catch (error) {
       if (error instanceof TopicOperationPendingError)
-        throw new TopicVoteAbandonedError(error.message, toHex(target))
+        throw new TopicVoteAbandonedError(error.message, toHex(target), error.cause)
       throw error
     }
   }

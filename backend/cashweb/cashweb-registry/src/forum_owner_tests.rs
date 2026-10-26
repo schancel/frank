@@ -262,12 +262,12 @@ impl JsonRpcTransport for ProofTransport {
                 reason: "controlled uncertain response".into(),
             });
         }
-        let hash = self.op.checked.decoded.tx_hash.to_hex();
+        let hash = self.op.checked.lead().tx_hash.to_hex();
         match method {
             "eth_sendRawTransaction" => {
                 assert_eq!(
                     params[0].as_str().unwrap(),
-                    format!("0x{}", hex::encode(self.op.event.burn_tx()))
+                    format!("0x{}", hex::encode(self.op.event.lead_burn_tx()))
                 );
                 self.entered.add_permits(1);
                 self.release.acquire().await.unwrap().forget();
@@ -276,13 +276,13 @@ impl JsonRpcTransport for ProofTransport {
             "eth_getTransactionReceipt" => Ok(json!({"transactionHash": hash,
                 "blockHash": format!("0x{}", hex::encode([0x22;32])),
                 "blockNumber":"0x1", "transactionIndex":"0x0",
-                "from":self.op.checked.decoded.sender.to_hex(),
+                "from":self.op.checked.lead().sender.to_hex(),
                 "to":Address([0x44;20]).to_hex(), "contractAddress":null,
                 "gasUsed":"0x5208", "status":"0x1", "logs":[]})),
             "eth_getTransactionByHash" => Ok(json!({"hash":hash,
-                "from":self.op.checked.decoded.sender.to_hex(),
+                "from":self.op.checked.lead().sender.to_hex(),
                 "to":Address([0x44;20]).to_hex(), "value":"0x7",
-                "input":format!("0x{}",hex::encode(&self.op.checked.decoded.input))})),
+                "input":format!("0x{}",hex::encode(&self.op.checked.lead().input))})),
             _ => panic!("unexpected RPC {method}"),
         }
     }

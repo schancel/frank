@@ -13,6 +13,7 @@ import {
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_VOTE_SUBMISSION,
+  MAX_TOPIC_BURNS,
 } from '@frank/codec'
 import type { ForumOperationStatus, ParsedFrame } from '@frank/codec'
 import type { EvmWalletHandle } from './evm-wallet-handle'
@@ -23,6 +24,7 @@ import type {
 } from './storage/topic-operation-journal'
 import type { EvmCoinList } from './evm-coin-list'
 import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { constructWhenSpendable } from './evm-transaction-set'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -85,13 +87,13 @@ export async function bindForumAuthority(
     )
       throw new Error('Invalid canonical Forum post')
     target = topicBurnCommitment(typed.postFrame.frame).hash
-    burns = [typed.burnTx]
+    burns = typed.burnTxs
   } else if (
     operation.kind === 'vote' &&
     typed?.type === TYPE_TOPIC_VOTE_SUBMISSION
   ) {
     target = typed.targetHash
-    burns = [typed.burnTx]
+    burns = typed.burnTxs
   } else throw new Error('Forum journal family mismatch')
   const expectedTarget =
     operation.kind === 'post'
@@ -121,7 +123,8 @@ export async function bindForumAuthority(
     members.length !== transactions.length ||
     typed.network !== wallet.cborNetwork ||
     bare(target) !== expectedTarget ||
-    transactions.length !== 1 ||
+    transactions.length < 1 ||
+    transactions.length > MAX_TOPIC_BURNS ||
     transactions.length !== burns.length ||
     transactions.length !== operation.funders.length ||
     transactions.some(
@@ -145,6 +148,13 @@ export async function bindForumAuthority(
   )
     throw new Error('Invalid durable Forum signed authority')
   return { request, target, transactions, journal }
+}
+
+/** A released v1 operation was paid by exactly one burn. */
+function onlyBurn(burns: readonly Uint8Array[]): Uint8Array {
+  if (burns.length !== 1)
+    throw new Error('Invalid retained Forum signed authority')
+  return burns[0]!
 }
 
 /** Released v1 authority belongs to its original lease and scalar signed request. */
@@ -174,13 +184,13 @@ export function bindRetainedForumAuthority(
     )
       throw new Error('Invalid retained Forum post')
     target = topicBurnCommitment(typed.postFrame.frame).hash
-    burn = typed.burnTx
+    burn = onlyBurn(typed.burnTxs)
   } else if (
     operation.kind === 'vote' &&
     typed?.type === TYPE_TOPIC_VOTE_SUBMISSION
   ) {
     target = typed.targetHash
-    burn = typed.burnTx
+    burn = onlyBurn(typed.burnTxs)
   } else throw new Error('Retained Forum journal family mismatch')
   const transaction = Transaction.from(operation.rawTx)
   const record = wallet.pool.getRecord(operation.leaseIndex)
@@ -381,11 +391,12 @@ function reconcileRetainedForumOperation(
 export class ForumOperationPendingError extends Error {
   constructor(message: string, readonly cause?: unknown) {
     super(message)
+    this.name = 'ForumOperationPendingError'
   }
 }
 
 /** A relay response is diagnostic only; it never authorizes another payment. */
-class ForumRelayResponseError extends Error {
+export class ForumRelayResponseError extends Error {
   constructor(
     readonly status: number,
     readonly cause: unknown,
@@ -397,6 +408,7 @@ class ForumRelayResponseError extends Error {
         detail ? `: ${detail}` : ''
       }. Original operation retained; receipt verification may still be pending.`,
     )
+    this.name = 'ForumRelayResponseError'
   }
 }
 
@@ -603,9 +615,7 @@ async function settle(
         nativeMemberSuperseded(member),
     )
   )
-    await wallet.forumOperationMutation!(() =>
-      wallet.topicOperationJournal!.delete(operation),
-    )
+    await wallet.topicOperationJournal!.delete(operation)
 }
 
 export async function reconcileForumOperations(
@@ -614,6 +624,14 @@ export async function reconcileForumOperations(
   admission?: MonadWalletOperationAdmission,
 ): Promise<void> {
   requireForumWallet(wallet)
+  // Nothing retained: nothing to ask the chain or the relay about.
+  if (
+    !wallet.topicOperationJournal!.getAll().some(row => row.kind === kind) &&
+    !(wallet.topicOperationJournal!.getRetainedLegacy?.() ?? []).some(
+      row => row.kind === kind,
+    )
+  )
+    return
   await wallet.refreshTransactionSetInventory?.()
   return wallet.walletState!.runLifetime(async () => {
     const results = await Promise.allSettled([
@@ -670,23 +688,35 @@ async function finishForumConstruction(
   )
   const commitment = topicVoteCommitment(wallet.cborNetwork!, target)
   const calldata = hexlify(topicBurnCalldata(retained.direction, commitment))
-  const prepared =
-    await wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+  // The same construction a direct-message stamp uses: ordinary coin selection over the
+  // wallet's one coin list, gathering value across as many coins as it needs, with its change
+  // and successor rules, its journal and submission. Every payment burns to the same address
+  // with the same calldata, and the event carries them all, as a message carries its stamps.
+  const construct = () =>
+    wallet.transactionSetPreparer!.constructTransactionSet({
       operationId: retained.transactionSetOperationId,
       amountWei: BigInt(retained.intendedValueWei),
       kdf: () => intent.burnAddress,
       calldata,
+      maxPaymentParts: MAX_TOPIC_BURNS,
     })
-  if (prepared.bundle.length !== 1)
-    throw new Error('Forum requires exactly one burn transaction')
-  const raw = getBytes(prepared.bundle[0]!.rawTransaction)
+  // Money that reached the wallet a few blocks ago may be spendable only from a later block
+  // (Monad's spacing rule): wait for that block, as a direct message does.
+  const prepared = wallet.untilBlock
+    ? await constructWhenSpendable(construct, {
+        untilBlock: wallet.untilBlock,
+        refresh: () => wallet.refreshTransactionSetInventory?.() ?? Promise.resolve(),
+      })
+    : await construct()
+  // The first payment is the lead: its hash names the event and its sender is the author.
+  const raws = prepared.bundle.map(tx => getBytes(tx.rawTransaction))
   const { construction: _construction, ...kept } = retained
   const operation: OutgoingTopicOperation = {
     ...kept,
     requestBytes: Array.from(
       retained.kind === 'post'
-        ? encodeTopicPostSubmission(getBytes('0x' + intent.postFrameHex!), raw)
-        : encodeTopicVote(wallet.cborNetwork!, target, raw),
+        ? encodeTopicPostSubmission(getBytes('0x' + intent.postFrameHex!), raws)
+        : encodeTopicVote(wallet.cborNetwork!, target, raws),
     ),
     funders: prepared.bundle.map(tx => tx.sourceAccount),
     rawTransactions: prepared.bundle.map(tx => tx.rawTransaction),
@@ -696,9 +726,7 @@ async function finishForumConstruction(
       .toString(),
   }
   await bindForumAuthority(wallet, operation)
-  await wallet.forumOperationMutation!(() =>
-    wallet.topicOperationJournal!.put(operation),
-  )
+  await wallet.topicOperationJournal!.put(operation)
   return operation
 }
 
@@ -757,10 +785,7 @@ async function submitForumOperationAdmitted(
   // intent. Construction failures must retain the caller's duplicate barrier: recovery
   // can still fund and submit this original operation when funds become available.
   try {
-    if (!prior)
-      await wallet.forumOperationMutation!(() =>
-        wallet.topicOperationJournal!.put(intent),
-      )
+    if (!prior) await wallet.topicOperationJournal!.put(intent)
     const operation = await finishForumConstruction(wallet, prior ?? intent)
     // Every signed byte and its original public payload are durable before external handoff.
     await prepareForumHandoff(wallet, operation)

@@ -158,6 +158,18 @@ export const rawFrFR = {
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
     voteOutcomeUnknown:
       'Votre vote n’a pas été confirmé. Votre portefeuille le garde en attente et il peut encore compter. Rechargez plus tard pour vérifier. Ne votez pas à nouveau.',
+    voteSlow:
+      'Vote toujours en cours. Le réseau est lent ; votre vote est conservé et sera envoyé.',
+    postSlow:
+      'Publication toujours en cours. Le réseau est lent ; votre publication est conservée et sera envoyée.',
+    failedNoFunds:
+      'Fonds insuffisants pour payer. C’est conservé et sera envoyé quand des fonds arriveront.',
+    failedPostNotOnRelay:
+      'Le relais n’a pas encore cette publication. Votre vote est conservé et sera renvoyé.',
+    failedRelayRefused: 'Le relais l’a refusé. C’est conservé et sera renvoyé.',
+    failedNetwork: 'Le réseau est injoignable. C’est conservé et sera renvoyé.',
+    failedUnknown:
+      'Ce n’est pas encore passé. C’est conservé et sera renvoyé ; ne l’envoyez pas deux fois.',
   },
   chatLayout: {
     invalidSubject:

@@ -4008,7 +4008,7 @@ tpRej(
 tpRej(
   'topic-submission-empty-burn',
   'A type-10 submission with an empty burn transaction.',
-  topicSubmissionFrame({ burnTx: new Uint8Array(0) }),
+  topicSubmissionFrame({ burnTxs: [new Uint8Array(0)] }),
   'schema',
   '8.2',
   ['T8'],
@@ -4016,7 +4016,7 @@ tpRej(
 tpRej(
   'topic-submission-burn-over-limit',
   'A type-10 submission with a 16,385-byte burn transaction, one over the CDDL bound.',
-  topicSubmissionFrame({ burnTx: burnTx(31, 16_385) }),
+  topicSubmissionFrame({ burnTxs: [burnTx(31, 16_385)] }),
   'schema',
   '8.2',
   ['T8'],
@@ -4024,7 +4024,7 @@ tpRej(
 acc(
   'topic-submission-burn-at-limit',
   'A type-10 submission with a 16,384-byte burn transaction: at the CDDL bound.',
-  topicSubmissionFrame({ burnTx: burnTx(31, 16_384) }),
+  topicSubmissionFrame({ burnTxs: [burnTx(31, 16_384)] }),
   ['T8'],
   TP,
 )
@@ -4047,7 +4047,7 @@ tpRej(
     TYPE_TOPIC_POST_SUBMISSION,
     new Map([
       ...topicSubmissionPayload(),
-      [TOPIC_POST_SUBMISSION.burnTx, 'tx'],
+      [TOPIC_POST_SUBMISSION.burnTxs, ['tx']],
     ]),
   ),
   'schema',
@@ -4097,7 +4097,56 @@ tpRej(
 tpRej(
   'topic-vote-empty-burn',
   'A type-11 vote with an empty burn transaction.',
-  topicVoteFrame({ burnTx: new Uint8Array(0) }),
+  topicVoteFrame({ burnTxs: [new Uint8Array(0)] }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-submission-burn-not-a-set',
+  'A type-10 submission whose burn field is one byte string instead of a set: the single-burn encoding of earlier builds is not read.',
+  fr(
+    TYPE_TOPIC_POST_SUBMISSION,
+    new Map([
+      ...topicSubmissionPayload(),
+      [TOPIC_POST_SUBMISSION.burnTxs, burnTx()],
+    ]),
+  ),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-no-burns',
+  'A type-11 vote whose burn set is empty.',
+  topicVoteFrame({ burnTxs: [] }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+acc(
+  'topic-vote-sixteen-burns',
+  'A type-11 vote paid by sixteen distinct burn transactions, the most a set may hold.',
+  topicVoteFrame({
+    burnTxs: Array.from({ length: 16 }, (_, i) => burnTx(40 + i)),
+  }),
+  ['T8'],
+  TP,
+)
+tpRej(
+  'topic-vote-seventeen-burns',
+  'A type-11 vote paid by seventeen burn transactions, one over the bound.',
+  topicVoteFrame({
+    burnTxs: Array.from({ length: 17 }, (_, i) => burnTx(40 + i)),
+  }),
+  'schema',
+  '8.2',
+  ['T8'],
+)
+tpRej(
+  'topic-vote-repeated-burn',
+  'A type-11 vote that lists one burn transaction twice: a burn pays for an event once.',
+  topicVoteFrame({ burnTxs: [burnTx(40), burnTx(41), burnTx(40)] }),
   'schema',
   '8.2',
   ['T8'],

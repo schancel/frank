@@ -92,6 +92,7 @@ import {
   MAX_MESSAGE_ITEMS_PER_ARRAY,
   MAX_OPAQUE_SECTIONS,
   MAX_PAYMENT_MEMBERS,
+  MAX_TOPIC_BURNS,
   MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   MAX_PLUGIN_ITEM_TYPE_BYTES,
   MAX_RELAY_BINDINGS,
@@ -397,6 +398,22 @@ export function checkRootFrameLimit(
   if (typeId === TYPE_FORUM_TOPIC_PAGE || typeId === TYPE_FORUM_DISCOVERY_PAGE)
     return frameLength <= MAX_FORUM_PAGE_BYTES
   return frameLength <= MAX_FRAME_BYTES
+}
+
+/** A topic event's burn set (types 41 and 42): 1..16 distinct raw transactions. */
+function burnSet(v: FrankValue | undefined, path: string): Uint8Array[] {
+  const burns: Uint8Array[] = []
+  asList(v, path, 1, MAX_TOPIC_BURNS).forEach((item, i) => {
+    const burn = bstr(item, `${path}[${i}]`, 1, 16384)
+    if (burns.some(seen => equalBytes(seen, burn)))
+      throw bad(`${path}[${i}]`, 'repeated burn transaction')
+    burns.push(burn)
+  })
+  return burns
+}
+
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i])
 }
 
 function tooMany(v: FrankValue | undefined, limit: number): boolean {
@@ -1791,7 +1808,7 @@ export function parseDraft(
         type: TYPE_TOPIC_POST_SUBMISSION,
         network: networkTag(m.get(K.network), at(P, K.network)),
         postFrame: framed(m.get(K.postFrame), at(P, K.postFrame)),
-        burnTx: bstr(m.get(K.burnTx), at(P, K.burnTx), 1, 16384),
+        burnTxs: burnSet(m.get(K.burnTxs), at(P, K.burnTxs)),
         unknownFields: m.unknown,
       }
     }
@@ -1802,7 +1819,7 @@ export function parseDraft(
         type: TYPE_TOPIC_VOTE_SUBMISSION,
         network: networkTag(m.get(K.network), at(P, K.network)),
         targetHash: bstr(m.get(K.targetHash), at(P, K.targetHash), 32, 32),
-        burnTx: bstr(m.get(K.burnTx), at(P, K.burnTx), 1, 16384),
+        burnTxs: burnSet(m.get(K.burnTxs), at(P, K.burnTxs)),
         unknownFields: m.unknown,
       }
     }

@@ -1495,7 +1495,8 @@ fn forum_frame(type_id: u32, target: frank_cbor::CborValue, burn: Vec<u8>) -> Ve
         FramePayload::Value(&cbor_map(vec![
             (0, CborValue::Text(solonet_payer::SOLONET_NETWORK.into())),
             (1, target),
-            (2, CborValue::Bytes(burn)),
+            // A burn set of one.
+            (2, CborValue::Array(vec![CborValue::Bytes(burn)])),
         ])),
     )
     .unwrap()

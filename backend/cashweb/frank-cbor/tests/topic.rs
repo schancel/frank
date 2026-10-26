@@ -74,11 +74,11 @@ fn projects_a_post_a_submission_and_a_vote() {
     match submission.typed.as_deref() {
         Some(TypedPayload::TopicPostSubmission {
             post_frame,
-            burn_tx,
+            burn_txs,
             ..
         }) => {
             assert_eq!(post_frame.frame, topic_post_frame());
-            assert_eq!(burn_tx, &bytes_of(110, 31));
+            assert_eq!(burn_txs, &vec![bytes_of(110, 31)]);
         }
         other => panic!("{other:?}"),
     }
@@ -135,7 +135,7 @@ fn submission_with(post: Vec<u8>, pad: usize) -> Vec<u8> {
     let mut entries = vec![
         (sub_k::NETWORK, text(NET)),
         (sub_k::POST_FRAME, bytes(post)),
-        (sub_k::BURN_TX, bytes(bytes_of(110, 31))),
+        (sub_k::BURN_TXS, burns(vec![bytes_of(110, 31)])),
     ];
     if pad > 0 {
         entries.push((9, bytes(vec![0; pad]))); // raw-cbor-key: additive padding field
@@ -157,13 +157,54 @@ fn r6_frame_limits_bound_complete_roots() {
         &cbor_map(vec![
             (vote_k::NETWORK, text(NET)),
             (vote_k::TARGET_HASH, bytes(bytes_of(32, 1))),
-            (vote_k::BURN_TX, bytes(bytes_of(110, 32))),
+            (vote_k::BURN_TXS, burns(vec![bytes_of(110, 32)])),
             (9, bytes(vec![0; 65_536])), // raw-cbor-key: additive padding field
         ]),
     );
     assert!(vote.len() > 65_536);
     assert_eq!(outcome(&vote), "resource@8.1");
     assert_eq!(outcome(&topic_vote_frame()), "parsed");
+}
+
+fn burns(items: Vec<Vec<u8>>) -> CborValue {
+    CborValue::Array(items.into_iter().map(CborValue::Bytes).collect())
+}
+
+fn vote_with_burns(set: CborValue) -> Vec<u8> {
+    fr(
+        TYPE_TOPIC_VOTE_SUBMISSION,
+        &cbor_map(vec![
+            (vote_k::NETWORK, text(NET)),
+            (vote_k::TARGET_HASH, bytes(bytes_of(32, 1))),
+            (vote_k::BURN_TXS, set),
+        ]),
+    )
+}
+
+#[test]
+fn a_topic_event_carries_a_set_of_one_to_sixteen_distinct_burns() {
+    let many: Vec<Vec<u8>> = (0..16).map(|i| bytes_of(110, 40 + i)).collect();
+    match parsed(&vote_with_burns(burns(many.clone())))
+        .typed
+        .as_deref()
+    {
+        Some(TypedPayload::TopicVoteSubmission { burn_txs, .. }) => assert_eq!(burn_txs, &many),
+        other => panic!("{other:?}"),
+    }
+    let too_many: Vec<Vec<u8>> = (0..17).map(|i| bytes_of(110, 40 + i)).collect();
+    assert_eq!(outcome(&vote_with_burns(burns(too_many))), "schema@8.2");
+    assert_eq!(outcome(&vote_with_burns(burns(Vec::new()))), "schema@8.2");
+    let repeated = vec![bytes_of(110, 40), bytes_of(110, 41), bytes_of(110, 40)];
+    assert_eq!(outcome(&vote_with_burns(burns(repeated))), "schema@8.2");
+    // The single-transaction encoding of earlier builds is not read.
+    assert_eq!(
+        outcome(&vote_with_burns(bytes(bytes_of(110, 40)))),
+        "schema@8.2"
+    );
+    assert_eq!(
+        outcome(&vote_with_burns(burns(vec![Vec::new()]))),
+        "schema@8.2"
+    );
 }
 
 #[test]
@@ -173,7 +214,7 @@ fn a_submission_must_share_its_posts_network() {
         &cbor_map(vec![
             (sub_k::NETWORK, text("other-net")),
             (sub_k::POST_FRAME, bytes(topic_post_frame())),
-            (sub_k::BURN_TX, bytes(bytes_of(110, 31))),
+            (sub_k::BURN_TXS, burns(vec![bytes_of(110, 31)])),
         ]),
     );
     assert_eq!(outcome(&other), "semantic@9");

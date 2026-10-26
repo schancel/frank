@@ -25,12 +25,12 @@
       "fields": {
         "network": 0,
         "post-frame": 1,
-        "burn-tx": 2
+        "burn-txs": 2
       },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#topic-post-submission",
-          "required": ["network", "post-frame", "burn-tx"],
+          "required": ["network", "post-frame", "burn-txs"],
           "optional": [],
           "open": true
         }
@@ -41,12 +41,12 @@
       "fields": {
         "network": 0,
         "target-hash": 1,
-        "burn-tx": 2
+        "burn-txs": 2
       },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/topic.cddl#topic-vote-submission",
-          "required": ["network", "target-hash", "burn-tx"],
+          "required": ["network", "target-hash", "burn-txs"],
           "optional": [],
           "open": true
         }

@@ -24,13 +24,17 @@ import type { DappPersonaRef } from "./dapp-bridge/persona-keys";
 import type { ChainAddress, ContractCallHandle } from "./chain/chain-wallet";
 
 export interface EvmWalletHandle {
-  /** Narrow Forum journal mutation admission; transport never holds this gate. */
+  /** Wallet admission for a retained v1 Forum operation that still mutates its lease-pool row.
+   * Forum journal writes do not take it. */
   forumOperationMutation?<T>(task: () => Promise<T>): Promise<T>;
   /** One native financial constructor shared by stamps, stealth and Forum. */
   transactionSetPreparer?: import("./evm-transaction-set").EvmTransactionSetPreparer;
   transactionSetLifecycle?: import("./evm-transaction-set-lifecycle").EvmTransactionSetLifecycle;
   transactionSetSubmission?: import("./evm-transaction-set-submission").EvmTransactionSetSubmission;
   refreshTransactionSetInventory?(): Promise<void>;
+  /** Resolves once the chain reaches `block`: a payment waits there for coins that become
+   * spendable then (Monad's spacing rule), as a direct message's stamp does. */
+  untilBlock?(block: number): Promise<unknown>;
   observeRetainedForumSpend?(rawTx: string): Promise<void>;
   /** Master / author identity for signing messages and topic posts. */
   identity?: MonadIdentity;

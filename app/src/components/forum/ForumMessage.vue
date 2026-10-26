@@ -156,7 +156,6 @@
             icon="arrow_upward"
             :aria-label="$t('a11y.voteUp')"
             :disable="isVoting"
-            :loading="isVoting && activeVoteDirection === 1"
             @click="addVotes(1)"
             data-test="forum-vote-up"
             class="vote-btn upvote-btn"
@@ -175,7 +174,6 @@
             icon="arrow_downward"
             :aria-label="$t('a11y.voteDown')"
             :disable="isVoting"
-            :loading="isVoting && activeVoteDirection === -1"
             @click="addVotes(-1)"
             data-test="forum-vote-down"
             class="vote-btn downvote-btn"
@@ -215,7 +213,22 @@
           role="status"
           data-test="vote-status"
         >
-          <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
+          <q-icon
+            v-if="voteFailedShown"
+            name="error_outline"
+            color="negative"
+            size="1.2em"
+            class="q-mr-xs"
+            data-test="vote-failed"
+          />
+          <q-icon
+            v-else-if="voteSlow"
+            name="hourglass_empty"
+            color="warning"
+            size="1.2em"
+            class="q-mr-xs"
+          />
+          <q-spinner-dots v-else size="1.2em" color="primary" class="q-mr-xs" />
           <span>{{ voteStatus }}</span>
         </div>
       </q-card-actions>
@@ -256,7 +269,7 @@ import {
 } from 'src/utils/burn-refresh-error'
 import { activeChain } from '@frank/wallet/chain'
 import { formatCompactAmount, formatRawAmount } from 'src/utils/chain-amount'
-import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
+import { FORUM_SLOW_MS, forumFailureText } from 'src/utils/forum-failure'
 import {
   isKnownOwnAddress,
   sameCanonicalAddress,
@@ -339,8 +352,10 @@ export default defineComponent({
       voteAmount: 0n,
       localVoteDelta: 0n,
       isVoting: false,
-      activeVoteDirection: 0,
       votePreparationStatus: null as string | null,
+      /** The last vote's failure in plain words, shown until the next vote. */
+      voteFailure: null as string | null,
+      voteSlow: false,
       voteActive: true,
       voteTarget: null as string | null,
       voteOwnerRevision: null as number | null,
@@ -361,7 +376,6 @@ export default defineComponent({
   },
   unmounted() {
     this.voteActive = false
-    this.activeVoteDirection = 0
     if (this.timeoutId) clearTimeout(this.timeoutId)
     if (this.voteAmount !== 0n && this.voteTarget) {
       this.rollbackOptimisticVote?.({
@@ -650,7 +664,6 @@ export default defineComponent({
           }
           this.voteAmount = 0n
           this.localVoteDelta = 0n
-          this.activeVoteDirection = 0
           this.setStampPreparationStatus?.(null)
           return
         }
@@ -665,12 +678,21 @@ export default defineComponent({
           // The votes being sent are consumed either way: a failed burn is reported, never
           // silently kept and re-sent on top of the next click (ticket #273).
           const satoshis = this.voteAmount
-          this.activeVoteDirection = satoshis >= 0n ? 1 : -1
           this.voteAmount = 0n
           this.isVoting = true
-          const initialStatus = this.$t('chat.stampPreparationChecking')
-          this.votePreparationStatus = initialStatus
-          this.setStampPreparationStatus?.(initialStatus)
+          this.voteFailure = null
+          this.voteSlow = false
+          const votingStatus = this.$t('stampPreparation.voting')
+          this.votePreparationStatus = votingStatus
+          this.setStampPreparationStatus?.(votingStatus)
+          // A vote that takes this long says so rather than spinning without end.
+          const slowTimer = setTimeout(() => {
+            if (!this.isVoting || this.message.payloadDigest !== digest) return
+            const slow = this.$t('stampPreparation.voteSlow')
+            this.voteSlow = true
+            this.votePreparationStatus = slow
+            this.setStampPreparationStatus?.(slow)
+          }, FORUM_SLOW_MS)
           try {
             const wallet = await useActiveWallet()
             if (
@@ -684,7 +706,6 @@ export default defineComponent({
                 deltaWei: satoshis,
               })
               this.localVoteDelta = 0n
-              this.activeVoteDirection = 0
               this.setStampPreparationStatus?.(null)
               return
             }
@@ -692,26 +713,6 @@ export default defineComponent({
               wallet,
               payloadDigest: digest,
               satoshis,
-              onPreparationProgress: progress => {
-                if (
-                  !this.voteActive ||
-                  this.message.payloadDigest !== digest ||
-                  accountStatus.revision !== revision ||
-                  accountStatus.status !== status
-                ) {
-                  return
-                }
-                const progressStatus = stampPreparationStatus(
-                  progress,
-                  (key, params) => this.$t(key, params ?? {}),
-                  {
-                    format: raw => activeChain.toDisplayAmount(raw),
-                    unit: activeChain.unit,
-                  },
-                )
-                this.votePreparationStatus = progressStatus
-                this.setStampPreparationStatus?.(progressStatus)
-              },
             })
             this.localVoteDelta = 0n
           } catch (err) {
@@ -722,10 +723,13 @@ export default defineComponent({
               })
               this.localVoteDelta = 0n
             }
+            if (!(err instanceof BurnRefreshError))
+              this.voteFailure = forumFailureText(err, key => this.$t(key))
             notifyBurnFailure(err, key => this.$t(key))
           } finally {
+            clearTimeout(slowTimer)
+            this.voteSlow = false
             this.isVoting = false
-            this.activeVoteDirection = 0
             this.votePreparationStatus = null
             this.setStampPreparationStatus?.(null)
           }
@@ -748,7 +752,13 @@ export default defineComponent({
         BigInt(this.message?.voteWeightWei || '0') + this.localVoteDelta
       ).toString()
     },
+    voteFailedShown(): boolean {
+      return !!this.voteFailure && !this.isVoting && this.voteAmount === 0n
+    },
     voteStatus(): string | null {
+      if (this.voteFailedShown) {
+        return this.voteFailure
+      }
       if (this.votePreparationStatus) {
         return this.votePreparationStatus
       }

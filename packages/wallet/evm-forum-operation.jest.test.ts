@@ -280,7 +280,7 @@ test('actual Forum construction submits one scalar burn and excludes private cha
       parsed.typed?.type !== TYPE_TOPIC_POST_SUBMISSION
     )
       throw new Error('expected post submission')
-    expect([hexlify(parsed.typed.burnTx)]).toEqual(
+    expect(parsed.typed.burnTxs.map(burn => hexlify(burn))).toEqual(
       result.operation.rawTransactions,
     )
     const other = f.preparer
@@ -351,7 +351,7 @@ test('failure between host intent and core retains the original complete post, t
   const f = await fixture()
   try {
     const prepare = jest
-      .spyOn(f.preparer, 'constructLegacyTransactionSet')
+      .spyOn(f.preparer, 'constructTransactionSet')
       .mockRejectedValueOnce(new Error('interrupted before signing'))
     await expect(submitForumOperation(f.wallet, f.params)).rejects.toThrow(
       'interrupted',
@@ -470,7 +470,7 @@ test.each(['arraybuffer', 'buffer', 'uint8array'] as const)(
     http.mockRejectedValue(original)
     await submitForumOperation(f.wallet, f.params).catch(() => undefined)
     const before = f.bundle.topicOperationJournal.getAll()
-    const construct = jest.spyOn(f.preparer, 'constructLegacyTransactionSet')
+    const construct = jest.spyOn(f.preparer, 'constructTransactionSet')
     const error = await reconcileForumOperations(f.wallet, 'post').catch(
       error => error,
     )

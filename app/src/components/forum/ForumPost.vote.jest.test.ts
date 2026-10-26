@@ -111,14 +111,20 @@ jest.mock('src/utils/chain-amount', () => ({
   formatRawAmount: (_chain: unknown, value: string) => `${value} MON`,
   formatCompactAmount: (_chain: unknown, value: string) => `${value} MON`,
 }))
+// A short "slow" threshold so the test sees the stalled status without waiting 30s.
+jest.mock('src/utils/forum-failure', () => ({
+  ...jest.requireActual('src/utils/forum-failure'),
+  FORUM_SLOW_MS: 300,
+}))
 jest.mock('./ForumMessageReplies.vue', () => ({ template: '<div />' }))
 jest.mock('../../utils/markdown', () => ({ renderMarkdown: () => '' }))
 
 const messages: Record<string, string> = {
   'stampPreparation.votedRefreshFailed': 'VOTED_REFRESH_FAILED',
   'stampPreparation.voting': 'VOTING…',
-  'chat.stampPreparationChecking': 'CHECKING_ACCOUNTS',
-  'chat.stampPreparationReady': 'READY_SENDING',
+  'stampPreparation.voteSlow': 'VOTE_SLOW',
+  'stampPreparation.failedNoFunds': 'FAILED_NO_FUNDS',
+  'stampPreparation.failedUnknown': 'FAILED_UNKNOWN',
 }
 
 // Every card reads the shared reactive mocks above (profile, own address). A card left mounted
@@ -248,18 +254,12 @@ describe('ForumPost vote handler', () => {
     wrapper.unmount()
   })
 
-  it('indicates that it is preparing or sending transactions and disables buttons while in-flight', async () => {
-    let capturedProgress: ((progress: { stage: string }) => void) | undefined
+  it('says "Voting…" and disables the buttons while the vote is in flight', async () => {
     let resolveOffering!: () => void
     const offeringPromise = new Promise<void>(resolve => {
       resolveOffering = resolve
     })
-    mockAddOffering.mockImplementationOnce(
-      async ({ onPreparationProgress }) => {
-        capturedProgress = onPreparationProgress
-        return offeringPromise
-      },
-    )
+    mockAddOffering.mockImplementationOnce(() => offeringPromise)
 
     const wrapper = mountCard()
     const vm = wrapper.vm as unknown as {
@@ -284,9 +284,10 @@ describe('ForumPost vote handler', () => {
 
     expect(vm.isVoting).toBe(true)
     expect(mockAddOffering).toHaveBeenCalledTimes(1)
-    expect(vm.voteStatus).toBe('CHECKING_ACCOUNTS')
-    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith(
-      'CHECKING_ACCOUNTS',
+    // No wallet-internal stage names: the label stays the plain "Voting…".
+    expect(vm.voteStatus).toBe('VOTING…')
+    expect(mockAddOffering.mock.calls[0][0]).not.toHaveProperty(
+      'onPreparationProgress',
     )
     expect(
       wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
@@ -294,18 +295,11 @@ describe('ForumPost vote handler', () => {
     expect(
       wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
     ).toBe('true')
-    expect(
-      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
-    ).toBe('true')
-    expect(
-      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
-    ).toBe('false')
-
-    // Simulate progress updates
-    capturedProgress?.({ stage: 'ready' })
-    await wrapper.vm.$nextTick()
-    expect(vm.voteStatus).toBe('READY_SENDING')
-    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('READY_SENDING')
+    // The arrows stay arrows: a spinner inside these 10px buttons shows as a stray tick.
+    for (const arrow of ['forum-vote-up', 'forum-vote-down'])
+      expect(
+        wrapper.find(`[data-test="${arrow}"]`).attributes('loading'),
+      ).toBeUndefined()
 
     // Resolve in-flight operation
     resolveOffering()
@@ -313,16 +307,55 @@ describe('ForumPost vote handler', () => {
     await wrapper.vm.$nextTick()
 
     expect(vm.isVoting).toBe(false)
-    expect(
-      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
-    ).toBe('false')
-    expect(
-      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
-    ).toBe('false')
     expect(vm.voteStatus).toBeNull()
     expect(mockSetStampPreparationStatus).toHaveBeenLastCalledWith(null)
 
     wrapper.unmount()
+  })
+
+  it('says so when a vote takes too long instead of spinning without end', async () => {
+    let resolveOffering!: () => void
+    mockAddOffering.mockImplementationOnce(
+      () => new Promise<void>(resolve => (resolveOffering = resolve)),
+    )
+    const wrapper = mountCard()
+    const vm = wrapper.vm as unknown as {
+      voteStatus: string | null
+      isVoting: boolean
+    }
+
+    await vote(wrapper)
+    expect(vm.voteStatus).toBe('VOTING…')
+    await new Promise(resolve => setTimeout(resolve, 400))
+    await wrapper.vm.$nextTick()
+
+    expect(vm.isVoting).toBe(true)
+    expect(vm.voteStatus).toBe('VOTE_SLOW')
+    expect(mockSetStampPreparationStatus).toHaveBeenCalledWith('VOTE_SLOW')
+
+    resolveOffering()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(vm.voteStatus).toBeNull()
+  })
+
+  it('shows why a vote failed where "Voting…" was', async () => {
+    const { EvmTransactionSetInsufficientFundsError } = jest.requireActual(
+      '@frank/wallet/evm-transaction-set-types',
+    )
+    mockAddOffering.mockRejectedValueOnce(
+      new Error('Vote abandoned', {
+        cause: new EvmTransactionSetInsufficientFundsError(),
+      }),
+    )
+    const wrapper = mountCard()
+    const vm = wrapper.vm as unknown as { voteStatus: string | null }
+
+    await vote(wrapper)
+    await wrapper.vm.$nextTick()
+
+    expect(vm.voteStatus).toBe('FAILED_NO_FUNDS')
+    expect(wrapper.find('[data-test="vote-failed"]').exists()).toBe(true)
+    expect(errorNotify).toHaveBeenCalled()
   })
 
   it('rolls back the optimistic counter when the vote transaction fails before landing', async () => {

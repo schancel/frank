@@ -265,7 +265,7 @@ function validate(raw: Uint8Array): Opened {
       [
         TOPIC_POST_SUBMISSION.network,
         TOPIC_POST_SUBMISSION.postFrame,
-        TOPIC_POST_SUBMISSION.burnTx,
+        TOPIC_POST_SUBMISSION.burnTxs,
       ],
       future,
     )
@@ -273,7 +273,12 @@ function validate(raw: Uint8Array): Opened {
       raw.length <= (f.type === TYPE_TOPIC_POST_SUBMISSION ? 1048576 : 65536),
       'submission limit',
     )
-    bytes(get(p, TOPIC_POST_SUBMISSION.burnTx), 1, 16384)
+    const burns = get(p, TOPIC_POST_SUBMISSION.burnTxs)
+    requireThat(
+      Array.isArray(burns) && burns.length >= 1 && burns.length <= 16,
+      'burn set size',
+    )
+    for (const burn of burns as unknown[]) bytes(burn, 1, 16384)
     if (f.type === TYPE_TOPIC_POST_SUBMISSION) {
       const post = validate(
         bytes(get(p, TOPIC_POST_SUBMISSION.postFrame), 9, 1048576),
@@ -751,7 +756,7 @@ function fixtures(): Fixture[] {
       M([
         [TOPIC_POST_SUBMISSION.network, NET],
         [TOPIC_POST_SUBMISSION.postFrame, top],
-        [TOPIC_POST_SUBMISSION.burnTx, txA],
+        [TOPIC_POST_SUBMISSION.burnTxs, [txA]],
       ]),
     ),
     subB = add(
@@ -760,7 +765,7 @@ function fixtures(): Fixture[] {
       M([
         [TOPIC_POST_SUBMISSION.network, NET],
         [TOPIC_POST_SUBMISSION.postFrame, top],
-        [TOPIC_POST_SUBMISSION.burnTx, txB],
+        [TOPIC_POST_SUBMISSION.burnTxs, [txB]],
       ]),
     )
   add(
@@ -769,7 +774,7 @@ function fixtures(): Fixture[] {
     M([
       [TOPIC_VOTE_SUBMISSION.network, NET],
       [TOPIC_VOTE_SUBMISSION.targetHash, t1(top)],
-      [TOPIC_VOTE_SUBMISSION.burnTx, txB],
+      [TOPIC_VOTE_SUBMISSION.burnTxs, [txB]],
     ]),
   )
   const magnitude = fromHex(
@@ -963,7 +968,9 @@ function bindStatus(
     equal(
       get(p, FORUM_OPERATION_STATUS.transactionHash),
       keccak_256(
-        get(submission.payload, TOPIC_POST_SUBMISSION.burnTx) as Uint8Array,
+        (
+          get(submission.payload, TOPIC_POST_SUBMISSION.burnTxs) as Uint8Array[]
+        )[0]!,
       ),
     ),
     'raw transaction hash',
@@ -1044,7 +1051,7 @@ function checkObserved(all: Fixture[], facts: ReturnType<typeof observations>) {
       p = validate(raw).payload,
       sub = open(get(p, FORUM_OPERATION_STATUS.submittedFrame) as Uint8Array)
     const fact = factFor(
-      get(sub.payload, TOPIC_POST_SUBMISSION.burnTx) as Uint8Array,
+      (get(sub.payload, TOPIC_POST_SUBMISSION.burnTxs) as Uint8Array[])[0]!,
       get(p, FORUM_OPERATION_STATUS.targetHash) as Uint8Array,
       get(p, FORUM_OPERATION_STATUS.network) as string,
     )

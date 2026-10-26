@@ -381,7 +381,22 @@ export class LevelTopicOperationJournal implements TopicOperationJournal {
     }
   }
 
-  async deleteRetained(operation: RetainedTopicOperation): Promise<void> {
+  /** One write at a time: each write checks the record it replaces before it persists. */
+  private writes: Promise<unknown> = Promise.resolve()
+  private serial<T>(write: () => Promise<T>): Promise<T> {
+    const run = this.writes.then(write)
+    this.writes = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  deleteRetained(operation: RetainedTopicOperation): Promise<void> {
+    return this.serial(() => this.deleteRetainedNow(operation))
+  }
+
+  private async deleteRetainedNow(operation: RetainedTopicOperation): Promise<void> {
     this.assertMutationAllowed()
     assertRetainedTopicOperation(operation)
     if (operation.writeFormat !== 'forum-cbor')
@@ -397,7 +412,11 @@ export class LevelTopicOperationJournal implements TopicOperationJournal {
     this.retained.delete(key)
   }
 
-  async put(operation: OutgoingTopicOperation): Promise<void> {
+  put(operation: OutgoingTopicOperation): Promise<void> {
+    return this.serial(() => this.putNow(operation))
+  }
+
+  private async putNow(operation: OutgoingTopicOperation): Promise<void> {
     this.assertMutationAllowed()
     assertOutgoingTopicOperation(operation)
     const key = topicOperationKey(operation)
@@ -406,7 +425,11 @@ export class LevelTopicOperationJournal implements TopicOperationJournal {
     this.operations.set(key, cloneOperation(operation))
   }
 
-  async delete(operation: OutgoingTopicOperation): Promise<void> {
+  delete(operation: OutgoingTopicOperation): Promise<void> {
+    return this.serial(() => this.deleteNow(operation))
+  }
+
+  private async deleteNow(operation: OutgoingTopicOperation): Promise<void> {
     this.assertMutationAllowed()
     const key = topicOperationKey(operation)
     const prior = this.operations.get(key)

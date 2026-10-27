@@ -374,7 +374,11 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       const vm = wrapper.vm as any
 
       await vm.browseForumTopic('memes')
-      expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+      // The topic is the forum's address: the same screen however it is reached.
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        path: '/forum',
+        query: { topic: 'memes' },
+      })
     })
 
     it('picking a topic on a phone closes the drawer, even when the forum is already open', async () => {
@@ -393,38 +397,43 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       expect(wrapper.emitted('closeDrawer')).toBeUndefined()
     })
 
+    // On the forum, the topic changes in place (a replace: no history entry).
     it('toggles off active topic when clicked again', async () => {
-      mockSetSelectedTopic.mockClear()
+      mockRouterReplace.mockClear()
       mockForumStore.selectedTopic = 'news'
+      mockRoute.path = '/forum'
+      mockRoute.query = { topic: 'news' }
       const wrapper = mountDrawer()
       const vm = wrapper.vm as any
 
       await vm.browseForumTopic('news')
-      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+      expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/forum' })
+      expect(mockRouterPush).not.toHaveBeenCalled()
     })
 
     it('clears selected topic when selecting all topics', async () => {
-      mockSetSelectedTopic.mockClear()
+      mockRouterReplace.mockClear()
       mockForumStore.selectedTopic = 'news'
+      mockRoute.path = '/forum'
+      mockRoute.query = { topic: 'news' }
       const wrapper = mountDrawer()
       const vm = wrapper.vm as any
 
       await vm.browseForumTopic('')
-      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+      expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/forum' })
     })
 
     it('resets selected topic to empty when clicking forum tab', async () => {
-      mockSetSelectedTopic.mockClear()
+      mockRouterReplace.mockClear()
       mockForumStore.selectedTopic = 'news'
       mockRoute.path = '/forum'
+      mockRoute.query = { topic: 'news' }
       const wrapper = mountDrawer()
       const vm = wrapper.vm as any
 
       await vm.openForumTab()
-      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
-      expect(mockRefreshMessages).toHaveBeenCalledWith(
-        expect.objectContaining({ topic: '' }),
-      )
+      expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/forum' })
+      expect(mockRouterPush).not.toHaveBeenCalled()
     })
   })
 

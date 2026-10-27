@@ -2,6 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { reactive } from 'vue'
 
 import ForumLayout from './ForumLayout.vue'
 import { useForumStore } from 'src/stores/forum'
@@ -74,12 +75,54 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
   })
 
   function mountLayout(options?: {
-    route?: { path: string; params?: Record<string, string> }
-    router?: { push: jest.Mock }
+    route?: {
+      path: string
+      params?: Record<string, string>
+      query?: Record<string, string>
+    }
+    router?: { push: jest.Mock; replace?: jest.Mock; go?: jest.Mock }
     width?: number
   }) {
-    const mockRoute = options?.route ?? { path: '/forum', params: {} }
-    const mockRouter = options?.router ?? { push: jest.fn() }
+    // The forum's address names the topic the store holds (`/forum?topic=`).
+    const selected = useForumStore().selectedTopic
+    const start = options?.route ?? {
+      path: '/forum',
+      params: {},
+      query: selected ? { topic: selected } : {},
+    }
+    const mockRoute = reactive({
+      path: start.path,
+      params: start.params ?? {},
+      query: start.query ?? {},
+      fullPath: '',
+    })
+    const address = () =>
+      `${mockRoute.path}?${new URLSearchParams(mockRoute.query).toString()}`
+    mockRoute.fullPath = address()
+    // The router's calls are recorded, and move the address as a router would.
+    const navigate = (
+      to: string | { path: string; query?: Record<string, string> },
+    ) => {
+      const target = typeof to === 'string' ? { path: to } : to
+      mockRoute.path = target.path
+      mockRoute.query = target.query ?? {}
+      mockRoute.params = {}
+      mockRoute.fullPath = address()
+      return Promise.resolve()
+    }
+    const given = options?.router ?? { push: jest.fn() }
+    const mockRouter = {
+      ...given,
+      currentRoute: { value: mockRoute },
+      push: jest.fn((to: Parameters<typeof navigate>[0]) => {
+        given.push(to)
+        return navigate(to)
+      }),
+      replace: jest.fn((to: Parameters<typeof navigate>[0]) => {
+        given.replace?.(to)
+        return navigate(to)
+      }),
+    }
     return mount(ForumLayout, {
       global: {
         mocks: {
@@ -412,12 +455,17 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
       },
       router: { push: mockRouterPush },
     })
+    const store = useForumStore()
 
     const vm = wrapper.vm as any
     await vm.setTopic('memes')
+    await flushPromises()
 
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
-    const store = useForumStore()
+    // The topic is the forum's address; the layout's store follows it.
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      path: '/forum',
+      query: { topic: 'memes' },
+    })
     expect(store.selectedTopic).toBe('memes')
   })
 
@@ -426,7 +474,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     store.setSelectedTopic('news')
 
     const wrapper = mountLayout({
-      route: { path: '/forum', params: {} },
+      route: { path: '/forum', params: {}, query: { topic: 'news' } },
     })
     await flushPromises()
 

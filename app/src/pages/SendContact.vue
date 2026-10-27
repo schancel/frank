@@ -342,7 +342,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   activeChain,
@@ -356,13 +356,22 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { useContactStore } from 'src/stores/contacts'
 import { useTranslate } from 'src/composables/useTranslate'
-import { goBack } from 'src/utils/navigation'
+import {
+  formStart,
+  formStep,
+  formStepLocation,
+  goBack,
+  leaveForm,
+} from 'src/utils/navigation'
 import {
   sentTransactionNotify,
   errorNotify,
   infoNotify,
 } from 'src/utils/notifications'
 import { fundsInPendingSendMessage } from 'src/utils/funds-in-pending-send'
+
+/** The form's review step, in the address (`?step=review`). */
+const REVIEW_STEP = 'review'
 
 export default defineComponent({
   setup() {
@@ -555,6 +564,58 @@ export default defineComponent({
       })()
     }
 
+    // The form's first entry (utils/navigation). A review reached by its address alone (a
+    // reload, a link) has nothing to review: the form shows in its place.
+    if (formStep(route)) void router.replace(formStepLocation(route, null))
+    const start = formStart()
+
+    function reviewTransfer() {
+      if (tooLarge.value) {
+        errorNotify(new Error(tooLargeText.value), {
+          safeMessage: tooLargeText.value,
+        })
+        return false
+      }
+      if (belowFloor.value) {
+        errorNotify(new Error(belowFloorText.value), {
+          safeMessage: belowFloorText.value,
+        })
+        return false
+      }
+      if (!isValid.value) {
+        errorNotify(new Error('Invalid transfer details'), {
+          fallbackKey: 'sendContactDialog.invalidAmount',
+        })
+        return false
+      }
+      isReviewing.value = true
+      feeChanged.value = false
+      requote()
+      // The review is a step of its own: Back returns to the form, filled in.
+      if (formStep(route) !== REVIEW_STEP)
+        void router.push(formStepLocation(route, REVIEW_STEP))
+      return true
+    }
+    // Back from the review shows the form as it was; Forward onto it reviews the form again
+    // (a fresh quote). A payment being sent stays as it is, and an address with nothing to
+    // review shows the form.
+    watch(
+      () => formStep(route),
+      step => {
+        if (step === REVIEW_STEP) {
+          if (isReviewing.value) return
+          if (sending.value || !isValid.value)
+            void router.replace(formStepLocation(route, null))
+          else reviewTransfer()
+          return
+        }
+        if (isReviewing.value && !sending.value) {
+          isReviewing.value = false
+          feeChanged.value = false
+        }
+      },
+    )
+
     return {
       quote,
       feeChanged,
@@ -587,32 +648,17 @@ export default defineComponent({
         selectedContactAddress.value = ''
       },
       cancelEdit() {
-        goBack(router, '/wallet')
+        leaveForm(router, start, '/wallet')
       },
       reviewTransfer() {
-        if (tooLarge.value) {
-          errorNotify(new Error(tooLargeText.value), {
-            safeMessage: tooLargeText.value,
-          })
-          return
-        }
-        if (belowFloor.value) {
-          errorNotify(new Error(belowFloorText.value), {
-            safeMessage: belowFloorText.value,
-          })
-          return
-        }
-        if (!isValid.value) {
-          errorNotify(new Error('Invalid transfer details'), {
-            fallbackKey: 'sendContactDialog.invalidAmount',
-          })
-          return
-        }
-        isReviewing.value = true
-        feeChanged.value = false
-        requote()
+        reviewTransfer()
       },
       cancelReview() {
+        if (formStep(route) === REVIEW_STEP) {
+          // Back, as from the review: the form shows when its entry does.
+          goBack(router, formStepLocation(route, null))
+          return
+        }
         isReviewing.value = false
         feeChanged.value = false
       },
@@ -623,6 +669,8 @@ export default defineComponent({
           // The details stopped being a payment that can be sent (the contact or the amount
           // is gone): said, and back to the form, never a button that does nothing.
           isReviewing.value = false
+          if (formStep(route) === REVIEW_STEP)
+            goBack(router, formStepLocation(route, null))
           errorNotify(new Error('Invalid transfer details'), {
             fallbackKey: 'sendContactDialog.invalidAmount',
           })
@@ -690,7 +738,9 @@ export default defineComponent({
           } else {
             infoNotify($t('sendContactDialog.pending'))
           }
-          goBack(router, '/wallet')
+          // Done: back to where the form was opened from, past its review, so neither Back
+          // nor Forward reaches this payment's form again.
+          leaveForm(router, start, '/wallet')
         } catch (err) {
           // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
           // says so and shows the new quote, whose fee bounds the payment if confirmed again.

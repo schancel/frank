@@ -3,6 +3,7 @@ import { accountStatus } from '../accounts/session'
 import { resolveSavedExtensionRoute } from './extension-route-persistence'
 import AvuDetails from '../pages/AvuDetails.vue'
 import { NOT_FOUND_ROUTE } from './not-found'
+import { forumTopicLocation } from '../utils/forum-topic'
 
 export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
@@ -45,15 +46,10 @@ export function createRoutes(): RouteRecordRaw[] {
             },
           ],
         },
+        // A topic is the forum filtered to it: one screen, one address (utils/forum-topic).
         {
-          path: 'topic',
-          component: () => import('layouts/TopicLayout.vue'),
-          children: [
-            {
-              path: ':topic',
-              component: () => import('pages/Topic.vue'),
-            },
-          ],
+          path: 'topic/:topic',
+          redirect: to => forumTopicLocation(String(to.params.topic || '')),
         },
         { path: 'agora', redirect: '/forum' },
         { path: 'changelog', component: () => import('pages/Changelog.vue') },

@@ -978,7 +978,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import meraLogo from '../assets/mera/mera-logo.svg'
 import { useRouter } from 'vue-router'
-import { replaceFlow } from 'src/utils/navigation'
+import { replaceFlow, returnTo } from 'src/utils/navigation'
 import { useTranslate } from '../composables/useTranslate'
 import {
   accountSession,
@@ -1288,6 +1288,53 @@ watch(
   () => {
     replaceAccepted.value = false
   },
+)
+/**
+ * Restoring an account is a screen of its own, in the address (`/setup?mode=restore`): Back
+ * returns to the choice it was started from (and cancels the restore), and Forward, a reload or
+ * a link start a fresh one. Its steps (the shares, then the account to restore) stay on that
+ * one entry.
+ */
+const RESTORE_MODE = 'restore'
+const restoring = computed(
+  () => mode.value === 'restore-shares' || mode.value === 'restore-choose',
+)
+function routeMode(): string | null {
+  const raw = router?.currentRoute?.value?.query?.mode
+  return typeof raw === 'string' ? raw : null
+}
+function setupLocation(restore: boolean) {
+  const current = router.currentRoute.value
+  const query = { ...current.query }
+  if (restore) query.mode = RESTORE_MODE
+  else delete query.mode
+  return { path: current.path, query, hash: current.hash }
+}
+watch(restoring, (now, before) => {
+  if (
+    !router?.currentRoute?.value ||
+    router.currentRoute.value.path !== '/setup'
+  )
+    return
+  if (now && routeMode() !== RESTORE_MODE) void router.push(setupLocation(true))
+  // The restore ended here (Cancel, done, refused): its entry gives way, as Back would.
+  else if (!now && before && routeMode() === RESTORE_MODE)
+    returnTo(router, setupLocation(false))
+})
+watch(
+  () => routeMode(),
+  value => {
+    if (value === RESTORE_MODE) {
+      if (restoring.value || busy.value) return
+      void startRestore().then(() => {
+        // Not started (another account is in the way): the choice, as Back would show it
+        // when it is the entry before (no second copy of it), else in place.
+        if (alive && !restoring.value && routeMode() === RESTORE_MODE)
+          returnTo(router, setupLocation(false))
+      })
+    } else if (restoring.value) cancel()
+  },
+  { immediate: true },
 )
 async function run(work: (isCurrent: () => boolean) => Promise<void>) {
   if (busy.value) return

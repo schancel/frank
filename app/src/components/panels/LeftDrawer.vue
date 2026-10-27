@@ -413,10 +413,10 @@ import { isNarrowWidth } from '../../utils/layout'
 import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
 import { openChat } from '../../utils/routes'
 import { START_TAB, switchTab } from '../../utils/navigation'
+import { routeForumTopic, showForumTopic } from '../../utils/forum-topic'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
 import { useForumStore } from 'src/stores/forum'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
@@ -464,21 +464,10 @@ export default defineComponent({
     const railStep = { beforeStep: markRailNavigation }
     function openForumTab() {
       maybeRefreshTopics()
-      if (forum.selectedTopic) {
-        forum.setSelectedTopic('')
-        void (async () => {
-          try {
-            let wallet
-            try {
-              wallet = await useActiveWallet()
-            } catch {
-              // Public reading requires no active wallet
-            }
-            await forum.refreshMessages({ wallet, topic: '' })
-          } catch {
-            // Handled: forumStore records outageStatus; no unhandled browser exception
-          }
-        })()
+      // The Forum tab shows every topic. On the forum already, that is a change in place.
+      if (route.path === '/forum') {
+        if (routeForumTopic(route)) return showForumTopic(router, '')
+        return
       }
       return switchTab(router, '/forum', railStep)
     }
@@ -528,25 +517,14 @@ export default defineComponent({
       Object.keys(topicStore.topics).sort(),
     )
     const selectedForumTopic = computed(() => forum.selectedTopic)
+    // A topic is the forum's address (`/forum?topic=`), the same screen however it is
+    // reached; the forum reads its posts. Picking the selected topic again shows every topic.
     async function browseForumTopic(name: string) {
-      const targetTopic = name === forum.selectedTopic ? '' : name
-      forum.setSelectedTopic(targetTopic)
+      const shown = route.path === '/forum' ? routeForumTopic(route) : ''
+      const targetTopic = name === shown ? '' : name
       // A topic is a destination: on a phone the drawer gives way to it, navigation or not.
       if (isNarrow.value) emit('closeDrawer')
-      if (route.path !== '/forum') {
-        await router.push('/forum')
-      }
-      try {
-        let wallet
-        try {
-          wallet = await useActiveWallet()
-        } catch {
-          // Public reading requires no active wallet
-        }
-        await forum.refreshMessages({ wallet, topic: targetTopic })
-      } catch (error) {
-        // Handled: forumStore records outageStatus; no unhandled browser exception
-      }
+      await showForumTopic(router, targetTopic)
     }
 
     const { formattedBalance, exactBalance, loaded, hasError } = useBalance()

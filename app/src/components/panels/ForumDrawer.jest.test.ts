@@ -8,6 +8,7 @@ import { useTopicStore } from 'src/stores/topics'
 
 const mockRoute = { path: '/forum' }
 const mockRouterPush = jest.fn()
+const mockRouterReplace = jest.fn()
 
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => Promise.resolve({})),
@@ -37,7 +38,11 @@ describe('ForumDrawer.vue thread navigation', () => {
       global: {
         mocks: {
           $route: mockRoute,
-          $router: { push: mockRouterPush },
+          $router: {
+            push: mockRouterPush,
+            replace: mockRouterReplace,
+            currentRoute: { value: mockRoute },
+          },
           $t: (key: string) => key,
         },
         stubs: {
@@ -63,43 +68,39 @@ describe('ForumDrawer.vue thread navigation', () => {
     })
   }
 
-  it('navigates to /forum when selecting a topic while on a thread route', async () => {
-    const forum = useForumStore()
-    const refreshSpy = jest.spyOn(forum, 'refreshMessages').mockResolvedValue()
+  // The topic is the forum's address (`/forum?topic=`); the forum follows it.
+  it('opens the forum at the topic when selecting a topic while on a thread route', async () => {
     const wrapper = mountDrawer({ routePath: '/forum/0x1234567890abcdef' })
 
     const vm = wrapper.vm as any
     await vm.setTopic('news')
 
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
-    expect(forum.selectedTopic).toBe('news')
-    expect(refreshSpy).toHaveBeenCalled()
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      path: '/forum',
+      query: { topic: 'news' },
+    })
   })
 
-  it('navigates to /forum when clearing topic while on a thread route', async () => {
-    const forum = useForumStore()
-    forum.setSelectedTopic('news')
-    const refreshSpy = jest.spyOn(forum, 'refreshMessages').mockResolvedValue()
+  it('opens the forum when clearing topic while on a thread route', async () => {
     const wrapper = mountDrawer({ routePath: '/forum/0x1234567890abcdef' })
 
     const vm = wrapper.vm as any
     await vm.onTopicClear()
 
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
-    expect(forum.selectedTopic).toBe('')
-    expect(refreshSpy).toHaveBeenCalled()
+    expect(mockRouterPush).toHaveBeenCalledWith({ path: '/forum' })
   })
 
-  it('does not push /forum when already on /forum', async () => {
+  it('changes the topic in place (no history entry) when already on /forum', async () => {
     const wrapper = mountDrawer({ routePath: '/forum' })
-    const forum = useForumStore()
-    jest.spyOn(forum, 'refreshMessages').mockResolvedValue()
 
     const vm = wrapper.vm as any
     await vm.setTopic('memes')
 
     expect(mockRouterPush).not.toHaveBeenCalled()
-    expect(forum.selectedTopic).toBe('memes')
+    expect(mockRouterReplace).toHaveBeenCalledWith({
+      path: '/forum',
+      query: { topic: 'memes' },
+    })
   })
 
   it('computes percentile cutoffs and updates voteThreshold on preset selection', async () => {

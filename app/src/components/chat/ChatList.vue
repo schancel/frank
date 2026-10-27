@@ -271,6 +271,7 @@ import { useContactStore } from '../../stores/contacts'
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
 import { openChat } from '../../utils/routes'
+import { useQueryState } from '../../composables/useQueryState'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
@@ -294,6 +295,9 @@ import {
 import { isListedConversation } from '../../utils/listed-conversations'
 import { chatDraftRevision, hasChatDraft } from '../../utils/draft-storage'
 
+/** The address's query keys for the list's search and filter. */
+const SEARCH_KEY = 'q'
+const FILTER_KEY = 'filter'
 /** How often the list reads again what the wallets saw arrive for unread messages. */
 const UNREAD_VALUE_REREAD_MS = 15_000
 
@@ -327,8 +331,20 @@ export default defineComponent({
     const contactStore = useContactStore()
     const mailboxStatus = useMailboxStatusStore()
 
-    const searchQuery = ref('')
-    const activeFilter = ref<'all' | 'screener'>('all')
+    // The search and the All/Screener filter are in the address (`?q=`, `?filter=`) on the
+    // Messages tab: Back, Forward and a reload keep them, the list on the page and the one in
+    // the sidebar show the same, and a phone turned wide (one list for the other) keeps them.
+    const onMessages = (route: { path: string }) =>
+      route.path === '/chat' || route.path.startsWith('/chat/')
+    const searchQuery = useQueryState<string>(SEARCH_KEY, {
+      fallback: '',
+      owns: onMessages,
+    })
+    const activeFilter = useQueryState(FILTER_KEY, {
+      fallback: 'all',
+      allowed: ['all', 'screener'] as const,
+      owns: onMessages,
+    })
     const searchInputRef = ref<HTMLInputElement | null>(null)
     const showIdentityQrDialog = ref(false)
 
@@ -573,8 +589,15 @@ export default defineComponent({
       },
       selectConversation(item: Conversation | string) {
         const target = typeof item === 'string' ? item : item.id
-        // The route selects the conversation once it is committed.
-        openChat(router, target)
+        // The route selects the conversation once it is committed. Beside the conversation (a
+        // wide layout) the list stays on screen, with its search and filter; on a phone the
+        // conversation takes the list's place, and Back returns to the list as it was.
+        const narrow = isNarrowWidth($q.screen.width)
+        const query: Record<string, string> = {}
+        if (!narrow && searchQuery.value) query[SEARCH_KEY] = searchQuery.value
+        if (!narrow && activeFilter.value !== 'all')
+          query[FILTER_KEY] = activeFilter.value
+        openChat(router, target, { query })
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
         // drawer this list lives in is an overlay covering the whole chat -- selecting a chat
         // used to leave that overlay open on top of the chat it just navigated to, so the chat

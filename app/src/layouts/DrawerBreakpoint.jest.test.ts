@@ -4,7 +4,6 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 
 import ForumLayout from './ForumLayout.vue'
-import TopicLayout from './TopicLayout.vue'
 
 // A sentinel that differs from the real 800, so a leftover hard-coded literal cannot pass.
 jest.mock('src/utils/layout', () => ({
@@ -94,10 +93,10 @@ function breakpointOf(layout: object): string | undefined {
 }
 
 describe('side drawers share the single breakpoint constant', () => {
-  it.each([
-    ['ForumLayout', ForumLayout],
-    ['TopicLayout', TopicLayout],
-  ])('%s passes DRAWER_BREAKPOINT to QDrawer', (_name, layout) => {
-    expect(breakpointOf(layout)).toBe('777')
-  })
+  it.each([['ForumLayout', ForumLayout]])(
+    '%s passes DRAWER_BREAKPOINT to QDrawer',
+    (_name, layout) => {
+      expect(breakpointOf(layout)).toBe('777')
+    },
+  )
 })

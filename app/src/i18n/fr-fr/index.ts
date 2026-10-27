@@ -561,7 +561,6 @@ export const rawFrFR = {
     forumRefresh: 'Actualiser le forum',
     newPost: 'Nouvelle publication',
     forumSettings: 'Paramètres du forum',
-    topicSettings: 'Paramètres du sujet',
     chatMenu: 'Options de la conversation',
     closeInfo: 'Retour à la conversation',
     exitSelectMode: 'Quitter la suppression de messages',

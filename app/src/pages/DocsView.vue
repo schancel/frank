@@ -30,9 +30,11 @@
         :style-fn="pageStyle"
       >
         <iframe
-          src="/docs/"
+          ref="frame"
+          :src="frameSrc"
           class="docs-iframe"
           :title="$t('docs.iframeTitle')"
+          @load="watchFrame"
         />
       </q-page>
     </q-page-container>
@@ -43,6 +45,20 @@
 import { defineComponent } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { viewportPageStyle } from 'src/utils/layout'
+
+const DOCS_ROOT = '/docs/'
+
+/**
+ * The documentation page open in the frame, as the address holds it (`?page=`, relative to
+ * `/docs/`), or '' for the documentation's start page. Only a page of the documentation.
+ */
+function docsPage(raw: unknown): string {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (typeof value !== 'string' || !value) return ''
+  // Relative to /docs/ and nowhere else: no scheme, no host, no way up.
+  if (/^[/\\]|:|\.\./.test(value)) return ''
+  return value
+}
 
 export default defineComponent({
   name: 'DocsView',
@@ -55,6 +71,105 @@ export default defineComponent({
         emit('toggleMyDrawerOpen')
       },
     }
+  },
+  data() {
+    // The page open in the documentation is in the address (`?page=`): Back, Forward, a reload
+    // and a link open it again.
+    const page = docsPage(
+      (this as { $route?: { query?: Record<string, unknown> } }).$route?.query
+        ?.page,
+    )
+    return {
+      frameSrc: DOCS_ROOT + page,
+      stopWatchingFrame: undefined as (() => void) | undefined,
+    }
+  },
+  watch: {
+    // The address changed to another page (Back or Forward between two entries): the frame
+    // follows, unless it is already there.
+    '$route.query.page'(raw: unknown) {
+      if (this.$route?.path !== '/docs') return
+      const page = docsPage(raw)
+      if (page !== this.framePage()) this.frameSrc = DOCS_ROOT + page
+    },
+  },
+  beforeUnmount() {
+    this.stopWatchingFrame?.()
+  },
+  methods: {
+    /** The documentation page the frame shows, relative to /docs/; null when unreadable. */
+    framePage(): string | null {
+      const frame = this.$refs.frame as HTMLIFrameElement | undefined
+      try {
+        const location = frame?.contentWindow?.location
+        if (!location || !location.pathname.startsWith(DOCS_ROOT)) return null
+        return (
+          location.pathname.slice(DOCS_ROOT.length) +
+          location.search +
+          location.hash
+        )
+      } catch {
+        // Not the documentation's own origin: nothing to keep.
+        return null
+      }
+    },
+    /** Keeps the address on the page the frame shows, in place (no history entry). */
+    syncAddress() {
+      const route = this.$route
+      if (!route || !this.$router || route.path !== '/docs') return
+      const page = this.framePage()
+      if (page === null || page === docsPage(route.query.page)) return
+      const query = { ...route.query }
+      if (page) query.page = page
+      else delete query.page
+      void this.$router.replace({ path: route.path, query })
+    },
+    /**
+     * The documentation moves between its pages inside the frame (its own client-side
+     * navigation, or a full load): each move is followed.
+     */
+    watchFrame() {
+      this.stopWatchingFrame?.()
+      this.stopWatchingFrame = undefined
+      const frame = this.$refs.frame as HTMLIFrameElement | undefined
+      let view: Window | null | undefined
+      try {
+        view = frame?.contentWindow
+        // Throws for a page of another origin.
+        void view?.location.pathname
+      } catch {
+        return
+      }
+      if (!view) return
+      const sync = () => this.syncAddress()
+      const history = view.history
+      const push = history.pushState
+      const replace = history.replaceState
+      history.pushState = function (...args: Parameters<History['pushState']>) {
+        push.apply(this, args)
+        sync()
+      }
+      history.replaceState = function (
+        ...args: Parameters<History['replaceState']>
+      ) {
+        replace.apply(this, args)
+        sync()
+      }
+      view.addEventListener('popstate', sync)
+      view.addEventListener('hashchange', sync)
+      const watched = view
+      this.stopWatchingFrame = () => {
+        try {
+          history.pushState = push
+          history.replaceState = replace
+          watched.removeEventListener('popstate', sync)
+          watched.removeEventListener('hashchange', sync)
+        } catch {
+          // The frame is gone.
+        }
+      }
+      sync()
+    },
   },
 })
 </script>

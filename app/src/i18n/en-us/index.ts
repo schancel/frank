@@ -548,7 +548,6 @@ export const rawEnUS = {
     forumRefresh: 'Refresh forum',
     newPost: 'New post',
     forumSettings: 'Forum settings',
-    topicSettings: 'Topic settings',
     chatMenu: 'Chat options',
     closeInfo: 'Back to chat',
     exitSelectMode: 'Exit message deletion',

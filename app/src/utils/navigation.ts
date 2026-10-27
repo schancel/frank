@@ -1,5 +1,6 @@
 import { defineComponent, onBeforeUnmount, watch } from 'vue'
 import type {
+  LocationQuery,
   RouteLocationNormalized,
   RouteLocationRaw,
   Router,
@@ -507,6 +508,106 @@ export async function replaceFlow(
   // The router's guards decide first; only a flow that did leave takes `from`'s entry too.
   if ((await committed(router.replace(target))) && leavesFrom)
     await settleOnEarlierEntry(router as Router, -1)
+}
+
+/**
+ * Where a multi-step form starts: the history position of its first entry, and whether an
+ * in-app page is under it (the page the form was opened from). Read on that first entry.
+ *
+ * A multi-step form keeps each later step (a review) as an entry of its own, pushed on the
+ * form's (`?step=`), so Back from a step returns to the step before it, filled in as it was.
+ * Leaving the form (`leaveForm`) or finishing it on an outcome (`settleForm`) leaves none of
+ * its steps for Back to return to.
+ */
+export interface FormStart {
+  position: number | null
+  parentInApp: boolean
+}
+
+/** The query key a multi-step form keeps its step in (none: its first step). */
+export const FORM_STEP = 'step'
+
+/** The step of its form `route` shows; null for the form's first step. */
+export function formStep(route: { query: LocationQuery }): string | null {
+  const raw = route.query[FORM_STEP]
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' && value ? value : null
+}
+
+/** `route` at `step` of its form (null: the form's first step). */
+export function formStepLocation(
+  route: { path: string; query: LocationQuery; hash: string },
+  step: string | null,
+): RouteLocationRaw {
+  const query: LocationQuery = { ...route.query }
+  if (step) query[FORM_STEP] = step
+  else delete query[FORM_STEP]
+  return { path: route.path, query, hash: route.hash }
+}
+
+export function formStart(): FormStart {
+  return {
+    position: entryPosition(),
+    parentInApp: previousInAppLocation() !== null,
+  }
+}
+
+/**
+ * Leaves a multi-step form (Cancel, or done) from whichever of its steps is showing: back, in
+ * one step, to the page it was opened from, like Back past every step. A form opened first (a
+ * link, a reload: nothing in the app under it) gives way to its `parent` instead, replacing
+ * the entry showing.
+ */
+export function leaveForm(
+  router: Pick<Router, 'go' | 'replace'>,
+  start: FormStart,
+  parent: RouteLocationRaw,
+): void {
+  const position = entryPosition()
+  if (
+    start.parentInApp &&
+    start.position !== null &&
+    position !== null &&
+    position >= start.position
+  ) {
+    historyGo(router, start.position - 1 - position)
+    return
+  }
+  void settled(router.replace(parent))
+}
+
+/**
+ * A multi-step form that stays on its outcome (a send in progress, then done): the form's
+ * entries give way to the route now committed, unseen. It takes the place of the form's first
+ * entry, above the page the form was opened from, and the entries after it are gone: Back
+ * returns to that page and Forward cannot reach any step of the form again. A form opened
+ * first keeps its first entry for the outcome (a browser keeps the entries after it; they are
+ * the form's own, and a step reached that way has nothing to show).
+ */
+export async function settleForm(
+  router: Router,
+  start: FormStart,
+): Promise<void> {
+  const position = entryPosition()
+  if (
+    start.position === null ||
+    position === null ||
+    position <= start.position
+  )
+    return
+  const below = start.parentInApp ? start.position - 1 : start.position
+  if (!(await moveUnseen(below - position)) || !routerHistory) return
+  const current = router.currentRoute.value
+  if (start.parentInApp) {
+    // On the page under the form: the Messages entry under it, if any, is the outcome's too.
+    committedStart = null
+    recordStartTab(routerHistory.location.split(/[?#]/)[0] ?? '')
+    routerHistory.push(current.fullPath)
+  } else {
+    routerHistory.replace(current.fullPath)
+    committedStart = null
+  }
+  recordStartTab(current.path)
 }
 
 /**

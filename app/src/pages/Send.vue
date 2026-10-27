@@ -392,7 +392,15 @@
 import QrScannerDialog from 'src/components/dialogs/QrScannerDialog.vue'
 import { accountSession } from 'src/accounts/session'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
-import { goBack } from 'src/utils/navigation'
+import {
+  FORM_STEP,
+  formStart,
+  formStep,
+  formStepLocation,
+  goBack,
+  leaveForm,
+  settleForm,
+} from 'src/utils/navigation'
 import {
   nativeOperationOutcome,
   nativeOperationProgress,
@@ -442,6 +450,8 @@ import {
 /** How often, and for how long, the outcome page re-reads a sent transfer's journal row while
  * its change and its note to the account's other devices are still going out. */
 const SETTLE_READ_INTERVAL_MS = 2_000
+/** The form's review step, in the address (`?step=review`). */
+const REVIEW_STEP = 'review'
 const SETTLE_READ_LIMIT_MS = 15 * 60_000
 
 export default defineComponent({
@@ -532,7 +542,17 @@ export default defineComponent({
       operation.value = undefined
       outcomeHash.value = undefined
     }
-    watch(() => route.fullPath, invalidate, { flush: 'sync' })
+    // Another address (another network, another recipient) is another page; the form's own
+    // step (the review) is not.
+    const pageAddress = () => {
+      const [beforeHash, hash] = route.fullPath.split('#')
+      const [path, search] = (beforeHash ?? '').split('?')
+      const query = new URLSearchParams(search ?? '')
+      query.delete(FORM_STEP)
+      const rest = query.toString()
+      return `${path}${rest ? `?${rest}` : ''}${hash ? `#${hash}` : ''}`
+    }
+    watch(pageAddress, invalidate, { flush: 'sync' })
     watch(amount, () => {
       belowFloorText.value = ''
     })
@@ -602,6 +622,122 @@ export default defineComponent({
     })
 
     const router = useRouter()
+    // The form's first entry (utils/navigation). A review reached by its address alone (a
+    // reload, a link) has nothing to review: the form shows in its place.
+    if (formStep(route)) void router.replace(formStepLocation(route, null))
+    const start = formStart()
+    /** The review's entry gives way to the form's: Back, as from the review. */
+    const leaveReviewStep = () => {
+      if (formStep(route) === REVIEW_STEP)
+        goBack(router, formStepLocation(route, null))
+    }
+
+    const reviewTransfer = async () => {
+      if (sending.value || dispatched.value || disposed) return
+      const transfer = parsedTransfer.value
+      const captured = context.value
+      const capturedAmount = amount.value
+      if (!transfer || !captured) {
+        errorNotify(new Error('invalid transfer'), {
+          fallbackKey: openFailure.value ?? 'sendAddressDialog.invalidTransfer',
+        })
+        return
+      }
+      sending.value = true
+      estimatedFeeText.value = ''
+      estimatedFeeWei.value = undefined
+      feeUnavailableReason.value = ''
+      reviewedFee = undefined
+      feeChanged.value = false
+      belowFloorText.value = ''
+      try {
+        const binding = await captured.captureWallet()
+        if (disposed) return
+        review.value = {
+          context: captured,
+          binding,
+          transfer,
+          amount: capturedAmount,
+        }
+        isReviewing.value = true
+        feeEstimating.value = true
+        try {
+          const estimate =
+            await captured.chain.nativeTransfers.estimateLegacyFee?.({
+              wallet: binding.wallet,
+              recipient: transfer.recipient,
+              value: transfer.value,
+            })
+          if (estimate && !disposed) {
+            reviewedFee = estimate.totalFee
+            estimatedFeeWei.value = estimate.totalFee
+            estimatedFeeText.value = `${captured.chain.toDisplayAmount(
+              estimate.totalFee,
+            )} ${captured.chain.unit}`
+          }
+        } catch (err) {
+          // Below the payment floor: no review. The amount is refused, with the minimum, on
+          // the page where it is entered.
+          const refused = disposed
+            ? undefined
+            : floorRefusal(err, captured, false)
+          if (refused) {
+            review.value = undefined
+            isReviewing.value = false
+            belowFloorText.value = refused
+            leaveReviewStep()
+            return
+          }
+          // Said, with the wallet's reason: never a silent "unavailable". Money still in an
+          // earlier send's change is said plainly, with the amount.
+          if (!disposed) {
+            estimatedFeeText.value = ''
+            feeUnavailableReason.value =
+              tiedUpText(err, captured.chain) ??
+              (err instanceof Error && err.message ? err.message : String(err))
+          }
+        } finally {
+          if (!disposed) feeEstimating.value = false
+        }
+        // The review is a step of its own once the amount is accepted (a refused amount stays
+        // on the form, with no step to go Forward to): Back returns to the form, filled in.
+        if (!disposed && isReviewing.value && formStep(route) !== REVIEW_STEP)
+          void router.push(formStepLocation(route, REVIEW_STEP))
+      } catch (err) {
+        if (disposed) return
+        errorNotify(err, {
+          fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
+        })
+      } finally {
+        if (!disposed) sending.value = false
+      }
+    }
+
+    // Back from the review shows the form, filled in as it was; Forward onto it reviews the
+    // form again (a fresh quote). A send under way or made stays as it is: it is never
+    // re-entered, and an address with nothing to review shows the form.
+    watch(
+      () => formStep(route),
+      step => {
+        if (disposed) return
+        if (step === REVIEW_STEP) {
+          if (isReviewing.value) return
+          if (
+            !dispatched.value &&
+            !sending.value &&
+            parsedTransfer.value &&
+            context.value
+          )
+            void reviewTransfer()
+          else void router.replace(formStepLocation(route, null))
+          return
+        }
+        if (isReviewing.value && !sending.value && !dispatched.value) {
+          review.value = undefined
+          isReviewing.value = false
+        }
+      },
+    )
 
     return {
       address,
@@ -696,91 +832,18 @@ export default defineComponent({
       networkName,
       unit,
       maxTotal,
-      reviewTransfer: async () => {
-        if (sending.value || dispatched.value || disposed) return
-        const transfer = parsedTransfer.value
-        const captured = context.value
-        const capturedAmount = amount.value
-        if (!transfer || !captured) {
-          errorNotify(new Error('invalid transfer'), {
-            fallbackKey:
-              openFailure.value ?? 'sendAddressDialog.invalidTransfer',
-          })
-          return
-        }
-        sending.value = true
-        estimatedFeeText.value = ''
-        estimatedFeeWei.value = undefined
-        feeUnavailableReason.value = ''
-        reviewedFee = undefined
-        feeChanged.value = false
-        belowFloorText.value = ''
-        try {
-          const binding = await captured.captureWallet()
-          if (disposed) return
-          review.value = {
-            context: captured,
-            binding,
-            transfer,
-            amount: capturedAmount,
-          }
-          isReviewing.value = true
-          feeEstimating.value = true
-          try {
-            const estimate =
-              await captured.chain.nativeTransfers.estimateLegacyFee?.({
-                wallet: binding.wallet,
-                recipient: transfer.recipient,
-                value: transfer.value,
-              })
-            if (estimate && !disposed) {
-              reviewedFee = estimate.totalFee
-              estimatedFeeWei.value = estimate.totalFee
-              estimatedFeeText.value = `${captured.chain.toDisplayAmount(
-                estimate.totalFee,
-              )} ${captured.chain.unit}`
-            }
-          } catch (err) {
-            // Below the payment floor: no review. The amount is refused, with the minimum, on
-            // the page where it is entered.
-            const refused = disposed
-              ? undefined
-              : floorRefusal(err, captured, false)
-            if (refused) {
-              review.value = undefined
-              isReviewing.value = false
-              belowFloorText.value = refused
-              return
-            }
-            // Said, with the wallet's reason: never a silent "unavailable". Money still in an
-            // earlier send's change is said plainly, with the amount.
-            if (!disposed) {
-              estimatedFeeText.value = ''
-              feeUnavailableReason.value =
-                tiedUpText(err, captured.chain) ??
-                (err instanceof Error && err.message
-                  ? err.message
-                  : String(err))
-            }
-          } finally {
-            if (!disposed) feeEstimating.value = false
-          }
-        } catch (err) {
-          if (disposed) return
-          errorNotify(err, {
-            fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
-          })
-        } finally {
-          if (!disposed) sending.value = false
-        }
-      },
+      reviewTransfer,
       cancelReview: () => {
         if (sending.value || dispatched.value || disposed) return
+        if (formStep(route) === REVIEW_STEP) {
+          leaveReviewStep()
+          return
+        }
         review.value = undefined
         isReviewing.value = false
       },
       cancelEdit: () => {
-        goBack(router, '/wallet')
+        leaveForm(router, start, '/wallet')
       },
       confirmSend: async () => {
         if (sending.value || dispatched.value || disposed) return
@@ -940,6 +1003,13 @@ export default defineComponent({
           refusal.value = undefined
           feeChanged.value = false
           dispatched.value = true
+          // From here the transfer may be under way: its outcome takes the form's place in
+          // history, so neither Back nor Forward reaches the form or its review again.
+          void (async () => {
+            if (formStep(route))
+              await router.replace(formStepLocation(route, null))
+            await settleForm(router, start)
+          })()
           const result = client.sendLegacy
             ? await client.sendLegacy(params)
             : await client.send(params)
@@ -964,7 +1034,7 @@ export default defineComponent({
             reviewed.context.chain.chainIdentifier,
             result.txHash,
           )
-          goBack(router, '/wallet')
+          leaveForm(router, start, '/wallet')
         } catch (err) {
           if (disposed) return
           if (!dispatched.value) {

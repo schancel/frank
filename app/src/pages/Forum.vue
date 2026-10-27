@@ -215,6 +215,8 @@
 <script lang="ts">
 import { defineComponent, onUnmounted, watch, computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
+import { showForumTopic } from '../utils/forum-topic'
 
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus } from 'src/accounts/session'
@@ -310,9 +312,11 @@ export default defineComponent({
       forumStore.setVoteThreshold('0')
     }
 
+    // The topic is the forum's address (`?topic=`): clearing it is a change in place, and the
+    // layout reads the posts again.
+    const router = useRouter()
     const clearFilter = async () => {
-      forumStore.setSelectedTopic('')
-      await retryRefresh()
+      await showForumTopic(router, '')
     }
 
     return {

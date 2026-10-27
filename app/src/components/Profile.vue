@@ -639,6 +639,17 @@ export default defineComponent({
     '$route.query.tab'(value: unknown) {
       this.tab = profileTabFromQuery(value)
     },
+    // And written back in place (a replace: switching tabs adds no history entry), so Back,
+    // Forward and a reload return to the tab that was open.
+    'tab'(value: 'profile' | 'identity') {
+      const route = this.$route
+      if (!route || !this.$router || route.path !== '/profile') return
+      if (profileTabFromQuery(route.query.tab) === value) return
+      const query = { ...route.query }
+      if (value === 'identity') query.tab = value
+      else delete query.tab
+      void this.$router.replace({ path: route.path, query, hash: route.hash })
+    },
     'internalName'(value: string) {
       this.$emit('update:name', normalizedProfileName(value))
     },

@@ -1,0 +1,420 @@
+/** @jest-environment jsdom */
+/**
+ * Finding 12: a send's Review is a step of its own in history, on a real router (hash mode, as
+ * the app ships). Back from Review returns to the form, filled in; Forward reviews it again. A
+ * send that went out leaves no step of its form for Back or Forward: Back lands where the form
+ * was opened from and Forward shows a fresh form. A Review reached by its address alone (a
+ * reload) shows the form, never a review of nothing.
+ */
+import { defineComponent, h } from 'vue'
+import { RouterView, type Router } from 'vue-router'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { getAddress } from 'ethers'
+
+import Send from './Send.vue'
+import SendContact from './SendContact.vue'
+import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { useContactStore } from 'src/stores/contacts'
+import { resetNavigationForTests } from '../utils/navigation'
+import enUS from '../i18n/en-us'
+import {
+  afterNavigation,
+  flushHistory,
+  historyPosition,
+  openApp,
+  userBack,
+  userForward,
+} from '../../test/jest/navigation-harness'
+
+jest.mock(
+  require.resolve('@vue/devtools-api', {
+    paths: [require.resolve('vue-router')],
+  }),
+  () => ({ setupDevtoolsPlugin: () => undefined }),
+)
+jest.mock('nostics', () => ({
+  createConsoleReporter: () => ({}),
+  defineDiagnostics: () => new Proxy({}, { get: () => () => undefined }),
+}))
+
+const mockSend = jest.fn()
+const mockCaptureWallet = jest.fn()
+const mockPrepare = jest.fn()
+const mockSendMessage = jest.fn()
+const mockEstimate = jest.fn()
+
+jest.mock('@frank/wallet/chain', () => {
+  const chainWallet = jest.requireActual('@frank/wallet/chain/chain-wallet')
+  const { getAddress: checksum } = jest.requireActual('ethers')
+  return {
+    onActiveChainChange: () => jest.fn(),
+    isChainUnreachableError: () => false,
+    ...jest.requireActual('@frank/wallet/chain/evm-native-operation-status'),
+    NativeTransactionSubmissionError:
+      chainWallet.NativeTransactionSubmissionError,
+    NativeTransactionRefusedError: chainWallet.NativeTransactionRefusedError,
+    NativeFeeExceededError: chainWallet.NativeFeeExceededError,
+    ContactPaymentBelowFloorError: chainWallet.ContactPaymentBelowFloorError,
+    MAX_STEALTH_ITEM_AMOUNT: 2n ** 64n - 1n,
+    activeChain: {
+      chainIdentifier: 'monad-testnet',
+      name: 'monad',
+      unit: 'MON',
+      toDisplayAmount: (raw: bigint) => {
+        const s = raw.toString().padStart(19, '0')
+        return `${s.slice(0, -18)}.${s.slice(-18)}`.replace(/\.?0+$/, '')
+      },
+      fromDisplayAmount: (display: string) => {
+        const [whole, frac = ''] = display.split('.')
+        return BigInt((whole || '0') + frac.padEnd(18, '0'))
+      },
+      formatAddress: (addr: { raw: string }) => checksum(addr.raw),
+      parseAddress: (input: string) => {
+        try {
+          return { raw: checksum(input.trim()) }
+        } catch {
+          return undefined
+        }
+      },
+      directMessages: { minimumStamp: async () => 0n },
+      nativeTransfers: {
+        send: (args: unknown) => mockSend(args),
+        estimateLegacyFee: (args: unknown) => mockEstimate(args),
+        getBalance: async () => 0n,
+      },
+    },
+  }
+})
+jest.mock('src/accounts/session', () => ({ accountSession: {} }))
+jest.mock('src/accounts/native-transfer', () => ({
+  ...jest.requireActual('src/accounts/native-transfer'),
+  createNativeTransferContext: jest.fn(async () => {
+    const { activeChain } = jest.requireMock('@frank/wallet/chain')
+    return { chain: { ...activeChain }, captureWallet: mockCaptureWallet }
+  }),
+}))
+jest.mock('src/utils/notifications', () => ({
+  sentTransactionNotify: jest.fn(),
+  errorNotify: jest.fn(),
+  infoNotify: jest.fn(),
+}))
+jest.mock('src/utils/clients', () => ({
+  useMonadWallet: () => ({ identity: { displayAddress: '0xmessaging' } }),
+}))
+jest.mock('src/stores/chats', () => ({
+  useChatStore: () => ({
+    sendMessage: mockSendMessage,
+    getStampWei: () => 0n,
+  }),
+}))
+jest.mock('src/composables/useActiveWallet', () => ({
+  useActiveWallet: jest.fn(),
+}))
+jest.mock('src/composables/useBalance', () => ({
+  useBalance: () => ({
+    formattedBalance: { value: '10 MON' },
+    formattedSpendable: { value: '10 MON' },
+    exactSpendable: { value: '10 MON' },
+    loaded: { value: true },
+  }),
+}))
+
+const Blank = { render: () => null }
+const RECIPIENT = '0x000000000000000000000000000000000000dEaD'
+const CONTACT = '0x2222222222222222222222222222222222222222'
+
+const stubs = {
+  QHeader: { template: '<header><slot /></header>' },
+  QToolbar: { template: '<div><slot /></div>' },
+  QToolbarTitle: { template: '<div><slot /></div>' },
+  QPageContainer: { template: '<div><slot /></div>' },
+  QPage: { template: '<div><slot /></div>' },
+  QCard: { template: '<div class="q-card"><slot /></div>' },
+  QCardSection: { template: '<div><slot /></div>' },
+  QCardActions: { template: '<div><slot /></div>' },
+  QList: { template: '<div><slot /></div>' },
+  QItem: { template: '<div @click="$emit(\'click\')"><slot /></div>' },
+  QItemSection: { template: '<div><slot /></div>' },
+  QItemLabel: { template: '<div><slot /></div>' },
+  QAvatar: { template: '<div><slot /></div>' },
+  QInput: {
+    props: ['modelValue', 'disable'],
+    emits: ['update:modelValue'],
+    inheritAttrs: false,
+    template:
+      '<input v-bind="$attrs" :value="modelValue" :disabled="disable" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
+  QBtn: {
+    props: ['label', 'disable', 'loading'],
+    template:
+      '<button :disabled="disable || loading" @click="$emit(\'click\')">{{ label }}<slot /></button>',
+  },
+  QBanner: { template: '<div><slot /></div>' },
+  QIcon: { template: '<i />' },
+  QSeparator: { template: '<hr />' },
+  QSpinner: { template: '<i />' },
+  QrScannerDialog: { template: '<div />' },
+}
+
+function t(key: string): string {
+  const value = key
+    .split('.')
+    .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], enUS)
+  return typeof value === 'string' ? value : key
+}
+
+let router: Router
+let destroy: () => void = () => undefined
+let wrapper: VueWrapper | undefined
+
+function mountApp() {
+  wrapper = mount(defineComponent({ render: () => h(RouterView) }), {
+    global: {
+      plugins: [router],
+      mocks: { $t: t },
+      stubs,
+    },
+  })
+  return wrapper
+}
+
+const ROUTES = [
+  '/wallet',
+  { path: '/send', component: Send },
+  { path: '/send-contact', component: SendContact },
+]
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  jest.clearAllMocks()
+})
+afterEach(() => {
+  wrapper?.unmount()
+  wrapper = undefined
+  destroy()
+  resetNavigationForTests()
+})
+
+function input(selector: string) {
+  return wrapper!.get(selector).element as HTMLInputElement
+}
+
+describe('Send to Address: Review is a step', () => {
+  const binding = {
+    wallet: {
+      family: 'evm',
+      chainIdentifier: 'monad-testnet',
+      getNativeOperations: () => [],
+    },
+    assertCurrent: jest.fn(async () => undefined),
+    isCurrent: () => true,
+  }
+
+  async function fillAndReview() {
+    await wrapper!.get('[data-test="send-address-input"]').setValue(RECIPIENT)
+    await wrapper!.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper!.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    await flushHistory()
+  }
+
+  beforeEach(() => {
+    mockCaptureWallet.mockResolvedValue(binding)
+    mockSend.mockResolvedValue({ txHash: '0xsent' })
+    mockEstimate.mockResolvedValue(undefined)
+  })
+
+  it('Back from Review shows the form filled in; Forward reviews it again', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    const form = historyPosition()
+
+    await fillAndReview()
+    expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+    expect(historyPosition()).toBe(form + 1)
+    expect(wrapper!.find('[data-test="send-review-card"]').exists()).toBe(true)
+
+    await userBack(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
+    expect(input('[data-test="send-address-input"]').value).toBe(RECIPIENT)
+    expect(input('[data-test="send-amount-input"]').value).toBe('0.01')
+
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+    expect(wrapper!.find('[data-test="send-review-card"]').exists()).toBe(true)
+    // Reviewed again: a fresh quote, nothing sent.
+    expect(mockCaptureWallet).toHaveBeenCalledTimes(2)
+    expect(mockSend).not.toHaveBeenCalled()
+  })
+
+  it('an amount refused below the payment floor stays on the form: no step to go Back or Forward to', async () => {
+    const { ContactPaymentBelowFloorError } = jest.requireMock(
+      '@frank/wallet/chain',
+    )
+    mockEstimate.mockRejectedValue(
+      new ContactPaymentBelowFloorError(10n ** 16n, 2n * 10n ** 16n),
+    )
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    const form = historyPosition()
+    const entries = window.history.length
+
+    await fillAndReview()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(form)
+    expect(window.history.length).toBe(entries)
+    expect(wrapper!.find('[data-test="send-below-floor"]').exists()).toBe(true)
+    expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
+  })
+
+  it('the review Edit button is Back to the form', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    const form = historyPosition()
+    await fillAndReview()
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="send-header-back"]').trigger('click')
+    await done
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(form)
+    expect(input('[data-test="send-amount-input"]').value).toBe('0.01')
+  })
+
+  it('a send that went out leaves no step behind: Back lands on the wallet, Forward shows a fresh form', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    const walletPosition = historyPosition()
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    await flushHistory()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    // The outcome took the form's place, right above the wallet; nothing after it.
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(walletPosition + 1)
+    expect((window.history.state as { forward: unknown }).forward).toBeNull()
+
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
+    expect(input('[data-test="send-address-input"]').value).toBe('')
+    expect((window.history.state as { forward: unknown }).forward).toBeNull()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('a reload on Review shows the form in its place', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send?step=review')
+    const position = historyPosition()
+    mountApp()
+    await flushPromises()
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(position)
+    expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
+    expect(mockCaptureWallet).not.toHaveBeenCalled()
+  })
+})
+
+describe('Send to Contact: Review is a step', () => {
+  const wallet = {
+    chainIdentifier: 'monad-testnet',
+    prepareContactPayment: (params: unknown) => mockPrepare(params),
+    identity: { address: { raw: '0x1111' }, displayAddress: '0x1111' },
+  }
+
+  beforeEach(() => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(wallet)
+    mockPrepare.mockResolvedValue({
+      stampValue: 0n,
+      item: { type: 'stealth' },
+      txHash: '0xabc',
+    })
+    mockSendMessage.mockResolvedValue({ state: 'sent', payloadDigest: 'dd' })
+    useContactStore().contacts = {
+      [CONTACT]: {
+        lastUpdateTime: Date.now(),
+        notify: true,
+        relayURL: null,
+        profile: { name: 'Alice', signedName: 'Alice', bio: '', avatar: '' },
+        inbox: {},
+      },
+    } as never
+  })
+
+  async function fillAndReview() {
+    await wrapper!.get('[data-test="contact-item"]').trigger('click')
+    await wrapper!
+      .get('[data-test="send-contact-amount-input"]')
+      .setValue('1.5')
+    await wrapper!
+      .get('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+    await flushHistory()
+  }
+
+  it('Back from Review shows the form filled in; the payment leaves no step for Back or Forward', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    const walletPosition = historyPosition()
+    await router.push('/send-contact')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    expect(router.currentRoute.value.query.step).toBe('review')
+    expect(historyPosition()).toBe(walletPosition + 2)
+
+    await userBack(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send-contact')
+    expect(wrapper!.find('[data-test="send-contact-edit-card"]').exists()).toBe(
+      true,
+    )
+    expect(input('[data-test="send-contact-amount-input"]').value).toBe('1.5')
+
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.query.step).toBe('review')
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await done
+    await flushPromises()
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+    // Done: back on the wallet in one step, past the form and its review.
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(walletPosition)
+
+    // Forward: a fresh form, never the payment again.
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send-contact')
+    expect(wrapper!.find('[data-test="send-contact-edit-card"]').exists()).toBe(
+      true,
+    )
+    expect(input('[data-test="send-contact-amount-input"]').value).toBe('')
+    await userForward(router)
+    await flushPromises()
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/send-contact')
+    expect(wrapper!.find('[data-test="send-contact-edit-card"]').exists()).toBe(
+      true,
+    )
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+  })
+})

@@ -26,7 +26,6 @@ import TopicListLink from './topic/TopicListLink.vue'
 import TopicMessage from './topic/TopicMessage.vue'
 import ChatLayout from '../layouts/ChatLayout.vue'
 import ForumLayout from '../layouts/ForumLayout.vue'
-import TopicLayout from '../layouts/TopicLayout.vue'
 
 jest.mock('pinia', () => ({
   ...jest.requireActual('pinia'),
@@ -214,12 +213,7 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
       ])
     })
 
-    it('names navigation and settings in the Topic toolbar and its send control', () => {
-      const wrapper = render(locale, TopicLayout)
-      expectNamedAndDistinct(buttonNames(wrapper), [
-        t('a11y.openNavigation'),
-        t('a11y.topicSettings'),
-      ])
+    it('names the topic send control', () => {
       const input = render(locale, TopicInput, { props: { message: '' } })
       expectNamedAndDistinct(buttonNames(input), [t('a11y.sendMessage')])
     })

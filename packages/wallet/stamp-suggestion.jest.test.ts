@@ -170,6 +170,15 @@ describe("Stamp Suggestion & Geometric Mean Convergence (Issues #819 & #820)", (
       expect(getMessageStampWei({})).toBe(0n);
     });
 
+    it("counts a wallet UTXO record's satoshis as the stamp it paid", () => {
+      // Chat messages carry their stamp outpoints as wallet UTXO records (`satoshis`).
+      expect(
+        getMessageStampWei({
+          outpoints: [{ satoshis: 546 }, { satoshis: 1000 }],
+        })
+      ).toBe(1546n);
+    });
+
     it("derives correct metrics across a conversation history", () => {
       const messages = [
         { outbound: true, stampValueWei: 1000n, status: "confirmed" },

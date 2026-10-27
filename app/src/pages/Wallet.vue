@@ -616,7 +616,10 @@
                   </div>
 
                   <!-- dApp Persona EOA & Extension Bridge Card -->
-                  <div v-if="isPrimaryStampChain" class="q-px-md q-py-md">
+                  <div
+                    v-if="isPrimaryStampChain && sendChainIdentifier"
+                    class="q-px-md q-py-md"
+                  >
                     <dapp-bridge-panel
                       :chain-identifier="sendChainIdentifier"
                     />
@@ -629,7 +632,7 @@
                   data-testid="wallet-history-panel"
                 >
                   <wallet-history
-                    :chain-identifier="sendChainIdentifier"
+                    :chain-identifier="historyChainIdentifier"
                     :groups="historyGroups"
                     :inspection-status="nativeOperations.status"
                     :deposits-unread="
@@ -1003,9 +1006,13 @@ export default defineComponent({
       status: 'unsupported',
     })
     // A derived view only: see wallet-history.ts for the owners it reads and when it is rebuilt.
+    // A network the app has no wallet for has no history: no record carries an empty identifier.
+    const historyChainIdentifier = computed(
+      () => sendChainIdentifier.value ?? '',
+    )
     const historyGroups = computed(() =>
       buildWalletHistoryGroups({
-        chainIdentifier: sendChainIdentifier.value,
+        chainIdentifier: historyChainIdentifier.value,
         load: nativeOperations.value,
         swaps: recentSwaps.value,
       }),
@@ -1148,6 +1155,7 @@ export default defineComponent({
       myDrawerOpen,
       nativeOperations,
       historyGroups,
+      historyChainIdentifier,
       networkName,
       nativeUnit: computed(() => nativePresentation.value.unit),
       nativeAmount: (value: string) =>

@@ -136,7 +136,7 @@
             />
             <chat-message-stealth
               v-else-if="item.type == 'stealth-asset' && stealthAssetCard(item)"
-              v-bind="stealthAssetCard(item)"
+              v-bind="stealthAssetCard(item)!"
               :outbound="message.outbound"
               :outbound-state="
                 message.outbound ? sentStealthAsset(item).state : undefined
@@ -429,8 +429,9 @@ export default defineComponent({
       type: String,
       required: true,
     },
+    // A message as the chat store holds it: keyed by its payload digest.
     message: {
-      type: Object as PropType<Message>,
+      type: Object as PropType<Message & { payloadDigest: string }>,
       required: true,
     },
     name: {

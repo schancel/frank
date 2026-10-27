@@ -37,6 +37,16 @@ if (existsSync(custodyConfig)) {
   targetConfigs.push(custodyConfig)
 }
 
+// The app itself, including its .vue single-file components: only vue-tsc reads those, so this
+// project is checked with vue-tsc whichever compiler checks the others.
+const appConfig = join(rootDir, 'app/tsconfig.json')
+const vueTscBin = join(rootDir, 'node_modules/.bin/vue-tsc')
+const vueProjects = new Set<string>()
+if (existsSync(appConfig)) {
+  targetConfigs.push(appConfig)
+  vueProjects.add(appConfig)
+}
+
 // Parse CLI flags
 const args = process.argv.slice(2)
 const forceTsc = args.includes('--tsc')
@@ -84,7 +94,8 @@ for (const config of targetConfigs) {
   const relConfig = config.replace(`${rootDir}/`, '')
   process.stdout.write(`  checking ${relConfig.padEnd(52)} `)
   const pkgStart = Date.now()
-  const proc = spawnSync(compilerBin, ['--project', config, '--noEmit'], {
+  const projectCompiler = vueProjects.has(config) ? vueTscBin : compilerBin
+  const proc = spawnSync(projectCompiler, ['--project', config, '--noEmit'], {
     cwd: rootDir,
     encoding: 'utf8',
   })

@@ -63,9 +63,10 @@
     "@frank/nakamoto": "*",
     "@frank/wallet": "*",
     "@quasar/extras": "^1.15.11",
+    "@solana/codecs-strings": "8.4.0",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",
-    "chronik-client": "^0.8.2",
+    "chronik-client": "4.3.1",
     "core-js": "^3.24.1",
     "dompurify": "^2.3.1",
     "electron-windows-badge": "^1.1.0",
@@ -138,7 +139,8 @@
     "promise": "^8",
     "ts-jest": "^29",
     "ts-protoc-gen": "^0.15.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vue-tsc": "3.3.13"
   },
   "optionalDependencies": {
     "protoc": "^1.0.4"

@@ -136,12 +136,7 @@
               flat
               :label="$t('groupChat.dismissRequest')"
               data-testid="participant-request-dismiss"
-              @click="
-                chatStore.dismissPendingParticipantRequest(
-                  conversation.id,
-                  request.senderAddress,
-                )
-              "
+              @click="dismissParticipantRequest(request.senderAddress)"
             />
           </template>
         </q-banner>
@@ -405,8 +400,8 @@
           class="chat-inline-sheet-card"
         >
           <invoice-compose-form
-            :payee-identity="ownAddress"
-            :receive-address="ownAddress"
+            :payee-identity="ownAddress ?? ''"
+            :receive-address="ownAddress ?? ''"
             :chain-key="activeChainKey"
             :network-id="activeNetworkId"
             :native-symbol="activeNativeSymbol"
@@ -874,6 +869,13 @@ export default defineComponent({
   },
   methods: {
     shortAddress,
+    dismissParticipantRequest(senderAddress: string) {
+      if (!this.conversation) return
+      this.chatStore.dismissPendingParticipantRequest(
+        this.conversation.id,
+        senderAddress,
+      )
+    },
     viewParticipantRequest(conversationId: string) {
       const target = this.chatStore.conversations[conversationId]
       if (target) openChat(this.$router, target.id)
@@ -1875,7 +1877,7 @@ export default defineComponent({
         this.stealthQuote = { status: 'error', message: notSentMessage }
       if (!this.bottom) this.$nextTick(this.buttonScrollBottom)
     },
-    newSwapId(): Uint8Array {
+    newSwapId(): Uint8Array<ArrayBuffer> {
       return crypto.getRandomValues(new Uint8Array(32))
     },
     openSwapDialog() {
@@ -2516,21 +2518,20 @@ export default defineComponent({
       return activeChain.chainIdentifier || 'monad'
     },
     activeNetworkId(): string {
-      try {
-        return getChainConfig(activeChain.chainIdentifier).chainId
-      } catch {
-        return '10143'
-      }
+      // The network's native chain ID where its protocol has one; otherwise its canonical
+      // identifier. Never another network's.
+      const nativeChainId = getChainConfig(
+        activeChain.chainIdentifier,
+      )?.nativeChainId
+      return nativeChainId === undefined
+        ? activeChain.chainIdentifier
+        : String(nativeChainId)
     },
     activeNativeSymbol(): string {
       return activeChain.unit || 'MON'
     },
     activeNativeDecimals(): number {
-      try {
-        return getChainConfig(activeChain.chainIdentifier).nativeDecimals
-      } catch {
-        return 18
-      }
+      return getChainConfig(activeChain.chainIdentifier)?.nativeDecimals ?? 18
     },
     swapStampValue(): string {
       try {
@@ -2801,18 +2802,10 @@ export default defineComponent({
       }
       return null
     },
+    /** What the wallet reports as its balance (its own send checks use it); undefined while
+     * unknown. */
     availableBalanceWei(): bigint | undefined {
-      if (
-        this.balanceUnavailable ||
-        this.activeWalletBalance?.total === undefined
-      ) {
-        return undefined
-      }
-      try {
-        return BigInt(this.activeWalletBalance.total)
-      } catch {
-        return undefined
-      }
+      return this.activeWalletBalance ?? undefined
     },
     peerStampSuggestion(): PeerStampSuggestionResult | undefined {
       if (this.isEmailThread || this.defaultStampWei === undefined)

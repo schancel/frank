@@ -17,7 +17,6 @@ import {
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
 import type { EcashWallet } from '@frank/wallet/ecash-wallet'
-import type { EcashNativeOperation } from '@frank/wallet/ecash-operation-store'
 import type { EcashSdkWallet } from '@frank/wallet/ecash-sdk-backend'
 import { MonadAccountTxSigner } from '@frank/wallet/evm-account-tx'
 import {
@@ -148,7 +147,9 @@ async function openXecEscrowSdk(
   const account = HdNode.fromSeed(seed).derivePath("m/44'/1899'/0'")
   const child0 = account.derivePath('0/0')
   const pkhHex = bytesToHex(shaRmd160(child0.pubkey()))
-  const sdk = new WalletCtor(account.seckey(), chronik, account, 0, 'ectest')
+  const seckey = account.seckey()
+  if (!seckey) throw new Error('eCash swap escrow key has no private key')
+  const sdk = new WalletCtor(seckey, chronik, account, 0, 'ectest')
   const address = sdk.getReceiveAddress(0)
   return { sdk, address, pkhHex }
 }
@@ -208,102 +209,10 @@ function parseActionDescriptor(raw: string): {
   }
 }
 
-function resolveParties(
-  role: SwapRole | undefined,
-  localPublicKey: string | undefined,
-  peerPublicKey: string | undefined,
-  swapId: string,
-): { initiatorPub: string; responderPub: string; role: SwapRole } {
-  const effectiveRole: SwapRole = role ?? 'initiator'
-  const local = (localPublicKey ?? '02' + swapId.slice(0, 64)).toLowerCase()
-  const peer = (peerPublicKey ?? '03' + swapId.slice(0, 64)).toLowerCase()
-  return {
-    role: effectiveRole,
-    initiatorPub: effectiveRole === 'initiator' ? local : peer,
-    responderPub: effectiveRole === 'initiator' ? peer : local,
-  }
-}
-
 export function createLiveXecSwapCapability(): XecSwapCapability {
   return {
-    async reserveInputs(input) {
-      const { initiatorPub, responderPub, role } = resolveParties(
-        input.role,
-        input.localPublicKey,
-        input.peerPublicKey,
-        input.swapId,
-      )
-      const swapId = input.swapId.toLowerCase()
-      const chronik = getChronikClient()
-      const escrow = await openXecEscrowSdk(
-        swapId,
-        initiatorPub,
-        responderPub,
-        chronik,
-      )
-
-      const claimDesc = `swap-xec-claim:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const claimIdDesc = `swap-xec-claim-id:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const refundDesc = `swap-xec-refund:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const refundIdDesc = `swap-xec-refund-id:${swapId}:${initiatorPub}:${responderPub}:${role}`
-
-      if (role === 'initiator') {
-        const { wallet } = await openUtxoWallet(
-          TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
-        )
-        await wallet.getBalance()
-        const ecashWallet = wallet as unknown as EcashWallet
-        const operationId = `swap-xec-fund:${swapId}`
-        let op: EcashNativeOperation
-        try {
-          op = await ecashWallet.prepareNativeOperation({
-            operationId,
-            recipient: { raw: escrow.address },
-            value: input.principalSats + XEC_SWEEP_FEE_BUFFER_SATS,
-          })
-        } catch {
-          op = await ecashWallet.prepareNativeOperation({
-            operationId,
-            recipient: { raw: escrow.address },
-            value: input.principalSats,
-          })
-        }
-        return {
-          inputs: op.inputs.map(i => ({
-            txid: i.txid,
-            vout: i.vout,
-            valueSats: i.satoshis.toString(),
-          })),
-          feeSats: BigInt(op.fee),
-          fundingTxHex: op.transactions[0].rawTransaction,
-          fundingTxid: op.transactions[0].txid,
-          claimTxHex: claimDesc,
-          claimTxid: claimIdDesc,
-          refundTxHex: refundDesc,
-          refundTxid: refundIdDesc,
-        }
-      }
-
-      // Responder watches the deterministic XEC escrow address funded by Initiator
-      const watchDesc = `swap-xec-watch:${swapId}:${initiatorPub}:${responderPub}:${input.principalSats.toString()}`
-      const watchIdDesc = `swap-xec-watch-id:${swapId}:${initiatorPub}:${responderPub}:${input.principalSats.toString()}`
-      return {
-        inputs: [
-          {
-            txid: escrow.pkhHex.padEnd(64, '0'),
-            vout: 0,
-            valueSats: input.principalSats.toString(),
-          },
-        ],
-        feeSats: XEC_SWEEP_FEE_BUFFER_SATS,
-        fundingTxHex: watchDesc,
-        fundingTxid: watchIdDesc,
-        claimTxHex: claimDesc,
-        claimTxid: claimIdDesc,
-        refundTxHex: refundDesc,
-        refundTxid: refundIdDesc,
-      }
-    },
+    // A new swap cannot be funded (see `SwapExecutionDisabledError`).
+    reserveInputs: refuseNewSwapExecution,
 
     async broadcastTransaction(txHex: string) {
       const desc = parseActionDescriptor(txHex)
@@ -484,86 +393,8 @@ export function createLiveEvmSwapCapability(
   getEvmWallet: () => EvmChainWalletHandle,
 ): EvmSwapCapability {
   return {
-    async reserveInput(input) {
-      const { initiatorPub, responderPub, role } = resolveParties(
-        input.role,
-        input.localPublicKey,
-        input.peerPublicKey,
-        input.swapId,
-      )
-      const swapId = input.swapId.toLowerCase()
-      const evmWallet = getEvmWallet()
-      const escrowPrivKey = deriveEvmEscrowPrivateKeyHex(
-        swapId,
-        initiatorPub,
-        responderPub,
-      )
-      const escrowWallet = new ethers.Wallet(escrowPrivKey)
-
-      const claimDesc = `swap-evm-claim:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const claimIdDesc = `swap-evm-claim-id:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const refundDesc = `swap-evm-refund:${swapId}:${initiatorPub}:${responderPub}:${role}`
-      const refundIdDesc = `swap-evm-refund-id:${swapId}:${initiatorPub}:${responderPub}:${role}`
-
-      if (role === 'responder') {
-        const feeData = await evmWallet.provider.getFeeData()
-        const gasPrice =
-          feeData.maxFeePerGas ?? feeData.gasPrice ?? 100_000_000_000n
-        const sweepGasReserveWei = 21_000n * gasPrice * 2n
-        const balance = await evmWallet.provider.getBalance(
-          evmWallet.mainAccount.address,
-        )
-        if (balance < input.principalWei + 21_000n * gasPrice) {
-          throw new Error('Insufficient funds')
-        }
-        const depositWei =
-          balance >= input.principalWei + sweepGasReserveWei * 2n
-            ? input.principalWei + sweepGasReserveWei
-            : input.principalWei
-        const signer = new MonadAccountTxSigner(
-          evmWallet.mainAccount,
-          evmWallet.httpClient,
-          BigInt(evmWallet.config.chainId),
-        )
-        const signed = await signer.buildAndSignTransfer(
-          escrowWallet.address,
-          depositWei,
-        )
-        const feeBudgetWei = (
-          signed.gasLimit * (signed.maxFeePerGas ?? signed.gasPrice ?? gasPrice)
-        ).toString()
-        return {
-          input: {
-            address: signed.from,
-            nonce: signed.nonce,
-            feeBudgetWei,
-          },
-          fundingTxHex: signed.rawTx,
-          fundingTxHash: signed.txHash,
-          claimTxHex: claimDesc,
-          claimTxHash: claimIdDesc,
-          refundTxHex: refundDesc,
-          refundTxHash: refundIdDesc,
-        }
-      }
-
-      // Initiator watches the deterministic EVM escrow address funded by Responder
-      const watchDesc = `swap-evm-watch:${swapId}:${initiatorPub}:${responderPub}:${input.principalWei.toString()}`
-      const watchIdDesc = `swap-evm-watch-id:${swapId}:${initiatorPub}:${responderPub}:${input.principalWei.toString()}`
-      return {
-        input: {
-          address: escrowWallet.address,
-          nonce: 0,
-          feeBudgetWei: '0',
-        },
-        fundingTxHex: watchDesc,
-        fundingTxHash: watchIdDesc,
-        claimTxHex: claimDesc,
-        claimTxHash: claimIdDesc,
-        refundTxHex: refundDesc,
-        refundTxHash: refundIdDesc,
-      }
-    },
+    // A new swap cannot be funded (see `SwapExecutionDisabledError`).
+    reserveInput: refuseNewSwapExecution,
 
     async broadcastTransaction(txHex: string) {
       const evmWallet = getEvmWallet()
@@ -607,18 +438,17 @@ export function createLiveEvmSwapCapability(
             throw new Error('Insufficient funds in Monad swap escrow')
           }
           const sendWei = balance - gasCost
-          const txSigner = new MonadAccountTxSigner(
-            escrowSigner,
-            evmWallet.httpClient,
-            BigInt(evmWallet.config.chainId),
-          )
-          const signed = await txSigner.buildAndSignTransfer(
-            evmWallet.mainAccount.address,
-            sendWei,
-          )
+          const recipient = evmWallet.mainAccount?.address
+          if (!recipient) throw new Error('The EVM wallet has no main account')
+          const txSigner = new MonadAccountTxSigner({
+            privateKey: escrowPrivKey,
+            provider: evmWallet.provider,
+            httpClient: evmWallet.httpClient,
+          })
+          const signed = await txSigner.buildAndSignTransfer(recipient, sendWei)
           const txHash = await evmWallet.httpClient
-            .sendRawTransaction(signed.rawTx)
-            .catch(err => {
+            .submitRawTransaction(signed.rawTx)
+            .catch((err: unknown) => {
               const msg = err instanceof Error ? err.message : String(err)
               if (/already known|nonce too low/i.test(msg)) {
                 return signed.txHash
@@ -629,15 +459,14 @@ export function createLiveEvmSwapCapability(
             .waitForTransaction(txHash, 1, 15_000)
             .catch(() => null)
           writeLocalTag(`${prefix}${desc.swapId}`, txHash)
-          await evmWallet.refreshBalance().catch(() => undefined)
           return { txHash }
         }
       }
 
       const parsedTx = ethers.Transaction.from(txHex)
       const txHash = await evmWallet.httpClient
-        .sendRawTransaction(txHex)
-        .catch(err => {
+        .submitRawTransaction(txHex)
+        .catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err)
           if (/already known|nonce too low/i.test(msg) && parsedTx.hash) {
             return parsedTx.hash
@@ -647,7 +476,6 @@ export function createLiveEvmSwapCapability(
       await evmWallet.provider
         .waitForTransaction(txHash, 1, 15_000)
         .catch(() => null)
-      await evmWallet.refreshBalance().catch(() => undefined)
       return { txHash }
     },
 
@@ -781,9 +609,7 @@ export function startAppSwapExecution(input: {
   let store: SwapExecutionStore
   if (typeof indexedDB !== 'undefined') {
     try {
-      const rawAddress =
-        (input.wallet.identity as { address?: string } | undefined)?.address ??
-        'default'
+      const rawAddress = input.wallet.identity.address?.raw ?? 'default'
       const namespace =
         `${activeChain.chainIdentifier}:${rawAddress}:${input.revision}`
           .replace(/[^a-zA-Z0-9_:-]/g, '_')
@@ -812,14 +638,8 @@ export function startAppSwapExecution(input: {
   createSwapExecutionCoordinator({
     store,
     custody,
-    xec: {
-      ...createLiveXecSwapCapability(),
-      reserveInputs: refuseNewSwapExecution,
-    },
-    evm: {
-      ...createLiveEvmSwapCapability(() => evmWallet),
-      reserveInput: refuseNewSwapExecution,
-    },
+    xec: createLiveXecSwapCapability(),
+    evm: createLiveEvmSwapCapability(() => evmWallet),
   })
 
   try {

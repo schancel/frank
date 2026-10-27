@@ -13,7 +13,7 @@ import ChatMessageNewsletterArticle from '../components/chat/messages/ChatMessag
 import ChatMessageSwapHandshake from '../components/chat/messages/ChatMessageSwapHandshake.vue'
 import ChatMessageWebRtcCall from '../components/chat/messages/ChatMessageWebRtcCall.vue'
 import SignedNegotiationCard from '../swap/SignedNegotiationCard.vue'
-const renderers: ReadonlyMap<string, Component> = new Map([
+const renderers: ReadonlyMap<string, Component> = new Map<string, Component>([
   ['swap-negotiation-v1', markRaw(SignedNegotiationCard)],
   [NEWSLETTER_ARTICLE_ITEM_TYPE, markRaw(ChatMessageNewsletterArticle)],
   [ARTICLE_PLUGIN_ID, markRaw(ChatMessageArticle)],

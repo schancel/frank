@@ -535,9 +535,10 @@ export function installSolanaWalletStandard(
               chain: input.chain,
             },
           })
-          const { default: bs58 } = await import('bs58')
+          const { getBase58Encoder } = await import('@solana/codecs-strings')
           results.push({
-            signature: bs58.decode(signature),
+            // The wallet answers with the base58 signature; the standard wants its bytes.
+            signature: Uint8Array.from(getBase58Encoder().encode(signature)),
             account: input.account,
             chain: input.chain,
           })

@@ -26,7 +26,7 @@ export interface State {
   /** The committed UI color theme (Signet stone). Defaults to 'carnelian'. */
   theme: SignetStone
   /** The committed UI display scale ('auto' | 85 | 100 | 115 | 130 | 150). */
-  uiScale?: UiScaleSetting
+  uiScale: UiScaleSetting
 }
 
 /** Extracted from the `storage` option below (same behavior) so it's directly unit-testable --

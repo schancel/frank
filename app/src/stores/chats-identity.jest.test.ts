@@ -123,7 +123,7 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
   })
 
   describe('overlapping participant sets ([self, peerA] and [self, peerB])', () => {
-    it('does not collide or alias self to another peer conversation', () => {
+    it('does not collide or alias self to another peer conversation', async () => {
       const store = useChatStore()
 
       const convA = store.createConversation({
@@ -149,7 +149,7 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
       expect(store.chats[SELF_ADDR]).toBeUndefined()
 
       // Running auto-heal must keep both conversations distinct and never alias self
-      store.autoHealDuplicateDirectConversations()
+      await store.autoHealDuplicateDirectConversations()
       expect(store.conversations[convA.id].address).toBe(PEER_A)
       expect(store.conversations[convB.id].address).toBe(PEER_B)
       expect(store.chats[SELF_ADDR]).toBeUndefined()
@@ -273,7 +273,7 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
       expect(store.conversations[thread1.id].totalUnreadMessages).toBe(1)
 
       // Auto-heal must NOT collapse distinct canonical threads for the same peer
-      store.autoHealDuplicateDirectConversations()
+      await store.autoHealDuplicateDirectConversations()
       expect(store.conversations[thread1.id]).toBeDefined()
       expect(store.conversations[thread2.id]).toBeDefined()
       expect(store.conversations[thread3.id]).toBeDefined()
@@ -304,7 +304,7 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
       )
     })
 
-    it('preserves two unnamed UUIDv4 conversations with the same peer as separate threads', () => {
+    it('preserves two unnamed UUIDv4 conversations with the same peer as separate threads', async () => {
       const store = useChatStore()
       const idA = '12121212-1212-4212-8212-121212121212'
       const idB = '34343434-3434-4434-8434-343434343434'
@@ -320,10 +320,49 @@ describe('Canonical Conversation Identity & Multi-Thread Preservation (#1237)', 
         participants: [PEER_A],
       })
 
-      store.autoHealDuplicateDirectConversations()
+      await store.autoHealDuplicateDirectConversations()
 
       expect(store.conversations[idA]).toBeDefined()
       expect(store.conversations[idB]).toBeDefined()
+    })
+
+    it('resolves the own address before healing, so a legacy self record with a peer is never merged into the self thread', async () => {
+      // In the app the own address resolves asynchronously.
+      mockOwnAddress.mockResolvedValue(SELF_ADDR)
+      const selfThreadId = '77777777-7777-5777-8777-777777777777'
+      const store = useChatStore()
+      const conversation = (
+        id: string,
+        participants: string[],
+        payloadDigest: string,
+      ): Conversation => ({
+        id,
+        kind: 'direct',
+        address: SELF_ADDR,
+        participants,
+        messages: [
+          {
+            ...makeMessage({ payloadDigest, senderAddress: SELF_ADDR }),
+            id: `tx-${payloadDigest}`,
+          },
+        ],
+        createdAt: 1000,
+        updatedAt: 1000,
+        lastRead: 0,
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+      })
+      store.conversations = {
+        [selfThreadId]: conversation(selfThreadId, [SELF_ADDR], 'self-1'),
+        [SELF_ADDR]: conversation(SELF_ADDR, [SELF_ADDR, PEER_A], 'self-2'),
+      }
+
+      await store.autoHealDuplicateDirectConversations()
+
+      expect(store.conversations[SELF_ADDR]).toBeDefined()
+      expect(store.conversations[SELF_ADDR].messages).toHaveLength(1)
+      expect(store.conversations[selfThreadId].messages).toHaveLength(1)
     })
 
     it('heals genuine legacy address-keyed duplicate records into the canonical default conversation without touching topical threads', () => {

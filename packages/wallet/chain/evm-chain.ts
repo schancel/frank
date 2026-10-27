@@ -287,6 +287,7 @@ import {
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { readEvmBlockTimes } from "./evm-block-times";
+import { fundsSettleBlocks } from "./evm-spend-rule";
 import {
   ChainUnreachableError,
   isChainUnreachableError,
@@ -3341,10 +3342,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 evmWalletInternals(wallet).blockWatcher?.next() ??
                 new Promise((resolve) => setTimeout(resolve, 500)),
               // The node admits a transaction against the balance of spacing + 1 blocks ago.
-              fundsSettleBlocks:
-                config.spendSpacingBlocks === undefined
-                  ? undefined
-                  : config.spendSpacingBlocks + 1,
+              fundsSettleBlocks: fundsSettleBlocks(config.spendSpacingBlocks),
               transactionBuilder,
               mainSource: { kind: "main", address: mainAccount.address.toLowerCase() },
               ownedSource: (address) => {

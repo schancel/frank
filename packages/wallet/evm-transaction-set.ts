@@ -19,6 +19,7 @@ import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsErr
 import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
+import { fundsSettleBlocks } from './chain/evm-spend-rule'
 import type {
   ConstructEvmTransactionSetRequest,
   ConstructLegacySubAccountRequest,
@@ -401,9 +402,12 @@ export class EvmTransactionSetPreparer {
             origin: 'change',
             changeIndex: meta.changeIndex,
             listedInBlock: observation.blockNumber,
-            ...(rule && tx.value < rule.belowWei
+            // Fresh money, whatever its amount: the node admits a transfer out of it only
+            // `fundsSettleBlocks` after the block that brought it (Monad: 4).
+            ...(rule && fundsSettleBlocks(rule.waitBlocks) > 0
               ? {
-                  spendableFromBlock: observation.blockNumber + rule.waitBlocks,
+                  spendableFromBlock:
+                    observation.blockNumber + fundsSettleBlocks(rule.waitBlocks),
                 }
               : {}),
           })
@@ -841,7 +845,7 @@ export class EvmTransactionSetPreparer {
         if (index >= offset) {
           const prior = previous.get(member.plan.source.address), funding = incoming.get(member.plan.source.address)
           member.plan.dependencies = prior !== undefined ? [prior] : funding ?? []
-          if (prior === undefined && funding) meta.fundingWaitBlocks = policy.spendRule?.waitBlocks ? policy.spendRule.waitBlocks + 1 : 0
+          if (prior === undefined && funding) meta.fundingWaitBlocks = fundsSettleBlocks(policy.spendRule?.waitBlocks)
           if (stageId !== undefined) meta.stageId = stageId
         }
         previous.set(member.plan.source.address, index)
@@ -1433,9 +1437,14 @@ export class EvmTransactionSetPreparer {
           tx.nonce === coin.after.nonce &&
           member.observation.state === 'included-success'
         )
+          // The account's own next coin waits the reserve rule's quiet window; a coin another
+          // account funded is fresh money and waits until the node judges it (`fundsSettleBlocks`).
           return (
             policy.head >=
-            member.observation.blockNumber + (policy.spendRule?.waitBlocks ?? 0)
+            member.observation.blockNumber +
+              (coin.after.account === coin.account
+                ? (policy.spendRule?.waitBlocks ?? 0)
+                : fundsSettleBlocks(policy.spendRule?.waitBlocks))
           )
       }
     return false

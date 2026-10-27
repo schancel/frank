@@ -105,9 +105,17 @@ and not at `head - 4`. An account funded with 5 MON was refused in the same way 
   is refused with "An existing transaction had higher priority".
 
 What it means for the wallet: it signs a transfer only against the balance the account already
-had `spendSpacingBlocks + 1` blocks ago and waits those blocks otherwise; a transfer that pays
-out of an account the same operation has just funded waits in the same way; and a payment the
-node keeps refusing is signed again at the same nonce, which can never pay twice because a nonce
+had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
+`packages/wallet/chain/evm-spend-rule.ts`) and waits those blocks otherwise. The window is the
+same for any amount, so it applies to every coin that just arrived: a deposit the coin-list sync
+sees, change a send made (also change of 10 MON or more, which until 2026-10-27 was listed as
+spendable at once and so was refused first; `yarn --cwd packages/bot regtest:monad-fresh-change`
+checks it on solonet), and an account the same operation has just funded. Coin selection, the
+fee quote and background consolidation pass over such a coin until its block; a send that only
+it would cover waits for that block once and is then built. This is distinct from the reserve
+rule below, whose quiet window (`spendSpacingBlocks`) follows an account's own transfer and
+applies only under 10 MON. A payment the node keeps refusing is still signed again at the same
+nonce, which can never pay twice because a nonce
 is consumed once. One rule for every path that does so (DM stamp payments and Send to Address,
 `packages/wallet/chain/evm-refused-resign.ts`): after two refusals over at least three seconds,
 the same transaction is signed again with only the tip one wei lower (the fee ceiling, and so the

@@ -239,6 +239,15 @@ Still replica-local; each relay's startup log names them:
   (job `wallet-received-payments`, added by #1894). It covers a one-coin wallet under the
   reserve rule on anvil: the stamp's funding lands at the account's lowest nonce before the
   relay has the message, and the contact transfer lands at the next nonce after it is stored.
+- **Fixed: a send right after a send with 10 MON or more of change is no longer refused first.**
+  The node judges a transaction against the sender's balance of four blocks back, whatever the
+  amount, but change of 10 MON or more was listed as spendable at once; the next send out of it
+  was refused ("Signer had insufficient balance") and recovered only by
+  [signing it again (#1939)](https://github.com/schancel/frank/pull/1939). Every change coin, and
+  every coin a set funds for its own later move, is now spendable from four blocks after the
+  block that brought it, the same window the coin-list sync gives a deposit
+  (`packages/wallet/chain/evm-spend-rule.ts`). `yarn --cwd packages/bot regtest:monad-fresh-change`
+  checks it on solonet.
 - **Format break:** notes to self written before #1916 read as unsupported. Start the
   deployment's wallets and bots from fresh stores.
 - **App:** unless the relay server is set by hand, the dev server's origin becomes a group's home

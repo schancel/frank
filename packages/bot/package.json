@@ -31,6 +31,7 @@
     "regtest:monad-reserve": "node --import tsx demo/regtest/monad-reserve.livecheck.ts",
     "regtest:monad-one-coin": "node --import tsx demo/regtest/monad-one-coin.livecheck.ts",
     "regtest:monad-resign-refused": "node --import tsx demo/regtest/monad-resign-refused.livecheck.ts",
+    "regtest:monad-fresh-change": "node --import tsx demo/regtest/monad-fresh-change.livecheck.ts",
     "regtest:monad-dm-cluster": "node --import tsx demo/regtest/monad-dm-cluster.livecheck.ts",
     "regtest:monad-exact-payment": "node --import tsx demo/regtest/monad-exact-payment.livecheck.ts",
     "regtest:monad-cross-device": "node --import tsx demo/regtest/monad-cross-device-collision.livecheck.ts",

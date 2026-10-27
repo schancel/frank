@@ -8,6 +8,9 @@ import { mergeFeed, oracleInputs } from '../stores/oracle-series'
 import { testFeed } from '../stores/oracle-test-feed'
 import { computeOracleRates, type OracleFeed } from '@frank/wallet/oracle'
 
+const mockRouter = { go: jest.fn(), replace: jest.fn() }
+jest.mock('vue-router', () => ({ useRouter: () => mockRouter }))
+
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
 
@@ -333,9 +336,11 @@ describe('AVU dollar reference details', () => {
       testFeed([NOW - 60], { electricity: [[NOW - 60, 0.05]] }),
     )
     const wrapper = mountPage()
-    expect(
-      wrapper.get('[data-test="avu-back-wallet"]').attributes('data-route'),
-    ).toBe('/wallet')
+    // The back arrow is Back; opened directly, the wallet takes the page's place (never a push).
+    mockRouter.replace.mockClear()
+    void wrapper.get('[data-test="avu-back-wallet"]').trigger('click')
+    expect(mockRouter.replace).toHaveBeenCalledWith('/wallet')
+    expect(mockRouter.go).not.toHaveBeenCalled()
     expect(wrapper.get('[data-test="avu-reference-legend"]').text()).toContain(
       'AVU (Hash)',
     )

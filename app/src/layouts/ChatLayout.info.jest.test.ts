@@ -122,14 +122,14 @@ describe('ChatLayout info mode with ?info=true query', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(true)
     expect(mockReplace).toHaveBeenCalledWith({ query: {} })
-    expect(mockSetActiveChat).toHaveBeenCalledWith(
-      '0x1111111111111111111111111111111111111111',
-    )
+    // The committed route selects the conversation (router afterEach), not Info's button.
+    expect(mockSetActiveChat).not.toHaveBeenCalled()
   })
 
-  it('allocates and activates target chat when ChatInfoView emits chat with address', async () => {
+  it('opens another conversation when ChatInfoView emits chat with its address', async () => {
     mockSetActiveChat.mockClear()
     const mockReplace = jest.fn()
+    const mockPush = jest.fn()
     const wrapper = mount(ChatLayout, {
       global: {
         mocks: {
@@ -137,7 +137,7 @@ describe('ChatLayout info mode with ?info=true query', () => {
             params: { address: '0x1111111111111111111111111111111111111111' },
             query: { info: 'true' },
           },
-          $router: { push: jest.fn(), replace: mockReplace },
+          $router: { push: mockPush, replace: mockReplace },
           $t: (key: string) => key,
         },
         stubs: {
@@ -165,10 +165,13 @@ describe('ChatLayout info mode with ?info=true query', () => {
       '0xf4482A16DC05A4fDBa94592B19fbD40e6953d063',
     )
     await flushPromises()
-    expect(mockSetActiveChat).toHaveBeenCalledWith(
-      '0xf4482A16DC05A4fDBa94592B19fbD40e6953d063',
+    // Another conversation opens as a page above Info (Back returns to Info); the committed
+    // route selects it.
+    expect(mockPush).toHaveBeenCalledWith(
+      '/chat/0xf4482A16DC05A4fDBa94592B19fbD40e6953d063',
     )
-    expect(mockReplace).toHaveBeenCalledWith({ query: {} })
+    expect(mockReplace).not.toHaveBeenCalled()
+    expect(mockSetActiveChat).not.toHaveBeenCalled()
   })
 
   it('defaults to chat router-view when route has no info query', async () => {

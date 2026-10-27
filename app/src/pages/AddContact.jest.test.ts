@@ -142,7 +142,13 @@ const chain = activeChain as unknown as {
   fetchProfile: jest.Mock
 }
 const mockOpenChat = openChat as jest.Mock
-const mockRouter = { go: jest.fn(), push: jest.fn(), back: jest.fn() }
+const mockRouter = {
+  go: jest.fn(),
+  push: jest.fn(),
+  back: jest.fn(),
+  replace: jest.fn(),
+  resolve: (to: string) => ({ fullPath: to }),
+}
 
 function translate(key: string, params: Record<string, unknown> = {}): string {
   const value = key
@@ -272,6 +278,7 @@ describe('AddContact latest lookup', () => {
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
     mockRouter.back.mockReset()
+    mockRouter.replace.mockReset()
     mockCreateEmailConversation.mockReset()
     mockSetActiveConversation.mockReset()
     mockCreateConversation.mockClear()
@@ -337,10 +344,11 @@ describe('AddContact latest lookup', () => {
       },
     })
     // In contact mode, Add saves the contact and, with no page to go back to, shows that
-    // contact (never the most recent conversation, which may be a group).
+    // contact (never the most recent conversation, which may be a group) in the form's place.
     expect(mockOpenChat).not.toHaveBeenCalled()
-    expect(mockRouter.push).toHaveBeenCalledTimes(1)
-    expect(mockRouter.push).toHaveBeenCalledWith('/chat/canonical:a')
+    expect(mockRouter.push).not.toHaveBeenCalled()
+    expect(mockRouter.replace).toHaveBeenCalledTimes(1)
+    expect(mockRouter.replace).toHaveBeenCalledWith('/chat/canonical:a')
   })
 
   it('offers any address with a published directory entry even though it has no display profile', async () => {
@@ -817,12 +825,12 @@ describe('AddContact latest lookup', () => {
       wrapper.unmount()
       wrapper = mountPage({ query: { from: '/chat/0x123' } })
       await cancelButton(wrapper).trigger('click')
-      expect(mockRouter.push).toHaveBeenCalledWith('/chat/0x123')
-      expect(mockRouter.push).not.toHaveBeenCalledWith('/')
-      expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+      // Not the page before (none here): the form gives way to it, leaving no entry.
+      expect(mockRouter.replace).toHaveBeenCalledWith('/chat/0x123')
+      expect(mockRouter.push).not.toHaveBeenCalled()
     })
 
-    it('uses router.back() when history.state.back points to a chat', async () => {
+    it('goes Back when history.state.back points to a chat', async () => {
       const origState = window.history.state
       try {
         Object.defineProperty(window.history, 'state', {
@@ -830,9 +838,8 @@ describe('AddContact latest lookup', () => {
           configurable: true,
         })
         await cancelButton(wrapper).trigger('click')
-        expect(mockRouter.back).toHaveBeenCalledTimes(1)
-        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
-        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+        expect(mockRouter.go).toHaveBeenCalledWith(-1)
+        expect(mockRouter.push).not.toHaveBeenCalled()
       } finally {
         Object.defineProperty(window.history, 'state', {
           value: origState,
@@ -849,9 +856,8 @@ describe('AddContact latest lookup', () => {
           configurable: true,
         })
         await cancelButton(wrapper).trigger('click')
-        expect(mockRouter.push).toHaveBeenCalledWith('/chat')
-        expect(mockRouter.push).not.toHaveBeenCalledWith('/')
-        expect(mockRouter.push).not.toHaveBeenCalledWith('/forum')
+        expect(mockRouter.replace).toHaveBeenCalledWith('/chat')
+        expect(mockRouter.push).not.toHaveBeenCalled()
       } finally {
         Object.defineProperty(window.history, 'state', {
           value: origState,
@@ -868,7 +874,7 @@ describe('AddContact latest lookup', () => {
           configurable: true,
         })
         await cancelButton(wrapper).trigger('click')
-        expect(mockRouter.back).toHaveBeenCalledTimes(1)
+        expect(mockRouter.go).toHaveBeenCalledWith(-1)
         expect(mockRouter.push).not.toHaveBeenCalled()
       } finally {
         Object.defineProperty(window.history, 'state', {
@@ -1059,6 +1065,7 @@ describe('AddContact latest lookup', () => {
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'conv-email-alice@example.com',
+        { replace: true },
       )
     })
 
@@ -1095,6 +1102,7 @@ describe('AddContact latest lookup', () => {
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'conv-email-bob@example.com',
+        { replace: true },
       )
     })
 
@@ -1155,6 +1163,7 @@ describe('AddContact latest lookup', () => {
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'created-conversation-id',
+        { replace: true },
       )
     })
 
@@ -1233,6 +1242,7 @@ describe('AddContact latest lookup', () => {
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'created-conversation-id',
+        { replace: true },
       )
     })
 
@@ -1251,6 +1261,7 @@ describe('AddContact latest lookup', () => {
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
         'created-conversation-id',
+        { replace: true },
       )
     })
 
@@ -1314,6 +1325,7 @@ describe('AddContact latest lookup', () => {
         expect(mockOpenChat).toHaveBeenCalledWith(
           mockRouter,
           'created-conversation-id',
+          { replace: true },
         )
       })
 
@@ -1349,6 +1361,7 @@ describe('AddContact latest lookup', () => {
         expect(mockOpenChat).toHaveBeenCalledWith(
           mockRouter,
           'created-conversation-id',
+          { replace: true },
         )
       })
 
@@ -1386,6 +1399,7 @@ describe('AddContact latest lookup', () => {
         expect(mockOpenChat).toHaveBeenCalledWith(
           mockRouter,
           'created-conversation-id',
+          { replace: true },
         )
       })
 
@@ -1400,6 +1414,7 @@ describe('AddContact latest lookup', () => {
         expect(mockOpenChat).toHaveBeenCalledWith(
           mockRouter,
           'created-conversation-id',
+          { replace: true },
         )
       })
 

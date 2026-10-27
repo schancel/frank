@@ -431,7 +431,7 @@
               color="primary"
               no-caps
               :label="$t('accountRecovery.return_to_wallet')"
-              @click="$router.push('/wallet')"
+              @click="$router.replace('/wallet')"
             />
           </template>
           <template v-else-if="account.status !== 'loading' && !activating">
@@ -593,7 +593,7 @@
                 color="primary"
                 no-caps
                 :label="$t('accountRecovery.return_to_wallet')"
-                @click="$router.push('/wallet')"
+                @click="$router.replace('/wallet')"
               />
             </template>
             <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
@@ -1119,7 +1119,7 @@ async function takeoverHere() {
   await tabCoordinator.requestTakeover()
   if (account.status === 'ready') {
     emit('setupCompleted')
-    router.push('/wallet')
+    void router.replace('/wallet')
   }
 }
 
@@ -1141,7 +1141,7 @@ watch(
       if (tabCoordinator.wasAutoReleased) {
         tabCoordinator.wasAutoReleased = false
         emit('setupCompleted')
-        router.push('/wallet')
+        void router.replace('/wallet')
       }
     }
   },
@@ -1529,7 +1529,8 @@ async function activateStagedAccount(expectedAttemptId?: string) {
       identityAddress ?? undefined,
     ).catch(() => undefined)
     emit('setupCompleted')
-    await router.push('/wallet')
+    // Setup is over: the wallet takes its entry, so Back never offers to set up again.
+    await router.replace('/wallet')
   } finally {
     activating.value = false
     stopChain()
@@ -1586,7 +1587,7 @@ async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
   }
   emit('setupCompleted')
   // Only a relay that answered "no profile" sends the owner to create one.
-  await router.push(outcome === 'missing' ? '/profile' : '/wallet')
+  await router.replace(outcome === 'missing' ? '/profile' : '/wallet')
 }
 function cancelPending() {
   return run(async () => {

@@ -50,6 +50,7 @@
 import { storeToRefs } from 'pinia'
 import { useAppearanceStore } from 'src/stores/appearance'
 import { computed, defineComponent } from 'vue'
+import { useBackDismiss } from 'src/utils/navigation'
 
 export default defineComponent({
   setup() {
@@ -64,6 +65,12 @@ export default defineComponent({
         lastDismissed.value = Date.now()
       },
     })
+    useBackDismiss(
+      () => showBanner.value,
+      () => {
+        showBanner.value = false
+      },
+    )
     return {
       showBanner,
       dismiss() {

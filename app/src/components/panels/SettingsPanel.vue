@@ -104,7 +104,6 @@ import { useQuasar } from 'quasar'
 
 import ContactCard from './ContactCard.vue'
 import OwnProfileUncheckedNotice from '../OwnProfileUncheckedNotice.vue'
-import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -151,7 +150,7 @@ export default defineComponent({
       const r = getRouter()
       maybeCloseDrawer('/settings')
       if (r) {
-        return openPage(r, '/settings')
+        return r.push('/settings')
       }
     }
 
@@ -159,7 +158,7 @@ export default defineComponent({
       const r = getRouter()
       maybeCloseDrawer('/backup')
       if (r) {
-        return openPage(r, '/backup')
+        return r.push('/backup')
       }
     }
 
@@ -167,7 +166,7 @@ export default defineComponent({
       const r = getRouter()
       maybeCloseDrawer('/profile')
       if (r) {
-        return openPage(r, '/profile')
+        return r.push('/profile')
       }
     }
 

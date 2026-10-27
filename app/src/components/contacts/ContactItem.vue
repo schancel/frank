@@ -71,7 +71,7 @@
           data-test="contact-item-actions"
           @click.stop
         >
-          <q-menu @click.stop @keydown.stop>
+          <q-menu v-model="menuOpen" @click.stop @keydown.stop>
             <q-list dense>
               <q-item
                 clickable
@@ -110,6 +110,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import { backDismissible } from 'src/utils/navigation'
 import type { ProfilePubKey } from 'src/utils/profile-pubkey'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
@@ -117,6 +118,8 @@ import AccountBadge from './AccountBadge.vue'
 import DeleteContactDialog from '../dialogs/DeleteContactDialog.vue'
 
 export default defineComponent({
+  // Phone Back closes these overlays (utils/navigation).
+  mixins: [backDismissible('menuOpen')],
   components: {
     AccountBadge,
     DeleteContactDialog,
@@ -139,7 +142,7 @@ export default defineComponent({
   },
   emits: ['mouseover-contact', 'mouseleave-contact'],
   data() {
-    return { confirmDeleteOpen: false }
+    return { confirmDeleteOpen: false, menuOpen: false }
   },
   setup() {
     return { profileAvatar }

@@ -11,7 +11,7 @@ import {
   errorNotify,
   infoNotify,
 } from 'src/utils/notifications'
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import enUS from '../i18n/en-us'
 
 // The stamp chosen for the conversation with the contact; free unless a test says otherwise.
@@ -94,8 +94,9 @@ jest.mock('src/utils/notifications', () => ({
   infoNotify: jest.fn(),
 }))
 
-jest.mock('src/utils/navigate-back', () => ({
-  navigateBack: jest.fn(),
+jest.mock('src/utils/navigation', () => ({
+  ...jest.requireActual('src/utils/navigation'),
+  goBack: jest.fn(),
 }))
 
 const mockRoute = { query: {} }
@@ -331,7 +332,7 @@ describe('SendContact.vue (dual-send model)', () => {
       '0xabc123',
       'Payment sent',
     )
-    expect(navigateBack).toHaveBeenCalled()
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it('with a stamp chosen for the chat, the payment and its stamp are two separate amounts', async () => {
@@ -407,7 +408,7 @@ describe('SendContact.vue (dual-send model)', () => {
     expect(errorNotify).not.toHaveBeenCalled()
     expect(sentTransactionNotify).not.toHaveBeenCalled()
     // The form is left, so the same payment cannot be confirmed a second time.
-    expect(navigateBack).toHaveBeenCalled()
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it('a message that failed stays in the chat for a retry: the user is told where, and the form is left', async () => {
@@ -422,7 +423,7 @@ describe('SendContact.vue (dual-send model)', () => {
       fallbackKey: 'sendContactDialog.messageEnded',
     })
     expect(sentTransactionNotify).not.toHaveBeenCalled()
-    expect(navigateBack).toHaveBeenCalled()
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it('a refusal before anything is signed sends no message and says nothing was sent', async () => {
@@ -433,7 +434,7 @@ describe('SendContact.vue (dual-send model)', () => {
     expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
       fallbackKey: 'sendContactDialog.notSent',
     })
-    expect(navigateBack).not.toHaveBeenCalled()
+    expect(goBack).not.toHaveBeenCalled()
   })
 
   it('an amount larger than one contact payment can carry is refused before review, in plain words', async () => {
@@ -570,7 +571,7 @@ describe('SendContact.vue (dual-send model)', () => {
       '1.523562 MON',
     )
     expect(mockSendMessage).not.toHaveBeenCalled()
-    expect(navigateBack).not.toHaveBeenCalled()
+    expect(goBack).not.toHaveBeenCalled()
 
     // Confirming again is bounded by the new fee.
     mockPrepare.mockResolvedValueOnce(PREPARED)

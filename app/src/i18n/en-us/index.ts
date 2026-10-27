@@ -2070,6 +2070,11 @@ export const rawEnUS = {
     earlierStateBody:
       'This account has wallet data saved under an older name, which this version no longer reads. Your funds are still on the chain. To find them again, open Settings → About, tap the version seven times, and run Developer → Reconcile wallet. Afterwards the old data can be deleted in the browser’s developer tools (IndexedDB):',
   },
+  notFound: {
+    title: 'Page not found',
+    message: 'There is no page at this address.',
+    home: 'Go to Frank',
+  },
   about: {
     appName: 'Frank',
     title: 'About',

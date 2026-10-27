@@ -18,7 +18,13 @@ jest.mock('../accounts/ceremony', () => ({
   recoveryErrorMessage: () => 'Account operation failed',
 }))
 const mockPush = jest.fn(async () => undefined)
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
+// Setup's completions replace its entry: Back never returns to setup.
+const mockReplace = jest.fn(async () => undefined)
+// Nothing in setup leaves an entry Back would return to.
+afterEach(() => expect(mockPush).not.toHaveBeenCalled())
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+}))
 const mockAccount = reactive(toRaw(accountStatus))
 const t = (locale: 'en' | 'fr') => (key: string) =>
   key
@@ -36,7 +42,10 @@ const pending = {
 function render(locale: 'en' | 'fr' = 'en') {
   return mount(Setup, {
     global: {
-      mocks: { $t: t(locale), $router: { push: mockPush } },
+      mocks: {
+        $t: t(locale),
+        $router: { push: mockPush, replace: mockReplace },
+      },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
         QToolbar: { template: '<div><slot /></div>' },
@@ -83,6 +92,7 @@ beforeEach(async () => {
     },
   })
   mockPush.mockClear()
+  mockReplace.mockClear()
   jest.spyOn(mockSession, 'retry').mockResolvedValue(undefined)
   jest.spyOn(mockSession, 'initialize').mockResolvedValue(undefined)
   jest.spyOn(mockSession, 'reset').mockResolvedValue(undefined)
@@ -172,7 +182,7 @@ test.each(['denied', 'hanging'])(
     await view.get('[data-test="activate-account"]').trigger('click')
     await flushPromises()
     expect(mockAccount.status).toBe('ready')
-    expect(mockPush).toHaveBeenCalledWith('/wallet')
+    expect(mockReplace).toHaveBeenCalledWith('/wallet')
     expect(persist).toHaveBeenCalledTimes(1)
     await jest.advanceTimersByTimeAsync(1000)
     expect(storage.status).toBe(
@@ -215,7 +225,7 @@ test.each(['en', 'fr'] as const)(
       )
       expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
       expect(mockSession.activatePending).not.toHaveBeenCalled()
-      expect(mockPush).not.toHaveBeenCalled()
+      expect(mockReplace).not.toHaveBeenCalled()
       expect(view.emitted('setupCompleted')).toBeUndefined()
     } finally {
       view.unmount()
@@ -287,7 +297,7 @@ test('invalid identification stays local and retains its input without claiming 
   expect(mockSession.reset).not.toHaveBeenCalled()
   expect(mockSession.stage).not.toHaveBeenCalled()
   expect(mockSession.activatePending).not.toHaveBeenCalled()
-  expect(mockPush).not.toHaveBeenCalled()
+  expect(mockReplace).not.toHaveBeenCalled()
   view.unmount()
 })
 
@@ -441,7 +451,7 @@ test('renders loading indicator when account status is loading and hides choice 
   expect(view.find('[data-test="new-account"]').exists()).toBe(false)
   finishActivate()
   await flushPromises()
-  expect(mockPush).toHaveBeenCalledWith('/wallet')
+  expect(mockReplace).toHaveBeenCalledWith('/wallet')
   view.unmount()
 })
 

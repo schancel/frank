@@ -323,7 +323,7 @@
 </template>
 
 <script lang="ts">
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import { defineComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { QSelectProps } from 'quasar'
@@ -1194,7 +1194,10 @@ export default defineComponent({
       return formatAttachmentSize(bytes)
     },
     back() {
-      navigateBack(this.$router)
+      goBack(
+        this.$router,
+        this.parentDigest ? `/forum/${this.parentDigest}` : '/forum',
+      )
     },
     validateUrl(val: string) {
       try {

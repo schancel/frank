@@ -2118,6 +2118,11 @@ export const rawFrFR = {
     earlierStateBody:
       'Ce compte a des données de portefeuille enregistrées sous un ancien nom, que cette version ne lit plus. Vos fonds sont toujours sur la chaîne. Pour les retrouver, ouvrez Paramètres → À propos, touchez sept fois la version, puis lancez Développeur → Rapprocher le portefeuille. Ensuite, les anciennes données peuvent être supprimées dans les outils de développement du navigateur (IndexedDB) :',
   },
+  notFound: {
+    title: 'Page introuvable',
+    message: "Il n'y a pas de page à cette adresse.",
+    home: 'Aller à Frank',
+  },
   about: {
     appName: 'Frank',
     title: 'À propos',

@@ -22,12 +22,14 @@ import {
   isAccountBackedUp,
 } from '../accounts/backup-status'
 
-const mockRouterBack = jest.fn()
+const mockRouterGo = jest.fn()
 const mockRouterPush = jest.fn()
+const mockRouterReplace = jest.fn()
 jest.mock('vue-router', () => ({
   useRouter: () => ({
-    back: mockRouterBack,
+    go: mockRouterGo,
     push: mockRouterPush,
+    replace: mockRouterReplace,
   }),
 }))
 
@@ -552,8 +554,10 @@ describe('BackupAccount page', () => {
 
     const backBtn = wrapper.find('[data-test="backup-back"]')
     await backBtn.trigger('click')
-    // navigateBack checks history.state.back; if unset, it pushes '/'
-    expect(mockRouterPush).toHaveBeenCalledWith('/')
+    // Opened directly (no history.state.back): Settings takes the page's place; nothing is
+    // pushed for Back to return through.
+    expect(mockRouterReplace).toHaveBeenCalledWith('/settings')
+    expect(mockRouterPush).not.toHaveBeenCalled()
   })
 
   it('verifies shards successfully with threshold shards and with all shards', async () => {

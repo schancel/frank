@@ -2865,8 +2865,8 @@ export default defineComponent({
     // Another conversation in the same page (/chat/<a> -> /chat/<b>). A watcher, not
     // `beforeRouteUpdate`: the router calls that guard on whatever instance its record holds
     // when the guard's turn comes, and ChatLayout can unmount this page earlier in the same
-    // navigation (its own `beforeRouteUpdate` shows the info view or the "conversation not
-    // found" page), so the guard ran with `this` null. A watcher stops with the page.
+    // navigation (it shows the info view or the "conversation not found" page instead), so the
+    // guard ran with `this` null. A watcher stops with the page.
     '$route.params.address'(next: unknown) {
       if (typeof next === 'string' && next) this.openRouteAddress(next)
     },
@@ -2938,19 +2938,8 @@ export default defineComponent({
       this.attachments = nextDraft?.attachments ?? []
       this.replyDigest = nextDraft?.replyDigest ?? null
       this.restoringDraft = false
-      if (
-        newAddr &&
-        typeof this.chatStore?.setActiveConversation === 'function'
-      ) {
-        if (
-          isChainAddress(newAddr) &&
-          typeof this.chatStore?.setActiveChat === 'function'
-        ) {
-          this.chatStore.setActiveChat(newAddr)
-        } else {
-          this.chatStore.setActiveConversation(newAddr)
-        }
-      }
+      // Selection follows the committed route (the router's afterEach), in one place: a second
+      // writer here raced the AppRuntime watcher that opens the selected conversation.
       void this.refreshMinimumStamp()
       // Another conversation opens on its newest message, wherever the last one was left.
       this.followBottom = true

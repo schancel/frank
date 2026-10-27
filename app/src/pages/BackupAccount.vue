@@ -304,7 +304,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
-import { navigateBack } from '../utils/navigate-back'
+import { goBack } from '../utils/navigation'
 import {
   isAccountBackedUp,
   verifyAccountBackup,
@@ -415,7 +415,7 @@ async function copyShare(share: string, index: number) {
 }
 
 function cancel() {
-  navigateBack(router)
+  goBack(router, '/settings')
 }
 
 // Shown and copied shares are not a backup until the user proves they saved them, so the

@@ -67,7 +67,8 @@ import {
   BurnRefreshError,
   notifyBurnFailure,
 } from 'src/utils/burn-refresh-error'
-import { DRAWER_BREAKPOINT } from 'src/utils/layout'
+import { DRAWER_BREAKPOINT, isNarrowWidth } from 'src/utils/layout'
+import { useBackDismiss } from 'src/utils/navigation'
 import { loadTopicDraft, saveTopicDraft } from 'src/utils/draft-storage'
 import assert from 'assert'
 
@@ -95,6 +96,16 @@ export default defineComponent({
     const routeParams = router.currentRoute.value.params
     const topic = routeParams['topic']
     const showTopicDrawer = ref(false)
+    // On a phone the topic drawer is an overlay: Back closes it.
+    useBackDismiss(
+      () =>
+        showTopicDrawer.value &&
+        typeof window !== 'undefined' &&
+        isNarrowWidth(window.innerWidth),
+      () => {
+        showTopicDrawer.value = false
+      },
+    )
     const toggleTopicDrawer = () => {
       showTopicDrawer.value = !showTopicDrawer.value
     }

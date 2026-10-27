@@ -14,7 +14,13 @@ const mockRestore = jest.fn()
 const mockNavigate = jest.fn()
 const mockRoute = { query: {} as Record<string, string> }
 let mockLeaveGuard: (() => boolean) | null = null
+const mockRouter = {
+  go: jest.fn(),
+  replace: jest.fn(),
+  resolve: (to: string) => ({ fullPath: to }),
+}
 jest.mock('vue-router', () => ({
+  useRouter: () => mockRouter,
   useRoute: () => mockRoute,
   onBeforeRouteLeave: (guard: () => boolean) => {
     mockLeaveGuard = guard

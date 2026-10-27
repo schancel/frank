@@ -343,6 +343,7 @@ import { useChatStore } from 'src/stores/chats'
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
+import { goBack, returnTo } from 'src/utils/navigation'
 import { errorNotify } from 'src/utils/notifications'
 import { useSettingsStore } from 'src/stores/settings'
 
@@ -944,7 +945,8 @@ export default defineComponent({
           subject: this.topic.trim() || undefined,
         })
         chatStore.setActiveConversation(conversation.id)
-        openChat(this.$router, conversation.id)
+        // The conversation takes the form's place: Back from it skips the finished form.
+        void openChat(this.$router, conversation.id, { replace: true })
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
@@ -997,7 +999,8 @@ export default defineComponent({
         if (conversation.screenerStatus === 'dismissed')
           chatStore.setScreenerStatus(conversation.id, 'approved')
         chatStore.setActiveConversation(conversation.id)
-        openChat(this.$router, conversation.id)
+        // The conversation takes the form's place: Back from it skips the finished form.
+        void openChat(this.$router, conversation.id, { replace: true })
         return
       }
     },
@@ -1015,16 +1018,15 @@ export default defineComponent({
      */
     cancel(fallback?: string) {
       const from = this.$route?.query?.from
-      if (typeof from === 'string' && from.startsWith('/')) {
-        void this.$router.push(from)
+      if (
+        typeof from === 'string' &&
+        from.startsWith('/') &&
+        !from.startsWith('//')
+      ) {
+        returnTo(this.$router, from)
         return
       }
-      const previous = (window.history.state as { back?: unknown } | null)?.back
-      if (typeof previous === 'string' && previous.length > 0) {
-        this.$router.back()
-        return
-      }
-      void this.$router.push(fallback ?? '/chat')
+      goBack(this.$router, fallback ?? '/chat')
     },
   },
   mounted() {

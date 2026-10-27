@@ -371,28 +371,36 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     consoleError.mockRestore()
   })
 
-  it('renders back button and breadcrumb on thread route and navigates back to /forum', async () => {
-    const mockRouterPush = jest.fn()
+  it('the back arrow and breadcrumb are Back, never a push of /forum', async () => {
+    const router = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
     const wrapper = mountLayout({
       route: {
         path: '/forum/0x1234567890abcdef',
         params: { payloadDigest: '0x1234567890abcdef' },
       },
-      router: { push: mockRouterPush },
+      router,
     })
 
     const backBtn = wrapper.find('[data-test="forum-back"]')
     expect(backBtn.exists()).toBe(true)
-
     const breadcrumb = wrapper.find('[data-test="forum-breadcrumb"]')
     expect(breadcrumb.exists()).toBe(true)
 
+    // Opened from the forum list: Back returns to it (and Forward to the thread).
+    window.history.replaceState({ back: '/forum', position: 2 }, '')
+    try {
+      await backBtn.trigger('click')
+      expect(router.go).toHaveBeenCalledWith(-1)
+      router.go.mockClear()
+      await breadcrumb.trigger('click')
+      expect(router.go).toHaveBeenCalledWith(-1)
+    } finally {
+      window.history.replaceState(null, '')
+    }
+    // Opened directly: the forum takes the thread's place.
     await backBtn.trigger('click')
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
-
-    mockRouterPush.mockClear()
-    await breadcrumb.trigger('click')
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+    expect(router.replace).toHaveBeenCalledWith('/forum')
+    expect(router.push).not.toHaveBeenCalled()
   })
 
   it('navigates to /forum when setTopic is invoked from thread route', async () => {
@@ -440,17 +448,24 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
   })
 
   it('renders back button on /new-post route', async () => {
-    const mockRouterPush = jest.fn()
+    const router = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
     const wrapper = mountLayout({
       route: { path: '/new-post', params: {} },
-      router: { push: mockRouterPush },
+      router,
     })
 
     const backBtn = wrapper.find('[data-test="forum-back"]')
     expect(backBtn.exists()).toBe(true)
 
-    await backBtn.trigger('click')
-    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+    // The same Back as the post form's own button: not a push that keeps the form behind it.
+    window.history.replaceState({ back: '/forum/0xabc', position: 3 }, '')
+    try {
+      await backBtn.trigger('click')
+      expect(router.go).toHaveBeenCalledWith(-1)
+      expect(router.push).not.toHaveBeenCalled()
+    } finally {
+      window.history.replaceState(null, '')
+    }
   })
 
   it('on a phone a new post is titled New post, shows back only, and none of the forum list controls', async () => {

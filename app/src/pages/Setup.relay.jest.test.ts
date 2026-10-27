@@ -81,7 +81,13 @@ jest.mock('../accounts/ceremony', () => ({
 }))
 
 const mockPush = jest.fn(async () => undefined)
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
+// Setup's completions replace its entry: Back never returns to setup.
+const mockReplace = jest.fn(async () => undefined)
+// Nothing in setup leaves an entry Back would return to.
+afterEach(() => expect(mockPush).not.toHaveBeenCalled())
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+}))
 
 const { accountStatus: mockAccount, accountSession } = jest.requireMock(
   '../accounts/session',
@@ -105,7 +111,7 @@ const t = (key: string, params?: Record<string, unknown>) => {
 function render() {
   return mount(Setup, {
     global: {
-      mocks: { $t: t, $router: { push: mockPush } },
+      mocks: { $t: t, $router: { push: mockPush, replace: mockReplace } },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
         QToolbar: { template: '<div><slot /></div>' },
@@ -299,6 +305,7 @@ describe('Setup page advanced relay configuration', () => {
       },
     })
     mockPush.mockClear()
+    mockReplace.mockClear()
     mockBeginNew.mockClear()
     mockBeginRestore.mockClear()
     mockConfirm.mockClear()
@@ -496,7 +503,7 @@ describe('Setup page advanced relay configuration', () => {
       expect(read).toHaveBeenCalledTimes(1)
       // A relay that did not answer does not hold the account back: it opens, and the
       // profile is adopted in the background once the relay answers.
-      expect(mockPush).toHaveBeenCalledWith(
+      expect(mockReplace).toHaveBeenCalledWith(
         outcome === 'missing' ? '/profile' : '/wallet',
       )
       expect(view.emitted('setupCompleted')).toHaveLength(1)
@@ -733,7 +740,7 @@ describe('Setup page advanced relay configuration', () => {
     expect(probeSpy).not.toHaveBeenCalled()
     expect(getCustomRelayBaseUrl()).toBe(existingRelay)
     expect(view.find('[data-test="custom-relay-input"]').exists()).toBe(false)
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
 
     probeSpy.mockRestore()
     view.unmount()

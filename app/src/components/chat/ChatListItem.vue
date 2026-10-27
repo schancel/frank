@@ -137,7 +137,7 @@
     </q-item-section>
 
     <!-- Right-click contextual menu -->
-    <q-menu touch-position context-menu>
+    <q-menu v-model="menuOpen" touch-position context-menu>
       <q-list dense style="min-width: 160px">
         <q-item clickable v-close-popup @click="openConversation">
           <q-item-section avatar>
@@ -222,6 +222,7 @@ import {
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent, ref, type PropType } from 'vue'
+import { useBackDismiss } from 'src/utils/navigation'
 import { copyToClipboard } from 'quasar'
 import { profileAvatar } from 'src/utils/avatar'
 import {
@@ -254,6 +255,20 @@ export default defineComponent({
       () => props.conversation?.id || props.conversationId || props.chatAddress,
     )
     const deleteDialogOpen = ref(false)
+    // Phone Back closes the context menu or the dialog (utils/navigation).
+    const menuOpen = ref(false)
+    useBackDismiss(
+      () => menuOpen.value,
+      () => {
+        menuOpen.value = false
+      },
+    )
+    useBackDismiss(
+      () => deleteDialogOpen.value,
+      () => {
+        deleteDialogOpen.value = false
+      },
+    )
 
     return {
       navigateAfterDeletion,
@@ -264,6 +279,7 @@ export default defineComponent({
       chats,
       myProfile,
       deleteDialogOpen,
+      menuOpen,
       profileAvatar,
       ownAddress: useReactiveOwnCanonicalAddress(),
     }
@@ -271,7 +287,7 @@ export default defineComponent({
   methods: {
     openConversation() {
       const target = this.effectiveId
-      this.chatStore.setActiveConversation(target)
+      // The route selects the conversation once it is committed.
       if (this.$router) {
         openChat(this.$router, target)
       }

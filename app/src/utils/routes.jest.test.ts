@@ -1,75 +1,87 @@
+/** @jest-environment jsdom */
 /**
- * Unit tests for `utils/routes.ts` -- the shared navigation helper every "open a page"/"open a
- * chat" call site in the app goes through (`LeftDrawer.vue`, `SettingsPanel.vue`, `TopicList.vue`,
- * etc.). The one behavior worth locking down: navigating *from* a settings-family route replaces
- * history instead of pushing, so "back" from e.g. /send doesn't return you to /profile -- it
- * returns you to wherever you were before you entered the settings flow at all.
+ * `utils/routes.ts`: opening a chat or a contact's profile is a page the user asked for, so it
+ * is pushed from wherever they are and Back returns there. (It used to replace the page when the
+ * current path started with a "settings-family" prefix — /settings, /profile, /send (which also
+ * matched /send-contact), /qr, ... — so Back skipped that page: Settings → Profile → Back left
+ * Settings behind.)
  */
 import type { Router } from 'vue-router'
+import { openChat, openContactProfile } from './routes'
+import { resetNavigationForTests } from './navigation'
 import {
-  openPage,
-  openChat,
-  openContactProfile,
-  settingsRoutes,
-} from './routes'
+  afterNavigation,
+  historyPosition,
+  openApp,
+  userBack,
+} from '../../test/jest/navigation-harness'
 
-function makeRouter(currentPath: string): Router {
-  return {
-    currentRoute: { value: { path: currentPath } },
-    push: jest.fn(),
-    replace: jest.fn(),
-  } as unknown as Router
-}
+jest.mock(
+  require.resolve('@vue/devtools-api', {
+    paths: [require.resolve('vue-router')],
+  }),
+  () => ({ setupDevtoolsPlugin: () => undefined }),
+)
+jest.mock('nostics', () => ({
+  createConsoleReporter: () => ({}),
+  defineDiagnostics: () => new Proxy({}, { get: () => () => undefined }),
+}))
 
-describe('openPage', () => {
-  it('pushes a new history entry when navigating from a non-settings route', () => {
-    const router = makeRouter('/chat/0xabc')
-    openPage(router, '/settings')
-    expect(router.push).toHaveBeenCalledWith('/settings')
-    expect(router.replace).not.toHaveBeenCalled()
-  })
+const PATHS = [
+  '/chat',
+  '/chat/:address',
+  '/settings',
+  '/profile',
+  '/send',
+  '/send-contact',
+  '/qr',
+  '/forum',
+]
 
-  it.each(settingsRoutes)(
-    'replaces the current history entry when already on %s',
-    settingsRoute => {
-      const router = makeRouter(settingsRoute)
-      openPage(router, '/send')
-      expect(router.replace).toHaveBeenCalledWith('/send')
-      expect(router.push).not.toHaveBeenCalled()
-    },
-  )
+let router: Router
+let destroy: () => void = () => undefined
 
-  it('matches a settings route by prefix (e.g. a sub-path of /profile)', () => {
-    const router = makeRouter('/profile/edit')
-    openPage(router, '/send')
-    expect(router.replace).toHaveBeenCalledWith('/send')
-  })
+afterEach(() => {
+  destroy()
+  resetNavigationForTests()
 })
 
-describe('openChat', () => {
-  it('builds a /chat/:address route and opens it via openPage', () => {
-    const router = makeRouter('/topic/news')
-    openChat(router, '0xabc')
-    expect(router.push).toHaveBeenCalledWith('/chat/0xabc')
-  })
+describe.each(['/settings', '/profile', '/send-contact', '/qr', '/forum'])(
+  'from %s',
+  from => {
+    beforeEach(async () => {
+      ;({ router, destroy } = await openApp(PATHS, from))
+    })
 
-  it('replaces rather than pushes when opening a chat from a settings route', () => {
-    const router = makeRouter('/receive')
-    openChat(router, '0xabc')
-    expect(router.replace).toHaveBeenCalledWith('/chat/0xabc')
-  })
-})
+    it('openChat pushes the conversation and Back returns to the page it was opened from', async () => {
+      const base = historyPosition()
+      await openChat(router, '0xabc')
+      expect(router.currentRoute.value.fullPath).toBe('/chat/0xabc')
+      expect(historyPosition()).toBe(base + 1)
+      await userBack(router)
+      expect(router.currentRoute.value.path).toBe(from)
+      expect(historyPosition()).toBe(base)
+    })
 
-describe('openContactProfile', () => {
-  it('builds a /chat/:address?info=true route and opens it via openPage', () => {
-    const router = makeRouter('/forum')
-    openContactProfile(router, '0xabc')
-    expect(router.push).toHaveBeenCalledWith('/chat/0xabc?info=true')
-  })
+    it('openContactProfile pushes the profile and Back returns to the page it was opened from', async () => {
+      const base = historyPosition()
+      await openContactProfile(router, '0xabc')
+      expect(router.currentRoute.value.fullPath).toBe('/chat/0xabc?info=true')
+      expect(historyPosition()).toBe(base + 1)
+      await userBack(router)
+      expect(router.currentRoute.value.path).toBe(from)
+    })
+  },
+)
 
-  it('replaces rather than pushes when opening profile from a settings route', () => {
-    const router = makeRouter('/settings')
-    openContactProfile(router, '0xabc')
-    expect(router.replace).toHaveBeenCalledWith('/chat/0xabc?info=true')
-  })
+it('openChat with replace takes the current entry (a finished form, a redirect)', async () => {
+  ;({ router, destroy } = await openApp(PATHS, '/forum'))
+  await router.push('/send-contact')
+  const formPosition = historyPosition()
+  void openChat(router, '0xabc', { replace: true })
+  await afterNavigation(router)
+  expect(router.currentRoute.value.fullPath).toBe('/chat/0xabc')
+  expect(historyPosition()).toBe(formPosition)
+  await userBack(router)
+  expect(router.currentRoute.value.path).toBe('/forum')
 })

@@ -122,7 +122,7 @@ import { isAvatarTooLarge, compressAvatarDataUrl } from '../utils/avatar'
 import { downscaleImage } from '../utils/image-resize'
 import Profile, { type ProfileLinkItem } from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
-import { navigateBack } from '../utils/navigate-back'
+import { goBack } from '../utils/navigation'
 import { claimOwnUsername, usernameErrorKey } from '../utils/username-claim'
 import { ownUsername, setOwnUsername } from '../utils/own-username'
 
@@ -528,7 +528,7 @@ export default defineComponent({
       }
     },
     cancel() {
-      navigateBack(this.$router)
+      goBack(this.$router, '/settings')
     },
   },
 })

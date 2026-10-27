@@ -190,7 +190,6 @@ import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useMultichainBalance } from '../../composables/useChainBalance'
 import { displayAmountText } from '../../utils/chain-amount'
 import { useWalletNames } from '../../composables/useWalletNames'
-import { openPage } from '../../utils/routes'
 import { walletSupport } from '../../utils/wallet-support'
 import { MAIN_WALLET_ID, WALLET_CONFIGS } from '../../utils/wallet-configs'
 import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
@@ -299,7 +298,7 @@ function selectWallet(wallet: string) {
 }
 function openBackup() {
   const router = getRouter()
-  if (router) return openPage(router, '/backup')
+  if (router) return router.push('/backup')
 }
 </script>
 

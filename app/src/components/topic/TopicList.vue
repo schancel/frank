@@ -13,7 +13,7 @@
             flat
             icon="add"
             :aria-label="$t('a11y.addTopic')"
-            @click="() => openPage($router, '/add-topic')"
+            @click="() => $router.push('/add-topic')"
           />
         </q-item>
         <q-separator />
@@ -32,15 +32,12 @@ import { storeToRefs } from 'pinia'
 import TopicListLink from './TopicListLink.vue'
 import { useTopicStore } from 'src/stores/topics'
 
-import { openPage } from '../../utils/routes'
-
 export default defineComponent({
   setup() {
     const { getTopics } = storeToRefs(useTopicStore())
 
     return {
       topics: getTopics,
-      openPage,
     }
   },
   components: {

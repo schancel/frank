@@ -317,6 +317,11 @@ export default configure(ctx => {
 
       // Quasar plugins
       plugins: ['Notify', 'Loading', 'Dialog'],
+
+      // Android's Back button is boot/capacitor.ts's (utils/navigation handleHardwareBack).
+      config: {
+        capacitor: { backButton: false },
+      },
     },
 
     // https://quasar.dev/quasar-cli/cli-documentation/supporting-ie

@@ -62,6 +62,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useBackDismiss } from 'src/utils/navigation'
 
 const props = withDefaults(
   defineProps<{
@@ -84,6 +85,10 @@ const emit = defineEmits<{
 }>()
 
 const inputName = ref('')
+useBackDismiss(
+  () => props.modelValue,
+  () => emit('update:modelValue', false),
+)
 
 watch(
   () => props.modelValue,

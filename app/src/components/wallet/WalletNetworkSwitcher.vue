@@ -9,6 +9,7 @@
   >
     <q-tooltip>{{ uiText.switchNetworkTooltip }}</q-tooltip>
     <q-menu
+      v-model="menuOpen"
       anchor="bottom right"
       self="top right"
       data-testid="wallet-network-switcher-menu"
@@ -66,11 +67,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
+import { useBackDismiss } from '../../utils/navigation'
 import { useRouter } from 'vue-router'
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useWalletNames } from '../../composables/useWalletNames'
-import { openPage } from '../../utils/routes'
 import { walletSupport } from '../../utils/wallet-support'
 import { MAIN_WALLET_ID, WALLET_CONFIGS } from '../../utils/wallet-configs'
 
@@ -107,7 +108,16 @@ function walletIsTestnet(walletId: string): boolean {
   return walletSupport(walletId, isTestnet.value).entry?.isTestnet ?? false
 }
 
+const menuOpen = ref(false)
+useBackDismiss(
+  () => menuOpen.value,
+  () => {
+    menuOpen.value = false
+  },
+)
+
 function selectWallet(walletId: string) {
-  openPage(router, `/wallet/${walletId || MAIN_WALLET_ID}`)
+  // Another network of the same Wallet screen: it takes this entry, it does not stack.
+  void router.replace(`/wallet/${walletId || MAIN_WALLET_ID}`)
 }
 </script>

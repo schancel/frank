@@ -6,6 +6,7 @@ import {
 } from 'vue-router'
 import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
+import { NOT_FOUND_ROUTE } from './not-found'
 import { startupRestoration } from '../boot/startup-state'
 import { useContactStore } from 'src/stores/contacts'
 import {
@@ -17,6 +18,9 @@ import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 import { notePendingChatRoute, takeInterruptedChatRoute } from './pending-chat'
 import { checkDebouncedAppUpdate } from 'src/utils/pwa'
+import { installNavigation } from 'src/utils/navigation'
+import { isNarrowWidth } from 'src/utils/layout'
+import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
 import {
   EXT_LAST_ROUTE_STORAGE_KEY,
   isExtensionContext,
@@ -78,6 +82,8 @@ export default () => {
   // `return '/setup'`. Purely mechanical; the actual gating logic is unchanged.
   async function redirectIfNoProfile(to: RouteLocationNormalized) {
     if (startupRestoration.value.phase !== 'restored') return
+    // An address Frank does not have is "Page not found", signed in or not.
+    if (to.name === NOT_FOUND_ROUTE) return
     await accountSession.initialize()
     // Standby is an existing account active elsewhere, not a signed-out session.
     // Show the takeover screen before public routes can present signup controls.
@@ -143,16 +149,23 @@ export default () => {
     ? createWebHistory
     : createWebHashHistory
 
+  // Leave this as is and make changes in quasar.conf.js instead!
+  // quasar.conf.js -> build -> vueRouterMode
+  // quasar.conf.js -> build -> publicPath
+  const history = createHistory(
+    process.env.MODE === 'ssr' ? undefined : process.env.VUE_ROUTER_BASE,
+  )
   const Router = createRouter({
     routes,
     scrollBehavior: () => ({ left: 0, top: 0 }),
-
-    // Leave this as is and make changes in quasar.conf.js instead!
-    // quasar.conf.js -> build -> vueRouterMode
-    // quasar.conf.js -> build -> publicPath
-    history: createHistory(
-      process.env.MODE === 'ssr' ? undefined : process.env.VUE_ROUTER_BASE,
-    ),
+    history,
+  })
+  // First: it must see a Back before any other guard does (see utils/navigation).
+  installNavigation(Router, history, {
+    backClosesOverlays: () =>
+      typeof window !== 'undefined' &&
+      process.env.MODE !== 'capacitor' &&
+      isNarrowWidth(getEffectiveScreenWidth(window.innerWidth)),
   })
   // Read before the first navigation starts: a chat that was being opened when the page was
   // reloaded (see `./pending-chat`).

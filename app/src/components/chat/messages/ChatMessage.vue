@@ -287,6 +287,7 @@
 <script lang="ts">
 import { isWakeupCapabilitySidecar } from '@frank/wallet/message-item-plugins/contact-card/plugin'
 import { computed, defineComponent, PropType } from 'vue'
+import { backDismissible } from 'src/utils/navigation'
 import {
   STAMP_NONE_PATIENCE_MS,
   useStampReceipt,
@@ -368,6 +369,8 @@ import type { PostAttachment } from '../../../utils/post-editor'
 export { STAMP_NONE_PATIENCE_MS }
 
 export default defineComponent({
+  // Phone Back closes these overlays (utils/navigation).
+  mixins: [backDismissible('transactionDialog', 'deleteDialog', 'imageDialog')],
   name: 'ChatMessage',
   components: {
     ChatMessageMenu,

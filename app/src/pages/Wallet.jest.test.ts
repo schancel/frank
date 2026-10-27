@@ -82,7 +82,7 @@ const balance = {
   loaded: ref(true),
   hasError: ref(false),
 }
-const openPage = jest.fn()
+const mockRouterPush = jest.fn()
 const mockCopyToClipboard = jest.fn()
 const mockSwapRows = ref<SwapActivityRow[]>([])
 jest.mock('src/swap/useSwapActivity', () => ({
@@ -171,11 +171,8 @@ jest.mock('src/stores/oracle', () => ({
 // setup cannot parse (see router/index.jest.test.ts's own boundary comment); Wallet.vue only
 // needs the composable to exist.
 jest.mock('vue-router', () => ({
-  useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush, replace: jest.fn() }),
   useRoute: () => mockRoute.value,
-}))
-jest.mock('src/utils/routes', () => ({
-  openPage: (...args: unknown[]) => openPage(...args),
 }))
 jest.mock('quasar', () => ({ copyToClipboard: mockCopyToClipboard }))
 jest.mock('src/utils/notifications', () => ({
@@ -309,7 +306,7 @@ describe('Wallet detail page (#570)', () => {
     balance.formattedBalance.value = '1 MON'
     balance.loaded.value = true
     balance.hasError.value = false
-    openPage.mockReset()
+    mockRouterPush.mockReset()
     mockCopyToClipboard.mockReset()
     mockCopyToClipboard.mockResolvedValue(undefined)
     mockUseActiveWallet.mockReset()
@@ -351,8 +348,7 @@ describe('Wallet detail page (#570)', () => {
         expect(send.text()).toBe(`walletPanel.sendAsset:${unit}`)
         expect(send.attributes('disabled')).toBeUndefined()
         await send.trigger('click')
-        expect(openPage).toHaveBeenCalledWith(
-          expect.anything(),
+        expect(mockRouterPush).toHaveBeenCalledWith(
           `/send?chainIdentifier=${chainIdentifier}`,
         )
         wrapper.unmount()
@@ -504,8 +500,7 @@ describe('Wallet detail page (#570)', () => {
       await flush()
       expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
       await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
-      expect(openPage).toHaveBeenCalledWith(
-        expect.anything(),
+      expect(mockRouterPush).toHaveBeenCalledWith(
         '/send?chainIdentifier=monad-testnet',
       )
       wrapper.unmount()
@@ -532,7 +527,7 @@ describe('Wallet detail page (#570)', () => {
     )
     expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
     await wrapper.get('[data-testid="wallet-about-avu"]').trigger('click')
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
+    expect(mockRouterPush).toHaveBeenCalledWith('/avu')
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
     expect(region.attributes()).toMatchObject({
@@ -620,15 +615,14 @@ describe('Wallet detail page (#570)', () => {
     expect(addressCopiedNotify).toHaveBeenCalledTimes(1)
 
     await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
-    expect(openPage).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(mockRouterPush).toHaveBeenCalledWith(
       '/send?chainIdentifier=monad-testnet',
     )
 
     await wrapper
       .get('[data-testid="wallet-contact-send-action"]')
       .trigger('click')
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send-contact')
+    expect(mockRouterPush).toHaveBeenCalledWith('/send-contact')
     wrapper.unmount()
   })
 
@@ -927,8 +921,7 @@ describe('Wallet detail page (#570)', () => {
     expect(sendBtn.text()).toBe('walletPanel.sendAsset:dSOL')
     expect(sendBtn.attributes('disabled')).toBeUndefined()
     await sendBtn.trigger('click')
-    expect(openPage).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(mockRouterPush).toHaveBeenCalledWith(
       '/send?chainIdentifier=solana-devnet',
     )
 
@@ -1100,7 +1093,7 @@ describe('Wallet detail page (#570)', () => {
 
     // Click navigates to the full AVU details page
     await unitRateBadge.trigger('click')
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
+    expect(mockRouterPush).toHaveBeenCalledWith('/avu')
 
     // AVU balance line becomes visible when balance is loaded
     balance.loaded.value = true
@@ -1108,12 +1101,12 @@ describe('Wallet detail page (#570)', () => {
     const balanceBadge = wrapper.get('[data-testid="wallet-balance-avu"]')
     expect(balanceBadge.attributes('role')).toBe('button')
     expect(balanceBadge.attributes('tabindex')).toBe('0')
-    jest.mocked(openPage).mockClear()
+    mockRouterPush.mockClear()
     await balanceBadge.trigger('keydown', { key: 'Enter' })
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
-    jest.mocked(openPage).mockClear()
+    expect(mockRouterPush).toHaveBeenCalledWith('/avu')
+    mockRouterPush.mockClear()
     await unitRateBadge.trigger('keydown', { key: ' ' })
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
+    expect(mockRouterPush).toHaveBeenCalledWith('/avu')
     wrapper.unmount()
   })
 

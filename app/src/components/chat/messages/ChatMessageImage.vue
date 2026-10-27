@@ -29,6 +29,7 @@
 
 <script lang="ts">
 import { ref } from 'vue'
+import { useBackDismiss } from 'src/utils/navigation'
 
 import {
   DELIVERED_IMAGE_LIMITS,
@@ -66,6 +67,12 @@ export default {
   },
   setup() {
     const imageDialog = ref(false)
+    useBackDismiss(
+      () => imageDialog.value,
+      () => {
+        imageDialog.value = false
+      },
+    )
     return {
       showImageDialog() {
         imageDialog.value = true

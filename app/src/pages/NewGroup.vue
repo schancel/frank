@@ -54,6 +54,7 @@ import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 import { activeChain } from '@frank/wallet/chain'
 import { messagingState } from '../utils/messaging-state'
 import { viewportPageStyle } from '../utils/layout'
+import { returnTo } from '../utils/navigation'
 
 export default defineComponent({
   name: 'NewGroupPage',
@@ -90,7 +91,8 @@ export default defineComponent({
         typeof from === 'string' && /^\/chat(?:\/|\?|$)/.test(from)
           ? from
           : '/chat'
-      void router.replace(target)
+      // Back to where the form was opened from; the form leaves no entry behind.
+      returnTo(router, target)
     }
     const form = ref<{ cancel(): void } | null>(null)
     const back = () => (form.value ? form.value.cancel() : cancel())

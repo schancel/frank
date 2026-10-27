@@ -112,9 +112,10 @@ jest.mock('vue-router', () => ({
     afterEach: jest.fn(),
     onError: jest.fn(),
   }),
-  createMemoryHistory: jest.fn(),
-  createWebHistory: jest.fn(),
-  createWebHashHistory: jest.fn(),
+  // The router listens to its history for Back (utils/navigation).
+  createMemoryHistory: jest.fn(() => ({ listen: jest.fn() })),
+  createWebHistory: jest.fn(() => ({ listen: jest.fn() })),
+  createWebHashHistory: jest.fn(() => ({ listen: jest.fn() })),
 }))
 
 const mockAccount = reactive(toRaw(accountStatus))

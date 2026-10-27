@@ -131,7 +131,12 @@
                   data-test="contact-actions"
                   @click.stop
                 >
-                  <q-menu @click.stop @keydown.stop>
+                  <q-menu
+                    :model-value="actionsMenuFor === item.address"
+                    @update:model-value="setActionsMenu(item.address, $event)"
+                    @click.stop
+                    @keydown.stop
+                  >
                     <q-list dense>
                       <q-item
                         clickable
@@ -289,6 +294,7 @@ import {
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
+import { useBackDismiss } from 'src/utils/navigation'
 import { storeToRefs } from 'pinia'
 import { useQuasar } from 'quasar'
 
@@ -299,7 +305,7 @@ import {
 } from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
-import { openChat, openContactProfile, openPage } from 'src/utils/routes'
+import { openChat, openContactProfile } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import DeleteContactDialog from 'src/components/dialogs/DeleteContactDialog.vue'
 import {
@@ -347,6 +353,18 @@ export default defineComponent({
     const search = ref<string | null>('')
     const deleteTarget = ref<{ address: string; name: string } | null>(null)
     const showMyQrDialog = ref(false)
+    // The contact whose actions menu is open; phone Back closes it (utils/navigation).
+    const actionsMenuFor = ref<string | null>(null)
+    function setActionsMenu(address: string, open: boolean) {
+      if (open) actionsMenuFor.value = address
+      else if (actionsMenuFor.value === address) actionsMenuFor.value = null
+    }
+    useBackDismiss(
+      () => actionsMenuFor.value !== null,
+      () => {
+        actionsMenuFor.value = null
+      },
+    )
     const networkResults = ref<NetworkSearchResult[]>([])
     const isSearchingNetwork = ref(false)
     let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -659,7 +677,7 @@ export default defineComponent({
       const target = from
         ? `/add-contact?from=${encodeURIComponent(from)}`
         : '/add-contact'
-      openPage(router, target)
+      router.push(target)
     }
 
     function openMyQr() {
@@ -672,7 +690,7 @@ export default defineComponent({
       if (from) {
         params.set('from', from)
       }
-      openPage(router, `/qr?${params.toString()}`)
+      router.push(`/qr?${params.toString()}`)
       if (isNarrow()) {
         emit('closeDrawer')
       }
@@ -689,13 +707,15 @@ export default defineComponent({
       if (from) {
         params.set('from', from)
       }
-      openPage(router, `/add-contact?${params.toString()}`)
+      router.push(`/add-contact?${params.toString()}`)
       if (isNarrow()) {
         emit('closeDrawer')
       }
     }
 
     return {
+      actionsMenuFor,
+      setActionsMenu,
       search,
       filteredContacts,
       networkResults,

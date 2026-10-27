@@ -43,7 +43,7 @@
 </template>
 
 <script lang="ts">
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import { defineComponent, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { QInput } from 'quasar'
@@ -57,7 +57,7 @@ export default defineComponent({
     const topic = ref('')
 
     const cancel = () => {
-      navigateBack(router)
+      goBack(router, '/forum')
     }
     const addTopic = () => {
       if (!topic.value) {

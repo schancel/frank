@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 
-import { shallowMount } from '@vue/test-utils'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import fs from 'fs'
 import path from 'path'
 import { defineComponent, nextTick, reactive, ref } from 'vue'
@@ -92,9 +92,10 @@ const QTabStub = defineComponent({
   template: '<button v-bind="$attrs"><slot /></button>',
 })
 
-function mountDrawer(setup = true, relayConnected?: boolean) {
+function mountDrawer(setup = true, relayConnected?: boolean, width?: number) {
   return shallowMount(LeftDrawer, {
     global: {
+      provide: width === undefined ? {} : { _q_: { screen: { width } } },
       mocks: {
         $status: { setup },
         $t: (key: string) => key,
@@ -260,17 +261,25 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     }
   })
 
-  it('navigates to /chat when clicking chats rail tab with no active chats', async () => {
+  // Rail tabs switch tabs like the bottom bar (utils/navigation switchTab). These mount with
+  // no history entry under the page, so Messages takes the current entry.
+  it('the Messages rail tab opens the conversation list in place, never a pushed conversation', async () => {
     mockRouterPush.mockReset()
+    mockRouterReplace.mockReset()
     const wrapper = mountDrawer()
     await wrapper.get('#rail-tab-chats').trigger('click')
-    expect(mockRouterPush).toHaveBeenCalledWith('/chat')
+    await flushPromises()
+    expect(mockRouterReplace).toHaveBeenCalledWith('/chat')
+    expect(mockRouterPush).not.toHaveBeenCalled()
   })
 
-  it('navigates to /settings when clicking settings rail tab', async () => {
+  it('the Settings rail tab opens Settings above Messages', async () => {
     mockRouterPush.mockReset()
+    mockRouterReplace.mockReset()
     const wrapper = mountDrawer()
     await wrapper.get('#rail-tab-settings').trigger('click')
+    await flushPromises()
+    expect(mockRouterReplace).toHaveBeenCalledWith('/chat')
     expect(mockRouterPush).toHaveBeenCalledWith('/settings')
   })
 
@@ -363,6 +372,22 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
 
       await vm.browseForumTopic('memes')
       expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+    })
+
+    it('picking a topic on a phone closes the drawer, even when the forum is already open', async () => {
+      mockRouterPush.mockReset()
+      mockRoute.path = '/forum'
+      const wrapper = mountDrawer(true, undefined, 390)
+      await (wrapper.vm as any).browseForumTopic('memes')
+      expect(mockRouterPush).not.toHaveBeenCalled()
+      expect(wrapper.emitted('closeDrawer')).toHaveLength(1)
+    })
+
+    it('picking a topic on a wide screen keeps the drawer', async () => {
+      mockRoute.path = '/forum'
+      const wrapper = mountDrawer(true, undefined, 1280)
+      await (wrapper.vm as any).browseForumTopic('memes')
+      expect(wrapper.emitted('closeDrawer')).toBeUndefined()
     })
 
     it('toggles off active topic when clicked again', async () => {

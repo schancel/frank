@@ -270,7 +270,7 @@ import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
-import { openChat, openPage } from '../../utils/routes'
+import { openChat } from '../../utils/routes'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
@@ -526,7 +526,6 @@ export default defineComponent({
         searchInputRef.value?.focus()
         searchInputRef.value?.select()
       },
-      openPage,
       openQrPage() {
         showIdentityQrDialog.value = true
         const from =
@@ -536,7 +535,7 @@ export default defineComponent({
         const target = from.startsWith('/chat')
           ? `/qr?from=${encodeURIComponent(from)}`
           : '/qr'
-        openPage(router, target)
+        router.push(target)
         if (isNarrowWidth($q.screen.width)) {
           emit('closeDrawer')
         }
@@ -554,7 +553,7 @@ export default defineComponent({
         const target = from.startsWith('/chat')
           ? `/new-conversation?from=${encodeURIComponent(from)}`
           : '/new-conversation'
-        openPage(router, target)
+        router.push(target)
       },
       onQrScanned(scanned: string) {
         const trimmed = scanned.trim()
@@ -567,14 +566,14 @@ export default defineComponent({
         if (from.startsWith('/chat')) {
           params.set('from', from)
         }
-        openPage(router, `/new-conversation?${params.toString()}`)
+        router.push(`/new-conversation?${params.toString()}`)
         if (isNarrowWidth($q.screen.width)) {
           emit('closeDrawer')
         }
       },
       selectConversation(item: Conversation | string) {
         const target = typeof item === 'string' ? item : item.id
-        chatStore.setActiveConversation(target)
+        // The route selects the conversation once it is committed.
         openChat(router, target)
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
         // drawer this list lives in is an overlay covering the whole chat -- selecting a chat

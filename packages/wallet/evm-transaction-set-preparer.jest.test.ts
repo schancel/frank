@@ -13,6 +13,7 @@ import { InMemoryTopicOperationJournal } from './storage/topic-operation-journal
 import { validateNativeTopicReferences } from './evm-input-admission'
 import {
   constructWhenSpendable,
+  EvmTransactionSetFeeExceededError,
   EvmTransactionSetPreparer,
 } from './evm-transaction-set'
 import { EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
@@ -1306,6 +1307,26 @@ it.each([0.01, 0.3, 0.5, 0.7, 0.99])('one coin under a reserve rule funds its co
   for (const index of onAccount.slice(2)) expect(members[index]!.transactionSet!.role).toBe('change')
   // The stamp waits for its funding to mature, one block past the payment's quiet window.
   expect(members[stamp]!.transactionSet!.fundingWaitBlocks).toBe(spendRule.waitBlocks + 1)
+})
+
+it.each([0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99])('a stage the authorized fee leaves no room for is refused for the fee, however the draw lays out the set it joins (draw %s)', async draw => {
+  // A stamp reviewed with no fee: its carved account holds exactly the stamp and cannot pay its
+  // own transfer. Whether some other output of the set could fund it depends on the draw (a
+  // change ahead of the payment can; one behind it cannot), but no coin makes the stage fit the
+  // bound, so the refusal is the fee every time, never missing funds.
+  const f = await setup([1000000n])
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => draw })
+  const request = { operationId: 'no-stamp-fee', amountWei: 300000n,
+    reserveForContinuationWei: 30000n, continuationFeeWei: 0n, kdf }
+  const quote = await f.preparer.quoteTransactionSet(request)
+  await f.preparer.constructTransactionSet({ ...request, maxFeeWei: quote.feeWei })
+  const before = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  const held = f.coins.all().filter(coin => coin.holder !== undefined).map(coin => `${coin.account}:${coin.nonce}`)
+  await expect(f.preparer.appendTransactionSet({ operationId: 'no-stamp-fee', stageId: 'stamp', amountWei: 30000n, kdf }))
+    .rejects.toBeInstanceOf(EvmTransactionSetFeeExceededError)
+  // Nothing more was signed or reserved.
+  expect(f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(before)
+  expect(f.coins.all().filter(coin => coin.holder !== undefined).map(coin => `${coin.account}:${coin.nonce}`)).toEqual(held)
 })
 
 it('a relay refusal before any broadcast releases a set whose only exposed members are its payments, and never one whose own moves were exposed', async () => {

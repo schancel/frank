@@ -685,6 +685,31 @@ export class EvmTransactionSetPreparer {
       this.selectionRules(request, policy, legacy, existing, admittedInput)
     const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }, oneSource = false) =>
       coins.reserveTransactionSetSources(selection(fanIn, continuation, oneSource))
+    // The fee the user authorized bounds the whole operation, every stage included. Payments
+    // are what the authorization is for; fresh change is optional. Change outputs are only
+    // planned while their fees fit under what the payments leave of the bound, and a residual
+    // that does not get them stays with its sender on the account's next nonce.
+    const bound = [request.maxFeeWei, ...(existing?.transactionSetStages ?? []).map(stage =>
+      stage.maxFeeWei === undefined ? undefined : BigInt(stage.maxFeeWei))]
+      .reduce<bigint | undefined>((least, value) =>
+        value === undefined || (least !== undefined && least <= value) ? least : value, undefined)
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    // A one-transfer continuation: the reserve is kept as one fresh account of exactly
+    // `reserve` (its own transfer, `changeFee`), and the bound holds the continuation's fee.
+    // Neither is ever spent on change.
+    const carve = this.continuationCarve(request)
+    const heldForContinuation = carve ? carve.feeWei + changeFee : 0n
+    const memberFee = (unsigned: string) => {
+      const tx = Transaction.from(unsigned)
+      return tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
+    }
+    const committed = (existing?.members ?? []).reduce((sum, member) => sum + memberFee(member.unsignedTransaction), 0n)
+    // Every stage signs at least its first payment. When that alone does not fit under what the
+    // bound leaves, no coins could make the stage fit: it is refused for the fee before any coin
+    // is chosen, whatever the wallet holds (a stamp whose reviewed fee no longer covers its
+    // transfer is a fee to review again, not missing funds).
+    if (bound !== undefined && committed + context(0).gas * policy.gasPriceWei + heldForContinuation > bound)
+      throw new EvmTransactionSetFeeExceededError(committed + context(0).gas * policy.gasPriceWei + heldForContinuation)
     const beforeSelection = coins.all()
     // The continuation an earlier stage kept a reserve for pays from one source when one covers
     // it: the transfer it was reserved and bounded for, not one more for each smaller output.
@@ -701,24 +726,6 @@ export class EvmTransactionSetPreparer {
     }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
-    const memberFee = (unsigned: string) => {
-      const tx = Transaction.from(unsigned)
-      return tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
-    }
-    // The fee the user authorized bounds the whole operation, every stage included. Payments
-    // are what the authorization is for; fresh change is optional. Change outputs are only
-    // planned while their fees fit under what the payments leave of the bound, and a residual
-    // that does not get them stays with its sender on the account's next nonce.
-    const bound = [request.maxFeeWei, ...(existing?.transactionSetStages ?? []).map(stage =>
-      stage.maxFeeWei === undefined ? undefined : BigInt(stage.maxFeeWei))]
-      .reduce<bigint | undefined>((least, value) =>
-        value === undefined || (least !== undefined && least <= value) ? least : value, undefined)
-    const changeFee = policy.changeGasLimit * policy.gasPriceWei
-    // A one-transfer continuation: the reserve is kept as one fresh account of exactly
-    // `reserve` (its own transfer, `changeFee`), and the bound holds the continuation's fee.
-    // Neither is ever spent on change.
-    const carve = this.continuationCarve(request)
-    const heldForContinuation = carve ? carve.feeWei + changeFee : 0n
     const carved: { member?: LocalMember } = {}
     let changeBudget: bigint | undefined
     // The coin distribution's band: change only as far as the pool stays within it (the same
@@ -759,7 +766,6 @@ export class EvmTransactionSetPreparer {
         if (bound !== undefined) {
           const paymentFees = planned.reduce((sum, item) =>
             item.hasPayment ? sum + context(item.index).gas * policy.gasPriceWei : sum, 0n)
-          const committed = (existing?.members ?? []).reduce((sum, member) => sum + memberFee(member.unsignedTransaction), 0n)
           if (committed + paymentFees + heldForContinuation > bound)
             throw new EvmTransactionSetFeeExceededError(committed + paymentFees + heldForContinuation)
           changeBudget = bound - committed - paymentFees - heldForContinuation

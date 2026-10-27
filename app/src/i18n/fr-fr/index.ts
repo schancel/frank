@@ -472,6 +472,8 @@ export const rawFrFR = {
     tableLimits: 'Cette table accepte les mises de {min} à {max}.',
     outsideTableLimits:
       'Cette table accepte les mises de {min} à {max}. Une mise en dehors serait rendue, pas jouée : rien n’est envoyé.',
+    tableMaxBelowMinimum:
+      'La mise la plus forte de cette table ({max}) est inférieure à la plus petite mise que ce réseau permet ({min}) : aucune mise n’y est possible.',
     supersededOffer:
       'Le croupier a fait une offre plus récente. Misez sur la plus récente : ses limites sont les limites actuelles.',
     line: {
@@ -500,6 +502,7 @@ export const rawFrFR = {
     rowCard: 'Carte',
     wager: 'En jeu : {amount}',
     accept: 'Accepter et distribuer',
+    betAmountNoLimits: 'Votre mise',
     betAmount: 'Votre mise (de {min} à {max})',
     bet: 'Miser',
     hit: 'Carte',

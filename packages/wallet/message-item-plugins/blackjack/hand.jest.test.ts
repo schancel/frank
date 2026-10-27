@@ -938,6 +938,32 @@ describe('amounts', () => {
     expect(table.bet(1n).error).toBeUndefined()
   })
 
+  // Review F3: a smallest bet above the offer's max was silently dropped; it is malformed, as
+  // the codec says.
+  it('an offer whose smallest bet is above its max bet is not a hand, nor is such an accept', () => {
+    const table = new Table(ALICE, BOB, DEALER_SEED, seeds.win)
+    const challenge = table.send(
+      ALICE,
+      table.next({
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '1000',
+        minBetWei: '1001',
+        commitment: commitmentOf(DEALER_SEED),
+      }),
+    )
+    expect(challenge.error).toBe('bad-amount')
+    expect(table.state).toBeUndefined()
+    const accepting = new Table(BOB, ALICE, DEALER_SEED, seeds.win)
+    accepting.send(ALICE, accepting.next({ action: 'challenge', role: 'player', maxBetWei: '2000' }))
+    const accept = accepting.send(
+      BOB,
+      accepting.next({ action: 'accept', maxBetWei: '1000', minBetWei: '1500', commitment: commitmentOf(DEALER_SEED) }),
+    )
+    expect(accept.error).toBe('bad-amount')
+    expect(accepting.state?.phase).toBe('challenged')
+  })
+
   it('an offer whose smallest bet is not an amount is not a hand', () => {
     const table = new Table(ALICE, BOB, DEALER_SEED, seeds.win)
     const result = table.send(

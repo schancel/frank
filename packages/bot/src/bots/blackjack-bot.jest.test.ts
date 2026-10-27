@@ -168,21 +168,72 @@ describe("BlackjackDealerBot", () => {
     expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
   });
 
-  test("a bet below the smallest bet as it is now (the fee floor rose after the offer) is returned with the minimum named, not dealt", async () => {
+  // Review F1: the offer is a stated contract. A bet at the offered minimum is dealt even when the
+  // fee floor rose after the offer (the stake rule's 2x margin is for exactly that); before, a
+  // 1-wei rise refunded it and the player lost the fees.
+  test("a bet at the offered minimum is dealt even when the fee floor rose a little after the offer", async () => {
+    const h = harness();
+    const FLOOR = 21_420_000_000_000_000n; // 0.02142 MON
+    h.feeFloor(FLOOR);
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    h.feeFloor(FLOOR + 1n);
+    await t.bet(2n * FLOOR);
+    expect(t.state()?.phase).toBe("player_turn");
+    expect(t.state()?.wagerWei).toBe(2n * FLOOR);
+    expect(h.paidOut()).toBe(0n);
+  });
+
+  test("a bet the fee floor rose above after the offer is returned with the floor named, not dealt", async () => {
     const h = harness();
     const FLOOR = 21_420_000_000_000_000n; // 0.02142 MON
     h.feeFloor(FLOOR / 2n);
     const bot = new BlackjackDealerBot();
     const t = table(h, bot);
     await t.open();
-    h.feeFloor(FLOOR);
-    await t.bet(2n * FLOOR - 1n);
+    // Offered minimum: FLOOR (twice the old floor). The floor then rises above it.
+    h.feeFloor(FLOOR + 1n);
+    await t.bet(FLOOR);
     const refund = h.sent[h.sent.length - 1];
     expect((h.item("blackjack-hand", refund) as HandItem).action).toBe("refund");
-    expect(refund.valueWei).toBe(2n * FLOOR - 1n);
-    expect(h.item("text", refund).text).toContain("below this table's smallest bet of 0.04284 MONT");
+    expect(refund.valueWei).toBe(FLOOR);
+    expect(h.item("text", refund).text).toContain("below this table's smallest bet as it stands now (0.021420000000000001 MONT)");
     expect(t.state()?.phase).toBe("refunded");
     expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+  });
+
+  // Review F2: an unreadable balance read as zero refunded every pending valid bet as "more than
+  // the dealer can cover (0 MON)". It now decides nothing until the balance can be read.
+  test("a bet waiting to be dealt while the balance cannot be read is neither refunded nor dealt until it can", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    const readable = (h.ctx as any).getBalance;
+    (h.ctx as any).getBalance = async () => {
+      throw new Error("rpc hiccup");
+    };
+    await t.bet(BET);
+    expect(t.state()?.phase).toBe("awaiting_deal");
+    expect(h.paidOut()).toBe(0n);
+    // The hand is still on the list the resume schedule works through.
+    (h.ctx as any).getBalance = readable;
+    const resume = bot.schedules.find((s) => s.id === "blackjack-resume")!;
+    await resume.handler(h.ctx);
+    expect(t.state()?.phase).toBe("player_turn");
+    expect(h.paidOut()).toBe(0n);
+  });
+
+  test("no hand is offered while the balance cannot be read", async () => {
+    const h = harness();
+    (h.ctx as any).getBalance = async () => {
+      throw new Error("rpc hiccup");
+    };
+    const bot = new BlackjackDealerBot();
+    await bot.onMessage(h.message([{ type: "text", text: "deal me in" }]), h.ctx);
+    expect(h.item("blackjack-hand")).toBeUndefined();
+    expect(h.item("text").text).toContain("cannot check what it can cover");
   });
 
   test("a bet the dealer can no longer cover (its balance fell after the offer) is returned, not dealt", async () => {

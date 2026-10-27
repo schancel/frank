@@ -460,6 +460,8 @@ export const rawEnUS = {
     tableLimits: 'This table takes bets from {min} to {max}.',
     outsideTableLimits:
       'This table takes bets from {min} to {max}. A bet outside them would be returned, not played, so nothing is sent.',
+    tableMaxBelowMinimum:
+      'This table’s largest bet ({max}) is below the smallest bet this network lets you make ({min}), so no bet can be placed on it.',
     supersededOffer:
       'The dealer has made a newer offer since this one. Bet on the newest offer: its limits are the current ones.',
     line: {
@@ -487,6 +489,7 @@ export const rawEnUS = {
     rowCard: 'Card',
     wager: 'At stake: {amount}',
     accept: 'Accept and deal',
+    betAmountNoLimits: 'Your bet',
     betAmount: 'Your bet ({min} to {max})',
     bet: 'Place bet',
     hit: 'Hit',

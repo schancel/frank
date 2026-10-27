@@ -211,7 +211,13 @@
       </div>
       <!-- The player bets: the bet is this message's own stamp. -->
       <div v-if="canBet" class="q-mt-sm">
-        <div class="text-caption" data-testid="blackjack-table-limits">
+        <!-- Shown once the payment floor is known: before then the smallest bet is not. A table
+             whose maximum is below the smallest bet says so in the error below instead. -->
+        <div
+          v-if="limitsKnown && !maxBelowMinimum"
+          class="text-caption"
+          data-testid="blackjack-table-limits"
+        >
           {{
             $t('blackjackP2p.tableLimits', {
               min: display(betMinimum),
@@ -239,10 +245,12 @@
           dense
           data-testid="blackjack-bet-amount"
           :label="
-            $t('blackjackP2p.betAmount', {
-              min: display(betMinimum),
-              max: display(state.maxBetWei),
-            })
+            limitsKnown
+              ? $t('blackjackP2p.betAmount', {
+                  min: display(betMinimum),
+                  max: display(state.maxBetWei),
+                })
+              : $t('blackjackP2p.betAmountNoLimits')
           "
           :suffix="unit"
           inputmode="decimal"
@@ -711,6 +719,21 @@ export default defineComponent({
         !this.superseded
       )
     },
+    /** Whether the smallest bet is known: the stake rule needs the payment floor, which is 0
+     * until it has been read. */
+    limitsKnown(): boolean {
+      return this.minimumStake > 0n
+    },
+    /** The offer's maximum is below the smallest bet this network lets the player make: no bet
+     * fits this table. */
+    maxBelowMinimum(): boolean {
+      return (
+        this.canBet &&
+        this.limitsKnown &&
+        !!this.state &&
+        this.betMinimum > this.state.maxBetWei
+      )
+    },
     /** The smallest bet this hand takes: the dealer's offer names it; never below the stake rule
      * every game shares. */
     betMinimum(): bigint {
@@ -770,6 +793,11 @@ export default defineComponent({
     amountError(): string {
       const state = this.state
       if (!state) return ''
+      if (this.maxBelowMinimum)
+        return this.$t('blackjackP2p.tableMaxBelowMinimum', {
+          min: this.display(this.betMinimum),
+          max: this.display(state.maxBetWei),
+        })
       if (this.balance === null) return this.$t('blackjackP2p.balanceUnknown')
       if (this.amount.trim() === '' || this.amountWei === null)
         return this.$t('blackjackP2p.enterAmount')

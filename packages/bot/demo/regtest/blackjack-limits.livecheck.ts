@@ -12,15 +12,21 @@
  *      app's own check (`checkWager`) refuses a bet below the one and above the other;
  *   2. a bet below the minimum, sent anyway (as an old app would), is not taken by the hand and
  *      is returned in full, on chain;
- *   3. a bet at the minimum on a fresh offer is dealt and the hand resolves; what it owes is on
- *      chain.
+ *   3. hands at the minimum are played until one ends in a push and one in a player win (the
+ *      cards come from both sides' entropy, so an outcome cannot be chosen). For every payout:
+ *      the reveal pays exactly what the hand owes; each transfer it names lands, succeeds and
+ *      moves exactly its value to the player's account (balance before and after its block);
+ *      the player's wallet counts exactly that; no other message of the hand carries money; and
+ *      how long the transfers took to land, with what the relay's log says about broadcasting
+ *      them (a payment the node refused at the relay's broadcast stays refused for minutes:
+ *      docs/protocol/chains/monad-reserve-balance.md).
  *
  * Funding comes from the solonet faucet. Every key funded here lives under the run's directory
  * (FRANK_REGTEST_STACK_DIR, kept with FRANK_REGTEST_KEEP=1 until the sweep is done): the bot
  * host's funding key is written there before it is funded. At the end, also after a failure,
  * everything is sent back to the faucet.
  */
-import { mkdirSync } from 'fs'
+import { mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 import { Wallet } from 'ethers'
@@ -120,11 +126,26 @@ async function main(): Promise<boolean> {
         } catch (error) {
           const pending =
             error instanceof FundsInPendingSendError || /tied up in a previous send/.test(String((error as Error)?.message))
-          if (!pending || attempt >= 100) throw error
+          // A payment the node refused stays refused for up to about fifteen minutes.
+          if (!pending || attempt >= 400) throw error
           if (attempt === 1) say('the previous send has not reached the chain yet; waiting for it')
+          if (attempt % 40 === 0) say(`  still waiting (${attempt * 3} s); relay: ${relaySaid() || 'nothing refused'}`)
           await player.chain.directMessages.reconcileAttempts({ wallet: player.handle, payloadDigests: [] })
           await sleep(3000)
         }
+      }
+    }
+    /** What the relay logged about payments it could not broadcast, or one payment's. */
+    const relaySaid = (txHash?: string) => {
+      try {
+        return readFileSync(join(stack.stateDir, 'logs', 'relay.log'), 'utf8')
+          .replace(/\x1b\[[0-9;]*m/g, '')
+          .split('\n')
+          .filter(line => /payment not broadcast/.test(line) && (!txHash || line.includes(txHash.replace(/^0x/, ''))))
+          .map(line => `${line.slice(11, 19)} ${line.match(/tx_hash=(\w{10})/)?.[1] ?? ''} ${line.match(/reason=(.*)$/)?.[1]?.slice(0, 120) ?? ''}`)
+          .join('; ')
+      } catch {
+        return ''
       }
     }
     const seen = new Set<string>()
@@ -165,6 +186,73 @@ async function main(): Promise<boolean> {
       }
     }
 
+    /**
+     * The payout of a hand, checked on chain: the reveal says it pays `owed`; every transfer it
+     * names lands, succeeds and moves exactly its value to the player's account; the player's
+     * wallet counts exactly `owed` for it; and no other message of the hand carries money (it is
+     * paid once). Waits up to ten minutes for the transfers and says how long they took.
+     */
+    const verifyPayout = async (
+      label: string,
+      gameId: string,
+      reveal: { payloadDigest: string; stampValueWei?: bigint; stampPayments?: { txHash: string; destinationAddress: string; valueWei: bigint }[] },
+      owed: bigint,
+    ) => {
+      const payments = reveal.stampPayments ?? []
+      say(
+        `${label}: reveal carries ${reveal.stampValueWei} in ${payments.length} transfer(s): ${payments
+          .map(p => `${p.txHash.slice(0, 10)}→${p.destinationAddress.slice(0, 10)} ${p.valueWei}`)
+          .join(', ')}`,
+      )
+      check(reveal.stampValueWei === owed, `${label}: the reveal pays exactly what the hand owes (${reveal.stampValueWei} of ${owed})`)
+      const startedAt = Date.now()
+      const landed = new Map<string, { block: number; to: string; value: bigint; ok: boolean }>()
+      while (landed.size < payments.length && Date.now() - startedAt < 600_000) {
+        for (const p of payments) {
+          if (landed.has(p.txHash)) continue
+          const receipt = await monad.provider.getTransactionReceipt(p.txHash)
+          if (!receipt) continue
+          const tx = await monad.provider.getTransaction(p.txHash)
+          landed.set(p.txHash, {
+            block: receipt.blockNumber,
+            to: tx?.to ?? '',
+            value: tx?.value ?? -1n,
+            ok: receipt.status === 1,
+          })
+        }
+        if (landed.size < payments.length) await sleep(3000)
+      }
+      say(`${label}: ${landed.size} of ${payments.length} transfer(s) on chain after ${Math.round((Date.now() - startedAt) / 1000)} s`)
+      for (const p of payments) {
+        const said = relaySaid(p.txHash)
+        if (said) say(`${label}: relay could not broadcast ${p.txHash.slice(0, 10)}: ${said}`)
+      }
+      let total = 0n
+      for (const p of payments) {
+        const tx = landed.get(p.txHash)
+        const good =
+          !!tx && tx.ok && tx.to.toLowerCase() === p.destinationAddress.toLowerCase() && tx.value === p.valueWei
+        check(good, `${label}: transfer ${p.txHash} landed, succeeded and paid ${p.valueWei} to ${p.destinationAddress}`)
+        if (!good || !tx) continue
+        total += p.valueWei
+        const before = await monad.provider.getBalance(p.destinationAddress, tx.block - 1)
+        const after = await monad.provider.getBalance(p.destinationAddress, tx.block)
+        check(after - before === p.valueWei, `${label}: the player's account ${p.destinationAddress} moved by ${after - before} (${p.valueWei} paid)`)
+      }
+      check(total === owed, `${label}: what landed on chain (${total}) is what the hand owes (${owed})`)
+      const counted = await onChain(reveal)
+      check(counted === owed, `${label}: the player's wallet counts ${counted} for the payout`)
+      // Paid once: after a pause, no other message of this hand from the dealer carries money.
+      await sleep(20_000)
+      const inbound = (await player.chain.directMessages.fetchSince({ wallet: player.handle, sinceMs: 0 })).filter(
+        x => !x.outbound && item(x)?.gameId === gameId && (x.stampValueWei ?? 0n) > 0n,
+      )
+      check(
+        inbound.length === 1 && inbound[0].payloadDigest === reveal.payloadDigest,
+        `${label}: the payout is the only paying message of the hand (${inbound.length} found)`,
+      )
+    }
+
     // 1. The offer names the table limits.
     const first = hand()
     await player.send(dealer, [{ type: 'text', text: 'deal me in' }])
@@ -189,23 +277,35 @@ async function main(): Promise<boolean> {
     check((await onChain(refund)) === under, 'the refund is on chain')
     check(first.state().phase === 'open', 'the hand never took the bet (still open, nothing dealt)')
 
-    // 3. A bet at the minimum on a fresh offer is dealt and settles.
-    const second = hand()
-    await sendSettled([{ type: 'text', text: 'another hand' }] as never[])
-    await second.fromDealer('challenge')
-    const seed = randomHex32()
-    await second.toDealer(buildBet(second.state(), seed)!, second.state().minBetWei!)
-    await second.fromDealer('deal')
-    if (second.state().phase === 'player_turn') await second.toDealer(playerStep(second.state(), 'stand', seed)!)
-    const reveal = await second.fromDealer('reveal')
-    const end = second.state()
-    check(end.phase === 'resolved', `the hand at the minimum resolved (${end.phase}, ${end.outcome})`)
-    const owed = payoutWei(end.outcome!, end.wagerWei, end.doubled)
-    const paid = owed > 0n ? await onChain(reveal) : 0n
-    check(
-      paid >= owed,
-      `what the hand owes (${owed}) is on chain (the reveal carried ${reveal.stampValueWei}; confirmed ${paid})`,
-    )
+    // 3. Hands at the minimum, played until one ended in a push and one in a player win (the
+    //    cards come from both sides' entropy, so an outcome cannot be chosen: hands are played
+    //    until each has come up). Every payout is checked on chain: paid once, in full, and the
+    //    player's receiving accounts moved by exactly that much.
+    const maxHands = Number(process.env.BLACKJACK_LIMITS_MAX_HANDS ?? '40')
+    const wanted = new Map<string, boolean>([
+      ['push', false],
+      ['player win', false],
+    ])
+    for (let n = 1; n <= maxHands && [...wanted.values()].includes(false); n++) {
+      const h = hand()
+      await sendSettled([{ type: 'text', text: `hand ${n}` }] as never[])
+      await h.fromDealer('challenge')
+      const seed = randomHex32()
+      await h.toDealer(buildBet(h.state(), seed)!, h.state().minBetWei!)
+      await h.fromDealer('deal')
+      if (h.state().phase === 'player_turn') await h.toDealer(playerStep(h.state(), 'stand', seed)!)
+      const reveal = await h.fromDealer('reveal')
+      const end = h.state()
+      const owed = payoutWei(end.outcome!, end.wagerWei, end.doubled)
+      say(`hand ${n}: ${end.outcome}, bet ${end.wagerWei}, owed ${owed}`)
+      check(end.phase === 'resolved', `hand ${n} resolved`)
+      const kind =
+        end.outcome === 'push' ? 'push' : end.outcome === 'player_win' || end.outcome === 'player_blackjack' ? 'player win' : undefined
+      if (owed > 0n) await verifyPayout(`hand ${n} (${end.outcome})`, end.gameId, reveal, owed)
+      else check((reveal.stampValueWei ?? 0n) === 0n, `hand ${n}: a reveal that owes nothing pays nothing`)
+      if (kind) wanted.set(kind, true)
+    }
+    for (const [kind, seen] of wanted) check(seen, `a ${kind} came up within ${maxHands} hands and was paid`)
   } catch (error) {
     problems.push(error instanceof Error ? error.stack ?? error.message : String(error))
     say('FAIL ', error)

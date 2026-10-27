@@ -501,6 +501,34 @@ describe('the player', () => {
     expect(button(wrapper, 'bet').attributes('disabled')).toBeUndefined()
   })
 
+  // Review F4: before the payment floor is read, an offer naming no minimum showed "bets from
+  // 0 MON".
+  it('shows no table limits before the payment floor is known, when the offer names no minimum', async () => {
+    mockFloor.value = 0n
+    const wrapper = await mountLast(hand(false, WIN, 0n, []))
+    expect(
+      wrapper.find('[data-testid="blackjack-table-limits"]').exists(),
+    ).toBe(false)
+    expect(wrapper.text()).not.toContain('0 MON to')
+    await button(wrapper, 'change-bet').trigger('click')
+    expect(wrapper.text()).not.toContain('0 MON to')
+  })
+
+  // Review F4: a table whose maximum is below the player's smallest bet showed an inverted range.
+  it('says plainly when the table maximum is below the smallest bet this network allows, and takes no bet', async () => {
+    mockFloor.value = 600n
+    const wrapper = await mountLast([limitedOffer()])
+    expect(
+      wrapper.find('[data-testid="blackjack-table-limits"]').exists(),
+    ).toBe(false)
+    expect(wrapper.find('[data-testid="blackjack-amount-error"]').text()).toBe(
+      'This table’s largest bet (1000 MON) is below the smallest bet this network lets you make (1200 MON), so no bet can be placed on it.',
+    )
+    expect(button(wrapper, 'bet').attributes('disabled')).toBeDefined()
+    await button(wrapper, 'bet').trigger('click')
+    expect(followUp(wrapper)).toEqual([])
+  })
+
   it('bets only on the newest offer of the chat: an older one says so and offers no bet', async () => {
     const OTHER = 'fedcba9876543210fedcba9876543210'
     const messages = [limitedOffer(GAME, 'old'), limitedOffer(OTHER, 'new')]

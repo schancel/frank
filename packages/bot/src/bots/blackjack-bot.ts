@@ -25,7 +25,13 @@ import {
 } from "@frank/wallet/message-item-plugins/blackjack/game";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
-import { Outbox, refuse, tableMinimumWei, type Received } from "./money";
+import {
+  feeFloorWei,
+  Outbox,
+  refuse,
+  tableMinimumWei,
+  type Received,
+} from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */
 const RESERVE_WEI = 20_000_000_000_000_000n;
@@ -53,6 +59,9 @@ interface Hand {
 }
 
 const WAITING = "waiting_hands";
+
+/** The dealer's answer when it cannot decide its next message yet (see `limits`). */
+const DEFER = Symbol("defer");
 
 interface PendingStep {
   id: string;
@@ -116,10 +125,17 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     return next;
   }
 
-  /** The largest bet the dealer offers: what its balance covers, within the table limits. */
-  private async limits(ctx: BotContext) {
+  /** The largest bet the dealer offers: what its balance covers, within the table limits.
+   * `undefined` (with `balance`) when the balance cannot be read right now: nothing is decided on
+   * a guess, neither an offer nor a refund. */
+  private async limits(ctx: BotContext): Promise<
+    | { balance: bigint; maxBet: bigint; minBet: bigint }
+    | { balance: undefined; maxBet: undefined; minBet: bigint }
+  > {
+    const minBet = await tableMinimumWei(ctx, this.minWagerWei);
     // What the dealer holds, less what it has already written down as owed.
-    const held = await ctx.getBalance().catch(() => 0n);
+    const held = await ctx.getBalance().catch(() => undefined);
+    if (held === undefined) return { balance: undefined, maxBet: undefined, minBet };
     const owed = await this.outbox.owedWei(ctx);
     const balance = held > owed ? held - owed : 0n;
     const free = balance > RESERVE_WEI ? balance - RESERVE_WEI : 0n;
@@ -129,7 +145,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     return {
       balance,
       maxBet: cover > this.maxWagerWei ? this.maxWagerWei : cover,
-      minBet: await tableMinimumWei(ctx, this.minWagerWei),
+      minBet,
     };
   }
 
@@ -222,6 +238,20 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     conversationId?: string
   ): Promise<void> {
     const { balance, maxBet, minBet } = await this.limits(ctx);
+    if (maxBet === undefined) {
+      await ctx.sendMessage(
+        peer,
+        [
+          {
+            type: "text",
+            text: "The dealer cannot check what it can cover right now. Try again in a moment.",
+          },
+        ],
+        conversationId,
+        { stampValueWei: 0n }
+      );
+      return;
+    }
     if (maxBet < minBet) {
       await ctx.sendMessage(
         peer,
@@ -375,6 +405,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       const { state } = foldHand(events);
       if (pending) return true;
       const next = state ? await this.next(ctx, hand, state) : undefined;
+      // The dealer cannot decide yet (its balance cannot be read): the hand stays on the list,
+      // and the `blackjack-resume` schedule takes it up again.
+      if (next === DEFER) return true;
       if (!next) {
         // Nothing for the dealer to do until the player's next message.
         await ctx.state.batch([await this.listed(ctx, hand, false)]);
@@ -390,7 +423,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     ctx: BotContext,
     hand: Hand,
     state: HandState
-  ): Promise<{ item: HandItem; text: string; payWei?: bigint } | undefined> {
+  ): Promise<
+    { item: HandItem; text: string; payWei?: bigint } | typeof DEFER | undefined
+  > {
     let seed = await ctx.state.get(`seed:${hand.gameId}`);
     if (state.phase === "challenged") {
       if (!seed) {
@@ -398,6 +433,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         await ctx.state.put(`seed:${hand.gameId}`, seed);
       }
       const { balance, maxBet, minBet } = await this.limits(ctx);
+      if (maxBet === undefined) return DEFER;
       const wanted = state.maxBetWei < maxBet ? state.maxBetWei : maxBet;
       const built =
         wanted >= minBet
@@ -418,12 +454,19 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         : undefined;
     }
     if (state.phase === "awaiting_deal") {
-      // The offer named the table limits and the hand already returns a bet outside them. The
-      // limits can move after the offer went out: the smallest bet follows the chain's fee floor,
-      // and the largest follows what the dealer can still cover. A bet outside the limits as
-      // they are now is returned instead of dealt: a payout the dealer could not cover, or one
-      // that might not clear the fee floor, is not a hand worth playing.
-      const { minBet, maxBet } = await this.limits(ctx);
+      // The offer named the table limits and is kept: the hand already returns a bet outside
+      // them. What can still move after the offer is the chain's fee floor and what the dealer
+      // can cover. The offer's smallest bet is twice the floor (the stake rule), and that margin
+      // is there for a rising floor: a bet is returned for the floor only once it is below the
+      // floor itself, where its payout or refund really could not clear it. A bet the dealer can
+      // no longer cover is returned too. Neither is decided while the balance cannot be read.
+      const { maxBet } = await this.limits(ctx);
+      if (maxBet === undefined) return DEFER;
+      const floor = await feeFloorWei(ctx);
+      const minBet =
+        state.minBetWei !== undefined && state.minBetWei > floor
+          ? state.minBetWei
+          : floor;
       const below = state.wagerWei < minBet;
       const above = state.wagerWei > maxBet;
       const refund = below || above ? refundBetStep(state) : undefined;
@@ -433,9 +476,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           text: below
             ? `Your bet of ${ctx.formatAmount(
                 state.wagerWei
-              )} is below this table's smallest bet of ${ctx.formatAmount(
+              )} is below this table's smallest bet as it stands now (${ctx.formatAmount(
                 minBet
-              )}, so it was not dealt. It is returned with this message.`
+              )}): the network's fee rose so far that its payout could not be paid. It was not dealt and is returned with this message.`
             : `Your bet of ${ctx.formatAmount(
                 state.wagerWei
               )} is more than the dealer can cover right now (${ctx.formatAmount(

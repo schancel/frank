@@ -1671,6 +1671,8 @@ export const rawFrFR = {
     partial:
       'Certaines transactions de financement sont incluses sur {network} ; le paiement au destinataire n’est pas enregistré comme inclus.',
     pending: 'Dans le mempool sur {network} : envoyé, en attente d’un bloc.',
+    sendingOne:
+      'Envoi en cours sur {network}… {confirmed} transaction confirmée sur {total}.',
     sending:
       'Envoi en cours sur {network}… {confirmed} transactions confirmées sur {total}.',
     missing:

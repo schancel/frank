@@ -1,4 +1,4 @@
-import { confirmReceived, Outbox, refuse } from "./money";
+import { confirmReceived, Outbox, refuse, RETRY_CAP_MS, RETRY_FIRST_MS } from "./money";
 import { harness, PLAYER } from "./bot-harness.testutil";
 
 describe("confirmReceived", () => {
@@ -193,6 +193,53 @@ describe("Outbox", () => {
     await outbox.owe(h.ctx, "b", { ...owed, valueWei: 1n });
     await outbox.settle(h.ctx);
     expect(h.sent.map((m) => m.valueWei)).toEqual([9n, 1n]);
+  });
+
+  test("a payout that keeps failing is tried again later each time, up to a cap, and pays once when it goes", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    let clock = 1_000_000;
+    const now = jest.spyOn(Date, "now").mockImplementation(() => clock);
+    let tries = 0;
+    const send = h.ctx.sendMessage;
+    h.ctx.sendMessage = (...args) => {
+      tries += 1;
+      return send(...args);
+    };
+    await outbox.owe(h.ctx, "a", { ...owed, valueWei: 9n });
+    h.failSends(new Error("Insufficient main account balance"));
+    // The schedule runs every 10 s for an hour: the tries thin out instead of one per tick.
+    const triedAt: number[] = [];
+    for (let tick = 0; tick < 360; tick++) {
+      const before = tries;
+      await outbox.settle(h.ctx);
+      if (tries > before) triedAt.push(clock);
+      clock += 10_000;
+    }
+    const gaps = triedAt.slice(1).map((at, i) => at - triedAt[i]);
+    expect(gaps.slice(0, 8)).toEqual([
+      10_000,
+      RETRY_FIRST_MS,
+      2 * RETRY_FIRST_MS,
+      4 * RETRY_FIRST_MS,
+      8 * RETRY_FIRST_MS,
+      16 * RETRY_FIRST_MS,
+      32 * RETRY_FIRST_MS,
+      RETRY_CAP_MS,
+    ]);
+    expect(Math.max(...gaps)).toBe(RETRY_CAP_MS);
+    expect(triedAt.length).toBeLessThan(20);
+    expect(h.sent).toHaveLength(0);
+    // Once the wallet can pay, the next try goes, once.
+    h.failSends();
+    clock += RETRY_CAP_MS;
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([9n]);
+    expect(await outbox.sent(h.ctx, "a")).toBe(true);
+    now.mockRestore();
+    warn.mockRestore();
   });
 
   test("a restart in the middle of a payout pays once", async () => {

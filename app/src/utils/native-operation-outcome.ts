@@ -42,8 +42,15 @@ export function nativeOperationOutcome(
   network: string,
 ): { key: string; params: Record<string, string | number> } {
   const progress = operation && nativeOperationProgress(operation)
+  // French counts 0 and 1 in the singular ("0 transaction confirmée"); English does not care.
   if (progress)
-    return { key: 'nativeOperation.sending', params: { ...progress, network } }
+    return {
+      key:
+        progress.confirmed <= 1
+          ? 'nativeOperation.sendingOne'
+          : 'nativeOperation.sending',
+      params: { ...progress, network },
+    }
   return {
     key: `nativeOperation.${operation?.payment ?? 'unknown'}`,
     params: { network },

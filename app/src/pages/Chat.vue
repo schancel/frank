@@ -611,7 +611,6 @@ import type {
 
 import { debounce, QScrollArea } from 'quasar'
 
-import { RouteLocationNormalized } from 'vue-router'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, type Conversation, useChatStore } from 'src/stores/chats'
@@ -659,14 +658,6 @@ export default defineComponent({
     // smallest stamp the wallet sends right now, read by `refreshMinimumStamp`.
     return {
       [PAYMENT_FLOOR_INJECTION]: (): bigint => this.minimumStampWei,
-    }
-  },
-  beforeRouteUpdate(to: RouteLocationNormalized) {
-    this.cancelHistoryAnchor()
-    const nextAddress = (to?.params?.address as string) || ''
-    this.messagesToShow = 30
-    if (this.address !== nextAddress) {
-      this.address = nextAddress
     }
   },
   beforeUnmount() {
@@ -1105,6 +1096,14 @@ export default defineComponent({
         this.$nextTick(() => {
           this.pinScrollToBottom()
         })
+      }
+    },
+    /** The route now names `nextAddress`: start that conversation at its latest messages. */
+    openRouteAddress(nextAddress: string) {
+      this.cancelHistoryAnchor()
+      this.messagesToShow = 30
+      if (this.address !== nextAddress) {
+        this.address = nextAddress
       }
     },
     cancelHistoryAnchor() {
@@ -2863,6 +2862,14 @@ export default defineComponent({
     },
   },
   watch: {
+    // Another conversation in the same page (/chat/<a> -> /chat/<b>). A watcher, not
+    // `beforeRouteUpdate`: the router calls that guard on whatever instance its record holds
+    // when the guard's turn comes, and ChatLayout can unmount this page earlier in the same
+    // navigation (its own `beforeRouteUpdate` shows the info view or the "conversation not
+    // found" page), so the guard ran with `this` null. A watcher stops with the page.
+    '$route.params.address'(next: unknown) {
+      if (typeof next === 'string' && next) this.openRouteAddress(next)
+    },
     'availableBalanceWei': {
       immediate: true,
       handler() {

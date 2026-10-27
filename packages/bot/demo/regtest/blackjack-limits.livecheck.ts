@@ -20,7 +20,7 @@
  * host's funding key is written there before it is funded. At the end, also after a failure,
  * everything is sent back to the faucet.
  */
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync } from 'fs'
 import { join } from 'path'
 
 import { Wallet } from 'ethers'
@@ -36,9 +36,11 @@ import {
   type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 
+import { FundsInPendingSendError } from '@frank/wallet/evm-transaction-set-types'
+
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { BlackjackDealerBot } from '../../src/bots/blackjack-bot'
-import { monadOf, openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
+import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 
 const MON = 10n ** 18n
@@ -65,9 +67,9 @@ async function main(): Promise<boolean> {
       try {
         return await monad.fund(address, amount)
       } catch (error) {
-        if (attempt >= 8) throw error
+        if (attempt >= 40) throw error
         say(`faucet payment failed (${(error as Error).message.slice(0, 80)}); trying again`)
-        await sleep(1500)
+        await sleep(1000 + Math.floor(Math.random() * 3000))
       }
     }
   }
@@ -82,40 +84,49 @@ async function main(): Promise<boolean> {
     process.env.MONAD_RPC_CHAIN = 'monad-regtest'
     process.env.MONAD_STAMP_BURN_ADDRESS = DEMO_DEFAULT_BURN_ADDRESS
     process.env.BLACKJACK_BOT_IDENTITY_JSON = join(botDir, 'blackjack.json')
-    // The host's funding key is written down before it is funded; the sweep finds it by its name.
-    const funder = Wallet.createRandom()
-    writeFileSync(
-      join(botDir, 'funding-wallet.json'),
-      JSON.stringify({ address: funder.address, privateKey: funder.privateKey }),
-      { mode: 0o600 },
-    )
-    await fund(funder.address, 6n * MON)
+    // No shared funding wallet: the dealer's two accounts are funded from the faucet directly,
+    // after its keys are on disk under the run directory (registration writes them).
     host = new FrankBotHost({
       stateDir: botDir,
       relayBaseUrl: stack.relayUrl,
       networkTag: 'MONR',
       rpcUrl: monad.rpcUrl,
-      fundingPrivateKeyHex: funder.privateKey,
-      // The dealer covers a bet of (balance - 0.02) / 4: about 0.5 MON at 2 MON.
-      topUpBelowWei: 2n * MON,
-      topUpToWei: 3n * MON,
-      fundingReserveWei: 0n,
+      fundingPrivateKeyHex: '',
       watchRegistrations: false,
       pollIntervalMs: 1500,
     })
     await host.register(new BlackjackDealerBot())
+    const instance = (host as any).instances.get('blackjack')
+    const dealer = instance.context.address as string
+    const dealerMain = (await instance.wallet.getReceiveAddress()).raw as string
+    say(`dealer ${dealer}, main account ${dealerMain}`)
+    // The dealer covers a bet of (identity balance - 0.02) / 4: about 0.5 MON at 2 MON. Its
+    // payouts and refunds are paid from its wallet (main account).
+    await fund(dealer, 2n * MON)
+    if (dealerMain.toLowerCase() !== dealer.toLowerCase()) await fund(dealerMain, 2n * MON)
     await host.start()
-    const dealer = (host as any).instances.get('blackjack').context.address as string
-    say(`dealer ${dealer}`)
-    for (const deadline = Date.now() + 120_000; (await monad.provider.getBalance(dealer)) < 2n * MON; ) {
-      if (Date.now() > deadline) throw new Error('the bot host did not fund the dealer')
-      await sleep(1000)
-    }
 
     const player = await openMonadWallet(stack, 'blackjack-limits-player')
     wallets.push(player)
     await fund(player.mainAccount, 4n * MON)
 
+    /** Sends once the wallet's earlier payments have settled: a paid send while the change of an
+     * earlier one is still on its way is refused (owner ruling 2026-10-26), never queued, and the
+     * wallet's own ticks finish that change. */
+    const sendSettled = async (items: never[], stampWei?: bigint): Promise<string> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await player.send(dealer, items, stampWei)
+        } catch (error) {
+          const pending =
+            error instanceof FundsInPendingSendError || /tied up in a previous send/.test(String((error as Error)?.message))
+          if (!pending || attempt >= 100) throw error
+          if (attempt === 1) say('the previous send has not reached the chain yet; waiting for it')
+          await player.chain.directMessages.reconcileAttempts({ wallet: player.handle, payloadDigests: [] })
+          await sleep(3000)
+        }
+      }
+    }
     const seen = new Set<string>()
     const item = (m: { items: readonly { type: string }[] }) =>
       m.items.find(i => i.type === 'blackjack-hand') as HandItem | undefined
@@ -124,29 +135,34 @@ async function main(): Promise<boolean> {
     const hand = () => {
       const events: HandEvent[] = []
       const fromDealer = async (action: string, timeoutMs = 300_000) => {
-        const m = await player.receive(x => item(x)?.action === action && !seen.has(x.payloadDigest), timeoutMs)
+        const m = await player
+          .receive(x => item(x)?.action === action && !seen.has(x.payloadDigest), timeoutMs)
+          .catch(async error => {
+            // What the dealer did say instead, for the report.
+            const got = await player.chain.directMessages.fetchSince({ wallet: player.handle, sinceMs: 0 })
+            for (const x of got.filter(x => !x.outbound))
+              say(`  inbound ${item(x)?.action ?? '-'} paying ${x.stampValueWei}: ${text(x)}`)
+            throw error
+          })
         seen.add(m.payloadDigest)
         events.push({ item: item(m)!, from: dealer, to: player.address, stampWei: m.stampValueWei ?? 0n, digest: m.payloadDigest })
         return m
       }
       /** `stampWei`: the money the message carries (a bet); a move goes with the ordinary stamp. */
       const toDealer = async (it: HandItem, stampWei?: bigint) => {
-        await tickUntilSettled(player)
-        const digest = await player.send(dealer, [it as never], stampWei)
+        const digest = await sendSettled([it as never], stampWei)
         events.push({ item: it, from: player.address, to: dealer, stampWei: stampWei ?? 0n, digest })
       }
       return { events, fromDealer, toDealer, state: () => foldHand(events).state! }
     }
-    /** What the dealer's message paid, as the chain shows it. */
-    const onChain = async (m: { stampPayments?: { txHash: string; destinationAddress: string; valueWei: bigint }[] }) => {
-      let total = 0n
-      for (const p of m.stampPayments ?? []) {
-        const receipt = await monad.provider.getTransactionReceipt(p.txHash)
-        const tx = await monad.provider.getTransaction(p.txHash)
-        if (receipt?.status === 1 && tx?.to?.toLowerCase() === p.destinationAddress.toLowerCase() && tx.value === p.valueWei)
-          total += p.valueWei
+    /** What the dealer's message paid, as the chain confirms it (the wallet's payment check, the
+     * one the bot uses for what a player paid). */
+    const onChain = async (m: { payloadDigest: string }) => {
+      for (let attempt = 1; ; attempt++) {
+        const checked = await player.handle.checkMessagePayment!(m.payloadDigest)
+        if (checked.receivedWei > 0n || attempt >= 150) return checked.receivedWei
+        await sleep(2000)
       }
-      return total
     }
 
     // 1. The offer names the table limits.
@@ -175,8 +191,7 @@ async function main(): Promise<boolean> {
 
     // 3. A bet at the minimum on a fresh offer is dealt and settles.
     const second = hand()
-    await tickUntilSettled(player)
-    await player.send(dealer, [{ type: 'text', text: 'another hand' }])
+    await sendSettled([{ type: 'text', text: 'another hand' }] as never[])
     await second.fromDealer('challenge')
     const seed = randomHex32()
     await second.toDealer(buildBet(second.state(), seed)!, second.state().minBetWei!)
@@ -186,7 +201,11 @@ async function main(): Promise<boolean> {
     const end = second.state()
     check(end.phase === 'resolved', `the hand at the minimum resolved (${end.phase}, ${end.outcome})`)
     const owed = payoutWei(end.outcome!, end.wagerWei, end.doubled)
-    check((await onChain(reveal)) >= owed, `what the hand owes (${owed}) is on chain`)
+    const paid = owed > 0n ? await onChain(reveal) : 0n
+    check(
+      paid >= owed,
+      `what the hand owes (${owed}) is on chain (the reveal carried ${reveal.stampValueWei}; confirmed ${paid})`,
+    )
   } catch (error) {
     problems.push(error instanceof Error ? error.stack ?? error.message : String(error))
     say('FAIL ', error)

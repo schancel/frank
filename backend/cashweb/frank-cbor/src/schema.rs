@@ -2455,9 +2455,16 @@ fn blackjack_hand_v3_payload(
     };
     let seq = u32_in(m.get(K::SEQ), &at(path, K::SEQ), seq_min, seq_max)?;
     let hash = |key: u64| bstr(m.get(key), &at(path, key), 32, 32);
+    // The dealer's minimum bet, when its offer names one.
+    let min_bet = || {
+        m.has(K::MIN_BET_WEI)
+            .then(|| hash(K::MIN_BET_WEI))
+            .transpose()
+    };
     let action = match action {
         A::CHALLENGE if m.has(K::COMMITMENT) => BlackjackHandV3Action::ChallengeDealer {
             max_bet_wei: hash(K::MAX_BET_WEI)?,
+            min_bet_wei: min_bet()?,
             commitment: hash(K::COMMITMENT)?,
         },
         A::CHALLENGE => BlackjackHandV3Action::ChallengePlayer {
@@ -2465,6 +2472,7 @@ fn blackjack_hand_v3_payload(
         },
         A::ACCEPT => BlackjackHandV3Action::Accept {
             max_bet_wei: hash(K::MAX_BET_WEI)?,
+            min_bet_wei: min_bet()?,
             commitment: hash(K::COMMITMENT)?,
             prev: hash(K::PREV)?,
         },

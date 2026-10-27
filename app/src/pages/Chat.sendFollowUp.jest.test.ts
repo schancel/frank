@@ -886,6 +886,8 @@ describe('Chat.vue blackjack challenge', () => {
       blackjackDialog: true,
       blackjackPreparing: false,
       blackjackPreparationSequence: 0,
+      // The wallet's payment floor, as Chat.data holds it once quoted.
+      minimumStampWei: 5n,
       ...over,
     })
     self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
@@ -913,6 +915,8 @@ describe('Chat.vue blackjack challenge', () => {
       action: 'challenge',
       role: 'dealer',
       maxBetWei: '1000',
+      // A dealer's offer names its smallest bet: the stake rule, twice the floor of 5.
+      minBetWei: '10',
     })
     // The seed behind the commitment is on this device and never in the message.
     const seed = loadSeed('0xMe', '0xDealer', item.gameId)!

@@ -13,6 +13,13 @@
  *
  * The hand's messages form a chain: each names its position (`seq`) and the digest of the message
  * before it (`prev`), so a replayed or reordered message never counts.
+ *
+ * Table limits: the dealer's offer (its challenge, or its accept of a player's challenge) names
+ * the largest bet (`maxBetWei`) and, optionally, the smallest (`minBetWei`, wire key 14 of the
+ * schema-3 item; positive and at most the largest, which the codec enforces). A bet outside them
+ * is not taken by the hand and is owed back. A dealer's limits move after it offers (the largest
+ * follows what it can cover), so the app bets only on a chat's newest offer, and a dealer may
+ * still return a bet outside its limits as they stand when it deals (`refundBetStep`).
  */
 import type { BlackjackHandV3Item } from '@frank/codec'
 
@@ -205,6 +212,9 @@ export type HandMoneyError =
   | 'above-own-limit'
   /** More than the hand's max bet. */
   | 'above-max-bet'
+  /** Less than the smallest bet the dealer's offer takes; or, for an offer, a smallest bet above
+   * its max bet. */
+  | 'below-min-bet'
 
 /** The largest max bet this wallet may name when challenging in `role`. */
 export function challengeLimitWei(
@@ -223,12 +233,18 @@ export function buildChallenge(input: {
   gameId: string
   role: HandRole
   maxBetWei: bigint
+  /** The smallest bet a dealer takes; a dealer's offer names it. Ignored for a player. */
+  minBetWei?: bigint
   spendableWei: bigint
   reserveWei: bigint
   /** Required when `role` is dealer. */
   seed?: string
 }): { item: HandItem } | { error: HandMoneyError } {
   if (input.maxBetWei <= 0n) return { error: 'not-positive' }
+  if (input.role === 'dealer' && input.minBetWei !== undefined) {
+    if (input.minBetWei <= 0n) return { error: 'not-positive' }
+    if (input.minBetWei > input.maxBetWei) return { error: 'below-min-bet' }
+  }
   if (
     input.maxBetWei >
     challengeLimitWei(input.role, input.spendableWei, input.reserveWei)
@@ -244,18 +260,27 @@ export function buildChallenge(input: {
   if (input.role === 'player') return { item: { ...base, role: 'player' } }
   if (!input.seed) throw new Error('a dealer challenge needs a seed')
   return {
-    item: { ...base, role: 'dealer', commitment: commitmentOf(input.seed) },
+    item: {
+      ...base,
+      role: 'dealer',
+      ...(input.minBetWei !== undefined
+        ? { minBetWei: input.minBetWei.toString() }
+        : {}),
+      commitment: commitmentOf(input.seed),
+    },
   }
 }
 
 /** The dealer's accept of a player's challenge: the challenge's max bet, lowered to what the
- * dealer can cover (and to `wantedMaxBetWei` if the dealer names less). */
+ * dealer can cover (and to `wantedMaxBetWei` if the dealer names less), and the dealer's smallest
+ * bet (`minBetWei`) when it has one. */
 export function buildAccept(input: {
   state: HandState
   spendableWei: bigint
   reserveWei: bigint
   seed: string
   wantedMaxBetWei?: bigint
+  minBetWei?: bigint
 }): { item: HandItem } | { error: HandMoneyError } {
   const own = maxDealerBetWei(input.spendableWei, input.reserveWei)
   let max = input.state.maxBetWei < own ? input.state.maxBetWei : own
@@ -267,24 +292,34 @@ export function buildAccept(input: {
     max = input.wantedMaxBetWei
   }
   if (max <= 0n) return { error: 'above-own-limit' }
+  if (input.minBetWei !== undefined) {
+    if (input.minBetWei <= 0n) return { error: 'not-positive' }
+    if (input.minBetWei > max) return { error: 'below-min-bet' }
+  }
   return {
     item: {
       ...chained(input.state),
       action: 'accept',
       maxBetWei: max.toString(),
+      ...(input.minBetWei !== undefined
+        ? { minBetWei: input.minBetWei.toString() }
+        : {}),
       commitment: commitmentOf(input.seed),
     },
   }
 }
 
-/** Why the player may not send `wagerWei` as a bet (or as the equal second wager of a double). */
+/** Why the player may not send `wagerWei` as a bet (or as the equal second wager of a double):
+ * outside the table limits the dealer's offer names, or more than this wallet can send. */
 export function checkWager(
-  state: Pick<HandState, 'maxBetWei'>,
+  state: Pick<HandState, 'maxBetWei' | 'minBetWei'>,
   wagerWei: bigint,
   spendableWei: bigint,
   reserveWei: bigint,
 ): HandMoneyError | undefined {
   if (wagerWei <= 0n) return 'not-positive'
+  if (state.minBetWei !== undefined && wagerWei < state.minBetWei)
+    return 'below-min-bet'
   if (wagerWei > state.maxBetWei) return 'above-max-bet'
   if (wagerWei > maxPlayerBetWei(spendableWei, reserveWei))
     return 'above-own-limit'

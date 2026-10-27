@@ -996,6 +996,9 @@ export interface HandState {
   player: string
   challenger: HandRole
   maxBetWei: bigint
+  /** The smallest bet the dealer's offer takes, when the offer names one. A smaller bet is
+   * returned, the same as one above `maxBetWei`. */
+  minBetWei?: bigint
   commitment?: string
   playerCommitment?: string
   dealerLink?: OpenedLink
@@ -1037,6 +1040,15 @@ const HEX64 = /^[0-9a-f]{64}$/
 const WEI_RE = /^[0-9]{1,40}$/
 const parseWeiStr = (value: unknown): bigint | undefined =>
   typeof value === 'string' && WEI_RE.test(value) ? BigInt(value) : undefined
+/** The minimum bet a dealer's offer names: `undefined` when it names none, `null` when what it
+ * names is not an amount (the codec never produces that; an item built in memory might). A
+ * minimum above the offer's maximum is not kept: the codec rejects such an offer on the wire. */
+const offeredMinimum = (item: object): bigint | undefined | null => {
+  const value = (item as { minBetWei?: unknown }).minBetWei
+  if (value === undefined) return undefined
+  const wei = parseWeiStr(value)
+  return wei === undefined || wei <= 0n ? null : wei
+}
 
 /** The stake that is at risk in the hand: the wager, twice that after a double or a split. */
 export function totalStakeWei(
@@ -1201,10 +1213,15 @@ export function applyHandEvent(
       return rejectHand(prev, 'bad-amount')
     if (item.role === 'dealer' && !HEX64.test(item.commitment))
       return rejectHand(prev, 'bad-commitment')
+    const minBetWei = item.role === 'dealer' ? offeredMinimum(item) : undefined
+    if (minBetWei === null) return rejectHand(prev, 'bad-amount')
     const base = {
       gameId: item.gameId,
       challenger: item.role,
       maxBetWei,
+      ...(minBetWei !== undefined && minBetWei <= maxBetWei
+        ? { minBetWei }
+        : {}),
       head: digest,
       count: 1,
       wagerWei: 0n,
@@ -1295,10 +1312,15 @@ export function applyHandEvent(
         maxBetWei > prev.maxBetWei
       )
         return rejectHand(prev, 'bad-amount')
+      const minBetWei = offeredMinimum(item)
+      if (minBetWei === null) return rejectHand(prev, 'bad-amount')
       if (!HEX64.test(item.commitment)) return rejectHand(prev, 'bad-commitment')
       return next({
         phase: 'open',
         maxBetWei,
+        ...(minBetWei !== undefined && minBetWei <= maxBetWei
+          ? { minBetWei }
+          : {}),
         commitment: item.commitment,
         dealerLink: { index: 0, link: item.commitment },
       })
@@ -1306,7 +1328,11 @@ export function applyHandEvent(
     case 'bet': {
       if (!fromPlayer) return rejectHand(prev, 'wrong-sender')
       if (prev.phase !== 'open') return owedBack('wrong-phase')
-      if (stampWei <= 0n || stampWei > prev.maxBetWei)
+      if (
+        stampWei <= 0n ||
+        stampWei > prev.maxBetWei ||
+        (prev.minBetWei !== undefined && stampWei < prev.minBetWei)
+      )
         return owedBack('bad-amount')
       if (!HEX64.test(item.commitment)) return owedBack('bad-commitment')
       return next({

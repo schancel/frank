@@ -728,16 +728,19 @@ export type BlackjackHandMessageItem = {
   schema: 2
 } & BlackjackHandFields<Uint8Array, Uint8Array>
 
-/** The ten closed schema-3 shapes of a peer-to-peer hand with entropy from both sides
- * (docs/protocol/blackjack-p2p.md). No shape states a card or an outcome: both sides compute them
- * from the links opened so far. `seq` and `prev` chain the hand's messages: `seq` counts the
- * messages before this one, `prev` is the payload digest of the previous one. A challenge is
- * message 0 and has no `prev`. No shape carries an amount of money. */
+/** The ten closed schema-3 shapes of a peer-to-peer hand with entropy from both sides. No shape
+ * states a card or an outcome: both sides compute them from the links opened so far. `seq` and
+ * `prev` chain the hand's messages: `seq` counts the messages before this one, `prev` is the
+ * payload digest of the previous one. A challenge is message 0 and has no `prev`. No shape carries
+ * an amount of money. The dealer's offer (its challenge, or its accept of a player's challenge)
+ * names the table's limits: `maxBetWei`, and `minBetWei` when the dealer has a minimum (positive,
+ * at most `maxBetWei`). */
 export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
   | {
       action: 'challenge'
       role: 'dealer'
       maxBetWei: Q
+      minBetWei?: Q
       commitment: H
       prev?: never
     }
@@ -748,7 +751,13 @@ export type BlackjackHandV3Fields<H, Q> = { gameId: string; seq: number } & (
       commitment?: never
       prev?: never
     }
-  | { action: 'accept'; maxBetWei: Q; commitment: H; prev: H }
+  | {
+      action: 'accept'
+      maxBetWei: Q
+      minBetWei?: Q
+      commitment: H
+      prev: H
+    }
   | { action: 'bet'; commitment: H; prev: H }
   | {
       action: 'deal' | 'hit' | 'stand' | 'double' | 'card' | 'reveal'

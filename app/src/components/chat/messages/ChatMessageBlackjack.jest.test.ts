@@ -434,6 +434,91 @@ describe('the player', () => {
     expect(followUp(wrapper)[0].stampValueWei).toBe(400n)
   })
 
+  // Owner ruling 2026-10-27: the dealer's offer carries its smallest and largest bet; the app shows
+  // them and refuses a bet outside them, since the dealer would only return it.
+  const limitedOffer = (gameId = GAME, digest?: string) =>
+    toMessage({
+      outbound: false,
+      item: {
+        gameId,
+        action: 'challenge',
+        seq: 0,
+        role: 'dealer',
+        maxBetWei: '1000',
+        minBetWei: '100',
+        commitment: commitmentOf(DEALER),
+      },
+      digest,
+    })
+
+  it('shows the table limits the dealer offer names, and refuses a bet outside them before anything is sent', async () => {
+    const wrapper = await mountLast([limitedOffer()])
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe(
+      'Blackjack challenge: the sender deals. Bets from 100 MON to 1000 MON.',
+    )
+    expect(wrapper.find('[data-testid="blackjack-table-limits"]').text()).toBe(
+      'This table takes bets from 100 MON to 1000 MON.',
+    )
+    // Suggested: the table's smallest bet, above the stake rule's 10.
+    expect(button(wrapper, 'bet').text()).toContain('100 MON')
+    await button(wrapper, 'change-bet').trigger('click')
+    const input = wrapper.find('[data-testid="blackjack-bet-amount"]')
+    for (const outside of ['99', '1001']) {
+      await input.setValue(outside)
+      expect(
+        wrapper.find('[data-testid="blackjack-amount-error"]').text(),
+      ).toBe(
+        'This table takes bets from 100 MON to 1000 MON. A bet outside them would be returned, not played, so nothing is sent.',
+      )
+      expect(button(wrapper, 'bet').attributes('disabled')).toBeDefined()
+      await button(wrapper, 'bet').trigger('click')
+      expect(followUp(wrapper)).toEqual([])
+    }
+    await input.setValue('1000')
+    expect(
+      wrapper.find('[data-testid="blackjack-amount-error"]').exists(),
+    ).toBe(false)
+    await button(wrapper, 'bet').trigger('click')
+    expect(followUp(wrapper)[0].stampValueWei).toBe(1000n)
+  })
+
+  it('never goes below the stake rule, even when the offer names a smaller minimum', async () => {
+    mockFloor.value = 200n
+    const wrapper = await mountLast([limitedOffer()])
+    expect(wrapper.find('[data-testid="blackjack-table-limits"]').text()).toBe(
+      'This table takes bets from 400 MON to 1000 MON.',
+    )
+    await button(wrapper, 'change-bet').trigger('click')
+    await wrapper.find('[data-testid="blackjack-bet-amount"]').setValue('399')
+    expect(button(wrapper, 'bet').attributes('disabled')).toBeDefined()
+  })
+
+  it('still shows and plays an offer that names no minimum, under the stake rule', async () => {
+    const wrapper = await mountLast(hand(false, WIN, 0n, []))
+    expect(wrapper.find('[data-testid="blackjack-table-limits"]').text()).toBe(
+      'This table takes bets from 10 MON to 1000 MON.',
+    )
+    expect(button(wrapper, 'bet').attributes('disabled')).toBeUndefined()
+  })
+
+  it('bets only on the newest offer of the chat: an older one says so and offers no bet', async () => {
+    const OTHER = 'fedcba9876543210fedcba9876543210'
+    const messages = [limitedOffer(GAME, 'old'), limitedOffer(OTHER, 'new')]
+    const older = await mountLast(messages, 0)
+    expect(older.find('[data-testid="blackjack-superseded"]').text()).toBe(
+      t('blackjackP2p.supersededOffer'),
+    )
+    expect(button(older, 'bet').exists()).toBe(false)
+    expect(older.find('[data-testid="blackjack-table-limits"]').exists()).toBe(
+      false,
+    )
+    const newer = await mountLast(messages, 1)
+    expect(newer.find('[data-testid="blackjack-superseded"]').exists()).toBe(
+      false,
+    )
+    expect(button(newer, 'bet').exists()).toBe(true)
+  })
+
   it('cannot bet while the balance is unknown', async () => {
     mockBalance.value = null
     const wrapper = await mountLast(hand(false, WIN, 0n, []))
@@ -664,7 +749,12 @@ describe('the dealer', () => {
     await button(wrapper, 'accept').trigger('click')
     const [sent] = followUp(wrapper)
     expect(sent.stampValueWei).toBe(0n)
-    expect(sent.items[0]).toMatchObject({ action: 'accept', maxBetWei: '300' })
+    // The accept is the dealer's offer: it names the smallest bet too (twice the floor of 5).
+    expect(sent.items[0]).toMatchObject({
+      action: 'accept',
+      maxBetWei: '300',
+      minBetWei: '10',
+    })
     expect(commitmentOf(loadSeed(ME, PEER, GAME)!)).toBe(
       sent.items[0].commitment,
     )

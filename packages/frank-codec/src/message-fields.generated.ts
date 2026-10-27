@@ -129,7 +129,7 @@ export const BLACKJACK_HAND_ITEM_ACTION_ONLY_SHAPE: MapShape = {
   openFrom: 0,
 }
 
-/** `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). */
+/** `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). The dealer's offer (a dealer challenge or an accept) carries the table's maximum bet (key 3) and may carry its minimum bet (key 14, positive and at most the maximum); the dealer returns a bet outside them instead of dealing it. */
 export const BLACKJACK_HAND_V3_ITEM = {
   gameId: 0,
   action: 1,
@@ -140,6 +140,7 @@ export const BLACKJACK_HAND_V3_ITEM = {
   seq: 11,
   prev: 12,
   link: 13,
+  minBetWei: 14,
 } as const
 /** `blackjack-hand-v3-item` challenge-dealer map shape. */
 export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
@@ -151,7 +152,7 @@ export const BLACKJACK_HAND_V3_ITEM_CHALLENGE_DEALER_SHAPE: MapShape = {
     BLACKJACK_HAND_V3_ITEM.maxBetWei,
     BLACKJACK_HAND_V3_ITEM.commitment,
   ],
-  optional: [],
+  optional: [BLACKJACK_HAND_V3_ITEM.minBetWei],
   open: false,
   openFrom: 0,
 }
@@ -178,7 +179,7 @@ export const BLACKJACK_HAND_V3_ITEM_ACCEPT_SHAPE: MapShape = {
     BLACKJACK_HAND_V3_ITEM.commitment,
     BLACKJACK_HAND_V3_ITEM.prev,
   ],
-  optional: [],
+  optional: [BLACKJACK_HAND_V3_ITEM.minBetWei],
   open: false,
   openFrom: 0,
 }

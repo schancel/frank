@@ -1,4 +1,4 @@
-/** The hand corpus with entropy from both sides (type 18, schema 3):
+/** The hand corpus with entropy from both sides (type 26, schema 3):
  * `docs/protocol/cbor/vectors/blackjack-hand-v3.json` is exactly `blackjackHandV3Corpus()`.
  * Accepted frames come from the public typed writer; rejected frames are built with the generic
  * frame encoder so that they can be malformed. */
@@ -34,6 +34,7 @@ export const BLACKJACK_HAND_V3_ITEMS: readonly { id: string; item: BlackjackHand
       seq: 0,
       role: 'dealer',
       maxBetWei: '1000000000000000000',
+      minBetWei: '10000000000000000',
       commitment: COMMITMENT,
     },
   },
@@ -49,6 +50,7 @@ export const BLACKJACK_HAND_V3_ITEMS: readonly { id: string; item: BlackjackHand
       seq: 1,
       prev: PREV,
       maxBetWei: '9999999999999999999999999999999999999999',
+      minBetWei: '9999999999999999999999999999999999999999',
       commitment: COMMITMENT,
     },
   },
@@ -66,6 +68,19 @@ export const BLACKJACK_HAND_V3_ITEMS: readonly { id: string; item: BlackjackHand
     },
   },
   { id: 'refund', item: { ...base, action: 'refund', seq: 3, prev: PREV, ref: REF } },
+  // An offer that names no minimum bet is still a whole offer.
+  {
+    id: 'challenge-as-dealer-without-min',
+    item: { ...base, action: 'challenge', seq: 0, role: 'dealer', maxBetWei: '5', commitment: COMMITMENT },
+  },
+  {
+    id: 'accept-without-min',
+    item: { ...base, action: 'accept', seq: 1, prev: PREV, maxBetWei: '5', commitment: COMMITMENT },
+  },
+  {
+    id: 'challenge-as-dealer-min-equals-max',
+    item: { ...base, action: 'challenge', seq: 0, role: 'dealer', maxBetWei: '5', minBetWei: '5', commitment: COMMITMENT },
+  },
 ]
 
 const bytes32 = (hex: string) => Uint8Array.from(Buffer.from(hex, 'hex'))
@@ -144,6 +159,34 @@ const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema2' }
   {
     id: 'reject-accept-without-commitment',
     frame: raw([g, [K.action, A.accept], [K.maxBetWei, quantity(5n)], seq(1), prev]),
+  },
+  {
+    id: 'reject-challenge-dealer-zero-min',
+    frame: raw([g, [K.action, A.challenge], [K.role, BLACKJACK_ROLE.dealer], [K.maxBetWei, quantity(5n)], [K.minBetWei, quantity(0n)], [K.commitment, bytes32(COMMITMENT)], seq(0)]),
+  },
+  {
+    id: 'reject-challenge-dealer-min-above-max',
+    frame: raw([g, [K.action, A.challenge], [K.role, BLACKJACK_ROLE.dealer], [K.maxBetWei, quantity(5n)], [K.minBetWei, quantity(6n)], [K.commitment, bytes32(COMMITMENT)], seq(0)]),
+  },
+  {
+    id: 'reject-challenge-dealer-short-min',
+    frame: raw([g, [K.action, A.challenge], [K.role, BLACKJACK_ROLE.dealer], [K.maxBetWei, quantity(5n)], [K.minBetWei, new Uint8Array(31)], [K.commitment, bytes32(COMMITMENT)], seq(0)]),
+  },
+  {
+    id: 'reject-challenge-dealer-text-min',
+    frame: raw([g, [K.action, A.challenge], [K.role, BLACKJACK_ROLE.dealer], [K.maxBetWei, quantity(5n)], [K.minBetWei, '1'], [K.commitment, bytes32(COMMITMENT)], seq(0)]),
+  },
+  {
+    id: 'reject-challenge-player-with-min',
+    frame: raw([g, [K.action, A.challenge], [K.role, BLACKJACK_ROLE.player], [K.maxBetWei, quantity(5n)], [K.minBetWei, quantity(1n)], seq(0)]),
+  },
+  {
+    id: 'reject-accept-min-above-max',
+    frame: raw([g, [K.action, A.accept], [K.maxBetWei, quantity(5n)], [K.minBetWei, quantity(6n)], [K.commitment, bytes32(COMMITMENT)], seq(1), prev]),
+  },
+  {
+    id: 'reject-bet-with-min',
+    frame: raw([g, [K.action, A.bet], [K.minBetWei, quantity(1n)], [K.commitment, bytes32(COMMITMENT)], seq(2), prev]),
   },
   { id: 'reject-bet-without-commitment', frame: raw([g, [K.action, A.bet], seq(2), prev]) },
   {

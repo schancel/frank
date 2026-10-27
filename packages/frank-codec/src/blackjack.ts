@@ -493,7 +493,11 @@ export function encodeBlackjackHandV3Item(
       if (input.role !== 'dealer' && input.role !== 'player')
         throw bad('unknown blackjack role')
       fields.push([K.role, 'role'], [K.maxBetWei, 'maxBetWei'])
-      if (input.role === 'dealer') fields.push([K.commitment, 'commitment'])
+      if (input.role === 'dealer') {
+        fields.push([K.commitment, 'commitment'])
+        // The dealer's minimum bet is optional: written only when the item names one.
+        if (own(input, 'minBetWei')) fields.push([K.minBetWei, 'minBetWei'])
+      }
       break
     case 'accept':
       fields.push(
@@ -501,6 +505,7 @@ export function encodeBlackjackHandV3Item(
         [K.commitment, 'commitment'],
         [K.prev, 'prev'],
       )
+      if (own(input, 'minBetWei')) fields.push([K.minBetWei, 'minBetWei'])
       break
     case 'bet':
       fields.push([K.commitment, 'commitment'], [K.prev, 'prev'])
@@ -528,7 +533,8 @@ export function encodeBlackjackHandV3Item(
         key,
         value === 'dealer' ? BLACKJACK_ROLE.dealer : BLACKJACK_ROLE.player,
       )
-    else if (key === K.maxBetWei) payload.set(key, quantity(value))
+    else if (key === K.maxBetWei || key === K.minBetWei)
+      payload.set(key, quantity(value))
     else if (key === K.seq) {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 0)
         throw bad('seq must be a non-negative integer')
@@ -581,6 +587,9 @@ export function projectBlackjackHandV3Item(parsed: ParsedFrame): {
               action: 'challenge',
               role: 'dealer',
               maxBetWei: decimal(wire.maxBetWei),
+              ...(wire.minBetWei !== undefined
+                ? { minBetWei: decimal(wire.minBetWei) }
+                : {}),
               commitment: toHex(wire.commitment),
             }
           : {
@@ -595,6 +604,9 @@ export function projectBlackjackHandV3Item(parsed: ParsedFrame): {
         ...base,
         action: 'accept',
         maxBetWei: decimal(wire.maxBetWei),
+        ...(wire.minBetWei !== undefined
+          ? { minBetWei: decimal(wire.minBetWei) }
+          : {}),
         commitment: toHex(wire.commitment),
         prev: toHex(wire.prev),
       }

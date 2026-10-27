@@ -468,6 +468,7 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
     let action = match &item.action {
         ChallengeDealer {
             max_bet_wei,
+            min_bet_wei,
             commitment,
         } => {
             fields.extend([
@@ -475,6 +476,9 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
                 (K::MAX_BET_WEI, CborValue::Bytes(quantity(max_bet_wei)?)),
                 (K::COMMITMENT, bytes32(commitment)?),
             ]);
+            if let Some(min) = min_bet_wei {
+                fields.push((K::MIN_BET_WEI, CborValue::Bytes(quantity(min)?)));
+            }
             A::CHALLENGE
         }
         ChallengePlayer { max_bet_wei } => {
@@ -486,6 +490,7 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
         }
         Accept {
             max_bet_wei,
+            min_bet_wei,
             commitment,
             prev,
         } => {
@@ -494,6 +499,9 @@ pub fn encode_blackjack_hand_v3_item(item: &BlackjackHandV3Item) -> Result<Vec<u
                 (K::COMMITMENT, bytes32(commitment)?),
                 (K::PREV, bytes32(prev)?),
             ]);
+            if let Some(min) = min_bet_wei {
+                fields.push((K::MIN_BET_WEI, CborValue::Bytes(quantity(min)?)));
+            }
             A::ACCEPT
         }
         Bet { commitment, prev } => {
@@ -553,9 +561,11 @@ pub fn project_blackjack_hand_v3_item(
     let action = match &wire.action {
         ChallengeDealer {
             max_bet_wei,
+            min_bet_wei,
             commitment,
         } => ChallengeDealer {
             max_bet_wei: decimal(max_bet_wei),
+            min_bet_wei: min_bet_wei.as_deref().map(decimal),
             commitment: hex(commitment),
         },
         ChallengePlayer { max_bet_wei } => ChallengePlayer {
@@ -563,10 +573,12 @@ pub fn project_blackjack_hand_v3_item(
         },
         Accept {
             max_bet_wei,
+            min_bet_wei,
             commitment,
             prev,
         } => Accept {
             max_bet_wei: decimal(max_bet_wei),
+            min_bet_wei: min_bet_wei.as_deref().map(decimal),
             commitment: hex(commitment),
             prev: hex(prev),
         },

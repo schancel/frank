@@ -413,6 +413,9 @@ function blackjackHandV3Payload(
     }
   }
   const hash = (m: MapView, key: number) => bstr(m.get(key), at(P, key), 32, 32)
+  /** The dealer's minimum bet, when its offer names one. */
+  const minBet = (m: MapView) =>
+    m.has(K.minBetWei) ? { minBetWei: hash(m, K.minBetWei) } : {}
   switch (action) {
     case A.challenge: {
       const dealer =
@@ -433,6 +436,7 @@ function blackjackHandV3Payload(
             action: 'challenge',
             role: 'dealer',
             maxBetWei: hash(m, K.maxBetWei),
+            ...minBet(m),
             commitment: hash(m, K.commitment),
           }
         : {
@@ -448,6 +452,7 @@ function blackjackHandV3Payload(
         ...base,
         action: 'accept',
         maxBetWei: hash(m, K.maxBetWei),
+        ...minBet(m),
         commitment: hash(m, K.commitment),
         prev: hash(m, K.prev),
       }
@@ -516,9 +521,18 @@ export function parseBlackjackDraft(
 export function checkBlackjackSemantics(typed: BlackjackWireItem): void {
   if (typed.schema === 3) {
     if (typed.action === 'challenge' || typed.action === 'accept') {
-      const max = typed.maxBetWei.reduce((n, b) => (n << 8n) | BigInt(b), 0n)
+      const quantity = (bytes: Uint8Array) =>
+        bytes.reduce((n, b) => (n << 8n) | BigInt(b), 0n)
+      const max = quantity(typed.maxBetWei)
       if (max < 1n || max > 10n ** 40n - 1n)
         throw semantic('blackjack max bet range')
+      // The dealer's minimum bet, when its offer names one, is positive and at most its maximum.
+      const min =
+        'minBetWei' in typed && typed.minBetWei !== undefined
+          ? quantity(typed.minBetWei)
+          : undefined
+      if (min !== undefined && (min < 1n || min > max))
+        throw semantic('blackjack min bet range/order')
     }
     return
   }

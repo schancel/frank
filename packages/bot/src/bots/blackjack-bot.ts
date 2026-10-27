@@ -243,6 +243,8 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       gameId,
       role: "dealer",
       maxBetWei: maxBet,
+      // The offer names the table limits, so the app refuses a bet outside them before paying.
+      minBetWei: minBet,
       spendableWei: balance,
       reserveWei: RESERVE_WEI,
       seed,
@@ -405,6 +407,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
               reserveWei: RESERVE_WEI,
               seed,
               wantedMaxBetWei: wanted,
+              minBetWei: minBet,
             })
           : undefined;
       return built && "item" in built
@@ -415,19 +418,29 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         : undefined;
     }
     if (state.phase === "awaiting_deal") {
-      // A bet below the table's smallest bet (the stake rule every game shares, which the app
-      // applies too) is returned instead of dealt: its payout or refund might not clear the fee
-      // floor by the time the hand ends.
-      const { minBet } = await this.limits(ctx);
-      const refund = state.wagerWei < minBet ? refundBetStep(state) : undefined;
+      // The offer named the table limits and the hand already returns a bet outside them. The
+      // limits can move after the offer went out: the smallest bet follows the chain's fee floor,
+      // and the largest follows what the dealer can still cover. A bet outside the limits as
+      // they are now is returned instead of dealt: a payout the dealer could not cover, or one
+      // that might not clear the fee floor, is not a hand worth playing.
+      const { minBet, maxBet } = await this.limits(ctx);
+      const below = state.wagerWei < minBet;
+      const above = state.wagerWei > maxBet;
+      const refund = below || above ? refundBetStep(state) : undefined;
       if (refund)
         return {
           item: refund.item,
-          text: `Your bet of ${ctx.formatAmount(
-            state.wagerWei
-          )} is below this table's smallest bet of ${ctx.formatAmount(
-            minBet
-          )}, so it was not dealt. It is returned with this message.`,
+          text: below
+            ? `Your bet of ${ctx.formatAmount(
+                state.wagerWei
+              )} is below this table's smallest bet of ${ctx.formatAmount(
+                minBet
+              )}, so it was not dealt. It is returned with this message.`
+            : `Your bet of ${ctx.formatAmount(
+                state.wagerWei
+              )} is more than the dealer can cover right now (${ctx.formatAmount(
+                maxBet
+              )}), so it was not dealt. It is returned with this message.`,
           payWei: refund.payWei,
         };
     }

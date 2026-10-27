@@ -199,8 +199,26 @@
           @click="onAccept"
         />
       </div>
+      <!-- An older offer of a dealer that has since made a newer one: only the newest is bet on,
+           since its limits are the dealer's current ones. -->
+      <div
+        v-if="superseded"
+        role="status"
+        class="text-caption q-mt-sm"
+        data-testid="blackjack-superseded"
+      >
+        {{ $t('blackjackP2p.supersededOffer') }}
+      </div>
       <!-- The player bets: the bet is this message's own stamp. -->
       <div v-if="canBet" class="q-mt-sm">
+        <div class="text-caption" data-testid="blackjack-table-limits">
+          {{
+            $t('blackjackP2p.tableLimits', {
+              min: display(betMinimum),
+              max: display(state.maxBetWei),
+            })
+          }}
+        </div>
         <div v-if="!editingBet" class="row items-center q-gutter-sm">
           <span data-testid="blackjack-bet-summary">{{
             $t('blackjackP2p.betSummary', { amount: display(amountWei ?? 0n) })
@@ -221,7 +239,10 @@
           dense
           data-testid="blackjack-bet-amount"
           :label="
-            $t('blackjackP2p.betAmount', { max: display(state.maxBetWei) })
+            $t('blackjackP2p.betAmount', {
+              min: display(betMinimum),
+              max: display(state.maxBetWei),
+            })
           "
           :suffix="unit"
           inputmode="decimal"
@@ -475,6 +496,7 @@ import { getOwnCanonicalAddress } from '../../../utils/own-address'
 import {
   chatHandEvents,
   HAND_FEE_RESERVE_WEI,
+  latestOfferGameId,
   loadSeed,
   newSeed,
   saveSeed,
@@ -670,8 +692,30 @@ export default defineComponent({
     canAccept(): boolean {
       return this.state?.phase === 'challenged' && this.role === 'dealer'
     },
+    /** Whether this hand's offer was followed by a newer offer in this chat. A dealer's limits
+     * move (its maximum follows its balance, its minimum the fee floor), so only the newest offer
+     * is bet on; the dealer still returns a bet outside the limits of any offer, or of the
+     * limits as they are when it deals. */
+    superseded(): boolean {
+      const state = this.state
+      if (state?.phase !== 'open' || this.role !== 'player') return false
+      const messages = useChatStore().activeConversation?.messages ?? []
+      return (
+        latestOfferGameId(messages, this.own, this.address) !== state.gameId
+      )
+    },
     canBet(): boolean {
-      return this.state?.phase === 'open' && this.role === 'player'
+      return (
+        this.state?.phase === 'open' &&
+        this.role === 'player' &&
+        !this.superseded
+      )
+    },
+    /** The smallest bet this hand takes: the dealer's offer names it; never below the stake rule
+     * every game shares. */
+    betMinimum(): bigint {
+      const offered = this.state?.minBetWei ?? 0n
+      return offered > this.minimumStake ? offered : this.minimumStake
     },
     moves(): Move[] {
       if (this.role !== 'player') return []
@@ -729,6 +773,17 @@ export default defineComponent({
       if (this.balance === null) return this.$t('blackjackP2p.balanceUnknown')
       if (this.amount.trim() === '' || this.amountWei === null)
         return this.$t('blackjackP2p.enterAmount')
+      // A bet outside the limits the dealer's offer names would be returned, not played: it is
+      // refused here, before anything is signed or paid.
+      if (
+        this.canBet &&
+        state.minBetWei !== undefined &&
+        (this.amountWei < this.betMinimum || this.amountWei > state.maxBetWei)
+      )
+        return this.$t('blackjackP2p.outsideTableLimits', {
+          min: this.display(this.betMinimum),
+          max: this.display(state.maxBetWei),
+        })
       if (this.amountWei < this.minimumStake)
         return this.$t('blackjackP2p.belowMinimumBet', {
           amount: this.display(this.minimumStake),
@@ -741,6 +796,7 @@ export default defineComponent({
           reserveWei: HAND_FEE_RESERVE_WEI,
           seed: '0'.repeat(64),
           wantedMaxBetWei: this.amountWei,
+          minBetWei: this.offeredMinimum,
         })
         error = 'error' in built ? built.error : undefined
       } else {
@@ -767,10 +823,20 @@ export default defineComponent({
         })
       return error ? this.$t('blackjackP2p.enterAmount') : ''
     },
+    /** The smallest bet this user names when it deals: the stake rule, when it is known. */
+    offeredMinimum(): bigint | undefined {
+      return this.minimumStake > 0n ? this.minimumStake : undefined
+    },
     itemLine(): string {
       const item = this.item
+      const min = 'minBetWei' in item ? item.minBetWei : undefined
       switch (item.action) {
         case 'challenge':
+          if (item.role === 'dealer' && min !== undefined)
+            return this.$t('blackjackP2p.lineChallengeDealerLimits', {
+              min: this.displayText(min),
+              max: this.displayText(item.maxBetWei),
+            })
           return this.$t(
             item.role === 'dealer'
               ? 'blackjackP2p.lineChallengeDealer'
@@ -778,6 +844,11 @@ export default defineComponent({
             { amount: this.displayText(item.maxBetWei) },
           )
         case 'accept':
+          if (min !== undefined)
+            return this.$t('blackjackP2p.lineAcceptLimits', {
+              min: this.displayText(min),
+              max: this.displayText(item.maxBetWei),
+            })
           return this.$t('blackjackP2p.lineAccept', {
             amount: this.displayText(item.maxBetWei),
           })
@@ -904,6 +975,7 @@ export default defineComponent({
     canBet: { immediate: true, handler: 'suggestAmount' },
     balance: 'suggestAmount',
     minimumStake: 'suggestAmount',
+    betMinimum: 'suggestAmount',
   },
   async created() {
     this.own = (await getOwnCanonicalAddress()) ?? ''
@@ -927,7 +999,7 @@ export default defineComponent({
         // A bet starts at the table's smallest, never at the most the player could lose. Not
         // known until the payment floor is: nothing is suggested before then.
         if (this.minimumStake > 0n)
-          this.amount = activeChain.toDisplayAmount(this.minimumStake)
+          this.amount = activeChain.toDisplayAmount(this.betMinimum)
         return
       }
       const own = this.canAccept
@@ -969,6 +1041,7 @@ export default defineComponent({
         reserveWei: HAND_FEE_RESERVE_WEI,
         seed,
         wantedMaxBetWei: this.amountWei ?? undefined,
+        minBetWei: this.offeredMinimum,
       })
       if ('error' in built) return
       // The seed is kept before its commitment leaves this device.
@@ -976,7 +1049,13 @@ export default defineComponent({
       this.send(built.item, 0n)
     },
     onBet() {
-      if (!this.state || this.amountError || this.amountWei === null) return
+      if (
+        !this.state ||
+        !this.canBet ||
+        this.amountError ||
+        this.amountWei === null
+      )
+        return
       const seed = newSeed(this.state.gameId, this.own)
       const bet = buildBet(this.state, seed)
       if (!bet) return

@@ -534,6 +534,7 @@ import {
 } from '../utils/chat-attribution'
 import { shortAddress } from '../utils/short-address'
 import { PAYMENT_FLOOR_INJECTION } from '../utils/game-stakes'
+import { stakeMinimumWei } from '@frank/wallet/message-item-plugins/shared/stake-minimum'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -2077,10 +2078,16 @@ export default defineComponent({
         const gameId = newGameId()
         const seed =
           role === 'dealer' ? newSeed(gameId, own ?? undefined) : undefined
+        // A dealer's offer names its smallest bet (the stake rule every game shares) next to its
+        // largest, so the player's app refuses a bet outside them before paying.
+        const minimum = stakeMinimumWei(this.minimumStampWei)
         const built = buildChallenge({
           gameId,
           role,
           maxBetWei,
+          ...(role === 'dealer' && minimum > 0n && minimum <= maxBetWei
+            ? { minBetWei: minimum }
+            : {}),
           spendableWei,
           reserveWei: HAND_FEE_RESERVE_WEI,
           seed,

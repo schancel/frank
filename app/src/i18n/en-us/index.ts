@@ -454,6 +454,14 @@ export const rawEnUS = {
     lineChallengePlayer:
       'Blackjack challenge: the sender plays, you deal. Maximum bet {amount}.',
     lineAccept: 'Challenge accepted. Maximum bet {amount}.',
+    lineChallengeDealerLimits:
+      'Blackjack challenge: the sender deals. Bets from {min} to {max}.',
+    lineAcceptLimits: 'Challenge accepted. Bets from {min} to {max}.',
+    tableLimits: 'This table takes bets from {min} to {max}.',
+    outsideTableLimits:
+      'This table takes bets from {min} to {max}. A bet outside them would be returned, not played, so nothing is sent.',
+    supersededOffer:
+      'The dealer has made a newer offer since this one. Bet on the newest offer: its limits are the current ones.',
     line: {
       bet: 'Bet placed: the stamp of this message is the bet.',
       deal: 'Cards dealt.',
@@ -479,7 +487,7 @@ export const rawEnUS = {
     rowCard: 'Card',
     wager: 'At stake: {amount}',
     accept: 'Accept and deal',
-    betAmount: 'Your bet (at most {max})',
+    betAmount: 'Your bet ({min} to {max})',
     bet: 'Place bet',
     hit: 'Hit',
     stand: 'Stand',

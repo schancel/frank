@@ -16,6 +16,7 @@ import type {
 import {
   GroupWritePaidRefusalError,
   GroupWritePaymentUnavailableError,
+  GroupWritePriceChangedError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
   discardPaidGroupWrite,
@@ -173,6 +174,7 @@ export type ChatMessage = {
   requestedConversationId?: string
   groupEnvelope?: SealedGroupMessageEnvelope
   groupWritePayment?: Message['groupWritePayment']
+  groupWriteShownPriceWei?: Message['groupWriteShownPriceWei']
   sealedMessageId?: string
   applicationAuthorization?: Message['applicationAuthorization']
   financialOperations?: OutgoingFinancialOperation[]
@@ -337,6 +339,12 @@ export interface GroupConversationState {
   /** A write price this administrator signed, persisted before it goes to the host and retried
    * until the host holds it, refuses it, or holds a newer one. */
   pendingWritePrice?: GroupWritePriceRecord
+  /** The host refused the last price this administrator signed (below its minimum, or
+   * otherwise); shown in group info until a price is held. */
+  writePriceRefusal?: {
+    reason: GroupWritePriceRefusedError['reason']
+    minPriceWei?: string
+  }
 }
 
 /** A group's write price as the app shows it. */
@@ -1626,6 +1634,7 @@ function applyAuthenticatedGroupEpoch(
     supersededMemberChange,
     writePrice: previous?.writePrice,
     pendingWritePrice: previous?.pendingWritePrice,
+    writePriceRefusal: previous?.writePriceRefusal,
   }
   conv.groupEpochSecretHex = epochSecretHex
   conv.groupMemberIndex = own?.index
@@ -3952,7 +3961,13 @@ export const useChatStore = defineStore('chats', {
         ? this.conversations[message.conversationId]
         : undefined
       if (group?.kind === 'group')
-        return this.retryGroupMessage(group.id, payloadDigest)
+        return this.retryGroupMessage(
+          group.id,
+          payloadDigest,
+          undefined,
+          undefined,
+          !automatic,
+        )
       if (
         !message ||
         !message.outbound ||
@@ -6535,7 +6550,12 @@ export const useChatStore = defineStore('chats', {
       try {
         await this.retryGroupEpochPublication(conv.id, client)
         // The price is on the host before any member is invited to write.
-        await this.retryGroupWritePrice(conv.id, client)
+        const price = await this.retryGroupWritePrice(conv.id, client)
+        // Shown to the creator from here, whether or not they chose one.
+        if (price.state === 'held' && !conv.groupState?.writePrice)
+          await this.refreshGroupWritePrice(conv.id, client).catch(
+            () => undefined,
+          )
         await this.retryGroupMemberDeliveries(conv.id, resolvedWallet)
       } catch {
         checkGroup()
@@ -6660,6 +6680,9 @@ export const useChatStore = defineStore('chats', {
       conv.groupState!.pendingMessages ??= {}
       conv.groupState!.pendingMessages[payloadDigest] = true
       this.messages[payloadDigest]!.groupEnvelope = sealed
+      // The price the composer showed: this write never pays more (none shown: nothing).
+      this.messages[payloadDigest]!.groupWriteShownPriceWei =
+        conv.groupState!.writePrice?.priceWei ?? '0'
       await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
       checkGroup()
       await this.flushPersistence?.()
@@ -6677,6 +6700,8 @@ export const useChatStore = defineStore('chats', {
       payloadDigest: string,
       relayClient?: GroupRelayClient,
       wallet?: GroupWritePayer,
+      /** The user's Retry: the write may pay the price shown now. */
+      acceptShownPrice = false,
     ): Promise<OutgoingOutcome> {
       return groupRun(this, `message:${payloadDigest}`, () =>
         this.retryGroupMessageOnce(
@@ -6684,6 +6709,7 @@ export const useChatStore = defineStore('chats', {
           payloadDigest,
           relayClient,
           wallet,
+          acceptShownPrice,
         ),
       )
     },
@@ -6692,6 +6718,7 @@ export const useChatStore = defineStore('chats', {
       payloadDigest: string,
       relayClient?: GroupRelayClient,
       wallet?: GroupWritePayer,
+      acceptShownPrice = false,
     ): Promise<OutgoingOutcome> {
       const conv = this.conversations[conversationId]
       const pending = conv?.groupState?.pendingMessages?.[payloadDigest]
@@ -6722,6 +6749,8 @@ export const useChatStore = defineStore('chats', {
       if (!owner || !sameCanonicalAddress(owner.address, message.senderAddress))
         throw new Error('Group send belongs to another account')
       const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      if (acceptShownPrice && state.writePrice)
+        message.groupWriteShownPriceWei = state.writePrice.priceWei
       // Retry may follow a rejected initial receipt write. Re-establish durability before transport.
       await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
       checkGroup()
@@ -6735,7 +6764,11 @@ export const useChatStore = defineStore('chats', {
           groupIdHex: state.groupIdHex,
           envelope,
           stored: message.groupWritePayment,
-          policy: () => client.getWritePolicy(state.groupIdHex),
+          // The creator's signed price, checked against the group's key.
+          policy: () =>
+            client.getWritePolicy(state.groupIdHex, state.groupPubKeyHex),
+          // Never more than the member was shown.
+          maxPriceWei: BigInt(message.groupWriteShownPriceWei ?? '0'),
           persist: async next => {
             checkGroup()
             message.groupWritePayment = next
@@ -6810,8 +6843,16 @@ export const useChatStore = defineStore('chats', {
         if (message.status === 'confirmed')
           return { state: 'failed', reason: 'unreachable' }
         message.status = 'error'
+        // The price rose above the one shown: nothing was planned or paid. Show the new one;
+        // the user's Retry pays it.
+        if (error instanceof GroupWritePriceChangedError)
+          void this.refreshGroupWritePrice(conv.id, client).catch(
+            () => undefined,
+          )
         const reason: OutgoingFailureReason = isInsufficientFundsError(error)
           ? 'insufficient-funds'
+          : error instanceof GroupWritePriceChangedError
+          ? 'group-price-changed'
           : error instanceof GroupWritePaymentUnavailableError
           ? 'unavailable'
           : error instanceof GroupWritePaymentUnresolvedError
@@ -6827,7 +6868,12 @@ export const useChatStore = defineStore('chats', {
           : 'unreachable'
         message.delivery = {
           failureReason: reason,
-          detail: error instanceof Error ? error.message : String(error),
+          detail:
+            error instanceof GroupWritePriceChangedError
+              ? error.priceWei.toString()
+              : error instanceof Error
+              ? error.message
+              : String(error),
         }
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
         return { state: 'failed', reason }
@@ -6912,7 +6958,9 @@ export const useChatStore = defineStore('chats', {
       if (!state) return undefined
       const checkGroup = captureGroupContext(this, conv)
       const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
-      const view = writePriceView(await client.getWritePolicy(state.groupIdHex))
+      const view = writePriceView(
+        await client.getWritePolicy(state.groupIdHex, state.groupPubKeyHex),
+      )
       checkGroup()
       // An epoch applied meanwhile replaces the state object; the group is the same.
       const current = conv.groupState
@@ -6946,7 +6994,10 @@ export const useChatStore = defineStore('chats', {
       // One price at a time: an earlier one still pending goes first.
       const earlier = await this.retryGroupWritePrice(conversationId, client)
       if (earlier.state === 'refused') throw earlier.error
-      const policy = await client.getWritePolicy(state.groupIdHex)
+      const policy = await client.getWritePolicy(
+        state.groupIdHex,
+        state.groupPubKeyHex,
+      )
       checkGroup()
       if (priceWei < policy.minPriceWei)
         throw new GroupWritePriceRefusedError(
@@ -6999,8 +7050,19 @@ export const useChatStore = defineStore('chats', {
         }
         checkGroup()
         const current = conv.groupState
-        if (current?.pendingWritePrice === pending)
+        if (current?.pendingWritePrice === pending) {
           current.pendingWritePrice = undefined
+          // A refusal is kept for the administrator to see; a held price clears it.
+          current.writePriceRefusal =
+            outcome.state === 'refused'
+              ? {
+                  reason: outcome.error.reason,
+                  ...(outcome.error.minPriceWei === undefined
+                    ? {}
+                    : { minPriceWei: outcome.error.minPriceWei.toString() }),
+                }
+              : undefined
+        }
         await this.flushPersistence?.()
         await this.refreshGroupWritePrice(conversationId, client).catch(
           () => undefined,
@@ -7235,9 +7297,20 @@ export const useChatStore = defineStore('chats', {
         return 0
       await this.retryGroupEpochPublication(conversationId, options.relayClient)
       if (options.lease?.isCancelled()) return 0
-      await this.retryGroupWritePrice(conversationId, options.relayClient)
-      if (options.lease?.isCancelled()) return 0
-      await this.retryGroupMemberDeliveries(conversationId)
+      // A pending price goes to the host beside the sync: reading messages never waits for it,
+      // and only member invitations do (members are invited to write once the price is held).
+      const pricePending = Boolean(
+        this.conversations[conversationId]?.groupState?.pendingWritePrice,
+      )
+      const price = this.retryGroupWritePrice(
+        conversationId,
+        options.relayClient,
+      ).catch(() => undefined)
+      if (pricePending)
+        void price
+          .then(() => this.retryGroupMemberDeliveries(conversationId))
+          .catch(() => undefined)
+      else await this.retryGroupMemberDeliveries(conversationId)
       const conv = this.conversations[conversationId]
       if (options.lease?.isCancelled() || !conv || conv.kind !== 'group')
         return 0

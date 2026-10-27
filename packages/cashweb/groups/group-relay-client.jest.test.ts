@@ -16,6 +16,7 @@ import {
 } from './group-crypto'
 import {
   GroupRelayClient,
+  GroupWritePriceRefusedError,
   createGroupOnRelay,
   rotateGroupEpochOnRelay,
   openGroupEpochCertificate,
@@ -451,6 +452,39 @@ describe('group write refusals', () => {
       const error = await write(answering(status, body)).catch(e => e)
       expect(error).not.toBeInstanceOf(GroupWriteRefusedError)
       expect(error).not.toBeInstanceOf(GroupWriteDeferredError)
+      expect(error.response?.status).toBe(status)
+    }
+  })
+
+  test('a price the host refused is final; a timeout or rate limit is not', async () => {
+    const record = {
+      group_id: '11'.repeat(32),
+      network: 'monad-testnet',
+      version: 1,
+      price_wei: '1000',
+      admin_sig: '00'.repeat(64),
+    }
+    const below = await answering(422, {
+      error: 'write_price_below_minimum',
+      min_price_wei: '2000',
+    })
+      .setWritePrice('11'.repeat(32), record)
+      .catch(e => e)
+    expect(below).toBeInstanceOf(GroupWritePriceRefusedError)
+    expect(below).toMatchObject({
+      reason: 'below_minimum',
+      minPriceWei: 2000n,
+    })
+    for (const status of [400, 403, 404])
+      await expect(
+        answering(status, {}).setWritePrice('11'.repeat(32), record),
+      ).rejects.toBeInstanceOf(GroupWritePriceRefusedError)
+    // Says nothing about the price: kept pending and retried.
+    for (const status of [408, 429, 502, 503]) {
+      const error = await answering(status, {})
+        .setWritePrice('11'.repeat(32), record)
+        .catch(e => e)
+      expect(error).not.toBeInstanceOf(GroupWritePriceRefusedError)
       expect(error.response?.status).toBe(status)
     }
   })

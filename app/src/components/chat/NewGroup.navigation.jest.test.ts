@@ -498,3 +498,25 @@ it("does not create a group while the relay's price terms are unknown", async ()
     wrapper.unmount()
   }
 })
+
+it('tells the creator when the group was created but its relay refused the price', async () => {
+  mockCreate.mockResolvedValueOnce({
+    id: 'refused-price',
+    groupState: { writePriceRefusal: { reason: 'refused' } },
+  })
+  const { errorNotify } = jest.requireMock('../../utils/notifications')
+  const { wrapper, router } = await start('/new-group')
+  try {
+    await wrapper.get('[data-test="group-name-input"]').setValue('Refused')
+    await flushPromises()
+    await wrapper.get('[data-test="create-group-submit"]').trigger('click')
+    await flushPromises()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'groupChat.writePriceRefusedAtCreation',
+    })
+    // The group exists: it opens.
+    expect(router.currentRoute.value.path).toBe('/chat/refused-price')
+  } finally {
+    wrapper.unmount()
+  }
+})

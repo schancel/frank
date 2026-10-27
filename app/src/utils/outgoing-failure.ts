@@ -19,6 +19,7 @@ export function failedBeforePayment(reason: string | undefined): boolean {
     reason === 'stamp-below-fee' ||
     reason === 'fee-exceeded' ||
     reason === 'blocked' ||
-    reason === 'funds-in-pending-send'
+    reason === 'funds-in-pending-send' ||
+    reason === 'group-price-changed'
   )
 }

@@ -105,7 +105,7 @@
               priceError ? $t(priceError.key, priceError.values ?? {}) : ''
             "
             data-test="group-write-price-input"
-            @keydown.enter.prevent="changePrice"
+            @keydown.enter.prevent="requestPriceChange"
           />
           <q-btn
             color="primary"
@@ -115,9 +115,70 @@
             :loading="busy"
             :label="$t('groupChat.changeWritePriceBtn')"
             data-test="group-write-price-btn"
-            @click="changePrice"
+            @click="requestPriceChange"
           />
         </div>
+        <!-- The typed price, read back in the network's unit with what it is now. -->
+        <div
+          v-if="canSetPrice && newPriceWei !== undefined"
+          class="text-caption q-mt-xs"
+          data-test="group-write-price-preview"
+        >
+          {{
+            $t('groupChat.writePricePreview', {
+              price: newPriceDisplay,
+              current: writePriceDisplay,
+            })
+          }}
+        </div>
+        <div
+          v-if="refusalText"
+          class="text-caption text-negative q-mt-xs"
+          role="alert"
+          data-test="group-info-price-refused"
+        >
+          {{ $t(refusalText.key, refusalText.values ?? {}) }}
+        </div>
+
+        <!-- A large raise is confirmed first: every member pays it for every message. -->
+        <q-dialog
+          :model-value="confirmingRaise"
+          @update:model-value="open => !open && (confirmingRaise = false)"
+        >
+          <q-card
+            style="min-width: 300px"
+            data-test="group-write-price-confirm"
+          >
+            <q-card-section class="text-h6">
+              {{ $t('groupChat.writePriceRaiseTitle') }}
+            </q-card-section>
+            <q-card-section class="q-pt-none">
+              {{
+                $t('groupChat.writePriceRaiseBody', {
+                  current: writePriceDisplay,
+                  price: newPriceDisplay,
+                })
+              }}
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                flat
+                no-caps
+                :label="$t('groupChat.cancel')"
+                data-test="group-write-price-confirm-cancel"
+                @click="confirmingRaise = false"
+              />
+              <q-btn
+                flat
+                no-caps
+                color="primary"
+                :label="$t('groupChat.changeWritePriceBtn')"
+                data-test="group-write-price-confirm-btn"
+                @click="confirmRaise"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
       </q-card-section>
 
       <q-separator />
@@ -293,10 +354,14 @@ import { shortAddress } from '../../utils/short-address'
 import { errorNotify } from '../../utils/notifications'
 import { registryAmountAdapter } from '../../utils/chain-amount'
 import {
+  groupWritePriceLabel,
   groupWritePriceRefusalMessage,
   groupWritePriceViewLabel,
   parseGroupWritePriceInput,
 } from '../../utils/group-write-price'
+
+/** A new price this many times the current one or more is confirmed before it is set. */
+const LARGE_RAISE_FACTOR = 10n
 
 interface MemberRow {
   address: string
@@ -470,6 +535,42 @@ export default defineComponent({
       },
       { immediate: true },
     )
+    const newPriceDisplay = computed(() =>
+      writePrice.value && newPriceWei.value !== undefined
+        ? groupWritePriceLabel(writePrice.value.network, newPriceWei.value)
+        : '',
+    )
+    const confirmingRaise = ref(false)
+    const requestPriceChange = () => {
+      const price = newPriceWei.value
+      if (price === undefined || busy.value) return
+      const current = writePrice.value ? BigInt(writePrice.value.priceWei) : 0n
+      if (current > 0n && price >= current * LARGE_RAISE_FACTOR)
+        confirmingRaise.value = true
+      else void changePrice()
+    }
+    const confirmRaise = () => {
+      confirmingRaise.value = false
+      void changePrice()
+    }
+    // The host refused the last price an administrator signed (at creation, too).
+    const refusalText = computed<
+      { key: string; values?: Record<string, string> } | undefined
+    >(() => {
+      const refusal = conversation.value?.groupState?.writePriceRefusal
+      if (!refusal) return undefined
+      if (refusal.minPriceWei !== undefined && writePrice.value)
+        return {
+          key: 'groupChat.writePriceBelowMinimum',
+          values: {
+            minimum: groupWritePriceLabel(
+              writePrice.value.network,
+              refusal.minPriceWei,
+            ),
+          },
+        }
+      return { key: 'groupChat.writePriceNotSet' }
+    })
     const changePrice = async () => {
       const conv = conversation.value
       const price = newPriceWei.value
@@ -571,6 +672,11 @@ export default defineComponent({
       newPriceWei,
       priceError,
       changePrice,
+      requestPriceChange,
+      confirmRaise,
+      confirmingRaise,
+      newPriceDisplay,
+      refusalText,
       memberRows,
       inviteeAddress,
       busy,

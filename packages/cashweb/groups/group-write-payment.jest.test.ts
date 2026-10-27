@@ -2,7 +2,11 @@
  * (`backend/cashweb/cashweb-registry/src/group_write_payment_tests.rs`) is checked against. */
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { getBytes } from 'ethers'
-import { bytesToHex, computeGroupIdFromPubKey } from './group-crypto'
+import {
+  bytesToHex,
+  computeGroupIdFromPubKey,
+  hexToBytes,
+} from './group-crypto'
 import {
   assertGroupWritePayment,
   groupWriteCalldata,
@@ -11,6 +15,7 @@ import {
   groupWritePriceDigest,
   parseGroupWritePolicy,
   signGroupWritePrice,
+  verifyGroupWritePriceRecord,
 } from './group-write-payment'
 
 const BURN = '0x000000000000000000000000000000000000dEaD'
@@ -33,6 +38,18 @@ function commitment(
   })
 }
 
+/** A group and its creator's price record: version 2 at 5000 wei. */
+const GROUP_SK = new Uint8Array(32).fill(7)
+const GROUP_PUB_HEX = bytesToHex(secp256k1.getPublicKey(GROUP_SK, true))
+const GROUP_ID_HEX = computeGroupIdFromPubKey(hexToBytes(GROUP_PUB_HEX))
+const GROUP = { groupIdHex: GROUP_ID_HEX, groupPubKeyHex: GROUP_PUB_HEX }
+const RECORD = signGroupWritePrice({
+  network: 'monad-testnet',
+  groupIdHex: GROUP_ID_HEX,
+  version: 2,
+  priceWei: 5000n,
+  rootSecretKey: GROUP_SK,
+})
 const policyBody = {
   network: 'monad-testnet',
   price_wei: '5000',
@@ -40,6 +57,7 @@ const policyBody = {
   min_price_wei: '1000',
   host_origin: 'https://relay.example',
   payee: '0x000000000000000000000000000000000000dead',
+  price_record: RECORD,
 }
 
 describe('group write payment', () => {
@@ -91,16 +109,17 @@ describe('group write payment', () => {
   })
 
   test("a policy names the relay the client writes to, its address and the group's price", () => {
-    expect(parseGroupWritePolicy(policyBody, 'https://relay.example/')).toEqual(
-      {
-        network: 'monad-testnet',
-        priceWei: 5000n,
-        priceVersion: 2,
-        minPriceWei: 1000n,
-        hostOrigin: 'https://relay.example',
-        payee: BURN,
-      },
-    )
+    expect(
+      parseGroupWritePolicy(policyBody, 'https://relay.example/', GROUP),
+    ).toEqual({
+      network: 'monad-testnet',
+      priceWei: 5000n,
+      priceVersion: 2,
+      minPriceWei: 1000n,
+      hostOrigin: 'https://relay.example',
+      payee: BURN,
+      priceRecord: RECORD,
+    })
     for (const bad of [
       { ...policyBody, host_origin: 'https://other.example' },
       { ...policyBody, price_wei: '0' },
@@ -119,17 +138,81 @@ describe('group write payment', () => {
         },
       },
       { ...policyBody, payee: '0x1234' },
+      // Not one of the protocol registry's network ids: an alias, a family, an unknown network.
+      { ...policyBody, network: 'monad' },
+      { ...policyBody, network: 'evm' },
+      { ...policyBody, network: 'monad-testnet-2' },
     ])
       expect(() =>
-        parseGroupWritePolicy(bad, 'https://relay.example'),
+        parseGroupWritePolicy(bad, 'https://relay.example', GROUP),
       ).toThrow()
   })
 
+  test("a host can name no price but the creator's signed record or its own minimum", () => {
+    const parse = (body: object) =>
+      parseGroupWritePolicy(body, 'https://relay.example', GROUP)
+    // No record: the minimum, at version 0.
+    expect(
+      parse({
+        ...policyBody,
+        price_wei: '1000',
+        price_version: 0,
+        price_record: null,
+      }).priceWei,
+    ).toBe(1000n)
+    // The minimum above the creator's price wins.
+    expect(
+      parse({ ...policyBody, price_wei: '6000', min_price_wei: '6000' })
+        .priceWei,
+    ).toBe(6000n)
+    for (const bad of [
+      // A price the record does not carry, above or below it.
+      { ...policyBody, price_wei: '1000000000000000000' },
+      { ...policyBody, price_wei: '4000' },
+      { ...policyBody, price_version: 3 },
+      // A price above the minimum with no record.
+      { ...policyBody, price_record: null, price_version: 0 },
+      // A record not signed by this group's root key, or for another network.
+      {
+        ...policyBody,
+        price_record: signGroupWritePrice({
+          network: 'monad-testnet',
+          groupIdHex: computeGroupIdFromPubKey(
+            secp256k1.getPublicKey(new Uint8Array(32).fill(8), true),
+          ),
+          version: 2,
+          priceWei: 5000n,
+          rootSecretKey: new Uint8Array(32).fill(8),
+        }),
+      },
+      {
+        ...policyBody,
+        price_record: { ...RECORD, price_wei: '9000' },
+        price_wei: '9000',
+      },
+      { ...policyBody, price_record: { ...RECORD, network: 'monad-mainnet' } },
+    ])
+      expect(() => parse(bad)).toThrow()
+    expect(verifyGroupWritePriceRecord(RECORD, 'monad-testnet', GROUP)).toBe(
+      true,
+    )
+    expect(
+      verifyGroupWritePriceRecord(RECORD, 'monad-testnet', {
+        ...GROUP,
+        groupPubKeyHex: bytesToHex(
+          secp256k1.getPublicKey(new Uint8Array(32).fill(8), true),
+        ),
+      }),
+    ).toBe(false)
+  })
+
   test("a write's plan pays the relay's address the group's price", () => {
-    const policy = parseGroupWritePolicy(policyBody, 'https://relay.example')
-    const sk = new Uint8Array(32).fill(7)
-    const groupIdHex = computeGroupIdFromPubKey(secp256k1.getPublicKey(sk, true))
-    const plan = groupWritePaymentPlan(policy, groupIdHex, {
+    const policy = parseGroupWritePolicy(
+      policyBody,
+      'https://relay.example',
+      GROUP,
+    )
+    const plan = groupWritePaymentPlan(policy, GROUP_ID_HEX, {
       epoch: 0,
       nonce: '01'.repeat(24),
       ciphertext: '00ff',

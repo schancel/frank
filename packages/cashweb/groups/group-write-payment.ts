@@ -23,6 +23,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { concatBytes } from '@noble/hashes/utils.js'
 import { Transaction, getAddress } from 'ethers'
+import { isCanonicalChainIdentifier } from '../message-items/chain-identifiers'
 import {
   bytesToHex,
   computeGroupIdFromPubKey,
@@ -83,6 +84,76 @@ export interface GroupWritePolicy {
   readonly hostOrigin: string
   /** The host relay's own checksummed address: every write pays it. */
   readonly payee: string
+  /** The creator's signed record `priceWei` comes from; absent while there is none. Checked
+   * against the group's root key when the caller names it (`GroupWritePolicyGroup`). */
+  readonly priceRecord?: GroupWritePriceRecord
+}
+
+/** The group a policy is read for, so its creator's price record is checked against the key
+ * that names the group. */
+export interface GroupWritePolicyGroup {
+  readonly groupIdHex: string
+  /** Compressed secp256k1 public key, hex: the group id is derived from it. */
+  readonly groupPubKeyHex: string
+}
+
+function parsePriceRecord(raw: unknown): GroupWritePriceRecord | undefined {
+  if (raw === null || raw === undefined) return undefined
+  const r = raw as Record<string, unknown>
+  if (
+    typeof r.group_id !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(r.group_id) ||
+    typeof r.network !== 'string' ||
+    typeof r.version !== 'number' ||
+    !Number.isSafeInteger(r.version) ||
+    r.version < 1 ||
+    typeof r.price_wei !== 'string' ||
+    !DECIMAL_WEI.test(r.price_wei) ||
+    typeof r.admin_sig !== 'string' ||
+    !/^[0-9a-fA-F]{128}$/.test(r.admin_sig)
+  )
+    throw new Error('Invalid group write price record')
+  return {
+    group_id: r.group_id,
+    network: r.network,
+    version: r.version,
+    price_wei: r.price_wei,
+    admin_sig: r.admin_sig.toLowerCase(),
+  }
+}
+
+/** Whether `record` is a price for `group` on `network`, signed low-S by the group's root key. */
+export function verifyGroupWritePriceRecord(
+  record: GroupWritePriceRecord,
+  network: string,
+  group: GroupWritePolicyGroup,
+): boolean {
+  const groupIdHex = group.groupIdHex.toLowerCase()
+  let pub: Uint8Array
+  try {
+    pub = hexToBytes(group.groupPubKeyHex)
+    if (computeGroupIdFromPubKey(pub) !== groupIdHex) return false
+  } catch {
+    return false
+  }
+  if (record.group_id !== groupIdHex || record.network !== network) return false
+  try {
+    const signature = secp256k1.Signature.fromCompact(record.admin_sig)
+    if (signature.hasHighS()) return false
+    return secp256k1.verify(
+      signature,
+      groupWritePriceDigest({
+        network,
+        groupIdHex,
+        version: record.version,
+        priceWei: BigInt(record.price_wei),
+      }),
+      pub,
+      { lowS: true },
+    )
+  } catch {
+    return false
+  }
 }
 
 const DECIMAL_WEI = /^[1-9][0-9]{0,38}$/
@@ -91,12 +162,13 @@ const DECIMAL_WEI = /^[1-9][0-9]{0,38}$/
 export function parseGroupWritePolicy(
   raw: unknown,
   expectedHostOrigin: string,
+  group?: GroupWritePolicyGroup,
 ): GroupWritePolicy {
   const body = raw as Record<string, unknown> | null
   if (
     !body ||
-    typeof body.network !== 'string' ||
-    !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(body.network) ||
+    // Exactly one of the protocol registry's ids (docs/protocol/chains/v1.json); no alias.
+    !isCanonicalChainIdentifier(body.network) ||
     typeof body.price_wei !== 'string' ||
     !DECIMAL_WEI.test(body.price_wei) ||
     typeof body.min_price_wei !== 'string' ||
@@ -118,6 +190,22 @@ export function parseGroupWritePolicy(
   const minPriceWei = BigInt(body.min_price_wei)
   if (priceWei < minPriceWei)
     throw new Error('Group write policy prices the group below its minimum')
+  // The price is the creator's signed price, or the host's minimum when that is higher or there
+  // is none: a host cannot name any other price for the group.
+  const priceRecord = parsePriceRecord(body.price_record)
+  const recordVersion = priceRecord?.version ?? 0
+  const recordPrice = priceRecord ? BigInt(priceRecord.price_wei) : 0n
+  if (
+    body.price_version !== recordVersion ||
+    priceWei !== (recordPrice > minPriceWei ? recordPrice : minPriceWei)
+  )
+    throw new Error("Group write policy's price is not its creator's record")
+  if (
+    priceRecord &&
+    group &&
+    !verifyGroupWritePriceRecord(priceRecord, body.network, group)
+  )
+    throw new Error("Group write price is not signed by the group's root key")
   return {
     network: body.network,
     priceWei,
@@ -125,6 +213,7 @@ export function parseGroupWritePolicy(
     minPriceWei,
     hostOrigin,
     payee: getAddress(body.payee.toLowerCase()),
+    ...(priceRecord ? { priceRecord } : {}),
   }
 }
 

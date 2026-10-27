@@ -173,7 +173,9 @@ function groupWritePriceRefusal(
 ): GroupWritePriceRefusedError | undefined {
   if (!axios.isAxiosError(error) || !error.response) return undefined
   const status = error.response.status
-  if (status < 400 || status >= 500) return undefined
+  // A timeout or rate limit says nothing about the price: retried, kept pending.
+  if (status < 400 || status >= 500 || status === 408 || status === 429)
+    return undefined
   const body = error.response.data as Record<string, unknown> | undefined
   if (
     status === 422 &&
@@ -455,13 +457,27 @@ export class GroupRelayClient {
   }
 
   /** What a write to this group pays its hosting relay (proxied by a home relay). */
-  async getWritePolicy(groupIdHex: string): Promise<GroupWritePolicy> {
+  /** The host's terms for one write to the group. With `groupPubKeyHex`, the creator's price
+   * record is checked against the group's root key, so the host cannot name another price. */
+  async getWritePolicy(
+    groupIdHex: string,
+    groupPubKeyHex?: string,
+  ): Promise<GroupWritePolicy> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
     const response = await this.http.get<unknown>(
       `${this.transportUrl}/groups/${cleanGroupId}/write-policy`,
       { headers: this.routingHeaders() },
     )
-    return parseGroupWritePolicy(response.data, this.relayUrl)
+    const policy = parseGroupWritePolicy(
+      response.data,
+      this.relayUrl,
+      groupPubKeyHex === undefined
+        ? undefined
+        : { groupIdHex: cleanGroupId, groupPubKeyHex },
+    )
+    if (policy.priceRecord && policy.priceRecord.group_id !== cleanGroupId)
+      throw new Error('Group write price is for another group')
+    return policy
   }
 
   /** Set or change the group's write price on its host (proxied by a home relay). Resolves

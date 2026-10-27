@@ -375,6 +375,15 @@ export default defineComponent({
           wei => `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`,
           (key, params) => this.$t(key, params ?? {}),
         )
+      // A group's price rose above the one shown: names the new price its failure kept.
+      if (
+        this.failureReason === 'group-price-changed' &&
+        /^[1-9]\d*$/.test(this.failureDetail)
+      )
+        return this.$t('outgoing.reasonGroupPriceChanged', {
+          amount: activeChain.toDisplayAmount(BigInt(this.failureDetail)),
+          unit: activeChain.unit,
+        })
       const key = keys[this.failureReason]
       if (key === undefined) return ''
       // A payment below the floor names the floor its failure kept (`errorDetail`).

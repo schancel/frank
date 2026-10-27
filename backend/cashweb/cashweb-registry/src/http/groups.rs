@@ -2602,6 +2602,7 @@ mod tests {
         // No creator price yet: the host's minimum.
         assert_eq!(policy.price_wei, TEST_PRICE.to_string());
         assert_eq!(policy.price_version, 0);
+        assert_eq!(policy.price_record, None);
         assert_eq!(policy.min_price_wei, TEST_PRICE.to_string());
         assert_eq!(policy.payee, "0x000000000000000000000000000000000000dead");
 
@@ -2772,7 +2773,7 @@ mod tests {
         let (host, host_task) = spawn_group_router(host_store.clone()).await;
         let home_store = GroupStore::new_temporary();
         let (home, home_task) = spawn_group_router(home_store.clone()).await;
-        let (root_sk, _) = keypair(7);
+        let (root_sk, root_pub) = keypair(7);
         let record = |version: u64, price: u128, network: &str| {
             let digest = crate::group_write_payment::group_write_price_digest(
                 network,
@@ -2799,6 +2800,14 @@ mod tests {
                 .await
                 .map(|bytes| serde_json::from_slice(&bytes).unwrap())
                 .unwrap();
+            // The signed record comes with the price, so a member checks it against the group key.
+            assert_eq!(
+                body.price_record.as_ref().map(|r| r.version).unwrap_or(0),
+                body.price_version
+            );
+            if let Some(record) = &body.price_record {
+                record.verify(&id, "monad-testnet", &root_pub).unwrap();
+            }
             (body.price_wei, body.price_version)
         };
         let set = |body: serde_json::Value| {

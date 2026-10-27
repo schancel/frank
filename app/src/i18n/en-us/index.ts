@@ -949,6 +949,8 @@ export const rawEnUS = {
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonStampBelowFee:
       'Its payment is below the minimum the network allows. Nothing was paid.',
+    reasonGroupPriceChanged:
+      "The group's price changed to {amount} {unit} per message. Nothing was paid; Retry sends it at the new price.",
     reasonStampBelowFeeAmount:
       'Its payment is below the minimum of {amount} {unit}: ten times what the network charges to move it. Nothing was paid.',
     reasonFeeExceeded:
@@ -2591,6 +2593,14 @@ export const rawEnUS = {
     systemMembershipUpdate: 'Group "{group}": members changed',
     systemRemovalSent: 'Told them they were removed from the group "{group}"',
     systemRemovalReceived: 'You were removed from the group "{group}"',
+    writePricePreview: 'New price: {price} per message (now {current}).',
+    writePriceRaiseTitle: 'Raise the price?',
+    writePriceRaiseBody:
+      'Every member will pay {price} for each message, instead of {current}.',
+    writePriceNotSet:
+      'The relay refused the last price you set; members pay the price shown.',
+    writePriceRefusedAtCreation:
+      "The group was created, but its relay refused your price. Members pay the relay's price; you can set yours in Group info.",
     writePriceLabel: 'Price per message',
     writePriceUnknown: 'Not known yet',
     changeWritePriceLabel: 'New price per message ({unit})',

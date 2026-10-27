@@ -909,6 +909,35 @@ describe('group info and a removed member, in mounted UI', () => {
     await wrapper.get('[data-test="group-write-price-btn"]').trigger('click')
     await flushPromises()
     expect(change).toHaveBeenCalledWith(CONVERSATION, 5_000_000_000_000_000n)
+    // The typed price is read back in the unit; a tenfold raise or more is confirmed first.
+    change.mockClear()
+    await wrapper.get('[data-test="group-write-price-input"]').setValue('1')
+    expect(
+      wrapper.get('[data-test="group-write-price-preview"]').text(),
+    ).toContain('1 MONT')
+    await wrapper.get('[data-test="group-write-price-btn"]').trigger('click')
+    await flushPromises()
+    expect(change).not.toHaveBeenCalled()
+    const confirm = wrapper.get('[data-test="group-write-price-confirm"]')
+    expect(confirm.text()).toContain('1 MONT')
+    expect(confirm.text()).toContain('0.003 MONT')
+    await wrapper
+      .get('[data-test="group-write-price-confirm-btn"]')
+      .trigger('click')
+    await flushPromises()
+    expect(change).toHaveBeenCalledWith(
+      CONVERSATION,
+      1_000_000_000_000_000_000n,
+    )
+    // A price the relay refused is shown to the administrator.
+    conv.groupState!.writePriceRefusal = {
+      reason: 'below_minimum',
+      minPriceWei: '1000000000000',
+    }
+    await flushPromises()
+    expect(
+      wrapper.get('[data-test="group-info-price-refused"]').text(),
+    ).toContain('0.000001 MONT')
     wrapper.unmount()
 
     // A member who is not the administrator sees the price and no control.

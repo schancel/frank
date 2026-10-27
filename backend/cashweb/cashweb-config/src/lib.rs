@@ -399,7 +399,34 @@ pub struct GroupWritesConf {
     /// [`CashwebdConf::public_origin`]), so one payment cannot fund a write on another relay.
     pub min_price_wei: String,
     /// The relay's own `0x`-prefixed 20-byte address on `registry.network`: every write pays it.
+    #[serde(deserialize_with = "plain_payee_address")]
     pub payee: String,
+}
+
+/// The payee is a plain address string. The removed table forms (`{ address = … }`,
+/// `{ xpub = … }`) are refused with a message that says what to write instead.
+fn plain_payee_address<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    struct PayeeVisitor;
+    impl<'de> serde::de::Visitor<'de> for PayeeVisitor {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("the relay's own address as a plain string, payee = \"0x…\"")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
+            Ok(value.to_owned())
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, _map: A) -> Result<String, A::Error> {
+            Err(serde::de::Error::custom(
+                "registry.group_writes.payee is now a plain address string, the relay's own \
+                 address: write payee = \"0x…\" (the { address = … }, { xpub = … } and \"burn\" \
+                 forms were removed; a relay that funds nobody names \
+                 \"0x000000000000000000000000000000000000dEaD\")",
+            ))
+        }
+    }
+    deserializer.deserialize_any(PayeeVisitor)
 }
 
 impl GroupWritesConf {
@@ -2833,6 +2860,17 @@ continuity_file = "/var/lib/frank/continuity"
             r#"{ min_price_wei = "1", payee = { address = "0x000000000000000000000000000000000000dEaD" } }"#,
         ] {
             assert!(parse(old).is_err(), "{old}");
+        }
+        // The removed table forms say what to write instead.
+        for old in [
+            r#"{ min_price_wei = "1", payee = { address = "0x000000000000000000000000000000000000dEaD" } }"#,
+            r#"{ min_price_wei = "1", payee = { xpub = "xpub661MyMwAqRbc" } }"#,
+        ] {
+            let error = parse(old).unwrap_err().to_string();
+            assert!(
+                error.contains("payee is now a plain address string"),
+                "{error}"
+            );
         }
     }
 

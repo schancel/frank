@@ -526,6 +526,11 @@ export default defineComponent({
         })
         // Leaving the page must not redirect a newer draft when creation settles.
         if (!currentHome()) return
+        // The group exists, but its relay refused the creator's price: say so.
+        if (conv.groupState?.writePriceRefusal)
+          errorNotify(new Error('Group write price refused'), {
+            fallbackKey: 'groupChat.writePriceRefusedAtCreation',
+          })
         chatStore.setActiveConversation(conv.id)
         await openChat(router, conv.id, { replace: true })
       } catch (err) {

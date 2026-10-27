@@ -99,9 +99,13 @@ is no burn payee kind: a lab or Docker relay that should fund nobody names `0xâ€
 address (owner ruling: "just use 0xdead"), and that address is treated specially only in being
 exempt from the protocol payment floor, since nobody moves coins sent there. `GET
 /groups/:group_id/write-policy` reports `{network, host_origin, payee, price_wei,
-price_version, min_price_wei}`: `payee` is a lower-case `0x` address, `price_wei` the price of
-one write to that group now, `price_version` the creator's price record version (0 when the
-creator set none) and `min_price_wei` the floor. It answers for any group id, so a client
+price_version, min_price_wei, price_record}`: `network` is one of the protocol registry's ids,
+`payee` a lower-case `0x` address, `price_wei` the price of one write to that group now,
+`price_version` the creator's price record version (0 when the creator set none),
+`min_price_wei` the floor and `price_record` the creator's signed record itself (`null` when
+there is none). The client checks the record's signature against the group's public key, which
+the group id is derived from, and that `price_wei` is exactly the larger of the record's price
+and the floor, so a host can name no other price. It answers for any group id, so a client
 reads the floor before it creates a group. A home relay proxies it to the host like every
 other group route, and the client refuses a policy whose `host_origin` is not the relay it
 writes to.
@@ -137,12 +141,26 @@ the accept transaction reads `G_price` again and refuses, 402 `group_payment_inv
 commits before a price change is accepted at the old price; one that commits after it is
 refused before anything is stored or broadcast. The client treats that 402 as a definitive
 refusal: the coin is released once the chain shows the payment did not land, and the member
-sees the new price. Nothing is lost silently. A write planned but not yet submitted asks the
-host for the price again and pays the current one; the client has no cap on how far that may
-rise.
+sees the new price. Nothing is lost silently. This holds after an earlier attempt of the same
+write went unanswered, too: the host answers a write it accepted with its receipt before it
+looks at the price, and broadcasts a payment only after accepting its write, so `underpaid`
+for the same bytes means no attempt was accepted.
+
+A member never pays more than the price shown. The app records, with each write, the price the
+composer showed when it was sent. A write not yet submitted re-reads the host's price; if that
+is higher, the write is refused before anything is planned, claimed or changed (reason
+`group-price-changed`, naming the new price), the new price is shown, and the member's Retry
+sends it at that price. A restart does not change this: the shown price is stored with the
+write. A price the host reports with no shown price (a group whose price has not been read
+yet) is refused the same way.
 
 The app shows the price in the composer of every group conversation and in group info, reads
-it again when a group is opened, and lets an administrator change it from group info. The
+it again when a group is opened, and lets an administrator change it from group info, reading
+the typed price back in the network's unit and asking for confirmation of a raise to ten times
+the current price or more. A price the host refuses (also at creation) is shown to the
+administrator. A timeout (408) or rate limit (429) is not a refusal: the price stays pending
+and is retried. A pending price is sent beside each sync; reading messages never waits for it,
+only member invitations do. The
 creator chooses it in the New group form, which starts from the hosting relay's floor and
 refuses less. A new group's price record is signed at creation, kept with the group, and sent
 to the host after the group's first epoch and before any member is invited; a price an

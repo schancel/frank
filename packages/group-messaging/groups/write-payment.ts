@@ -19,6 +19,9 @@
  *
  * Until the bytes are first submitted, a change of the host's terms replaces the plan: the
  * claimed coin is given back and the write is planned again. After that the plan is final.
+ * A plan never pays more than the price the writer was shown (`maxPriceWei`): a higher price
+ * is refused before anything is planned, claimed or changed (`GroupWritePriceChangedError`),
+ * so the writer sees the new price and sends again at it; this holds after a restart too.
  *
  * A host answer that it checked the payment and stored nothing yet (`503 group_payment_*`: the
  * node does not show the payment can land yet, or cannot be read) leaves the write pending; it
@@ -27,7 +30,10 @@
  * write is retried with the same bytes; nothing is signed again, and the write is marked
  * uncertain. A definitive refusal (`402 group_payment_*`, `403`, `404`: nothing stored, nothing
  * broadcast) lets the claimed coin go, but only when no earlier attempt was uncertain and the
- * wallet reads the chain and finds no member pending or mined. When the chain shows the
+ * wallet reads the chain and finds no member pending or mined. After an uncertain attempt, a
+ * host's `402 underpaid` for the same bytes is definitive too: the host answers a write it
+ * accepted with its receipt before it looks at the price, and broadcasts a payment only after
+ * accepting its write, so that answer says no attempt was ever accepted. When the chain shows the
  * payment, the funds have moved: the wallet authorizes and tracks the set (`spent`) and the write
  * stays pending, retried with the same bytes, since a paid write is still owed. After an
  * uncertain attempt the coin is never released.
@@ -87,6 +93,17 @@ export class GroupWritePaymentUnavailableError extends Error {
   }
 }
 
+/** The host now prices the group above what the writer was shown. Nothing was planned, claimed
+ * or changed for that price; the writer is shown `priceWei` and may send again. */
+export class GroupWritePriceChangedError extends Error {
+  constructor(readonly priceWei: bigint, readonly shownPriceWei: bigint) {
+    super(
+      `The group's price changed to ${priceWei} wei (shown: ${shownPriceWei} wei)`,
+    )
+    this.name = 'GroupWritePriceChangedError'
+  }
+}
+
 /** The relay refused a write after an earlier attempt of it had no answer, and the chain does
  * not show its payment. The payment may still land, so the coin stays claimed and the write
  * is retried with the same bytes. */
@@ -120,6 +137,9 @@ export interface DeliverPaidGroupWriteParams<Receipt> {
   readonly stored: StoredGroupWritePayment | undefined
   /** The hosting relay's current policy; read only while no bytes were submitted. */
   readonly policy: () => Promise<GroupWritePolicy>
+  /** The most this write may pay: the price the writer was shown when sending it. Absent only
+   * for a writer with no one to show a price to (a headless tool). */
+  readonly maxPriceWei?: bigint
   /** Persist `next` on this write's message, durably, before returning. */
   readonly persist: (next: StoredGroupWritePayment) => Promise<void>
   readonly wallet: GroupWritePayer | undefined
@@ -274,8 +294,15 @@ export async function deliverPaidGroupWrite<Receipt>(
   }
   const digest = groupWriteSigningDigest(params.groupIdHex, params.envelope)
   if (!stored?.submitted) {
+    const policy = await params.policy()
+    // Never more than the writer saw: refused before any plan, claim or release.
+    if (
+      params.maxPriceWei !== undefined &&
+      policy.priceWei > params.maxPriceWei
+    )
+      throw new GroupWritePriceChangedError(policy.priceWei, params.maxPriceWei)
     const plan = groupWritePaymentPlan(
-      await params.policy(),
+      policy,
       params.groupIdHex,
       params.envelope,
     )
@@ -352,7 +379,14 @@ export async function deliverPaidGroupWrite<Receipt>(
     }
     // Already out and tracked: the write is owed, so it is retried as it is.
     if (stored.spent) throw new GroupWritePaidRefusalError(error)
-    if (stored.uncertain) {
+    // `underpaid` for these exact bytes: the host checked for an accepted receipt first and
+    // found none, so no attempt was accepted, and an unaccepted write's payment is never
+    // broadcast by the host. Definitive, like a refusal with no unknown attempt.
+    const neverAccepted =
+      error.status === 402 &&
+      error.code === 'group_payment_invalid' &&
+      error.reason === 'underpaid'
+    if (stored.uncertain && !neverAccepted) {
       // An attempt had no answer: the relay may have stored it then and broadcast the bytes,
       // or still may. Only the chain can tell; without it the write is retried as it is.
       if (!(await payer.observeTransactionSet(stored.operationId)))

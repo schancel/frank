@@ -944,6 +944,10 @@ export type OutgoingFailureReason =
   | 'funds-in-pending-send'
   /** The recipient address has no published directory entry on this relay. */
   | 'recipient-unregistered'
+  /** A group write refused before anything was planned, claimed or sent: the group's price rose
+   * above the one the writer was shown (`detail` keeps the new price, decimal wei). The user's
+   * Retry sends it at the new price, which the app shows. */
+  | 'group-price-changed'
   /** The chain's fee rose above the stamp the composer showed; nothing was paid. */
   | 'stamp-below-fee'
   /** Sending it would have cost more network fee than the user approved; nothing was paid or
@@ -994,6 +998,9 @@ export interface Message {
    * before it is signed and again before its bytes leave this device; every attempt of the
    * write carries the same bytes. */
   groupWritePayment?: StoredGroupWritePayment
+  /** The group's price per write the writer was shown when sending, decimal wei: the write never
+   * pays more. The user's Retry replaces it with the price shown then. */
+  groupWriteShownPriceWei?: string
   /** Persisted before sealing; reused even for free financial message retries. */
   sealedMessageId?: string
   /** Opaque retained application owner reference; never itself authorizes spending. */

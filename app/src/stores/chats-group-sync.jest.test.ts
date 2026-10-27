@@ -28,6 +28,7 @@ import type { AxiosInstance } from 'axios'
 import {
   GroupRelayClient,
   GroupWriteDeferredError,
+  GroupWritePriceRefusedError,
   GroupWriteRefusedError,
   type StoredGroupMessageWire,
 } from '@frank/cashweb/groups'
@@ -182,6 +183,7 @@ function createSharedMockGroupRelay() {
               network: 'monad-testnet',
               price_wei: record?.price_wei ?? RELAY_MIN_PRICE.toString(),
               price_version: record?.version ?? 0,
+              price_record: record ?? null,
               min_price_wei: RELAY_MIN_PRICE.toString(),
               host_origin: 'https://relay.frank.test',
               payee: GROUP_WRITE_BURN_ADDRESS.toLowerCase(),
@@ -447,7 +449,9 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       { type: 'text', text: 'Welcome to epoch 0!' },
     ])
 
-    // 5. Bob replies in the group and Alice syncs via syncAllJoinedGroups
+    // 5. Bob replies in the group and Alice syncs via syncAllJoinedGroups. Opening the group
+    // shows Bob its price (Chat.vue), which his write may pay.
+    await bobChats.refreshGroupWritePrice(bobGroup.id, relayClient)
     const bobReply = await bobChats.sendGroupMessage({
       conversationId: bobGroup.id,
       items: [{ type: 'text', text: 'Hi Alice, Bob here!' }],
@@ -595,6 +599,9 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       ],
       recipient,
     )
+    // The member opens the group, as Chat.vue does: the composer shows its price.
+    if (chats.conversations[group.id]?.groupState)
+      await chats.refreshGroupWritePrice(group.id, client)
     return { chats, group: chats.conversations[group.id] }
   }
 
@@ -1417,7 +1424,11 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
 
   it('an administrator changes the price: the signed record is kept until the host holds it, and only an administrator can sign one', async () => {
     const { chats, group, client } = await makeGroup()
-    expect(group.groupState.writePrice).toBeUndefined()
+    // No price chosen: the creator is shown the relay's minimum.
+    expect(group.groupState.writePrice).toMatchObject({
+      priceWei: RELAY_MIN_PRICE.toString(),
+      version: 0,
+    })
     const setPrice = client.setWritePrice.bind(client)
     const sending = jest
       .spyOn(client, 'setWritePrice')
@@ -1428,8 +1439,24 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     // Signed and kept: a sync sends the same record, not a new one.
     const pending = group.groupState.pendingWritePrice
     expect(pending).toMatchObject({ version: 1, price_wei: '7000' })
-    sending.mockImplementation(setPrice)
+    // A sync sends it beside reading messages: a stuck PUT holds up only member invitations.
+    let unstick!: () => void
+    sending.mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve, reject) => {
+          unstick = () => setPrice(...args).then(resolve, reject)
+        }),
+    )
+    const reading = jest.spyOn(client, 'fetchGroupMessages')
+    const delivering = jest.spyOn(chats, 'retryGroupMemberDeliveries')
     await chats.syncGroupConversation(group.id, { relayClient: client })
+    expect(reading).toHaveBeenCalled()
+    expect(delivering).not.toHaveBeenCalled()
+    expect(group.groupState.pendingWritePrice).toBe(pending)
+    unstick()
+    await chats.retryGroupWritePrice(group.id, client)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(delivering).toHaveBeenCalledWith(group.id)
     expect(sending).toHaveBeenLastCalledWith(
       group.groupState.groupIdHex,
       pending,
@@ -1465,6 +1492,75 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     // The member sees the price.
     await bobChats.refreshGroupWritePrice(bobGroup.id, client)
     expect(bobGroup.groupState.writePrice).toMatchObject({ priceWei: '9000' })
+  })
+
+  it('a member never pays more than the price shown: a raise refuses the write before anything is claimed, shows the new price, and Retry pays it', async () => {
+    const { chats, group, client } = await makeGroup()
+    // The member was shown the relay's minimum; the administrator then raises it 1000-fold.
+    expect(group.groupState.writePrice.priceWei).toBe('1000')
+    await chats.setGroupWritePrice(group.id, 1_000_000n, client)
+    group.groupState.writePrice = {
+      ...group.groupState.writePrice,
+      priceWei: '1000',
+      version: 0,
+    }
+    const sending = jest.spyOn(client, 'sendGroupMessage')
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'At the price I saw' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome).toEqual({ state: 'failed', reason: 'group-price-changed' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWriteShownPriceWei,
+    )!
+    expect(chats.messages[digest].delivery).toEqual({
+      failureReason: 'group-price-changed',
+      detail: '1000000',
+    })
+    // Nothing planned, claimed, signed or sent.
+    expect(chats.messages[digest].groupWritePayment).toBeUndefined()
+    expect(groupWritePayer.events).toEqual([])
+    expect(sending).not.toHaveBeenCalled()
+    // The new price is shown.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(group.groupState.writePrice.priceWei).toBe('1000000')
+    // An automatic retry still refuses it.
+    expect(
+      (await chats.retryGroupMessage(group.id, digest, client)).state,
+    ).toBe('failed')
+    expect(groupWritePayer.events).toEqual([])
+    // The user's Retry, with the new price shown, pays it.
+    expect(
+      (await chats.retryGroupMessage(group.id, digest, client, undefined, true))
+        .state,
+    ).toBe('sent')
+    expect(chats.messages[digest].groupWritePayment).toMatchObject({
+      amountWei: '1000000',
+    })
+  })
+
+  it("tells the creator when the relay refused the group's price at creation", async () => {
+    currentOwnAddress = ALICE
+    const client = createSharedMockGroupRelay()
+    jest
+      .spyOn(client, 'setWritePrice')
+      .mockRejectedValue(new GroupWritePriceRefusedError('refused', 403))
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', client)
+    const group = await chats.createGroupConversation({
+      groupName: 'Refused price',
+      memberAddresses: [BOB],
+      relayUrl: 'https://relay.frank.test',
+      relayClient: client,
+      creatorAddress: ALICE,
+      writePriceWei: 5000n,
+    })
+    expect(group.groupState.pendingWritePrice).toBeUndefined()
+    expect(group.groupState.writePriceRefusal).toEqual({ reason: 'refused' })
+    // What members pay is shown: the relay's minimum.
+    expect(group.groupState.writePrice).toMatchObject({ priceWei: '1000' })
   })
 
   it('a write refused as underpaid after a price change shows the new price', async () => {
@@ -1553,7 +1649,11 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       .spyOn(client, 'sendGroupMessage')
       .mockRejectedValueOnce(new Error('timeout of 15000ms exceeded'))
       .mockRejectedValue(
-        new GroupWriteRefusedError(402, 'group_payment_invalid', 'underpaid'),
+        new GroupWriteRefusedError(
+          402,
+          'group_payment_invalid',
+          'wrong_commitment',
+        ),
       )
     expect(
       await chats.sendGroupMessage({

@@ -10,7 +10,9 @@ import {
   rotateGroupEpochOnRelay,
   prepareGroupEpochRotation,
 } from './group-relay-client'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
+  bytesToHex,
   openGroupMessage,
   sealGroupMessage,
   verifyEpochFrame,
@@ -158,9 +160,21 @@ async function main() {
         error.minPriceWei === policy.minPriceWei,
     )
     await client.setWritePrice(id, price(1, policy.minPriceWei * 3n))
-    const priced = await reopened.getWritePolicy(id)
+    // Read with the group's key: the Rust relay's record checks out in TypeScript.
+    const priced = await reopened.getWritePolicy(
+      id,
+      created.identity.groupPubKeyHex,
+    )
     assert.equal(priced.priceWei, policy.minPriceWei * 3n)
     assert.equal(priced.priceVersion, 1)
+    assert.equal(priced.priceRecord?.version, 1)
+    // Read with another group's key, it is refused.
+    await assert.rejects(
+      reopened.getWritePolicy(
+        id,
+        bytesToHex(secp256k1.getPublicKey(new Uint8Array(32).fill(9), true)),
+      ),
+    )
     await assert.rejects(
       client.setWritePrice(id, price(1, policy.minPriceWei * 2n)),
       (error: unknown) =>

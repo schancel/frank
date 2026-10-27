@@ -96,6 +96,9 @@ pub struct GroupWritePolicyBody {
     pub price_version: u64,
     /// The least price a creator may set on this relay, decimal wei.
     pub min_price_wei: String,
+    /// The creator's signed price record `price_wei` comes from, so a member checks it against
+    /// the group's root key; `null` while there is none.
+    pub price_record: Option<GroupWritePrice>,
 }
 
 /// The relay's group-write policy and the node it checks and broadcasts payments through.
@@ -196,6 +199,7 @@ impl GroupWriteRuntime {
             price_wei: self.policy.price_wei(creator).to_string(),
             price_version: creator.map_or(0, |record| record.version),
             min_price_wei: self.policy.min_price_wei.to_string(),
+            price_record: creator.cloned(),
         }
     }
 

@@ -983,7 +983,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       observed: false,
       submitted: false,
     })
-    const watchNativeOperation = jest.fn(() => new Promise<void>(() => {}))
+    const watchNativeOperation = jest.fn(
+      // The next look at the chain never comes in this test.
+      () => new Promise<void>(() => undefined),
+    )
     mockCaptureWallet.mockResolvedValue({
       wallet: {
         family: 'evm',

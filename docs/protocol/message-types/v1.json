@@ -308,7 +308,7 @@
       "title": "Generic Plugin Message Item",
       "schema": "direct-message.cddl",
       "rule": "plugin-message-item",
-      "description": "Application item type identifier with the owning plugin's opaque bytes (up to 512 KiB)"
+      "description": "Application item type identifier with the owning plugin's opaque bytes (512 KiB unless the plugin declares up to 8 MiB)"
     },
     {
       "id": 4294901761,

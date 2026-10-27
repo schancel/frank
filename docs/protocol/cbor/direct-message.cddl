@@ -273,9 +273,11 @@ email-attachment = {
 ; Active type 27 / schema 1 / min-reader 1: generic plugin message item. The container for an
 ; application item that has no dedicated frame. Field 1 is opaque to this profile: the plugin
 ; registered for the identifier in field 0 owns its encoding (deterministic CBOR, protobuf, ...).
+; Field 1 holds at most what one direct message carries; a reader applies the plugin's own limit
+; on top: 524,288 bytes unless the plugin declares another (only `outbox-message` does).
 plugin-message-item = {
   0: plugin-item-type,                  ; application item type identifier, e.g. "dice"
-  1: bstr .size (0..524288),            ; the owning plugin's bytes, never interpreted here
+  1: bstr .size (0..8388608),           ; the owning plugin's bytes, never interpreted here
   * uint => frank-value,                ; forward-compatible extensible fields
 }
 

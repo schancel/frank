@@ -258,6 +258,12 @@ export interface MessageItemPlugin<
   type: TRaw extends ApplicationMessageItem ? string : TRaw['type']
   /** Set by the typed application bridge, retained when a registration is copied. */
   carrier?: TRaw extends ApplicationMessageItem ? 'application' : never
+  /** Most bytes `encode` may write when the item travels in the generic plugin item frame
+   * (type 27). Omitted: `MAX_PLUGIN_ITEM_PAYLOAD_BYTES` (512 KiB) from `@frank/codec`. A plugin
+   * whose item carries a copy of a whole message declares more, at most
+   * `MAX_PLUGIN_ITEM_DATA_BYTES`. A writer refuses an item over it; a reader keeps one as
+   * unsupported. */
+  maxDataBytes?: number
   /** The one place a raw, just-deserialized item gets turned into the trusted object the
    * full-bubble renderer and any bot game logic use -- reconciling (or overriding) any
    * self-reported field against real on-chain data via `context`. May be async (e.g. looking up an

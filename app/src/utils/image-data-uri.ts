@@ -28,11 +28,11 @@ export const DELIVERED_IMAGE_LIMITS: ImageLimits = {
 /**
  * What this app puts in one direct message: the UTF-8 bytes of the text plus the data URIs of
  * its pictures (they travel byte for byte), plus `SENT_ITEM_ALLOWANCE_BYTES` for each of those
- * items. The app sends sealed, and a sealed message's note to self carries all its item frames in
- * one plugin item of at most 524,288 bytes (`MAX_PLUGIN_ITEM_PAYLOAD_BYTES` in `@frank/codec`),
- * far under a direct message's own 8 MiB of ciphertext; 500 KiB leaves the rest for a reply
- * reference and the framing. The wallet refuses a sealed send whose note would not fit before it
- * pays (`requireSelfCopyFits`); this bound keeps the composer from offering one.
+ * items. The bound was set when a sealed message's note to self was capped at 512 KiB; the note
+ * now holds what a direct message carries (8 MiB of ciphertext), so 500 KiB is the composer's own
+ * choice, well under what the wallet sends. Raising it also needs per-item bounds: the text is one
+ * text item (at most 256 KiB) and each picture one image item (at most 512 KiB). The wallet
+ * refuses a sealed send whose note to self would not fit before it pays (`requireSelfCopyFits`).
  */
 export const MAX_SENT_MESSAGE_BYTES = 500 * 1024
 /** Framing counted for each text or image item (measured: 44 bytes for an image, 25 for text). */

@@ -1,3 +1,4 @@
+import { MAX_PLUGIN_ITEM_DATA_BYTES } from '@frank/codec'
 import type { OutboxMessageItem } from '@frank/cashweb/types/messages'
 
 import {
@@ -14,6 +15,9 @@ export function initOutboxMessagePlugin(
   requirePluginCapabilities('outbox-message', capabilities)
   registry.register<OutboxMessageItem>({
     type: 'outbox-message',
+    // A note to self carries a copy of a whole sent message, so it holds what a direct message
+    // carries, not the 512 KiB of other plugin items.
+    maxDataBytes: MAX_PLUGIN_ITEM_DATA_BYTES,
     hydrate: raw => raw,
     previewText: item => item.text ?? 'Outbox message',
     encode: outboxMessageCodec.encode,

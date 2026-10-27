@@ -8,7 +8,6 @@ import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/pl
  */
 import {
   MAX_MESSAGE_ITEMS_PER_ARRAY,
-  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   decodeCanonical,
   encodeCanonical,
   type Encodable,
@@ -16,6 +15,7 @@ import {
 import type { MessageItem } from '@frank/cashweb/types/messages'
 
 import { createDefaultMessageItemRegistry } from './default-registry'
+import { MAX_OUTBOX_ITEM_FRAME_BYTES } from '../journal/journal-codec'
 import {
   MessageItemDecodeError,
   MessageItemEncodeError,
@@ -785,9 +785,9 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ['itemFrames: an empty frame', [8], [new Uint8Array(0)]],
       ['itemFrames: a frame as hex text', [8], ['a1006568656c6c6f']],
       [
-        `itemFrames: a frame over ${MAX_PLUGIN_ITEM_PAYLOAD_BYTES} bytes`,
+        `itemFrames: a frame over ${MAX_OUTBOX_ITEM_FRAME_BYTES} bytes`,
         [8],
-        [new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1)],
+        [new Uint8Array(MAX_OUTBOX_ITEM_FRAME_BYTES + 1)],
       ],
       ...each('text', [9], ['', 'x'.repeat(16_385)]),
     ],

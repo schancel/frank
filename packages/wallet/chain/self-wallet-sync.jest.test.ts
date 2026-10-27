@@ -34,7 +34,15 @@ import {
 } from 'ethers'
 
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
-import { outboxMessageCodec } from '../journal/journal-codec'
+import { MAX_JOURNAL_SUBJECT_BYTES, outboxMessageCodec } from '../journal/journal-codec'
+import {
+  joinConsecutiveTextItems,
+  textItemsOf,
+} from '../message-item-plugins/text/long-text'
+import {
+  DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES,
+  MAX_SEALED_MESSAGE_CONTENT_BYTES,
+} from './direct-message-limits'
 import * as wire from '../message-item-plugins/wire'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { isDirectMessageNotAttempted } from './active-chain'
@@ -674,6 +682,93 @@ describe("a wallet's sync note to itself", () => {
             payloadDigest: sent.payloadDigest,
             items,
           }),
+        ])
+      },
+    )
+
+    it('a paid sealed text of about 1 MB, sent as the composer splits it, arrives byte for byte as one text on the recipient and on the other device', async () => {
+      routeByRecipient = true
+      // Mixed widths, so pieces end next to multibyte characters; about 1 MB of UTF-8.
+      const unit = 'Line of text é € \u{1F600} '.repeat(3) + '\n'
+      const text = unit.repeat(Math.ceil(1_000_000 / Buffer.byteLength(unit)))
+      expect(Buffer.byteLength(text)).toBeGreaterThan(1_000_000)
+      const items = textItemsOf(text)
+      expect(items.length).toBe(4)
+      const sent = await one.chain.directMessages.send({
+        wallet: one.alice,
+        recipient: one.bob.identity.address,
+        items,
+        stampValue: STAMP,
+        sealedSender: true,
+      })
+      expect(bobMailbox).toHaveLength(1)
+      const shownAsOne = (got: readonly MessageItem[]) => {
+        const shown = joinConsecutiveTextItems(got)
+        expect(shown).toHaveLength(1)
+        const only = shown[0]
+        // Compared as bytes, not as a 1 MB diff.
+        expect(only.type === 'text' && Buffer.from(only.text).equals(Buffer.from(text))).toBe(true)
+      }
+      // The recipient reads the very items, and shows them as one text.
+      const received = await read(one, one.bob)
+      const inbound = received.messages.find(message => message.payloadDigest === sent.payloadDigest)
+      expect(inbound?.items).toEqual(items)
+      shownAsOne(inbound!.items)
+      // The other device reads the note to self and shows the message as sent, one text.
+      routeByRecipient = false
+      const other = await otherDevice()
+      const { messages, held } = await read(other, other.alice)
+      expect(held).toEqual([])
+      const outbound = messages.find(message => message.payloadDigest === sent.payloadDigest)
+      expect(outbound).toEqual(expect.objectContaining({ outbound: true }))
+      expect(outbound?.items).toEqual(items)
+      shownAsOne(outbound!.items)
+    })
+
+    it.each([
+      ['free', 0n],
+      ['paid', STAMP],
+    ] as const)(
+      'sends a %s sealed message as large as the composer allows, with a reply, a subject and a wakeup card, and shows it on the other device',
+      async (_kind, stampValue) => {
+        routeByRecipient = true
+        // Counted as the composer counts it: each item's content plus an allowance per item. The
+        // reply, the subject and the wakeup card are not counted: the fields allowance holds them.
+        const pieces = 32
+        const room = MAX_SEALED_MESSAGE_CONTENT_BYTES - pieces * DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES
+        const text = 'z'.repeat(room)
+        const textItems = textItemsOf(text)
+        expect(textItems).toHaveLength(pieces)
+        const items: MessageItem[] = [
+          { type: 'reply', payloadDigest: 'ab'.repeat(32) },
+          ...textItems,
+          {
+            type: 'contact-card',
+            uid: 'frank-wakeup-capability',
+            fullName: 'Wakeup Capability',
+            frankAddress: one.alice.identity.displayAddress,
+            wakeupTokenHex: 'cd'.repeat(32),
+          },
+        ]
+        const sent = await one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items,
+          stampValue,
+          sealedSender: true,
+          // The widest subject a note to self keeps.
+          conversationName: 'S'.repeat(MAX_JOURNAL_SUBJECT_BYTES),
+        })
+        expect(bobMailbox).toHaveLength(1)
+        routeByRecipient = false
+        const other = await otherDevice()
+        const { messages, held } = await read(other, other.alice)
+        expect(held).toEqual([])
+        const outbound = messages.find(message => message.payloadDigest === sent.payloadDigest)
+        expect(outbound?.outbound).toBe(true)
+        expect(outbound?.items.length).toBe(items.length)
+        expect(joinConsecutiveTextItems(outbound!.items).filter(item => item.type === 'text')).toEqual([
+          { type: 'text', text },
         ])
       },
     )

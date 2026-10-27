@@ -184,3 +184,27 @@ describe('ChatMessage Retry and Discard', () => {
     ])
   })
 })
+
+describe('ChatMessage shows a long text sent as several text items', () => {
+  it('as one continuous text, byte for byte, with the pictures after it', async () => {
+    const { wrapper } = mountFailed()
+    const pieces = ['first piece é', '\u{1F600} second piece ', 'third']
+    await wrapper.setProps({
+      message: {
+        ...(wrapper.props('message') as object),
+        status: 'confirmed',
+        items: [
+          { type: 'reply', payloadDigest: 'ab'.repeat(32) },
+          ...pieces.map(text => ({ type: 'text', text })),
+          { type: 'image', image: 'data:image/png;base64,AAAA' },
+        ],
+      } as never,
+    })
+    const texts = wrapper.findAllComponents({ name: 'ChatMessageText' })
+    expect(texts).toHaveLength(1)
+    expect(texts[0].props('text')).toBe(pieces.join(''))
+    expect(
+      wrapper.findAllComponents({ name: 'ChatMessageReply' }),
+    ).toHaveLength(1)
+  })
+})

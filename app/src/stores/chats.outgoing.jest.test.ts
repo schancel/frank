@@ -1706,6 +1706,55 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect([...(await durable()).keys()]).toEqual(['cd'.repeat(32)])
     })
 
+    it('a message too large to encode, refused before anything was paid, says so, survives a reload, and its Retry is refused the same way without sending', async () => {
+      const {
+        MessageItemEncodeError,
+      } = require('@frank/cashweb/message-items/registry')
+      const {
+        directMessageNotAttempted,
+      } = require('@frank/wallet/chain/active-chain')
+      // As the wallet refuses a text item over 256 KiB: nothing was paid, signed or handed out.
+      const refused = Object.defineProperty(
+        new MessageItemEncodeError(
+          'text',
+          'resource (stage 7A) at root/payload: text string longer than 262144',
+        ),
+        directMessageNotAttempted,
+        { value: true },
+      )
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(refused)
+      const chats = useChatStore()
+      const outcome = await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: TEXT,
+        stampValue: 5n,
+      })
+      expect(outcome).toEqual({ state: 'failed', reason: 'too-large' })
+      // Not tried again by itself.
+      expect(send).toHaveBeenCalledTimes(1)
+      const restored = await reload()
+      const [failed] = only(restored)
+      expect(failed).toEqual(
+        expect.objectContaining({
+          status: 'error',
+          delivery: expect.objectContaining({ failureReason: 'too-large' }),
+        }),
+      )
+      expect(failed.delivery?.attemptDigest).toBeUndefined()
+      expect(
+        await restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: failed.payloadDigest,
+        }),
+      ).toEqual({ state: 'failed', reason: 'too-large' })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(restored)[0].status).toBe('error')
+    })
+
     it('Discard removes it durably; it does not come back after a reload', async () => {
       jest
         .spyOn(activeChain.directMessages, 'send')

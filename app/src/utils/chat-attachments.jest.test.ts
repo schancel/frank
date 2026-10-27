@@ -4,6 +4,7 @@ import {
   composeChatItems,
   fitsOneMessage,
   inlinePositions,
+  messageTooLargeText,
   picturePreview,
   picturePreviewText,
   prepareChatImage,
@@ -193,5 +194,77 @@ describe('the preview of a message with pictures', () => {
     expect(
       picturePreview([{ type: 'text', text: '![a](attachment:1)' }]),
     ).toBeUndefined()
+  })
+})
+
+describe('a text longer than one text item holds', () => {
+  const byteLength = (text: string) => new TextEncoder().encode(text).length
+
+  it('is sent as consecutive text items that join to the text byte for byte, before the pictures', () => {
+    const a = attachment('7', png(2, 2))
+    const text = '\u{1F600} é ![x](attachment:7) '.repeat(40_000)
+    const items = composeChatItems(text, [a], 'digest')
+    expect(items[0]).toEqual({ type: 'reply', payloadDigest: 'digest' })
+    expect(items[items.length - 1]).toEqual({ type: 'image', image: a.dataUrl })
+    const texts = items.flatMap(item =>
+      item.type === 'text' ? [item.text] : [],
+    )
+    expect(texts.length).toBeGreaterThan(1)
+    for (const piece of texts)
+      expect(byteLength(piece)).toBeLessThanOrEqual(262_144)
+    expect(texts.join('')).toBe(text.replaceAll('attachment:7', 'attachment:1'))
+  })
+
+  it('counts an allowance for each text item it travels as', () => {
+    const text = 'x'.repeat(262_144 * 2 + 1)
+    expect(sentMessageBytes(text, [])).toBe(
+      text.length + 3 * SENT_ITEM_ALLOWANCE_BYTES,
+    )
+  })
+
+  it('fits up to the bound of one sealed message, and one byte more is refused', () => {
+    // 32 text items at most for this many bytes.
+    const room = MAX_SENT_MESSAGE_BYTES - 32 * SENT_ITEM_ALLOWANCE_BYTES
+    expect(fitsOneMessage('x'.repeat(room), [])).toBe(true)
+    expect(fitsOneMessage('x'.repeat(room + 1), [])).toBe(false)
+    // The bound is what a direct message carries less its fields, far above the old 500 KiB.
+    expect(MAX_SENT_MESSAGE_BYTES).toBeGreaterThan(8_000_000)
+    expect(MAX_SENT_MESSAGE_BYTES).toBeLessThan(8 * 1024 * 1024)
+  })
+
+  it('is refused with the limit and its size named', () => {
+    const t = jest.fn(
+      (key: string, params?: Record<string, unknown>) =>
+        `${key} ${params?.limit} ${params?.size}`,
+    )
+    expect(messageTooLargeText('x'.repeat(9 * 1024 * 1024), [], t)).toBe(
+      'chatInput.messageTooLarge 8.0 MB 9.0 MB',
+    )
+  })
+
+  it('shows a picture inline whose reference is cut between two text items', () => {
+    const items = [
+      { type: 'text' as const, text: 'see ![a](attach' },
+      { type: 'text' as const, text: 'ment:1) here' },
+      { type: 'image' as const, image: png(2, 2) },
+    ]
+    expect([...inlinePositions(items, shownAttachments(items))]).toEqual([1])
+    expect(picturePreview(items)).toEqual({ photos: 1, text: 'see here' })
+  })
+})
+
+describe('the number of items of one message', () => {
+  it('holds as many pictures as a message has items for, besides its text, a reply and a wakeup card', () => {
+    const pictures = (n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        attachment(String(i), 'A'.repeat(100)),
+      )
+    // 256 items at most (MAX_MESSAGE_ITEMS_TOTAL): one text item, a reply, a wakeup card.
+    expect(fitsOneMessage('hi', pictures(253))).toBe(true)
+    expect(fitsOneMessage('hi', pictures(254))).toBe(false)
+    expect(fitsOneMessage('', pictures(254))).toBe(true)
+    // A long text's pieces count too.
+    expect(fitsOneMessage('x'.repeat(262_145), pictures(252))).toBe(true)
+    expect(fitsOneMessage('x'.repeat(262_145), pictures(253))).toBe(false)
   })
 })

@@ -25,6 +25,11 @@ import {
   MonadMailboxAuthError,
 } from '@frank/cashweb/relay/mailbox-client'
 import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
+import { MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
+import { FrankCodecError } from '@frank/codec'
+import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
+import { SealedSelfCopyTooLargeError } from '@frank/wallet/chain/canonical-dm'
+import { unretryableFailure } from '../utils/outgoing-failure'
 import {
   classifySendFailure,
   errorDetail,
@@ -188,4 +193,55 @@ it('keeps the tied-up amount as the failure detail, so the bubble can say it', (
   expect(
     errorDetail(new InsufficientStampFundsError('stamp', { cause: tiedUp })),
   ).toBe('50000000000000000')
+})
+
+describe('a send refused before anything was paid because it can never be encoded', () => {
+  /** As the wallet labels a refusal that did nothing (`isDirectMessageNotAttempted`). */
+  const refusedBeforeSending = <E extends Error>(error: E): E =>
+    Object.defineProperty(error, directMessageNotAttempted, { value: true })
+
+  it.each([
+    [
+      'a text item over 256 KiB',
+      new MessageItemEncodeError(
+        'text',
+        'resource (stage 7A) at root/payload: text string longer than 262144',
+      ),
+    ],
+    [
+      'a message over what a direct message carries',
+      new FrankCodecError('resource', '7A', 'ciphertext too large'),
+    ],
+    [
+      'a sealed message whose note to self would not fit',
+      new SealedSelfCopyTooLargeError('envelope too large'),
+    ],
+  ])('is too large: %s', (_name, error) => {
+    expect(classifySendFailure(refusedBeforeSending(error), own)).toEqual({
+      reason: 'too-large',
+    })
+    expect(unretryableFailure('too-large')).toBe(true)
+  })
+
+  it('is unencodable when a plugin refuses an item for another reason', () => {
+    expect(
+      classifySendFailure(
+        refusedBeforeSending(
+          new MessageItemEncodeError('dice', 'roll out of range'),
+        ),
+        own,
+      ),
+    ).toEqual({ reason: 'unencodable' })
+    expect(unretryableFailure('unencodable')).toBe(true)
+  })
+
+  it('is an ordinary failure, keeping its attempt, when the wallet does not say nothing was done', () => {
+    expect(
+      classifySendFailure(
+        new MessageItemEncodeError('text', 'resource (stage 7A)'),
+        own,
+      ),
+    ).toEqual({ reason: 'error', keepDigest: own })
+    expect(unretryableFailure('error')).toBe(false)
+  })
 })

@@ -37,7 +37,8 @@ function translator(messages: unknown) {
     return typeof value === 'string'
       ? key === 'outgoing.blockedBy' ||
         key === 'outgoing.reasonStampBelowFeeAmount' ||
-        key === 'outgoing.reasonFundsInPendingSend'
+        key === 'outgoing.reasonFundsInPendingSend' ||
+        key === 'outgoing.reasonTooLarge'
         ? Object.entries(named).reduce(
             (text, [name, part]) => text.split(`{${name}}`).join(part),
             value,
@@ -696,5 +697,50 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(unknown.get('[data-testid="outgoing-failure-details"]').text()).toBe(
       `Failed to send — ${enUS.outgoing.reasonBlocked}`,
     )
+  })
+})
+
+describe('a message refused before anything was paid because it can never be sent as it is', () => {
+  it.each([
+    [enUS, 'It is larger than one message can carry (8.0 MB).'],
+    [frFR, 'Il dépasse ce qu’un message peut contenir (8.0 MB).'],
+  ])(
+    'says it is too large, naming the limit, and offers Discard but no Retry',
+    (messages, reason) => {
+      const failed = messages.chatMessage.failedToSend
+      const suffix = mountSuffix(
+        { status: 'error', outbound: true, failureReason: 'too-large' },
+        messages,
+      )
+      const details = suffix
+        .get('[data-testid="outgoing-failure-details"]')
+        .text()
+      expect(details.startsWith(`${failed} — ${reason}`)).toBe(true)
+      expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
+      expect(suffix.find('[data-testid="outgoing-discard"]').exists()).toBe(
+        true,
+      )
+    },
+  )
+
+  it('says an item cannot be sent, with no Retry', () => {
+    const suffix = mountSuffix({
+      status: 'error',
+      outbound: true,
+      failureReason: 'unencodable',
+    })
+    expect(suffix.get('[data-testid="outgoing-failure-details"]').text()).toBe(
+      `Failed to send — ${enUS.outgoing.reasonUnencodable}`,
+    )
+    expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
+  })
+
+  it('still offers Retry for a failure a Retry can cure', () => {
+    const suffix = mountSuffix({
+      status: 'error',
+      outbound: true,
+      failureReason: 'unreachable',
+    })
+    expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
   })
 })

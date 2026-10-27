@@ -168,6 +168,22 @@ display and the wallet's fee summary.
   self (envelope 8,388,634 bytes, limit 8,388,696) reached alice's mailbox and read back as the
   sent message, one byte more was refused before anything was sent; all funds went back to the
   faucet.
+- **Long text in the app composer** (branch `fix/composer-long-text`, on main `b8a0fe8db`): a
+  text longer than one text item holds (256 KiB) is sent as consecutive text items, cut on UTF-8
+  boundaries, and every reader (bubble, chat list, notification, copy, forward, search, email
+  thread, mail gateway) shows them as one text. The composer holds a message to what a sealed
+  message carries (`MAX_SEALED_MESSAGE_CONTENT_BYTES`, 8 MiB of ciphertext less 16 KiB for the
+  message's and its note's fields: 8,372,224 bytes) and refuses a larger one before Send, naming
+  the limit. A send the wallet refuses before paying because it cannot be encoded says so in the
+  bubble (too large, or an item that cannot be sent) and offers Discard, not Retry. In Chrome
+  against this lab (dev server on :8094, two fresh accounts, Alice funded 20 MONR): sealed paid
+  DMs of 1,000,692 bytes (4 text items), 4,000,712 bytes (16) and 8,360,000 bytes (32) reached
+  Bob with the same SHA-256 as sent, each shown as one bubble with one text; a 9 MiB text was
+  refused before Send with "one message holds at most 8.0 MB, and this one is 9.0 MB" and
+  nothing was sent. Both accounts were swept to the faucet (app and chain balances 0). The
+  sender's other device is covered by the wallet test (self-wallet-sync.jest.test.ts: a 1 MB
+  split text and a message at exactly the composer bound read back on the other device), not in
+  the browser.
 
 ## Shared across replicas, and replica-local
 

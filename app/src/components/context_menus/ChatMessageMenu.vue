@@ -39,7 +39,7 @@
         }}</q-item-section>
       </q-item>
       <q-item
-        v-if="isError"
+        v-if="canResend"
         clickable
         v-close-popup
         @click="$emit('resendClick')"
@@ -82,7 +82,9 @@
 import { defineComponent, type PropType } from 'vue'
 import { copyToClipboard } from 'quasar'
 import type { Message } from '@frank/cashweb/types/messages'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 import { infoNotify } from 'src/utils/notifications'
+import { unretryableFailure } from 'src/utils/outgoing-failure'
 
 export default defineComponent({
   name: 'ChatMessageMenu',
@@ -146,6 +148,13 @@ export default defineComponent({
     isError(): boolean {
       return this.message.status === 'error' && Boolean(this.message.outbound)
     },
+    /** A failed message the same send would refuse again offers no Resend. */
+    canResend(): boolean {
+      return (
+        this.isError &&
+        !unretryableFailure(this.message.delivery?.failureReason)
+      )
+    },
     canDiscard(): boolean {
       return (
         Boolean(this.message.outbound) &&
@@ -159,7 +168,10 @@ export default defineComponent({
     copyMessage() {
       let text = ''
       if (Array.isArray(this.message.items)) {
-        const textItem = this.message.items.find(el => el.type === 'text')
+        // A long text travels as consecutive text items: it is copied whole.
+        const textItem = joinConsecutiveTextItems(this.message.items).find(
+          el => el.type === 'text',
+        )
         if (
           textItem &&
           'text' in textItem &&

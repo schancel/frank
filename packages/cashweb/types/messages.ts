@@ -948,6 +948,13 @@ export type OutgoingFailureReason =
    * itself (`detail` names its payload digest). Nothing was paid for this one; retrying the
    * earlier message (its same bytes) is what can free them. */
   | 'blocked'
+  /** Refused before anything was paid or handed out: the message is larger than one (sealed)
+   * direct message carries. Sending the same message again fails the same way, so it is not
+   * offered a Retry. */
+  | 'too-large'
+  /** Refused before anything was paid or handed out: one of its items cannot be encoded (a
+   * plugin refused it). Sending it again fails the same way, so it is not offered a Retry. */
+  | 'unencodable'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

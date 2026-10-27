@@ -25,6 +25,7 @@ import {
   pluginCapabilitiesNotYetAvailable,
 } from '@frank/cashweb/message-items/registry'
 import * as wire from '../message-item-plugins/wire'
+import { MAX_IMAGE_BYTES } from '../message-item-plugins/image/codec'
 import {
   DEDICATED_SAMPLES,
   GENERIC_SAMPLES,
@@ -231,10 +232,11 @@ describe('message items across the canonical path, two wallets', () => {
     expect(message.items).toEqual(items)
   })
 
-  // The app's composer holds one message to 512,000 bytes (`MAX_SENT_MESSAGE_BYTES`,
-  // app/src/utils/image-data-uri.ts): the text's UTF-8 bytes plus each picture's data URI, plus
-  // 64 bytes for each of those items. A reply reference comes on top. Above about 523,000 bytes
-  // the message is refused only at sealing, after funding, so the composer's bound has to hold.
+  // The app's composer once held one message to 512,000 bytes: the text's UTF-8 bytes plus each
+  // picture's data URI, plus 64 bytes for each of those items. A reply reference comes on top.
+  // It now holds a message to what a sealed message carries (`MAX_SEALED_MESSAGE_CONTENT_BYTES`,
+  // packages/wallet/chain/direct-message-limits.ts, sent whole in self-wallet-sync.jest.test.ts);
+  // these shapes still arrive whole.
   it('text and three pictures at the composer bound, with a reply, arrive whole', async () => {
     const text =
       'one ![a](attachment:1) two ![b](attachment:2) three ![c](attachment:3) ' +
@@ -259,6 +261,15 @@ describe('message items across the canonical path, two wallets', () => {
   it('one picture as large as the composer allows, alone, arrives whole', async () => {
     const items: MessageItem[] = [
       { type: 'image', image: 'A'.repeat(512_000 - 64) },
+    ]
+    const { message } = await roundTrip(items)
+    expect(message.items).toEqual(items)
+  })
+
+  it('one picture as large as an image item holds (the composer per-picture limit) arrives whole', async () => {
+    const items: MessageItem[] = [
+      // The app's SENT_IMAGE_LIMITS: the image plugin's limit less one item allowance.
+      { type: 'image', image: 'A'.repeat(MAX_IMAGE_BYTES - 64) },
     ]
     const { message } = await roundTrip(items)
     expect(message.items).toEqual(items)

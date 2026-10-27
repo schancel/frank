@@ -15,6 +15,13 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/mailbox-client'
 import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
+import {
+  MessageItemEncodeError,
+  MessageItemUnsupportedError,
+} from '@frank/cashweb/message-items/registry'
+import { FrankCodecError } from '@frank/codec'
+import { isDirectMessageNotAttempted } from '@frank/wallet/chain/active-chain'
+import { SealedSelfCopyTooLargeError } from '@frank/wallet/chain/canonical-dm'
 import { describeWalletFailure } from '@frank/wallet/wallet-failure'
 import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
 import type {
@@ -244,6 +251,28 @@ export function isInsufficientFundsError(error: unknown): boolean {
   return describeWalletFailure(error).kind === 'insufficient-funds'
 }
 
+/** Why a send the wallet refused before anything was paid or handed out can never succeed as
+ * it is: `too-large` when the message (or its note to self) is more than a direct message
+ * carries, `unencodable` when an item cannot be encoded. Undefined for anything else. */
+export function unencodableReason(
+  error: unknown,
+): 'too-large' | 'unencodable' | undefined {
+  if (!isDirectMessageNotAttempted(error)) return undefined
+  if (
+    error instanceof SealedSelfCopyTooLargeError ||
+    (error instanceof FrankCodecError && error.category === 'resource') ||
+    (error instanceof MessageItemEncodeError &&
+      error.detail.startsWith('resource'))
+  )
+    return 'too-large'
+  if (
+    error instanceof MessageItemEncodeError ||
+    error instanceof MessageItemUnsupportedError
+  )
+    return 'unencodable'
+  return undefined
+}
+
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 export function classifySendFailure(
@@ -277,6 +306,10 @@ export function classifySendFailure(
       return { reason: 'stamp-below-fee' }
     if (error instanceof NativeFeeExceededError)
       return { reason: 'fee-exceeded' }
+    // Refused before anything was paid or handed out, and the same message is refused again:
+    // larger than a message carries, or an item no plugin can encode.
+    const unencodable = unencodableReason(error)
+    if (unencodable) return { reason: unencodable }
   } catch {
     // Hostile unknown values have no presentation classification authority.
   }

@@ -382,7 +382,9 @@ function errorText(error: unknown): string {
  *    another process paying from the same account (the faucet is shared by every check on this
  *    solonet) read the same pending nonce. Solonet says "An existing transaction had higher
  *    priority" (-32000); other nodes "nonce too low" or "replacement transaction underpriced".
- *  - `refused`: turned down for now and not held ("A newer transaction had higher priority").
+ *  - `refused`: turned down for now and not held ("A newer transaction had higher priority";
+ *    "Signer had insufficient balance", which Monad says until money received is about four
+ *    blocks old: docs/protocol/chains/monad-reserve-balance.md).
  *  - `maybe-held`: the node was busy or the answer was lost; it may hold the transaction anyway.
  *  - undefined: anything else, which is not a nonce race.
  */
@@ -391,7 +393,7 @@ export function rejection(error: unknown): 'taken' | 'refused' | 'maybe-held' | 
   const text = errorText(error)
   if (/existing transaction had higher priority|nonce too low|nonce has already been used|replacement transaction underpriced/i.test(text))
     return 'taken'
-  if (/newer transaction had higher priority/i.test(text)) return 'refused'
+  if (/newer transaction had higher priority|signer had insufficient balance/i.test(text)) return 'refused'
   if (isError(error, 'TIMEOUT') || isError(error, 'NETWORK_ERROR') || /overloaded|try again|timed? ?out|busy|ECONNRESET|socket hang up/i.test(text))
     return 'maybe-held'
   return undefined
@@ -418,7 +420,15 @@ export async function payAtFreshNonce(
   let taken = -1
   for (let attempt = 1; ; attempt++) {
     const nonce = Math.max(await provider.getTransactionCount(signer.address, 'pending'), taken + 1)
-    const raw = await signer.signTransaction(await signer.populateTransaction({ ...request, nonce }))
+    const populated = await signer.populateTransaction({ ...request, nonce })
+    // Other bytes on each attempt: the node keeps refusing bytes it once refused, even once they
+    // would be valid. One wei more of priority fee changes them and not what the payment costs.
+    if (populated.maxPriorityFeePerGas != null && populated.maxFeePerGas != null) {
+      const tip = BigInt(populated.maxPriorityFeePerGas) + BigInt(attempt - 1)
+      const cap = BigInt(populated.maxFeePerGas)
+      populated.maxPriorityFeePerGas = tip > cap ? cap : tip
+    }
+    const raw = await signer.signTransaction(populated)
     const hash = Transaction.from(raw).hash as string
     let why: string
     try {

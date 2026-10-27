@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     }
     for (const handle of handles) await handle.stop()
     if (unswept === 0) rmSync(KEY_FILE, { force: true })
-    else console.error(`${unswept} keys not swept; they are in ${KEY_FILE}`)
+    else failures.push(`${unswept} keys not swept; they are in ${KEY_FILE}`)
   }
   if (failures.length) throw new Error(`concurrent faucet funding failed:\n  ${failures.join('\n  ')}`)
   console.log(`PASS: ${FUNDERS} funders at once, ${ROUNDS} rounds, every payment landed once; all swept back`)

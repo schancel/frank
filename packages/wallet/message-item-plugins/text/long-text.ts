@@ -86,6 +86,28 @@ export function textItemsOf(text: string): TextItem[] {
 }
 
 /**
+ * `items` with each text item longer than one text item holds replaced, in place, by the
+ * consecutive text items that carry it (`textItemsOf`); every other item, and every text that
+ * fits, is kept as it is. A reader shows the result as `items` (`joinConsecutiveTextItems`).
+ * Returns the same array when nothing needs splitting. Deterministic: the same items always give
+ * the same result, so a message sent again under its ID has the same bytes.
+ */
+export function splitLongTextItems(items: readonly MessageItem[]): MessageItem[] {
+  if (
+    !items.some(
+      item => item.type === 'text' && item.text.length * 3 > MAX_TEXT_STRING_BYTES &&
+        utf8ByteLength(item.text) > MAX_TEXT_STRING_BYTES,
+    )
+  )
+    return items as MessageItem[]
+  return items.flatMap(item =>
+    item.type === 'text' && utf8ByteLength(item.text) > MAX_TEXT_STRING_BYTES
+      ? textItemsOf(item.text)
+      : [item],
+  )
+}
+
+/**
  * A message's items as a reader shows them: each run of consecutive text items is one text item
  * holding their texts joined with nothing between them. Every other item is kept as it is, in
  * order. Returns the same array when there is nothing to join.

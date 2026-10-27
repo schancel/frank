@@ -2600,6 +2600,7 @@ type ExecutionOwner = {
   conversations: Record<string, Conversation>
   refreshOutgoingFromStore: OutgoingExecutionPorts<ChatMessage>['refresh']
   setOutgoingState: OutgoingExecutionPorts<ChatMessage>['setState']
+  forgetTiedUpAttempt: OutgoingExecutionPorts<ChatMessage>['forgetTiedUpAttempt']
   confirmOutgoing: OutgoingExecutionPorts<ChatMessage>['confirm']
   applyAttemptStatus: OutgoingExecutionPorts<ChatMessage>['applyAttemptStatus']
   reconcileOutgoing: OutgoingExecutionPorts<ChatMessage>['reconcileOutgoing']
@@ -2669,6 +2670,8 @@ function createChatOutgoingExecution(owner: ExecutionOwner) {
     refresh: (address, id) => owner.refreshOutgoingFromStore(address, id),
     setState: (address, id, status, delivery, options) =>
       owner.setOutgoingState(address, id, status, delivery, options),
+    forgetTiedUpAttempt: (address, id, digest, options) =>
+      owner.forgetTiedUpAttempt(address, id, digest, options),
     confirm: params => owner.confirmOutgoing(params),
     applyAttemptStatus: params => owner.applyAttemptStatus(params),
     reconcileOutgoing: params => owner.reconcileOutgoing(params),
@@ -4067,6 +4070,30 @@ export const useChatStore = defineStore('chats', {
           : { attemptDigest: recordedDigest }),
       }
       await this.saveOutgoingExclusive(address, id, options)
+    },
+    /** Takes an attempt the wallet ended for funds tied up off its message, which goes back to
+     * pending (`OutgoingExecutionPorts.forgetTiedUpAttempt`). Strict: the write must be durable
+     * before a new send under the same message ID. */
+    async forgetTiedUpAttempt(
+      address: string,
+      id: string,
+      digest: string,
+      options: { assertCurrent: () => void },
+    ) {
+      return serializeDeliveryMutation(async () => {
+        options.assertCurrent()
+        const message = this.messages[id]
+        if (!message || message.delivery?.attemptDigest !== digest)
+          throw new Error(`outgoing message ${id} records another attempt`)
+        try {
+          await assertDurableAttemptAssociation(id, digest, message, address)
+        } finally {
+          options.assertCurrent()
+        }
+        message.status = 'pending'
+        message.delivery = {}
+        await this.saveOutgoingExclusive(address, id, { strict: true })
+      })
     },
     /** The exact payment set of this message was delivered: re-key the local copy by its payload
      * hash (unless already so), persist it, and drop the local-id record. The UI is reconciled

@@ -1132,6 +1132,8 @@ async function endUnconstructed(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
   reason: 'fee_exceeded' | 'funds_tied_up' | 'discarded',
+  /** With `funds_tied_up`: what the earlier sends held (`FundsInPendingSendError.tiedUpWei`). */
+  tiedUpWei?: bigint,
 ): Promise<boolean> {
   const shared = owner.transactionSets
   if (!shared || !sharedConstructionPending(row) || !row.transactionSetOperationId) return false
@@ -1149,7 +1151,12 @@ async function endUnconstructed(
       return false
   }
   const { exposurePending: _pending, unexposed: _unexposed, ...kept } = row
-  const ended: StoredMessage = { ...kept, outcome: 'dead', reason }
+  const ended: StoredMessage = {
+    ...kept,
+    outcome: 'dead',
+    reason,
+    ...(reason === 'funds_tied_up' && tiedUpWei !== undefined ? { tiedUpWei: tiedUpWei.toString() } : {}),
+  }
   await owner.messages.put(ended)
   await releaseEndedPayment(owner, ended)
   return true
@@ -2190,6 +2197,17 @@ async function resend(
             try {
               row = await owner.lifetime(() => finishSharedConstruction(owner, row))
             } catch (error) {
+              // The free coins do not cover it and this wallet's own earlier sends, not on the
+              // chain yet, would (owner ruling 2026-10-26, as for a send refused at once): it
+              // ends now, saying so and how much, and is never signed or sent by this pass.
+              // Only the user's Retry, under the same message ID, sends it again.
+              if (error instanceof FundsInPendingSendError &&
+                  await endUnconstructed(owner, row, 'funds_tied_up', error.tiedUpWei)) {
+                console.warn(
+                  `[monad-canonical-dm] message ${row.digest} was not sent: ${error.tiedUpWei} wei is tied up in a previous send that has not reached the chain yet. It ends here; a Retry sends it again.`,
+                )
+                return
+              }
               // This intent remains pending for its own retry. Other operations can still
               // settle and report their status; malformed or uncertain authority still fails.
               if (error instanceof EvmTransactionSetInsufficientFundsError) return
@@ -2781,7 +2799,7 @@ async function send(
       // they reach the chain (owner ruling 2026-10-26): refused now, not kept to be sent later.
       // The message ends and the payment it would have joined is given back; the user retries.
       if (error instanceof FundsInPendingSendError && stored &&
-          await owner.lifetime(() => endUnconstructed(owner, stored, 'funds_tied_up')).catch(() => false))
+          await owner.lifetime(() => endUnconstructed(owner, stored, 'funds_tied_up', error.tiedUpWei)).catch(() => false))
         throw error
       // The journal or message write may have reached durable storage. Keep the stable ID
       // and every reservation; reopen will finish this same operation.
@@ -3713,7 +3731,11 @@ export function canonicalDirectMessages(
       if ('payments' in row && unconstructed(row)) {
         if (row.reason === 'fee_exceeded') return { reason: 'fee-exceeded' }
         if (row.reason === 'discarded') return { reason: 'discarded' }
-        if (row.reason === 'funds_tied_up') return { reason: 'funds-tied-up' }
+        if (row.reason === 'funds_tied_up')
+          return {
+            reason: 'funds-tied-up',
+            ...('tiedUpWei' in row && row.tiedUpWei !== undefined ? { tiedUpWei: BigInt(row.tiedUpWei) } : {}),
+          }
       }
       return { reason: 'relay', ...(row.reason === undefined ? {} : { relayReason: row.reason }) }
     },
@@ -3888,6 +3910,9 @@ export function canonicalDirectMessages(
         .filter(
           row =>
             !known.has(row.digest) &&
+            // Refused for funds tied up before anything of it was signed: it stands for no
+            // payment, so it is no attempt anyone must answer for.
+            !refusedForTiedUpFunds(row) &&
             // Unresolved and relay-ended attempts are always reported; see `account`.
             (row.outcome !== 'delivered' || !row.accounted),
         )

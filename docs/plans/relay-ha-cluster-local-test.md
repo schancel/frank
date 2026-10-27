@@ -184,6 +184,28 @@ display and the wallet's fee summary.
   sender's other device is covered by the wallet test (self-wallet-sync.jest.test.ts: a 1 MB
   split text and a message at exactly the composer bound read back on the other device), not in
   the browser.
+- **Long bot replies, and tied-up funds found later** (branch
+  `fix/bot-long-replies-pending-tied-up`):
+  - The bot host sends a long text as consecutive text items, with the app's splitter. That
+    covers stored replies, a handler's own replies and anything else a bot sends. A stored reply
+    may be as large as a sealed message carries. A reply larger than that is refused before the
+    wallet is asked, and the log says why. The peer gets the failure reply once; the long reply
+    is never sent again. The host gives up, at once and with the reason, on a reply the wallet
+    refuses as too large or unencodable.
+  - Owner question 15 now also covers sends found later. The wallet's background pass may find
+    an older pending intent, for example after a restart, whose money is still in its earlier
+    sends. It ends that intent `funds_tied_up` and records the amount, and no later pass sends
+    it. The app shows the reason and the amount. A Retry takes the ended attempt off the message
+    and sends again under the same message ID. A message carrying a payment of its own keeps its
+    attempt.
+  - The bot host gives up on a stored reply the wallet refuses this way, or one the wallet's
+    pass already ended, and logs the amount. It does not resend it on later polls; the peer's
+    next message is answered as usual. A handler's own reply refused this way is rejected to the
+    handler at once.
+  - Evidence: wallet, bot-framework and app tests. The restart case runs in
+    `evm-parallel-send.jest.test.ts`: ended with the amount, not sent by six later passes, sent
+    once on Retry, a second Retry the same attempt. A ~1 MB bot reply arrives as items that join
+    to the one text. Not yet checked: a bot's long reply through a real relay.
 
 ## Shared across replicas, and replica-local
 
@@ -288,7 +310,10 @@ Still replica-local; each relay's startup log names them:
     is signed, reserved or kept to send later. The app says "Your last payment's change hasn't
     gone out yet (X MON). Try again in a moment." (DM bubble, email, Send to Contact, chat
     payment, Send to Address). The message stays failed until the user clicks Retry, which sends
-    it again under the same message ID. Not chosen: queueing the send, or putting change before
+    it again under the same message ID. This also applies to an older pending send that the
+    wallet's background pass finds, for example after a restart. That send ends with the reason
+    and the amount, and only a Retry sends it again. The bot host does not resend such a reply on
+    later polls. Not chosen: queueing the send, or putting change before
     payments. The DM cluster check ticks its wallets between paid steps, as the app and the bot
     host do. That made step 5 flaky before. The one-coin check sends back-to-back on purpose and
     expects this refusal.

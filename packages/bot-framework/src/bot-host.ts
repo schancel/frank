@@ -39,6 +39,10 @@ import {
 } from "@frank/cashweb/relay/mailbox-client";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
+import { splitLongTextItems } from "@frank/wallet/message-item-plugins/text/long-text";
+import { sealedMessageOverLimit } from "@frank/wallet/chain/direct-message-limits";
+import { unencodableReason } from "@frank/wallet/chain/direct-message-refusal";
+import { fundsInPendingSend } from "@frank/wallet/evm-transaction-set-types";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import type {
@@ -67,6 +71,7 @@ import {
   inboundOrder,
   conversationIdentity,
   replyMessageId,
+  replyTextOverLimit,
   writtenBySelf,
   type InboundIdentity,
 } from "./inbound-operation-store";
@@ -93,6 +98,51 @@ const MAX_REPLY_SENDS = 5;
 // A stored reply is sent again on every poll until it is delivered, but not for ever: after this
 // long it is given up, at error level, and its conversation goes on.
 const REPLY_GIVE_UP_MS = 60 * 60_000;
+
+/** A message a bot tried to send that one sealed direct message cannot carry, even with its long
+ * texts split into consecutive text items. Refused before the wallet is asked: nothing was paid
+ * or sent, and the same message is refused the same way again, so it is never sent again. */
+export class BotMessageTooLargeError extends Error {
+  constructor(readonly why: string) {
+    super(`This message is too large to send: ${why}.`);
+    this.name = "BotMessageTooLargeError";
+  }
+}
+
+/**
+ * The items a bot's message goes out as: each text longer than one text item holds is sent as
+ * consecutive text items, which a reader shows as one text (`splitLongTextItems`, the same split
+ * the app uses). Throws {@link BotMessageTooLargeError} when the result is more than one sealed
+ * direct message carries.
+ */
+export function outgoingItems(items: readonly MessageItem[]): MessageItem[] {
+  const split = splitLongTextItems(items);
+  const over = sealedMessageOverLimit(split);
+  if (over) throw new BotMessageTooLargeError(over);
+  return split;
+}
+
+/** Why a send refused before anything was paid or handed out can never go through as it is:
+ * too large (by the host's count or the wallet's) or an item that cannot be encoded. Undefined
+ * for any other refusal. */
+function permanentRefusal(error: unknown): string | undefined {
+  if (error instanceof BotMessageTooLargeError) return error.message;
+  const unencodable = unencodableReason(error);
+  if (unencodable === "too-large")
+    return "it is more than a direct message carries";
+  if (unencodable === "unencodable") return "an item of it cannot be encoded";
+  return undefined;
+}
+
+/** A send refused because the bot's money is still in its earlier sends, which have not reached
+ * the chain yet (`FundsInPendingSendError`; owner ruling 2026-10-26: fail with a clear reason,
+ * never queued): why, in words with the amount. Undefined for any other refusal. */
+function tiedUpRefusal(error: unknown): string | undefined {
+  const tiedUp = fundsInPendingSend(error);
+  return tiedUp
+    ? `${tiedUp.tiedUpWei} wei of the bot's funds is tied up in a previous send that has not reached the chain yet; it is not sent again by itself`
+    : undefined;
+}
 
 /** What a peer is told when its message could not be handled, so it is never met with silence. */
 export const FAILED_REPLY_TEXT =
@@ -1571,6 +1621,17 @@ export class FrankBotHost {
         if (!reported) await linked();
         return result;
       } catch (error) {
+        // Refused before anything was paid, and not to be sent again by the host: the handler
+        // is told at once, and the operator why.
+        const final = reported
+          ? undefined
+          : permanentRefusal(error) ?? tiedUpRefusal(error);
+        if (final) {
+          console.error(
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound.peerAddress} for message ${inbound.messageId} was not sent and is not sent again: ${final}`
+          );
+          throw error;
+        }
         // The wallet's label is about this one call and is read from this rejection, here.
         if (!isDirectMessageNotAttempted(error) || reported) throw error;
         if (sends >= MAX_REPLY_SENDS) {
@@ -1748,8 +1809,11 @@ export class FrankBotHost {
     } catch {
       instance.operations.assertOpen(); // a failed journal write holds everything
       if (instance.operations.get(digest)?.reply) return;
+      const over = typeof text === "string" ? replyTextOverLimit(text) : undefined;
       console.error(
-        `[bot-host] [${instance.definition.id}] The reply for ${digest} could not be stored; the peer is told its message failed`
+        `[bot-host] [${instance.definition.id}] The reply for ${digest} could not be stored${
+          over ? ` (it is too large to send: ${over})` : ""
+        }; the peer is told its message failed`
       );
       await instance.operations.stageReply(
         digest,
@@ -1779,7 +1843,23 @@ export class FrankBotHost {
     // outlive the delivery bound; neither proves that discarding its only durable
     // text is safe. Retry this same identity so a wallet attempt, if any, is reused.
     const text = await instance.operations.replyText(digest);
+    const messageId = replyMessageId(instance.operations.owner, digest);
+    // The wallet ended an earlier send of this reply itself, before anything of it was signed,
+    // because the bot's money was still in its earlier sends (its background pass, after a
+    // restart or a send that failed on its way): that ruling stands (owner ruling 2026-10-26),
+    // and the host does not send the reply again by itself.
+    const tiedUp = await this.endedForTiedUpFunds(instance, messageId);
+    if (tiedUp !== undefined) {
+      await this.giveUp(
+        instance,
+        digest,
+        `the wallet ended it: ${tiedUp} of the bot's funds is tied up in a previous send that has not reached the chain yet; it is not sent again by itself`
+      );
+      return undefined;
+    }
     try {
+      // A long text goes as consecutive text items, the same ones on every send of it.
+      const items = outgoingItems([{ type: "text", text }]);
       // Bounded like the poll's other calls: a send that hangs must not hold this peer's lane
       // and the retry pass. The call left behind cannot lead to a second payment: the next
       // send carries the same message identity, the wallet runs sends one at a time, and it
@@ -1788,11 +1868,11 @@ export class FrankBotHost {
         this.chain.directMessages.send({
           wallet: instance.wallet,
           recipient: toChainAddress(row.peerAddress),
-          items: [{ type: "text", text }],
+          items,
           // Sealed: the relay learns the recipient, not who wrote to them.
           sealedSender: true,
           conversationId: row.conversationId,
-          messageId: replyMessageId(instance.operations.owner, digest),
+          messageId,
           // Paid only if what it carries is at or above the chain's fee floor right now.
           stampValue: await this.atLeastTheFloor(
             instance.wallet,
@@ -1810,6 +1890,28 @@ export class FrankBotHost {
       if (error instanceof DirectMessageAlreadyAttemptedError)
         await instance.operations.linkReply(digest, error.payloadDigest);
       if (instance.operations.get(digest)?.reply?.digest) return undefined;
+      // Refused before anything was paid or handed out as too large or unencodable: it never
+      // could be sent, so it is not sent again.
+      const permanent = permanentRefusal(error);
+      if (permanent) {
+        await this.giveUp(instance, digest, permanent);
+        return undefined;
+      }
+      // Refused because the bot's money is still in its earlier sends (owner ruling 2026-10-26:
+      // fail with a clear reason; the peer's next message is answered anew). Given up only when
+      // the wallet's own record says it ended the send unsigned; otherwise the wallet may still
+      // finish it, and the reply stays owed under its one message ID.
+      if (tiedUpRefusal(error) !== undefined) {
+        const ended = await this.endedForTiedUpFunds(instance, messageId);
+        if (ended !== undefined) {
+          await this.giveUp(
+            instance,
+            digest,
+            `${ended} of the bot's funds is tied up in a previous send that has not reached the chain yet; it is not sent again by itself`
+          );
+          return undefined;
+        }
+      }
       if (!instance.sendWarned.has(digest)) {
         instance.sendWarned.add(digest);
         console.warn(
@@ -1821,6 +1923,32 @@ export class FrankBotHost {
     }
     await this.finish(instance, digest, true);
     return undefined;
+  }
+
+  /** When the wallet holds an attempt for `messageId` that it ended because the bot's money was
+   * still in its earlier sends (`DirectMessageEnd` `funds-tied-up`): the amount it recorded, as
+   * words ("123 wei", or "money" when none was recorded). Undefined otherwise, and when the
+   * wallet cannot say. Reads the wallet's own record; no request. */
+  private async endedForTiedUpFunds(
+    instance: ActiveBotInstance,
+    messageId: string
+  ): Promise<string | undefined> {
+    const messages = this.chain.directMessages;
+    try {
+      const held = await messages.attemptOf?.({
+        wallet: instance.wallet,
+        messageId,
+      });
+      if (!held?.paid) return undefined;
+      const end = await messages.endOf?.({
+        wallet: instance.wallet,
+        payloadDigest: held.payloadDigest,
+      });
+      if (end?.reason !== "funds-tied-up") return undefined;
+      return end.tiedUpWei === undefined ? "money" : `${end.tiedUpWei} wei`;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Reads this bot's mailbox from its scan floor. `passed` is the inclusive position the read
@@ -2300,7 +2428,8 @@ export class FrankBotHost {
     return this.chain.directMessages.send({
       wallet,
       recipient: toChainAddress(recipientAddress),
-      items,
+      // A long text goes as consecutive text items; more than a message carries is refused.
+      items: outgoingItems(items),
       // Sealed: the relay learns the recipient, not who wrote to them.
       sealedSender: true,
       conversationId:

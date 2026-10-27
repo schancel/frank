@@ -8,11 +8,16 @@ import {
 import {
   joinConsecutiveTextItems,
   joinConsecutiveTextItemsIndexed,
+  splitLongTextItems,
   splitTextByUtf8Bytes,
   textItemsOf,
   utf8ByteLength,
 } from './long-text'
 import { initTextPlugin } from './plugin'
+import {
+  MAX_SEALED_MESSAGE_CONTENT_BYTES,
+  sealedMessageOverLimit,
+} from '../../chain/direct-message-limits'
 
 const bytes = (text: string) => new TextEncoder().encode(text).length
 const registry = registryWith('text', initTextPlugin)
@@ -176,5 +181,43 @@ describe('joinConsecutiveTextItems', () => {
   it('returns the same items when nothing is consecutive', () => {
     const items: MessageItem[] = [{ type: 'text', text: 'a' }, image, { type: 'text', text: 'b' }]
     expect(joinConsecutiveTextItems(items)).toBe(items)
+  })
+})
+
+describe('splitLongTextItems', () => {
+  const reply: MessageItem = { type: 'reply', payloadDigest: 'ab'.repeat(32) }
+  it('splits only the texts longer than a text item holds, in place, and a reader shows the items given', () => {
+    const long = 'ä long line\n'.repeat(60_000)
+    const items: MessageItem[] = [reply, { type: 'text', text: 'short' }, { type: 'text', text: long }]
+    const split = splitLongTextItems(items)
+    expect(split.slice(0, 2)).toEqual(items.slice(0, 2))
+    expect(split.length).toBeGreaterThan(3)
+    for (const item of split.slice(1)) expect(() => registry.encodeItem(item)).not.toThrow()
+    expect(joinConsecutiveTextItems(split)).toEqual([reply, { type: 'text', text: 'short' + long }])
+    // The same items again give the same items: a message sent again has the same bytes.
+    expect(splitLongTextItems(items)).toEqual(split)
+  })
+  it('returns the same items when every text fits', () => {
+    const items: MessageItem[] = [reply, { type: 'text', text: 'x'.repeat(MAX_TEXT_STRING_BYTES) }]
+    expect(splitLongTextItems(items)).toBe(items)
+  })
+})
+
+describe('sealedMessageOverLimit', () => {
+  it('admits the largest text a sealed message carries and refuses one byte more, saying why', () => {
+    const largest = (text: number) => [{ type: 'text', text: 'z'.repeat(text) }] as MessageItem[]
+    // Each text item of the split counts its allowance (64 bytes) on top of its text.
+    const fits = (n: number) => sealedMessageOverLimit(splitLongTextItems(largest(n))) === undefined
+    // ASCII with no break splits at exactly 256 KiB: 32 items for the largest text.
+    const n = MAX_SEALED_MESSAGE_CONTENT_BYTES - 64 * 32
+    expect(splitLongTextItems(largest(n))).toHaveLength(32)
+    expect(fits(n)).toBe(true)
+    expect(sealedMessageOverLimit(splitLongTextItems(largest(n + 1)))).toMatch(
+      new RegExp(`carries at most ${MAX_SEALED_MESSAGE_CONTENT_BYTES}`),
+    )
+  })
+  it('refuses more items than a message holds', () => {
+    const items = Array.from({ length: 257 }, () => ({ type: 'text', text: 'a' }) as MessageItem)
+    expect(sealedMessageOverLimit(items)).toMatch(/257 items .* at most 256/)
   })
 })

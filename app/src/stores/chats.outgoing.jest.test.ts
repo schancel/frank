@@ -1165,6 +1165,80 @@ describe('outgoing direct messages (#269, #270)', () => {
       }
     })
 
+    it('a Retry of an attempt the wallet ended because its funds were tied up sends it again, once, under the same message ID (owner ruling 2026-10-26)', async () => {
+      const send = sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      const firstId = send.mock.calls[0][0].messageId
+      await chats.setOutgoingState(PEER, message.payloadDigest, 'error', {
+        attemptDigest: HASH,
+      })
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({
+        reason: 'funds-tied-up' as const,
+        tiedUpWei: 50_000_000_000_000_000n,
+      }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      const fresh = 'cd'.repeat(32)
+      send.mockReset().mockImplementation(async params => {
+        await params.onAttemptCreated?.(fresh)
+        return okResult(fresh)
+      })
+      try {
+        const result = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        })
+        expect(result).toMatchObject({ state: 'sent' })
+        expect(endOf).toHaveBeenCalledWith({ wallet, payloadDigest: HASH })
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(send.mock.calls[0][0].messageId).toBe(firstId)
+        expect(only(chats)[0].status).toBe('confirmed')
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
+    })
+
+    it('reconcileOutgoing shows an attempt the wallet ended for funds tied up as that, with the amount, and does not send it again', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({
+        reason: 'funds-tied-up' as const,
+        tiedUpWei: 50_000_000_000_000_000n,
+      }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      try {
+        await chats.reconcileOutgoing({ wallet })
+        expect(only(chats)[0].status).toBe('error')
+        expect(only(chats)[0].delivery).toMatchObject({
+          attemptDigest: HASH,
+          failureReason: 'funds-in-pending-send',
+          detail: '50000000000000000',
+        })
+        reconcileReturns({ [HASH]: 'dead' })
+        await chats.reconcileOutgoing({ wallet })
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(only(chats)[0].status).toBe('error')
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
+    })
+
     it('retains the recorded digest on presentation updates and rejects a replacement before mutation', async () => {
       sendJournalsThenPending()
       const chats = useChatStore()

@@ -23,6 +23,14 @@ function failureOfEnd(
   return 'rejected'
 }
 
+/** The amount a funds-tied-up end recorded, as the failure's `detail` (wei, decimal), so the
+ * bubble can say how much is held. Nothing for any other end. */
+function endDetail(end: DirectMessageEnd | undefined): { detail?: string } {
+  return end?.reason === 'funds-tied-up' && end.tiedUpWei !== undefined
+    ? { detail: end.tiedUpWei.toString() }
+    : {}
+}
+
 export interface RecoveryMessage {
   outbound: boolean
   status: string
@@ -371,6 +379,12 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
                 assertCurrent: entry.assertCurrent,
               })
               if (applied === 'dead' || applied === 'unknown') {
+                const end =
+                  applied === 'dead'
+                    ? await context
+                        .endOf?.(wallet, entry.digest as string)
+                        .catch(() => undefined)
+                    : undefined
                 await ports.setState(
                   entry.address,
                   entry.id,
@@ -378,13 +392,8 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
                   {
                     attemptDigest: entry.digest,
                     failureReason:
-                      applied === 'dead'
-                        ? failureOfEnd(
-                            await context
-                              .endOf?.(wallet, entry.digest as string)
-                              .catch(() => undefined),
-                          )
-                        : 'unverified',
+                      applied === 'dead' ? failureOfEnd(end) : 'unverified',
+                    ...endDetail(end),
                   },
                   { assertCurrent: entry.assertCurrent },
                 )

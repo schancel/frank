@@ -95,7 +95,7 @@ import {
   MAX_OPAQUE_SECTIONS,
   MAX_PAYMENT_MEMBERS,
   MAX_TOPIC_BURNS,
-  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+  MAX_PLUGIN_ITEM_DATA_BYTES,
   MAX_PLUGIN_ITEM_TYPE_BYTES,
   MAX_RELAY_BINDINGS,
   MAX_SIGNATURES,
@@ -553,7 +553,7 @@ export function checkTypeLimits(
       const data = f(PLUGIN_MESSAGE_ITEM.data)
       if (
         data instanceof Uint8Array &&
-        data.length > MAX_PLUGIN_ITEM_PAYLOAD_BYTES
+        data.length > MAX_PLUGIN_ITEM_DATA_BYTES
       )
         over('plugin item bytes')
       break
@@ -2075,7 +2075,7 @@ export function parseDraft(
           m.get(K.data),
           at(P, K.data),
           0,
-          MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+          MAX_PLUGIN_ITEM_DATA_BYTES,
         ),
         unknownFields: m.unknown,
       }

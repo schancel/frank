@@ -1650,8 +1650,10 @@ async function openOwnOriginal(
  * spends through `applyWalletSyncItem` and show the message as sent.
  *
  * The spends travel in their own note so the message's note is bounded by the message alone: it
- * holds the original's items and a fixed set of fields, and {@link requireSelfCopyFits} checks,
- * before a sealed send pays or hands out anything, that it fits in a direct message.
+ * holds the original's items and a fixed set of fields, in one `outbox-message` item that may hold
+ * what a direct message carries (not the 512 KiB of other plugin items). {@link
+ * requireSelfCopyFits} checks, before a sealed send pays or hands out anything, that it fits in a
+ * direct message.
  *
  * Each note's message ID is derived from the original's payload digest, so a repeat is the same
  * note: named free sends keep their sealed envelope until delivered, and applying a note twice
@@ -1761,9 +1763,12 @@ export class SealedSelfCopyTooLargeError extends MessageItemEncodeError {
  * every direct message; the facts not known yet stand in at their widest: the payload digest
  * (always 32 bytes), the relay's time, and a stamp not yet settled (the largest amount).
  *
- * The note holds the original's item frames and its own fields, so a sealed message within a few
- * hundred bytes of the largest direct message cannot have one; such a message is refused here
- * rather than delivered without a note the other devices could read.
+ * This is the size limit of a sealed message: the original and its note must both fit. The note
+ * holds the original's item frames and its own fields, about 170 bytes more than the sealed
+ * original (more for a paid one, whose stamp is counted at its widest), so the largest sealed
+ * message is a few hundred bytes smaller than the largest message that names its sender. A
+ * larger one is refused here rather than delivered without a note the other devices could
+ * read.
  */
 async function requireSelfCopyFits(
   owner: CanonicalMessagingOwner,

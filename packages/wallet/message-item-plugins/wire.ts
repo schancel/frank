@@ -18,6 +18,7 @@
  */
 import {
   FrankCodecError,
+  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   TYPE_BLACKJACK_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_EMAIL_MESSAGE_ITEM,
@@ -269,6 +270,9 @@ function itemFrame(
       )
     return { type, frame: bytes }
   }
+  const limit = pluginDataLimit(registry, type)
+  if (bytes.length > limit)
+    throw new MessageItemEncodeError(type, overPluginLimit(limit))
   try {
     return {
       type,
@@ -278,6 +282,15 @@ function itemFrame(
     throw new MessageItemEncodeError(type, detailOf(error))
   }
 }
+
+/** Most bytes the plugin for `type` may put in a generic plugin item: its own declared limit, or
+ * the 512 KiB every other plugin has. */
+function pluginDataLimit(registry: MessageItemRegistry, type: string): number {
+  return registry.get(type)?.maxDataBytes ?? MAX_PLUGIN_ITEM_PAYLOAD_BYTES
+}
+
+const overPluginLimit = (limit: number) =>
+  `its plugin's bytes exceed the plugin's maximum of ${limit} bytes`
 
 /** The frames opened the way a reader opens one message's items. */
 function openAsMessageItems(frames: readonly Uint8Array[]): ChildFrame[] {
@@ -393,6 +406,14 @@ function readItemFrame(
   }
   if (itemFrameRule(type, addressing).carried === 'no' || !registry.has(type))
     return unsupported(child, 'unknown-type', type)
+  // A plugin's bytes over that plugin's own limit: kept, never handed to it.
+  if (frame === undefined && bytes.length > pluginDataLimit(registry, type))
+    return unsupported(
+      child,
+      'malformed',
+      type,
+      overPluginLimit(pluginDataLimit(registry, type)),
+    )
   if (
     registry.get(type)?.carrier === 'application' &&
     itemFrameRule(type).carried !== 'generic'

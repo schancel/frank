@@ -6,7 +6,7 @@
     "schemaVersion": 1,
     "minReaderVersion": 1,
     "maximumTypeBytes": 64,
-    "maximumDataBytes": 524288,
+    "maximumDataBytes": 8388608,
     "typePattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
   },
   "provenance": "TypeScript-origin (packages/frank-codec encodePluginMessageItem and the generic frame encoder). All data bytes are public fixtures.",

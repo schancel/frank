@@ -153,9 +153,21 @@ display and the wallet's fee summary.
   the maximum (an 8,390,526-byte request), B and C each read it back unchanged, and its object
   is under `lab/messages/sha256/<sha256 of the request>/` in MinIO; a request of 12,582,913
   bytes got 413 with nothing stored; the same message sealed was refused before anything was
-  sent, because its note to self would not fit; all funds went back to the faucet. A sealed
-  message is still capped at about 512 KiB by its note to self (a plugin item, whose limit was
-  not raised).
+  sent, because its note to self would not fit; all funds went back to the faucet. On that
+  branch a sealed message was still capped at about 512 KiB by its note to self; see the next
+  bullet.
+- **A sealed message up to the DM limit** (branch `fix/note-to-self-dm-size`): a note to self
+  (`outbox-message`) holds what a direct message carries, not the 512 KiB of other plugin
+  items, so a sealed message is no longer capped at about 512 KiB. Its note holds the message
+  and its own fields, so the original and the note must both fit: the largest sealed message is
+  a few hundred bytes smaller than the largest that names its sender (in the wallet test, 33
+  text items: 8,387,320 bytes of text named, 8,386,997 sealed free, 8,386,916 sealed paid,
+  whose note counts the stamp at its widest before paying). One byte more is refused before
+  anything is paid. Cluster contract 16 of 16; DM livecheck OK (burst 300): the largest sealed paid
+  message (8,386,916 bytes of text, envelope 8,388,443 bytes) was delivered to bob, its note to
+  self (envelope 8,388,634 bytes, limit 8,388,696) reached alice's mailbox and read back as the
+  sent message, one byte more was refused before anything was sent; all funds went back to the
+  faucet.
 
 ## Shared across replicas, and replica-local
 
@@ -196,8 +208,6 @@ Still replica-local; each relay's startup log names them:
   suite and adds its CI job.
 - **History doesn't list external deposits.** The `fund` script's deposit (the faucet's 20 MON)
   never appears; the faucet bot's grant does.
-- **A sealed message within about 200 bytes of the largest DM is refused** before anything is paid,
-  because its note to self wouldn't fit. The same message unsealed goes through.
 - **Format break:** notes to self written before #1916 read as unsupported. Start the
   deployment's wallets and bots from fresh stores.
 - **App:** unless the relay server is set by hand, the dev server's origin becomes a group's home
@@ -256,8 +266,10 @@ Still replica-local; each relay's startup log names them:
     - skip coins that cost more to move than they're worth.
 14. **DM size versus the 8 MiB acceptance line.** Resolved: the owner chose to raise the limit
     (2026-10-26). A DM holds up to 8 MiB of ciphertext and a relay reads requests up to 12 MiB.
-    A sealed message is still capped at about 512 KiB by its note to self, a plugin item whose
-    limit was not raised.
+    A sealed message's note to self now holds what a DM carries (owner, 2026-10-26: a note to
+    self must not cap the message it copies), so a sealed message can be about as large as one
+    that names its sender: a few hundred bytes smaller, because the note holds the message and
+    its own fields and both must fit.
 
 ## Before deploying this main
 

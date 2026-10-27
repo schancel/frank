@@ -849,9 +849,13 @@ lowercase ASCII letters and digits in groups separated by single hyphens
 opaque to this profile: a plugin may write deterministic CBOR, protobuf, or any
 other encoding, and E3 is satisfied by the container, whose payload is one
 restricted-CBOR map. A new application item type therefore needs no type
-identifier allocation. Field 1 is at most 524,288 bytes (its own bound, unchanged
-when R2 was raised; exceeding it is a `resource` error at 8.1), and its length is already
-charged to the enclosing frame. A reader that decodes field 1 as CBOR, or opens
+identifier allocation. Field 1 is at most 8,388,608 bytes, what one direct message
+carries (`MAX_PLUGIN_ITEM_DATA_BYTES`; exceeding it is a `resource` error at 8.1), and
+its length is already charged to the enclosing frame. A reader then applies the
+plugin's own limit: 524,288 bytes (`MAX_PLUGIN_ITEM_PAYLOAD_BYTES`) unless the plugin
+declares another. Only a note to self (`outbox-message`), which carries a copy of a
+whole sent message, declares more: the full 8,388,608. A writer refuses an item over
+its plugin's limit; a reader keeps one as unsupported. A reader that decodes field 1 as CBOR, or opens
 it as a nested frame, MUST charge that work to the same operation's counters
 and depth (R1) and MUST NOT start a fresh budget per item. A reader with no
 plugin for the identifier, or whose plugin rejects the bytes, MUST keep the

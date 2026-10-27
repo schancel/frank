@@ -8,6 +8,7 @@ import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
   FORWARDING_DELIVERY_ENVELOPE,
+  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_PLUGIN_MESSAGE_ITEM,
   encodeBlackjackHandV3Item,
@@ -361,6 +362,76 @@ describe('sending', () => {
     expect(() => encodeItemFrames(registry, many)).toThrow(
       MessageItemEncodeError,
     )
+  })
+})
+
+describe("each plugin's own byte limit in the generic plugin frame", () => {
+  // A plugin that writes exactly the bytes asked for, and one that reads them back.
+  const bulk = createMessageItemRegistry()
+  const decode = jest.fn((bytes: Uint8Array) => ({ type: 'bulk', size: bytes.length }))
+  bulk.register({
+    type: 'bulk',
+    hydrate: raw => raw,
+    previewText: () => 'bulk',
+    encode: raw => new Uint8Array((raw as unknown as { size: number }).size),
+    decode,
+  } as never)
+  const item = (size: number) => ({ type: 'bulk', size }) as never
+
+  it('sends and reads back a plugin item of 512 KiB, and refuses one byte more before anything is sent', () => {
+    const [frame] = encodeItemFrames(bulk, [item(MAX_PLUGIN_ITEM_PAYLOAD_BYTES)])
+    expect(
+      decodeItemFrames(bulk, children([frame]), standaloneItemBudget()),
+    ).toEqual([{ type: 'bulk', size: MAX_PLUGIN_ITEM_PAYLOAD_BYTES }])
+    expect(() =>
+      encodeItemFrames(bulk, [item(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1)]),
+    ).toThrow(
+      new MessageItemEncodeError(
+        'bulk',
+        `its plugin's bytes exceed the plugin's maximum of ${MAX_PLUGIN_ITEM_PAYLOAD_BYTES} bytes`,
+      ),
+    )
+  })
+
+  it('keeps a received plugin item one byte over its plugin limit as unsupported, never handing it to the plugin', () => {
+    decode.mockClear()
+    // The container holds what a direct message carries; the plugin's limit is the reader's.
+    const frame = encodePluginMessageItem({
+      itemType: 'bulk',
+      data: new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
+    })
+    expect(
+      decodeItemFrames(bulk, children([frame]), standaloneItemBudget()),
+    ).toEqual([
+      {
+        type: 'unsupported',
+        reason: 'malformed',
+        itemType: 'bulk',
+        frameType: TYPE_PLUGIN_MESSAGE_ITEM,
+        frame: toHex(frame),
+      },
+    ])
+    expect(decode).not.toHaveBeenCalled()
+  })
+
+  it('carries a note to self (outbox-message) larger than 512 KiB: it copies a whole message', () => {
+    const copied = [1, 2, 3].map(i => toHex(directMessageText(String(i).repeat(250_000))))
+    const note = {
+      type: 'outbox-message' as const,
+      payloadDigest: '34'.repeat(32),
+      recipientAddress: '0x' + 'b2'.repeat(20),
+      sentAt: 1760000000000,
+      itemFrames: copied,
+    }
+    expect(registry.encodeItem(note).bytes.length).toBeGreaterThan(
+      MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+    )
+    const frames = encodeItemFrames(registry, [note], { selfAddressed: true })
+    expect(
+      decodeItemFrames(registry, children(frames), standaloneItemBudget(), {
+        selfAddressed: true,
+      }),
+    ).toEqual([note])
   })
 })
 

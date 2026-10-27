@@ -33,6 +33,7 @@ import {
 } from 'ethers'
 
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
+import { outboxMessageCodec } from '../journal/journal-codec'
 import * as wire from '../message-item-plugins/wire'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { isDirectMessageNotAttempted } from './active-chain'
@@ -629,45 +630,41 @@ describe("a wallet's sync note to itself", () => {
       },
     )
 
-    it('refuses, before anything is paid or sent, a sealed message too large for its note to self', async () => {
-      routeByRecipient = true
-      // Within a few hundred bytes of the largest plugin item (512 KiB), which carries the whole
-      // note to self: the message alone fits, the note, which holds it and its own fields, does
-      // not.
-      const items = [
-        { type: 'text' as const, text: 'c'.repeat(262_144) },
-        { type: 'text' as const, text: 'd'.repeat(262_144) },
-      ]
-      for (const stampValue of [0n, STAMP]) {
-        const error = await one.chain.directMessages
-          .send({
-            wallet: one.alice,
-            recipient: one.bob.identity.address,
+    it.each([
+      ['free', 0n],
+      ['paid', STAMP],
+    ] as const)(
+      'shows a %s sealed message larger than the 512 KiB of a plugin item on the other device: its note to self is not held to that limit',
+      async (_kind, stampValue) => {
+        routeByRecipient = true
+        // Once refused: the note to self, which holds the message and its own fields, was one
+        // plugin item of at most 512 KiB. It now holds what a direct message carries.
+        const items = [
+          { type: 'text' as const, text: 'c'.repeat(262_144) },
+          { type: 'text' as const, text: 'd'.repeat(262_144) },
+        ]
+        const sent = await one.chain.directMessages.send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items,
+          stampValue,
+          sealedSender: true,
+        })
+        expect(bobMailbox).toHaveLength(1)
+        expect(addressed.filter(to => to === 'self').length).toBeGreaterThan(0)
+        routeByRecipient = false
+        const other = await otherDevice()
+        const { messages, held } = await read(other, other.alice)
+        expect(held).toEqual([])
+        expect(messages).toEqual([
+          expect.objectContaining({
+            outbound: true,
+            payloadDigest: sent.payloadDigest,
             items,
-            stampValue,
-            sealedSender: true,
-          })
-          .then(
-            () => undefined,
-            (e: unknown) => e,
-          )
-        expect(error).toBeInstanceOf(SealedSelfCopyTooLargeError)
-        expect(isDirectMessageNotAttempted(error)).toBe(true)
-      }
-      expect(addressed).toEqual([])
-      expect(bobMailbox).toHaveLength(0)
-      expect(mailbox).toHaveLength(0)
-      expect(mockFunded).toHaveLength(0)
-      expect(providerBroadcasts).toHaveLength(0)
-      // The same message with its sender named needs no note to self, and is sent.
-      await one.chain.directMessages.send({
-        wallet: one.alice,
-        recipient: one.bob.identity.address,
-        items,
-        stampValue: 0n,
-      })
-      expect(bobMailbox).toHaveLength(1)
-    })
+          }),
+        ])
+      },
+    )
 
     it('seals and sends a free and a paid direct message of the largest size, more than 8 MiB, and refuses one byte more before anything is sent', async () => {
       routeByRecipient = true
@@ -716,8 +713,9 @@ describe("a wallet's sync note to itself", () => {
       expect(over).toBeInstanceOf(FrankCodecError)
       expect(over).toMatchObject({ category: 'resource' })
       expect(isDirectMessageNotAttempted(over)).toBe(true)
-      // Sealed, the same message cannot have a note to self (one plugin item of at most 512 KiB
-      // carries the note's copy of every item), so it is refused before anything is sent.
+      // Sealed, the same message cannot have a note to self: the note holds every item and its
+      // own fields, so it is larger than the largest direct message. It is refused before
+      // anything is sent (the largest sealed message is a little smaller; see the next test).
       const sealed = await send(texts(last), true).then(
         () => undefined,
         (e: unknown) => e,
@@ -727,6 +725,121 @@ describe("a wallet's sync note to itself", () => {
       expect(bobMailbox).toHaveLength(3)
       expect(mockFunded).toHaveLength(funded)
     })
+
+    it.each([
+      ['free', 0n],
+      ['paid', STAMP],
+    ] as const)(
+      'sends a %s sealed message of the largest size whose note to self fits, shows it on the other device, and refuses one byte more before anything is paid',
+      async (kind, stampValue) => {
+        routeByRecipient = true
+        const envelopeOf = (record: InboxRecord): number => {
+          const parsed = parseFrame(record.delivery)
+          if (parsed.kind !== 'parsed' || parsed.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
+            throw new Error('expected a delivery frame')
+          const payload = parsed.typed.payloadFrame.typed
+          if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD || payload.schemaVersion !== 2)
+            throw new Error('expected a schema-2 payload')
+          return payload.cryptoBoxEnvelope.length
+        }
+        const texts = (last: number) =>
+          Array.from({ length: 33 }, (_, i) => ({
+            type: 'text' as const,
+            text: String.fromCharCode(97 + (i % 26)).repeat(i === 32 ? last : 254_000),
+          }))
+        const send = (items: MessageItem[], stamp = 0n) =>
+          one.chain.directMessages.send({
+            wallet: one.alice,
+            recipient: one.bob.identity.address,
+            items,
+            stampValue: stamp,
+            sealedSender: true,
+          })
+        // A free sealed probe of the same shape: the sealed original and its note to self each
+        // grow byte for byte with the text. The note, which holds the original's items and its
+        // own fields, is the larger, so it is what bounds a sealed message.
+        await send(texts(200_000))
+        expect(bobMailbox).toHaveLength(1)
+        expect(mailbox).toHaveLength(1)
+        const original = envelopeOf(bobMailbox[0])
+        const note = envelopeOf(mailbox[0])
+        expect(note).toBeGreaterThan(original)
+        // Before it pays, the wallet builds the note with the facts it does not know yet at their
+        // widest: the relay's time as a current time (this test's relay answers 1234) and, for a
+        // paid send, a stamp of the largest amount. The note it sends is smaller by that much.
+        const outbox = {
+          type: 'outbox-message' as const,
+          payloadDigest: '00'.repeat(32),
+          recipientAddress: one.bob.identity.address.raw,
+          sentAt: bobMailbox[0].timestampMs,
+        }
+        const size = (fields: Partial<typeof outbox> & { stampValueWei?: string }) =>
+          outboxMessageCodec.encode({ ...outbox, ...fields }).length
+        const widest = size({
+          sentAt: Date.now(),
+          ...(kind === 'paid' ? { stampValueWei: ((1n << 256n) - 1n).toString() } : {}),
+        })
+        const slack = widest - size({})
+        const largest = 200_000 + MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - note - slack
+        bobMailbox.length = 0
+        mailbox.length = 0
+        addressed = []
+        const sent = await send(texts(largest), stampValue)
+        expect(bobMailbox).toHaveLength(1)
+        expect(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - envelopeOf(bobMailbox[0])).toBe(note - original + slack)
+        expect(bobMailbox[0].delivery.length).toBeGreaterThan(8 * 1024 * 1024)
+        // The note to self of the largest sealed message is the one large record in the
+        // account's mailbox (a paid send also writes its spends and its coins' notes).
+        const notes = mailbox.map(envelopeOf)
+        if (kind === 'free') expect(notes).toHaveLength(1)
+        expect(notes.filter(size => size > 1_000_000)).toHaveLength(1)
+        const largestNote = Math.max(...notes)
+        // Exactly the largest envelope, less what the wallet counted at its widest; a paid note
+        // holds its settled stamp.
+        const settledStamp =
+          kind === 'paid' ? size({ stampValueWei: sent.stampValueWei.toString() }) - size({}) : 0
+        expect(largestNote).toBe(MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - slack + settledStamp)
+        expect(
+          one.chain.directMessages.selfCopyOf!({
+            wallet: one.alice,
+            payloadDigest: sent.payloadDigest,
+          }),
+        ).toBeUndefined()
+        // One byte more: refused before anything is paid or handed to the relay.
+        const funded = mockFunded.length
+        const broadcasts = providerBroadcasts.length
+        addressed = []
+        const over = await send(texts(largest + 1), stampValue).then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+        expect(over).toBeInstanceOf(SealedSelfCopyTooLargeError)
+        expect(isDirectMessageNotAttempted(over)).toBe(true)
+        // Nothing went to the recipient, and no second note to self (the paid send's own small
+        // notes may still be on their way to the account's mailbox).
+        expect(addressed).not.toContain('peer')
+        expect(bobMailbox).toHaveLength(1)
+        expect(mailbox.map(envelopeOf).filter(size => size > 1_000_000)).toHaveLength(1)
+        expect(mockFunded).toHaveLength(funded)
+        expect(providerBroadcasts).toHaveLength(broadcasts)
+        console.log(
+          `largest ${kind} sealed message: 33 text items, ${32 * 254_000 + largest} bytes of text; ` +
+            `original envelope ${envelopeOf(bobMailbox[0])}, note envelope ${largestNote} (limit ${MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES}, counted at the widest: ${slack} bytes more)`,
+        )
+        // The other device reads the note and shows the whole message as sent.
+        routeByRecipient = false
+        const other = await otherDevice()
+        const { messages, held } = await read(other, other.alice)
+        expect(held).toEqual([])
+        expect(messages).toEqual([
+          expect.objectContaining({
+            outbound: true,
+            payloadDigest: sent.payloadDigest,
+            items: texts(largest),
+          }),
+        ])
+      },
+    )
 
     it.each([
       ['free', 0n],

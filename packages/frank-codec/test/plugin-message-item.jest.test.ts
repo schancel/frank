@@ -5,6 +5,9 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
   FrankCodecError,
+  MAX_DM_CIPHERTEXT_BYTES,
+  MAX_GENERAL_FRAME_BYTES,
+  MAX_PLUGIN_ITEM_DATA_BYTES,
   MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   TYPE_PLUGIN_MESSAGE_ITEM,
   beginDirectMessageValidation,
@@ -78,10 +81,14 @@ describe('type 27 vectors (docs/protocol/cbor/vectors/plugin-message-item.json)'
       schemaVersion: 1,
       minReaderVersion: 1,
       maximumTypeBytes: 64,
-      maximumDataBytes: MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+      maximumDataBytes: MAX_PLUGIN_ITEM_DATA_BYTES,
       typePattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
     })
     expect(TYPE_PLUGIN_MESSAGE_ITEM).toBe(27)
+    // The container holds what one direct message carries; each plugin's own limit (512 KiB
+    // unless it declares more) is applied by the reader that knows the plugin.
+    expect(MAX_PLUGIN_ITEM_DATA_BYTES).toBe(MAX_DM_CIPHERTEXT_BYTES)
+    expect(MAX_PLUGIN_ITEM_PAYLOAD_BYTES).toBe(524_288)
   })
 
   it.each(corpus.frames.map(c => [c.id, c] as const))('%s', (_, c) => {
@@ -151,32 +158,42 @@ describe('type 27 writer and limits', () => {
     expect(() =>
       encodePluginMessageItem({
         itemType: 'dice',
-        data: new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
+        data: new Uint8Array(MAX_PLUGIN_ITEM_DATA_BYTES + 1),
       }),
     ).toThrow(FrankCodecError)
   })
 
-  it('accepts bytes at the limit and rejects one more byte as a resource error at 8.1', () => {
+  it('accepts bytes over the 512 KiB plugin default (that limit is the reader\'s), up to what a root frame holds, and rejects one more byte', () => {
+    const over512 = encodePluginMessageItem({
+      itemType: 'outbox-message',
+      data: new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
+    })
+    expect(validateFrame(over512).kind).toBe('parsed')
+    // A type-27 frame is bounded by the general frame limit (its own, or its enclosing
+    // message's) before the field's own limit binds; both refusals are resource errors at 8.1.
+    const overhead = over512.length - (MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1)
+    const largest = MAX_GENERAL_FRAME_BYTES - overhead
     const at = encodePluginMessageItem({
-      itemType: 'image',
-      data: new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES),
+      itemType: 'outbox-message',
+      data: new Uint8Array(largest),
     })
+    expect(at.length).toBe(MAX_GENERAL_FRAME_BYTES)
     expect(validateFrame(at).kind).toBe('parsed')
-    const over = fr(
-      TYPE_PLUGIN_MESSAGE_ITEM,
-      M([
-        [PLUGIN_MESSAGE_ITEM.itemType, 'image'],
-        [
-          PLUGIN_MESSAGE_ITEM.data,
-          new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
-        ],
-      ]),
-    )
-    expect(outcome(() => validateFrame(over))).toEqual({
-      result: 'reject',
-      stage: '8.1',
-      category: 'resource',
-    })
+    const frameWith = (bytes: number) =>
+      fr(
+        TYPE_PLUGIN_MESSAGE_ITEM,
+        M([
+          [PLUGIN_MESSAGE_ITEM.itemType, 'outbox-message'],
+          [PLUGIN_MESSAGE_ITEM.data, new Uint8Array(bytes)],
+        ]),
+      )
+    expect(frameWith(largest)).toEqual(at)
+    for (const bytes of [largest + 1, MAX_PLUGIN_ITEM_DATA_BYTES + 1])
+      expect(outcome(() => validateFrame(frameWith(bytes)))).toEqual({
+        result: 'reject',
+        stage: '8.1',
+        category: 'resource',
+      })
   })
 
   it('does not copy-alias the caller bytes into the projection', () => {

@@ -28,9 +28,12 @@
  *      bytes, a request of more than 8 MiB), paid and sent with its sender named, admitted on A, reads back
  *      unchanged on B and on C, and its request is one object in MinIO (a request over 64 KiB is
  *      stored in S3, not in FoundationDB). Sealed, the same message is refused before anything is
- *      sent: its note to self would not fit the 512 KiB plugin item that carries it. A request one
- *      byte over the relay's limit is refused with 413 and nothing is stored
- *      (FRANK_DM_LAB_LARGE=0 skips the step).
+ *      sent: its note to self, which holds the message and its own fields, would not fit a direct
+ *      message. The largest sealed message, paid as the app sends it, is delivered and its note to
+ *      self (an envelope of at most 8 MiB + 88) reaches the sender's mailbox and reads back as the
+ *      sent message; one byte more is refused before anything is sent. A request one byte over the
+ *      relay's limit is refused with 413 and nothing is stored (FRANK_DM_LAB_LARGE=0 skips the
+ *      step).
  *
  * Every wallet's funds go back to the faucet at the end, also after a failure (`returnToFaucet`).
  *
@@ -57,12 +60,15 @@ import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 import { SealedSelfCopyTooLargeError } from '@frank/wallet/chain/canonical-dm'
 import { CANONICAL_DM_MAX_BYTES } from '@frank/cashweb/relay/canonical-dm-transport'
 import type { MessageItem } from '@frank/cashweb/types/messages'
+import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
 import {
   MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
   TYPE_DIRECT_MESSAGE_DELIVERY,
   TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
   parseFrame,
+  toHex,
 } from '@frank/codec'
+import { outboxMessageCodec } from '@frank/wallet/journal/journal-codec'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const LABS = join(REPO_ROOT, 'backend', 'labs')
@@ -617,8 +623,8 @@ async function main() {
         else reads.push({ relay, body: answer.body })
         return answer
       }
-      // Sent with its sender named: a sealed message's note to self carries a copy of every item
-      // in one plugin item of at most 512 KiB, so a sealed message this large is refused (below).
+      // Sent with its sender named: a sealed message's note to self holds a copy of every item and
+      // its own fields, so a sealed message this large is refused (below).
       const sendNamed = async (all: string[], stampValue: bigint) =>
         (
           await alice.chain.directMessages.send({
@@ -628,12 +634,16 @@ async function main() {
             stampValue,
           })
         ).payloadDigest
-      const envelopeOf = (request: Captured): number => {
+      const payloadOf = (request: Captured) => {
         const parsed = parseFrame(deliveryPart(request))
         const payload = parsed.kind === 'parsed' && parsed.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY ? parsed.typed.payloadFrame.typed : undefined
         assert.ok(payload?.type === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD && payload.schemaVersion === 2, 'a schema-2 payload')
-        return payload.cryptoBoxEnvelope.length
+        return payload
       }
+      const envelopeOf = (request: Captured): number => payloadOf(request).cryptoBoxEnvelope.length
+      /** Whether a request is addressed to Alice herself: a note to self. */
+      const toAlice = (request: Captured): boolean =>
+        toHex(payloadOf(request).recipient.keyBytes) === toHex(alice.handle.identity.compressedPubKey)
       // A first message of the same shape measures the envelope; it grows byte for byte with the
       // text, so the last item is then sized to make the envelope exactly the codec's limit.
       const probeLast = 200_000
@@ -693,6 +703,75 @@ async function main() {
           `read back unchanged on B and C; MinIO holds it at ${objects.map(o => o.key).join(', ')}`,
       )
       console.log(`   sealed, the same message was refused before anything was sent: ${sealedRefusal.message}`)
+
+      // The largest sealed message, as the app sends it: sealed and paid. A free sealed probe of
+      // the same shape measures its note to self, which holds the original's items and its own
+      // fields and grows byte for byte with the text. Before a paid send the wallet counts the
+      // note's stamp at its widest (it is not settled yet), so the paid message is smaller by that
+      // field.
+      puts.length = 0
+      readFrom = 'b'
+      // Read from here on: a mailbox read takes at most 8 pages, and every large message above
+      // is a page of its own.
+      const sealedSince = Date.now() - 5_000
+      const findSince = async (wallet: RealWallet, match: (message: DirectMessageReceived) => boolean) => {
+        const deadline = Date.now() + 120_000
+        for (;;) {
+          const messages = await wallet.chain.directMessages.fetchSince({
+            wallet: wallet.handle,
+            sinceMs: sealedSince,
+            onIncompleteTimestamp: () => undefined,
+          })
+          const found = messages.find(match)
+          if (found) return found
+          if (Date.now() > deadline) throw new Error(`no matching message since ${sealedSince} within 120 s (saw ${messages.length})`)
+          await sleep(2000)
+        }
+      }
+      await alice.send(bob.address, items(texts(probeLast)), 0n)
+      const probeNote = puts.find(put => put.status < 300 && toAlice(put.request))
+      const probeSealed = puts.find(put => put.status < 300 && !toAlice(put.request))
+      assert.ok(probeNote && probeSealed, `A admitted the sealed probe and its note to self (A answered ${puts.map(put => put.status).join(', ')})`)
+      const outbox = {
+        type: 'outbox-message' as const,
+        payloadDigest: '00'.repeat(32),
+        recipientAddress: bob.address,
+        sentAt: Date.now(),
+      }
+      const widestStamp =
+        outboxMessageCodec.encode({ ...outbox, stampValueWei: ((1n << 256n) - 1n).toString() }).length -
+        outboxMessageCodec.encode(outbox).length
+      const lastSealed = probeLast + MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - envelopeOf(probeNote.request) - widestStamp
+      puts.length = 0
+      const sealedOver = await alice.send(bob.address, items(texts(lastSealed + 1)), stamp).then(
+        () => undefined,
+        (err: unknown) => err,
+      )
+      assert.ok(sealedOver instanceof SealedSelfCopyTooLargeError, `one byte more than the largest sealed message is refused (${String(sealedOver)})`)
+      assert.equal(puts.length, 0, 'the refused sealed send handed nothing to the relay')
+      const largestSealed = texts(lastSealed)
+      const sealedDigest = await alice.send(bob.address, items(largestSealed), stamp)
+      const gotSealed = await findSince(bob, message => !message.outbound && message.payloadDigest === sealedDigest)
+      assert.deepEqual(textsOf(gotSealed.items), largestSealed, 'bob received the largest sealed message')
+      assert.ok(gotSealed.stampValueWei >= stamp, `bob was paid the stamp (${gotSealed.stampValueWei} < ${stamp})`)
+      const sealedPut = puts.find(put => put.status < 300 && !toAlice(put.request))
+      const notePut = puts.find(put => put.status < 300 && toAlice(put.request) && envelopeOf(put.request) > 8 * 1024 * 1024)
+      assert.ok(sealedPut && notePut, `A admitted the largest sealed message and its note to self (A answered ${puts.map(put => put.status).join(', ')})`)
+      assert.ok(envelopeOf(notePut.request) <= MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, 'its note to self fits a direct message')
+      assert.ok(
+        MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - envelopeOf(notePut.request) <= widestStamp,
+        `its note to self is the largest a direct message holds, less the stamp counted at its widest (${envelopeOf(notePut.request)})`,
+      )
+      // The note to self reached Alice's mailbox: she reads the sealed message back as sent, which
+      // only the note can tell her (the relay was not told who sent the original).
+      const ownCopy = await findSince(alice, message => message.outbound === true && message.payloadDigest === sealedDigest)
+      assert.deepEqual(textsOf(ownCopy.items), largestSealed, 'the note to self holds the whole sealed message')
+      const sealedBytes = largestSealed.reduce((sum, text) => sum + text.length, 0)
+      console.log(
+        `   the largest sealed message, paid ${gotSealed.stampValueWei} wei: ${sealedBytes} bytes of text (${bytes - sealedBytes} fewer than with its sender named); ` +
+          `envelope ${envelopeOf(sealedPut.request)} bytes, its note to self ${envelopeOf(notePut.request)} bytes (limit ${MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES}); ` +
+          `delivered to bob, and the note read back on alice as the sent message; one byte more was refused before anything was sent`,
+      )
       // One byte over the relay's request limit: refused before it is read, nothing stored.
       const before = (await lab.messageObjects()).length
       const oversized = await fetch(`http://127.0.0.1:${RELAYS.a}/message`, {

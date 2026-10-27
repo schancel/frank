@@ -135,10 +135,12 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      stamps at their schema maxima. A relay reads a request of at most 12 MiB: the frame, up to
      4 KiB of context, 64 raw transactions and the multipart framing; one byte more is 413. The
      same 12 MiB is the mailbox page budget. Other frame types keep their limits (8 MiB + 9
-     bytes for types without their own limit). A sealed message is still capped at about
-     512 KiB, because its note to self is a plugin item, whose limit was not raised; a message
-     that names its sender can use the full 8 MiB. The livecheck sends a message whose envelope
-     is exactly the maximum, reads it back on B and C, finds its object in MinIO, and checks
+     bytes for types without their own limit). A sealed message's note to self holds what a
+     direct message carries, so a sealed message can use nearly the full 8 MiB: a few hundred
+     bytes less than one that names its sender, because its note holds the message and its own
+     fields and both must fit. The livecheck sends a message whose envelope
+     is exactly the maximum, reads it back on B and C, finds its object in MinIO, sends the
+     largest sealed message (paid) and reads its note to self back on the sender, and checks
      that a request one byte over 12 MiB is refused with nothing stored.
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.
 8. **Directory port.** Accept: an entry published on A resolves on B; conflicting revisions on A and B leave one accepted and no fork; a forward interrupted by killing A is delivered exactly once.

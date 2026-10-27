@@ -3,7 +3,7 @@
 // validates the container; it never interprets the bytes, whatever encoding the plugin chose.
 import { cborMap } from './cbor'
 import {
-  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+  MAX_PLUGIN_ITEM_DATA_BYTES,
   PLUGIN_MESSAGE_ITEM,
   TYPE_PLUGIN_MESSAGE_ITEM,
 } from './constants'
@@ -30,9 +30,9 @@ export function encodePluginMessageItem(item: {
       'itemType must be 1..64 lowercase letters and digits in hyphen-separated groups',
     )
   if (!(item.data instanceof Uint8Array)) throw bad('data must be bytes')
-  if (item.data.length > MAX_PLUGIN_ITEM_PAYLOAD_BYTES)
+  if (item.data.length > MAX_PLUGIN_ITEM_DATA_BYTES)
     throw bad(
-      `data exceeds the maximum of ${MAX_PLUGIN_ITEM_PAYLOAD_BYTES} bytes`,
+      `data exceeds the maximum of ${MAX_PLUGIN_ITEM_DATA_BYTES} bytes`,
     )
   const bytes = encodeFrame(
     {

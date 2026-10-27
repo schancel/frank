@@ -78,8 +78,13 @@ export const MAX_EMAIL_RECIPIENTS = 64
 export const MAX_EMAIL_ATTACHMENTS = 16
 /** UTF-8 bytes of a plugin item type identifier (the identifier is ASCII). */
 export const MAX_PLUGIN_ITEM_TYPE_BYTES = 64
-/** A plugin's bytes in one type-27 item (512 KiB). Its own limit: raising the direct-message
- * limit did not raise it. */
+/** The bytes field 1 of one type-27 item may hold: what one direct message carries (its 8 MiB
+ * of ciphertext). The enclosing frame bounds them further. A reader applies each plugin's own
+ * limit on top ({@link MAX_PLUGIN_ITEM_PAYLOAD_BYTES} unless the plugin declares another). */
+export const MAX_PLUGIN_ITEM_DATA_BYTES = MAX_DM_CIPHERTEXT_BYTES
+/** A plugin's bytes in one type-27 item (512 KiB), unless the plugin declares its own limit. Only
+ * a note to self (`outbox-message`), which carries a copy of a whole sent message, declares
+ * more: up to {@link MAX_PLUGIN_ITEM_DATA_BYTES}. */
 export const MAX_PLUGIN_ITEM_PAYLOAD_BYTES = 524_288
 
 /** Reserved for schema-1 opaque proof-vector ciphertext (S2c). */

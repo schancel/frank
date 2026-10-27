@@ -2887,8 +2887,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // What the look showed frees the main account for whoever waits for it.
               await releaseSettledMainAccounts(wallet, false);
             },
+            // Send to Address, a bot's or a dApp's transfer: to someone else, so never below
+            // the payment floor (`ContactPaymentBelowFloorError`, before anything is signed).
             sendLegacy: (params) =>
-              sendLegacyTransfer({ ...params, recipient: { ...params.recipient } }),
+              sendLegacyTransfer({ ...params, recipient: { ...params.recipient }, recipientOwned: false }),
             async ensureLegacySubAccount(ref) {
               return transactionOwner.runLifetime(async () => {
               requireOpenWallet(wallet);
@@ -3022,6 +3024,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 transactionOwner.runLifetime(() =>
                   legacyTransactions.estimateLegacyMax({
                     recipient: { raw: main },
+                    recipientOwned: true,
                     excludedSourceAccounts: [main],
                   })
                 ).then(
@@ -3057,14 +3060,25 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 value: params.value,
                 ...(params.onProgress ? { onProgress: params.onProgress } : {}),
                 ...(params.onSigned ? { onSigned: params.onSigned } : {}),
+                // The wallet's own account: no payment floor for moving its own value.
+                recipientOwned: true,
                 excludedSourceAccounts: [main],
               });
               // What the main account holds now is read from the chain into its coin.
               await transactionSetRuntime.coinListSync.refreshAccounts([main]).catch(() => undefined);
               return result;
             },
-            estimateLegacyFee: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyFee(params)),
-            estimateLegacyMax: params => transactionOwner.runLifetime(() => legacyTransactions.estimateLegacyMax(params)),
+            // Quoting a move into the wallet's own main account (a swap's consolidation, paid by
+            // `fundMainAccount`) is not held to the payment floor; any other recipient is.
+            estimateLegacyFee: params => transactionOwner.runLifetime(() =>
+              legacyTransactions.estimateLegacyFee({
+                recipient: params.recipient,
+                value: params.value,
+                recipientOwned:
+                  params.recipient.raw.toLowerCase() === mainAccount.address.toLowerCase(),
+              })),
+            estimateLegacyMax: params => transactionOwner.runLifetime(() =>
+              legacyTransactions.estimateLegacyMax({ recipient: params.recipient, recipientOwned: false })),
             getUnresolvedLegacySend: () => [...legacyTransactions.getUnresolvedLegacySend()],
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);

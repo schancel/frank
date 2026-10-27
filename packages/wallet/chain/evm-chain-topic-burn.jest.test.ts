@@ -1,4 +1,5 @@
 import { walletStateLocation } from '../storage/wallet-state-location'
+import { evmPaymentFloorWei } from './payment-floor'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Topic posts and votes use the composed wallet's shared signed transaction graph.
@@ -1249,14 +1250,16 @@ describe('Forum respects native reservations and confirmed nonce transitions (#1
     const x = wallet.pool.records()[0]!
     wallet.pool.setStatus(x.index, 'available')
     const xAddress = x.address.toLowerCase()
-    fake.balances.set(xAddress, WEIGHT + 2n * GAS_LIMIT * GAS_PRICE)
+    // A Send is at least the payment floor; X holds it on top, so the residual is unchanged.
+    const floor = evmPaymentFloorWei(GAS_PRICE)
+    fake.balances.set(xAddress, floor + WEIGHT + 2n * GAS_LIMIT * GAS_PRICE)
     // Main cannot pay, so the Send spends from X, leaving a residual.
     for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
       fake.balances.set(address, 0n)
     replyLost = window === 'pending'
     const send = wallet.sendLegacy!({
       recipient,
-      value: WEIGHT / 2n,
+      value: floor + WEIGHT / 2n,
     })
     if (window === 'pending')
       await expect(send).rejects.toBeInstanceOf(NativeTransactionSubmissionError)

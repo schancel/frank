@@ -383,7 +383,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       await expect(
         alice.sendLegacy!({
           recipient: { raw: recipient },
-          value: 12_345n,
+          // At the payment floor, so only the reserved inputs can refuse it.
+          value: alice.transactionSetPreparer!.transactionSetPolicy().dustWei,
           onSigned,
         }),
       ).rejects.toThrow(/Insufficient available EVM coins/)
@@ -402,9 +403,11 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       await automine(true)
       await settle([first.payloadDigest])
       const rootNonce = await chain.getTransactionCount(main, 'latest')
+      // At the payment floor: a Send below it is refused.
+      const amount = alice.transactionSetPreparer!.transactionSetPolicy().dustWei
       const transfer = await alice.sendLegacy!({
         recipient: { raw: recipient },
-        value: 12_345n,
+        value: amount,
         onSigned,
       })
       expect(onSigned).toHaveBeenCalledTimes(1)
@@ -414,8 +417,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       const mined = (await chain.getTransaction(transfer.txHash))!
       expect(mined.from.toLowerCase()).not.toBe(main.toLowerCase())
       const policy = alice.transactionSetPreparer!.transactionSetPolicy()
-      expect(mined.value).toBeGreaterThanOrEqual(12_345n)
-      expect(mined.value - 12_345n).toBeLessThan(
+      expect(mined.value).toBeGreaterThanOrEqual(amount)
+      expect(mined.value - amount).toBeLessThan(
         policy.dustWei + policy.changeGasLimit * policy.gasPriceWei,
       )
       expect(await chain.getBalance(recipient)).toBe(mined.value)
@@ -429,7 +432,7 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       expect(
         row.members.find(member => member.transactionSet?.role === 'payment')!
           .transactionSet!.intendedValueWei,
-      ).toBe('12345')
+      ).toBe(amount.toString())
       const signed = row.members.map(member => member.signed!.rawTransaction)
       await alice.transactionSetSubmission!.reconcileAuthorized()
       expect(
@@ -455,7 +458,8 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       await expect(
         alice.sendLegacy!({
           recipient: { raw: Wallet.createRandom().address },
-          value: 1n,
+          // At the payment floor, so only the reserved inputs can refuse it.
+          value: alice.transactionSetPreparer!.transactionSetPolicy().dustWei,
           mainAccountWaitMs: 1_500,
           onSigned,
         }),

@@ -4,6 +4,7 @@
  * surface are the offline stand-ins of `canonical-two-wallets.testutil` (unit seam). The same
  * behaviour on real chain software is `monad-parallel-send.anvil.jest.test.ts`.
  */
+import { evmPaymentFloorWei } from './payment-floor'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { SigningKey, Transaction, hexlify, getBytes } from 'ethers'
@@ -1732,7 +1733,11 @@ describe('parallel paid messages', () => {
     expect(successor.state).toBe('unspent')
     expect(successor.nonce).toBeGreaterThan(0)
     const [native, message] = await Promise.allSettled([
-      alice.sendLegacy!({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n }),
+      // At the payment floor: a Send below it is refused before anything is signed.
+      alice.sendLegacy!({
+        recipient: { raw: '0x' + '77'.repeat(20) },
+        value: evmPaymentFloorWei(alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
+      }),
       send(2),
     ])
     expect(native.status).toBe('fulfilled')

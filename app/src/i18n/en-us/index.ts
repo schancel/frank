@@ -1651,6 +1651,10 @@ export const rawEnUS = {
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
     sendMax: 'Max',
     sendMaxUnavailable: 'Cannot work out the most you can send: {reason}',
+    belowMinimum:
+      'That is below the smallest payment of {amount}: ten times the network fee to move it, so the recipient can spend it. Nothing was signed or sent: send at least {amount}.',
+    maxBelowMinimum:
+      'The most you can send now ({max}) is below the smallest payment of {amount}: ten times the network fee to move it. Nothing was signed or sent.',
     irreversibleWarning:
       'Blockchain transactions are irreversible. Verify recipient and network before confirming.',
     editTransfer: 'Edit',

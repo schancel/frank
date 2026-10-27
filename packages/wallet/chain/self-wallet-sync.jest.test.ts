@@ -10,6 +10,7 @@
  * journals, real sealing and opening; only the chain RPC and the relay's HTTP surface are
  * stand-ins (`canonical-two-wallets.testutil.ts`).
  */
+import { evmPaymentFloorWei } from './payment-floor'
 import * as syncDispatch from '@frank/cashweb/sync-dispatcher'
 import * as relayDm from '@frank/cashweb/relay/canonical-dm'
 import type {
@@ -952,7 +953,8 @@ describe("a wallet's sync note to itself", () => {
       one.setMailbox(mailbox)
       const sent = await sender.sendLegacy!({
         recipient: { raw: one.bob.identity.address.raw },
-        value: 1_000n,
+        // At the payment floor: a Send below it is refused.
+        value: evmPaymentFloorWei(sender.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
       })
       await sender.reobserveNativeOperations!()
       await sender.flushNativeSync!()
@@ -1171,7 +1173,8 @@ describe("a wallet's sync note to itself", () => {
       f.chain.nativeTransfers.sendLegacy!({
         wallet: f.alice,
         recipient: f.bob.identity.address,
-        value: 1_000n,
+        // At the payment floor: a Send below it is refused.
+        value: evmPaymentFloorWei(f.alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
       })
     /** What the app's Wallet and Send pages read (`inspectNativeTransferOperations`). */
     const status = async (txHash: string) => {

@@ -1685,6 +1685,10 @@ export const rawFrFR = {
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
     sendMax: 'Max',
     sendMaxUnavailable: 'Impossible de calculer le montant maximal : {reason}',
+    belowMinimum:
+      'C’est moins que le plus petit paiement de {amount} : dix fois les frais de réseau pour le déplacer, afin que le destinataire puisse le dépenser. Rien n’a été signé ni envoyé : envoyez au moins {amount}.',
+    maxBelowMinimum:
+      'Le maximum que vous pouvez envoyer maintenant ({max}) est inférieur au plus petit paiement de {amount} : dix fois les frais de réseau pour le déplacer. Rien n’a été signé ni envoyé.',
     irreversibleWarning:
       'Les transactions sur la blockchain sont irréversibles. Vérifiez le destinataire et le réseau avant de confirmer.',
     editTransfer: 'Modifier',

@@ -252,7 +252,9 @@ Still replica-local; each relay's startup log names them:
      the ruling).
    - Main is not stuck: it puts the contact transfer on the chain before the relay stores the
      message (see the known bug above).
-9. **Send to Address below the floor** to an external address: refuse it, or allow it there?
+9. **Send to Address below the floor** to an external address. Resolved: refuse (2026-10-26).
+   The wallet refuses the transfer, and Send max when everything it can send is below the floor,
+   before anything is signed, and the page names the minimum, as Send to Contact does.
 10. **External deposits in History** need a relay-side index or full block reads. Which one?
 11. **Cross-device rebuild (#1907) gaps:**
     - a nonce taken by a transaction with a different value;

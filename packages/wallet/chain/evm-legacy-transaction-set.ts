@@ -12,7 +12,9 @@ import {
   type EvmNativeOperation,
 } from '../storage/evm-native-operation-journal'
 import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
+import { evmPaymentFloorWei } from './payment-floor'
 import {
+  ContactPaymentBelowFloorError,
   NativeFeeExceededError,
   type ChainAddress,
   type LegacySendProgress,
@@ -36,6 +38,10 @@ export interface SendLegacyParams {
   /** Accepted for the shared transfer contract; a coin-list transfer never waits on the main
    * account, so it is ignored. */
   mainAccountWaitMs?: number
+  /** The recipient is an account of this wallet (funding its main account): the wallet moves
+   * its own value, so the payment floor does not apply. Only the wallet's composition sets
+   * it; a transfer a host or bot asks for is to someone else and is held to the floor. */
+  recipientOwned?: boolean
 }
 
 export class LegacyTransactionSetFailedError extends Error {
@@ -84,6 +90,16 @@ export function createLegacyTransactionSetPayments(options: {
   operations(): readonly EvmNativeOperation[]
   readOperation(operationId: string): Promise<EvmNativeOperation | undefined>
 }) {
+  /** A transfer to someone else is never below the payment floor (`evmPaymentFloorWei` at the
+   * policy's gas price, which is the policy's `dustWei` in the wallet): its recipient could not
+   * move the coin it makes for less than a tenth of its value. Refused before anything is
+   * reserved or signed, as Send to Contact and chat stealth payments refuse it. Call after
+   * `refresh`, so the floor is at the live price. */
+  const requireAtFloor = (valueWei: bigint, recipientOwned: boolean | undefined) => {
+    if (recipientOwned) return
+    const floorWei = evmPaymentFloorWei(options.preparer.transactionSetPolicy().gasPriceWei)
+    if (valueWei < floorWei) throw new ContactPaymentBelowFloorError(valueWei, floorWei)
+  }
   const isSharedLegacy = (row: EvmNativeOperation | undefined): row is EvmNativeOperation =>
     row?.kind === 'transaction-set' && row.preparationId?.startsWith(preparationPrefix) === true
   const isSharedLegacyOperation = async (operationId: string): Promise<boolean> =>
@@ -184,13 +200,15 @@ export function createLegacyTransactionSetPayments(options: {
     },
     resumeLegacySend,
     /** The exact fee the transfer pays: the same selection, change split and member count the
-     * construction makes (`EvmTransactionSetPreparer.quoteLegacyTransactionSet`). */
+     * construction makes (`EvmTransactionSetPreparer.quoteLegacyTransactionSet`). Refused
+     * below the payment floor, as `sendLegacy` is, unless the recipient is the wallet's own. */
     async estimateLegacyFee(
-      params: Pick<SendLegacyParams, 'recipient' | 'value'>,
+      params: Pick<SendLegacyParams, 'recipient' | 'value' | 'recipientOwned'>,
     ): Promise<LegacyFeeEstimate> {
       if (params.value <= 0n)
         throw new RangeError('Transfer value must be positive')
       await options.refresh()
+      requireAtFloor(params.value, params.recipientOwned)
       return feeEstimate(
         await options.preparer.quoteLegacyTransactionSet({
           destination: params.recipient.raw,
@@ -199,9 +217,11 @@ export function createLegacyTransactionSetPayments(options: {
       )
     },
     /** The most one transfer can send now (every coin selection can draw on, less the fees of
-     * moving it) and the exact fee it pays. */
+     * moving it) and the exact fee it pays. Refused (`ContactPaymentBelowFloorError`, naming the
+     * most and the floor) when that is below the payment floor and the recipient is not the
+     * wallet's own. */
     async estimateLegacyMax(
-      params: Pick<SendLegacyParams, 'recipient'> & {
+      params: Pick<SendLegacyParams, 'recipient' | 'recipientOwned'> & {
         excludedSourceAccounts?: readonly string[]
       },
     ): Promise<LegacyMaxEstimate> {
@@ -212,6 +232,7 @@ export function createLegacyTransactionSetPayments(options: {
           ? { excludedSourceAccounts: params.excludedSourceAccounts }
           : {}),
       })
+      requireAtFloor(quote.amountWei, params.recipientOwned)
       return { value: quote.amountWei, ...feeEstimate(quote) }
     },
     /**
@@ -262,6 +283,7 @@ export function createLegacyTransactionSetPayments(options: {
         | 'onProgress'
         | 'onSigned'
         | 'mainAccountWaitMs'
+        | 'recipientOwned'
       > & {
         /** Accounts whose coins this transfer must not spend: funding the main account never
          * pays out of the main account. */
@@ -274,6 +296,10 @@ export function createLegacyTransactionSetPayments(options: {
       const operationId = request.operationId ?? `legacy-${hexlify(randomBytes(16)).slice(2)}`
       if (!/^legacy-[a-zA-Z0-9_-]{1,121}$/.test(operationId))
         throw new Error('Invalid legacy send operation ID')
+      // A caller replaying its own operation (the same `operationId`) gets that operation back,
+      // whatever the floor is now; only a new transfer is held to it.
+      if (!(await options.preparer.readOperation(operationId)))
+        requireAtFloor(request.value, request.recipientOwned)
       let prepared
       try {
         prepared = await options.preparer.constructLegacyTransactionSet({

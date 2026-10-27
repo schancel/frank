@@ -1,4 +1,5 @@
 import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
+import { evmPaymentFloorWei } from './payment-floor'
 import { LevelRecordStore, EVM_COIN_NAMESPACE } from '../storage/evm-coin-store'
 import { NegotiationRecovery, type NegotiationScan } from '../../swap-protocol/src/runtime'
 import { createNativeNegotiationJournalStore } from '../../swap-protocol/src/storage/negotiation-native'
@@ -4610,7 +4611,8 @@ describe('a stamp account a coin-list Send spends from (#1235)', () => {
 
     mockBalances.set(main, 0n)
     replyLost = window === 'pending'
-    const send = f.alice.sendLegacy!({ recipient, value: 100n })
+    // At the payment floor: a Send below it is refused.
+    const send = f.alice.sendLegacy!({ recipient, value: evmPaymentFloorWei(f.alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei) })
     if (window === 'pending') await expect(send).rejects.toThrow()
     else await send
     replyLost = false
@@ -4710,7 +4712,8 @@ describe('a stamp account a coin-list Send spends from (#1235)', () => {
         payloadDigests: [sent.payloadDigest],
       })
       r.broadcasts.length = 0
-      await f.alice.sendLegacy!({ recipient: r.recipient, value: 1n })
+      // At the payment floor: a Send below it is refused.
+      await f.alice.sendLegacy!({ recipient: r.recipient, value: evmPaymentFloorWei(f.alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei) })
       expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).not.toContain(r.xAddress)
       expect(await admission()).toMatchObject({ status: 'ready' })
 
@@ -4746,7 +4749,8 @@ describe('a stamp account a coin-list Send spends from (#1235)', () => {
         payloadDigests: [again.payloadDigest],
       })
       r.broadcasts.length = 0
-      await f.alice.sendLegacy!({ recipient: r.recipient, value: 1n })
+      // At the payment floor: a Send below it is refused.
+      await f.alice.sendLegacy!({ recipient: r.recipient, value: evmPaymentFloorWei(f.alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei) })
       expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).not.toContain(r.xAddress)
       expect(await admission()).toMatchObject({ status: 'ready' })
     },

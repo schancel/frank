@@ -242,6 +242,22 @@ describe('canonical exact request', () => {
       }),
     ).toThrow(/limit/)
   })
+  test('a request of exactly the 12 MiB limit is read; one byte more is refused for its size', () => {
+    expect(CANONICAL_DM_MAX_BYTES).toBe(12 * 1024 * 1024)
+    const at = (size: number) => {
+      try {
+        restoreCanonicalRequest({
+          body: new Uint8Array(size).fill(0x2d),
+          contentType: request().contentType,
+        })
+        return 'restored'
+      } catch (error) {
+        return (error as Error).message
+      }
+    }
+    expect(at(CANONICAL_DM_MAX_BYTES)).not.toMatch(/byte limit/)
+    expect(at(CANONICAL_DM_MAX_BYTES + 1)).toMatch(/Canonical byte limit/)
+  })
   test('oversized context rejects before any ownership copy of body or context', () => {
     const delivery = canonicalTransportFixture().delivery
     const largeContext = new Uint8Array(7 * 1024 * 1024)

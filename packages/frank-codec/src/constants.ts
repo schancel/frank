@@ -4,27 +4,39 @@ export const FRAME_MAGIC = new Uint8Array([0x46, 0x52, 0x4e, 0x4b]) // "FRNK"
 export const FRAME_VERSION = 1
 export const FRAME_HEADER_BYTES = 9
 
-export const MAX_FRAME_BYTES = 8_388_617
-export const MAX_BODY_BYTES = 8_388_608
+/** The stage-1 ceiling (10 MiB body + 9). Only a direct message (types 10 and 11, R2) may be this
+ * large; every other known type is bounded at stage 8.1 by its own limit or by
+ * MAX_GENERAL_FRAME_BYTES. */
+export const MAX_FRAME_BYTES = 10_485_769
+export const MAX_BODY_BYTES = 10_485_760
+/** Root frame of a known type with no limit of its own, and a decrypted type-12 frame (8 MiB body
+ * + 9). Unchanged when the direct-message limit was raised. */
+export const MAX_GENERAL_FRAME_BYTES = 8_388_617
 export const MAX_DEPTH = 32
 export const MAX_CONTAINERS = 16_384
 export const MAX_ITEMS = 131_072
 export const MAX_MAP_ENTRIES = 256
 export const MAX_ARRAY_ELEMENTS = 8_192
-export const MAX_BYTE_STRING_BYTES = 8_388_608
+export const MAX_BYTE_STRING_BYTES = 10_485_760
 export const MAX_TEXT_STRING_BYTES = 262_144
 
 // R2 through R4, applied at stage 8.1.
-export const MAX_DIRECT_MESSAGE_FRAME_BYTES = 1_048_576
+/** R2 (10 MiB): a type-10 delivery and its type-11 payload. It holds the largest crypto-box
+ * envelope (8 MiB + 88) and leaves 2 MiB for the type-11 fields and up to 64 payment members at
+ * their CDDL maxima (about 17 KB each). */
+export const MAX_DIRECT_MESSAGE_FRAME_BYTES = 10_485_760
 export const MAX_DIRECTORY_ATTESTATION_FRAME_BYTES = 262_144
 export const MAX_MESSAGE_ITEMS_TOTAL = 256
 export const MAX_MESSAGE_ITEMS_PER_ARRAY = 256
 export const MAX_PAYMENT_MEMBERS = 64
 /** Most burn transactions one topic post or vote may carry (types 41 and 42). */
 export const MAX_TOPIC_BURNS = 16
-export const MAX_CIPHERTEXT_BYTES = 524_288
+/** Crypto-box ciphertext in one direct message's type-11 schema-2 payload (8 MiB). */
+export const MAX_DM_CIPHERTEXT_BYTES = 8_388_608
 /** Crypto-box's maximum deterministic-CBOR envelope overhead is 88 bytes. */
-export const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES = MAX_CIPHERTEXT_BYTES + 88
+export const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES = MAX_DM_CIPHERTEXT_BYTES + 88
+/** Ciphertext of a type-11 schema-1 payload, kept only for the reserved proof fixture. */
+export const MAX_V1_CIPHERTEXT_BYTES = 524_288
 // R6: topic events.
 export const MAX_TOPIC_FRAME_BYTES = 1_048_576
 export const MAX_TOPIC_VOTE_FRAME_BYTES = 65_536
@@ -66,8 +78,9 @@ export const MAX_EMAIL_RECIPIENTS = 64
 export const MAX_EMAIL_ATTACHMENTS = 16
 /** UTF-8 bytes of a plugin item type identifier (the identifier is ASCII). */
 export const MAX_PLUGIN_ITEM_TYPE_BYTES = 64
-/** A plugin's bytes can never exceed what one encrypted direct message holds (R2). */
-export const MAX_PLUGIN_ITEM_PAYLOAD_BYTES = MAX_CIPHERTEXT_BYTES
+/** A plugin's bytes in one type-27 item (512 KiB). Its own limit: raising the direct-message
+ * limit did not raise it. */
+export const MAX_PLUGIN_ITEM_PAYLOAD_BYTES = 524_288
 
 /** Reserved for schema-1 opaque proof-vector ciphertext (S2c). */
 export const ENCRYPTION_SUITE_PROOF = ENCRYPTION_SUITE.proof

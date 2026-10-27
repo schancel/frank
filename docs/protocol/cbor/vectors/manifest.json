@@ -2521,9 +2521,9 @@
     },
     {
       "id": "env-byte-declared-oversize",
-      "description": "A byte string in the envelope declaring 8,388,609 bytes while truncated: resource wins because the header is checked first.",
+      "description": "A byte string in the envelope declaring 10,485,761 bytes while truncated: resource wins because the header is checked first.",
       "source": "handcrafted",
-      "frame_hex": "46524e4b010000000da4001101010201035a00800001",
+      "frame_hex": "46524e4b010000000da4001101010201035a00a00001",
       "validation_context": {
         "operation": "generic",
         "route_byte_limit": 8388617,
@@ -5650,9 +5650,9 @@
     },
     {
       "id": "limit-byte-string-declared-oversize",
-      "description": "Payload byte string declaring 8,388,609 bytes, truncated: resource, not malformed.",
+      "description": "Payload byte string declaring 10,485,761 bytes, truncated: resource, not malformed.",
       "source": "handcrafted",
-      "frame_hex": "46524e4b010000000ea400160101020103455a00800001",
+      "frame_hex": "46524e4b010000000ea400160101020103455a00a00001",
       "validation_context": {
         "operation": "generic",
         "route_byte_limit": 8388617,

@@ -597,7 +597,7 @@ async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, Stri
         .to_hex();
         let challenge = client
             .post(format!(
-                "{url}/message/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608"
+                "{url}/message/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes={MAX_REQUEST_BYTES}"
             ))
             .header("x-frank-mailbox-subject", &account.subject)
             .send()

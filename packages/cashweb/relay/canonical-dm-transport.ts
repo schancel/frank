@@ -64,7 +64,13 @@ const PROTOCOL_CHAIN_NETWORK_TAGS: Readonly<Record<string, string>> =
     'arbitrum-sepolia': 'ARBS',
   })
 
-export const CANONICAL_DM_MAX_BYTES = 8 * 1024 * 1024
+/**
+ * One direct-message request, and one mailbox page or record (12 MiB). It holds the largest
+ * delivery frame (`MAX_DIRECT_MESSAGE_FRAME_BYTES`, 10 MiB, whose crypto-box envelope is at
+ * most 8 MiB + 88) and 2 MiB for its context (at most 4 KiB), up to 64 raw stamp transactions
+ * and the multipart framing. The relay's `MAX_REQUEST_BYTES` is the same number.
+ */
+export const CANONICAL_DM_MAX_BYTES = 12 * 1024 * 1024
 export const CANONICAL_DM_MAX_STATUS_BYTES = 16 * 1024
 export const CANONICAL_DM_MAX_CONTEXT_BYTES = 4096
 export const CANONICAL_DM_MAX_TRANSACTIONS = 64

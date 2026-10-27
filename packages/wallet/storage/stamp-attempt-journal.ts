@@ -26,6 +26,7 @@ import {
   decodeCanonicalAcceptedStatus,
   type CanonicalExactRequest,
   type CanonicalAcceptedBody,
+  CANONICAL_DM_MAX_BYTES,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
   durableBatch,
@@ -131,7 +132,12 @@ export class LevelStampAttemptJournal implements StampAttemptJournal {
 /** Separate versioned namespace; opening it never rewrites the legacy exact-set journal. */
 const CANONICAL_NAMESPACE = 'canonical-stamp-attempts-v1'
 const CANONICAL_MANIFEST = 'manifest'
-const CANONICAL_MAX_BODY = 8 * 1024 * 1024
+/** The largest request a relay reads, which also bounds the prepared delivery frame. */
+const CANONICAL_MAX_BODY = CANONICAL_DM_MAX_BYTES
+/** Most one stored intent may reserve: its base64 body (4/3 of the maximum) plus its members. */
+const CANONICAL_MAX_INTENT_RESERVATION = 2 * CANONICAL_MAX_BODY
+/** Default journal budget: room for several largest intents pending at once. */
+const CANONICAL_DEFAULT_MAX_BYTES = 8 * CANONICAL_MAX_BODY
 
 export interface CanonicalPreparedAttempt {
   readonly walletBindingId: string
@@ -1035,7 +1041,7 @@ export class LevelCanonicalStampAttemptJournal {
     limits: { maxRecords?: number; maxBytes?: number } = {},
   ) {
     this.maxRecords = limits.maxRecords ?? 1024
-    this.maxBytes = limits.maxBytes ?? 64 * 1024 * 1024
+    this.maxBytes = limits.maxBytes ?? CANONICAL_DEFAULT_MAX_BYTES
     if (
       !Number.isSafeInteger(this.maxRecords) ||
       this.maxRecords < 1 ||
@@ -1551,7 +1557,7 @@ export class LevelCanonicalStampAttemptJournal {
     if (
       !Number.isSafeInteger(row.reservedBytes) ||
       row.reservedBytes < minimum ||
-      row.reservedBytes > 16 * 1024 * 1024
+      row.reservedBytes > CANONICAL_MAX_INTENT_RESERVATION
     )
       canonicalFail('invalid')
     return row

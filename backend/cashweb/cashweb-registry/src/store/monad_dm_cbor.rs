@@ -1909,9 +1909,9 @@ mod large_request_tests {
         owner.read(|| None, |tx| load(tx, hash)).unwrap()
     }
 
-    /// The largest crypto-box envelope a relay admits (`MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES`:
-    /// 512 KiB of ciphertext and its envelope overhead).
-    const LARGEST_ENVELOPE: usize = 524_288 + 88;
+    /// The largest crypto-box envelope a relay admits (8 MiB of ciphertext and its envelope
+    /// overhead).
+    const LARGEST_ENVELOPE: usize = frank_cbor::MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES;
 
     #[test]
     fn a_request_over_the_inline_limit_is_an_object_its_row_references() {
@@ -1920,7 +1920,7 @@ mod large_request_tests {
         let owner = Owner::beside(registry.clone());
         let (input, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
         let body = input.request.body().to_vec();
-        assert!(body.len() > INLINE_LIMIT);
+        assert!(body.len() >= 8 * 1024 * 1024);
         eprintln!(
             "largest admissible direct-message request: {} bytes",
             body.len()

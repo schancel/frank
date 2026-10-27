@@ -7,8 +7,8 @@ import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/pl
  * accepted.
  */
 import {
-  MAX_CIPHERTEXT_BYTES,
   MAX_MESSAGE_ITEMS_PER_ARRAY,
+  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   decodeCanonical,
   encodeCanonical,
   type Encodable,
@@ -785,9 +785,9 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ['itemFrames: an empty frame', [8], [new Uint8Array(0)]],
       ['itemFrames: a frame as hex text', [8], ['a1006568656c6c6f']],
       [
-        `itemFrames: a frame over ${MAX_CIPHERTEXT_BYTES} bytes`,
+        `itemFrames: a frame over ${MAX_PLUGIN_ITEM_PAYLOAD_BYTES} bytes`,
         [8],
-        [new Uint8Array(MAX_CIPHERTEXT_BYTES + 1)],
+        [new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1)],
       ],
       ...each('text', [9], ['', 'x'.repeat(16_385)]),
     ],

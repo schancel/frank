@@ -54,9 +54,9 @@ variables.
 | Event bus | Publish only on wakeup; websocket fallback invents a timestamp when the row is missing | Publish after every new commit on `frank.<cluster>.dm.<addr>` / `frank.<cluster>.grp.<id>`. Drop a hint whose row is missing; the client catches up from its cursor. |
 
 FoundationDB limits shape the large-value rule: 100 KB per value, 10 MB and 5 s per
-transaction. Values that can be larger are DM requests (an 8 MiB HTTP limit, but
-the codec admits about 0.53 MB: see step 6), group messages (about
-2 MiB stored), profiles, forum and DM frames (up to 1 MiB), directory evidence (up to 256 KiB)
+transaction. Values that can be larger are DM requests (up to 12 MiB, holding up to 8 MiB
+of ciphertext: see step 6), group messages (about
+2 MiB stored), profiles, forum frames (up to 1 MiB), DM frames (up to 10 MiB), directory evidence (up to 256 KiB)
 and forward bodies. These are inlined up to 64 KiB and stored in S3 above that. Each
 upload is its own S3 object, `<namespace>/sha256/<hex>/<upload-id>`: content-verified on
 read and unique per upload, so equal content is not deduplicated and deleting one upload
@@ -129,12 +129,17 @@ Each PR is reviewed and merged on its own. Acceptance runs in the compose cluste
      references is left to the orphan sweep. While S3 is down, admitting a request over 64 KiB
      fails as unavailable with nothing stored (decision E); smaller requests do not need S3.
      There is no FDB splitting.
-   - Request size: the HTTP limit is 8 MiB, but the codec bounds what a relay admits: a
-     direct-message frame holds one crypto-box envelope of at most 524,376 bytes (512 KiB of
-     ciphertext), stamps are calldata-free transfers, at most 64. The largest admissible request
-     is therefore about 0.53 MB (a unit test admits one of 525,850 bytes with one stamp), and an
-     8 MiB request cannot round-trip. The livecheck sends the largest message a client seals,
-     reads it back on B and C, and finds its object in MinIO.
+   - Request size (owner decision, 2026-10-26): a direct message holds up to 8 MiB
+     (8,388,608 bytes) of ciphertext, so its crypto-box envelope is at most 8,388,696 bytes. A
+     direct-message frame (types 10 and 11) is at most 10 MiB, which fits that envelope plus 64
+     stamps at their schema maxima. A relay reads a request of at most 12 MiB: the frame, up to
+     4 KiB of context, 64 raw transactions and the multipart framing; one byte more is 413. The
+     same 12 MiB is the mailbox page budget. Other frame types keep their limits (8 MiB + 9
+     bytes for types without their own limit). A sealed message is still capped at about
+     512 KiB, because its note to self is a plugin item, whose limit was not raised; a message
+     that names its sender can use the full 8 MiB. The livecheck sends a message whose envelope
+     is exactly the maximum, reads it back on B and C, finds its object in MinIO, and checks
+     that a request one byte over 12 MiB is refused with nothing stored.
 7. **Registry `Db` port.** Accept: a username claimed concurrently on A and B has one winner, and the indexes agree; a profile replaced on A shows only its new index rows on B.
 8. **Directory port.** Accept: an entry published on A resolves on B; conflicting revisions on A and B leave one accepted and no fork; a forward interrupted by killing A is delivered exactly once.
 9. **Forum port.** Accept: a cursor from A works on B; one burn presented to A and B gives one post.

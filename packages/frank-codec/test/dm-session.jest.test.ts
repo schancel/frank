@@ -7,7 +7,7 @@ import {
   FrankCodecError,
   FrankContextError,
   fromHex,
-  MAX_FRAME_BYTES,
+  MAX_GENERAL_FRAME_BYTES,
   parseFrame,
   type Encodable,
   type Operation,
@@ -261,7 +261,7 @@ describe('opaque DM structural continuation', () => {
     )
   })
 
-  it('does not charge plaintext against route bytes, but checks MAX_FRAME_BYTES before header', () => {
+  it('does not charge plaintext against route bytes, but checks MAX_GENERAL_FRAME_BYTES before header', () => {
     const r = encrypted(),
       c = content('x'.repeat(r.length * 2))
     const session = beginDirectMessageValidation(
@@ -272,7 +272,7 @@ describe('opaque DM structural continuation', () => {
     expect(session.completeAuthenticatedContent(c).content.typeId).toBe(
       TYPE_ENCRYPTED_MESSAGE_CONTENT,
     )
-    expect(outcome(() => finish(r, new Uint8Array(MAX_FRAME_BYTES + 1)))).toBe(
+    expect(outcome(() => finish(r, new Uint8Array(MAX_GENERAL_FRAME_BYTES + 1)))).toBe(
       'resource@1',
     )
     expect(

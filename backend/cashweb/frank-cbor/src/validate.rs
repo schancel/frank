@@ -20,7 +20,7 @@ use crate::error::{CodecError, ContextError, Error, ErrorCategory, ErrorStage};
 use crate::hash::{directory_signature_digest, key_transition_signature_digest};
 use crate::limits::{
     is_known_type, ENCRYPTION_SUITE_DM_AUTH_XCHACHA, FRAME_HEADER_BYTES, FRAME_MAGIC,
-    FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES, MAX_MESSAGE_ITEMS_TOTAL,
+    FRAME_VERSION, KNOWN_TYPES, MAX_FRAME_BYTES, MAX_GENERAL_FRAME_BYTES, MAX_MESSAGE_ITEMS_TOTAL,
 };
 use crate::message_types::{
     TYPE_DIRECTORY_STATEMENT, TYPE_DIRECT_MESSAGE_DELIVERY, TYPE_KEY_TRANSITION_STATEMENT,
@@ -1512,16 +1512,16 @@ impl DirectMessageValidationSession {
 
     /// The caller MUST authenticate these bytes before calling. This resumes required
     /// type-12 validation with the actual original graph counters and nesting depth.
-    /// The plaintext has its own MAX_FRAME_BYTES bound, not a second route-byte charge.
+    /// The plaintext has its own MAX_GENERAL_FRAME_BYTES bound, not a second route-byte charge.
     pub fn complete_authenticated_content(
         self,
         bytes: &[u8],
     ) -> Result<DirectMessageValidatedContent, Error> {
-        if bytes.len() > MAX_FRAME_BYTES {
+        if bytes.len() > MAX_GENERAL_FRAME_BYTES {
             return Err(Error::Codec(fail(
                 ErrorCategory::Resource,
                 ErrorStage::S1,
-                "decrypted frame exceeds MAX_FRAME_BYTES",
+                "decrypted frame exceeds MAX_GENERAL_FRAME_BYTES",
                 &self.location,
             )));
         }

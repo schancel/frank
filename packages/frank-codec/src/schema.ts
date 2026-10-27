@@ -76,7 +76,9 @@ import {
   MAX_CHANNEL_APP_STATE_BYTES,
   MAX_CHANNEL_SIGNATURES,
   MAX_CHANNEL_UPDATE_FRAME_BYTES,
-  MAX_CIPHERTEXT_BYTES,
+  MAX_V1_CIPHERTEXT_BYTES,
+  MAX_GENERAL_FRAME_BYTES,
+  MAX_DIRECT_MESSAGE_FRAME_BYTES,
   MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
@@ -366,7 +368,8 @@ export function isPluginItemType(value: unknown): value is string {
   )
 }
 
-/** Root frame length limits of R2 and R3. Only a root frame is charged. */
+/** Root frame length limits of R2, R3 and R6. Only a root frame is charged. A known type with no
+ * limit of its own is bounded by MAX_GENERAL_FRAME_BYTES. */
 export function checkRootFrameLimit(
   typeId: number,
   frameLength: number,
@@ -387,7 +390,11 @@ export function checkRootFrameLimit(
     return frameLength <= MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
     return frameLength <= 262_144
-  if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
+  if (
+    typeId === TYPE_DIRECT_MESSAGE_DELIVERY ||
+    typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+  )
+    return frameLength <= MAX_DIRECT_MESSAGE_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_ATTESTATION) return frameLength <= 262_144
   if (typeId === TYPE_TOPIC_POST || typeId === TYPE_TOPIC_POST_SUBMISSION)
     return frameLength <= MAX_TOPIC_FRAME_BYTES
@@ -397,7 +404,7 @@ export function checkRootFrameLimit(
     return frameLength <= MAX_FORUM_VIEW_BYTES
   if (typeId === TYPE_FORUM_TOPIC_PAGE || typeId === TYPE_FORUM_DISCOVERY_PAGE)
     return frameLength <= MAX_FORUM_PAGE_BYTES
-  return frameLength <= MAX_FRAME_BYTES
+  return frameLength <= MAX_GENERAL_FRAME_BYTES
 }
 
 /** A topic event's burn set (types 41 and 42): 1..16 distinct raw transactions. */
@@ -480,7 +487,7 @@ export function checkTypeLimits(
           over('crypto-box envelope')
       } else {
         const c = f(RECIPIENT_ENCRYPTED_PAYLOAD_V1.ciphertext)
-        if (c instanceof Uint8Array && c.length > MAX_CIPHERTEXT_BYTES)
+        if (c instanceof Uint8Array && c.length > MAX_V1_CIPHERTEXT_BYTES)
           over('ciphertext')
       }
       break
@@ -1525,7 +1532,7 @@ export function parseDraft(
           m.get(K.ciphertext),
           at(P, K.ciphertext),
           1,
-          MAX_CIPHERTEXT_BYTES,
+          MAX_V1_CIPHERTEXT_BYTES,
         ),
         ephemeralPoint: point(m.get(K.ephemeralPoint), at(P, K.ephemeralPoint)),
         sharedPoint: point(m.get(K.sharedPoint), at(P, K.sharedPoint)),

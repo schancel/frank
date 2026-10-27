@@ -513,7 +513,7 @@ describe('encryption suites', () => {
       if (!result.ok) expect(result.error.code).toBe('envelope')
     }
 
-    const oversized = new Uint8Array(1_114_220)
+    const oversized = new Uint8Array(16_842_860)
     oversized[0] = 0xa6
     expect(decodeEnvelope(oversized)).toBeNull()
     const overBound = open({
@@ -615,7 +615,7 @@ describe('encryption suites', () => {
       [legacy.slice(0, 89), 'envelope'],
       [legacy.slice(0, 90), 'open-failed'],
       [Uint8Array.of(0x02), 'envelope'],
-      [new Uint8Array(1_114_202).fill(0x01), 'envelope'],
+      [new Uint8Array(16_842_842).fill(0x01), 'envelope'],
     ] as const) {
       const result = open({
         envelope,
@@ -731,9 +731,9 @@ describe('encryption suites', () => {
     })
     expect(sealed.ok).toBe(true)
     if (!sealed.ok) return
-    expect(sealed.value).toHaveLength(1_114_219)
+    expect(sealed.value).toHaveLength(16_842_859)
     expect(sealed.value.slice(CIPHERTEXT_HEAD_OFFSET, 88)).toEqual(
-      Uint8Array.of(0x5a, 0x00, 0x11, 0x00, 0x13),
+      Uint8Array.of(0x5a, 0x01, 0x01, 0x00, 0x13),
     )
     const opened = open({
       envelope: sealed.value,

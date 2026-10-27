@@ -17,10 +17,15 @@ pub const FRAME_HEADER_BYTES: usize = 9;
 /// The only frame version this reader interprets.
 pub const FRAME_VERSION: u8 = 1;
 
-/// Complete frame, including the nine-byte header.
-pub const MAX_FRAME_BYTES: usize = 8_388_617;
+/// Complete frame, including the nine-byte header: the stage-1 ceiling (10 MiB body + 9). Only a
+/// direct message (types 10 and 11, R2) may be this large; every other known type is bounded at
+/// stage 8.1 by its own limit or by [`MAX_GENERAL_FRAME_BYTES`].
+pub const MAX_FRAME_BYTES: usize = 10_485_769;
 /// Envelope CBOR body.
-pub const MAX_BODY_BYTES: usize = 8_388_608;
+pub const MAX_BODY_BYTES: usize = 10_485_760;
+/// Root frame of a known type that has no limit of its own, and a decrypted type-12 frame
+/// (8 MiB body + 9). Unchanged when the direct-message limit was raised.
+pub const MAX_GENERAL_FRAME_BYTES: usize = 8_388_617;
 /// Nested arrays and maps, including the envelope and the payload.
 pub const MAX_DEPTH: u32 = 32;
 /// Arrays plus maps in one validation operation.
@@ -31,13 +36,16 @@ pub const MAX_ITEMS: u32 = 131_072;
 pub const MAX_MAP_ENTRIES: usize = 256;
 /// Elements in any one array.
 pub const MAX_ARRAY_ELEMENTS: usize = 8_192;
-/// Any byte string before a type-specific limit.
-pub const MAX_BYTE_STRING_BYTES: usize = 8_388_608;
+/// Any byte string before a type-specific limit: the body limit, so a frame bounds it first.
+pub const MAX_BYTE_STRING_BYTES: usize = 10_485_760;
 /// Any UTF-8 text string.
 pub const MAX_TEXT_STRING_BYTES: usize = 262_144;
 
-/// R2 direct-message frame limit.
-pub(crate) const MAX_DIRECT_MESSAGE_FRAME_BYTES: usize = 1_048_576;
+/// R2 direct-message frame limit (10 MiB), for a type-10 delivery and its type-11 payload. It
+/// holds the largest crypto-box envelope ([`MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES`], 8 MiB + 88) and
+/// leaves 2 MiB for the type-11 fields and up to 64 payment members at their CDDL maxima (about
+/// 17 KB each).
+pub const MAX_DIRECT_MESSAGE_FRAME_BYTES: usize = 10_485_760;
 /// R3 directory-attestation frame limit.
 pub(crate) const MAX_DIRECTORY_ATTESTATION_FRAME_BYTES: usize = 262_144;
 /// R2 message items across one opened item graph.
@@ -57,10 +65,12 @@ pub(crate) const MAX_FORUM_ENTRIES: usize = 64;
 pub(crate) const MAX_FORUM_CURSOR_BYTES: usize = 2048;
 /// Payment members in one delivery.
 pub(crate) const MAX_PAYMENT_MEMBERS: usize = 64;
-/// Ciphertext bytes in one recipient payload.
-pub(crate) const MAX_CIPHERTEXT_BYTES: usize = 524_288;
+/// Crypto-box ciphertext in one direct message's type-11 schema-2 payload (8 MiB).
+pub const MAX_DM_CIPHERTEXT_BYTES: usize = 8_388_608;
 /// Complete deterministic-CBOR crypto-box envelope, including bounded overhead.
-pub(crate) const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES: usize = MAX_CIPHERTEXT_BYTES + 88;
+pub const MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES: usize = MAX_DM_CIPHERTEXT_BYTES + 88;
+/// Ciphertext of a type-11 schema-1 payload, kept only for the reserved proof fixture.
+pub(crate) const MAX_V1_CIPHERTEXT_BYTES: usize = 524_288;
 /// Relay bindings in one statement.
 pub(crate) const MAX_RELAY_BINDINGS: usize = 32;
 /// Signature entries in one attestation.

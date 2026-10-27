@@ -24,9 +24,13 @@
  *   5. A killed while admitting a paid message: the wallet's retry goes to B, and the message is
  *      kept once with its payment made once (twice, killed before and after A answers);
  *   6. with NATS stopped, a message is still kept and the reader catches up from its cursor;
- *   7. a message near the largest a client can seal (512 KiB of ciphertext), admitted on A, reads back
+ *   7. the largest direct message the codec admits (a crypto-box envelope of exactly 8 MiB + 88
+ *      bytes, a request of more than 8 MiB), paid and sent with its sender named, admitted on A, reads back
  *      unchanged on B and on C, and its request is one object in MinIO (a request over 64 KiB is
- *      stored in S3, not in FoundationDB; FRANK_DM_LAB_LARGE=0 skips it).
+ *      stored in S3, not in FoundationDB). Sealed, the same message is refused before anything is
+ *      sent: its note to self would not fit the 512 KiB plugin item that carries it. A request one
+ *      byte over the relay's limit is refused with 413 and nothing is stored
+ *      (FRANK_DM_LAB_LARGE=0 skips the step).
  *
  * Every wallet's funds go back to the faucet at the end, also after a failure (`returnToFaucet`).
  *
@@ -50,6 +54,15 @@ import { openMonadWallet, returnToFaucet } from './monad-wallets'
 import type { RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
+import { SealedSelfCopyTooLargeError } from '@frank/wallet/chain/canonical-dm'
+import { CANONICAL_DM_MAX_BYTES } from '@frank/cashweb/relay/canonical-dm-transport'
+import type { MessageItem } from '@frank/cashweb/types/messages'
+import {
+  MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
+  TYPE_DIRECT_MESSAGE_DELIVERY,
+  TYPE_RECIPIENT_ENCRYPTED_PAYLOAD,
+  parseFrame,
+} from '@frank/codec'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const LABS = join(REPO_ROOT, 'backend', 'labs')
@@ -62,11 +75,12 @@ type Relay = keyof typeof RELAYS
 const ALL: Relay[] = ['a', 'b', 'c']
 const FUND_WEI = parseEther('50')
 const BURST = Number(process.env.FRANK_DM_LAB_BURST ?? 60)
-/** Near the most a client seals into one direct message: the codec bounds its ciphertext at
- * 512 KiB (MAX_CIPHERTEXT_BYTES), padding included. Far over the 64 KiB a relay keeps inline, so
- * the request is an object in the large-value store (MinIO). The relay's unit tests admit the
- * largest request the codec allows. */
-const LARGE_TEXT_BYTES = Number(process.env.FRANK_DM_LAB_LARGE_BYTES ?? 400_000)
+/** Step 7's message: 33 text items (a text item holds at most 256 KiB), the last one sized so
+ * the crypto-box envelope is exactly the codec's limit (MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES). */
+const LARGE_ITEMS = 33
+const LARGE_ITEM_BYTES = 254_000
+/** The relay's request limit (MAX_REQUEST_BYTES, the client's CANONICAL_DM_MAX_BYTES). */
+const REQUEST_LIMIT = CANONICAL_DM_MAX_BYTES
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> {
   return new Promise((resolveRun, reject) => {
@@ -584,15 +598,14 @@ async function main() {
       proxy.reset()
     }
 
-    // 7. A message near the largest a client can seal: admitted on A, its request is an object in
-    // MinIO, and it reads back byte for byte on B and on C.
+    // 7. The largest direct message: admitted on A, its request is an object in MinIO, and it
+    // reads back byte for byte on B and on C.
     if (process.env.FRANK_DM_LAB_LARGE !== '0') {
-      // A text item holds at most 256 KiB, so the message is many of them.
       const tag = randomBytes(8).toString('hex')
-      const texts = Array.from({ length: Math.ceil(LARGE_TEXT_BYTES / 200_000) }, (_, i) => `${tag} ${i} ` + 'x'.repeat(200_000))
-      // Every request A answered. A send is two requests: the message to Bob and Alice's sealed
-      // note to self (`deliverSealedSelfCopy`), which for a message this size is also an object in
-      // MinIO. A resend reseals, so the stored message is whichever request the replicas read back.
+      const texts = (last: number) =>
+        Array.from({ length: LARGE_ITEMS }, (_, i) => `${tag} ${String(i).padStart(2, '0')} ` + 'x'.repeat(i === LARGE_ITEMS - 1 ? last : LARGE_ITEM_BYTES))
+      const items = (all: string[]): MessageItem[] => all.map(text => ({ type: 'text' as const, text }))
+      // Every request A answered, and what B and C answered reads with.
       const puts: Array<{ request: Captured; status: number }> = []
       let readFrom: Relay = 'b'
       const reads: Array<{ relay: Relay; body: Buffer }> = []
@@ -604,16 +617,54 @@ async function main() {
         else reads.push({ relay, body: answer.body })
         return answer
       }
-      const digest = await alice.send(bob.address, texts.map(text => ({ type: 'text' as const, text })), 0n)
-      const got = await bob.receive(message => message.payloadDigest === digest, 60_000)
-      const textsOf = (items: readonly (typeof got.items)[number][]) => items.flatMap(item => (item.type === 'text' ? [item.text] : []))
-      assert.deepEqual(textsOf(got.items), texts, 'bob received the large message')
-      // The push may have come over the websocket; read the mailbox from B, then from C.
+      // Sent with its sender named: a sealed message's note to self carries a copy of every item
+      // in one plugin item of at most 512 KiB, so a sealed message this large is refused (below).
+      const sendNamed = async (all: string[], stampValue: bigint) =>
+        (
+          await alice.chain.directMessages.send({
+            wallet: alice.handle,
+            recipient: { raw: bob.address },
+            items: items(all),
+            stampValue,
+          })
+        ).payloadDigest
+      const envelopeOf = (request: Captured): number => {
+        const parsed = parseFrame(deliveryPart(request))
+        const payload = parsed.kind === 'parsed' && parsed.typed?.type === TYPE_DIRECT_MESSAGE_DELIVERY ? parsed.typed.payloadFrame.typed : undefined
+        assert.ok(payload?.type === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD && payload.schemaVersion === 2, 'a schema-2 payload')
+        return payload.cryptoBoxEnvelope.length
+      }
+      // A first message of the same shape measures the envelope; it grows byte for byte with the
+      // text, so the last item is then sized to make the envelope exactly the codec's limit.
+      const probeLast = 200_000
+      await sendNamed(texts(probeLast), 0n)
+      const probe = puts.find(put => put.status < 300)
+      assert.ok(probe, `A admitted the first large message (A answered ${puts.map(put => put.status).join(', ')})`)
+      const last = probeLast + MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES - envelopeOf(probe.request)
+      puts.length = 0
+      const sealedRefusal = await alice.send(bob.address, items(texts(last)), 0n).then(
+        () => undefined,
+        (err: unknown) => err,
+      )
+      assert.ok(sealedRefusal instanceof SealedSelfCopyTooLargeError, `sealed, it is refused for its note to self (${String(sealedRefusal)})`)
+      assert.equal(puts.length, 0, 'the refused sealed send handed nothing to the relay')
+      const largest = texts(last)
+      // Paid, so it goes through the stamp path and the wallet's attempt journal too.
+      const digest = await sendNamed(largest, stamp)
+      const got = await bob.receive(message => message.payloadDigest === digest, 120_000)
+      assert.ok(got.stampValueWei >= stamp, `bob was paid the stamp (${got.stampValueWei} < ${stamp})`)
+      for (const payment of got.stampPayments) {
+        const receipt = await monad.provider.waitForTransaction(payment.txHash, 1, 120_000)
+        assert.equal(receipt?.status, 1, `stamp payment ${payment.txHash} mined`)
+      }
+      const textsOf = (all: readonly (typeof got.items)[number][]) => all.flatMap(item => (item.type === 'text' ? [item.text] : []))
+      assert.deepEqual(textsOf(got.items), largest, 'bob received the largest message')
+      // Read the mailbox from B, then from C.
       for (const relay of ['b', 'c'] as const) {
         readFrom = relay
         const scan = await bob.chain.directMessages.scanAuthenticatedMailbox!({ wallet: bob.handle, sinceMs: 0 })
         const record = scan.records.find(r => r.payloadDigest === digest)
-        assert.deepEqual(record && textsOf(record.items), texts, `the large message reads back on ${relay.toUpperCase()}`)
+        assert.deepEqual(record && textsOf(record.items), largest, `the largest message reads back on ${relay.toUpperCase()}`)
       }
       // The request A admitted is the one whose exact delivery frame B and C both answered.
       const admitted = puts
@@ -626,6 +677,8 @@ async function main() {
         admitted,
         `B and C answered the exact delivery frame of a request A admitted (A answered ${puts.map(put => put.status).join(', ')})`,
       )
+      assert.equal(envelopeOf(admitted), MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, 'its envelope is the largest the codec admits')
+      assert.ok(admitted.body.length >= 8 * 1024 * 1024, `its request is at least 8 MiB (${admitted.body.length} bytes)`)
       const sha256 = createHash('sha256').update(admitted.body).digest('hex')
       const all = await lab.messageObjects()
       const objects = all.filter(object => object.key.startsWith(`lab/messages/sha256/${sha256}/`))
@@ -634,11 +687,23 @@ async function main() {
         `an object under lab/messages/sha256/${sha256}/ in MinIO; it holds ${all.map(o => `${o.key} (${o.sha256})`).join(', ') || 'none'}`,
       )
       for (const object of objects) assert.equal(object.sha256, sha256, `${object.key} holds the request`)
-      const bytes = texts.reduce((sum, text) => sum + text.length, 0)
+      const bytes = largest.reduce((sum, text) => sum + text.length, 0)
       console.log(
-        `7. a message of ${texts.length} text items, ${bytes} bytes (request ${admitted.body.length} bytes; A answered ${puts.map(put => put.status).join(', ')}) admitted on A ` +
+        `7. the largest message, paid ${got.stampValueWei} wei in ${got.stampPayments.length} payment(s), ${largest.length} text items, ${bytes} bytes (envelope ${MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES} bytes, request ${admitted.body.length} bytes; A answered ${puts.map(put => put.status).join(', ')}), admitted on A, ` +
           `read back unchanged on B and C; MinIO holds it at ${objects.map(o => o.key).join(', ')}`,
       )
+      console.log(`   sealed, the same message was refused before anything was sent: ${sealedRefusal.message}`)
+      // One byte over the relay's request limit: refused before it is read, nothing stored.
+      const before = (await lab.messageObjects()).length
+      const oversized = await fetch(`http://127.0.0.1:${RELAYS.a}/message`, {
+        method: 'PUT',
+        headers: { 'content-type': 'multipart/form-data; boundary=frank-oversized' },
+        body: new Uint8Array(REQUEST_LIMIT + 1).fill(0x2d),
+      })
+      const refusal = (await oversized.json()) as { error?: string }
+      assert.equal(oversized.status, 413, `a request of ${REQUEST_LIMIT + 1} bytes is refused (${oversized.status} ${JSON.stringify(refusal)})`)
+      assert.equal((await lab.messageObjects()).length, before, 'the refused request stored nothing in MinIO')
+      console.log(`   a request of ${REQUEST_LIMIT + 1} bytes (one over the limit) was refused on A with ${oversized.status} ${refusal.error}; MinIO still holds ${before} objects`)
       proxy.reset()
     }
 

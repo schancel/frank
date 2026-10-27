@@ -31,8 +31,8 @@ import sys
 import jsonschema
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'protocol', 'cbor'))
-MAX_FRAME, MAX_DEPTH, MAX_CONT, MAX_ITEMS = 8388617, 32, 16384, 131072
-MAX_MAP, MAX_ARR, MAX_BSTR, MAX_TSTR = 256, 8192, 8388608, 262144
+MAX_FRAME, MAX_DEPTH, MAX_CONT, MAX_ITEMS = 10485769, 32, 16384, 131072
+MAX_MAP, MAX_ARR, MAX_BSTR, MAX_TSTR = 256, 8192, 10485760, 262144
 # Type identifiers come from the registry (docs/protocol/message-types/v1.json), by key.
 TYPE = {t['key']: t['id'] for t in json.load(
     open(os.path.join(ROOT, '..', 'message-types', 'v1.json')))['types']}

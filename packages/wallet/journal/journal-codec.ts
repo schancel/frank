@@ -5,8 +5,8 @@
  * - `journal-checkpoint` ({@link JournalCheckpointItem})
  */
 import {
-  MAX_CIPHERTEXT_BYTES,
   MAX_MESSAGE_ITEMS_PER_ARRAY,
+  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
   standaloneItemBudget,
 } from '@frank/codec'
 import type {
@@ -41,14 +41,16 @@ import {
 export const MAX_JOURNAL_SUBJECT_BYTES = 160
 /**
  * A note to self carries a sent message's item frames (`itemFrames`, field 8) so the account's
- * other devices show what was sent. Its limits are the direct message's own, from the codec, not a
- * number of its own: as many frames as one message may hold, each as large as the encrypted
- * content that holds it may be. The frames travel as byte strings, so the note is not twice the
- * size of the message. The whole note is a direct message too, so it is bounded as one; a sealed
- * send whose note would not fit is refused before anything is paid (`canonical-dm.ts`).
+ * other devices show what was sent. Its limits come from the codec, not a number of its own: as
+ * many frames as one message may hold, each at most as large as the generic plugin item (type 27)
+ * that carries the whole note may be. The frames travel as byte strings, so the note is not twice
+ * the size of the message. The note's item is bounded by the plugin item limit (512 KiB), well
+ * under a direct message's (8 MiB of ciphertext): a sealed send whose note would not fit is
+ * refused before anything is paid (`canonical-dm.ts`), so a sealed message is at most about
+ * 512 KiB while an unsealed one may use the whole direct-message limit.
  */
 export const MAX_OUTBOX_ITEM_FRAMES = MAX_MESSAGE_ITEMS_PER_ARRAY
-export const MAX_OUTBOX_ITEM_FRAME_BYTES = MAX_CIPHERTEXT_BYTES
+export const MAX_OUTBOX_ITEM_FRAME_BYTES = MAX_PLUGIN_ITEM_PAYLOAD_BYTES
 export const MAX_CHECKPOINT_CONVERSATIONS = 1024
 export const MAX_CHECKPOINT_TOMBSTONES_PER_CONVERSATION = 1024
 

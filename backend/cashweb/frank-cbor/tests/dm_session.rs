@@ -14,7 +14,7 @@ use frank_cbor::message_types::{
 use frank_cbor::{
     begin_direct_message_validation, cbor_map, default_context, encode_frame, parse_frame,
     CborValue, ChildFrame, DirectMessageValidatedContent, EnvelopeFields, Error, FramePayload,
-    Operation, ParsedFrame, TypedPayload, ValidationResult, MAX_FRAME_BYTES,
+    Operation, ParsedFrame, TypedPayload, ValidationResult, MAX_GENERAL_FRAME_BYTES,
 };
 
 fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
@@ -300,7 +300,7 @@ fn plaintext_bound_is_not_route_bound() {
         "parsed"
     );
     assert_eq!(
-        outcome(finish(&r, &vec![0; MAX_FRAME_BYTES + 1])),
+        outcome(finish(&r, &vec![0; MAX_GENERAL_FRAME_BYTES + 1])),
         "resource@1"
     );
     ctx.route_byte_limit -= 1;

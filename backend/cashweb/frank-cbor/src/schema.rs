@@ -3,12 +3,13 @@
 use crate::cbor::CborValue;
 use crate::error::{CodecError, ErrorCategory, ErrorStage};
 use crate::limits::{
-    ENCRYPTION_SUITE_DM_AUTH_XCHACHA, ENCRYPTION_SUITE_PROOF, MAX_CIPHERTEXT_BYTES,
+    ENCRYPTION_SUITE_DM_AUTH_XCHACHA, ENCRYPTION_SUITE_PROOF,
     MAX_DIRECTORY_ATTESTATION_FRAME_BYTES, MAX_DIRECT_MESSAGE_FRAME_BYTES,
     MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES, MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_FRAME_BYTES,
-    MAX_JOURNAL_FACTS, MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS, MAX_PAYMENT_MEMBERS,
-    MAX_RELAY_BINDINGS, MAX_SIGNATURES, MAX_TEXT_STRING_BYTES, MAX_TOPIC_BODY_BYTES,
-    MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
+    MAX_GENERAL_FRAME_BYTES, MAX_JOURNAL_FACTS, MAX_MESSAGE_ITEMS_PER_ARRAY, MAX_OPAQUE_SECTIONS,
+    MAX_PAYMENT_MEMBERS, MAX_RELAY_BINDINGS, MAX_SIGNATURES, MAX_TEXT_STRING_BYTES,
+    MAX_TOPIC_BODY_BYTES, MAX_TOPIC_FRAME_BYTES, MAX_TOPIC_VOTE_FRAME_BYTES,
+    MAX_V1_CIPHERTEXT_BYTES,
 };
 use crate::limits::{
     MAX_FORUM_CURSOR_BYTES, MAX_FORUM_ENTRIES, MAX_FORUM_PAGE_BYTES, MAX_FORUM_ROWS,
@@ -387,7 +388,8 @@ fn timestamp(v: Option<&CborValue>, path: &str) -> Result<Timestamp, CodecError>
     })
 }
 
-/// Root frame length limits of R2 and R3. Only a root frame is charged by the caller.
+/// Root frame length limits of R2, R3 and R6. Only a root frame is charged by the caller. A
+/// known type with no limit of its own is bounded by [`MAX_GENERAL_FRAME_BYTES`].
 pub(crate) fn check_root_frame_limit(
     type_id: u32,
     frame_length: usize,
@@ -399,7 +401,7 @@ pub(crate) fn check_root_frame_limit(
     if type_id == TYPE_DIRECTORY_STATEMENT && schema_version >= 4 {
         return frame_length <= MAX_DIRECTORY_ATTESTATION_FRAME_BYTES;
     }
-    if type_id == TYPE_DIRECT_MESSAGE_DELIVERY {
+    if type_id == TYPE_DIRECT_MESSAGE_DELIVERY || type_id == TYPE_RECIPIENT_ENCRYPTED_PAYLOAD {
         return frame_length <= MAX_DIRECT_MESSAGE_FRAME_BYTES;
     }
     if type_id == TYPE_FORWARDING_DELIVERY_ENVELOPE {
@@ -420,7 +422,7 @@ pub(crate) fn check_root_frame_limit(
     if type_id == TYPE_FORUM_TOPIC_PAGE || type_id == TYPE_FORUM_DISCOVERY_PAGE {
         return frame_length <= MAX_FORUM_PAGE_BYTES;
     }
-    frame_length <= MAX_FRAME_BYTES
+    frame_length <= MAX_GENERAL_FRAME_BYTES
 }
 
 fn too_many(v: Option<&CborValue>, limit: usize) -> bool {
@@ -507,7 +509,7 @@ pub(crate) fn check_type_limits(
             } else if let Some(CborValue::Bytes(bytes)) =
                 map_field(payload, mf::recipient_encrypted_payload_v1::CIPHERTEXT)
             {
-                if bytes.len() > MAX_CIPHERTEXT_BYTES {
+                if bytes.len() > MAX_V1_CIPHERTEXT_BYTES {
                     return Err(over("ciphertext"));
                 }
             }
@@ -1703,7 +1705,7 @@ pub(crate) fn parse_draft(
                         map.get(k::CIPHERTEXT),
                         &at(path, k::CIPHERTEXT),
                         1,
-                        MAX_CIPHERTEXT_BYTES,
+                        MAX_V1_CIPHERTEXT_BYTES,
                     )?),
                     crypto_box_envelope: None,
                     ephemeral_point: point(

@@ -341,12 +341,21 @@ Still replica-local; each relay's startup log names them:
       again on balance alone. When the chain shows that payment's own nonce used by a different
       transaction, the same amount goes to the same destination from other coins, once
       (`repayments` on the message row, payment summary `repaid`), as v1 did for a reverted
-      payment.
+      payment. A repayment still waiting for its block is finished on a later pass.
+      **Owner question:** the recipient's wallet does not count that money. Its message names
+      the taken transaction, which never lands, and a received coin is counted only once the
+      transfer its message carries is included (#1912). The money is at the recipient's
+      one-time account and its key is in the recipient's received-coin store, but the payment
+      shows "Can't check now" (`unverifiable`) and is not spendable. Either the recipient counts
+      a funded account whose carried transfer's nonce went to another transaction, or the
+      sender tells the recipient about the new transaction; neither is done.
     Verified by `packages/wallet/chain/cross-device-collision.anvil.jest.test.ts` (anvil; fails on
     main) and by rounds 3 to 5 of `yarn --cwd packages/bot regtest:monad-cross-device` (solonet,
     real relay). Still open: an exposed payment that stands on a transfer that was given up
     (a payment behind its own stamp-funding change) stays held until its own nonce is decided.
-    What the app's *Retry* does with a `payment-taken` message was not exercised.
+    What the app's *Retry* does with a `payment-taken` message was not exercised. The regtest
+    funds sweep (`packages/bot/demo/funds.ts`, #1952) reads the received-coin store, so money
+    at such an uncounted account goes back to the faucet.
 12. **Operator blackjack minimum on the wire.** Resolved (2026-10-27): the dealer's offer
     carries its minimum and maximum bet. "No point in betting when you won't be paid out."
     Implemented in

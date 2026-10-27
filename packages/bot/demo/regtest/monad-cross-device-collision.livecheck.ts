@@ -34,6 +34,7 @@
  * Every account the wallets used is swept back to the faucet at the end.
  */
 import assert from 'assert'
+import type { EvmNativeOperation } from '@frank/wallet/storage/evm-native-operation-journal'
 import { fork, type ChildProcess } from 'child_process'
 import { copyFileSync, mkdirSync, readdirSync } from 'fs'
 import { join } from 'path'
@@ -245,9 +246,19 @@ async function main() {
           // The giver's change from its last gift lands and matures a few blocks later. Its own
           // sends' later transfers go to the node from the wallet's background pass, which the
           // app runs on a timer and this check runs here.
-          if (tries >= 100 || (err as Error).name !== 'InsufficientStampFundsError') throw err
+          if (tries >= 100 || (err as Error).name !== 'InsufficientStampFundsError') {
+            // What the giver's sets still wait on, for the report.
+            const { Transaction } = await import('ethers')
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const journal = (evmWalletInternals(giver.handle).transactionSetPreparer as any)?.options?.journal
+            for (const row of (journal?.list?.() ?? []) as EvmNativeOperation[])
+              console.log(`${label}: giver set ${row.operationId}: ${row.members.map(m => `${m.transactionSet?.role} ${m.source.address}:${Transaction.from(m.unsignedTransaction).nonce} ${m.observation.state} exposed=${m.exposed}`).join('; ')}`)
+            throw err
+          }
           await giver.chain.directMessages.reconcileAttempts({ wallet: giver.handle, payloadDigests: [] }).catch(() => undefined)
-          await giver.handle.reobserveNativeOperations?.().catch(() => undefined)
+          await giver.handle.reobserveNativeOperations?.().catch(error => {
+            if (tries % 20 === 0) console.warn(`${label}: the giver's background pass failed:`, error)
+          })
           await sleep(3000)
         }
       }

@@ -55,6 +55,9 @@ async function main() {
             if (tries >= 100 || (error as Error).name !== 'InsufficientStampFundsError') throw error
             await device.chain.directMessages.reconcileAttempts({ wallet: device.handle, payloadDigests: [] }).catch(() => undefined)
             await device.handle.reobserveNativeOperations?.().catch(() => undefined)
+            // A coin this device received is counted once a read of the chain shows it (the
+            // app's balance read does this on its own timer).
+            await device.handle.refreshReceivedPayments?.().catch(() => undefined)
             await new Promise(resolve => setTimeout(resolve, 3000))
           }
         }

@@ -737,9 +737,20 @@ async function main() {
         }
       }
       await alice.send(bob.address, items(texts(probeLast)), 0n)
-      const probeNote = puts.find(put => put.status < 300 && toAlice(put.request))
-      const probeSealed = puts.find(put => put.status < 300 && !toAlice(put.request))
+      // Other notes to self (of earlier messages, sent again by the wallet's tick) may be admitted
+      // meanwhile: the probe's own note is the one that holds the probe, the largest of them.
+      console.log(`   sealed probe: A admitted ${puts.filter(put => put.status < 300).map(put => `${toAlice(put.request) ? 'note' : 'message'} ${envelopeOf(put.request)}`).join(', ')}`)
+      const probeNote = puts
+        .filter(put => put.status < 300 && toAlice(put.request))
+        .reduce<(typeof puts)[number] | undefined>((largest, put) => (!largest || envelopeOf(put.request) > envelopeOf(largest.request) ? put : largest), undefined)
+      const probeSealed = puts
+        .filter(put => put.status < 300 && !toAlice(put.request))
+        .reduce<(typeof puts)[number] | undefined>((largest, put) => (!largest || envelopeOf(put.request) > envelopeOf(largest.request) ? put : largest), undefined)
       assert.ok(probeNote && probeSealed, `A admitted the sealed probe and its note to self (A answered ${puts.map(put => put.status).join(', ')})`)
+      assert.ok(
+        envelopeOf(probeNote.request) > envelopeOf(probeSealed.request),
+        `the probe's note to self holds the probe and is larger than it (${envelopeOf(probeNote.request)} <= ${envelopeOf(probeSealed.request)})`,
+      )
       const outbox = {
         type: 'outbox-message' as const,
         payloadDigest: '00'.repeat(32),

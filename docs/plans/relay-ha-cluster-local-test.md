@@ -149,7 +149,13 @@ display and the wallet's fee summary.
     bullet.
 - **Direct messages up to 8 MiB** (branch `fix/dm-8mib`): a DM holds up to 8 MiB of
   ciphertext (an envelope of at most 8,388,696 bytes), a DM frame up to 10 MiB, and a request up
-  to 12 MiB. EVIDENCE_PLACEHOLDER
+  to 12 MiB. Cluster contract 16 of 16; DM livecheck OK (burst 300): A admitted a paid message whose envelope is exactly
+  the maximum (an 8,390,526-byte request), B and C each read it back unchanged, and its object
+  is under `lab/messages/sha256/<sha256 of the request>/` in MinIO; a request of 12,582,913
+  bytes got 413 with nothing stored; the same message sealed was refused before anything was
+  sent, because its note to self would not fit; all funds went back to the faucet. A sealed
+  message is still capped at about 512 KiB by its note to self (a plugin item, whose limit was
+  not raised).
 
 ## Shared across replicas, and replica-local
 

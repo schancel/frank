@@ -8,7 +8,8 @@
  * transaction had higher priority", seen 2026-10-27 in regtest:monad-dm-cluster while another
  * process funded). This check runs several funders at once, each as a separate funder would (its
  * own `startMonadRegtest` handle, or the `fund` command's `fundFromFaucet`), round after round,
- * and passes only if every payment landed exactly once. It then sweeps everything back.
+ * and passes only if every payment landed exactly once. It then sweeps everything back, and fails
+ * if a swept key keeps more than the sweep's tip-bump margin (21,000 x 12 wei).
  *
  * The fresh keys are written to FRANK_LIVECHECK_KEY_FILE (default: a file in the temp folder)
  * before anything is paid to them, and the file is removed only once they are swept, so a crash
@@ -23,7 +24,7 @@ import { join } from 'path'
 
 import { formatEther, parseEther, Wallet } from 'ethers'
 
-import { fundFromFaucet, startMonadRegtest, sweepToFaucet } from './monad-regtest'
+import { fundFromFaucet, startMonadRegtest, SWEEP_TIP_MARGIN_WEI, sweepToFaucet } from './monad-regtest'
 
 const FUNDERS = Number(process.env.FRANK_FAUCET_FUNDERS ?? 4)
 const ROUNDS = Number(process.env.FRANK_FAUCET_ROUNDS ?? 3)
@@ -65,6 +66,10 @@ async function main(): Promise<void> {
     for (const key of keys) {
       try {
         await sweepToFaucet(key)
+        // A sweep holds back only what it pays: what is left is at most the tip-bump margin.
+        const left = await provider.getBalance(new Wallet(key).address)
+        if (left > 21_000n * SWEEP_TIP_MARGIN_WEI)
+          failures.push(`${new Wallet(key).address} keeps ${formatEther(left)} MON after its sweep`)
       } catch (error) {
         unswept += 1
         console.error(`sweep of ${new Wallet(key).address} failed:`, error instanceof Error ? error.message : error)

@@ -7,6 +7,7 @@ import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './evm-transaction-set-graph'
 import { recordSignedTransactionSender } from '../evm-signed-sender'
+import { isResigningOf, MAX_SIGNINGS } from '../chain/evm-refused-resign'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
@@ -50,6 +51,31 @@ export function nativeMemberSuperseded(member: {
     member.observation.state === 'missing' &&
     member.account !== null &&
     member.account.nonce > Transaction.from(member.unsignedTransaction).nonce
+  )
+}
+
+/** Every signing of a member, newest first: `signed`, then its earlier signings. */
+export function memberSignings(member: {
+  signed: EvmNativeSigning | null
+  earlierSignings?: EvmNativeSigning[]
+}): EvmNativeSigning[] {
+  return member.signed
+    ? [member.signed, ...[...(member.earlierSignings ?? [])].reverse()]
+    : []
+}
+
+/** The signing of a member the chain included (by the observation's hash); else its newest. */
+export function landedSigning(member: {
+  signed: EvmNativeSigning | null
+  earlierSignings?: EvmNativeSigning[]
+  observation: EvmNativeObservation
+}): EvmNativeSigning | null {
+  const observation = member.observation
+  if (!('transactionHash' in observation)) return member.signed
+  return (
+    memberSignings(member).find(
+      signing => signing.transactionHash === observation.transactionHash,
+    ) ?? member.signed
   )
 }
 
@@ -119,8 +145,19 @@ export interface EvmNativeMemberPlan {
   unsignedTransaction: string
   dependencies: number[]
 }
+export interface EvmNativeSigning {
+  rawTransaction: string
+  transactionHash: string
+}
 export interface EvmNativeMember extends EvmNativeMemberPlan {
-  signed: { rawTransaction: string; transactionHash: string } | null
+  /** The newest signing of this member: what is handed to the node. */
+  signed: EvmNativeSigning | null
+  /**
+   * Earlier signings of the same transaction at the same nonce, oldest first, that the node
+   * refused (`EvmNativeOperationJournal.recordResigned`). Any of them may still land; at most
+   * one of all the signings can, since they share a nonce. Absent when it was signed once.
+   */
+  earlierSignings?: EvmNativeSigning[]
   exposed: boolean
   observation: EvmNativeObservation
   account: EvmNativeAccountObservation | null
@@ -660,6 +697,12 @@ async function validateRow(
       'account',
       'syncApplied',
       ...(row.kind === 'transaction-set' ? ['transactionSet'] : []),
+      ...(row.kind === 'transaction-set' &&
+      !!row.members[i] &&
+      typeof row.members[i] === 'object' &&
+      'earlierSignings' in (row.members[i] as object)
+        ? ['earlierSignings']
+        : []),
     ])
     const source = checked('source', () => validateSource(member.source))
     if (sourceAddresses.has(source.address) && row.kind !== 'transaction-set')
@@ -717,14 +760,16 @@ async function validateRow(
         recordSignedTransactionSender(rawTransaction, parsed.from!)
       })
     } else if (member.exposed || member.syncApplied) fail()
+    if ('earlierSignings' in member)
+      validateEarlierSignings(member, source.address)
     const observation = checked('observation', () =>
       validateObservation(member.observation),
     )
     if (
       'transactionHash' in observation &&
-      (member.signed === null ||
-        observation.transactionHash !==
-          (member.signed as { transactionHash: string }).transactionHash)
+      !memberSignings(member as unknown as EvmNativeMember).some(
+        signing => signing.transactionHash === observation.transactionHash,
+      )
     )
       fail()
     if (member.syncApplied && observation.state !== 'included-success') fail()
@@ -806,6 +851,50 @@ async function validateRow(
   )
     fail('capacity')
   return typed
+}
+
+/**
+ * A member signed more than once: it was exposed, each earlier signing is a valid signature of
+ * the member's source, and each signing (the current one last) is the one before it signed
+ * again under the one re-signing rule (`isResigningOf`: only the tip is lower).
+ */
+function validateEarlierSignings(
+  member: Record<string, unknown>,
+  source: string,
+): void {
+  const earlier = member.earlierSignings
+  if (
+    member.signed === null ||
+    member.exposed !== true ||
+    !Array.isArray(earlier) ||
+    earlier.length === 0 ||
+    earlier.length >= MAX_SIGNINGS
+  )
+    fail()
+  const chain: Transaction[] = []
+  for (const value of earlier) {
+    const signing = object(value, ['rawTransaction', 'transactionHash'])
+    hash(signing.transactionHash)
+    if (typeof signing.rawTransaction !== 'string' || signing.rawTransaction.length > MAX_UNSIGNED + 256)
+      fail()
+    let parsed: Transaction
+    try {
+      parsed = Transaction.from(signing.rawTransaction)
+    } catch {
+      return fail('invalid', 'signature')
+    }
+    if (
+      !parsed.isSigned() ||
+      parsed.serialized !== signing.rawTransaction ||
+      parsed.from?.toLowerCase() !== source ||
+      parsed.hash !== signing.transactionHash
+    )
+      fail('invalid', 'signature')
+    chain.push(parsed)
+  }
+  chain.push(Transaction.from((member.signed as EvmNativeSigning).rawTransaction))
+  for (let i = 1; i < chain.length; i++)
+    if (!isResigningOf(chain[i - 1]!, chain[i]!)) fail()
 }
 
 /** The new baseline alone permits repeated sources, with an explicit contiguous nonce chain. */
@@ -1538,6 +1627,59 @@ export class EvmNativeOperationJournal {
         rawTransaction,
         transactionHash: keccak256(rawTransaction),
       }
+    })
+  }
+  /**
+   * Records `rawTransaction`, the same member signed again at its nonce because the node keeps
+   * refusing its bytes (`chain/evm-refused-resign.ts`), as the member's current signing; the
+   * one it replaces is kept in `earlierSignings` and may still land. Durable before the new
+   * bytes are handed to anyone. Only an exposed, authorized member of a transaction set whose
+   * nonce the chain has not shown consumed; idempotent for the same bytes.
+   */
+  recordResigned(
+    id: string,
+    index: number,
+    rawTransaction: string,
+  ): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      const m = row.members[index]
+      if (
+        row.kind !== 'transaction-set' ||
+        row.cancelled ||
+        !row.submissionAuthorized ||
+        !m?.signed ||
+        !m.exposed
+      )
+        fail('conflict')
+      if (m.signed.rawTransaction === rawTransaction) return false
+      if (
+        m.observation.state === 'included-success' ||
+        m.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(m) ||
+        memberSignings(m).some(signing => signing.rawTransaction === rawTransaction) ||
+        (m.earlierSignings?.length ?? 0) + 2 > MAX_SIGNINGS
+      )
+        fail('conflict')
+      const parsed = Transaction.from(rawTransaction)
+      if (
+        !parsed.isSigned() ||
+        parsed.from?.toLowerCase() !== m.source.address ||
+        !isResigningOf(Transaction.from(m.signed.rawTransaction), parsed)
+      )
+        fail('conflict')
+      m.earlierSignings = [...(m.earlierSignings ?? []), m.signed]
+      m.unsignedTransaction = parsed.unsignedSerialized
+      m.signed = { rawTransaction, transactionHash: parsed.hash! }
+      row.reservedBytes = reservation(row)
+      if (
+        row.reservedBytes > MAX_ROW ||
+        [...this.rows.values()]
+          .filter(other => !other.cancelled && other.operationId !== id)
+          .reduce((sum, other) => sum + other.reservedBytes, 0) +
+          row.reservedBytes >
+          this.maxBytes
+      )
+        fail('capacity')
     })
   }
   markExposed(id: string, index: number): Promise<EvmNativeOperation> {

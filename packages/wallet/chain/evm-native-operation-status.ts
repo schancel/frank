@@ -1,5 +1,7 @@
 import { Transaction } from "ethers";
 import {
+  landedSigning,
+  memberSignings,
   nativeMemberSuperseded,
   type EvmNativeOperation,
 } from "../storage/evm-native-operation-journal";
@@ -163,7 +165,9 @@ export function summarizeEvmNativeOperation(
     const included = "transactionHash" in observation;
     if (
       included &&
-      observation.transactionHash !== member.signed?.transactionHash
+      !memberSignings(member).some(
+        (signing) => signing.transactionHash === observation.transactionHash
+      )
     )
       throw new Error(
         "Native operation observation does not match signed transaction"
@@ -176,7 +180,7 @@ export function summarizeEvmNativeOperation(
       ...(member.transactionSet?.stageId === undefined
         ? {}
         : { stageId: member.transactionSet.stageId }),
-      transactionHash: member.signed?.transactionHash,
+      transactionHash: landedSigning(member)?.transactionHash,
       submitted: member.exposed,
       state: stateOf(member),
       ...(included
@@ -224,7 +228,7 @@ export function summarizeEvmNativeOperation(
     ...(messageId === undefined ? {} : { messageId }),
     intendedValueWei: row.intendedValueWei,
     payment,
-    finalTransactionHash: final.signed?.transactionHash,
+    finalTransactionHash: landedSigning(final)?.transactionHash,
     members,
     observedFeeWei: observed
       .reduce((sum, member) => sum + BigInt(member.feeWei!), 0n)
@@ -308,7 +312,8 @@ export function summarizeEvmNativeStampStages(
       intendedValueWei: stage.intendedValueWei,
       payment,
       finalTransactionHash:
-        row.members[payments[payments.length - 1]!]!.signed?.transactionHash,
+        landedSigning(row.members[payments[payments.length - 1]!]!)
+          ?.transactionHash,
       members,
       observedFeeWei: observed
         .reduce((sum, member) => sum + BigInt(member.feeWei!), 0n)

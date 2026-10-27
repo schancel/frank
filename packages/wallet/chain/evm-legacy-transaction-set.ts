@@ -8,6 +8,7 @@ import {
 import type { PreparedEvmTransactionSet } from '../evm-transaction-set-types'
 import type { TransactionSetSubmission } from '../transaction-set'
 import {
+  landedSigning,
   nativeMemberSuperseded,
   type EvmNativeOperation,
 } from '../storage/evm-native-operation-journal'
@@ -152,11 +153,13 @@ export function createLegacyTransactionSetPayments(options: {
         new Error('Original legacy payment or owned redistribution is pending'),
       )
     const final = recipient(row)
+    // Each member's hash is that of the signing the chain included (an earlier signing of a
+    // member signed again because the node refused it may be the one that landed).
     return {
-      txHash: final.signed!.transactionHash,
+      txHash: landedSigning(final)!.transactionHash,
       intermediateTxHashes: row.members
         .filter(member => member !== final)
-        .map(member => member.signed!.transactionHash),
+        .map(member => landedSigning(member)!.transactionHash),
       totalValueSent: Transaction.from(final.signed!.rawTransaction).value,
       totalFeePaid: row.members.reduce(
         (sum, member) =>

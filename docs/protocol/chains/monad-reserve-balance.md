@@ -95,12 +95,24 @@ and not at `head - 4`. An account funded with 5 MON was refused in the same way 
   "upstream RPC error".
 - Seen from outside this is "the relay could not broadcast the payment, the message is
   delivered" followed, much later, by the payment being mined.
+- Measured again on 2026-10-27 (monad-solonet, client 0.16.4): a type 0 transfer out of a
+  20 MON deposit, offered in the deposit's block, was refused, and the same bytes were refused
+  again 8 and 18 blocks later and after the nonce had been used. The same transfer signed again
+  at its nonce as a type 2 transaction with the same fee ceiling (`maxFeePerGas` = the old
+  `gasPrice`) and a tip one wei lower was accepted at once and mined; it was charged exactly
+  what the first signing would have been. Offering the same bytes of a transaction the node has
+  already taken is answered with success, and a different transaction at a nonce the node holds
+  is refused with "An existing transaction had higher priority".
 
 What it means for the wallet: it signs a transfer only against the balance the account already
 had `spendSpacingBlocks + 1` blocks ago and waits those blocks otherwise; a transfer that pays
 out of an account the same operation has just funded waits in the same way; and a payment the
-node keeps refusing is signed again at the same nonce (other fee fields), which can never pay
-twice because a nonce is consumed once.
+node keeps refusing is signed again at the same nonce, which can never pay twice because a nonce
+is consumed once. One rule for every path that does so (DM stamp payments and Send to Address,
+`packages/wallet/chain/evm-refused-resign.ts`): after two refusals over at least three seconds,
+the same transaction is signed again with only the tip one wei lower (the fee ceiling, and so the
+most it can cost, unchanged), at most four signings in all; the new bytes are recorded before
+they are handed to the node, and every signing is looked for on the chain until one lands.
 
 ## The reserve balance
 

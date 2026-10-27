@@ -163,7 +163,11 @@ display and the wallet's fee summary.
   a few hundred bytes smaller than the largest that names its sender (in the wallet test, 33
   text items: 8,387,320 bytes of text named, 8,386,997 sealed free, 8,386,916 sealed paid,
   whose note counts the stamp at its widest before paying). One byte more is refused before
-  anything is paid.
+  anything is paid. Cluster contract 16 of 16; DM livecheck OK (burst 300): the largest sealed paid
+  message (8,386,916 bytes of text, envelope 8,388,443 bytes) was delivered to bob, its note to
+  self (envelope 8,388,634 bytes, limit 8,388,696) reached alice's mailbox and read back as the
+  sent message, one byte more was refused before anything was sent; all funds went back to the
+  faucet.
 
 ## Shared across replicas, and replica-local
 

@@ -103,9 +103,17 @@ async function main(): Promise<boolean> {
       check(await monad.provider.getBalance(transferReceipt!.to!) === valueWei, 'the contact\'s one-time address holds the payment once')
       const unpaid = await checkStampOnChain(monad.provider, got, stampWei)
       check(unpaid === undefined, `the stamp is paid on the chain${unpaid ? ` (${unpaid})` : ''}`)
-      const reverted = await Promise.all(operation.members.map(member =>
+      // The set's change after the transfer is the wallet's own, sent on later ticks.
+      let receipts = await Promise.all(operation.members.map(member =>
         monad.provider.getTransactionReceipt(member.signed!.transactionHash)))
-      check(reverted.every(receipt => receipt?.status === 1), 'no transaction of the set reverted')
+      for (let pass = 0; pass < 60 && receipts.some(receipt => receipt === null); pass++) {
+        await sender.handle.resumeContactPayments!()
+        await sleep(2000)
+        receipts = await Promise.all(operation.members.map(member =>
+          monad.provider.getTransactionReceipt(member.signed!.transactionHash)))
+      }
+      check(receipts.every(receipt => receipt?.status === 1),
+        `every transaction of the set landed and none reverted (${receipts.map(receipt => receipt?.status ?? 'missing').join(', ')})`)
       await sender.close()
     }
 

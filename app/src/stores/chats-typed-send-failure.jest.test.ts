@@ -4,7 +4,10 @@ import {
   NativeFeeExceededError,
 } from '@frank/wallet/chain'
 import { SolanaStealthSendRefusedError } from '@frank/wallet/solana-stealth'
-import { EvmTransactionSetInsufficientFundsError } from '@frank/wallet/evm-transaction-set-types'
+import {
+  EvmTransactionSetInsufficientFundsError,
+  FundsInPendingSendError,
+} from '@frank/wallet/evm-transaction-set-types'
 import { ChainUnreachableError } from '@frank/wallet/evm-block-watcher'
 import { InsufficientStampFundsError } from '@frank/wallet/evm-account-pool'
 import { EvmInputAdmissionError } from '@frank/wallet/evm-input-admission'
@@ -54,6 +57,14 @@ const examples = [
   [new OpenDirectoryError('not-published'), 'recipient-unregistered'],
   [new InsufficientStampFundsError('changed wording'), 'insufficient-funds'],
   [new EvmTransactionSetInsufficientFundsError(), 'insufficient-funds'],
+  [new FundsInPendingSendError(5n, 3n), 'funds-in-pending-send'],
+  // A stamp refusal keeps the tied-up refusal as its recorded cause.
+  [
+    new InsufficientStampFundsError('stamp', {
+      cause: new FundsInPendingSendError(5n, 3n),
+    }),
+    'funds-in-pending-send',
+  ],
   [new ChainUnreachableError(new Error('observation failed')), 'error'],
   [new SolanaStealthSendRefusedError(), 'error'],
   [new DirectMessageStampBelowFeeError(1n, 2n), 'stamp-below-fee'],
@@ -169,4 +180,12 @@ it('a payment over the fee the user approved fails as fee-exceeded and keeps no 
   ).toEqual({
     reason: 'fee-exceeded',
   })
+})
+
+it('keeps the tied-up amount as the failure detail, so the bubble can say it', () => {
+  const tiedUp = new FundsInPendingSendError(50_000_000_000_000_000n, 3n)
+  expect(errorDetail(tiedUp)).toBe('50000000000000000')
+  expect(
+    errorDetail(new InsufficientStampFundsError('stamp', { cause: tiedUp })),
+  ).toBe('50000000000000000')
 })

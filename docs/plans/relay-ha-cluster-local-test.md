@@ -264,6 +264,18 @@ Still replica-local; each relay's startup log names them:
     self must not cap the message it copies), so a sealed message can be about as large as one
     that names its sender: a few hundred bytes smaller, because the note holds the message and
     its own fields and both must fit.
+15. **A second send while the last one's change hasn't gone out.** Resolved (2026-10-26): fail
+    with a clear reason. On Monad the change behind a message's payments goes out only after the
+    relay stored that message, on later ticks. A small wallet's next paid send in that window
+    finds no free coin. The wallet now refuses it at once with `FundsInPendingSendError`, naming
+    the amount still in its own unfinished sets (read from the transaction-set journal). Nothing
+    is signed, reserved or kept to send later. The app says "Your last payment's change hasn't
+    gone out yet (X MON). Try again in a moment." (DM bubble, email, Send to Contact, chat
+    payment, Send to Address). The message stays failed until the user clicks Retry, which sends
+    it again under the same message ID. Not chosen: queueing the send, or putting change before
+    payments. The DM cluster check ticks its wallets between paid steps, as the app and the bot
+    host do. That made step 5 flaky before. The one-coin check sends back-to-back on purpose and
+    expects this refusal.
 
 ## Before deploying this main
 

@@ -15,7 +15,7 @@ import {
   constructWhenSpendable,
   EvmTransactionSetPreparer,
 } from './evm-transaction-set'
-import { EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
+import { EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
 import type { EvmTransactionSetPolicy } from './evm-transaction-set-types'
 const signer = (index: number) =>
   new Wallet('0x' + index.toString(16).padStart(64, '0'))
@@ -1906,5 +1906,72 @@ describe('money the chain lets be spent only from a later block', () => {
     } finally {
       await f.journal.Close()
     }
+  })
+})
+
+describe('money tied up in an earlier send that has not reached the chain (owner ruling 2026-10-26)', () => {
+  // On Monad the change behind a payment goes out only after the relay stored that message and
+  // on later ticks. A one-coin wallet's second send seconds later finds every coin of it held.
+  const spendRule = { belowWei: 2000000n, waitBlocks: 3 }
+  const include = async (f: Awaited<ReturnType<typeof setup>>, preparer: EvmTransactionSetPreparer,
+    operationId: string, index: number, blockNumber: number) => {
+    const member = f.journal.list().find(row => row.preparationId?.endsWith(':' + operationId))!.members[index]!
+    const tx = Transaction.from(member.signed!.rawTransaction)
+    await preparer.recordObservation(operationId, index, {
+      state: 'included-success', transactionHash: tx.hash!, blockHash: '0x' + 'ab'.repeat(32), blockNumber,
+      transactionIndex: index, feeWei: '21000',
+    }, { nonce: tx.nonce + 1, balanceWei: member.transactionSet!.balanceAfterWei, blockNumber, blockHash: '0x' + 'ab'.repeat(32) })
+  }
+
+  it.each([0.01, 0.5, 0.99])('a second send is refused at once with the tied-up amount, and goes through once that change lands (draw %s)', async draw => {
+    const current = { ...policy, head: 100, spendRule }
+    const f = await setup([1000000n], current)
+    const preparer = new EvmTransactionSetPreparer({ ...f.options, policy: () => current, random: () => draw })
+    try {
+      const first = await preparer.constructTransactionSet({ operationId: 'first', amountWei: 300000n, kdf })
+      const fees = [...first.bundle, ...first.otherTransactions].reduce((sum, tx) => sum + tx.gasLimit, 0n) * policy.gasPriceWei
+      const quoted = await preparer.quoteTransactionSet({ amountWei: 300000n, kdf }).catch(error => error)
+      expect(quoted).toBeInstanceOf(FundsInPendingSendError)
+      const before = f.coins.all()
+      const refused = await preparer.constructTransactionSet({ operationId: 'second', amountWei: 300000n, kdf }).catch(error => error)
+      // Still an insufficient-funds refusal for callers that ask only that, with the reason.
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused).toBeInstanceOf(FundsInPendingSendError)
+      expect(refused.spendableFromBlock).toBeUndefined()
+      // Everything the one coin had beyond the first payment and its fees is that set's change.
+      expect(refused.tiedUpWei).toBe(1000000n - 300000n - fees)
+      expect(refused.shortfallWei).toBe(300000n)
+      expect(refused.message).toContain('Insufficient available EVM coins')
+      // Nothing signed, reserved or recorded for the refused send.
+      expect(f.coins.heldBy('second')).toEqual([])
+      expect(f.coins.all()).toEqual(before)
+      expect(f.journal.list()).toHaveLength(1)
+      // The host's ticks land the earlier set; its change becomes coins the second send uses.
+      const members = f.journal.list()[0]!.members
+      for (let index = 0; index < members.length; index++) {
+        current.head = 100 + 4 * (index + 1)
+        await include(f, preparer, 'first', index, current.head)
+      }
+      current.head += spendRule.waitBlocks + 1
+      const second = await preparer.constructTransactionSet({ operationId: 'second', amountWei: 300000n, kdf })
+      expect(second.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBe(300000n)
+    } finally { await f.journal.Close() }
+  })
+
+  it('keeps the plain refusal when nothing is pending, or when what is pending would not cover the send', async () => {
+    const current = { ...policy, head: 100, spendRule }
+    const empty = await setup([100000n], current)
+    try {
+      const refused = await empty.preparer.constructTransactionSet({ operationId: 'nothing-pending', amountWei: 300000n, kdf }).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused).not.toBeInstanceOf(FundsInPendingSendError)
+    } finally { await empty.journal.Close() }
+    const f = await setup([1000000n], current)
+    try {
+      await f.preparer.constructTransactionSet({ operationId: 'first', amountWei: 300000n, kdf })
+      const refused = await f.preparer.constructTransactionSet({ operationId: 'too-much', amountWei: 900000n, kdf }).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+      expect(refused).not.toBeInstanceOf(FundsInPendingSendError)
+    } finally { await f.journal.Close() }
   })
 })

@@ -1,4 +1,4 @@
-import { recordWalletFailure } from './wallet-failure'
+import { describeWalletFailure, recordWalletFailure } from './wallet-failure'
 import type {
   EvmCoinList,
   EvmCoinListOrigin,
@@ -166,4 +166,34 @@ export class EvmTransactionSetInsufficientFundsError extends Error {
     this.name = 'EvmTransactionSetInsufficientFundsError'
     recordWalletFailure(this, { diagnosis: 'insufficient-funds' })
   }
+}
+
+/**
+ * The wallet's free coins do not cover this send, but money of its own earlier sends that has
+ * not reached the chain yet would: change those sends split off and what stays with a sending
+ * account after them (on Monad, change behind a payment goes out only after the relay stored
+ * that message, on later ticks). Owner ruling 2026-10-26: refuse right away with this reason
+ * and let the user try again; never queue the send and never reorder the earlier set. Nothing
+ * was signed, reserved or recorded. It is still an insufficient-funds refusal for every caller
+ * that asks only that.
+ */
+export class FundsInPendingSendError extends EvmTransactionSetInsufficientFundsError {
+  constructor(
+    /** What the wallet's own unfinished sends hand back to it once they reach the chain. */
+    readonly tiedUpWei: bigint,
+    /** What the free coins lack for this send. */
+    readonly shortfallWei: bigint,
+  ) {
+    super()
+    this.message = `Insufficient available EVM coins: ${tiedUpWei} wei is tied up in a previous send that has not reached the chain yet; try again in a moment`
+    this.name = 'FundsInPendingSendError'
+  }
+}
+
+/** The tied-up refusal itself, or the one a wrapping refusal recorded as its cause (a stamp
+ * refusal wraps it). Identity lookups only, as `describeWalletFailure`. */
+export function fundsInPendingSend(error: unknown): FundsInPendingSendError | undefined {
+  if (error instanceof FundsInPendingSendError) return error
+  const { cause } = describeWalletFailure(error)
+  return cause instanceof FundsInPendingSendError ? cause : undefined
 }

@@ -2,6 +2,7 @@
 
 import { mount } from '@vue/test-utils'
 
+import { activeChain } from '@frank/wallet/chain'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import enUS from '../../../i18n/en-us'
 import frFR from '../../../i18n/fr-fr'
@@ -35,7 +36,8 @@ function translator(messages: unknown) {
     // the raw template.
     return typeof value === 'string'
       ? key === 'outgoing.blockedBy' ||
-        key === 'outgoing.reasonStampBelowFeeAmount'
+        key === 'outgoing.reasonStampBelowFeeAmount' ||
+        key === 'outgoing.reasonFundsInPendingSend'
         ? Object.entries(named).reduce(
             (text, [name, part]) => text.split(`{${name}}`).join(part),
             value,
@@ -149,6 +151,38 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(
       bare.get('[data-testid="outgoing-failure-details"]').text(),
     ).toContain('below the minimum the network allows')
+  })
+
+  it("says a send refused for money still in the last payment's change, with the amount, in English and French", () => {
+    // Owner ruling 2026-10-26: refused at once, the user tries again in a moment. The amount the
+    // failure kept (`errorDetail`), in wei: 0.05.
+    const props = {
+      status: 'error',
+      failureReason: 'funds-in-pending-send',
+      failureDetail: '50000000000000000',
+    }
+    const en = mountSuffix(props, enUS)
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
+    expect(en).toContain(
+      `Your last payment's change hasn't gone out yet (0.05 ${activeChain.unit}). Try again in a moment.`,
+    )
+    const fr = mountSuffix(props, frFR)
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
+    expect(fr).toContain(
+      `La monnaie de votre dernier paiement n’est pas encore partie (0.05 ${activeChain.unit}). Réessayez dans un instant.`,
+    )
+    // Saved without the amount, it still says why and what to do.
+    const bare = mountSuffix({
+      status: 'error',
+      failureReason: 'funds-in-pending-send',
+    })
+    expect(
+      bare.get('[data-testid="outgoing-failure-details"]').text(),
+    ).toContain(
+      "Your last payment's change hasn't gone out yet. Try again in a moment.",
+    )
   })
 
   it('shows recipient-unregistered failure reason in English and French', () => {

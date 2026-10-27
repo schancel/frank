@@ -53,7 +53,7 @@ import { formatEther, parseEther } from 'ethers'
 
 import type { RealWallet } from '../real-stack'
 import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest, startMonadRegtest } from './monad-regtest'
-import { openMonadWallet, returnToFaucet } from './monad-wallets'
+import { openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
 import type { RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
@@ -438,6 +438,10 @@ async function main() {
       assert.ok(proxy.served.some(s => s.method === 'WS' && s.relay === 'b'))
       console.log(`1. paid message ${digest} admitted on A was pushed on bob's websocket held on B; ${paidWei} wei for a ${stamp} wei stamp in ${payments} mined payment(s)`)
       proxy.reset()
+      // The app and the bot host tick their wallets; so does this check between paid steps, so
+      // the change behind a delivered message's payments is out before alice pays again (until
+      // it is, her next paid send is refused with FundsInPendingSendError, never queued).
+      console.log(`   alice's own change of that message on the chain after ${await tickUntilSettled(alice)} tick(s)`)
     }
 
     // 2. A burst to one recipient through all three replicas.
@@ -507,6 +511,7 @@ async function main() {
       assert.ok(results.every(r => r.status >= 200 && r.status < 300), `both replicas accepted: ${JSON.stringify(results)}`)
       console.log(`3. one request sent to A and B at once (${results.map(r => `${r.relay}:${r.status}`).join(', ')}) kept once; ${paidWei} wei in ${payments} mined payment(s)`)
       proxy.reset()
+      console.log(`   alice's own change of that message on the chain after ${await tickUntilSettled(alice)} tick(s)`)
     }
 
     // 4. A challenge from A, used on B, replayed on C and on B.
@@ -562,6 +567,7 @@ async function main() {
       console.log(`5. A killed ${when}: the wallet's retry was answered by B (${retries.map(r => r.status).join(', ')}); one row, ${paidWei} wei for a ${stamp} wei stamp in ${payments} mined payment(s), no second copy`)
       proxy.reset()
       await lab.start('a', proxy)
+      console.log(`   alice's own change of that message on the chain after ${await tickUntilSettled(alice)} tick(s)`)
     }
 
     // 6. NATS down: kept, not announced; the reader catches up from its cursor.
@@ -703,6 +709,8 @@ async function main() {
           `read back unchanged on B and C; MinIO holds it at ${objects.map(o => o.key).join(', ')}`,
       )
       console.log(`   sealed, the same message was refused before anything was sent: ${sealedRefusal.message}`)
+      // Alice pays again below: her own change of this message goes out on her ticks first.
+      await tickUntilSettled(alice)
 
       // The largest sealed message, as the app sends it: sealed and paid. A free sealed probe of
       // the same shape measures its note to self, which holds the original's items and its own
@@ -729,9 +737,20 @@ async function main() {
         }
       }
       await alice.send(bob.address, items(texts(probeLast)), 0n)
-      const probeNote = puts.find(put => put.status < 300 && toAlice(put.request))
-      const probeSealed = puts.find(put => put.status < 300 && !toAlice(put.request))
+      // Other notes to self (of earlier messages, sent again by the wallet's tick) may be admitted
+      // meanwhile: the probe's own note is the one that holds the probe, the largest of them.
+      console.log(`   sealed probe: A admitted ${puts.filter(put => put.status < 300).map(put => `${toAlice(put.request) ? 'note' : 'message'} ${envelopeOf(put.request)}`).join(', ')}`)
+      const probeNote = puts
+        .filter(put => put.status < 300 && toAlice(put.request))
+        .reduce<(typeof puts)[number] | undefined>((largest, put) => (!largest || envelopeOf(put.request) > envelopeOf(largest.request) ? put : largest), undefined)
+      const probeSealed = puts
+        .filter(put => put.status < 300 && !toAlice(put.request))
+        .reduce<(typeof puts)[number] | undefined>((largest, put) => (!largest || envelopeOf(put.request) > envelopeOf(largest.request) ? put : largest), undefined)
       assert.ok(probeNote && probeSealed, `A admitted the sealed probe and its note to self (A answered ${puts.map(put => put.status).join(', ')})`)
+      assert.ok(
+        envelopeOf(probeNote.request) > envelopeOf(probeSealed.request),
+        `the probe's note to self holds the probe and is larger than it (${envelopeOf(probeNote.request)} <= ${envelopeOf(probeSealed.request)})`,
+      )
       const outbox = {
         type: 'outbox-message' as const,
         payloadDigest: '00'.repeat(32),

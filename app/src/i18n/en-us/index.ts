@@ -932,6 +932,10 @@ export const rawEnUS = {
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
+    reasonFundsInPendingSend:
+      "Your last payment's change hasn't gone out yet ({amount}). Try again in a moment.",
+    reasonFundsInPendingSendNoAmount:
+      "Your last payment's change hasn't gone out yet. Try again in a moment.",
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonStampBelowFee:
       'Its payment is below the minimum the network allows. Nothing was paid.',

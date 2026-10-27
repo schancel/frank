@@ -933,6 +933,10 @@ export type OutgoingFailureReason =
   | 'recovered'
   /** The wallet could not prepare the message's stamp because the account lacks funds. */
   | 'insufficient-funds'
+  /** Refused at once: the free funds do not cover it, but the change of an earlier send of this
+   * wallet that has not reached the chain yet would (`detail` keeps that amount in wei, decimal).
+   * Nothing was paid; the user's Retry sends it again (owner ruling 2026-10-26). */
+  | 'funds-in-pending-send'
   /** The recipient address has no published directory entry on this relay. */
   | 'recipient-unregistered'
   /** The chain's fee rose above the stamp the composer showed; nothing was paid. */

@@ -59,6 +59,37 @@ export function openMonadWallet(
 }
 
 /**
+ * Ticks `wallet` the way the app and the bot host do (`reconcileAttempts` drives every unfinished
+ * message one step), until every transaction of its own sets is on the chain. On Monad the change
+ * behind a delivered message's payments goes out only on later ticks, and until it lands a small
+ * wallet's next paid send is refused with `FundsInPendingSendError` (owner ruling 2026-10-26: a
+ * send is refused, never queued). A check that sends again after a paid message ticks first.
+ */
+export async function tickUntilSettled(wallet: RealWallet, timeoutMs = 180_000): Promise<number> {
+  const startedAt = Date.now()
+  for (let ticks = 1; ; ticks++) {
+    await wallet.chain.directMessages.reconcileAttempts({ wallet: wallet.handle, payloadDigests: [] })
+    const open = (wallet.handle.getNativeOperations?.() ?? []).filter(
+      row =>
+        row.kind === 'transaction-set' &&
+        !row.cancelled &&
+        row.members.some(
+          member =>
+            member.signed !== null &&
+            member.observation.state !== 'included-success' &&
+            member.observation.state !== 'included-revert',
+        ),
+    )
+    if (open.length === 0) return ticks
+    if (Date.now() - startedAt > timeoutMs)
+      throw new Error(
+        `${wallet.label}'s own transactions were not all on the chain after ${ticks} ticks (${open.map(row => row.operationId).join(', ')})`,
+      )
+    await new Promise(resolveTick => setTimeout(resolveTick, 2000))
+  }
+}
+
+/**
  * Deploys GenericHTLC and StateChannel to the solonet from the faucet and returns the record,
  * which is also written to `<stack state>/deployments/monad-regtest.json`. The record belongs to
  * this chain only and is never committed. A solonet that already has the contracts (an earlier

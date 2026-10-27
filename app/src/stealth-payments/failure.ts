@@ -2,6 +2,8 @@ import { describeWalletFailure } from '@frank/wallet/wallet-failure'
 import { StealthPaymentMemberLimitError } from '@frank/wallet/stealth-payment'
 import { ContactPaymentBelowFloorError } from '@frank/wallet/chain/chain-wallet'
 import { formatStealthAmount, type StealthAssetOption } from './options'
+import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
+import { fundsInPendingSendMessage } from '../utils/funds-in-pending-send'
 
 /** The financial owner proved the prepared payment was never handed to anyone who could
  * broadcast it, and released it. Only then may the user be told that nothing was sent. */
@@ -19,6 +21,9 @@ export function notSentFailureKey(error: unknown): string {
   const failure = describeWalletFailure(error)
   // A throttled or unreachable RPC: the chain's provider is busy, not the payment wrong.
   if (failure.retry === 'transient') return 'sendStealthDialog.networkBusy'
+  // The money is in an earlier send's change not on the chain yet: try again in a moment.
+  if (fundsInPendingSend(error))
+    return 'outgoing.reasonFundsInPendingSendNoAmount'
   if (failure.kind === 'insufficient-funds')
     return 'sendStealthDialog.insufficientFunds'
   if (error instanceof StealthPaymentMemberLimitError)
@@ -54,6 +59,22 @@ export function notSentFailureMessage(
   const failure =
     error instanceof StealthPaymentNotSentError ? error.failure : error
   const floorWei = notSentFailureFloorWei(failure)
+  // Money held by an earlier send names its amount, in the payment's native unit.
+  if (fundsInPendingSend(failure)) {
+    const option = assetOf()
+    return (
+      (option &&
+        fundsInPendingSendMessage(
+          failure,
+          wei =>
+            `${formatStealthAmount(wei, option.nativeDecimals)} ${
+              option.nativeUnit
+            }`,
+          t,
+        )) ??
+      t(notSentFailureKey(failure))
+    )
+  }
   if (floorWei === undefined) return t(notSentFailureKey(failure))
   const option = assetOf()
   if (!option) return t('sendStealthDialog.notSent')
@@ -67,7 +88,20 @@ export function notSentFailureMessage(
 /** The message for a failed send. Once the prepared payment was adopted by messaging (or its
  * release could not be proven) a signed transaction may have been exposed: a timeout or a 429
  * is no proof it did not land, so the message never says that nothing was sent. */
+/** Whether the payment was refused because its money is still in an earlier send's change
+ * (`FundsInPendingSendError`), released unsent or not. */
+export function refusedForPendingSend(error: unknown): boolean {
+  return (
+    fundsInPendingSend(
+      error instanceof StealthPaymentNotSentError ? error.failure : error,
+    ) !== undefined
+  )
+}
+
 export function sendFailureKey(error: unknown): string {
+  // Refused at construction for money still in an earlier send: nothing was signed for it.
+  if (refusedForPendingSend(error))
+    return 'outgoing.reasonFundsInPendingSendNoAmount'
   return error instanceof StealthPaymentNotSentError
     ? notSentFailureKey(error.failure)
     : 'sendStealthDialog.messageEnded'

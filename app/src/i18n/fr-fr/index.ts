@@ -950,6 +950,10 @@ export const rawFrFR = {
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
     reasonInsufficientFunds:
       'Les fonds sont insuffisants pour envoyer ce message.',
+    reasonFundsInPendingSend:
+      'La monnaie de votre dernier paiement n’est pas encore partie ({amount}). Réessayez dans un instant.',
+    reasonFundsInPendingSendNoAmount:
+      'La monnaie de votre dernier paiement n’est pas encore partie. Réessayez dans un instant.',
     reasonRecipientUnregistered:
       "Le destinataire n'est pas enregistré sur ce relais.",
     reasonStampBelowFee:

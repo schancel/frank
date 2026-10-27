@@ -19,6 +19,7 @@ function failureOfEnd(
 ): OutgoingFailureReason {
   if (end?.reason === 'fee-exceeded') return 'fee-exceeded'
   if (end?.reason === 'discarded') return 'error'
+  if (end?.reason === 'funds-tied-up') return 'funds-in-pending-send'
   return 'rejected'
 }
 

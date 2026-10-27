@@ -17,18 +17,25 @@
  *      transaction of the wallet reverted.
  *   2. A paid direct message (a stamp only): delivered and its stamp paid on the chain, no
  *      broadcast of the stamp before the relay stored the message, nothing reverted.
+ *   3. A second paid message sent straight after it, before the wallet ticks: its one coin is all
+ *      in the first message's change, which goes out only on later ticks. It is refused at once
+ *      with `FundsInPendingSendError` naming that amount (owner ruling 2026-10-26: refused, never
+ *      queued), and nothing of it is recorded. After the wallet ticks (as the app does) until that
+ *      change is on the chain, the same message goes through.
  *
  * Every wallet's funds go back to the faucet at the end, also after a failure (`returnToFaucet`).
  */
+import { randomUUID } from 'crypto'
 import { formatEther, parseEther, Transaction } from 'ethers'
 
 import { checkStampOnChain } from '../two-wallets'
 import type { RealWallet } from '../real-stack'
 import { MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
-import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
+import { monadOf, openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 import { ContactPaymentPendingError } from '@frank/wallet/chain/chain-wallet'
+import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
@@ -135,6 +142,44 @@ async function main(): Promise<boolean> {
       const receipts = await Promise.all(operation.members.map(member =>
         monad.provider.getTransactionReceipt(member.signed!.transactionHash)))
       check(receipts.every(receipt => receipt === null || receipt.status === 1), 'no transaction of the set reverted')
+
+      // 3. Straight after it, before any tick: the one coin is in that message's change.
+      const operationsBefore = sender.handle.getNativeOperations!().length
+      // One message ID for both tries, as the app's Retry sends the same message again.
+      const messageId = randomUUID()
+      let attempt: string | undefined
+      const sendAgain = () => sender.chain.directMessages.send({
+        wallet: sender.handle,
+        recipient: { raw: recipient.address },
+        items: [{ type: 'text', text: 'one coin, a second stamp' }],
+        sealedSender: true,
+        stampValue: stampWei,
+        messageId,
+        onAttemptCreated: created => { attempt = created },
+      })
+      const refused = await sendAgain().then(() => undefined, (error: unknown) => error)
+      const tiedUp = fundsInPendingSend(refused)
+      check(tiedUp !== undefined && tiedUp.tiedUpWei > 0n,
+        `a second paid message straight after is refused with FundsInPendingSendError (${tiedUp ? `${formatEther(tiedUp.tiedUpWei)} MON tied up, ${formatEther(tiedUp.shortfallWei)} MON short` : String(refused)})`)
+      check(refused instanceof Error && /tied up in a previous send/.test(refused.message),
+        `its message says why (${refused instanceof Error ? refused.message : String(refused)})`)
+      check(sender.handle.getNativeOperations!().length === operationsBefore, 'nothing of the refused message was signed or recorded')
+      const ticks = await tickUntilSettled(sender)
+      check(attempt === undefined, 'the refused message made no attempt')
+      // Delivered, or accepted and then reconciled to delivered as the app does.
+      const second = await sendAgain().then(sent => sent.payloadDigest, async (error: unknown) => {
+        if (attempt === undefined) throw error
+        for (let pass = 0; pass < 60; pass++) {
+          const status = (await sender.chain.directMessages.reconcileAttempts({ wallet: sender.handle, payloadDigests: [attempt] }))[attempt]
+          if (status === 'delivered') return attempt
+          if (status === 'dead') break
+          await sleep(3000)
+        }
+        throw error
+      })
+      const gotSecond = await recipient.receive(message => message.payloadDigest === second, 120_000)
+      const unpaidSecond = await checkStampOnChain(monad.provider, gotSecond, stampWei)
+      check(unpaidSecond === undefined, `after ${ticks} tick(s) the same message goes through and its stamp is paid${unpaidSecond ? ` (${unpaidSecond})` : ''}`)
       await sender.close()
     }
     await recipient.close()

@@ -107,6 +107,10 @@
           {{
             outboundPayment.nativeFeeAtomic === undefined
               ? $t('chatMessageStealth.sentFeeNotKnown')
+              : outboundPayment.nativeFeePartial
+              ? $t('chatMessageStealth.sentFeeSoFar', {
+                  fee: formatNativeAmount(outboundPayment.nativeFeeAtomic),
+                })
               : formatNativeAmount(outboundPayment.nativeFeeAtomic)
           }}
         </div>

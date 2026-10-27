@@ -108,6 +108,7 @@ const ChatListItem = require('../components/chat/ChatListItem.vue').default
 const ChatLayout = require('./ChatLayout.vue').default
 const AddContact = require('../pages/AddContact.vue').default
 const quasar = require('quasar')
+const { saveChatDraft, clearChatDraft } = require('../utils/draft-storage')
 const en = require('../i18n/en-us').default
 /* eslint-enable @typescript-eslint/no-var-requires */
 const PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
@@ -292,6 +293,33 @@ it('renders an explicit subject in the header and provides its editor', async ()
         .find(item => item.props('conversationId') === id)
         ?.text(),
     ).toContain('Project plan')
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('lists a conversation the user created even once its subject is blanked, and an opened default thread only while it holds a draft', async () => {
+  const app = await mountedConversations()
+  try {
+    const listed = () =>
+      app.root
+        .findAllComponents(ChatListItem)
+        .map(item => item.props('conversationId'))
+    const explicit = await app.create(PEER, 'Budget')
+    app.chats.renameConversation(explicit, '')
+    await settle()
+    expect(app.chats.conversations[explicit].name).toBeUndefined()
+    expect(app.chats.conversations[explicit].messages).toHaveLength(0)
+    expect(listed()).toContain(explicit)
+
+    const defaultId = await app.create(OTHER, '', false)
+    expect(listed()).not.toContain(defaultId)
+    saveChatDraft(OTHER, { message: 'half a thought' })
+    await settle()
+    expect(listed()).toContain(defaultId)
+    clearChatDraft(OTHER)
+    await settle()
+    expect(listed()).not.toContain(defaultId)
   } finally {
     app.root.unmount()
   }

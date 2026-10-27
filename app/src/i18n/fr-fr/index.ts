@@ -1315,6 +1315,7 @@ export const rawFrFR = {
     sentLandedAmount: 'Arrivé sur la chaîne',
     sentNetworkFee: 'Frais de réseau',
     sentFeeNotKnown: 'pas encore connus',
+    sentFeeSoFar: '{fee} pour l’instant (partiels)',
     sentStamp: 'Timbre du message',
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',

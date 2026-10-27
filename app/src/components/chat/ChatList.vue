@@ -292,6 +292,7 @@ import {
   summarizeScreenerQueue,
 } from '../../utils/screener-triage'
 import { isListedConversation } from '../../utils/listed-conversations'
+import { chatDraftRevision, hasChatDraft } from '../../utils/draft-storage'
 
 /** How often the list reads again what the wallets saw arrive for unread messages. */
 const UNREAD_VALUE_REREAD_MS = 15_000
@@ -333,12 +334,15 @@ export default defineComponent({
 
     // The order the store keeps, without the empty chats that are not listed (see
     // `isListedConversation`).
-    const listedConversations = computed<Conversation[]>(() =>
-      (Array.isArray(getSortedChatOrder?.value)
-        ? getSortedChatOrder.value
-        : []
-      ).filter(isListedConversation),
-    )
+    const listedConversations = computed<Conversation[]>(() => {
+      // Read so the list follows a draft that appears or goes.
+      void chatDraftRevision.value
+      const hasDraft = (c: { id: string }) =>
+        hasChatDraft(c.id) || hasChatDraft((c as { address?: string }).address)
+      return (
+        Array.isArray(getSortedChatOrder?.value) ? getSortedChatOrder.value : []
+      ).filter(conversation => isListedConversation(conversation, hasDraft))
+    })
 
     const isContactFn = (address: string): boolean =>
       contactStore.isContact(address)

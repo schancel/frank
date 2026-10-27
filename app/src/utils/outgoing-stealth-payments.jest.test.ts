@@ -304,140 +304,161 @@ test('a Send to Contact payment another device sent reads as the chain shows it,
   expect(detail.payment?.nativeFeeAtomic).toBe(141n)
 })
 
-test('a Send to Contact payment this device sent shows the network fee History shows: its journal operation, the stamp stage included', async () => {
-  const { Wallet, Transaction } = await import('ethers')
-  const { resolveChainIdentifier } = await import(
-    '@frank/wallet/chain/chains-registry'
-  )
-  const { summarizeEvmNativeOperation, summarizeEvmNativeStampStages } =
-    await import('@frank/wallet/chain')
-  const chain = resolveChainIdentifier('monad-regtest')!
-  const signer = Wallet.createRandom()
-  const recipient = '0x' + '5c'.repeat(20)
-  const stampTo = '0x' + '5d'.repeat(20)
-  const changeTo = '0x' + '5e'.repeat(20)
-  const stageId = 'stamp-' + 'ab'.repeat(16)
-  const member = async (
-    nonce: number,
-    to: string,
-    value: bigint,
-    feeWei: string,
-    transactionSet: Record<string, unknown>,
-  ) => {
-    const plan = {
-      type: 2,
-      chainId: 20143n, // monad-regtest (docs/protocol/chains/v1.json)
-      nonce,
-      to,
-      value,
-      gasLimit: 21000n,
-      maxFeePerGas: 1n,
-      maxPriorityFeePerGas: 1n,
+test.each([
+  ['every transaction is in a block', true],
+  ['its change is not in a block yet (History shows a partial fee)', false],
+])(
+  'a Send to Contact payment this device sent shows the network fee History shows: its journal operation, the stamp stage included; %s',
+  async (_case, changeLanded) => {
+    const { Wallet, Transaction } = await import('ethers')
+    const { resolveChainIdentifier } = await import(
+      '@frank/wallet/chain/chains-registry'
+    )
+    const { summarizeEvmNativeOperation, summarizeEvmNativeStampStages } =
+      await import('@frank/wallet/chain')
+    const chain = resolveChainIdentifier('monad-regtest')!
+    const signer = Wallet.createRandom()
+    const recipient = '0x' + '5c'.repeat(20)
+    const stampTo = '0x' + '5d'.repeat(20)
+    const changeTo = '0x' + '5e'.repeat(20)
+    const stageId = 'stamp-' + 'ab'.repeat(16)
+    const member = async (
+      nonce: number,
+      to: string,
+      value: bigint,
+      feeWei: string,
+      transactionSet: Record<string, unknown>,
+      landed = true,
+    ) => {
+      const plan = {
+        type: 2,
+        chainId: 20143n, // monad-regtest (docs/protocol/chains/v1.json)
+        nonce,
+        to,
+        value,
+        gasLimit: 21000n,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+      }
+      const rawTransaction = await signer.signTransaction(plan)
+      const transactionHash = Transaction.from(rawTransaction).hash!
+      return {
+        unsignedTransaction: Transaction.from(plan).unsignedSerialized,
+        source: { address: signer.address },
+        dependencies: [],
+        transactionSet,
+        signed: { rawTransaction, transactionHash },
+        exposed: true,
+        observation: landed
+          ? {
+              state: 'included-success',
+              transactionHash,
+              blockNumber: 1,
+              blockHash: '0x' + '01'.repeat(32),
+              feeWei,
+            }
+          : { state: 'pending' },
+        account: null,
+        syncApplied: true,
+      }
     }
-    const rawTransaction = await signer.signTransaction(plan)
-    const transactionHash = Transaction.from(rawTransaction).hash!
-    return {
-      unsignedTransaction: Transaction.from(plan).unsignedSerialized,
-      source: { address: signer.address },
-      dependencies: [],
-      transactionSet,
-      signed: { rawTransaction, transactionHash },
-      exposed: true,
-      observation: {
-        state: 'included-success',
-        transactionHash,
-        blockNumber: 1,
-        blockHash: '0x' + '01'.repeat(32),
-        feeWei,
+    const payment = await member(0, recipient, 500n, '30', { role: 'payment' })
+    const row = {
+      version: 1,
+      operationId: 'op-7',
+      kind: 'transaction-set',
+      binding: { chainIdentifier: chain.id, nativeChainId: '20143' },
+      preparationId: 'evm-transaction-set:contact-' + 'ab'.repeat(16),
+      recipient,
+      intendedValueWei: '500',
+      maximumFeeWei: '1000',
+      cancelled: false,
+      reservedBytes: 0,
+      transactionSetStages: [
+        {
+          startIndex: 0,
+          memberCount: 2,
+          intendedValueWei: '500',
+          calldata: '0x',
+          destinations: [recipient],
+        },
+        {
+          stageId,
+          startIndex: 2,
+          memberCount: 1,
+          intendedValueWei: '50',
+          calldata: '0x',
+          destinations: [stampTo],
+        },
+      ],
+      members: [
+        payment,
+        await member(1, changeTo, 7n, '12', { role: 'change' }, changeLanded),
+        await member(2, stampTo, 50n, '99', { role: 'payment', stageId }),
+      ],
+    } as unknown as import('@frank/wallet/chain').EvmNativeOperation
+    const txHash = payment.signed.transactionHash.toLowerCase()
+    const sender: StealthPaymentOwner = {
+      chainIdentifier: chain.id,
+      // A contact payment is no stealth-payment preparation: the journal names it.
+      stealthPayments: { list: async () => [], status: async () => undefined },
+      evmReader: {
+        getTransactionReceipt: async hash =>
+          hash.toLowerCase() === txHash ? { to: recipient, status: 1 } : null,
       },
-      account: null,
-      syncApplied: true,
+      // This device's own notes do not name it (yet).
+      getNotedSends: async () => [],
+      getContactPayments: () => [
+        { ephemeralPubKey: '02AB', operationId: 'op-7' },
+      ],
+      readNativeOperation: async id => (id === 'op-7' ? row : undefined),
     }
-  }
-  const payment = await member(0, recipient, 500n, '30', { role: 'payment' })
-  const row = {
-    version: 1,
-    operationId: 'op-7',
-    kind: 'transaction-set',
-    binding: { chainIdentifier: chain.id, nativeChainId: '20143' },
-    preparationId: 'evm-transaction-set:contact-' + 'ab'.repeat(16),
-    recipient,
-    intendedValueWei: '500',
-    maximumFeeWei: '1000',
-    cancelled: false,
-    reservedBytes: 0,
-    transactionSetStages: [
-      {
-        startIndex: 0,
-        memberCount: 2,
-        intendedValueWei: '500',
-        calldata: '0x',
-        destinations: [recipient],
+    const message = sentMessage({
+      items: [
+        {
+          type: 'stealth',
+          networkTag: chain.id,
+          ephemeralPubKey: '02ab',
+          transactions: [payment.signed.rawTransaction.slice(2)],
+        },
+      ],
+    })
+    // A partial fee is read again until it is whole.
+    expect(await refreshOutgoingStealthPayments([sender], [message])).toBe(
+      changeLanded ? 0 : 1,
+    )
+    const detail = sentStealthAssetDetail(outgoingStealthPayments.get(DIGEST), {
+      transfers: [{ chainIdentifier: chain.id, txId: txHash }],
+    })
+    const operation = summarizeEvmNativeOperation(row)
+    const history = buildWalletHistoryGroups({
+      chainIdentifier: chain.id,
+      swaps: [],
+      load: {
+        status: 'available',
+        operations: [operation],
+        stampStages: summarizeEvmNativeStampStages(row).map(stamp => ({
+          of: row.operationId,
+          stamp,
+        })),
+        received: [],
+        noted: [],
+        contactPayments: [],
+        blockTimes: new Map(),
       },
-      {
-        stageId,
-        startIndex: 2,
-        memberCount: 1,
-        intendedValueWei: '50',
-        calldata: '0x',
-        destinations: [stampTo],
-      },
-    ],
-    members: [
-      payment,
-      await member(1, changeTo, 7n, '12', { role: 'change' }),
-      await member(2, stampTo, 50n, '99', { role: 'payment', stageId }),
-    ],
-  } as unknown as import('@frank/wallet/chain').EvmNativeOperation
-  const txHash = payment.signed.transactionHash.toLowerCase()
-  const sender: StealthPaymentOwner = {
-    chainIdentifier: chain.id,
-    // A contact payment is no stealth-payment preparation: the journal names it.
-    stealthPayments: { list: async () => [], status: async () => undefined },
-    evmReader: {
-      getTransactionReceipt: async hash =>
-        hash.toLowerCase() === txHash ? { to: recipient, status: 1 } : null,
-    },
-    // This device's own notes do not name it (yet).
-    getNotedSends: async () => [],
-    getContactPayments: () => [
-      { ephemeralPubKey: '02AB', operationId: 'op-7' },
-    ],
-    readNativeOperation: async id => (id === 'op-7' ? row : undefined),
-  }
-  const message = sentMessage({
-    items: [
-      {
-        type: 'stealth',
-        networkTag: chain.id,
-        ephemeralPubKey: '02ab',
-        transactions: [payment.signed.rawTransaction.slice(2)],
-      },
-    ],
-  })
-  expect(await refreshOutgoingStealthPayments([sender], [message])).toBe(0)
-  const detail = sentStealthAssetDetail(outgoingStealthPayments.get(DIGEST), {
-    transfers: [{ chainIdentifier: chain.id, txId: txHash }],
-  })
-  const operation = summarizeEvmNativeOperation(row)
-  const history = buildWalletHistoryGroups({
-    chainIdentifier: chain.id,
-    swaps: [],
-    load: {
-      status: 'available',
-      operations: [operation],
-      stampStages: summarizeEvmNativeStampStages(row).map(stamp => ({
-        of: row.operationId,
-        stamp,
-      })),
-      received: [],
-      noted: [],
-      contactPayments: [],
-      blockTimes: new Map(),
-    },
-  }).flatMap(group => group.rows)
-  expect(history).toHaveLength(1)
-  expect(history[0]).toMatchObject({ kind: 'native', feeWei: '141' })
-  expect(detail.state).toBe('paid')
-  expect(detail.payment?.nativeFeeAtomic).toBe(141n)
-})
+    }).flatMap(group => group.rows)
+    expect(history).toHaveLength(1)
+    const fee = changeLanded ? '141' : '129'
+    expect(history[0]).toMatchObject({
+      kind: 'native',
+      feeWei: fee,
+      feeCoverage: changeLanded ? 'complete' : 'partial',
+    })
+    expect(detail.state).toBe('paid')
+    // The card names the same fee History does, and says when it is only part of it.
+    expect(detail.payment?.nativeFeeAtomic).toBe(BigInt(fee))
+    expect(detail.payment?.nativeFeePartial).toBe(
+      changeLanded ? undefined : true,
+    )
+  },
+)

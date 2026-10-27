@@ -128,6 +128,8 @@ export interface SentStealthDetail {
     readonly intendedAmountAtomic: bigint
     readonly verifiedReceivedAmountAtomic?: bigint
     readonly nativeFeeAtomic?: bigint
+    /** `nativeFeeAtomic` is the fee known so far, not yet the whole fee. */
+    readonly nativeFeePartial?: true
     readonly members: readonly {
       readonly txHash: string
       readonly recipientAmountAtomic: bigint
@@ -148,6 +150,7 @@ export function sentStealthAssetDetail(
   payments:
     | readonly {
         readonly chainIdentifier: string
+        readonly feePartial?: true
         readonly status: {
           readonly status: 'pending' | 'partial' | 'succeeded' | 'failed'
           readonly submitted: boolean
@@ -164,7 +167,7 @@ export function sentStealthAssetDetail(
 ): SentStealthDetail {
   const chainIdentifier = item.transfers[0]?.chainIdentifier
   const hashes = item.transfers.map(transfer => bareHash(transfer.txId)).sort()
-  const found = payments?.find(
+  const match = payments?.find(
     payment =>
       payment.chainIdentifier === chainIdentifier &&
       payment.status.members.length === hashes.length &&
@@ -172,8 +175,9 @@ export function sentStealthAssetDetail(
         .map(member => bareHash(member.txHash))
         .sort()
         .every((hash, index) => hash === hashes[index]),
-  )?.status
-  if (found === undefined) return { state: 'unknown' }
+  )
+  if (match === undefined) return { state: 'unknown' }
+  const found = match.status
   const payment = {
     intendedAmountAtomic: found.intendedAmountAtomic,
     ...(found.verifiedReceivedAmountAtomic === undefined
@@ -181,7 +185,10 @@ export function sentStealthAssetDetail(
       : { verifiedReceivedAmountAtomic: found.verifiedReceivedAmountAtomic }),
     ...(found.nativeFeeAtomic === undefined
       ? {}
-      : { nativeFeeAtomic: found.nativeFeeAtomic }),
+      : {
+          nativeFeeAtomic: found.nativeFeeAtomic,
+          ...(match.feePartial ? { nativeFeePartial: true as const } : {}),
+        }),
     members: found.members,
   }
   const state: SentStealthState =

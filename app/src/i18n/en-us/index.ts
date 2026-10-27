@@ -1291,6 +1291,7 @@ export const rawEnUS = {
     sentLandedAmount: 'Landed on chain',
     sentNetworkFee: 'Network fee',
     sentFeeNotKnown: 'not known yet',
+    sentFeeSoFar: '{fee} so far (partial)',
     sentStamp: 'Message stamp',
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',

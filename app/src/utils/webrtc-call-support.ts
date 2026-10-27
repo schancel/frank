@@ -23,13 +23,19 @@ export interface CallConversation {
 }
 
 /** What a profile declares about itself: the bot marker, or a bot or service account type.
- * Never inferred from a name. */
+ * A kind guessed from a name (`botKindInferred`) is not a declaration, and anything not declared
+ * counts as a person: a call is offered unless the profile says nobody will answer. */
 export function isAutomatedAccount(
   profile:
-    | { isBot?: boolean | null; accountType?: number | null }
+    | {
+        isBot?: boolean | null
+        accountType?: number | null
+        botKindInferred?: boolean
+      }
     | null
     | undefined,
 ): boolean {
+  if (!profile || profile.botKindInferred) return false
   return (
     profile?.isBot === true ||
     profile?.accountType === ACCOUNT_TYPE_BOT ||

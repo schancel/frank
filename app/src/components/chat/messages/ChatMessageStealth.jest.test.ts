@@ -445,6 +445,23 @@ describe('ChatMessageStealth', () => {
       expect(states(wrapper)).toEqual(['landed', 'pending'])
     })
 
+    it('a fee known only in part is shown as History shows it, and says it is partial', () => {
+      const wrapper = sent(
+        'paid',
+        [{ txHash: HASH_A, recipientAmountAtomic: 2n * ONE, state: 'landed' }],
+        {
+          verifiedReceivedAmountAtomic: 2n * ONE,
+          nativeFeeAtomic: 21000n,
+          nativeFeePartial: true,
+        },
+      )
+      expect(text(wrapper, 'stealth-sent-fee')).toBe(
+        `Network fee: ${activeChain.toDisplayAmount(21000n)} ${
+          activeChain.unit
+        } so far (partial)`,
+      )
+    })
+
     it('paid once every transfer landed', () => {
       const wrapper = sent(
         'paid',

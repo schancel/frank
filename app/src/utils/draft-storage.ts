@@ -1,4 +1,11 @@
+import { ref } from 'vue'
 import type { PostAttachment } from './post-editor'
+
+/**
+ * Counts every chat-draft save and clear in this tab, so views that ask `hasChatDraft` (the
+ * conversation list) read again when a draft appears or goes.
+ */
+export const chatDraftRevision = ref(0)
 
 const CHAT_DRAFT_PREFIX = 'frank:draft:chat:'
 const FORUM_DRAFT_PREFIX = 'frank:draft:forum:'
@@ -113,9 +120,13 @@ export function saveChatDraft(
   const replyDigest = draft.replyDigest ?? null
   try {
     if (!message && attachments.length === 0 && !replyDigest) {
-      storage.removeItem(`${CHAT_DRAFT_PREFIX}${key}`)
+      if (storage.getItem(`${CHAT_DRAFT_PREFIX}${key}`) !== null) {
+        storage.removeItem(`${CHAT_DRAFT_PREFIX}${key}`)
+        chatDraftRevision.value++
+      }
       return
     }
+    const hadDraft = storage.getItem(`${CHAT_DRAFT_PREFIX}${key}`) !== null
     const record: ChatDraftRecord = {
       message,
       attachments,
@@ -123,9 +134,17 @@ export function saveChatDraft(
       updatedAt: Date.now(),
     }
     storage.setItem(`${CHAT_DRAFT_PREFIX}${key}`, JSON.stringify(record))
+    if (!hadDraft) chatDraftRevision.value++
   } catch {
     // Ignore quota or serialization errors
   }
+}
+
+/** Whether an unsent chat draft is saved for this conversation key. */
+export function hasChatDraft(
+  conversationKey: string | null | undefined,
+): boolean {
+  return loadChatDraft(conversationKey) !== null
 }
 
 export function clearChatDraft(
@@ -136,7 +155,9 @@ export function clearChatDraft(
   const storage = getStorage()
   if (!storage) return
   try {
+    if (storage.getItem(`${CHAT_DRAFT_PREFIX}${key}`) === null) return
     storage.removeItem(`${CHAT_DRAFT_PREFIX}${key}`)
+    chatDraftRevision.value++
   } catch {
     // Ignore
   }

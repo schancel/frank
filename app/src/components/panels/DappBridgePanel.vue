@@ -562,6 +562,8 @@ export interface DiscoveredPersonaActivity {
  * is read again (about a minute in all). */
 const SWEEP_RECEIPT_POLL_MS = 1_000
 const SWEEP_RECEIPT_POLLS = 60
+/** How long one chain read may take before it is given up. */
+const RPC_TIMEOUT_MS = 15_000
 
 function shortHexAddress(addr: string): string {
   if (!addr || addr.length < 12) return addr
@@ -765,6 +767,18 @@ export default defineComponent({
     const maxPersonaIndex = ref(0)
     // What the chain last reported for each persona slot; absent until read.
     const personaBalancesByIndex = ref<Record<number, bigint>>({})
+    // Each balance read of a slot takes the next number; a reply is shown only while its read
+    // is still the newest of that slot, so an older reply never overwrites a newer one.
+    const balanceReadSeq: Record<number, number> = {}
+    function startBalanceRead(slot: number): number {
+      balanceReadSeq[slot] = (balanceReadSeq[slot] ?? 0) + 1
+      return balanceReadSeq[slot]
+    }
+    function isNewestBalanceRead(slot: number, read: number): boolean {
+      return balanceReadSeq[slot] === read
+    }
+    // Reads stop when the panel goes: its timers and requests are not left running.
+    const panelLifetime = new AbortController()
     const usedPersonasByIndex = ref<Record<number, boolean>>({})
 
     const useBurnerForConnect = ref(true)
@@ -898,6 +912,7 @@ export default defineComponent({
       }
       const rpcUrl = personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier)
       if (!rpcUrl || !fundingSupported.value) return
+      const reads = slotAddresses.map((_, index) => startBalanceRead(index))
       const results = await discoverUsedPersonasOnChain(slotAddresses, {
         rpcUrl,
         knownMaxIndex: maxPersonaIndex.value,
@@ -912,7 +927,11 @@ export default defineComponent({
           item.used ||
           item.index <= maxPersonaIndex.value
         ) {
-          nextBalances[item.index] = item.balanceWei
+          if (
+            reads[item.index] === undefined ||
+            isNewestBalanceRead(item.index, reads[item.index])
+          )
+            nextBalances[item.index] = item.balanceWei
           if (item.used && item.index > 0) {
             nextUsed[item.index] = true
           }
@@ -1314,7 +1333,10 @@ export default defineComponent({
       })
       void refreshBridgeState()
     })
-    onBeforeUnmount(() => offApprovalsChanged?.())
+    onBeforeUnmount(() => {
+      offApprovalsChanged?.()
+      panelLifetime.abort()
+    })
 
     function selectPersona(index: number) {
       if (index < 0 || index > maxPersonaIndex.value) return
@@ -1395,11 +1417,27 @@ export default defineComponent({
       method: string,
       params: unknown[],
     ): Promise<T> {
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      })
+      // Given up after RPC_TIMEOUT_MS, or at once when the panel goes.
+      const request = new AbortController()
+      const giveUp = () => request.abort()
+      const timer = setTimeout(giveUp, RPC_TIMEOUT_MS)
+      panelLifetime.signal.addEventListener('abort', giveUp)
+      let response: Response
+      try {
+        response = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+          signal: request.signal,
+        })
+      } catch (error) {
+        if (request.signal.aborted)
+          throw new Error('The network did not answer in time.')
+        throw error
+      } finally {
+        clearTimeout(timer)
+        panelLifetime.signal.removeEventListener('abort', giveUp)
+      }
       if (!response.ok)
         throw new Error(`The network did not answer (${response.status}).`)
       const body = (await response.json()) as {
@@ -1418,9 +1456,11 @@ export default defineComponent({
     async function refreshPersonaBalance(slot: number, address: string) {
       const rpcUrl = personaRpcUrl(hostRelayBaseUrl(), props.chainIdentifier)
       if (!rpcUrl) return
+      const read = startBalanceRead(slot)
       const balance = BigInt(
         await rpc<string>(rpcUrl, 'eth_getBalance', [address, 'latest']),
       )
+      if (!isNewestBalanceRead(slot, read)) return
       personaBalancesByIndex.value = {
         ...personaBalancesByIndex.value,
         [slot]: balance,
@@ -1436,14 +1476,16 @@ export default defineComponent({
       address: string,
     ) {
       for (let attempt = 0; attempt < SWEEP_RECEIPT_POLLS; attempt += 1) {
+        if (panelLifetime.signal.aborted) return
         const receipt = await rpc<unknown>(
           rpcUrl,
           'eth_getTransactionReceipt',
           [txHash],
         ).catch(() => null)
-        if (receipt) break
+        if (receipt || panelLifetime.signal.aborted) break
         await new Promise(resolve => setTimeout(resolve, SWEEP_RECEIPT_POLL_MS))
       }
+      if (panelLifetime.signal.aborted) return
       await refreshPersonaBalance(slot, address)
     }
 
@@ -1462,16 +1504,18 @@ export default defineComponent({
         if (wallet.chainIdentifier !== props.chainIdentifier)
           throw new Error('Your wallet is open on another network.')
         const to = (await wallet.getReceiveAddress()).raw
+        const read = startBalanceRead(slot)
         const [balanceHex, nonceHex, gasPriceHex] = await Promise.all([
           rpc<string>(rpcUrl, 'eth_getBalance', [from, 'latest']),
           rpc<string>(rpcUrl, 'eth_getTransactionCount', [from, 'pending']),
           rpc<string>(rpcUrl, 'eth_gasPrice', []),
         ])
         const balance = BigInt(balanceHex)
-        personaBalancesByIndex.value = {
-          ...personaBalancesByIndex.value,
-          [slot]: balance,
-        }
+        if (isNewestBalanceRead(slot, read))
+          personaBalancesByIndex.value = {
+            ...personaBalancesByIndex.value,
+            [slot]: balance,
+          }
         const gasLimit = 21_000n
         const maxFeePerGas = BigInt(gasPriceHex)
         // Monad charges the whole gas limit: this is the fee, not just its ceiling.

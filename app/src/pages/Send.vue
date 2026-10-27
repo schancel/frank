@@ -245,18 +245,12 @@
           data-test="native-operation-outcome"
           role="status"
         >
-          <p>
+          <p data-test="native-operation-line">
             {{
-              $t(
-                sending
-                  ? 'nativeOperation.processing'
-                  : `nativeOperation.${operation?.payment ?? 'unknown'}`,
-                { network: networkName },
-              )
+              sending
+                ? $t('nativeOperation.processing', { network: networkName })
+                : $t(outcomeLine.key, outcomeLine.params)
             }}
-          </p>
-          <p v-if="operation" data-test="native-operation-id">
-            {{ operation.operationId }}
           </p>
           <p
             v-if="outcomeHash && !operation"
@@ -312,8 +306,9 @@
             <p
               v-if="
                 operation === undefined ||
-                operation.payment === 'unknown' ||
-                operation.payment === 'partial'
+                ((operation.payment === 'unknown' ||
+                  operation.payment === 'partial') &&
+                  !nativeOperationProgress(operation))
               "
               data-test="native-operation-recovery"
             >
@@ -365,6 +360,10 @@ import { accountSession } from 'src/accounts/session'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { navigateBack } from 'src/utils/navigate-back'
 import {
+  nativeOperationOutcome,
+  nativeOperationProgress,
+} from 'src/utils/native-operation-outcome'
+import {
   computed,
   defineComponent,
   onBeforeUnmount,
@@ -404,6 +403,11 @@ import {
   walletOpenFailureKey,
   type WalletOpenFailureKey,
 } from 'src/accounts/wallet-open-failure'
+
+/** How often, and for how long, the outcome page re-reads a sent transfer's journal row while
+ * its change and its note to the account's other devices are still going out. */
+const SETTLE_READ_INTERVAL_MS = 2_000
+const SETTLE_READ_LIMIT_MS = 15 * 60_000
 
 export default defineComponent({
   components: { QrScannerDialog },
@@ -590,6 +594,11 @@ export default defineComponent({
       operation,
       watching,
       outcomeHash,
+      // A send still under way reads as such; "unresolved" only when it is (`nativeOperationProgress`).
+      outcomeLine: computed(() =>
+        nativeOperationOutcome(operation.value, networkName.value),
+      ),
+      nativeOperationProgress,
       observedFee: computed(() =>
         operation.value && chain.value
           ? chain.value.toDisplayAmount(BigInt(operation.value.observedFeeWei))
@@ -801,6 +810,40 @@ export default defineComponent({
           operation.value?.payment === 'pending' ||
           operation.value?.payment === 'missing' ||
           operation.value?.payment === 'unknown'
+        // Once the payment is in a block, the rest of the operation still happens: its change
+        // lands and the note telling the account's other devices goes out (it is sent after the
+        // transactions it describes land). The page keeps reading the journal, which is local,
+        // until those are done, so it never keeps saying "not yet shared" after the note went
+        // out. The QA run that found this saw it several minutes after History said "sent".
+        const unsettled = () => {
+          const op = operation.value
+          return (
+            op?.payment === 'included' &&
+            (op.sharing === 'not-shared' ||
+              op.sharing === 'failed' ||
+              op.members.some(
+                member =>
+                  member.state !== 'included-success' &&
+                  member.state !== 'included-revert' &&
+                  member.state !== 'superseded',
+              ))
+          )
+        }
+        const settle = async () => {
+          const until = Date.now() + SETTLE_READ_LIMIT_MS
+          while (
+            !disposed &&
+            reviewed.binding.isCurrent() &&
+            unsettled() &&
+            Date.now() < until
+          ) {
+            await new Promise(resolve =>
+              setTimeout(resolve, SETTLE_READ_INTERVAL_MS),
+            )
+            if (disposed) return
+            await inspect()
+          }
+        }
         const watch = async () => {
           const wallet = reviewed.binding.wallet
           const id = operation.value?.operationId
@@ -816,11 +859,13 @@ export default defineComponent({
               !disposed &&
               reviewed.binding.isCurrent() &&
               operation.value?.payment === 'included'
-            )
+            ) {
               sentTransactionNotify(
                 reviewed.context.chain.chainIdentifier,
                 signedTxHash,
               )
+              void settle()
+            }
           } catch {
             // The wallet was closed: what is shown stays; the journal keeps the transfer.
           } finally {
@@ -868,12 +913,13 @@ export default defineComponent({
           // been told is information shown with the transfer, never a reason to hold this page.
           if (reviewed.binding.wallet.family === 'evm') {
             // The page stays on the outcome: sent, its block and its fee, from the journal.
-            if (operation.value?.payment === 'included')
+            if (operation.value?.payment === 'included') {
               sentTransactionNotify(
                 reviewed.context.chain.chainIdentifier,
                 result.txHash,
               )
-            else void watch()
+              void settle()
+            } else void watch()
             return
           }
           sentTransactionNotify(
@@ -946,7 +992,8 @@ export default defineComponent({
           if (!(await current())) return
           await inspect()
           if (disposed || !reviewed.binding.isCurrent()) return
-          void watch()
+          if (operation.value?.payment === 'included') void settle()
+          else void watch()
         } finally {
           if (!disposed) sending.value = false
         }

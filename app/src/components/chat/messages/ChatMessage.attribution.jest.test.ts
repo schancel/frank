@@ -37,6 +37,7 @@ jest.mock('../../../utils/message-items', () => ({
 jest.mock('../../../utils/message-item-renderers', () => ({
   getMessageItemRenderer: () => undefined,
   messageSystemLine: () => undefined,
+  conversationSystemLine: () => undefined,
 }))
 jest.mock('../../../utils/avatar', () => ({
   profileAvatar: (avatar: string | undefined, identity: string) =>

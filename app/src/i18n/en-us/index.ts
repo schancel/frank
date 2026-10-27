@@ -230,6 +230,7 @@ export const rawEnUS = {
     resetToDefault: 'Reset to default',
     stampReset: 'Default',
     stampFree: 'Free',
+    stampMakeFree: 'Make it free',
     stampChipFree: 'No stamp: this message is free',
     stampChip: 'Stamp: {amount}',
     stampChipMultiple: 'Stamp: {amount}, {multiplier}× the default',
@@ -1605,6 +1606,8 @@ export const rawEnUS = {
     partial:
       'Some funding transactions are included on {network}; recipient payment is not recorded as included.',
     pending: 'In the mempool on {network}: sent, waiting for a block.',
+    sending:
+      'Sending on {network}… {confirmed} of {total} transactions confirmed.',
     missing:
       '{network} does not have this transfer yet. It is being offered again.',
     superseded:

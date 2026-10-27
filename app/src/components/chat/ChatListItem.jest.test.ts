@@ -16,6 +16,7 @@ let latest: {
   outbound: boolean
   senderAddress?: string
   photos?: number
+  systemLine?: { key: string; params?: Record<string, string> }
 } | null = null
 // Addresses (lower case) that are not contacts, and names of those that are.
 const mockStrangers = new Set<string>()
@@ -97,6 +98,39 @@ describe('ChatListItem message preview (ticket #274)', () => {
     latest = { text: 'after recovery', outbound }
     expect(preview(locale)).toBe(expected)
   })
+
+  // A QA run showed "Them: Group control (remove-member, epoch 1)" for a removal notice while
+  // the chat itself said "You were removed from the group …".
+  it.each([
+    [
+      'en-us',
+      'groupChat.systemRemovalReceived',
+      { group: 'Core' },
+      'You were removed from the group "Core"',
+    ],
+    [
+      'fr-fr',
+      'groupChat.systemRemovalReceived',
+      { group: 'Core' },
+      'Vous avez été retiré du groupe « Core »',
+    ],
+    [
+      'en-us',
+      'groupChat.systemMembershipUpdate',
+      undefined,
+      'Group "Group": members changed',
+    ],
+  ])(
+    '%s previews the record %s as the chat line %j',
+    (locale, key, params, expected) => {
+      latest = {
+        text: 'Removed from the group',
+        outbound: false,
+        systemLine: { key, params },
+      }
+      expect(preview(locale)).toBe(expected)
+    },
+  )
 
   // The run that found this showed "Them: 💬 **Lobby Group Chat…" in the list.
   it.each([

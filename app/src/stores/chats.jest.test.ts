@@ -6114,4 +6114,76 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(desktopNotify).not.toHaveBeenCalled()
     })
   })
+
+  describe("the chat list previews a group record with the chat's own line, not its protocol fields", () => {
+    const GROUP_ID = 'cd'.repeat(32)
+    function directWith(items: unknown[], outbound: boolean): string {
+      const chats = useChatStore()
+      chats.conversations[groupConversationUuid(GROUP_ID)] = {
+        id: groupConversationUuid(GROUP_ID),
+        name: 'Core',
+        kind: 'group',
+        messages: [],
+      } as any
+      const convId = '33333333-3333-4333-8333-000000000002'
+      chats.conversations[convId] = {
+        id: convId,
+        address: RECIPIENT_ADDRESS,
+        kind: 'direct',
+        messages: [
+          {
+            outbound,
+            senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
+            items,
+          },
+        ],
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+        lastReceived: 0,
+        lastRead: 0,
+        stampAmount: 0,
+      } as any
+      return convId
+    }
+    const control = {
+      type: 'group-control',
+      groupId: GROUP_ID,
+      action: 'remove-member',
+      epoch: 1,
+      prevEpochHash: '00'.repeat(32),
+      targetAddress: SENDER_ADDRESS,
+      authoritySigHex: '11'.repeat(64),
+    }
+
+    it('a removal notice received from the administrator', () => {
+      const convId = directWith([control], false)
+      const latest = useChatStore().getLatestMessage(convId)
+      expect(latest?.systemLine).toEqual({
+        key: 'groupChat.systemRemovalReceived',
+        params: { group: 'Core' },
+      })
+      expect(latest?.text).not.toContain('epoch')
+      expect(latest?.text).not.toContain('remove-member')
+    })
+
+    it('a membership change sent to a member who stays', () => {
+      const convId = directWith(
+        [{ ...control, epochSecretHex: '22'.repeat(32) }],
+        true,
+      )
+      expect(useChatStore().getLatestMessage(convId)?.systemLine).toEqual({
+        key: 'groupChat.systemMembershipUpdate',
+        params: { group: 'Core' },
+      })
+    })
+
+    it('an ordinary message has no system line', () => {
+      const convId = directWith([{ type: 'text', text: 'hi' }], false)
+      expect(useChatStore().getLatestMessage(convId)).toMatchObject({
+        text: 'hi',
+        systemLine: undefined,
+      })
+    })
+  })
 })

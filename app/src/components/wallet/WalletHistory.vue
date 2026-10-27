@@ -265,11 +265,10 @@
               <div class="wallet-history-detail-body">
                 <p class="wallet-history-outcome">
                   {{
-                    $t(`nativeOperation.${entry.operation.payment}`, {
-                      network:
-                        networkName(entry.operation.chainIdentifier) ||
-                        entry.operation.chainIdentifier,
-                    })
+                    $t(
+                      outcomeLine(entry.operation).key,
+                      outcomeLine(entry.operation).params,
+                    )
                   }}
                 </p>
                 <p
@@ -448,8 +447,9 @@
                 </p>
                 <p
                   v-if="
-                    entry.operation.payment === 'unknown' ||
-                    entry.operation.payment === 'partial'
+                    (entry.operation.payment === 'unknown' ||
+                      entry.operation.payment === 'partial') &&
+                    !nativeOperationProgress(entry.operation)
                   "
                   data-testid="wallet-native-operation-recovery"
                 >
@@ -496,6 +496,11 @@ import {
   type WalletHistoryLoad,
   type WalletHistoryRow,
 } from './wallet-history'
+import type { EvmNativeOperationStatus } from '@frank/wallet/chain'
+import {
+  nativeOperationOutcome,
+  nativeOperationProgress,
+} from 'src/utils/native-operation-outcome'
 
 const props = defineProps<{
   /** The network these rows are of. */
@@ -511,6 +516,14 @@ const props = defineProps<{
   ) => string | undefined
   formatSwapTime: (timestamp: number) => string
 }>()
+
+/** The outcome line: a send still under way reads as such, not as unresolved. */
+function outcomeLine(operation: EvmNativeOperationStatus) {
+  return nativeOperationOutcome(
+    operation,
+    props.networkName(operation.chainIdentifier) || operation.chainIdentifier,
+  )
+}
 
 /** The amount as a row reads it; the exact amount is its title. */
 function shortAmount(value: string): string {

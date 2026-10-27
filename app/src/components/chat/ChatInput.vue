@@ -449,13 +449,16 @@
                   :suffix="chainUnit"
                   :label="$t('chatInput.stampPayment')"
                 />
+                <!-- An action, not the stamp's value: shown only while the stamp is not 0. -->
                 <q-btn
+                  v-if="stampWei !== 0n"
                   flat
                   dense
                   no-caps
                   color="primary"
+                  icon="money_off"
                   data-testid="chat-input-stamp-free"
-                  :label="$t('chatInput.stampFree')"
+                  :label="$t('chatInput.stampMakeFree')"
                   :disable="disable"
                   @click="chooseFreeStamp"
                 />

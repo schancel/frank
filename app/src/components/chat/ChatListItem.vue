@@ -214,6 +214,7 @@
 import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 import { type Conversation, useChatStore } from 'src/stores/chats'
 import { picturePreviewText } from '../../utils/chat-attachments'
+import { systemLineText } from '../../utils/message-item-renderers'
 import {
   markdownPlainText,
   formatSnippet,
@@ -438,6 +439,9 @@ export default defineComponent({
       if (info === null || !info) {
         return ''
       }
+      // A group invitation or membership change reads as the chat's own line for it, which
+      // already says who did what, so it takes no "You:"/"Them:" prefix.
+      if (info.systemLine) return systemLineText(info.systemLine, this.$t)
       // The preview is plain text: the words of the message, without its Markdown syntax.
       const photoLabel = this.$t('chatImage.onePhoto')
       const plain = formatSnippet(info.text, photoLabel)

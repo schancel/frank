@@ -58,6 +58,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
+import { conversationSystemLine } from '../utils/message-item-renderers'
 
 import {
   CanonicalRecipientNotPublishedError,
@@ -2940,6 +2941,13 @@ export const useChatStore = defineStore('chats', {
         senderAddress: lastMessage.senderAddress,
         photos: pictures?.photos ?? 0,
         text: pictures ? pictures.text : messageItems.previewText(previewItem),
+        // A record of a group invitation or membership change is previewed with the line the
+        // chat shows for it, not the item's own protocol summary.
+        systemLine: conversationSystemLine(
+          items,
+          lastMessage.outbound,
+          state.conversations,
+        ),
       }
     },
     getLastReceived(state) {

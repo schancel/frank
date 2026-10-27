@@ -15,7 +15,11 @@ export function initGroupControlPlugin(
   registry.register<GroupControlItem>({
     type: 'group-control',
     hydrate: raw => raw,
-    previewText: raw => `Group control (${raw.action}, epoch ${raw.epoch})`,
+    // The app shows its own line for these; this plain summary never shows protocol fields.
+    previewText: raw =>
+      raw.action === 'remove-member' && !raw.epochSecretHex
+        ? 'Removed from the group'
+        : 'Group membership changed',
     encode: groupControlCodec.encode,
     decode: groupControlCodec.decode,
   })

@@ -61,6 +61,7 @@ jest.mock('../../../utils/message-items', () => ({
 jest.mock('../../../utils/message-item-renderers', () => ({
   getMessageItemRenderer: () => undefined,
   messageSystemLine: () => undefined,
+  conversationSystemLine: () => undefined,
 }))
 
 function translate(messages: unknown) {

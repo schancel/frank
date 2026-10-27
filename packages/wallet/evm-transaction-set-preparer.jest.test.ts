@@ -1279,6 +1279,35 @@ it('a set that could fund its next stage only from behind its payment is refused
   expect(f.journal.list()).toHaveLength(0)
 })
 
+it.each([0.01, 0.3, 0.5, 0.7, 0.99])('one coin under a reserve rule funds its continuation at the lowest nonce and pays at the next (draw %s)', async draw => {
+  // The owner's two-nonce ruling: the stamp's funding (the carved continuation account) is
+  // signed first on the coin's account, the payment the message carries directly after it, and
+  // the rest of the change behind the payment. Nothing else of the set comes between the two.
+  const spendRule = { belowWei: 2000000n, waitBlocks: 3 }
+  const f = await setup([1000000n], { ...policy, spendRule })
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => draw })
+  await f.preparer.constructTransactionSet({ operationId: 'one-coin', amountWei: 300000n,
+    reserveForContinuationWei: 51000n, continuationFeeWei: 21000n, kdf })
+  await f.preparer.appendTransactionSet({ operationId: 'one-coin', stageId: 'stamp', amountWei: 30000n, kdf })
+  const members = f.preparer.getOperation('one-coin')!.members
+  const nonce = (index: number) => Transaction.from(members[index]!.unsignedTransaction).nonce
+  const account = members[0]!.source.address
+  const onAccount = members.flatMap((member, index) => member.source.address === account ? [index] : [])
+    .sort((a, b) => nonce(a) - nonce(b))
+  const stamp = members.findIndex(member => member.transactionSet?.stageId === 'stamp' && member.transactionSet.role === 'payment')
+  const [funding] = members[stamp]!.dependencies
+  expect(funding).toBe(onAccount[0])
+  expect(members[funding!]!.transactionSet!.role).toBe('change')
+  expect(Transaction.from(members[funding!]!.unsignedTransaction).value).toBe(51000n)
+  const payment = onAccount[1]!
+  expect(members[payment]!.transactionSet).toMatchObject({ role: 'payment', predecessorWaitBlocks: 3 })
+  expect(members[payment]!.transactionSet!.stageId).toBeUndefined()
+  expect(nonce(payment)).toBe(nonce(funding!) + 1)
+  for (const index of onAccount.slice(2)) expect(members[index]!.transactionSet!.role).toBe('change')
+  // The stamp waits for its funding to mature, one block past the payment's quiet window.
+  expect(members[stamp]!.transactionSet!.fundingWaitBlocks).toBe(spendRule.waitBlocks + 1)
+})
+
 it('a relay refusal before any broadcast releases a set whose only exposed members are its payments, and never one whose own moves were exposed', async () => {
   const f = await setup(), original = f.coins.all()
   // A random draw that splits off no change first: the payment is the set's first move.

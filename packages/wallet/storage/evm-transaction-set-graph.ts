@@ -71,7 +71,16 @@ export function validateTransactionSetGraph(
       if (tx.nonce !== 0 || before !== funding.value || funding.indexes.some(creator => creator >= index) || JSON.stringify(member.dependencies) !== JSON.stringify(funding.indexes)) fail()
       if (meta.fundingWaitBlocks !== undefined) integer(meta.fundingWaitBlocks)
     } else if (member.dependencies.length || meta.fundingWaitBlocks !== undefined) fail()
-    if (meta.predecessorWaitBlocks !== undefined && (integer(meta.predecessorWaitBlocks) === 0 || !previous || meta.role !== 'change' || member.dependencies.length !== 1)) fail()
+    // A payment waits for a quiet window only behind the change that funds its message's
+    // continuation (the stamp), the move signed at the nonce below it: a message's carried
+    // payments reach the chain only after the relay stores the message, which is after that
+    // funding has landed and matured. Every other below-reserve drain is private change.
+    const behindContinuationFunding = () => meta.role === 'payment' && previous !== undefined &&
+      members[previous.index]!.transactionSet?.role === 'change' &&
+      stages?.find(item => index >= item.startIndex && index < item.startIndex + item.memberCount)
+        ?.reserveForContinuationWei !== undefined
+    if (meta.predecessorWaitBlocks !== undefined && (integer(meta.predecessorWaitBlocks) === 0 || !previous ||
+        (meta.role !== 'change' && !behindContinuationFunding()) || member.dependencies.length !== 1)) fail()
     latest.set(member.source.address, { index, nonce: tx.nonce, balance: after })
     const stage = stages?.find(item => index >= item.startIndex && index < item.startIndex + item.memberCount)
     if (stages && (!stage || stage.stageId !== meta.stageId)) fail()

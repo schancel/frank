@@ -191,21 +191,16 @@ Still replica-local; each relay's startup log names them:
   It needs the owner decisions in [#89](https://github.com/schancel/frank/issues/89).
 - [A second device's 'existing' answer makes it broadcast its own group-write payment (#1862)](https://github.com/schancel/frank/issues/1862).
 - [The app's websocket advances its cursor before storing the record (#1854)](https://github.com/schancel/frank/issues/1854).
-- **A contact payment leaves before the relay stores its message.** On this main a wallet
-  with one coin can pay a contact plus the message's stamp: the send first answers "pending,
-  nothing failed" and the next tick delivers it (checked on anvil with one coin, with the
-  wallet's Monad spend spacing on and off). It works because the wallet puts the whole set on
-  the chain, the contact transfer included, before the relay has the message. That breaks the 2026-10-20
-  broadcast rule (persist, submit, then broadcast). The held
-  [Carried payments go out only after the relay stores the message (#1894)](https://github.com/schancel/frank/pull/1894)
-  fixes the order, and on its own it then refuses a one-coin wallet under Monad's reserve rule
-  with "Insufficient available EVM coins": see owner question 8 for the ruling it needs.
-- **`packages/wallet/chain/received-payments.anvil.integration.ts` fails on this main (12 of
-  12) and is not in CI.** Not because of one coin: it runs the shared fixture's stub fee policy
-  (3 wei gas, head 100) and a 1,000 wei default stamp against a real node, expects a paid send
-  to finish at once where main first answers "pending", and expects the contact transfer to be
-  off the chain until the relay stores the message, which only #1894 does. #1894 updates the
-  suite and adds its CI job.
+- **Fixed: a contact payment no longer leaves before the relay stores its message.**
+  [A message's carried payments reach the chain only after the relay stores it (#1894)](https://github.com/schancel/frank/pull/1894)
+  holds every carried payment (recipient payments, stamps, a contact transfer) until the relay
+  has stored the message, and only the set's own moves (change, the stamp's funding) go before.
+  A one-coin wallet under Monad's reserve rule is no longer refused: it uses the two-nonce
+  ordering of owner question 8.
+- **Fixed: `packages/wallet/chain/received-payments.anvil.integration.ts` passes and runs in CI**
+  (job `wallet-received-payments`, added by #1894). It covers a one-coin wallet under the
+  reserve rule on anvil: the stamp's funding lands at the account's lowest nonce before the
+  relay has the message, and the contact transfer lands at the next nonce after it is stored.
 - **History doesn't list external deposits.** The `fund` script's deposit (the faucet's 20 MON)
   never appears; the faucet bot's grant does.
 - **Format break:** notes to self written before #1916 read as unsupported. Start the
@@ -242,16 +237,13 @@ Still replica-local; each relay's startup log names them:
    On an EVM account with one coin, the stamp's funding goes out at the lower nonce, before the
    relay has the message, and the carried contact transfer at a higher nonce, after the relay
    stores it. No self-payment round trip, no consolidation.
-   - Where it applies: [Carried payments go out only after the relay stores the message (held: #1894)](https://github.com/schancel/frank/pull/1894).
-     Under Monad's reserve rule its preparer puts the contact transfer first on an account below
-     10 MON, so the stamp's funding comes after it and can never land first. Its last commit then
-     refuses that set, so a one-coin wallet is refused. Per the ruling the stamp's funding should
-     come first instead. On Monad that is safe if nothing else of the set sits between them: the
-     relay gets the message only 4 blocks after that funding lands, and the account's quiet
-     window is 3. The set's other change then goes after the transfer (a proposal, not part of
-     the ruling).
-   - Main is not stuck: it puts the contact transfer on the chain before the relay stores the
-     message (see the known bug above).
+   - Implemented in [A message's carried payments reach the chain only after the relay stores it (#1894)](https://github.com/schancel/frank/pull/1894).
+     When a set keeps back funds for its message's stamp, the preparer signs the stamp's
+     funding at the account's lowest nonce and the carried transfer at the next nonce, with
+     nothing of the set between them. A transfer that leaves the account below the reserve
+     waits out the 3-block quiet window after the funding; the relay gets the message only 4
+     blocks after the funding lands, so the window has passed before anyone can broadcast the
+     transfer. The set's other change goes after the transfer, as before.
 9. **Send to Address below the floor** to an external address. Resolved: refuse (2026-10-26).
    The wallet refuses the transfer, and Send max when everything it can send is below the floor,
    before anything is signed, and the page names the minimum, as Send to Contact does.

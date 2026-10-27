@@ -862,6 +862,11 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   // On main (A4): no parameter; a second call for the message would wait behind the ended
   // attempt under a new ID and pay again once it clears.
   it('A4: retains the original exposed payment when the relay refuses delivery', async () => {
+    // A layout whose own change moves come before the stamp on its account: they go to the chain
+    // before the relay has the message, so its refusal cannot show that nothing of the set left
+    // the wallet. (With the stamp first and nothing broadcast, the refusal frees the set instead:
+    // canonical-dm-shared-refusal-recovery.)
+    jest.spyOn(Math, 'random').mockReturnValue(0)
     relayMode = 'ended'
     let digest: string | undefined
     const first = await attempt({

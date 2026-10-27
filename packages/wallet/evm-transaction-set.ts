@@ -1377,20 +1377,6 @@ export class EvmTransactionSetPreparer {
       const other = Math.floor(this.entropy() * (index + 1))
       ;[moves[index], moves[other]] = [moves[other]!, moves[index]!]
     }
-    // A continuation (the stamp of the message this payment travels in) is paid from this
-    // set's own change, and its funding goes to the chain before the relay has the message,
-    // the payment only after. Keep one change that can carry the continuation ahead of the
-    // payment, so funding it never puts the payment on the chain first.
-    const continuation = request.reserveForContinuationWei ?? 0n
-    if (hasPayment && continuation > 0n) {
-      const payment = moves.findIndex(move => move.role === 'payment')
-      const carries = (move: { role: string; value: bigint }) =>
-        move.role === 'change' && move.value >= continuation
-      if (!moves.slice(0, payment).some(carries)) {
-        const later = moves.findIndex((move, index) => index > payment && carries(move))
-        if (later > payment) moves.splice(payment, 0, moves.splice(later, 1)[0]!)
-      }
-    }
     // The relay/recipient can rebroadcast payment bytes. A below-reserve final drain
     // requiring a quiet window must therefore remain a private, wallet-scheduled change.
     if (policy.spendRule?.waitBlocks && moves.length > 1) {
@@ -1416,6 +1402,28 @@ export class EvmTransactionSetPreparer {
         const paymentIndex = moves.findIndex(move => move.role === 'payment')
         moves.unshift(moves.splice(paymentIndex, 1)[0]!)
       }
+    }
+    // A continuation (the stamp of the message this payment travels in) is paid from this
+    // set's own change. Its funding goes to the chain before the relay has the message; the
+    // payment (a carried payment) only after the relay stored it. So the change that carries
+    // the continuation is signed on this account directly ahead of the payment, at the nonce
+    // below it: never behind it, where it could land only after the payment and the message
+    // could never be stored. Under a reserve rule this is the account's first move and the
+    // payment the next nonce: a payment it leaves below the reserve waits its quiet window
+    // after the funding (`predecessorWaitBlocks`), which has passed before the relay can have
+    // the message (the continuation's stage waits `fundingWaitBlocks`, one block more). Nothing
+    // else of the set comes between the two. The rest of the account's change follows the
+    // payment as above.
+    const continuation = request.reserveForContinuationWei ?? 0n
+    if (hasPayment && continuation > 0n) {
+      const paymentAt = moves.findIndex(move => move.role === 'payment')
+      const carries = (move: Move) => move.role === 'change' && move.value >= continuation
+      // A one-transfer continuation is paid from its carved account; otherwise any change that
+      // holds it will do, and one already ahead of the payment needs no move.
+      const carrier = request.continuationFeeWei !== undefined
+        ? moves.findIndex(move => move.carve === true)
+        : moves.slice(0, paymentAt).some(carries) ? -1 : moves.findIndex(carries)
+      if (carrier > paymentAt) moves.splice(paymentAt, 0, moves.splice(carrier, 1)[0]!)
     }
     let changeLogicalIndex = 0
     for (const move of moves)

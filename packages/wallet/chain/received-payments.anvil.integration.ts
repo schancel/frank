@@ -597,6 +597,100 @@ describe('payments between two wallets on a real EVM node', () => {
     })
   })
 
+  it('one coin under the reserve rule: the stamp is funded at the lower nonce before the relay has the message, the contact transfer at the next nonce only after it is stored', async () => {
+    // The owner's two-nonce ruling for an account-based chain: alice's whole wallet is one
+    // coin, below the network's reserve (Monad: 10 MON, 3 blocks). The stamp's funding leaves
+    // first, at that account's lowest nonce; the transfer the message carries is the next nonce
+    // and reaches the node only once the relay stored the message. No self-payment round trip
+    // and no consolidation.
+    await f.close()
+    f = await fixture({
+      transactionSetPolicy: undefined,
+      resolveDefaultStamp: fixedStampDefault(STAMP),
+      spendSpacingBlocks: 3,
+      reserveBalanceWei: parseEther('10'),
+    })
+    alice = f.alice
+    bob = f.bob
+    installCanonicalDirectory(alice, await f.directoryFor('alice', alice, bob))
+    installCanonicalDirectory(bob, await f.directoryFor('bob', bob, alice))
+    bobMailbox = []
+    mailboxes.set(subjectOf(bob), bobMailbox)
+    mailboxes.set(subjectOf(alice), [])
+    f.setMailbox(bobMailbox)
+    const aliceMain = await mainOf(alice)
+    expect(await node.getBalance(aliceMain)).toBe(parseEther('1'))
+    const startNonce = await node.getTransactionCount(aliceMain)
+    // The deposit is spendable once it is older than the spacing window.
+    for (let i = 0; i < 5; i++) await node.send('evm_mine', [])
+    // Every broadcast of alice's wallet, and whether the relay had stored the message by then.
+    const broadcasts: { hash: string; afterStored: boolean }[] = []
+    const real = alice.provider.broadcastTransaction.bind(alice.provider)
+    jest.spyOn(alice.provider, 'broadcastTransaction').mockImplementation(async raw => {
+      broadcasts.push({ hash: Transaction.from(raw).hash!, afterStored: bobMailbox.length === 1 })
+      return real(raw)
+    })
+    const sending = alice.sendToContact!({ recipient: bob.identity.address, value: VALUE })
+      .catch(error => error)
+    // A real chain keeps making blocks while the host's tick finishes the same payment.
+    let mining = true
+    const miner = (async () => {
+      while (mining) {
+        await node.send('evm_mine', [])
+        await sleep(100)
+      }
+    })()
+    try {
+      const outcome = await sending
+      if (!(outcome && 'txHash' in outcome) && !(outcome instanceof ContactPaymentPendingError))
+        throw outcome
+      await until(
+        'the contact payment to be paid',
+        async () => {
+          await alice.resumeContactPayments!()
+          return alice.getContactPayments!()[0].state
+        },
+        state => state === 'paid',
+      )
+    } finally {
+      mining = false
+      await miner
+    }
+    const [payment] = alice.getContactPayments!()
+    const operation = alice
+      .getNativeOperations!()
+      .find(row => row.members.some(member => member.signed?.transactionHash === payment.txHash))!
+    const nonceOf = (member: (typeof operation.members)[number]) =>
+      Transaction.from(member.signed!.rawTransaction).nonce
+    const transfer = operation.members.find(member => member.signed?.transactionHash === payment.txHash)!
+    const stampPayment = operation.members.find(member =>
+      member.transactionSet?.role === 'payment' && member.transactionSet.stageId !== undefined)!
+    const funding = operation.members[stampPayment.dependencies[0]!]!
+    // The stamp is funded from the one coin at its lowest nonce; the transfer is the next one.
+    expect(funding.source.address).toBe(aliceMain)
+    expect(nonceOf(funding)).toBe(startNonce)
+    expect(transfer.source.address).toBe(aliceMain)
+    expect(nonceOf(transfer)).toBe(startNonce + 1)
+    const fundingReceipt = await node.getTransactionReceipt(funding.signed!.transactionHash)
+    const transferReceipt = await node.getTransactionReceipt(payment.txHash!)
+    expect(fundingReceipt!.status).toBe(1)
+    expect(transferReceipt!.status).toBe(1)
+    // The funding went out before the relay had the message; no payment it carries did.
+    expect(broadcasts.find(item => item.hash === funding.signed!.transactionHash)?.afterStored).toBe(false)
+    const carried = new Set(operation.members
+      .filter(member => member.transactionSet?.role === 'payment')
+      .map(member => member.signed!.transactionHash))
+    expect(broadcasts.filter(item => carried.has(item.hash) && !item.afterStored)).toEqual([])
+    expect(broadcasts.some(item => item.hash === payment.txHash && item.afterStored)).toBe(true)
+    // The transfer waited out the account's quiet window after the funding landed.
+    expect(transferReceipt!.blockNumber).toBeGreaterThanOrEqual(fundingReceipt!.blockNumber + 3)
+    expect(await node.getBalance(transferReceipt!.to!)).toBe(VALUE)
+    expect(bobMailbox).toHaveLength(1)
+    await poll(bob)
+    await settled(bob)
+    expect(stealthOf(bob)[0]).toMatchObject({ status: 'received', amountWei: VALUE })
+  })
+
   it('a payment nothing of which was ever sent is released: its account is free at the same nonce, and its transfer can never land', async () => {
     const aliceMain = await mainOf(alice)
     const prepared = await alice.prepareContactPayment!({

@@ -6,7 +6,10 @@
  * handed.
  */
 import { Transaction, hexlify } from 'ethers'
-import { GroupWriteRefusedError } from '@frank/cashweb/groups/group-relay-client'
+import {
+  GroupWriteDeferredError,
+  GroupWriteRefusedError,
+} from '@frank/cashweb/groups/group-relay-client'
 import {
   GROUP_WRITE_BURN_ADDRESS,
   type GroupWritePaymentWire,
@@ -26,6 +29,7 @@ import type { EvmTransactionSetPolicy } from '@frank/wallet/evm-transaction-set-
 import {
   GroupWritePaidRefusalError,
   deliverPaidGroupWrite,
+  discardPaidGroupWrite,
 } from './write-payment'
 
 jest.mock('@frank/wallet/evm-provider', () =>
@@ -286,6 +290,92 @@ test('a restart between signing and relay submission resumes with the same bytes
     expect(minedPayments()).toHaveLength(1)
   } finally {
     await reopened?.close()
+    await f.close()
+  }
+})
+
+/** The host checked the payment and stored nothing yet: a nonce gap. */
+const deferred = async () => {
+  throw new GroupWriteDeferredError('group_payment_not_ready', 'nonce_gap')
+}
+
+test('discarding a deferred write gives its coin back once the chain shows nothing, and only once', async () => {
+  const f = await setup()
+  let reopened: EvmChainWalletHandle | undefined
+  try {
+    const coins = evmWalletInternals(f.alice).coinList!
+    const account = f.alice.mainAccount!.address
+    const before = coins.get(account, 0)
+    const record = message()
+    await expect(deliver(f.alice, record, deferred)).rejects.toBeInstanceOf(
+      GroupWriteDeferredError,
+    )
+    expect(coins.isAccountReserved(account)).toBe(true)
+    // A restart keeps the write waiting with its coin claimed; the discard runs after it.
+    await f.alice.close()
+    reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    const reopenedCoins = evmWalletInternals(reopened).coinList!
+    expect(reopenedCoins.isAccountReserved(account)).toBe(true)
+    const discard = () =>
+      discardPaidGroupWrite({
+        stored: record.stored,
+        persist: record.persist,
+        wallet: reopened,
+      })
+    expect(await discard()).toEqual({ state: 'discarded' })
+    expect(record.stored).toMatchObject({ released: true, discarded: true })
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(reopenedCoins.get(account, 0)).toEqual(before)
+    expect(reopenedCoins.isAccountReserved(account)).toBe(false)
+    // Repeated: nothing changes, and the coin is not freed twice.
+    expect(await discard()).toEqual({ state: 'discarded' })
+    // The freed coin pays the next write.
+    expect(
+      await deliver(reopened, message(), async () => ({ server_seq: 1 }), '44'),
+    ).toMatchObject({ state: 'delivered', settled: true })
+    expect(await discard()).toEqual({ state: 'discarded' })
+    expect(minedPayments()).toHaveLength(1)
+  } finally {
+    await reopened?.close()
+    await f.close()
+  }
+})
+
+test('discarding a deferred write whose payment the chain shows keeps the write and its coin', async () => {
+  const f = await setup()
+  try {
+    const coins = evmWalletInternals(f.alice).coinList!
+    const account = f.alice.mainAccount!.address
+    const record = message()
+    await expect(deliver(f.alice, record, deferred)).rejects.toBeInstanceOf(
+      GroupWriteDeferredError,
+    )
+    // Somebody broadcast the bytes after all, and the chain has them.
+    offlineChain.mine(`0x${record.stored!.rawTransaction}`)
+    expect(
+      await discardPaidGroupWrite({
+        stored: record.stored,
+        persist: record.persist,
+        wallet: f.alice,
+      }),
+    ).toEqual({ state: 'kept', reason: 'paid' })
+    expect(record.stored!.released).toBeUndefined()
+    expect(record.stored!.discarding).toBeUndefined()
+    expect(coins.isAccountReserved(account)).toBe(true)
+    expect(
+      f.alice.transactionSetPreparer!.getOperation(record.stored!.operationId),
+    ).toBeDefined()
+    // The write is still owed: the next attempt delivers it with the same bytes.
+    const submitted: string[] = []
+    expect(
+      await deliver(f.alice, record, async payment => {
+        submitted.push(payment.raw_transaction)
+        return { server_seq: 1 }
+      }),
+    ).toMatchObject({ state: 'delivered' })
+    expect(submitted).toEqual([record.stored!.rawTransaction])
+    expect(walletPaymentBroadcasts()).toEqual([])
+  } finally {
     await f.close()
   }
 })

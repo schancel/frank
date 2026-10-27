@@ -18,6 +18,8 @@ import {
   GroupWritePaymentUnavailableError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
+  discardPaidGroupWrite,
+  type GroupWriteDiscard,
   type GroupWritePayer,
 } from '@frank/group-messaging/groups/write-payment'
 import { encodeItemFrames } from '@frank/wallet/message-item-plugins/wire'
@@ -6663,6 +6665,11 @@ export const useChatStore = defineStore('chats', {
             client.sendGroupMessage(state.groupIdHex, envelope, payment),
         })
         checkGroup()
+        if (delivery.state === 'discarded') {
+          // A discard a restart cut short finished here: its coin is back.
+          await this.dropDiscardedGroupWrite(conv, payloadDigest)
+          return { state: 'busy' }
+        }
         if (delivery.state === 'refused') {
           // Final: the coin is back, and nothing of the write or its payment is out.
           const reason: OutgoingFailureReason = 'rejected'
@@ -6719,10 +6726,11 @@ export const useChatStore = defineStore('chats', {
           : // Refused after its payment went out: retried, since the payment is owed its write.
           error instanceof GroupWritePaidRefusalError
           ? 'rejected-paid'
-          : // The host cannot see yet that the payment lands: retried with the same bytes.
-          error instanceof GroupWriteDeferredError &&
-            error.reason === 'insufficient_balance'
-          ? 'insufficient-funds'
+          : // The host stored nothing yet: the node does not show the payment can land (a nonce
+          // gap, a balance not seen yet) or cannot be read. Waiting, not unreachable: retried
+          // with the same bytes, and Discard gives the coin back only after a chain read.
+          error instanceof GroupWriteDeferredError
+          ? 'waiting-funds-or-chain'
           : 'unreachable'
         message.delivery = {
           failureReason: reason,
@@ -6731,6 +6739,72 @@ export const useChatStore = defineStore('chats', {
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
         return { state: 'failed', reason }
       }
+    },
+    /** The user's Discard of a group write the relay does not hold yet (owner ruling 2026-10-27).
+     * Waits for an attempt in flight, then gives the payment's coin back only after the wallet
+     * read the chain and found nothing of it pending or mined, and only when no attempt went
+     * unanswered (`discardPaidGroupWrite`); then the message is removed. Otherwise the write, its
+     * payment and its coin are kept, and the reason is returned. Repeating it is safe. */
+    async discardGroupMessage(
+      conversationId: string,
+      payloadDigest: string,
+      wallet?: GroupWritePayer,
+    ): Promise<GroupWriteDiscard | { state: 'kept'; reason: 'delivered' }> {
+      const key = `message:${payloadDigest}`
+      for (;;) {
+        const running = groupRuns.get(toRaw(this))?.get(key)
+        if (!running) break
+        await running.catch(() => undefined)
+      }
+      type Outcome = GroupWriteDiscard | { state: 'kept'; reason: 'delivered' }
+      let outcome: Outcome = { state: 'discarded' }
+      // Under the same key as a send attempt, so none runs meanwhile. A retry that joins it
+      // learns only that the message is being worked on.
+      await groupRun(this, key, async (): Promise<OutgoingOutcome> => {
+        const conv = this.conversations[conversationId]
+        const message = this.messages[payloadDigest]
+        if (!conv?.groupState || !message?.outbound) return { state: 'busy' }
+        // The relay holds it (its payment may only be settling): there is nothing to discard.
+        if (message.status === 'confirmed') {
+          outcome = { state: 'kept', reason: 'delivered' }
+          return { state: 'busy' }
+        }
+        const checkGroup = captureGroupContext(this, conv)
+        outcome = await discardPaidGroupWrite({
+          stored: message.groupWritePayment,
+          persist: async next => {
+            checkGroup()
+            message.groupWritePayment = next
+            await this.saveOutgoing(conv.address, payloadDigest, {
+              strict: true,
+            })
+            checkGroup()
+            await this.flushPersistence?.()
+          },
+          wallet: wallet ?? groupWritePayer(),
+        })
+        checkGroup()
+        if (outcome.state === 'discarded')
+          await this.dropDiscardedGroupWrite(conv, payloadDigest)
+        return { state: 'busy' }
+      })
+      return outcome
+    },
+    /** Removes a discarded group write: it is never sent again. */
+    async dropDiscardedGroupWrite(conv: Conversation, payloadDigest: string) {
+      if (conv.groupState?.pendingMessages)
+        delete conv.groupState.pendingMessages[payloadDigest]
+      const message = this.messages[payloadDigest]
+      await (await store).deleteMessage(payloadDigest)
+      delete this.messages[payloadDigest]
+      conv.messages = conv.messages.filter(
+        m =>
+          m !== message &&
+          m.payloadDigest !== payloadDigest &&
+          (m as { index?: string }).index !== payloadDigest,
+      )
+      recomputeChatAccounting(conv, this.activeConversationId)
+      await this.flushPersistence?.()
     },
     /** Reconcile the original signed epoch after timeout/restart before delivering its secret.
      * 'superseded' means another device of this administrator account published a different

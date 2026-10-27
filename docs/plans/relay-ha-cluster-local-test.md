@@ -265,9 +265,11 @@ Still replica-local; each relay's startup log names them:
 5. **Group payment exposure.** The relay accepts at most one write per (payer, nonce). Each
    unlanded write costs one landed transaction at that nonce, and at most 64 can be outstanding
    (nonce window 63). Accept this, or ask for a tighter rule?
-6. **Deferred group writes.** Writes waiting on a nonce gap or a chain check show as "unreachable".
-   Should they get a distinct "waiting for funds/chain" state, plus a discard that releases the
-   coin only after a chain read?
+6. **Deferred group writes.** Resolved (owner ruling 2026-10-27): a write the host defers (`503
+   group_payment_*`: nonce gap, balance not seen, node unreadable) shows "Waiting for funds or the
+   chain…", not "unreachable", and keeps retrying the same bytes. Discard gives the coin back only
+   after the wallet reads the chain and finds the payment neither pending nor mined, and only if no
+   attempt went unanswered; otherwise it keeps the write and its reservation and says why.
 7. **Relay-to-relay forwarding (#1348).** It needs the #89 decisions: how relays authenticate each
    other, who may retry, and how fees are kept separate from the recipient's payment.
 8. **One-coin wallet and its stamp.** Resolved (2026-10-26): "For a UTXO based coin, there's no

@@ -931,6 +931,9 @@ export const rawFrFR = {
     waitingForPreviousPayment:
       'En attente de la confirmation du paiement précédent…',
     waitingForChain: 'En file : le réseau est injoignable.',
+    waitingFundsOrChain: 'En attente de fonds ou de la chaîne…',
+    reasonWaitingFundsOrChain:
+      'Le serveur du groupe ne voit pas encore que son paiement peut passer : des fonds ou un paiement précédent ne sont pas encore sur la chaîne, ou la chaîne ne peut pas être lue. Il sera renvoyé automatiquement, avec le même paiement.',
     waitingBlocks:
       'Encore {blocks} blocs à attendre après le paiement précédent avant de payer…',
     paymentSent: 'Envoyé',
@@ -980,6 +983,15 @@ export const rawFrFR = {
       'Il sera retiré de votre conversation. Si son paiement est encore en attente, il pourrait tout de même être remis.',
     discardFailedConfirmMessage:
       'Il sera retiré de votre conversation. Aucun fond n’a été dépensé.',
+    discardGroupWriteConfirmMessage:
+      'Il sera retiré du groupe une fois que le réseau montre que son paiement n’est pas parti. Ses fonds redeviennent alors disponibles.',
+    discardKeptDelivered: 'Non supprimé : le groupe a déjà ce message.',
+    discardKeptPaid:
+      'Non supprimé : son paiement est parti, il sera donc tout de même envoyé au groupe.',
+    discardKeptUncertain:
+      'Non supprimé : une tentative précédente est restée sans réponse, son paiement peut donc encore passer. Ses fonds restent réservés et l’envoi continue.',
+    discardKeptUnavailable:
+      'Non supprimé : ce portefeuille ne peut pas vérifier son paiement pour le moment. Réessayez plus tard.',
     sendAgainTitle: 'Renvoyer ?',
     sendAgainUnverified:
       "Nous n'avons pas pu confirmer si le premier paiement a été remis. Renvoyer pourrait vous débiter une seconde fois.",

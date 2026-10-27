@@ -12,9 +12,15 @@ import enUS from '../../../i18n/en-us'
 
 const retryOutgoing = jest.fn()
 const deleteMessage = jest.fn(async () => undefined)
+const discardGroupMessage = jest.fn()
+const mockConversations: Record<string, { kind: string }> = {
+  'group-1': { kind: 'group' },
+}
 jest.mock('../../../stores/chats', () => ({
   useChatStore: () => ({
     deleteMessage,
+    discardGroupMessage,
+    conversations: mockConversations,
     getStampAmount: () => 0,
     sendMessage: jest.fn(),
     retryOutgoing,
@@ -31,7 +37,11 @@ jest.mock('../../../utils/clients', () => ({
 jest.mock('../../../composables/useActiveWallet', () => ({
   useActiveWallet: () => ({}),
 }))
-jest.mock('../../../utils/notifications', () => ({ errorNotify: jest.fn() }))
+const infoNotify = jest.fn()
+jest.mock('../../../utils/notifications', () => ({
+  errorNotify: jest.fn(),
+  infoNotify: (text: string) => infoNotify(text),
+}))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: () => '0', unit: 'MON' },
 }))
@@ -164,6 +174,44 @@ describe('ChatMessage Retry and Discard', () => {
       address: '0xPEER',
       payloadDigest: 'pending:1:1:abc',
     })
+  })
+
+  it('Discard of a waiting group write goes through its payment, and a kept write says why', async () => {
+    const { wrapper, dialogs } = mountFailed()
+    await wrapper.setProps({
+      payloadDigest: 'ab'.repeat(32),
+      message: {
+        ...wrapper.props('message'),
+        conversationId: 'group-1',
+        groupEnvelope: {
+          epoch: 0,
+          nonce: '',
+          ciphertext: '',
+          write_sig: '',
+        },
+        delivery: { failureReason: 'waiting-funds-or-chain' },
+      } as never,
+    })
+    const vm = wrapper.vm as unknown as {
+      confirmDiscard: () => void
+      discardGroupWrite: (id: string) => Promise<void>
+    }
+    vm.confirmDiscard()
+    expect(dialogs[0].message).toBe(
+      t('outgoing.discardGroupWriteConfirmMessage'),
+    )
+    discardGroupMessage.mockResolvedValueOnce({
+      state: 'kept',
+      reason: 'uncertain',
+    })
+    await vm.discardGroupWrite('group-1')
+    expect(discardGroupMessage).toHaveBeenCalledWith('group-1', 'ab'.repeat(32))
+    expect(infoNotify).toHaveBeenCalledWith(t('outgoing.discardKeptUncertain'))
+    expect(deleteMessage).not.toHaveBeenCalled()
+    discardGroupMessage.mockResolvedValueOnce({ state: 'discarded' })
+    await vm.discardGroupWrite('group-1')
+    expect(infoNotify).toHaveBeenCalledTimes(1)
+    expect(deleteMessage).not.toHaveBeenCalled()
   })
 
   it('emits replyClicked when suffix emits replyClick', () => {

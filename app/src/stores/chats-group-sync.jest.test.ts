@@ -1472,14 +1472,18 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         relayClient: client,
         senderAddress: ALICE,
       }),
-    ).toEqual({ state: 'failed', reason: 'unreachable' })
+    ).toEqual({ state: 'failed', reason: 'waiting-funds-or-chain' })
     const digest = Object.keys(chats.messages).find(
       key => chats.messages[key].groupWritePayment,
     )!
+    // Waiting for funds or the chain, not "unreachable" (owner ruling 2026-10-27).
+    expect(chats.messages[digest].delivery?.failureReason).toBe(
+      'waiting-funds-or-chain',
+    )
     expect(group.groupState.pendingMessages?.[digest]).toBe(true)
     expect(await chats.retryGroupMessage(group.id, digest, client)).toEqual({
       state: 'failed',
-      reason: 'insufficient-funds',
+      reason: 'waiting-funds-or-chain',
     })
     expect(group.groupState.pendingMessages?.[digest]).toBe(true)
     expect(chats.messages[digest].groupWritePayment.uncertain).toBeUndefined()
@@ -1493,6 +1497,152 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(
       groupWritePayer.events.some(event => event.startsWith('release')),
     ).toBe(false)
+  })
+
+  describe('discarding a group write', () => {
+    async function waitingWrite(first: 'gap' | 'timeout' = 'gap'): Promise<{
+      chats: ReturnType<typeof useChatStore>
+      group: Awaited<ReturnType<typeof makeGroup>>['group']
+      client: GroupRelayClient
+      digest: string
+      send: jest.SpyInstance
+    }> {
+      const { chats, group, client } = await makeGroup()
+      const send = jest
+        .spyOn(client, 'sendGroupMessage')
+        .mockImplementationOnce(async () => {
+          if (first === 'timeout')
+            throw new Error('timeout of 15000ms exceeded')
+          throw new GroupWriteDeferredError(
+            'group_payment_not_ready',
+            'nonce_gap',
+          )
+        })
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Waiting' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      })
+      const digest = Object.keys(chats.messages).find(
+        key => chats.messages[key].groupWritePayment,
+      )!
+      return { chats, group, client, digest, send }
+    }
+
+    it('gives the coin back once the chain shows nothing, removes the write, and is safe to repeat', async () => {
+      const { chats, group, client, digest, send } = await waitingWrite()
+      const operationId = chats.messages[digest].groupWritePayment.operationId
+      expect(await chats.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'discarded',
+      })
+      expect(
+        groupWritePayer.events.filter(event => event.startsWith('release')),
+      ).toEqual([`release:${operationId}`])
+      expect(
+        groupWritePayer.events.some(event => event.startsWith('send')),
+      ).toBe(false)
+      expect(chats.messages[digest]).toBeUndefined()
+      expect(group.messages.some(m => m.payloadDigest === digest)).toBe(false)
+      expect(group.groupState.pendingMessages?.[digest]).toBeUndefined()
+      // Repeated: nothing more is released.
+      expect(await chats.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'discarded',
+      })
+      expect(
+        groupWritePayer.events.filter(event => event.startsWith('release')),
+      ).toHaveLength(1)
+      // The next sync sends nothing for it.
+      await chats.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: ALICE,
+      })
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('after an attempt without an answer, keeps the write and its reservation', async () => {
+      const { chats, group, digest } = await waitingWrite('timeout')
+      expect(await chats.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'kept',
+        reason: 'uncertain',
+      })
+      expect(
+        groupWritePayer.events.some(event => event.startsWith('release')),
+      ).toBe(false)
+      expect(groupWritePayer.sets.size).toBe(1)
+      expect(chats.messages[digest]).toBeDefined()
+      expect(group.groupState.pendingMessages?.[digest]).toBe(true)
+    })
+
+    it('keeps the write when the chain shows its payment', async () => {
+      const { chats, group, digest } = await waitingWrite()
+      groupWritePayer.seenOnChain.add(
+        chats.messages[digest].groupWritePayment.operationId,
+      )
+      expect(await chats.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'kept',
+        reason: 'paid',
+      })
+      expect(chats.messages[digest].groupWritePayment.released).toBeUndefined()
+      expect(
+        chats.messages[digest].groupWritePayment.discarding,
+      ).toBeUndefined()
+      expect(group.groupState.pendingMessages?.[digest]).toBe(true)
+    })
+
+    it('a waiting write stays waiting, with its payment, across a restart, and can be discarded then', async () => {
+      const { chats, group, digest } = await waitingWrite()
+      const messageStore = await messageStorePromise
+      const rows = messageStore.saveMessage.mock.calls
+        .filter(([row]) => row.index === digest)
+        .map(([row]) => row)
+      const saved = JSON.parse(JSON.stringify(rows[rows.length - 1]))
+      expect(saved.message.delivery.failureReason).toBe(
+        'waiting-funds-or-chain',
+      )
+      messageStore.getIterator.mockResolvedValueOnce([saved])
+      const restored = await rehydrateChat(
+        JSON.parse(
+          JSON.stringify({
+            conversations: { [group.id]: { ...group, messages: [] } },
+            lastReceived: chats.lastReceived,
+          }),
+        ),
+      )
+      setActivePinia(createPinia())
+      const reopened = useChatStore()
+      reopened.$patch(restored)
+      const conv = reopened.conversations[group.id]
+      expect(conv.groupState.pendingMessages?.[digest]).toBe(true)
+      expect(reopened.messages[digest].delivery?.failureReason).toBe(
+        'waiting-funds-or-chain',
+      )
+      expect(reopened.messages[digest].groupWritePayment).toEqual(
+        chats.messages[digest].groupWritePayment,
+      )
+      expect(await reopened.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'discarded',
+      })
+      expect(reopened.messages[digest]).toBeUndefined()
+    })
+
+    it('a delivered write is not discarded', async () => {
+      const { chats, group, client } = await makeGroup()
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Delivered' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      })
+      const digest = Object.keys(chats.messages).find(
+        key => chats.messages[key].groupWritePayment,
+      )!
+      expect(await chats.discardGroupMessage(group.id, digest)).toEqual({
+        state: 'kept',
+        reason: 'delivered',
+      })
+      expect(chats.messages[digest].status).toBe('confirmed')
+    })
   })
 
   it('rejects payment intent at the headless group boundary before submission', async () => {

@@ -212,7 +212,14 @@ describe('a sent message refused before its stamp was paid', () => {
     wrapper.unmount()
   })
 
-  it.each(['unverified', 'rejected-paid', 'unreachable', 'insufficient-funds'])(
+  it.each([
+    'unverified',
+    'rejected-paid',
+    'unreachable',
+    'insufficient-funds',
+    // A group write its host keeps deferring: its payment may have gone out.
+    'waiting-funds-or-chain',
+  ])(
     '%s: nothing says it was not paid, so the amount stays as it was',
     reason => {
       const wrapper = mountFailed(reason)

@@ -1655,6 +1655,8 @@ export const rawFrFR = {
     processing: 'Vérification du résultat du transfert initial…',
     submitting: 'Envoi en cours sur {network}…',
     included: 'Envoyé sur {network}.',
+    changeSettlingOne:
+      'Le rendu de la monnaie est en cours ({confirmed} transaction confirmée sur {total}).',
     changeSettling:
       'Le rendu de la monnaie est en cours ({confirmed} transactions confirmées sur {total}).',
     reverted:

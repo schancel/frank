@@ -1622,6 +1622,8 @@ export const rawEnUS = {
     processing: 'Checking the original transfer outcome…',
     submitting: 'Sending on {network}…',
     included: 'Sent on {network}.',
+    changeSettlingOne:
+      'Change still settling ({confirmed} of {total} transactions confirmed).',
     changeSettling:
       'Change still settling ({confirmed} of {total} transactions confirmed).',
     reverted:

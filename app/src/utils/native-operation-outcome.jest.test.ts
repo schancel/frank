@@ -151,17 +151,40 @@ describe('a sent transfer whose change is still settling', () => {
     },
   )
 
+  // French agrees with the count confirmed: 0 or 1 is singular ("1 transaction confirmée").
   it.each([
-    [enUS, 'Change still settling (1 of 2 transactions confirmed).'],
+    [
+      enUS,
+      'changeSettlingOne',
+      1,
+      'Change still settling (1 of 2 transactions confirmed).',
+    ],
+    [
+      enUS,
+      'changeSettling',
+      2,
+      'Change still settling (2 of 3 transactions confirmed).',
+    ],
     [
       frFR,
-      'Le rendu de la monnaie est en cours (1 transactions confirmées sur 2).',
+      'changeSettlingOne',
+      1,
+      'Le rendu de la monnaie est en cours (1 transaction confirmée sur 2).',
     ],
-  ])('reads in each language (%#)', (messages, expected) => {
-    expect(
-      messages.nativeOperation.changeSettling
-        .replace('{confirmed}', '1')
-        .replace('{total}', '2'),
-    ).toBe(expected)
-  })
+    [
+      frFR,
+      'changeSettling',
+      2,
+      'Le rendu de la monnaie est en cours (2 transactions confirmées sur 3).',
+    ],
+  ] as const)(
+    'reads in each language (%#)',
+    (messages, key, confirmed, expected) => {
+      expect(
+        messages.nativeOperation[key]
+          .replace('{confirmed}', String(confirmed))
+          .replace('{total}', String(confirmed + 1)),
+      ).toBe(expected)
+    },
+  )
 })

@@ -257,7 +257,14 @@
           <!-- The recipient is paid, but the rest of the send (its change) is not in a block
                yet: the page does not claim the send is final. -->
           <p v-if="settling" data-test="native-operation-settling">
-            {{ $t('nativeOperation.changeSettling', settling) }}
+            {{
+              $t(
+                settling.confirmed <= 1
+                  ? 'nativeOperation.changeSettlingOne'
+                  : 'nativeOperation.changeSettling',
+                settling,
+              )
+            }}
           </p>
           <p
             v-if="outcomeHash && !operation"

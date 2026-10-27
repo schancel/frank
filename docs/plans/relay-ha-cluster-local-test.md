@@ -179,11 +179,21 @@ Still replica-local; each relay's startup log names them:
   It needs the owner decisions in [#89](https://github.com/schancel/frank/issues/89).
 - [A second device's 'existing' answer makes it broadcast its own group-write payment (#1862)](https://github.com/schancel/frank/issues/1862).
 - [The app's websocket advances its cursor before storing the record (#1854)](https://github.com/schancel/frank/issues/1854).
-- **A wallet holding one coin can't pay a message plus its stamp.** The stamp waits for change that
-  only appears after the message is stored, so the send stays pending. Fund with more than one
-  coin (the faucet bot's grant arrives as several), or see owner question 8.
-  `packages/wallet/chain/received-payments.anvil.integration.ts` fails for this reason and is not
-  in CI yet.
+- **A contact payment leaves before the relay stores its message.** On this main a wallet
+  with one coin can pay a contact plus the message's stamp: the send first answers "pending,
+  nothing failed" and the next tick delivers it (checked on anvil with one coin, with the
+  wallet's Monad spend spacing on and off). It works because the wallet puts the whole set on
+  the chain, the contact transfer included, before the relay has the message. That breaks the 2026-10-20
+  broadcast rule (persist, submit, then broadcast). The held
+  [Carried payments go out only after the relay stores the message (#1894)](https://github.com/schancel/frank/pull/1894)
+  fixes the order, and on its own it then refuses a one-coin wallet under Monad's reserve rule
+  with "Insufficient available EVM coins": see owner question 8 for the ruling it needs.
+- **`packages/wallet/chain/received-payments.anvil.integration.ts` fails on this main (12 of
+  12) and is not in CI.** Not because of one coin: it runs the shared fixture's stub fee policy
+  (3 wei gas, head 100) and a 1,000 wei default stamp against a real node, expects a paid send
+  to finish at once where main first answers "pending", and expects the contact transfer to be
+  off the chain until the relay stores the message, which only #1894 does. #1894 updates the
+  suite and adds its CI job.
 - **History doesn't list external deposits.** The `fund` script's deposit (the faucet's 20 MON)
   never appears; the faucet bot's grant does.
 - **A sealed message within about 200 bytes of the largest DM is refused** before anything is paid,
@@ -217,9 +227,21 @@ Still replica-local; each relay's startup log names them:
    coin only after a chain read?
 7. **Relay-to-relay forwarding (#1348).** It needs the #89 decisions: how relays authenticate each
    other, who may retry, and how fees are kept separate from the recipient's payment.
-8. **One-coin wallet and its stamp** ([held: #1894](https://github.com/schancel/frank/pull/1894)).
-   - A: split the coin with a payment to itself first (recommended).
-   - B or C: as described in the PR.
+8. **One-coin wallet and its stamp.** Resolved (2026-10-26): "For a UTXO based coin, there's no
+   problem. For the account based coin we should be able to just use two different nonces, no?"
+   On an EVM account with one coin, the stamp's funding goes out at the lower nonce, before the
+   relay has the message, and the carried contact transfer at a higher nonce, after the relay
+   stores it. No self-payment round trip, no consolidation.
+   - Where it applies: [Carried payments go out only after the relay stores the message (held: #1894)](https://github.com/schancel/frank/pull/1894).
+     Under Monad's reserve rule its preparer puts the contact transfer first on an account below
+     10 MON, so the stamp's funding comes after it and can never land first. Its last commit then
+     refuses that set, so a one-coin wallet is refused. Per the ruling the stamp's funding should
+     come first instead. On Monad that is safe if nothing else of the set sits between them: the
+     relay gets the message only 4 blocks after that funding lands, and the account's quiet
+     window is 3. The set's other change then goes after the transfer (a proposal, not part of
+     the ruling).
+   - Main is not stuck: it puts the contact transfer on the chain before the relay stores the
+     message (see the known bug above).
 9. **Send to Address below the floor** to an external address: refuse it, or allow it there?
 10. **External deposits in History** need a relay-side index or full block reads. Which one?
 11. **Cross-device rebuild (#1907) gaps:**

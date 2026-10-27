@@ -35,6 +35,8 @@ import { displayNetwork } from '../utils/constants'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
+import { unretryableFailure } from '../utils/outgoing-failure'
 import { desktopNotify } from '../utils/notifications'
 import {
   acknowledgeServiceWorkerWakeupHandled,
@@ -2920,8 +2922,9 @@ export const useChatStore = defineStore('chats', {
       }
 
       const lastMessage = chat.messages[chat.messages.length - 1]
-      const items = lastMessage.items.filter(
-        item => !isWakeupCapabilitySidecar(item),
+      // A long text travels as consecutive text items: it is previewed as one text.
+      const items = joinConsecutiveTextItems(
+        lastMessage.items.filter(item => !isWakeupCapabilitySidecar(item)),
       )
       const lastItem = items[items.length - 1]
 
@@ -3901,6 +3904,15 @@ export const useChatStore = defineStore('chats', {
       ) {
         return { state: 'busy' }
       }
+      // Refused before anything was paid, and the same message would be refused again: the
+      // Retry is refused with the same reason, and nothing is built.
+      const reason = message.delivery?.failureReason
+      if (
+        message.delivery?.attemptDigest === undefined &&
+        reason !== undefined &&
+        unretryableFailure(reason)
+      )
+        return { state: 'failed', reason }
       return this.runOutgoing({
         wallet,
         address: toChainDisplayAddress(address),
@@ -7649,7 +7661,7 @@ export const useChatStore = defineStore('chats', {
         const senderName = contacts.isContact(copartyAddress)
           ? contact.profile.name ?? 'Unknown'
           : shortAddress(copartyAddress)
-        const textItem: TextItem = (newMsg.items.find(
+        const textItem: TextItem = (joinConsecutiveTextItems(newMsg.items).find(
           item => item.type === 'text',
         ) as TextItem) ?? { text: '' }
         const stealthItem: StealthItem = (newMsg.items.find(

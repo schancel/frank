@@ -101,7 +101,12 @@
             @resendClick="resend()"
             @discardClick="confirmDiscard()"
           />
-          <template v-for="(item, subIndex) in message.items" :key="subIndex">
+          <!-- A long text travels as consecutive text items, shown as one text; `subIndex` is
+          each shown item's first index in `message.items`. -->
+          <template
+            v-for="{ item, index: subIndex } in displayedItems"
+            :key="subIndex"
+          >
             <chat-message-reply
               v-if="item.type == 'reply'"
               :payload-digest="item.payloadDigest"
@@ -333,6 +338,7 @@ import {
   systemLineText,
 } from '../../../utils/message-item-renderers'
 import { messageItems } from '../../../utils/message-items'
+import { joinConsecutiveTextItemsIndexed } from '@frank/wallet/message-item-plugins/text/long-text'
 import { profileAvatar } from '../../../utils/avatar'
 import {
   readableKeyColor,
@@ -615,6 +621,11 @@ export default defineComponent({
       return color
         ? { color: readableKeyColor(color, this.$q?.dark?.isActive === true) }
         : {}
+    },
+    /** The items as shown, each with its index in `message.items`: consecutive text items are
+     * one text. */
+    displayedItems(): { item: MessageItem; index: number }[] {
+      return joinConsecutiveTextItemsIndexed(this.message.items)
     },
     // This message's pictures that passed vetting, by position among its image items.
     shownAttachments(): PostAttachment[] {

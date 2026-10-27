@@ -194,7 +194,7 @@ export const rawEnUS = {
     removeAttachment: 'Remove {name}',
     imageRefused: '{name} cannot be sent: {reason}.',
     messageTooLarge:
-      'This message is too large to send. Remove a picture or shorten the text.',
+      'This message is too large to send: one message holds at most {limit}, and this one is {size}. Remove a picture or shorten the text.',
     blackjackChallenge: 'Blackjack challenge',
     diceChallenge: 'Satoshi Dice challenge',
     rpsChallenge: 'Rock-Paper-Scissors challenge',
@@ -947,6 +947,10 @@ export const rawEnUS = {
     blockedBy: 'It waits for your message “{preview}” ({time}).',
     reasonBlocked:
       'An earlier message whose payment is stuck holds the funds this one needs. Nothing was paid for this one. Retry it once that message goes through.',
+    reasonTooLarge:
+      'It is larger than one message can carry ({limit}). Nothing was paid. Shorten it and send it again.',
+    reasonUnencodable:
+      'It holds something that cannot be sent in a message. Nothing was paid.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:

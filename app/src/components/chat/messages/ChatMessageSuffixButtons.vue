@@ -5,7 +5,7 @@
     "
   >
     <q-btn
-      v-if="status === 'error'"
+      v-if="status === 'error' && retryable"
       icon="replay"
       dense
       flat
@@ -98,6 +98,12 @@ export default defineComponent({
     status: {
       type: String,
       required: true,
+    },
+    /** A failed message the same send would refuse again (too large to send) has no Retry. */
+    retryable: {
+      type: Boolean,
+      required: false,
+      default: true,
     },
   },
   setup(props, { emit }) {

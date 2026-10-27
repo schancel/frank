@@ -1,6 +1,7 @@
 import type { ChatMessage, Conversation } from '../stores/chats'
 import type { ContactState } from '../stores/contacts'
 import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 import { cleanEmailSnippet, decodeHtmlEntities } from './markdown-plain-text'
 
 export type MatchedSearchField =
@@ -551,7 +552,10 @@ function extractMessageFields(
   hasCalendar: boolean
   stampValue: number
 } {
-  const items: MessageItem[] = Array.isArray(message.items) ? message.items : []
+  // A long text travels as consecutive text items: it is indexed as one text.
+  const items: MessageItem[] = Array.isArray(message.items)
+    ? joinConsecutiveTextItems(message.items)
+    : []
   const bodyParts: string[] = []
   const attachmentNames: string[] = []
   const recipientAddresses = new Set<string>()

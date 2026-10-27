@@ -597,7 +597,11 @@ import {
 import { getChainConfig } from '@frank/wallet/chain/chains-registry'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
-import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
+import {
+  composeChatItems,
+  fitsOneMessage,
+  messageTooLargeText,
+} from '../utils/chat-attachments'
 import type { PostAttachment } from '../utils/post-editor'
 import {
   clearChatDraft,
@@ -1429,7 +1433,9 @@ export default defineComponent({
       // The text and its pictures must fit one message. Refused here, before anything is paid:
       // the wallet would refuse an oversized message only after funding it.
       if (!fitsOneMessage(message, attachmentsToSend)) {
-        errorNotify(new Error(this.$t('chatInput.messageTooLarge')))
+        errorNotify(
+          new Error(messageTooLargeText(message, attachmentsToSend, this.$t)),
+        )
         return
       }
       // Move the submitted text into the optimistic outbox bubble immediately. The user should

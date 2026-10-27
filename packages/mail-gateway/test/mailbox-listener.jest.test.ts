@@ -107,6 +107,43 @@ describe('RelayMailboxListener', () => {
     expect(dispatchedEmails[0].raw).toContain('Sounds great, Bob!');
   });
 
+  it('carries a text sent as several consecutive text items whole in the reply', async () => {
+    const conversationId = 'conv-long-text';
+    ledger.recordThreadMapping({
+      conversationId,
+      frankMessageId: 'inbound_msg_long',
+      rfc822MessageId: '<long@external.com>',
+      subject: 'Long',
+      senderAddress: 'bob@external.com',
+      toRecipientsJson: JSON.stringify([{ address: 'alice@frank.org' }]),
+      createdAtMs: Date.now() - 10000,
+    });
+    const listener = new RelayMailboxListener({
+      gatewayDomain,
+      activeChain: {} as ActiveChain,
+      wallet: mockWallet,
+      ledger,
+      outboundWorker,
+    });
+    await listener.processDirectMessage({
+      senderAddress: { raw: aliceFrankAddress },
+      recipientAddress: { raw: '0xgateway' },
+      conversationId,
+      messageId: 'alice_long_001',
+      payloadDigest: 'digest_long',
+      stampValueWei: 1000n,
+      stampPayments: [],
+      receivedTime: Date.now(),
+      // A long text travels as consecutive pieces cut anywhere, here inside a word.
+      items: [
+        { type: 'text', text: 'FIRSTPIECE-CONTI' },
+        { type: 'text', text: 'NUED-SECONDPIECE' },
+      ],
+    });
+    expect(dispatchedEmails).toHaveLength(1);
+    expect(dispatchedEmails[0].raw).toContain('FIRSTPIECE-CONTINUED-SECONDPIECE');
+  });
+
   it('handles a reply to a multi-party thread defaulting to Reply-All', async () => {
     const conversationId = 'conv-multiparty-5678';
     ledger.recordThreadMapping({

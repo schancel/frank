@@ -232,10 +232,13 @@ describe('Chat Reply and Forward flows', () => {
   it('sendMessage refuses a message too large for one message before anything is sent, and keeps it', async () => {
     const { wrapper } = mountChat()
     const vm = wrapper.vm as any
-    const huge = [
-      { id: '1', name: 'a.png', dataUrl: 'A'.repeat(300_000), sizeBytes: 1 },
-      { id: '2', name: 'b.png', dataUrl: 'B'.repeat(300_000), sizeBytes: 1 },
-    ]
+    // 30 pictures of 300,000 bytes: 9 MB, more than one (sealed) message carries.
+    const huge = Array.from({ length: 30 }, (_, i) => ({
+      id: String(i + 1),
+      name: `${i + 1}.png`,
+      dataUrl: String.fromCharCode(65 + i).repeat(300_000),
+      sizeBytes: 1,
+    }))
     vm.attachments = huge
     vm.message = 'hello'
     await vm.sendMessage('hello')

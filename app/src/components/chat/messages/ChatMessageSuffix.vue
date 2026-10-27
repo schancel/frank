@@ -93,6 +93,7 @@
           <chat-message-suffix-buttons
             class="outgoing-actions"
             :status="status"
+            :retryable="retryable"
             @replyClick="$emit('replyClick')"
             @forwardClick="$emit('forwardClick')"
             @infoClick="$emit('infoClick')"
@@ -113,6 +114,10 @@ import { useChatStore } from '../../../stores/chats'
 import { blockingMessage } from '../../../stores/chats-self-notes'
 import { fundsInPendingSendReasonText } from '../../../utils/funds-in-pending-send'
 import { messageItems } from '../../../utils/message-items'
+import { MAX_SENT_MESSAGE_BYTES } from '../../../utils/image-data-uri'
+import { formatAttachmentSize } from '../../../utils/post-editor'
+import { unretryableFailure } from '../../../utils/outgoing-failure'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 
 import ChatMessageSuffixButtons from './ChatMessageSuffixButtons.vue'
 
@@ -311,6 +316,10 @@ export default defineComponent({
       if (this.showPaymentSuccess) return this.$t(this.paymentSuccessKey)
       return this.paymentSummaryText
     },
+    /** A failed message that the same send would refuse again offers no Retry. */
+    retryable(): boolean {
+      return !unretryableFailure(this.failureReason)
+    },
     /** The full failure, for the tooltip of the short "Failed" label and for screen readers. */
     failureDetails(): string {
       const failed = this.$t('chatMessage.failedToSend')
@@ -331,6 +340,12 @@ export default defineComponent({
       keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
       keys['fee-exceeded'] = 'outgoing.reasonFeeExceeded'
       keys.blocked = 'outgoing.reasonBlocked'
+      keys.unencodable = 'outgoing.reasonUnencodable'
+      // Larger than a message carries: names the limit the composer holds a message to.
+      if (this.failureReason === 'too-large')
+        return this.$t('outgoing.reasonTooLarge', {
+          limit: formatAttachmentSize(MAX_SENT_MESSAGE_BYTES),
+        })
       // Money of an earlier send not on the chain yet: says how much (the amount its failure
       // kept, `errorDetail`) and to try again in a moment.
       if (this.failureReason === 'funds-in-pending-send')
@@ -367,7 +382,7 @@ export default defineComponent({
         this.failureDetail,
       )
       if (!found) return ''
-      const words = found.items
+      const words = joinConsecutiveTextItems(found.items)
         .map(item => messageItems.previewText(item))
         .join(' ')
         .trim()

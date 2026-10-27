@@ -10,6 +10,7 @@ import type {
   WalletHandle,
 } from '@frank/wallet/chain/active-chain';
 import type { EmailItem, TextItem } from '@frank/cashweb/types/messages';
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text';
 
 export interface RelayMailboxListenerOptions {
   readonly gatewayDomain: string;
@@ -288,7 +289,8 @@ export class RelayMailboxListener {
 
     // Look for EmailItem or TextItem
     const emailItem = msg.items.find((i): i is EmailItem => i.type === 'email');
-    const textItem = msg.items.find((i): i is TextItem => i.type === 'text');
+    // A long text travels as consecutive text items: the email carries it whole.
+    const textItem = joinConsecutiveTextItems(msg.items).find((i): i is TextItem => i.type === 'text');
 
     if (!emailItem && !textItem) {
       // Not a supported message format for email bridging

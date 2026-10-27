@@ -6,6 +6,11 @@
  * VP8/VP8L/VP8X) and rejects anything over the limits.
  */
 import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from '@frank/cashweb/relay/message-limits'
+import {
+  DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES,
+  MAX_SEALED_MESSAGE_CONTENT_BYTES,
+} from '@frank/wallet/chain/direct-message-limits'
+import { MAX_IMAGE_BYTES } from '@frank/wallet/message-item-plugins/image/codec'
 
 export interface ImageLimits {
   /** Max length of the whole URI string (the encoded size). */
@@ -28,18 +33,19 @@ export const DELIVERED_IMAGE_LIMITS: ImageLimits = {
 /**
  * What this app puts in one direct message: the UTF-8 bytes of the text plus the data URIs of
  * its pictures (they travel byte for byte), plus `SENT_ITEM_ALLOWANCE_BYTES` for each of those
- * items. The bound was set when a sealed message's note to self was capped at 512 KiB; the note
- * now holds what a direct message carries (8 MiB of ciphertext), so 500 KiB is the composer's own
- * choice, well under what the wallet sends. Raising it also needs per-item bounds: the text is one
- * text item (at most 256 KiB) and each picture one image item (at most 512 KiB). The wallet
- * refuses a sealed send whose note to self would not fit before it pays (`requireSelfCopyFits`).
+ * items. The text travels as as many text items as it needs (a text item holds at most 256 KiB;
+ * `textItemsOf`). The bound is what one sealed message carries with its note to self
+ * (`MAX_SEALED_MESSAGE_CONTENT_BYTES`, from the codec's 8 MiB of direct-message ciphertext). The
+ * wallet refuses a sealed send whose note to self would not fit before it pays
+ * (`requireSelfCopyFits`); the composer refuses it before Send.
  */
-export const MAX_SENT_MESSAGE_BYTES = 500 * 1024
+export const MAX_SENT_MESSAGE_BYTES = MAX_SEALED_MESSAGE_CONTENT_BYTES
 /** Framing counted for each text or image item (measured: 44 bytes for an image, 25 for text). */
-export const SENT_ITEM_ALLOWANCE_BYTES = 64
-/** One picture: at most what a message holds, and what a recipient's app will show. */
+export const SENT_ITEM_ALLOWANCE_BYTES = DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES
+/** One picture: at most what an image item holds (its plugin's 512 KiB, less the item's own
+ * framing, counted as one allowance), and what a recipient's app will show. */
 export const SENT_IMAGE_LIMITS: ImageLimits = {
-  maxEncodedLength: MAX_SENT_MESSAGE_BYTES - SENT_ITEM_ALLOWANCE_BYTES,
+  maxEncodedLength: MAX_IMAGE_BYTES - SENT_ITEM_ALLOWANCE_BYTES,
   maxDimension: DELIVERED_IMAGE_LIMITS.maxDimension,
   maxPixels: DELIVERED_IMAGE_LIMITS.maxPixels,
 }

@@ -197,7 +197,7 @@ export const rawFrFR = {
     removeAttachment: 'Retirer {name}',
     imageRefused: '{name} ne peut pas être envoyée : {reason}.',
     messageTooLarge:
-      'Ce message est trop volumineux pour être envoyé. Retirez une image ou raccourcissez le texte.',
+      'Ce message est trop volumineux pour être envoyé : un message contient au plus {limit}, et celui-ci fait {size}. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
     diceChallenge: 'Défi de Satoshi Dice',
     rpsChallenge: 'Défi Pierre-Feuille-Ciseaux',
@@ -966,6 +966,10 @@ export const rawFrFR = {
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:
       "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Rien n'a été payé pour celui-ci. Réessayez une fois ce message parti.",
+    reasonTooLarge:
+      'Il dépasse ce qu’un message peut contenir ({limit}). Rien n’a été payé. Raccourcissez-le et envoyez-le de nouveau.',
+    reasonUnencodable:
+      'Il contient quelque chose qui ne peut pas être envoyé dans un message. Rien n’a été payé.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

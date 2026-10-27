@@ -88,6 +88,7 @@
 import { defineComponent, type PropType } from 'vue'
 import { ContactState, useContactStore } from 'src/stores/contacts'
 import type { Message } from '@frank/cashweb/types/messages'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 
 export default defineComponent({
   name: 'ForwardMessageDialog',
@@ -114,7 +115,9 @@ export default defineComponent({
       return this.contactStore.getContacts || {}
     },
     previewText(): string {
-      const textItem = this.message?.items?.find(it => it.type === 'text')
+      const textItem = joinConsecutiveTextItems(this.message?.items ?? []).find(
+        it => it.type === 'text',
+      )
       if (textItem && 'text' in textItem) {
         return textItem.text
       }

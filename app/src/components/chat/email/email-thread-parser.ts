@@ -1,5 +1,6 @@
 import type { Conversation, ChatMessage } from 'src/stores/chats'
 import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
+import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 import type { EmailParty, EmailAttachment } from '@frank/codec'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { isChainAddress } from 'src/utils/chain-address'
@@ -261,9 +262,9 @@ export function parseEmailCardsFromMessages(params: {
         ),
       })
     } else {
-      const textItem = msg.items?.find(it => it.type === 'text') as
-        | { text?: string }
-        | undefined
+      const textItem = joinConsecutiveTextItems(msg.items ?? []).find(
+        it => it.type === 'text',
+      ) as { text?: string } | undefined
       const text = textItem?.text || ''
       const cleanText = decodeQuotedPrintableIfNeeded(cleanEmailSnippet(text))
       const { mainBody, quotedBody } = splitQuotedEmailBody(cleanText)

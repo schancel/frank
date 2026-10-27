@@ -501,8 +501,11 @@ describe('ChatInput holds pictures for the message', () => {
       },
     ]
     await flushPromises()
+    // Named: the limit, and this message's size (just over it, so both in bytes).
     expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
-      enUS.chatInput.messageTooLarge,
+      enUS.chatInput.messageTooLarge
+        .replace('{limit}', `${MAX_SENT_MESSAGE_BYTES} B`)
+        .replace('{size}', `${2 + MAX_SENT_MESSAGE_BYTES + 128} B`),
     )
     c.box().focus()
     enter()
@@ -513,6 +516,32 @@ describe('ChatInput holds pictures for the message', () => {
     enter()
     await flushPromises()
     expect(c.sent).toEqual(['hi'])
+  })
+
+  it('sends a text far longer than one text item holds, and refuses one over the limit of a message before Send, naming it', async () => {
+    // Well over the 500 KiB the composer once held a message to.
+    const long = 'word '.repeat(400_000)
+    const c = mountWithAttachments(long)
+    await flushPromises()
+    expect(
+      c.wrapper.find('[data-testid="chat-message-too-large"]').exists(),
+    ).toBe(false)
+    c.box().focus()
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual([long])
+    // Over what one message carries: refused before Send, the limit named.
+    c.message.value = 'x'.repeat(9 * 1024 * 1024)
+    await flushPromises()
+    expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
+      enUS.chatInput.messageTooLarge
+        .replace('{limit}', '8.0 MB')
+        .replace('{size}', '9.0 MB'),
+    )
+    c.box().focus()
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual([long])
   })
 
   it('sends a message that is only pictures', async () => {

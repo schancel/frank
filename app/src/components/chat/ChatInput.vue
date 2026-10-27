@@ -40,7 +40,7 @@
         role="alert"
         data-testid="chat-message-too-large"
       >
-        {{ $t('chatInput.messageTooLarge') }}
+        {{ messageTooLargeText }}
       </div>
       <div
         v-if="attachError"
@@ -544,7 +544,11 @@
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
 import emoji from 'node-emoji'
-import { fitsOneMessage, prepareChatImage } from '../../utils/chat-attachments'
+import {
+  fitsOneMessage,
+  messageTooLargeText,
+  prepareChatImage,
+} from '../../utils/chat-attachments'
 import {
   parseIcsToCalendarInvite,
   parseVcfToContactCard,
@@ -904,6 +908,10 @@ export default defineComponent({
   computed: {
     overBudget(): boolean {
       return !fitsOneMessage(this.message, this.attachments)
+    },
+    /** Why Send is refused for an oversized message: the limit and this message's size. */
+    messageTooLargeText(): string {
+      return messageTooLargeText(this.message, this.attachments, this.$t)
     },
     chainUnit() {
       return activeChain.unit

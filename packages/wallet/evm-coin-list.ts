@@ -75,6 +75,11 @@ export interface EvmListCoin {
   readonly spentInBlock?: number
   /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
   readonly lastSpentInBlock?: number
+  /** The block from which the list knows this coin: the block that included the transfer that
+   * made it (change, a successor) or the head when a chain read found it. How old a coin is, for
+   * the coin distribution (`evm-coin-distribution.ts`). Absent on a coin listed before this was
+   * recorded: it counts as old. */
+  readonly listedInBlock?: number
 }
 
 /** The coin as it is stored: wei as a decimal string. `spend_pending` is never stored. */
@@ -93,6 +98,7 @@ export interface StoredEvmListCoin {
   readonly spentInBlock?: number
   /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
   readonly lastSpentInBlock?: number
+  readonly listedInBlock?: number
 }
 
 export const EVM_COIN_LIST_NAMESPACE = 'evm-coin-list'
@@ -154,6 +160,9 @@ function toStored(coin: EvmListCoin): StoredEvmListCoin {
     ...(coin.spentInBlock === undefined
       ? {}
       : { spentInBlock: coin.spentInBlock }),
+    ...(coin.listedInBlock === undefined
+      ? {}
+      : { listedInBlock: coin.listedInBlock }),
   }
 }
 
@@ -167,7 +176,9 @@ function fromStored(row: StoredEvmListCoin): EvmListCoin {
     !['unspent', 'pending_receipt', 'spent'].includes(row.state) ||
     (row.state === 'pending_receipt' && row.spendingTx === undefined) ||
     (row.lastSpentInBlock !== undefined &&
-      (!Number.isSafeInteger(row.lastSpentInBlock) || row.lastSpentInBlock < 0))
+      (!Number.isSafeInteger(row.lastSpentInBlock) || row.lastSpentInBlock < 0)) ||
+    (row.listedInBlock !== undefined &&
+      (!Number.isSafeInteger(row.listedInBlock) || row.listedInBlock < 0))
   )
     throw new EvmCoinListError(
       `Unreadable coin record ${String(row.account)}:${String(row.nonce)} ` +
@@ -252,6 +263,16 @@ export class EvmCoinList {
     return this.all()
       .filter(coin => coin.state === 'unspent' && !behind(coin) && (filter?.(coin) ?? true))
       .reduce((sum, coin) => sum + coin.valueWei, 0n)
+  }
+
+  /** The coins that hold the wallet's free money now: unspent, not behind a later coin of their
+   * account, and not planned on top of another operation's move. Read only; what the coin
+   * distribution counts (`evm-coin-distribution.ts`). */
+  liveUnspent(): EvmListCoin[] {
+    const behind = this.behind()
+    return this.all().filter(
+      coin => coin.state === 'unspent' && !behind(coin) && coin.after === undefined,
+    )
   }
 
   /** Called after every change. Returns the unsubscribe. */
@@ -371,6 +392,7 @@ export class EvmCoinList {
     changeIndex?: number
     lastSpentInBlock?: number
     spendableFromBlock?: number
+    listedInBlock?: number
   }): Promise<EvmListCoin> {
     const snapshot = { ...input }
     return this.accountMutation(snapshot.account, () =>
@@ -387,6 +409,7 @@ export class EvmCoinList {
     changeIndex?: number
     lastSpentInBlock?: number
     spendableFromBlock?: number
+    listedInBlock?: number
   }): Promise<EvmListCoin> {
     const account = input.account.toLowerCase()
     if (computeAddress(input.privateKey).toLowerCase() !== account)
@@ -399,6 +422,11 @@ export class EvmCoinList {
         input.lastSpentInBlock < 0)
     )
       throw new EvmCoinListError('Invalid last-spend block')
+    if (
+      input.listedInBlock !== undefined &&
+      (!Number.isSafeInteger(input.listedInBlock) || input.listedInBlock < 0)
+    )
+      throw new EvmCoinListError('Invalid listing block')
     if (input.valueWei < 0n)
       throw new EvmCoinListError('A coin value is not negative')
     const key = coinKey(account, input.nonce)
@@ -437,6 +465,10 @@ export class EvmCoinList {
       ...(input.spendableFromBlock === undefined
         ? {}
         : { spendableFromBlock: input.spendableFromBlock }),
+      // A new value of the same coin keeps the block it was first listed in.
+      ...((existing?.listedInBlock ?? input.listedInBlock) === undefined
+        ? {}
+        : { listedInBlock: existing?.listedInBlock ?? input.listedInBlock }),
     }
     this.coinsByKey.set(key, coin)
     for (const old of stale)
@@ -1005,6 +1037,7 @@ export class EvmCoinList {
             ...(outcome.successor.spendableFromBlock === undefined
               ? {}
               : { spendableFromBlock: outcome.successor.spendableFromBlock }),
+            listedInBlock: outcome.block,
           }
         : undefined
     // The successor first: a crash between the two writes leaves the old coin pending (it is

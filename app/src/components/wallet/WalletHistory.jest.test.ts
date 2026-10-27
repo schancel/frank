@@ -41,8 +41,9 @@ function translate(key: string, params: Record<string, unknown> = {}) {
 function mountHistory(
   payment: EvmNativeOperationStatus['payment'],
   kind: EvmNativeOperationStatus['kind'] = 'legacy',
+  purpose: EvmNativeOperationStatus['purpose'] = 'transfer',
 ) {
-  const row = { ...operation(payment), kind }
+  const row = { ...operation(payment), kind, purpose }
   return shallowMount(History, {
     props: {
       chainIdentifier: 'monad-testnet',
@@ -445,4 +446,16 @@ it('shows a deposit from outside Frank: what arrived, from whom, its transaction
   expect(
     wrapper.get('[data-testid="wallet-deposits-unread"]').text(),
   ).toContain('could not be read')
+})
+
+it('reads a background merge of coins as "Merged N coins", with what it was and its fee, not as an amount sent', () => {
+  const wrapper = mountHistory('included', 'transaction-set', 'consolidation')
+  expect(wrapper.get('[data-testid="wallet-activity-merged"]').text()).toBe(
+    'Merged 2 coins',
+  )
+  expect(wrapper.get('.wallet-history-amount').text()).not.toContain('MONT')
+  expect(wrapper.text()).toContain(
+    'Small coins merged into one of your accounts',
+  )
+  expect(wrapper.get('[data-testid="wallet-activity-fee"]').exists()).toBe(true)
 })

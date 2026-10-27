@@ -14,6 +14,8 @@ import {
  * - `contact-payment`: a payment to a contact (Send to Contact, or a payment in a chat);
  * - `forum`: a forum post's or vote's burn;
  * - `group-write`: the payment for a write to a group (creating it, or a message in it);
+ * - `consolidation`: a background merge of the wallet's small coins into one of its own accounts
+ *   (`evm-coin-consolidator.ts`); it moves no money out of the wallet, only its fee;
  * - `transfer`: anything else (Send to Address, a contract call).
  */
 export type EvmSendPurpose =
@@ -21,6 +23,7 @@ export type EvmSendPurpose =
   | "contact-payment"
   | "forum"
   | "group-write"
+  | "consolidation"
   | "transfer";
 
 /** The prefix of a shared transaction set's preparation identity. */
@@ -53,6 +56,8 @@ export function classifyEvmOperation(
     return { purpose: "contact-payment" };
   if (/^forum-/.test(logical ?? "")) return { purpose: "forum" };
   if (/^group-write-/.test(logical ?? "")) return { purpose: "group-write" };
+  if (/^consolidate-[0-9a-f]{32}$/.test(logical ?? ""))
+    return { purpose: "consolidation" };
   return { purpose: "transfer" };
 }
 

@@ -616,6 +616,19 @@ export interface OutgoingReconciliation {
   stop: () => void
 }
 
+/** Starts one step of the wallet's background coin maintenance (`maintainCoins`), if the handle
+ * has it. Only from an idle tick. Never awaited and never throws: its failure is not the
+ * caller's, and the next idle tick tries again. */
+function maintainIdleCoins(wallet: WalletHandle): void {
+  try {
+    void (wallet as WalletHandle & Pick<NativeWalletHandle, 'maintainCoins'>)
+      .maintainCoins?.()
+      .catch(error => console.warn('Background coin maintenance failed', error))
+  } catch {
+    /* Nothing to do. */
+  }
+}
+
 /** Starts the wallet's bounded re-observation of its own broadcast transfers, if the handle has
  * one. Never awaited and never throws: its failure is not the caller's. */
 function reobserveNativeOperations(wallet: WalletHandle): void {
@@ -1015,6 +1028,10 @@ export function startOutgoingReconciliation({
       delayMs = intervalMs
     setsProgressBefore = sets.progress
     pending += walletUnsettled
+    // Idle: nothing being sent or reconciled. The wallet may merge the small coins stamps and
+    // payouts left (owner, 2026-10-26); a merge it starts is one of its own unfinished sets on
+    // the next tick, which keeps the short pauses until it lands.
+    if (pending === 0 && !stopped) maintainIdleCoins(wallet)
     delayMs =
       pending > 0 && !resetRequested
         ? Math.min(maxIntervalMs, delayMs * 2)

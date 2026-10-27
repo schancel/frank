@@ -37,6 +37,7 @@ import {
 } from "./evm-stealth-payments";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 import { createLegacyTransactionSetPayments } from "./evm-legacy-transaction-set";
+import { createEvmCoinConsolidator } from "../evm-coin-consolidator";
 import { createEvmTransactionSetSubmission } from "../evm-transaction-set-submission";
 import { EvmTransactionSetInsufficientFundsError } from "../evm-transaction-set-types";
 import { evmTransactionSetCapability } from "../evm-transaction-set-public";
@@ -720,6 +721,10 @@ async function reconcileNativeAdmission(
       )
     });
 }
+/** How many of the most recent change allocations a merge's fresh account is looked for among
+ * (`listTarget`); one older than that is found by the seed walk of the change branch. */
+const MERGE_TARGET_SEARCH = 64;
+
 // One typed economic owner per EVM account/network in this runtime, across chain factories.
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
 const openTypedEvmAccounts = new Set<string>();
@@ -2315,6 +2320,55 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 return results;
               }).finally(() => invalidateBalanceRead()),
           };
+          // Background coin consolidation: merges the small coins stamps and payouts leave once
+          // the pool is above the coin distribution's band, through the same transaction sets
+          // as every payment. Hosts call it from their idle tick (`maintainCoins`).
+          const coinConsolidator = createEvmCoinConsolidator({
+            chainIdentifier: config.networkId,
+            coins: coinList,
+            preparer: transactionSetPreparer,
+            operations: () => transactionOwner.nativeJournal!.list(),
+            // A fresh account of the change branch, its index durably allocated before
+            // anything is signed to it.
+            reserveTarget: async () => {
+              const target = await changePool.reserveFreshChange(coinList.nextChangeIndex());
+              return { account: target.account.toLowerCase(), changeIndex: target.changeIndex };
+            },
+            submit: (prepared) => transactionSetSubmission.sendTransaction(prepared),
+            refreshPolicy: () => transactionSetRuntime.refresh(),
+            // Once a move has reached it, the fresh account is recorded the way the seed walk
+            // records a funded change account (it holds money, so it is in use), which makes it
+            // a source the coin list reads. An index this cannot find among the recent
+            // allocations is left to the next walk of the change branch.
+            listTarget: async (account) => {
+              const key = account.toLowerCase();
+              const known = [...changePool.records(), ...changePool.recoveredAccounts()]
+                .some((record) => record.address.toLowerCase() === key);
+              if (!known) {
+                const top = changePool.nextUnusedIndex();
+                let index: number | undefined;
+                for (let i = top - 1; i >= Math.max(0, top - MERGE_TARGET_SEARCH); i--)
+                  if (changeKeyring.deriveChangeAccount(i).address.toLowerCase() === key) {
+                    index = i;
+                    break;
+                  }
+                if (index === undefined) return;
+                const [nonce, balanceWei] = await Promise.all([
+                  provider.getTransactionCount(key, "latest"),
+                  provider.getBalance(key, "latest"),
+                ]);
+                if (nonce === 0 && balanceWei === 0n) return;
+                changePool.applyRecoveredAccounts([{
+                  index,
+                  address: changeKeyring.deriveChangeAccount(index).address,
+                  nonce,
+                  balanceWei: balanceWei.toString(),
+                }]);
+                await changePool.flush();
+              }
+              await transactionSetRuntime.coinListSync.refreshAccounts([key]);
+            },
+          });
           const publicTransactionSets = evmTransactionSetCapability(
             transactionSetPreparer,
             prepared => transactionSetSubmission.sendTransaction(prepared),
@@ -2929,6 +2983,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   admission
                 ).cancelUnsigned(operationId);
               });
+            },
+            // One step of background coin maintenance, from a host's idle tick: a merge of the
+            // pool's small coins when it is above the coin distribution's band, or the resume of
+            // the merge still on its way. Never at open; never holds a send.
+            async maintainCoins() {
+              const internals = evmWalletInternals(wallet);
+              if (internals.closed) return { outcome: "idle" as const };
+              try {
+                // From the coin list as the wallet's own reads keep it: an idle wallet's
+                // maintenance step makes no node request unless it may have a merge to make
+                // or finish.
+                return await transactionOwner.runLifetime(() => coinConsolidator.maintain());
+              } catch (error) {
+                if (isChainUnreachableError(error)) {
+                  throw error instanceof ChainUnreachableError
+                    ? error
+                    : new ChainUnreachableError(error);
+                }
+                throw error;
+              } finally {
+                invalidateBalanceRead();
+              }
             },
             // Bounded re-observation of broadcast members nothing has seen confirm. Called from
             // the hosts' existing polls, never at open. The network reads run under the wallet

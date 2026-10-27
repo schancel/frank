@@ -1360,6 +1360,22 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
+        // Idle (no reply being handled or asked about): the wallet may merge the small coins
+        // stamps and payouts left (owner, 2026-10-26). Not awaited; its failure is not this
+        // poll's, and the next idle poll tries again. A handle without it has nothing to do.
+        if (!asked && !held && instance.inFlightDigests.size === 0)
+          try {
+            void instance.wallet
+              .maintainCoins?.()
+              .catch((error) =>
+                console.warn(
+                  `[bot-host] [${id}] Background coin maintenance failed:`,
+                  error instanceof Error ? error.message : error
+                )
+              );
+          } catch {
+            /* Nothing to do. */
+          }
         // A read that outlived an earlier poll's bound is joined, or its result used, not
         // started again beside it: abandoned reads would pile up and starve every bot of CPU.
         instance.mailboxRead ??= this.readMailbox(instance).catch((error) => {

@@ -68,6 +68,13 @@
                   {{ depositUnit(entry.deposit) }}</span
                 >
                 <span
+                  v-else-if="mergedCoins(entry) !== undefined"
+                  data-testid="wallet-activity-merged"
+                  >{{
+                    $t('walletHistory.merged', { count: mergedCoins(entry) })
+                  }}</span
+                >
+                <span
                   v-else-if="entry.kind === 'noted'"
                   :title="`${nativeAmount(entry.valueWei)} ${nativeUnit}`"
                   >{{ shortAmount(entry.valueWei) }} {{ nativeUnit }}</span
@@ -568,6 +575,7 @@ import { shortenDisplayAmount } from 'src/utils/chain-amount'
 import {
   changeMembers,
   observedFees,
+  mergedCoins,
   paymentMembers,
   type WalletHistoryGroup,
   type WalletHistoryLoad,

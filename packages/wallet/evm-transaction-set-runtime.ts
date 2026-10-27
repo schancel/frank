@@ -76,6 +76,7 @@ export function installEvmTransactionSetRuntime(
     },
     reserveChange: (_operationId, minimumIndex) =>
       changePool.reserveFreshChange(minimumIndex),
+    onPaymentIncluded: account => coinListSync.noteOwnTransferIncluded(account),
     canSelectCoin: coin =>
       !coinListSync.isDirty(coin.account) &&
       !pool.isAccountClaimed(coin.account) &&

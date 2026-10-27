@@ -255,6 +255,16 @@ export async function readWalletDeposits(
   }
 }
 
+/** How many coins a background merge moved into one account: its row reads "Merged N coins".
+ * Undefined for any other row. */
+export function mergedCoins(row: WalletHistoryRow): number | undefined {
+  if (row.kind === 'native' && row.operation.purpose === 'consolidation')
+    return paymentMembers(row.operation).length
+  if (row.kind === 'noted' && row.purpose === 'consolidation')
+    return row.sends.length
+  return undefined
+}
+
 /** The members that carry the payment itself: what the recipient is paid with. */
 export function paymentMembers(operation: EvmNativeOperationStatus) {
   return operation.members.filter(member => member.role !== 'change')
@@ -619,7 +629,12 @@ export function buildWalletHistoryGroups(input: {
     )
     for (const [key, all] of sends) {
       // What moved between the wallet's own accounts is no send of its own: only its fee is.
-      const group = all.filter(send => !send.toOwnAccount)
+      // A background merge of coins is the exception: it is one row of its own ("Merged N
+      // coins"), so every device shows what it cost.
+      const group =
+        notedGroupPurpose(all) === 'consolidation'
+          ? all
+          : all.filter(send => !send.toOwnAccount)
       if (group.length === 0) continue
       // What the recipient was paid, apart from the message's stamp; a stamp alone is the row.
       const paid = group.filter(send => send.purpose !== 'stamp')

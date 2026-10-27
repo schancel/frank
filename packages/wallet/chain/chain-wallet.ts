@@ -25,6 +25,21 @@ export interface ChainTransaction {
  * transaction was accepted. `transaction` is derived from the exact signed bytes, so callers can
  * reconcile that id before deciding whether to create a replacement payment.
  */
+/** What one step of background coin maintenance did (`maintainCoins`). */
+export type CoinMaintenanceResult =
+  /** Inside the band, or nothing may be merged now. */
+  | { readonly outcome: "idle" }
+  /** An earlier merge is still on its way. */
+  | { readonly outcome: "waiting"; readonly operationId: string }
+  /** A merge of `coins` coins into `target` was signed, journalled and handed to the network. */
+  | {
+      readonly outcome: "merged";
+      readonly operationId: string;
+      readonly coins: number;
+      readonly feeWei: bigint;
+      readonly target: string;
+    };
+
 export class NativeTransactionSubmissionError extends Error {
   readonly transaction: ChainTransaction;
   readonly reason: unknown;
@@ -467,6 +482,15 @@ export interface NativeWalletHandle {
    * on a handle with nothing to look up; callers treat absence as nothing to do.
    */
   reobserveNativeOperations?(): Promise<void>;
+  /**
+   * One step of background coin maintenance, for a host's idle tick (nothing being sent or
+   * reconciled): when stamps and payouts have left more small coins than the wallet's coin
+   * distribution allows, the smallest of them are merged into one fresh account of the wallet,
+   * as one transaction set like any send (`merged`); while that merge is on its way, a call
+   * offers it to the network again (`waiting`). Holds no send: a payment built meanwhile takes
+   * other coins. Absent on a handle with nothing to maintain.
+   */
+  maintainCoins?(): Promise<CoinMaintenanceResult>;
   /**
    * Waits for the wallet's next look at the chain (its block watcher), then looks at the
    * transactions of one native operation that are not yet seen in a block. A host showing a

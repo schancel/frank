@@ -20,9 +20,9 @@ import {
 } from '@frank/cashweb/relay/conversation-id'
 import { useSettingsStore } from './settings'
 import { sameCanonicalAddress } from '../utils/own-address'
+import type { Utxo } from '@frank/cashweb/types/utxo'
 import type {
   ChatMessage,
-  ChatState,
   Conversation,
   ConversationEpoch,
   ConversationMember,

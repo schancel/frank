@@ -996,11 +996,11 @@ export default defineComponent({
     },
     onPay() {
       const step = this.payStep
-      if (step) this.send(step.item, step.payWei)
+      if (step?.payWei !== undefined) this.send(step.item, step.payWei)
     },
     onRefundBet() {
       const step = this.refundBet
-      if (step) this.send(step.item, step.payWei)
+      if (step?.payWei !== undefined) this.send(step.item, step.payWei)
     },
   },
 })

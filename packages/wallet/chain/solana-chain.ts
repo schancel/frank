@@ -28,7 +28,7 @@ export const SOLANA_SWEEP_DECOY_MAX_DELAY_MS = 120_000;
 export const SOLANA_SWEEP_DECOY_MEAN_DELAY_MS = 30_000;
 
 export interface SolanaPrioritizationFeeSample {
-  readonly slot: number;
+  readonly slot: number | bigint;
   readonly prioritizationFee: number | bigint;
 }
 

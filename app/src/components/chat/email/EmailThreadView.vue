@@ -1234,6 +1234,7 @@ import {
 import { useSettingsStore } from 'src/stores/settings'
 import { useProfileStore } from 'src/stores/my-profile'
 import { errorNotify } from 'src/utils/notifications'
+import { useMonadWallet } from 'src/utils/clients'
 import { isChainAddress } from 'src/utils/chain-address'
 import {
   getOwnCanonicalAddress,
@@ -2260,10 +2261,30 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
     },
-    async retryFailedCard(card: ParsedEmailCard) {
-      if (!card.payloadDigest) return
+    /** Manual Retry of a failed reply, as a chat bubble's Retry (`ChatMessage.vue`). */
+    async retryFailedCard(card: ParsedEmailCard, confirmed = false) {
+      if (!card.payloadDigest || !this.recipientAddress) return
       try {
-        await useChatStore().retryOutgoing(card.payloadDigest)
+        const outcome = await useChatStore().retryOutgoing({
+          wallet: useMonadWallet(),
+          address: this.recipientAddress,
+          payloadDigest: card.payloadDigest,
+          confirmed,
+        })
+        if (outcome.state === 'needs-confirmation') {
+          this.$q
+            .dialog({
+              title: this.$t('outgoing.sendAgainTitle'),
+              message:
+                outcome.reason === 'recovered'
+                  ? this.$t('outgoing.sendAgainRecovered')
+                  : this.$t('outgoing.sendAgainUnverified'),
+              ok: { label: this.$t('outgoing.sendAgain') },
+              cancel: true,
+              persistent: true,
+            })
+            .onOk(() => void this.retryFailedCard(card, true))
+        }
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       }

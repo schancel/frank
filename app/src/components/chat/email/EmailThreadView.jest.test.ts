@@ -38,6 +38,11 @@ jest.mock('src/utils/own-address', () => {
   }
 })
 
+const mockMessagingWallet = { chainIdentifier: 'monad-testnet' }
+jest.mock('src/utils/clients', () => ({
+  useMonadWallet: () => mockMessagingWallet,
+}))
+
 describe('EmailThreadView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -1669,7 +1674,12 @@ describe('EmailThreadView', () => {
         ).toBe(true)
 
         await vm.retryFailedCard(failedCard)
-        expect(retrySpy).toHaveBeenCalledWith('digest-failed-outbound')
+        expect(retrySpy).toHaveBeenCalledWith({
+          wallet: mockMessagingWallet,
+          address: '0x3333333333333333333333333333333333333333',
+          payloadDigest: 'digest-failed-outbound',
+          confirmed: false,
+        })
 
         vm.replyText = ''
         await vm.cancelOrDiscardCard(pendingCard)

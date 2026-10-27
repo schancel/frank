@@ -40,7 +40,8 @@ export function stakeProblem(
 
 /** How a game card states a payout it is owed: the amount, what its message carried (or, once
  * on chain, what landed), whether that is short, and whether the chain showed it arrive. */
-export interface PayoutView {
+// A type alias, not an interface: it is passed whole as a message's named parameters.
+export type PayoutView = {
   amount: string
   carried: string
   short: boolean

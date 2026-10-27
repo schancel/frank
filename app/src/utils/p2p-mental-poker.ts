@@ -163,7 +163,7 @@ export function buildMentalPokerChallenge(
   payload: MentalPokerPayload
   item: ApplicationMessageItem
 } {
-  const handId = params.handId ?? newGameId('mp')
+  const handId = params.handId ?? newGameId()
   const stakeWei = BigInt(params.stakeWei ?? 0n)
   const secrets = getOrCreateMentalPokerSecrets(
     handId,

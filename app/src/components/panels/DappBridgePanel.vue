@@ -1253,21 +1253,25 @@ export default defineComponent({
 
     async function refreshBridgeState() {
       try {
-        const res = await sendRuntimeMessage<{
-          result?: {
-            ok?: boolean
-            activePersonaAddress?: string
-            announceMode?: DappProviderAnnounceMode
-            originPersonas?: Record<string, OriginPersonaBinding>
-            pendingApprovals?: Array<{
-              id: string
-              kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
-              origin: string
-              method: string
-              params?: unknown
-            }>
+        // The type arguments are the request's, then the reply's.
+        const res = await sendRuntimeMessage<
+          unknown,
+          {
+            result?: {
+              ok?: boolean
+              activePersonaAddress?: string
+              announceMode?: DappProviderAnnounceMode
+              originPersonas?: Record<string, OriginPersonaBinding>
+              pendingApprovals?: Array<{
+                id: string
+                kind?: 'connect' | 'sign' | 'transaction' | 'permissions'
+                origin: string
+                method: string
+                params?: unknown
+              }>
+            }
           }
-        }>({
+        >({
           channel: FRANK_DAPP_BRIDGE_CHANNEL,
           type: 'get-bridge-state',
         })

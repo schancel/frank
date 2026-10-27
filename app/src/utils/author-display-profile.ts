@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, type ChainAddress } from '@frank/wallet/chain'
 import { relayHandleOf } from 'src/utils/contact-username'
 import { inferCuratedBotAttributes } from 'src/utils/curated-bots'
 
@@ -98,16 +98,9 @@ export async function fetchAuthorDisplayProfile(
     AuthorDisplayProfile | undefined
   > => {
     try {
-      let chainAddress: { raw: string; display: string } | undefined
+      let chainAddress: ChainAddress | undefined
       try {
-        chainAddress =
-          (
-            activeChain as {
-              parseAddress?: (
-                addr: string,
-              ) => { raw: string; display: string } | null
-            }
-          )?.parseAddress?.(trimmedAddress) ?? undefined
+        chainAddress = activeChain.parseAddress?.(trimmedAddress)
       } catch {
         chainAddress = undefined
       }
@@ -116,15 +109,10 @@ export async function fetchAuthorDisplayProfile(
         typeof (activeChain as { fetchProfile?: unknown })?.fetchProfile ===
           'function'
       ) {
-        chainAddress = {
-          raw: normalizedKey,
-          display: trimmedAddress,
-        }
+        chainAddress = { raw: normalizedKey }
       }
-      const displayAddress =
-        typeof chainAddress?.display === 'string' && chainAddress.display.trim()
-          ? chainAddress.display.trim()
-          : trimmedAddress
+      // A parsed address carries only its raw form; the author is shown as written.
+      const displayAddress = trimmedAddress
 
       const fetchProfileFn = (
         activeChain as {

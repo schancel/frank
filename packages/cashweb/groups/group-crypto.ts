@@ -843,7 +843,8 @@ export interface OpenedGroupMessage {
   readonly epoch: number
   readonly senderIndex: number
   readonly senderEpochPubKeyHex: string
-  readonly senderAddress?: string
+  /** From the authenticated epoch roster, never from the frame. */
+  readonly senderAddress: string
   readonly timestampMs: number
   readonly payload: Uint8Array
   readonly payloadText: string

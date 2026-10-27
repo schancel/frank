@@ -438,7 +438,7 @@ export const useForumStore = defineStore('forum', {
         let failures = 0
         let succeeded = 0
         let firstError: unknown
-        let nextMessages = [...this.messages]
+        let nextMessages: ForumMessage[] = [...this.messages]
         for (const name of names) {
           try {
             const entries = await stageForumQuery(

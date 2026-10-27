@@ -187,13 +187,11 @@ export interface WebRtcCallControllerOptions
   gatherTimeoutMs?: number
   inviteTtlMs?: number
   nowMs?: () => number
-  peerConnectionFactory?: (
-    config: RTCConfiguration & { certificates?: unknown[] },
-  ) => MinimalPeerConnection
+  peerConnectionFactory?: (config: RTCConfiguration) => MinimalPeerConnection
   mediaDevices?: MinimalMediaDevices
   generateCertificate?: (
     keygenAlgorithm: Record<string, unknown>,
-  ) => Promise<unknown>
+  ) => Promise<RTCCertificate>
 }
 
 export type WebRtcCallSessionControllerOptions = WebRtcCallControllerOptions
@@ -272,12 +270,12 @@ export class WebRtcCallSessionController {
   private readonly inviteTtlMs: number
   private readonly nowMs: () => number
   private readonly peerConnectionFactory: (
-    config: RTCConfiguration & { certificates?: unknown[] },
+    config: RTCConfiguration,
   ) => MinimalPeerConnection
   private readonly mediaDevices: MinimalMediaDevices
   private readonly generateCertificateFn?: (
     keygenAlgorithm: Record<string, unknown>,
-  ) => Promise<unknown>
+  ) => Promise<RTCCertificate>
   private readonly onPhaseChange?: (phase: WebRtcCallControllerPhase) => void
   private readonly onStateChange?: (
     snapshot: WebRtcCallControllerSnapshot,
@@ -360,7 +358,7 @@ export class WebRtcCallSessionController {
           RTCPeerConnection?: {
             generateCertificate?: (
               alg: Record<string, unknown>,
-            ) => Promise<unknown>
+            ) => Promise<RTCCertificate>
           }
         }
       ).RTCPeerConnection?.generateCertificate === 'function'
@@ -370,7 +368,7 @@ export class WebRtcCallSessionController {
                 RTCPeerConnection: {
                   generateCertificate: (
                     a: Record<string, unknown>,
-                  ) => Promise<unknown>
+                  ) => Promise<RTCCertificate>
                 }
               }
             ).RTCPeerConnection.generateCertificate(alg)
@@ -532,7 +530,7 @@ export class WebRtcCallSessionController {
       turnServers: turnServersToUse,
     })
 
-    let certificates: unknown[] | undefined
+    let certificates: RTCCertificate[] | undefined
     if (this.generateCertificateFn) {
       try {
         const cert = await this.generateCertificateFn({

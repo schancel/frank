@@ -1,7 +1,13 @@
 {
   // Quasar generates .quasar/tsconfig.json and framework aliases/types via `yarn quasar prepare`
   // from app/quasar.config.js. This checked-in browser config retains its strict settings
-  // independently; do not copy generated output or inherit its skipLibCheck default.
+  // independently; do not copy generated output.
+  //
+  // `yarn typecheck` checks this project with vue-tsc (scripts/typecheck.ts), which also checks
+  // the .vue single-file components. skipLibCheck is set here, as in every package tsconfig:
+  // third-party declarations (workbox's service-worker globals, ts-toolbelt depth limits,
+  // vue-router's dual .d.ts/.d.mts entries, builder-util-runtime) do not check under this
+  // browser lib set, and those errors are not ours to fix.
   // Ticket #51 (Vite migration): `@quasar/app-webpack/tsconfig-preset` no longer exists once
   // app-webpack is uninstalled, and `@quasar/app-vite` ships no equivalent general-purpose preset
   // (only a narrow `.d.ts`-only one). Inlined verbatim from that preset's own content (checked
@@ -18,6 +24,7 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "strict": true,
+    "skipLibCheck": true,
     "jsx": "preserve",
     // Ticket #53 (package split): without this, TS auto-includes every `@types/*` package found
     // anywhere in the (now much larger, workspace-hoisted) node_modules tree as an ambient

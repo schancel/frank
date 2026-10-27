@@ -165,6 +165,7 @@ import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing
 export type ChatMessage = {
   requestedConversationId?: string
   groupEnvelope?: SealedGroupMessageEnvelope
+  groupWritePayment?: Message['groupWritePayment']
   sealedMessageId?: string
   applicationAuthorization?: Message['applicationAuthorization']
   financialOperations?: OutgoingFinancialOperation[]
@@ -393,6 +394,7 @@ export interface Conversation {
 
 import {
   type ChatState,
+  type ComposeFocusRequest,
   NULL_CONVERSATION_NAMESPACE,
   type OutboundDeliveryMatch,
   type OutboundDeliveryOwner,
@@ -984,9 +986,11 @@ export function autoHealDuplicateDirectConversations(
   const conversations = isOptionsObj
     ? (arg1 as { conversations: Record<string, Conversation> }).conversations
     : (arg1 as Record<string, Conversation>)
+  // The positional form carries no own address (it is resolved asynchronously); callers that
+  // must protect `self` pass the options object.
   const ownAddress = isOptionsObj
     ? (arg1 as { ownAddress?: string | null }).ownAddress ?? null
-    : getOwnCanonicalAddress()
+    : null
   const activeConversationId = isOptionsObj
     ? (arg1 as { activeConversationId?: string | null }).activeConversationId ??
       null
@@ -1890,7 +1894,7 @@ async function adoptPublishedAdminEpochs(
   if (latest.epoch <= conv.groupState.epoch)
     throw new Error('Conflicting group epoch')
   while (conv.groupState.epoch < latest.epoch) {
-    const state = conv.groupState
+    const state: GroupConversationState = conv.groupState
     const nextEpoch = state.epoch + 1
     const next =
       nextEpoch === latest.epoch
@@ -4597,12 +4601,14 @@ export const useChatStore = defineStore('chats', {
       }
       return this.conversations[id]
     },
-    autoHealDuplicateDirectConversations(): void {
+    async autoHealDuplicateDirectConversations(): Promise<void> {
+      // The own address resolves asynchronously; without it, `self` could be aliased to a peer.
+      const ownAddress = await getOwnCanonicalAddress()
       autoHealDuplicateDirectConversations({
         conversations: this.conversations,
         logicalMessages: this.logicalMessages,
         activeConversationId: this.activeConversationId,
-        ownAddress: getOwnCanonicalAddress(),
+        ownAddress,
       })
     },
     renameConversation(id: string, subject: string): void {
@@ -6835,6 +6841,7 @@ export const useChatStore = defineStore('chats', {
       )
       checkGroup()
       if (
+        !identity ||
         !state.roster.some(
           member => member.role === 'admin' && member.address === identity,
         )

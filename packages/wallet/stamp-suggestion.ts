@@ -102,6 +102,12 @@ export interface StampHistoryPaymentEntry {
   status?: "pending" | "received" | "not-received" | "unverifiable" | "failed";
 }
 
+/** A UTXO a stamp was paid with: `value`, or a wallet UTXO record's `satoshis`. */
+export interface StampOutpoint {
+  value?: number | string | bigint;
+  satoshis?: number;
+}
+
 export interface StampHistoryMessage {
   outbound: boolean;
   /** The message's items. When given, only a message of conversation content counts toward the
@@ -117,7 +123,7 @@ export interface StampHistoryMessage {
     | "unverifiable"
     | "failed";
   stampPayments?: ReadonlyArray<StampHistoryPaymentEntry>;
-  outpoints?: Array<{ value?: number | string | bigint }>;
+  outpoints?: ReadonlyArray<StampOutpoint>;
   status?: string;
 }
 
@@ -136,7 +142,7 @@ function parseNonNegativeWei(value: bigint | string | number | undefined): bigin
  */
 export function getMessageStampWei(msg: {
   stampValueWei?: bigint;
-  outpoints?: Array<{ value?: number | string | bigint }>;
+  outpoints?: ReadonlyArray<StampOutpoint>;
 }): bigint {
   if (msg.stampValueWei !== undefined) {
     return msg.stampValueWei;
@@ -144,8 +150,9 @@ export function getMessageStampWei(msg: {
   if (Array.isArray(msg.outpoints) && msg.outpoints.length > 0) {
     let sum = 0n;
     for (const utxo of msg.outpoints) {
-      if (utxo?.value !== undefined) {
-        sum += BigInt(utxo.value);
+      const value = utxo?.value ?? utxo?.satoshis;
+      if (value !== undefined) {
+        sum += BigInt(value);
       }
     }
     return sum;

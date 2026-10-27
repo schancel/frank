@@ -111,6 +111,7 @@ import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { useChatStore } from '../../../stores/chats'
 import { blockingMessage } from '../../../stores/chats-self-notes'
+import { fundsInPendingSendReasonText } from '../../../utils/funds-in-pending-send'
 import { messageItems } from '../../../utils/message-items'
 
 import ChatMessageSuffixButtons from './ChatMessageSuffixButtons.vue'
@@ -330,6 +331,14 @@ export default defineComponent({
       keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
       keys['fee-exceeded'] = 'outgoing.reasonFeeExceeded'
       keys.blocked = 'outgoing.reasonBlocked'
+      // Money of an earlier send not on the chain yet: says how much (the amount its failure
+      // kept, `errorDetail`) and to try again in a moment.
+      if (this.failureReason === 'funds-in-pending-send')
+        return fundsInPendingSendReasonText(
+          this.failureDetail,
+          wei => `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`,
+          (key, params) => this.$t(key, params ?? {}),
+        )
       const key = keys[this.failureReason]
       if (key === undefined) return ''
       // A payment below the floor names the floor its failure kept (`errorDetail`).

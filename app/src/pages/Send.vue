@@ -376,6 +376,7 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 
 import { sentTransactionNotify, errorNotify } from '../utils/notifications'
+import { fundsInPendingSendMessage } from '../utils/funds-in-pending-send'
 import {
   activeChain,
   onActiveChainChange,
@@ -426,6 +427,14 @@ export default defineComponent({
     // Set when the wallet refused the amount (or, for Max, everything it can send) below the
     // payment floor: the message naming the minimum. Cleared when the amount changes.
     const belowFloorText = ref('')
+    /** Refused because the money is still in an earlier send's change that has not reached the
+     * chain (`FundsInPendingSendError`): the words, with the amount; otherwise undefined. */
+    const tiedUpText = (err: unknown, chain: NativeTransferContext['chain']) =>
+      fundsInPendingSendMessage(
+        err,
+        wei => `${chain.toDisplayAmount(wei)} ${chain.unit}`,
+        (key, params) => $t(key, params),
+      )
     const floorRefusal = (
       err: unknown,
       captured: NativeTransferContext,
@@ -696,11 +705,15 @@ export default defineComponent({
               belowFloorText.value = refused
               return
             }
-            // Said, with the wallet's reason: never a silent "unavailable".
+            // Said, with the wallet's reason: never a silent "unavailable". Money still in an
+            // earlier send's change is said plainly, with the amount.
             if (!disposed) {
               estimatedFeeText.value = ''
               feeUnavailableReason.value =
-                err instanceof Error && err.message ? err.message : String(err)
+                tiedUpText(err, captured.chain) ??
+                (err instanceof Error && err.message
+                  ? err.message
+                  : String(err))
             }
           } finally {
             if (!disposed) feeEstimating.value = false
@@ -871,9 +884,13 @@ export default defineComponent({
         } catch (err) {
           if (disposed) return
           if (!dispatched.value) {
-            errorNotify(err, {
-              fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
-            })
+            const tiedUp = tiedUpText(err, reviewed.context.chain)
+            errorNotify(
+              err,
+              tiedUp
+                ? { safeMessage: tiedUp }
+                : { fallbackKey: 'sendAddressDialog.definitelyNotBroadcast' },
+            )
             return
           }
           // Refused below the payment floor before anything was signed (the floor rose since
@@ -915,9 +932,15 @@ export default defineComponent({
             signedTxHash === undefined
           ) {
             dispatched.value = false
-            errorNotify(err, {
-              fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
-            })
+            // Money still in an earlier send's change (owner ruling 2026-10-26): said plainly,
+            // with the amount; the user tries again in a moment.
+            const tiedUp = tiedUpText(err, reviewed.context.chain)
+            errorNotify(
+              err,
+              tiedUp
+                ? { safeMessage: tiedUp }
+                : { fallbackKey: 'sendAddressDialog.definitelyNotBroadcast' },
+            )
             return
           }
           if (!(await current())) return

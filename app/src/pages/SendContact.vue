@@ -338,6 +338,7 @@ import {
   errorNotify,
   infoNotify,
 } from 'src/utils/notifications'
+import { fundsInPendingSendMessage } from 'src/utils/funds-in-pending-send'
 
 export default defineComponent({
   setup() {
@@ -469,6 +470,10 @@ export default defineComponent({
 
     const display = (wei: bigint) =>
       `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`
+    /** The words for a payment refused because its money is still in an earlier send's
+     * change (owner ruling 2026-10-26): not queued; the user tries again in a moment. */
+    const tiedUpText = (err: unknown) =>
+      fundsInPendingSendMessage(err, display, (key, params) => $t(key, params))
     const pendingText = () =>
       quote.value.state === 'unavailable'
         ? $t('sendAddressDialog.feeUnavailableBecause', {
@@ -516,7 +521,11 @@ export default defineComponent({
             quote.value = {
               state: 'unavailable',
               reason:
-                err instanceof Error && err.message ? err.message : String(err),
+                // Money still in an earlier send's change: said plainly, with the amount.
+                tiedUpText(err) ??
+                (err instanceof Error && err.message
+                  ? err.message
+                  : String(err)),
             }
         }
       })()
@@ -642,6 +651,13 @@ export default defineComponent({
               prepared.txHash,
               $t('sendContactDialog.sent'),
             )
+          } else if (
+            outcome.state === 'failed' &&
+            outcome.reason === 'funds-in-pending-send'
+          ) {
+            // Saved in the conversation, failed, with its Retry for when that change is out.
+            const text = $t('outgoing.reasonFundsInPendingSendNoAmount')
+            errorNotify(new Error(outcome.reason), { safeMessage: text })
           } else if (outcome.state === 'failed') {
             // Saved in the conversation with its Retry: the same payment, never a second one.
             errorNotify(new Error(outcome.reason), {
@@ -659,7 +675,13 @@ export default defineComponent({
             requote()
             return
           }
-          // Refused before anything was signed: nothing was sent.
+          // Refused before anything was signed: nothing was sent. Money still in an earlier
+          // send's change is said as such, with the amount: try again in a moment.
+          const tiedUp = tiedUpText(err)
+          if (tiedUp) {
+            errorNotify(err, { safeMessage: tiedUp })
+            return
+          }
           errorNotify(err, { fallbackKey: 'sendContactDialog.notSent' })
         } finally {
           sending.value = false

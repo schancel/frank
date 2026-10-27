@@ -808,6 +808,7 @@ export default defineComponent({
         'unverified': 'outgoing.reasonUnverified',
         'recovered': 'outgoing.reasonRecovered',
         'insufficient-funds': 'outgoing.reasonInsufficientFunds',
+        'funds-in-pending-send': 'outgoing.reasonFundsInPendingSendNoAmount',
         'recipient-unregistered': 'outgoing.reasonRecipientUnregistered',
       }
       return this.$t(keys[reason ?? ''] ?? 'outgoing.reasonError')

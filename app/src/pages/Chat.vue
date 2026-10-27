@@ -513,6 +513,7 @@ import {
 import { stealthAvailableBalance } from '../stealth-payments/available'
 import {
   notSentFailureMessage,
+  refusedForPendingSend,
   sendFailureKey,
   StealthPaymentNotSentError,
 } from '../stealth-payments/failure'
@@ -1618,7 +1619,16 @@ export default defineComponent({
             }
           },
         })
-        if (outcome && (outcome as any).state === 'failed') {
+        if (
+          outcome &&
+          (outcome as any).state === 'failed' &&
+          (outcome as any).reason === 'funds-in-pending-send'
+        ) {
+          // The money is in an earlier send's change that has not gone out yet: said plainly;
+          // the email stays failed until the user retries it.
+          const text = this.$t('outgoing.reasonFundsInPendingSendNoAmount')
+          errorNotify(new Error(text), { safeMessage: text })
+        } else if (outcome && (outcome as any).state === 'failed') {
           const reason = (outcome as any).reason
           errorNotify(
             new Error(
@@ -1829,8 +1839,23 @@ export default defineComponent({
         )
       } catch (error) {
         const key = sendFailureKey(error)
-        errorNotify(error, { fallbackKey: key })
-        if (error instanceof StealthPaymentNotSentError)
+        // Money still in an earlier send's change: says how much, in the payment's native unit.
+        const tiedUp = refusedForPendingSend(error)
+          ? notSentFailureMessage(
+              error,
+              () =>
+                this.stealthAssets.find(
+                  option => option.key === intent.assetKey,
+                ),
+              (key, params) => this.$t(key, params ?? {}),
+            )
+          : undefined
+        errorNotify(
+          error,
+          tiedUp ? { safeMessage: tiedUp } : { fallbackKey: key },
+        )
+        if (tiedUp) notSentMessage = tiedUp
+        else if (error instanceof StealthPaymentNotSentError)
           notSentMessage = this.$t(key)
       } finally {
         this.stealthReview = null

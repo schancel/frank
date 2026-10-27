@@ -2169,6 +2169,13 @@ export default defineComponent({
             }),
           }
         }
+        if (card.failureReason === 'funds-in-pending-send') {
+          return {
+            color: 'negative',
+            icon: 'error_outline',
+            label: this.$t('outgoing.reasonFundsInPendingSendNoAmount'),
+          }
+        }
         if (card.failureReason === 'stamp-below-fee') {
           return {
             color: 'negative',

@@ -3,6 +3,7 @@ import { recordEvmRpcFailure } from '@frank/wallet/evm-rpc-failure'
 import { recordWalletFailure } from '@frank/wallet/wallet-failure'
 import { StealthPaymentMemberLimitError } from '@frank/wallet/stealth-payment'
 import { ContactPaymentBelowFloorError } from '@frank/wallet/chain/chain-wallet'
+import { FundsInPendingSendError } from '@frank/wallet/evm-transaction-set-types'
 import enUS from '../i18n/en-us'
 import {
   notSentFailureKey,
@@ -52,6 +53,28 @@ describe('stealth payment failure messages', () => {
         ),
       ),
     ).toBe('sendStealthDialog.insufficientFunds')
+  })
+
+  it("says the money is in the last payment's change, with the amount, and to try again (owner ruling 2026-10-26)", () => {
+    const tiedUp = new FundsInPendingSendError(50_000_000_000_000_000n, 1n)
+    const asset = { nativeUnit: 'MON', nativeDecimals: 18 }
+    expect(notSentFailureMessage(tiedUp, () => asset, english)).toBe(
+      "Your last payment's change hasn't gone out yet (0.05 MON). Try again in a moment.",
+    )
+    // Released unsent by the financial owner: the same words.
+    expect(
+      notSentFailureMessage(
+        new StealthPaymentNotSentError(tiedUp),
+        () => asset,
+        english,
+      ),
+    ).toBe(
+      "Your last payment's change hasn't gone out yet (0.05 MON). Try again in a moment.",
+    )
+    // Not released (or not provably): still nothing was signed for it, and said so.
+    expect(english(sendFailureKey(tiedUp))).toBe(
+      "Your last payment's change hasn't gone out yet. Try again in a moment.",
+    )
   })
 
   it('tells the user what to do when the payment needs too many coins', () => {

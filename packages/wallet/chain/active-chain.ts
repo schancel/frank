@@ -340,6 +340,9 @@ export type DirectMessageAttemptStatus =
 export type DirectMessageEnd =
   | { readonly reason: "fee-exceeded" }
   | { readonly reason: "discarded" }
+  /** Refused at once: the free coins did not cover it, and money of this wallet's earlier sends
+   * that would have was not on the chain yet (`FundsInPendingSendError`). Nothing was paid. */
+  | { readonly reason: "funds-tied-up" }
   | { readonly reason: "relay"; readonly relayReason?: string };
 
 /** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only

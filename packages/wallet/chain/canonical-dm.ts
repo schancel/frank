@@ -6,7 +6,7 @@ import type {
   OutgoingMessageStore,
   UnpaidEnvelope,
 } from '../storage/outgoing-message-store'
-import { EvmTransactionSetInsufficientFundsError } from '../evm-transaction-set-types'
+import { EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from '../evm-transaction-set-types'
 import { constructWhenSpendable, EvmTransactionSetFeeExceededError } from '../evm-transaction-set'
 import { NativeFeeExceededError } from './chain-wallet'
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
@@ -1131,7 +1131,7 @@ function sharedConstructionPending(row: StoredMessage): boolean {
 async function endUnconstructed(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
-  reason: 'fee_exceeded' | 'discarded',
+  reason: 'fee_exceeded' | 'funds_tied_up' | 'discarded',
 ): Promise<boolean> {
   const shared = owner.transactionSets
   if (!shared || !sharedConstructionPending(row) || !row.transactionSetOperationId) return false
@@ -1169,6 +1169,15 @@ async function releaseEndedPayment(
     return
   }
   await owner.messages.put({ ...owner.messages.get(row.consumerId)!, paymentReleased: true })
+}
+
+/** A message with a stamp of its own that this wallet refused at once because the money that
+ * would pay it was still in its earlier sends (`FundsInPendingSendError`), before anything of it
+ * was signed or handed out. It stands for nothing: the user's Retry sends it afresh under the
+ * same message ID (owner ruling 2026-10-26), and only that Retry does. */
+function refusedForTiedUpFunds(row: StoredMessage): boolean {
+  return row.version === 2 && row.outcome === 'dead' && row.reason === 'funds_tied_up' &&
+    row.paymentOperationId === undefined && unconstructed(row)
 }
 
 /** A shared message the relay refused before anything of it was broadcast: its set is cancelled
@@ -2399,7 +2408,7 @@ async function send(
       }
     }
     const original = owner.messages.get(consumerId)
-    if (original) {
+    if (original && !refusedForTiedUpFunds(original)) {
       if (original.exposurePending && params.onEnvelopeDurable) {
         if (
           computeAddress('0x' + original.recipientSubject).toLowerCase() !==
@@ -2768,6 +2777,12 @@ async function send(
       if (error instanceof EvmTransactionSetFeeExceededError && stored &&
           await owner.lifetime(() => endUnconstructed(owner, stored, 'fee_exceeded')).catch(() => false))
         throw new NativeFeeExceededError(error.feeWei)
+      // The free coins do not cover it but this wallet's earlier sends will hand money back once
+      // they reach the chain (owner ruling 2026-10-26): refused now, not kept to be sent later.
+      // The message ends and the payment it would have joined is given back; the user retries.
+      if (error instanceof FundsInPendingSendError && stored &&
+          await owner.lifetime(() => endUnconstructed(owner, stored, 'funds_tied_up')).catch(() => false))
+        throw error
       // The journal or message write may have reached durable storage. Keep the stable ID
       // and every reservation; reopen will finish this same operation.
       work.unrecorded = true
@@ -2833,7 +2848,13 @@ async function send(
     // Once a shared construction intent is recorded, its operation identity is retained
     // across failure and its reservation is recovered from the wallet journal on reopen.
     const reported =
-      error instanceof EvmTransactionSetInsufficientFundsError
+      error instanceof FundsInPendingSendError
+        // The reason stays the cause: the caller tells the user to try again in a moment.
+        ? new InsufficientStampFundsError(
+            `No free funds cover a stamp of ${String(params.stampValue ?? 0n)} wei plus transaction fees: ${error.tiedUpWei} wei is tied up in a previous send that has not reached the chain yet; try again in a moment.`,
+            { cause: error },
+          )
+        : error instanceof EvmTransactionSetInsufficientFundsError
         ? new InsufficientStampFundsError(
             `No funds cover a stamp of ${String(params.stampValue ?? 0n)} wei plus transaction fees.`,
             { cause: error },
@@ -3692,6 +3713,7 @@ export function canonicalDirectMessages(
       if ('payments' in row && unconstructed(row)) {
         if (row.reason === 'fee_exceeded') return { reason: 'fee-exceeded' }
         if (row.reason === 'discarded') return { reason: 'discarded' }
+        if (row.reason === 'funds_tied_up') return { reason: 'funds-tied-up' }
       }
       return { reason: 'relay', ...(row.reason === undefined ? {} : { relayReason: row.reason }) }
     },

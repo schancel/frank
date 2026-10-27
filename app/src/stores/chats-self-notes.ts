@@ -16,6 +16,7 @@ import {
 } from '@frank/cashweb/relay/mailbox-client'
 import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
 import { describeWalletFailure } from '@frank/wallet/wallet-failure'
+import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
 import type {
   MessageItem,
   OutgoingFailureReason,
@@ -200,6 +201,9 @@ export function errorDetail(error: unknown): string {
   // minimum is.
   if (error instanceof DirectMessageStampBelowFeeError)
     return error.floorWei.toString()
+  // Money held by an earlier send keeps that amount (wei, decimal), so the bubble can say it.
+  const tiedUp = fundsInPendingSend(error)
+  if (tiedUp) return tiedUp.tiedUpWei.toString()
   return (error instanceof Error ? error.message : String(error)).slice(0, 300)
 }
 
@@ -265,6 +269,9 @@ export function classifySendFailure(
       (error instanceof OpenDirectoryError && error.code === 'not-published')
     )
       return { reason: 'recipient-unregistered' }
+    // Free funds short, but an earlier send's change not on the chain yet would cover it: said
+    // as such, and sent again only on the user's Retry (owner ruling 2026-10-26).
+    if (fundsInPendingSend(error)) return { reason: 'funds-in-pending-send' }
     if (isInsufficientFundsError(error)) return { reason: 'insufficient-funds' }
     if (error instanceof DirectMessageStampBelowFeeError)
       return { reason: 'stamp-below-fee' }

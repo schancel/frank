@@ -14,7 +14,7 @@ import type {
   EvmNativeObservation,
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
-import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError } from './evm-transaction-set-types'
+import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
 import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import type {
@@ -678,11 +678,10 @@ export class EvmTransactionSetPreparer {
     if (!parts && legacy) { parts = select(true); fanIn = true }
     if (!parts) {
       this.options.assertFundingObserved?.()
-      throw new EvmTransactionSetInsufficientFundsError(
-        this.spendableLater(policy, eligible, request.amountWei, coin =>
-          capacityWei(false)(coin, context(0).gas * policy.gasPriceWei),
-        ),
-      )
+      const capacity = (coin: EvmListCoin) => capacityWei(false)(coin, context(0).gas * policy.gasPriceWei)
+      const later = this.spendableLater(policy, eligible, request.amountWei, capacity)
+      throw later !== undefined ? new EvmTransactionSetInsufficientFundsError(later)
+        : this.refusal(request.operationId, policy, eligible, request.amountWei, capacity)
     }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
@@ -766,7 +765,8 @@ export class EvmTransactionSetPreparer {
         const additional = select(false, { deficit: carve.reserveWei, maxCoins: 1 })
         if (!additional) {
           this.options.assertFundingObserved?.()
-          throw new EvmTransactionSetInsufficientFundsError()
+          throw this.refusal(request.operationId, policy, eligible, carve.reserveWei,
+            coin => capacityWei(false, true)(coin, policy.changeGasLimit * policy.gasPriceWei))
         }
         parts.push(...additional)
         const source = await this.prepareSource(
@@ -785,10 +785,12 @@ export class EvmTransactionSetPreparer {
         // A change-only source moves value by change alone: with no change fee left under the
         // bound there is nothing it may sign.
         if (changeAllowance() < 1) throw new EvmTransactionSetFeeExceededError(bound! - changeBudget! + changeFee)
-        const additional = select(false, { deficit: reserve - privateValue(), maxCoins })
+        const deficit = reserve - privateValue()
+        const additional = select(false, { deficit, maxCoins })
         if (!additional) {
           this.options.assertFundingObserved?.()
-          throw new EvmTransactionSetInsufficientFundsError()
+          throw this.refusal(request.operationId, policy, eligible, deficit,
+            coin => capacityWei(false, true)(coin, policy.changeGasLimit * policy.gasPriceWei))
         }
         parts.push(...additional)
         for (const part of additional) {
@@ -1030,7 +1032,11 @@ export class EvmTransactionSetPreparer {
     const single = coins.planTransactionSetSources(rules.selection(false))
     if (single) return { amountWei: amountWei!, ...this.continuedFee(single, amountWei!, undefined, policy, rules, carve) }
     const parts = coins.planTransactionSetSources(rules.selection(true))
-    if (!parts) return insufficient()
+    if (!parts) {
+      this.options.assertFundingObserved?.()
+      throw this.refusal(undefined, policy, rules.eligible, amountWei!,
+        coin => rules.capacityWei(false)(coin, paymentFee))
+    }
     const balance = parts.reduce((sum, part) => sum + part.coin.valueWei - changeFee, 0n)
     const kept = carve ? carve.reserveWei + changeFee : 0n
     const outputs = this.changeOutputs(policy, balance - amountWei! - paymentFee - kept, amountWei!,
@@ -1113,7 +1119,8 @@ export class EvmTransactionSetPreparer {
     const parts = coins.planTransactionSetSources(rules.selection(false))
     if (!parts) {
       this.options.assertFundingObserved?.()
-      throw new EvmTransactionSetInsufficientFundsError()
+      throw this.refusal(undefined, policy, rules.eligible, request.amountWei,
+        coin => rules.capacityWei(false)(coin, rules.context(0).gas * policy.gasPriceWei))
     }
     return { amountWei: request.amountWei, ...this.continuedFee(parts, request.amountWei, request.calldata, policy, rules, carve) }
   }
@@ -1248,6 +1255,69 @@ export class EvmTransactionSetPreparer {
           policy.spendRule.waitBlocks < 0))
     )
       throw new Error('Invalid reviewed EVM transaction-set policy')
+  }
+
+  /**
+   * The refusal for a send the free coins do not cover. When what the wallet's own unfinished
+   * sends will hand back to it (`pendingOwnValue`) would cover what is missing, it says the
+   * money is tied up in a previous send (owner ruling 2026-10-26: refuse, the user tries again);
+   * otherwise the funds are simply not there. Reads only; nothing is reserved or recorded.
+   */
+  private refusal(
+    holder: string | undefined,
+    policy: EvmTransactionSetPolicy,
+    eligible: (coin: EvmListCoin) => boolean,
+    amountWei: bigint,
+    capacity: (coin: EvmListCoin) => bigint,
+  ): EvmTransactionSetInsufficientFundsError {
+    const free = this.options.coins
+      .selectableAt({ sourceOrder: policy.sourceOrder, canSelect: eligible, head: policy.head })
+      .reduce((sum, coin) => {
+        const part = capacity(coin)
+        return part > 0n ? sum + part : sum
+      }, 0n)
+    const shortfall = amountWei - free
+    if (shortfall <= 0n) return new EvmTransactionSetInsufficientFundsError()
+    const outputs = this.pendingOwnValue(holder)
+    const tiedUp = outputs.reduce((sum, value) => sum + value, 0n)
+    // Each of those outputs is a coin with its own fee to move again.
+    const usable = outputs.reduce((sum, valueWei) => {
+      const part = capacity({ account: '', nonce: 0, privateKey: '', origin: 'change', valueWei, state: 'unspent' })
+      return part > 0n ? sum + part : sum
+    }, 0n)
+    return usable >= shortfall
+      ? new FundsInPendingSendError(tiedUp, shortfall)
+      : new EvmTransactionSetInsufficientFundsError()
+  }
+
+  /**
+   * The wallet's own money that its unfinished transaction sets (other than `holder`'s) hand
+   * back to it once they reach the chain: each change move not yet included, and what stays with
+   * a sending account after its last move of the set while that move is not yet included. Read
+   * from the journal, which owns those signed moves until they land; landed ones are coins in
+   * the list and are counted there, never here.
+   */
+  private pendingOwnValue(holder: string | undefined): bigint[] {
+    const values: bigint[] = []
+    for (const row of this.options.journal.list()) {
+      if (row.kind !== 'transaction-set' || row.cancelled) continue
+      if (holder !== undefined && row.preparationId === prefix + holder) continue
+      const sources = new Set(row.members.map(member => member.source.address))
+      const landed = (member: EvmNativeOperation['members'][number]) =>
+        member.transactionSet!.inventoryApplied === true ||
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(member)
+      row.members.forEach((member, index) => {
+        if (!member.signed || landed(member)) return
+        const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
+        // Change to an account the same set spends from is spent again by that set.
+        if (meta.role !== 'payment' && !sources.has(tx.to!.toLowerCase())) values.push(tx.value)
+        const last = !row.members.slice(index + 1).some(other => other.source.address === member.source.address)
+        if (last && BigInt(meta.balanceAfterWei) > 0n) values.push(BigInt(meta.balanceAfterWei))
+      })
+    }
+    return values
   }
 
   /** The block from which every coin selection passed over only for the chain's spacing rule

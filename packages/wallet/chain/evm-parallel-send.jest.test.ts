@@ -37,6 +37,7 @@ import {
   type CanonicalDirectory,
 } from './evm-chain'
 import { InsufficientStampFundsError } from '../evm-stamp-payer'
+import { FundsInPendingSendError, fundsInPendingSend } from '../evm-transaction-set-types'
 import {
   MonadStampPendingAttemptError,
   MonadStampTerminalError,
@@ -969,7 +970,12 @@ describe('parallel paid messages', () => {
     providerRequests.length = 0
     const outcomes = await Promise.allSettled(Array.from({ length: 5 }, (_, index) => constructOnly(`blocked-${index}`)))
     expect(outcomes.every(result => result.status === 'rejected')).toBe(true)
-    for (const result of outcomes) if (result.status === 'rejected') expect(result.reason.message).toBe('Insufficient available EVM coins')
+    // The pending root holds the money they would use: each is refused at once and says so
+    // (owner ruling 2026-10-26), still an insufficient-funds refusal.
+    for (const result of outcomes) if (result.status === 'rejected') {
+      expect(result.reason).toBeInstanceOf(FundsInPendingSendError)
+      expect(result.reason.message).toMatch(/^Insufficient available EVM coins: [1-9]\d* wei is tied up in a previous send/)
+    }
     expect(providerRequests.filter(method => method === 'getTransactionReceipt')).toEqual([])
     expect(graphBytes()).toEqual(original)
     expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
@@ -1482,20 +1488,25 @@ describe('parallel paid messages', () => {
       everySlotOnce()
     })
 
-    it('when the failed bundle took the whole main balance (no later main coin exists) and the node cannot take it, a later send is refused at once without a wait, and resumes once that payment lands', async () => {
+    it('when the failed bundle took the whole main balance (no later main coin exists) and the node cannot take it, a later send is refused at once without a wait, and goes through on the user\'s retry once that payment lands', async () => {
       const failed = await failFirst(1)
       const original = graphBytes()
       const refused = await within(sendIn(2, 1), 3_000)
       expect(refused).toBeInstanceOf(InsufficientStampFundsError)
+      // Its money is in the failed send's set: the refusal says so (owner ruling 2026-10-26).
+      expect(fundsInPendingSend(refused)?.tiedUpWei).toBeGreaterThan(0n)
       // Nothing was signed for it and the failed one keeps its coin and its pending payment.
       expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
       expect(graphBytes()).toEqual(original)
       expect(
         f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: failed.digest }),
       ).toEqual(['pending'])
-      // It stays a durable intent under its own identity, not a dropped message.
+      // It is refused, not kept to be sent later (owner ruling 2026-10-26): its record says why
+      // it ended, and nothing of it was signed.
       const intent = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })
       expect(intent?.paid).toBe(true)
+      expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: intent!.payloadDigest }))
+        .toEqual({ reason: 'funds-tied-up' })
       // The node is back but no relay has the failed message: its payment is not broadcast
       // (it would pay for a message nobody can fetch), so the account stays held.
       offlineChain.broadcastDown = false
@@ -1507,12 +1518,25 @@ describe('parallel paid messages', () => {
       expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
       expect(bobMailbox).toHaveLength(0)
       // The relay is back: the failed message is delivered, then its same bytes land, which
-      // frees the account, and the refused send resumes under the same identity.
+      // frees the account. The refused send does not go out by itself.
       relay.answer = undefined
-      for (let pass = 0; pass < 16 && bobMailbox.length < 2; pass++) await tick([failed.digest])
-      expect(bobMailbox).toHaveLength(2)
+      for (let pass = 0; pass < 16 && !offlineChain.mined.has(failed.payment.hash!); pass++) await tick([failed.digest])
       expect(offlineChain.mined.has(failed.payment.hash!)).toBe(true)
-      expect(await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })).toEqual(intent)
+      for (let pass = 0; pass < 4; pass++) await tick([failed.digest])
+      expect(bobMailbox).toHaveLength(1)
+      // The user's Retry sends it again under the same identity, once the failed set's change
+      // is out (until then each try is refused the same way, and nothing of it is kept).
+      let retried: unknown
+      for (let pass = 0; pass < 16; pass++) {
+        retried = await within(sendIn(2, 1), 8_000)
+        if (!(retried instanceof Error)) break
+        expect(fundsInPendingSend(retried)).toBeDefined()
+        await tick([failed.digest])
+      }
+      expect(retried).toMatchObject({ stampValueWei: STAMP })
+      expect(bobMailbox).toHaveLength(2)
+      expect(await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) }))
+        .toEqual({ payloadDigest: (retried as { payloadDigest: string }).payloadDigest, paid: true })
       expect(graphBytes().filter(raw => original.includes(raw))).toEqual(original)
       expect(signedAtNonceOf(failed.payment)).toEqual(new Set([failed.payment.hash]))
       for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])

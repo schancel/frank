@@ -493,6 +493,8 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
               ? 'fee-exceeded'
               : end?.reason === 'discarded'
               ? 'error'
+              : end?.reason === 'funds-tied-up'
+              ? 'funds-in-pending-send'
               : 'rejected'
           assertCurrent()
           await ports.setState(

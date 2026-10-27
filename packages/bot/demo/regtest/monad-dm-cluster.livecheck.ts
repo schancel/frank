@@ -60,6 +60,7 @@ import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 import { SealedSelfCopyTooLargeError } from '@frank/wallet/chain/canonical-dm'
 import { CANONICAL_DM_MAX_BYTES } from '@frank/cashweb/relay/canonical-dm-transport'
 import type { MessageItem } from '@frank/cashweb/types/messages'
+import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
 import {
   MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES,
   TYPE_DIRECT_MESSAGE_DELIVERY,
@@ -710,6 +711,23 @@ async function main() {
       // field.
       puts.length = 0
       readFrom = 'b'
+      // Read from here on: a mailbox read takes at most 8 pages, and every large message above
+      // is a page of its own.
+      const sealedSince = Date.now() - 5_000
+      const findSince = async (wallet: RealWallet, match: (message: DirectMessageReceived) => boolean) => {
+        const deadline = Date.now() + 120_000
+        for (;;) {
+          const messages = await wallet.chain.directMessages.fetchSince({
+            wallet: wallet.handle,
+            sinceMs: sealedSince,
+            onIncompleteTimestamp: () => undefined,
+          })
+          const found = messages.find(match)
+          if (found) return found
+          if (Date.now() > deadline) throw new Error(`no matching message since ${sealedSince} within 120 s (saw ${messages.length})`)
+          await sleep(2000)
+        }
+      }
       await alice.send(bob.address, items(texts(probeLast)), 0n)
       const probeNote = puts.find(put => put.status < 300 && toAlice(put.request))
       const probeSealed = puts.find(put => put.status < 300 && !toAlice(put.request))
@@ -733,7 +751,7 @@ async function main() {
       assert.equal(puts.length, 0, 'the refused sealed send handed nothing to the relay')
       const largestSealed = texts(lastSealed)
       const sealedDigest = await alice.send(bob.address, items(largestSealed), stamp)
-      const gotSealed = await bob.receive(message => message.payloadDigest === sealedDigest, 120_000)
+      const gotSealed = await findSince(bob, message => !message.outbound && message.payloadDigest === sealedDigest)
       assert.deepEqual(textsOf(gotSealed.items), largestSealed, 'bob received the largest sealed message')
       assert.ok(gotSealed.stampValueWei >= stamp, `bob was paid the stamp (${gotSealed.stampValueWei} < ${stamp})`)
       const sealedPut = puts.find(put => put.status < 300 && !toAlice(put.request))
@@ -746,10 +764,7 @@ async function main() {
       )
       // The note to self reached Alice's mailbox: she reads the sealed message back as sent, which
       // only the note can tell her (the relay was not told who sent the original).
-      const ownCopy = (await alice.chain.directMessages.fetchSince({ wallet: alice.handle, sinceMs: 0 })).find(
-        message => message.outbound && message.payloadDigest === sealedDigest,
-      )
-      assert.ok(ownCopy, 'the note to self of the largest sealed message reads back on the sender')
+      const ownCopy = await findSince(alice, message => message.outbound === true && message.payloadDigest === sealedDigest)
       assert.deepEqual(textsOf(ownCopy.items), largestSealed, 'the note to self holds the whole sealed message')
       const sealedBytes = largestSealed.reduce((sum, text) => sum + text.length, 0)
       console.log(

@@ -530,8 +530,7 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
                 attemptDigest: digest,
                 failureReason,
                 detail:
-                  end?.reason === 'funds-tied-up' &&
-                  end.tiedUpWei !== undefined
+                  end?.reason === 'funds-tied-up' && end.tiedUpWei !== undefined
                     ? end.tiedUpWei.toString()
                     : previous?.detail,
               },

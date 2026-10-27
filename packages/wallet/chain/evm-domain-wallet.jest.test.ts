@@ -46,9 +46,11 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { MonadRootBundle } from './active-chain'
 import {
+  ContactPaymentBelowFloorError,
   InMemoryNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
 } from './chain-wallet'
+import { deriveDappPersona } from '../dapp-bridge/persona-keys'
 import * as materialModule from '../evm-wallet-material'
 import * as providerModule from '../evm-provider'
 import { MonadAccountTxSigner } from '../evm-account-tx'
@@ -1146,6 +1148,61 @@ test('snapshots sendLegacy authorization before shared inventory refresh', async
   } finally {
     release?.()
     await sending?.catch(() => undefined)
+    await wallet.close()
+  }
+})
+
+// Send to Address below the payment floor (210,000 wei at the stub's 1 wei per gas): refused to
+// an address the wallet does not own, sent to one of its own dApp personas (a top-up), which
+// the wallet recognises from its own keys, whatever the caller says.
+test('below the payment floor, a Send to an outside address is refused and a top-up of the wallet\'s own persona is sent', async () => {
+  const chain = createEvmChain(config)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100_000_000n })
+  jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({ payloadDigest: 'aa' } as never)
+  try {
+    const outside = { raw: '0x' + '5e'.repeat(20) }
+    const refused = await wallet
+      .sendLegacy!({ recipient: outside, value: 1_000n })
+      .catch(error => error)
+    expect(refused).toBeInstanceOf(ContactPaymentBelowFloorError)
+    expect(refused.floorWei).toBe(210_000n)
+    await expect(
+      wallet.estimateLegacyFee!({ recipient: outside, value: 1_000n }),
+    ).rejects.toBeInstanceOf(ContactPaymentBelowFloorError)
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    expect(wallet.getNativeOperations!()).toEqual([])
+
+    // A shared persona the Send page tops up (the dApp panel's burner #3): never registered
+    // with the wallet, derived from its own keys.
+    const master = evmWalletInternals(wallet).material!.keyring.masterNode
+    const persona = deriveDappPersona(master, { kind: 'shared', slot: 3 }).address
+    await expect(
+      wallet.estimateLegacyFee!({ recipient: { raw: persona }, value: 1_000n }),
+    ).resolves.toMatchObject({ inputCount: 1 })
+    const topUp = await wallet.sendLegacy!({ recipient: { raw: persona }, value: 1_000n })
+    const paid = Transaction.from(
+      rpc.broadcast.mock.calls.find(([raw]) => Transaction.from(raw).hash === topUp.txHash)![0],
+    )
+    expect(paid.to).toBe(persona)
+    expect(paid.value).toBe(1_000n)
+
+    // A site persona, as the dApp bridge funds it on first connection.
+    const site = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    const funded = await wallet.sendLegacy!({ recipient: site, value: 1_000n })
+    expect(
+      Transaction.from(
+        rpc.broadcast.mock.calls.find(([raw]) => Transaction.from(raw).hash === funded.txHash)![0],
+      ).to!.toLowerCase(),
+    ).toBe(site.raw.toLowerCase())
+
+    // Still refused to the outside address afterwards.
+    await expect(
+      wallet.sendLegacy!({ recipient: outside, value: 1_000n }),
+    ).rejects.toBeInstanceOf(ContactPaymentBelowFloorError)
+  } finally {
     await wallet.close()
   }
 })

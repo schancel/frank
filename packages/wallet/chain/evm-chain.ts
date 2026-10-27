@@ -2317,7 +2317,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 !["unknown", "missing"].includes(member.observation.state)) ?? false;
             },
           );
+          // Shared dApp persona slots are numbered from 0 as the user creates them; this many are
+          // derived (once, and only when a transfer below the payment floor asks) to tell a
+          // persona top-up from a payment to someone else. A per-site persona is in the coin list
+          // once its site is connected (`ensureLegacySubAccount`).
+          const SHARED_PERSONA_SLOTS = 256;
+          let sharedPersonaAddresses: Set<string> | undefined;
+          const isOwnRecipient = (address: string): boolean => {
+            const key = address.toLowerCase();
+            if (isOwnAccount(key) || coinList.latestOf(key) !== undefined) return true;
+            sharedPersonaAddresses ??= new Set(
+              Array.from({ length: SHARED_PERSONA_SLOTS }, (_, slot) =>
+                deriveDappPersona(keyring.masterNode, { kind: "shared", slot }).address.toLowerCase()
+              )
+            );
+            return sharedPersonaAddresses.has(key);
+          };
           const legacyTransactions = createLegacyTransactionSetPayments({
+            isOwnAccount: isOwnRecipient,
             preparer: transactionSetPreparer,
             sendTransaction: prepared => transactionSetSubmission.sendTransaction(prepared),
             refresh: transactionSetRuntime.refresh,
@@ -2887,10 +2904,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // What the look showed frees the main account for whoever waits for it.
               await releaseSettledMainAccounts(wallet, false);
             },
-            // Send to Address, a bot's or a dApp's transfer: to someone else, so never below
-            // the payment floor (`ContactPaymentBelowFloorError`, before anything is signed).
+            // Send to Address, a bot's or a dApp's transfer: never below the payment floor to an
+            // address the wallet does not own (`ContactPaymentBelowFloorError`, before anything is
+            // signed); a persona or other own account is topped up with any amount.
             sendLegacy: (params) =>
-              sendLegacyTransfer({ ...params, recipient: { ...params.recipient }, recipientOwned: false }),
+              sendLegacyTransfer({ ...params, recipient: { ...params.recipient } }),
             async ensureLegacySubAccount(ref) {
               return transactionOwner.runLifetime(async () => {
               requireOpenWallet(wallet);
@@ -3024,7 +3042,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 transactionOwner.runLifetime(() =>
                   legacyTransactions.estimateLegacyMax({
                     recipient: { raw: main },
-                    recipientOwned: true,
                     excludedSourceAccounts: [main],
                   })
                 ).then(
@@ -3060,25 +3077,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 value: params.value,
                 ...(params.onProgress ? { onProgress: params.onProgress } : {}),
                 ...(params.onSigned ? { onSigned: params.onSigned } : {}),
-                // The wallet's own account: no payment floor for moving its own value.
-                recipientOwned: true,
                 excludedSourceAccounts: [main],
               });
               // What the main account holds now is read from the chain into its coin.
               await transactionSetRuntime.coinListSync.refreshAccounts([main]).catch(() => undefined);
               return result;
             },
-            // Quoting a move into the wallet's own main account (a swap's consolidation, paid by
-            // `fundMainAccount`) is not held to the payment floor; any other recipient is.
             estimateLegacyFee: params => transactionOwner.runLifetime(() =>
-              legacyTransactions.estimateLegacyFee({
-                recipient: params.recipient,
-                value: params.value,
-                recipientOwned:
-                  params.recipient.raw.toLowerCase() === mainAccount.address.toLowerCase(),
-              })),
+              legacyTransactions.estimateLegacyFee({ recipient: params.recipient, value: params.value })),
             estimateLegacyMax: params => transactionOwner.runLifetime(() =>
-              legacyTransactions.estimateLegacyMax({ recipient: params.recipient, recipientOwned: false })),
+              legacyTransactions.estimateLegacyMax({ recipient: params.recipient })),
             getUnresolvedLegacySend: () => [...legacyTransactions.getUnresolvedLegacySend()],
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);

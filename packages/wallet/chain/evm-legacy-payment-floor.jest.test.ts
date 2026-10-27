@@ -1,8 +1,8 @@
 /** Send to Address (a transfer to an address outside the wallet) is refused below the payment
  * floor before anything is signed, like Send to Contact and chat stealth payments; "Send max"
  * is refused the same way when everything the wallet can send is below it. A transfer to an
- * account of the wallet itself (funding the main account) is not a payment to anyone else and
- * is not held to it. */
+ * address the wallet owns (its main account, a dApp persona) is not a payment to anyone else
+ * and is not held to it. */
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -24,6 +24,8 @@ const external = '0x00000000000000000000000000000000000be5e5'
 // Gas price 1 wei, so a plain transfer costs 21,000 wei and the payment floor is ten of them;
 // the policy's `dustWei` is the same floor, as in the wallet.
 const FLOOR = evmPaymentFloorWei(1n)
+// An account the wallet owns (a dApp persona, say): the composed wallet derives this from its keys.
+const OWN = key(50).address
 
 function network() {
   const head = 10
@@ -112,6 +114,7 @@ async function fixture(coinValueWei: bigint) {
     refresh: async () => undefined,
     operations: () => journal.list(),
     readOperation: id => journal.readOperation(id),
+    isOwnAccount: address => address.toLowerCase() === OWN.toLowerCase(),
   })
   return {
     chain,
@@ -195,14 +198,18 @@ test('Send max at or above the payment floor is offered, and sends', async () =>
   }
 })
 
-test('moving value to an account of the wallet itself is not held to the payment floor', async () => {
+test('moving value to an account the wallet owns is not held to the payment floor', async () => {
   const f = await fixture(10_000_000n)
   try {
-    const own = key(50).address
-    const small = await f.legacy.estimateLegacyMax({ recipient: { raw: own }, recipientOwned: true })
-    expect(small.value).toBeGreaterThan(0n)
-    const sent = await f.legacy.sendLegacy({ recipient: { raw: own }, value: FLOOR - 1n, recipientOwned: true })
+    await expect(
+      f.legacy.estimateLegacyFee({ recipient: { raw: OWN }, value: FLOOR - 1n }),
+    ).resolves.toMatchObject({ inputCount: 1 })
+    const sent = await f.legacy.sendLegacy({ recipient: { raw: OWN }, value: FLOOR - 1n })
     expect(sent.totalValueSent).toBe(FLOOR - 1n)
+    // The same amount to an address the wallet does not own is still refused.
+    await expect(
+      f.legacy.sendLegacy({ recipient: { raw: external }, value: FLOOR - 1n }),
+    ).rejects.toBeInstanceOf(ContactPaymentBelowFloorError)
   } finally {
     await f.close()
   }

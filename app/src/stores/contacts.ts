@@ -181,6 +181,10 @@ type Profile = {
   isBot?: boolean
   accountType?: number
   botRole?: number
+  /** `isBot`, `accountType` and `botRole` were guessed from the name of a curated default
+   * contact (`inferCuratedBotAttributes`), for its badge, and not yet read from its signed
+   * profile. A guess never decides what the account can do (such as whether it takes calls). */
+  botKindInferred?: boolean
 }
 
 export type ContactState = {
@@ -635,6 +639,7 @@ export const useContactStore = defineStore('contacts', {
           isBot: contact.profile?.isBot,
           accountType: contact.profile?.accountType,
           botRole: contact.profile?.botRole,
+          botKindInferred: contact.profile?.botKindInferred,
           pubKey: contact.profile?.pubKey
             ? markRaw(contact.profile?.pubKey)
             : null,
@@ -849,6 +854,7 @@ export const useContactStore = defineStore('contacts', {
             isBot: contact?.profile?.isBot,
             accountType: contact?.profile?.accountType,
             botRole: contact?.profile?.botRole,
+            botKindInferred: contact?.profile?.botKindInferred,
           },
         },
       })
@@ -1308,6 +1314,9 @@ export const useContactStore = defineStore('contacts', {
               location: profileInfo.location ?? null,
               links: profileInfo.links ?? [],
               isBot: profileInfo.bot === true,
+              botKindInferred: false,
+              accountType: profileInfo.accountType,
+              botRole: profileInfo.botRole,
               pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
             inbox: defaultRelayData.inbox,
@@ -1362,6 +1371,7 @@ export const useContactStore = defineStore('contacts', {
           isBot: inferred.isBot ?? true,
           accountType: inferred.accountType,
           botRole: inferred.botRole,
+          botKindInferred: true,
         },
       }
       addingWithoutDecision = true
@@ -1496,6 +1506,7 @@ export const useContactStore = defineStore('contacts', {
                     location: profile.location ?? null,
                     links: profile.links ?? [],
                     isBot: profile.bot === true,
+                    botKindInferred: false,
                     accountType: profile.accountType,
                     botRole: profile.botRole,
                     pubKey: markRaw(profilePubKeyFromBytes(profile.pubKey)),
@@ -1688,6 +1699,7 @@ export const useContactStore = defineStore('contacts', {
                 profileInfo.location ?? oldContactInfo.profile.location ?? null,
               links: profileInfo.links ?? oldContactInfo.profile.links ?? [],
               isBot: profileInfo.bot === true,
+              botKindInferred: false,
               accountType: profileInfo.accountType,
               botRole: profileInfo.botRole,
               pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),

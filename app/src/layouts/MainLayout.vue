@@ -91,7 +91,7 @@
         icon="account_balance_wallet"
         :label="$t('leftDrawer.wallet')"
         :aria-label="$t('leftDrawer.wallet')"
-        :color="currentRoutePath.startsWith('/wallet') ? 'primary' : undefined"
+        :color="activeMobileTab === 'wallet' ? 'primary' : undefined"
         data-testid="mobile-nav-wallet"
         @click="$router.push('/wallet')"
       />
@@ -117,9 +117,7 @@
         icon="settings"
         :label="$t('leftDrawer.settings')"
         :aria-label="$t('leftDrawer.settings')"
-        :color="
-          currentRoutePath.startsWith('/settings') ? 'primary' : undefined
-        "
+        :color="activeMobileTab === 'settings' ? 'primary' : undefined"
         data-testid="mobile-nav-settings"
         @click="$router.push('/settings')"
       />
@@ -680,11 +678,25 @@ export default defineComponent({
       // open conversation (/chat/<id>) hides it, as Telegram and WhatsApp do.
       return !path.startsWith('/chat/') && !path.startsWith('/setup')
     },
+    /** The bottom-bar tab a page belongs to: a page reached from a tab keeps that tab lit
+     * (sending belongs to Wallet; Docs, Changelog and About are Settings sections). */
+    activeMobileTab(): 'wallet' | 'settings' | undefined {
+      const path = this.currentRoutePath
+      if (['/wallet', '/send', '/avu'].some(prefix => path.startsWith(prefix)))
+        return 'wallet'
+      if (
+        ['/settings', '/docs', '/changelog', '/about'].some(prefix =>
+          path.startsWith(prefix),
+        )
+      )
+        return 'settings'
+      return undefined
+    },
     mobileNavChatsLabel(): string {
-      return 'Messages'
+      return this.$t('leftDrawer.messagesTab')
     },
     mobileNavQrLabel(): string {
-      return 'QR'
+      return this.$t('leftDrawer.qrTab')
     },
     drawerWidth(): number {
       if (isNarrowWidth(this.screenWidth)) {

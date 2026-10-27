@@ -108,6 +108,7 @@ const ChatListItem = require('../components/chat/ChatListItem.vue').default
 const ChatLayout = require('./ChatLayout.vue').default
 const AddContact = require('../pages/AddContact.vue').default
 const quasar = require('quasar')
+const { saveChatDraft, clearChatDraft } = require('../utils/draft-storage')
 const en = require('../i18n/en-us').default
 /* eslint-enable @typescript-eslint/no-var-requires */
 const PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
@@ -297,6 +298,33 @@ it('renders an explicit subject in the header and provides its editor', async ()
   }
 })
 
+it('lists a conversation the user created even once its subject is blanked, and an opened default thread only while it holds a draft', async () => {
+  const app = await mountedConversations()
+  try {
+    const listed = () =>
+      app.root
+        .findAllComponents(ChatListItem)
+        .map(item => item.props('conversationId'))
+    const explicit = await app.create(PEER, 'Budget')
+    app.chats.renameConversation(explicit, '')
+    await settle()
+    expect(app.chats.conversations[explicit].name).toBeUndefined()
+    expect(app.chats.conversations[explicit].messages).toHaveLength(0)
+    expect(listed()).toContain(explicit)
+
+    const defaultId = await app.create(OTHER, '', false)
+    expect(listed()).not.toContain(defaultId)
+    saveChatDraft(OTHER, { message: 'half a thought' })
+    await settle()
+    expect(listed()).toContain(defaultId)
+    clearChatDraft(OTHER)
+    await settle()
+    expect(listed()).not.toContain(defaultId)
+  } finally {
+    app.root.unmount()
+  }
+})
+
 it('shows the peer and the subject in the title and in each list row, and neither where there is none', async () => {
   const app = await mountedConversations()
   try {
@@ -309,6 +337,30 @@ it('shows the peer and the subject in the title and in each list row, and neithe
       app.root
         .findAllComponents(ChatListItem)
         .find(item => item.props('conversationId') === id)!
+    // An empty default thread is not listed (as in any messenger); a message lists it.
+    expect(row(defaultId)).toBeUndefined()
+    await app.chats.receiveMessages([
+      {
+        index: `received-${defaultId}`,
+        conversationId: defaultId,
+        outbound: false,
+        senderAddress: PEER,
+        copartyAddress: PEER,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        stampValue: 0,
+        message: {
+          conversationId: defaultId,
+          outbound: false,
+          senderAddress: PEER,
+          status: 'confirmed',
+          receivedTime: 50,
+          serverTime: 50,
+          outpoints: [],
+          items: [{ type: 'text', text: 'hello' }],
+        },
+      },
+    ] as never)
+    await settle()
     // The ordinary thread: just the peer, no subject line and no placeholder.
     expect(header('name').text()).toBe('Alice')
     expect(header('subject').exists()).toBe(false)
@@ -459,12 +511,14 @@ it.each([false, true])(
       // A blank subject is the default thread; each subject made its own conversation.
       expect(blank).toBe(defaultId)
       expect(new Set([defaultId, first, second, other]).size).toBe(4)
+      // Each subject is its own row; the default thread has no message yet, so it is not
+      // listed until it has one.
       expect(
         app.root
           .findAllComponents(ChatListItem)
           .map(item => item.props('conversationId'))
           .sort(),
-      ).toEqual([defaultId, first, second, other].sort())
+      ).toEqual([first, second, other].sort())
       expect(app.chats.conversations[first].topic).toBeUndefined()
       for (const [id, peer] of [
         [first, PEER],

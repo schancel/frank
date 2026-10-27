@@ -876,6 +876,47 @@ describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => 
     }
   })
 
+  it('takes every tab label from the locale (none is hard-coded English)', async () => {
+    // A locale whose words differ from the English ones shows its own words.
+    const drawer = (enUS as unknown as { leftDrawer: Record<string, string> })
+      .leftDrawer
+    const saved = { ...drawer }
+    Object.assign(drawer, { messagesTab: 'Discussions', qrTab: 'Code' })
+    try {
+      const { wrapper } = await mountLayout(390, undefined, true, '/forum')
+      const label = (tab: string) =>
+        wrapper.get(`[data-testid="mobile-nav-${tab}"]`).text()
+      expect(label('chats')).toBe('Discussions')
+      expect(label('qr')).toBe('Code')
+      wrapper.unmount()
+    } finally {
+      for (const key of Object.keys(drawer)) delete drawer[key]
+      Object.assign(drawer, saved)
+    }
+  })
+
+  it.each([
+    ['/send-contact', 'wallet'],
+    ['/send', 'wallet'],
+    ['/docs', 'settings'],
+    ['/changelog', 'settings'],
+    ['/about', 'settings'],
+  ])('on %s the %s tab is lit', async (path, tab) => {
+    const { wrapper } = await mountLayout(390, undefined, true, path)
+    for (const other of [
+      'chats',
+      'forum',
+      'contacts',
+      'wallet',
+      'qr',
+      'settings',
+    ])
+      expect(
+        wrapper.get(`[data-testid="mobile-nav-${other}"]`).attributes('color'),
+      ).toBe(other === tab ? 'primary' : undefined)
+    wrapper.unmount()
+  })
+
   it('the Contacts tab opens the contact list, not the add-contact form', async () => {
     const { wrapper, router } = await mountLayout(390)
     await wrapper.find('[data-testid="mobile-nav-contacts"]').trigger('click')

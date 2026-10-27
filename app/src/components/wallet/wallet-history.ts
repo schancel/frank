@@ -69,8 +69,11 @@ export type WalletHistoryRow =
        * when there is none or the row is the stamp itself. */
       stampWei: string
       /** Network fees the chain charged for this send's transactions so far (its stamps' with
-       * them), wei. */
+       * them, and those that returned change), wei. The card and its details show this one
+       * figure. */
       feeWei: string
+      /** Whether `feeWei` covers every one of those transactions yet. */
+      feeCoverage: EvmNativeOperationStatus['feeCoverage']
     }
   | {
       kind: 'noted'
@@ -598,6 +601,7 @@ export function buildWalletHistoryGroups(input: {
         operation.payment !== 'partial'
           ? contactOutcomes.get(operation.messageId)
           : undefined
+      const fees = sendFees(operation, stamps)
       rows.push({
         kind: 'native',
         id: `native:${operation.operationId}`,
@@ -609,7 +613,8 @@ export function buildWalletHistoryGroups(input: {
         stampWei: stamps
           .reduce((total, stamp) => total + BigInt(stamp.intendedValueWei), 0n)
           .toString(),
-        feeWei: sendFees(operation, stamps).feeWei,
+        feeWei: fees.feeWei,
+        feeCoverage: fees.coverage,
       })
     }
   if (load.status === 'available') {

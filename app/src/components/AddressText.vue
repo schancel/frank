@@ -9,6 +9,10 @@
       <span ref="measure" class="address-measure" aria-hidden="true">{{
         address
       }}</span>
+      <!-- Holds the box at the whole address's width (up to the room it has), so the width
+      measured never depends on the shortened text shown: a box sized by its content would
+      otherwise keep whatever short form one narrow moment produced. -->
+      <span class="address-sizer" aria-hidden="true">{{ address }}</span>
       <span data-test="address-text">{{ displayed }}</span>
       <q-tooltip>{{ address }}</q-tooltip>
     </span>
@@ -140,6 +144,13 @@ async function copyAddress() {
   position: relative;
   overflow: hidden;
   white-space: nowrap;
+}
+.address-sizer {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: pre;
 }
 .address-measure {
   position: absolute;

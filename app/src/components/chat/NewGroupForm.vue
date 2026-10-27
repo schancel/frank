@@ -1,24 +1,12 @@
 <template>
   <q-card flat bordered class="new-group-form" data-test="new-group-form">
-    <q-card-section class="row items-center no-wrap q-gutter-x-sm q-pb-sm">
-      <q-btn
-        data-test="new-group-back"
-        flat
-        round
-        dense
-        icon="arrow_back"
-        :aria-label="$t('a11y.backToChats')"
-        @click="cancel"
-      />
-      <div class="text-h6 col">{{ $t('groupChat.createGroupTitle') }}</div>
-    </q-card-section>
-
-    <q-card-section class="q-pt-none q-gutter-sm">
+    <!-- The page's app header carries the title and the back arrow (which calls `cancel`). -->
+    <q-card-section class="q-gutter-sm">
       <q-input
         v-model="groupName"
         filled
         dense
-        autofocus
+        :autofocus="!narrow"
         :label="$t('groupChat.groupNameLabel')"
         :placeholder="$t('groupChat.groupNamePlaceholder')"
         data-test="group-name-input"
@@ -197,6 +185,8 @@ import { sameCanonicalAddress } from '../../utils/own-address'
 import { openChat } from '../../utils/routes'
 import { errorNotify } from '../../utils/notifications'
 import { shortAddress } from '../../utils/short-address'
+import { isNarrowWidth } from '../../utils/layout'
+import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
 
 export default defineComponent({
   name: 'NewGroupForm',
@@ -213,6 +203,12 @@ export default defineComponent({
       contactStore = null
     }
     const router = useRouter()
+    // A phone does not open the keyboard (and hide the bottom bar) before the user picks a field.
+    const narrow = isNarrowWidth(
+      getEffectiveScreenWidth(
+        typeof window !== 'undefined' ? window.innerWidth : 1024,
+      ),
+    )
     const groupName = ref('')
     const memberFilter = ref('')
     const selectedAddresses = ref<string[]>(
@@ -447,6 +443,7 @@ export default defineComponent({
       formatShort,
       displayMemberLabel,
       cancel,
+      narrow,
       creationError,
       submitCreateGroup,
     }

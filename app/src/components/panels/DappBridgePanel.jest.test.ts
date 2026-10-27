@@ -42,6 +42,14 @@ const ONE = 10n ** 18n
 const chainBalances = new Map<string, bigint>()
 const sentRaw: string[] = []
 let refuseSend: string | undefined
+/** Runs when a receipt is asked for: the moment the sent transaction is in a block. */
+let mined: (() => void) | undefined
+/** No block includes the sent transaction: every receipt read answers null. */
+let receiptMissing = false
+/** Holds back the reply to the next single balance read until `release` is called. */
+let holdNextBalance: ((release: () => void) => void) | undefined
+/** A method the network never answers: the request hangs until it is aborted. */
+let hangMethod: string | undefined
 const rpcCalls: Array<{ url: string; method: string }> = []
 function answer(item: { id: number; method: string; params: unknown[] }) {
   rpcCalls.push({ url: '', method: item.method })
@@ -57,6 +65,11 @@ function answer(item: { id: number; method: string; params: unknown[] }) {
       return { jsonrpc: '2.0', id: item.id, result: '0x0' }
     case 'eth_gasPrice':
       return { jsonrpc: '2.0', id: item.id, result: '0x3b9aca00' } // 1 gwei
+    case 'eth_getTransactionReceipt':
+      // The block that includes it: what the chain reports from now on.
+      if (receiptMissing) return { jsonrpc: '2.0', id: item.id, result: null }
+      mined?.()
+      return { jsonrpc: '2.0', id: item.id, result: { status: '0x1' } }
     case 'eth_sendRawTransaction':
       if (refuseSend)
         return { jsonrpc: '2.0', id: item.id, error: { message: refuseSend } }
@@ -67,8 +80,23 @@ function answer(item: { id: number; method: string; params: unknown[] }) {
 }
 const mockFetch = jest.fn(async (url: string, init?: RequestInit) => {
   const body = JSON.parse(String(init?.body))
+  if (!Array.isArray(body) && body.method === hangMethod)
+    return new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener('abort', () =>
+        reject(new Error('aborted')),
+      ),
+    )
   const result = Array.isArray(body) ? body.map(answer) : answer(body)
   for (const call of rpcCalls) if (!call.url) call.url = url
+  if (
+    !Array.isArray(body) &&
+    body.method === 'eth_getBalance' &&
+    holdNextBalance
+  ) {
+    const hold = holdNextBalance
+    holdNextBalance = undefined
+    await new Promise<void>(release => hold(release))
+  }
   return { ok: true, json: async () => result } as unknown as Response
 })
 const persona = (slot: number) =>
@@ -102,6 +130,9 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     sentRaw.length = 0
     rpcCalls.length = 0
     refuseSend = undefined
+    receiptMissing = false
+    holdNextBalance = undefined
+    hangMethod = undefined
     mockFetch.mockClear()
     window.localStorage.clear()
   })
@@ -343,6 +374,102 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       wrapper.get('[data-testid="dapp-funding-message"]').text(),
     ).toContain('Sent')
     expect(wrapper.emitted('sweep-to-pool')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('after a sweep, shows the balance the chain reports once the sweep is in a block', async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    const wrapper = mountPanel()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '2 MONR',
+    )
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    // Until its block, the chain still reports the amount before the sweep.
+    mined = () => chainBalances.set(persona(0).toLowerCase(), 0n)
+    try {
+      await wrapper
+        .get('[data-testid="dapp-sweep-confirm-btn"]')
+        .trigger('click')
+      await flushPromises()
+      expect(sentRaw).toHaveLength(1)
+      expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+        '0 MONR',
+      )
+    } finally {
+      mined = undefined
+    }
+    wrapper.unmount()
+  })
+
+  it('never lets an older balance reply overwrite a newer one', async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    // The read made on opening the panel answers 2 MONR, but late.
+    let releaseOld: (() => void) | undefined
+    holdNextBalance = release => {
+      releaseOld = release
+    }
+    const wrapper = mountPanel()
+    await flushPromises()
+    expect(releaseOld).toBeDefined()
+    // A newer read (reviewing a sweep) finds the persona empty.
+    chainBalances.set(persona(0).toLowerCase(), 0n)
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '0 MONR',
+    )
+    releaseOld!()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '0 MONR',
+    )
+    wrapper.unmount()
+  })
+
+  it("stops waiting for the sweep's block once the panel is closed", async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    receiptMissing = true
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="dapp-sweep-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(sentRaw).toHaveLength(1)
+    wrapper.unmount()
+    const receiptReads = () =>
+      rpcCalls.filter(call => call.method === 'eth_getTransactionReceipt')
+        .length
+    const afterClose = receiptReads()
+    await new Promise(resolve => setTimeout(resolve, 2_500))
+    await flushPromises()
+    expect(receiptReads()).toBe(afterClose)
+  })
+
+  it('gives up a chain read the network never answers, and says so', async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    const wrapper = mountPanel()
+    await flushPromises()
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+    })
+    try {
+      hangMethod = 'eth_gasPrice'
+      await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+      await flushPromises()
+      expect(
+        wrapper.find('[data-testid="dapp-funding-message"]').exists(),
+      ).toBe(false)
+      jest.advanceTimersByTime(15_000)
+      await flushPromises()
+      expect(
+        wrapper.get('[data-testid="dapp-funding-message"]').text(),
+      ).toContain('did not answer in time')
+    } finally {
+      jest.useRealTimers()
+    }
     wrapper.unmount()
   })
 

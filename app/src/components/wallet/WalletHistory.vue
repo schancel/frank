@@ -376,19 +376,14 @@
                       : $t('walletHistory.notYetInBlock')
                   }}
                 </p>
-                <p>
+                <!-- The card's own figure: every transaction of the send, the change returned
+                included (its share is shown again under the change). -->
+                <p data-testid="wallet-native-operation-fee">
                   {{
-                    $t(
-                      `nativeOperation.fee${
-                        observedFees(paymentMembers(entry.operation)).coverage
-                      }`,
-                      {
-                        amount: nativeAmount(
-                          observedFees(paymentMembers(entry.operation)).feeWei,
-                        ),
-                        unit: nativeUnit,
-                      },
-                    )
+                    $t(`nativeOperation.fee${detailFees(entry).coverage}`, {
+                      amount: nativeAmount(detailFees(entry).feeWei),
+                      unit: nativeUnit,
+                    })
                   }}
                 </p>
                 <div
@@ -610,6 +605,17 @@ function outcomeLine(operation: EvmNativeOperationStatus) {
     operation,
     props.networkName(operation.chainIdentifier) || operation.chainIdentifier,
   )
+}
+
+/** The fee a row's details name first. A send's is the card's own figure (every transaction,
+ * change and stamps included), so the card and its details never show two different fees; a
+ * swap's is that of the transactions that carried it. */
+function detailFees(entry: WalletHistoryRow): ReturnType<typeof observedFees> {
+  if (entry.kind === 'native')
+    return { feeWei: entry.feeWei, coverage: entry.feeCoverage }
+  if (entry.kind === 'swap' && entry.operation)
+    return observedFees(paymentMembers(entry.operation))
+  return { feeWei: '0', coverage: 'unknown' }
 }
 
 /** The amount as a row reads it; the exact amount is its title. */

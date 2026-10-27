@@ -9,6 +9,8 @@
  * `../utils/notifications` need mocking here too.
  */
 import { createPinia, setActivePinia } from 'pinia'
+import { isAutomatedAccount } from '../utils/webrtc-call-support'
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from '@frank/codec'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -311,6 +313,24 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(contacts.getContact(other).profile.isBot).toBe(false)
     })
 
+    it('keeps the kind the bot declares (a game) from the moment it is added, not only after a refresh', async () => {
+      const contacts = useContactStore()
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        bot: true,
+        accountType: ACCOUNT_TYPE_BOT,
+        botRole: BOT_ROLE_GAME,
+      })
+      await contacts.fetchAndAddContact({
+        address: ADDRESS,
+        contact: undefined as unknown as Partial<ContactState>,
+      })
+      const profile = contacts.getContact(ADDRESS).profile
+      expect(profile.accountType).toBe(ACCOUNT_TYPE_BOT)
+      expect(profile.botRole).toBe(BOT_ROLE_GAME)
+    })
+
     it('a contact added by route navigation (empty contact) is refreshed so its bot marker is resolved', async () => {
       const contacts = useContactStore()
       jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
@@ -516,6 +536,41 @@ describe('stores/contacts.ts (ticket #42)', () => {
       await contacts.refresh(ADDRESS)
 
       expect(contacts.getContactProfile(ADDRESS).name).toBe('0x3e3e\u20263E3e')
+    })
+
+    it('a default contact whose name only sounds like a bot still takes calls until its profile declares one', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      await contacts.addDefaultContact({ address: ADDRESS, name: 'Dice Night' })
+      // The name gives it a badge, but a guess is not a declaration.
+      expect(contacts.getContactProfile(ADDRESS).isBot).toBe(true)
+      expect(isAutomatedAccount(contacts.getContactProfile(ADDRESS))).toBe(
+        false,
+      )
+
+      // Its signed profile says it is a person: still callable.
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Dice Night',
+        bot: false,
+      })
+      await contacts.refresh(ADDRESS)
+      expect(isAutomatedAccount(contacts.getContactProfile(ADDRESS))).toBe(
+        false,
+      )
+
+      // One that declares a bot takes no calls.
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Dice Night',
+        bot: true,
+        accountType: ACCOUNT_TYPE_BOT,
+        botRole: BOT_ROLE_GAME,
+      })
+      await contacts.refresh(ADDRESS)
+      expect(isAutomatedAccount(contacts.getContactProfile(ADDRESS))).toBe(true)
     })
 
     it('shows a curated default bot immediately, then its registered name, bio and avatar (#317)', async () => {

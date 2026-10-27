@@ -177,6 +177,19 @@ describe('ContactsPanel navigation', () => {
     return wrapper
   }
 
+  it('with no contacts, says how to add one (there is no drawer above on a phone)', async () => {
+    const saved = mockContacts.value
+    mockContacts.value = {}
+    try {
+      const wrapper = mountPanel(390)
+      await flushPromises()
+      expect(wrapper.text()).toContain('contactBookDialog.empty')
+      expect(wrapper.text()).not.toContain('chatList.noContactMessage')
+    } finally {
+      mockContacts.value = saved
+    }
+  })
+
   it('never lists the account itself as a contact', async () => {
     mockOwnAddress = '0x1111111111111111111111111111111111111111'
     try {

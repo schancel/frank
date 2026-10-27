@@ -34,6 +34,10 @@ jest.mock('../../../utils/clients', () => ({
 jest.mock('../../../composables/useActiveWallet', () => ({
   useActiveWallet: () => ({}),
 }))
+const openChat = jest.fn()
+jest.mock('../../../utils/routes', () => ({
+  openChat: (...args: unknown[]) => openChat(...args),
+}))
 jest.mock('../../../utils/notifications', () => ({ errorNotify: jest.fn() }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: () => '0', unit: 'MON' },
@@ -141,6 +145,36 @@ describe('a group record in a direct message', () => {
         .get('[data-testid="chat-system-line"]')
         .text(),
     ).toBe('Invitation to the group "Core"')
+  })
+
+  it("a received invitation, with the inviter's hidden wakeup card, is one line that opens the group", async () => {
+    const welcome = {
+      type: 'group-welcome',
+      groupId: GROUP_ID,
+      groupName: 'Core',
+      groupPubKey: frame.group_pubkey,
+      homeRelay: 'https://relay.example',
+      epoch: 2,
+      epochSecretHex: '66'.repeat(32),
+      memberIndex: 1,
+      epochFrame: frame,
+    }
+    const wakeupCard = {
+      type: 'contact-card',
+      uid: 'frank-wakeup-capability',
+      fullName: 'Wakeup Capability',
+      frankAddress: '0x3B84Bfbb9f032Ff09549044f21981dDf9fe8b38E',
+      wakeupTokenHex: '28'.repeat(32),
+    }
+    const wrapper = mountWith([welcome, wakeupCard], false)
+    expect(wrapper.find('[data-testid="bubble"]').exists()).toBe(false)
+    const link = wrapper.get('[data-testid="chat-system-line-link"]')
+    expect(link.text()).toBe('Invitation to the group "Core"')
+    await link.trigger('click')
+    expect(openChat).toHaveBeenCalledWith(
+      undefined,
+      groupConversationUuid(GROUP_ID),
+    )
   })
 
   it('a removal notice tells the removed member', () => {

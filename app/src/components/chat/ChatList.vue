@@ -238,7 +238,7 @@
 
         <q-item
           v-else-if="
-            getSortedChatOrder.length === 0 &&
+            listedConversations.length === 0 &&
             $status.setup &&
             messagingState.status === 'ready' &&
             mailboxStatus.initialPoll === 'ready'
@@ -291,9 +291,32 @@ import {
   rankScreenerConversations,
   summarizeScreenerQueue,
 } from '../../utils/screener-triage'
+import { isListedConversation } from '../../utils/listed-conversations'
+import { chatDraftRevision, hasChatDraft } from '../../utils/draft-storage'
 
 /** How often the list reads again what the wallets saw arrive for unread messages. */
 const UNREAD_VALUE_REREAD_MS = 15_000
+
+/** The read count every mounted list follows. A list that mounts makes them all read again,
+ * so a list opened later never shows newer values than one already on screen. */
+const receiptsRead = ref(0)
+let receiptsReaders = 0
+let receiptsTimer: ReturnType<typeof setInterval> | undefined
+function startReceiptsClock() {
+  receiptsReaders += 1
+  receiptsRead.value += 1
+  if (receiptsReaders === 1)
+    receiptsTimer = setInterval(() => {
+      receiptsRead.value += 1
+    }, UNREAD_VALUE_REREAD_MS)
+}
+function stopReceiptsClock() {
+  receiptsReaders -= 1
+  if (receiptsReaders === 0) {
+    clearInterval(receiptsTimer)
+    receiptsTimer = undefined
+  }
+}
 
 export default defineComponent({
   emits: ['closeDrawer'],
@@ -309,15 +332,25 @@ export default defineComponent({
     const searchInputRef = ref<HTMLInputElement | null>(null)
     const showIdentityQrDialog = ref(false)
 
+    // The order the store keeps, without the empty chats that are not listed (see
+    // `isListedConversation`).
+    const listedConversations = computed<Conversation[]>(() => {
+      // Read so the list follows a draft that appears or goes.
+      void chatDraftRevision.value
+      const hasDraft = (c: { id: string }) =>
+        hasChatDraft(c.id) || hasChatDraft((c as { address?: string }).address)
+      return (
+        Array.isArray(getSortedChatOrder?.value) ? getSortedChatOrder.value : []
+      ).filter(conversation => isListedConversation(conversation, hasDraft))
+    })
+
     const isContactFn = (address: string): boolean =>
       contactStore.isContact(address)
 
     const getContactFn = (address: string) => contactStore.getContact(address)
 
     const screenerSummary = computed(() => {
-      const list = Array.isArray(getSortedChatOrder?.value)
-        ? getSortedChatOrder.value
-        : []
+      const list = listedConversations.value
       return summarizeScreenerQueue(list, {
         isContact: isContactFn,
         chain: activeChain,
@@ -327,9 +360,7 @@ export default defineComponent({
     const normalizedQuery = computed(() => searchQuery.value.trim())
 
     const indexedConversations = computed(() => {
-      const list = Array.isArray(getSortedChatOrder?.value)
-        ? getSortedChatOrder.value
-        : []
+      const list = listedConversations.value
       const index = new ChatSearchIndex()
       index.indexConversations(list, {
         getContact: getContactFn,
@@ -356,9 +387,7 @@ export default defineComponent({
     })
 
     const displayedConversations = computed<Conversation[]>(() => {
-      const list: Conversation[] = Array.isArray(getSortedChatOrder?.value)
-        ? getSortedChatOrder.value
-        : []
+      const list: Conversation[] = listedConversations.value
       if (normalizedQuery.value) {
         const byId = new Map<string, Conversation>()
         for (const c of list) {
@@ -387,15 +416,10 @@ export default defineComponent({
       return list
     })
 
-    // The wallets' view of what arrived is not reactive: read it again now and then.
-    const receiptsRead = ref(0)
-    let receiptsTimer: ReturnType<typeof setInterval> | undefined
-    onMounted(() => {
-      receiptsTimer = setInterval(() => {
-        receiptsRead.value += 1
-      }, UNREAD_VALUE_REREAD_MS)
-    })
-    onBeforeUnmount(() => clearInterval(receiptsTimer))
+    // The wallets' view of what arrived is not reactive: read it again now and then, on one
+    // clock shared by every list on screen (sidebar and page), so they show the same values.
+    onMounted(startReceiptsClock)
+    onBeforeUnmount(stopReceiptsClock)
     // Resolve restored and newly received peers without requiring a row click. Directory
     // readiness gates the lookup; periodic retries recover from transient startup outages.
     const profilePeers = computed(() =>
@@ -480,6 +504,7 @@ export default defineComponent({
         return figure ? `≈ ${figure}` : undefined
       },
       getSortedChatOrder,
+      listedConversations,
       mailboxStatus,
       messagingState,
       displayedConversations,

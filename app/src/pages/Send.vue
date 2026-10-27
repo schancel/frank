@@ -1,371 +1,391 @@
 <template>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <q-card v-if="stale" data-test="send-stale-card">
-        <q-card-section>{{ $t('nativeOperation.stale') }}</q-card-section>
-        <q-card-actions
-          ><q-btn :label="$t('nativeOperation.back')" @click="cancelEdit"
-        /></q-card-actions>
-      </q-card>
-      <!-- Edit State -->
-      <q-card v-else-if="!isReviewing" data-test="send-edit-card">
-        <q-card-section>
-          <div class="text-h6">{{ $t('sendAddressDialog.sendToAddress') }}</div>
-        </q-card-section>
-        <q-card-section>
-          <q-input
-            class="text-bold text-h6"
-            v-model="address"
-            filled
-            dense
-            data-test="send-address-input"
-            :placeholder="$t('sendAddressDialog.recipient')"
-          />
-        </q-card-section>
+  <div>
+    <!-- The page's app header: its back arrow does what the card's own Back / Cancel / Edit
+    button does at this step, nothing else. -->
+    <q-header>
+      <q-toolbar class="q-pl-sm">
         <q-btn
+          class="q-px-sm"
           flat
-          icon="qr_code_scanner"
-          :label="$t('qrScanner.open')"
-          :disable="!chainReady"
-          data-test="send-scan"
-          @click="showScanner = true"
+          dense
+          icon="arrow_back"
+          :aria-label="$t('settings.back')"
+          :disable="isReviewing && !stale && !dispatched && sending"
+          data-test="send-header-back"
+          @click="
+            isReviewing && !stale && !dispatched ? cancelReview() : cancelEdit()
+          "
         />
-        <p class="q-px-md text-caption">{{ $t('qrScanner.paymentHint') }}</p>
-        <q-card-section>
-          <q-input
-            class="text-bold text-h6"
-            v-model="amount"
-            inputmode="decimal"
-            filled
-            dense
-            data-test="send-amount-input"
-            :placeholder="$t('sendAddressDialog.enterAmount', { unit })"
-          >
-            <template v-if="maxSupported" #append>
-              <q-btn
-                flat
-                dense
-                no-caps
-                :label="$t('sendAddressDialog.sendMax')"
-                :disable="!recipientValid || sending || fillingMax"
-                :loading="fillingMax"
-                data-test="send-max-button"
-                @click="fillMax"
-              />
-            </template>
-          </q-input>
-          <p
-            v-if="maxUnavailableReason"
-            class="text-caption text-negative q-mt-xs q-mb-none"
-            role="alert"
-            data-test="send-max-unavailable"
-          >
-            {{
-              $t('sendAddressDialog.sendMaxUnavailable', {
-                reason: maxUnavailableReason,
-              })
-            }}
-          </p>
-          <!-- The payment floor: the wallet refused the amount (or everything it can send), and
-               says the minimum. Nothing was signed. -->
-          <p
-            v-if="belowFloorText"
-            class="text-caption text-negative q-mt-xs q-mb-none"
-            role="alert"
-            data-test="send-below-floor"
-          >
-            {{ belowFloorText }}
-          </p>
-        </q-card-section>
-        <q-card-actions align="right">
+        <q-toolbar-title class="h6" data-test="send-title">{{
+          $t('sendAddressDialog.sendToAddress')
+        }}</q-toolbar-title>
+      </q-toolbar>
+    </q-header>
+    <q-page-container>
+      <q-page class="q-ma-none q-pa-sm">
+        <q-card v-if="stale" data-test="send-stale-card">
+          <q-card-section>{{ $t('nativeOperation.stale') }}</q-card-section>
+          <q-card-actions
+            ><q-btn :label="$t('nativeOperation.back')" @click="cancelEdit"
+          /></q-card-actions>
+        </q-card>
+        <!-- Edit State -->
+        <q-card v-else-if="!isReviewing" data-test="send-edit-card">
+          <q-card-section>
+            <q-input
+              class="text-bold text-h6"
+              v-model="address"
+              filled
+              dense
+              data-test="send-address-input"
+              :placeholder="$t('sendAddressDialog.recipient')"
+            />
+          </q-card-section>
           <q-btn
-            :label="$t('sendAddressDialog.cancel')"
-            color="negative"
-            data-test="send-cancel-button"
-            @click="cancelEdit"
+            flat
+            icon="qr_code_scanner"
+            :label="$t('qrScanner.open')"
+            :disable="!chainReady"
+            data-test="send-scan"
+            @click="showScanner = true"
           />
-          <q-btn
-            :disable="!isValid || sending"
-            :loading="sending"
-            :label="$t('sendAddressDialog.review')"
-            color="primary"
-            data-test="send-review-button"
-            @click="reviewTransfer"
-          />
-        </q-card-actions>
-        <!-- The wallet could not open on this network: say why, instead of blaming the input. -->
-        <q-card-section
-          v-if="openFailure"
-          class="q-pt-none"
-          role="alert"
-          data-test="send-wallet-unavailable"
-        >
-          <q-banner dense rounded class="bg-red-1 text-red-10">
-            {{ $t(openFailure) }}
-          </q-banner>
-        </q-card-section>
-      </q-card>
-
-      <!-- Review State -->
-      <q-card v-else data-test="send-review-card">
-        <q-card-section>
-          <div class="text-h6" data-test="review-title">
-            {{
-              $t(
-                dispatched
-                  ? 'nativeOperation.title'
-                  : 'sendAddressDialog.reviewTitle',
-              )
-            }}
-          </div>
-        </q-card-section>
-
-        <q-card-section class="q-pt-none">
-          <div class="q-gutter-y-sm">
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendAddressDialog.network')
-              }}</span>
-              <span class="text-weight-medium" data-test="review-network">{{
-                networkName
-              }}</span>
-            </div>
-
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendAddressDialog.recipient')
-              }}</span>
-              <span
-                class="text-weight-bold text-body2 text-right ellipsis"
-                style="max-width: 260px"
-                data-test="review-recipient"
-              >
-                {{ formattedRecipient }}
-              </span>
-            </div>
-
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t(
-                  dispatched
-                    ? 'nativeOperation.intendedAmount'
-                    : 'sendAddressDialog.amount',
-                )
-              }}</span>
-              <span
-                class="text-weight-bold text-primary"
-                data-test="review-amount"
-              >
-                {{ reviewedAmount }} {{ unit }}
-              </span>
-            </div>
-
-            <div
-              v-if="!dispatched"
-              class="row justify-between items-center q-py-xs"
+          <p class="q-px-md text-caption">{{ $t('qrScanner.paymentHint') }}</p>
+          <q-card-section>
+            <q-input
+              class="text-bold text-h6"
+              v-model="amount"
+              inputmode="decimal"
+              filled
+              dense
+              data-test="send-amount-input"
+              :placeholder="$t('sendAddressDialog.enterAmount', { unit })"
             >
-              <span class="text-caption text-grey-7">{{
-                $t('sendAddressDialog.estimatedFee')
-              }}</span>
-              <span class="text-grey-7 text-right" data-test="review-fee">
-                {{
-                  estimatedFeeText ||
-                  (feeEstimating
-                    ? $t('sendAddressDialog.feeEstimating')
-                    : feeUnavailableReason
-                    ? $t('sendAddressDialog.feeUnavailableBecause', {
-                        reason: feeUnavailableReason,
-                      })
-                    : $t('sendAddressDialog.feeUnavailable'))
-                }}
-              </span>
-            </div>
-
-            <q-separator />
-
-            <div
-              v-if="!dispatched"
-              class="row justify-between items-center q-py-xs"
+              <template v-if="maxSupported" #append>
+                <q-btn
+                  flat
+                  dense
+                  no-caps
+                  :label="$t('sendAddressDialog.sendMax')"
+                  :disable="!recipientValid || sending || fillingMax"
+                  :loading="fillingMax"
+                  data-test="send-max-button"
+                  @click="fillMax"
+                />
+              </template>
+            </q-input>
+            <p
+              v-if="maxUnavailableReason"
+              class="text-caption text-negative q-mt-xs q-mb-none"
+              role="alert"
+              data-test="send-max-unavailable"
             >
-              <span class="text-subtitle2">{{
-                $t('sendAddressDialog.maxTotal')
-              }}</span>
-              <span
-                class="text-subtitle1 text-weight-bold"
-                data-test="review-total"
-              >
-                {{ maxTotal }}
-              </span>
-            </div>
-          </div>
-        </q-card-section>
-
-        <q-card-section v-if="!dispatched" class="q-pt-none">
-          <q-banner
-            class="bg-amber-1 text-grey-9 q-pa-sm"
-            rounded
-            role="alert"
-            data-test="review-warning"
-          >
-            <template #avatar>
-              <q-icon name="warning" color="warning" />
-            </template>
-            {{ $t('sendAddressDialog.irreversibleWarning') }}
-          </q-banner>
-        </q-card-section>
-
-        <q-card-section
-          v-if="feeChanged && !dispatched"
-          class="q-pt-none"
-          role="alert"
-          data-test="send-fee-changed"
-        >
-          <q-banner dense rounded class="bg-amber-1 text-amber-10">
-            {{ $t('sendAddressDialog.feeChanged') }}
-          </q-banner>
-        </q-card-section>
-
-        <!-- The network answered no: nothing was sent, and its reason is shown as given. -->
-        <q-card-section
-          v-if="refusal !== undefined && !dispatched"
-          class="q-pt-none"
-          role="alert"
-          data-test="send-refused"
-        >
-          <q-banner dense rounded class="bg-red-1 text-red-10">
-            {{ $t('sendAddressDialog.refused') }}
-            <div v-if="refusal" class="text-caption text-break">
-              {{ refusal }}
-            </div>
-          </q-banner>
-        </q-card-section>
-
-        <q-card-section
-          v-if="dispatched"
-          data-test="native-operation-outcome"
-          role="status"
-        >
-          <!-- While the send is under way its record is not read yet: a neutral line, never the
-               recovery wording a reopened, unresolved transfer gets. -->
-          <p data-test="native-operation-line">
-            {{
-              sending
-                ? $t('nativeOperation.submitting', { network: networkName })
-                : $t(outcomeLine.key, outcomeLine.params)
-            }}
-          </p>
-          <!-- The recipient is paid, but the rest of the send (its change) is not in a block
-               yet: the page does not claim the send is final. -->
-          <p v-if="settling" data-test="native-operation-settling">
-            {{
-              $t(
-                settling.confirmed <= 1
-                  ? 'nativeOperation.changeSettlingOne'
-                  : 'nativeOperation.changeSettling',
-                settling,
-              )
-            }}
-          </p>
-          <p
-            v-if="outcomeHash && !operation"
-            class="text-break"
-            data-test="native-operation-hash"
-          >
-            {{ outcomeHash }}
-          </p>
-          <template v-if="operation">
-            <p data-test="native-operation-fee">
               {{
-                $t(`nativeOperation.fee${operation.feeCoverage}`, {
-                  amount: observedFee,
-                  unit,
+                $t('sendAddressDialog.sendMaxUnavailable', {
+                  reason: maxUnavailableReason,
                 })
               }}
             </p>
+            <!-- The payment floor: the wallet refused the amount (or everything it can send), and
+                 says the minimum. Nothing was signed. -->
             <p
-              v-for="(member, index) in operation.members"
-              :key="index"
-              class="text-break"
+              v-if="belowFloorText"
+              class="text-caption text-negative q-mt-xs q-mb-none"
+              role="alert"
+              data-test="send-below-floor"
             >
-              {{ member.transactionHash }}
-              <span v-if="member.blockNumber !== undefined">{{
-                $t('nativeOperation.block', { block: member.blockNumber })
-              }}</span>
+              {{ belowFloorText }}
             </p>
-            <!-- Information, not an outcome: the payment line above is the outcome. Nothing is
-                 shared while no transfer has landed: a transfer that never lands never is. -->
-            <p
-              v-if="operation.sharing !== 'none'"
-              class="text-caption text-grey-7"
-              data-test="native-operation-sync"
-            >
+          </q-card-section>
+          <q-card-actions align="right">
+            <q-btn
+              :label="$t('sendAddressDialog.cancel')"
+              color="negative"
+              data-test="send-cancel-button"
+              @click="cancelEdit"
+            />
+            <q-btn
+              :disable="!isValid || sending"
+              :loading="sending"
+              :label="$t('sendAddressDialog.review')"
+              color="primary"
+              data-test="send-review-button"
+              @click="reviewTransfer"
+            />
+          </q-card-actions>
+          <!-- The wallet could not open on this network: say why, instead of blaming the input. -->
+          <q-card-section
+            v-if="openFailure"
+            class="q-pt-none"
+            role="alert"
+            data-test="send-wallet-unavailable"
+          >
+            <q-banner dense rounded class="bg-red-1 text-red-10">
+              {{ $t(openFailure) }}
+            </q-banner>
+          </q-card-section>
+        </q-card>
+
+        <!-- Review State -->
+        <q-card v-else data-test="send-review-card">
+          <q-card-section>
+            <div class="text-h6" data-test="review-title">
               {{
                 $t(
-                  operation.sharing === 'shared'
-                    ? 'nativeOperation.syncShared'
-                    : operation.sharing === 'failed'
-                    ? 'nativeOperation.syncFailed'
-                    : 'nativeOperation.syncNotShared',
+                  dispatched
+                    ? 'nativeOperation.title'
+                    : 'sendAddressDialog.reviewTitle',
+                )
+              }}
+            </div>
+          </q-card-section>
+
+          <q-card-section class="q-pt-none">
+            <div class="q-gutter-y-sm">
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendAddressDialog.network')
+                }}</span>
+                <span class="text-weight-medium" data-test="review-network">{{
+                  networkName
+                }}</span>
+              </div>
+
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendAddressDialog.recipient')
+                }}</span>
+                <span
+                  class="text-weight-bold text-body2 text-right ellipsis"
+                  style="max-width: 260px"
+                  data-test="review-recipient"
+                >
+                  {{ formattedRecipient }}
+                </span>
+              </div>
+
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t(
+                    dispatched
+                      ? 'nativeOperation.intendedAmount'
+                      : 'sendAddressDialog.amount',
+                  )
+                }}</span>
+                <span
+                  class="text-weight-bold text-primary"
+                  data-test="review-amount"
+                >
+                  {{ reviewedAmount }} {{ unit }}
+                </span>
+              </div>
+
+              <div
+                v-if="!dispatched"
+                class="row justify-between items-center q-py-xs"
+              >
+                <span class="text-caption text-grey-7">{{
+                  $t('sendAddressDialog.estimatedFee')
+                }}</span>
+                <span class="text-grey-7 text-right" data-test="review-fee">
+                  {{
+                    estimatedFeeText ||
+                    (feeEstimating
+                      ? $t('sendAddressDialog.feeEstimating')
+                      : feeUnavailableReason
+                      ? $t('sendAddressDialog.feeUnavailableBecause', {
+                          reason: feeUnavailableReason,
+                        })
+                      : $t('sendAddressDialog.feeUnavailable'))
+                  }}
+                </span>
+              </div>
+
+              <q-separator />
+
+              <div
+                v-if="!dispatched"
+                class="row justify-between items-center q-py-xs"
+              >
+                <span class="text-subtitle2">{{
+                  $t('sendAddressDialog.maxTotal')
+                }}</span>
+                <span
+                  class="text-subtitle1 text-weight-bold"
+                  data-test="review-total"
+                >
+                  {{ maxTotal }}
+                </span>
+              </div>
+            </div>
+          </q-card-section>
+
+          <q-card-section v-if="!dispatched" class="q-pt-none">
+            <q-banner
+              class="bg-amber-1 text-grey-9 q-pa-sm"
+              rounded
+              role="alert"
+              data-test="review-warning"
+            >
+              <template #avatar>
+                <q-icon name="warning" color="warning" />
+              </template>
+              {{ $t('sendAddressDialog.irreversibleWarning') }}
+            </q-banner>
+          </q-card-section>
+
+          <q-card-section
+            v-if="feeChanged && !dispatched"
+            class="q-pt-none"
+            role="alert"
+            data-test="send-fee-changed"
+          >
+            <q-banner dense rounded class="bg-amber-1 text-amber-10">
+              {{ $t('sendAddressDialog.feeChanged') }}
+            </q-banner>
+          </q-card-section>
+
+          <!-- The network answered no: nothing was sent, and its reason is shown as given. -->
+          <q-card-section
+            v-if="refusal !== undefined && !dispatched"
+            class="q-pt-none"
+            role="alert"
+            data-test="send-refused"
+          >
+            <q-banner dense rounded class="bg-red-1 text-red-10">
+              {{ $t('sendAddressDialog.refused') }}
+              <div v-if="refusal" class="text-caption text-break">
+                {{ refusal }}
+              </div>
+            </q-banner>
+          </q-card-section>
+
+          <q-card-section
+            v-if="dispatched"
+            data-test="native-operation-outcome"
+            role="status"
+          >
+            <!-- While the send is under way its record is not read yet: a neutral line, never the
+                 recovery wording a reopened, unresolved transfer gets. -->
+            <p data-test="native-operation-line">
+              {{
+                sending
+                  ? $t('nativeOperation.submitting', { network: networkName })
+                  : $t(outcomeLine.key, outcomeLine.params)
+              }}
+            </p>
+            <!-- The recipient is paid, but the rest of the send (its change) is not in a block
+                 yet: the page does not claim the send is final. -->
+            <p v-if="settling" data-test="native-operation-settling">
+              {{
+                $t(
+                  settling.confirmed <= 1
+                    ? 'nativeOperation.changeSettlingOne'
+                    : 'nativeOperation.changeSettling',
+                  settling,
                 )
               }}
             </p>
-          </template>
-          <!-- In the mempool, or not at the node yet: the wallet is watching for its block. -->
-          <p v-if="watching" data-test="native-operation-watching">
-            {{ $t('nativeOperation.watching') }}
-          </p>
-          <template v-else-if="!sending && operation?.payment !== 'included'">
-            <!-- Only while the outcome is still open. A transfer that reverted, was replaced or
-                 was cancelled is final, and its line above says so. -->
             <p
-              v-if="
-                operation === undefined ||
-                ((operation.payment === 'unknown' ||
-                  operation.payment === 'partial') &&
-                  !nativeOperationProgress(operation))
-              "
-              data-test="native-operation-recovery"
+              v-if="outcomeHash && !operation"
+              class="text-break"
+              data-test="native-operation-hash"
             >
-              {{ $t('nativeOperation.recoveryUnavailable') }}
+              {{ outcomeHash }}
             </p>
-            <p>{{ $t('nativeOperation.reviewHeld') }}</p>
-          </template>
-        </q-card-section>
-        <q-card-actions v-if="dispatched" align="right">
-          <q-btn
-            :label="$t('nativeOperation.back')"
-            data-test="native-operation-back"
-            @click="cancelEdit"
-          />
-        </q-card-actions>
-        <q-card-actions v-else align="right">
-          <q-btn
-            :disable="sending"
-            :label="$t('sendAddressDialog.editTransfer')"
-            flat
-            color="primary"
-            data-test="review-cancel-button"
-            @click="cancelReview"
-          />
-          <q-btn
-            :disable="sending"
-            :loading="sending"
-            :label="$t('sendAddressDialog.confirmAndSend')"
-            color="primary"
-            data-test="review-confirm-button"
-            @click="confirmSend"
-          />
-        </q-card-actions>
-      </q-card>
-      <qr-scanner-dialog
-        v-model="showScanner"
-        :network-name="networkName"
-        :context="scannerContext"
-        :validate-address="validateScannedAddress"
-        @scan="address = $event"
-      />
-    </q-page>
-  </q-page-container>
+            <template v-if="operation">
+              <p data-test="native-operation-fee">
+                {{
+                  $t(`nativeOperation.fee${operation.feeCoverage}`, {
+                    amount: observedFee,
+                    unit,
+                  })
+                }}
+              </p>
+              <p
+                v-for="(member, index) in operation.members"
+                :key="index"
+                class="text-break"
+              >
+                {{ member.transactionHash }}
+                <span v-if="member.blockNumber !== undefined">{{
+                  $t('nativeOperation.block', { block: member.blockNumber })
+                }}</span>
+              </p>
+              <!-- Information, not an outcome: the payment line above is the outcome. Nothing is
+                   shared while no transfer has landed: a transfer that never lands never is. -->
+              <p
+                v-if="operation.sharing !== 'none'"
+                class="text-caption text-grey-7"
+                data-test="native-operation-sync"
+              >
+                {{
+                  $t(
+                    operation.sharing === 'shared'
+                      ? 'nativeOperation.syncShared'
+                      : operation.sharing === 'failed'
+                      ? 'nativeOperation.syncFailed'
+                      : 'nativeOperation.syncNotShared',
+                  )
+                }}
+              </p>
+            </template>
+            <!-- In the mempool, or not at the node yet: the wallet is watching for its block. -->
+            <p v-if="watching" data-test="native-operation-watching">
+              {{ $t('nativeOperation.watching') }}
+            </p>
+            <template v-else-if="!sending && operation?.payment !== 'included'">
+              <!-- Only while the outcome is still open. A transfer that reverted, was replaced or
+                   was cancelled is final, and its line above says so. -->
+              <p
+                v-if="
+                  operation === undefined ||
+                  ((operation.payment === 'unknown' ||
+                    operation.payment === 'partial') &&
+                    !nativeOperationProgress(operation))
+                "
+                data-test="native-operation-recovery"
+              >
+                {{ $t('nativeOperation.recoveryUnavailable') }}
+              </p>
+              <p>{{ $t('nativeOperation.reviewHeld') }}</p>
+            </template>
+          </q-card-section>
+          <q-card-actions v-if="dispatched" align="right">
+            <q-btn
+              :label="$t('nativeOperation.back')"
+              data-test="native-operation-back"
+              @click="cancelEdit"
+            />
+          </q-card-actions>
+          <q-card-actions v-else align="right">
+            <q-btn
+              :disable="sending"
+              :label="$t('sendAddressDialog.editTransfer')"
+              flat
+              color="primary"
+              data-test="review-cancel-button"
+              @click="cancelReview"
+            />
+            <q-btn
+              :disable="sending"
+              :loading="sending"
+              :label="$t('sendAddressDialog.confirmAndSend')"
+              color="primary"
+              data-test="review-confirm-button"
+              @click="confirmSend"
+            />
+          </q-card-actions>
+        </q-card>
+        <qr-scanner-dialog
+          v-model="showScanner"
+          :network-name="networkName"
+          :context="scannerContext"
+          :validate-address="validateScannedAddress"
+          @scan="address = $event"
+        />
+      </q-page>
+    </q-page-container>
+  </div>
 </template>
 
 <script lang="ts">

@@ -26,13 +26,22 @@ export interface SentStealthPayment {
   /** Sent from another device and nothing here can tell its network fee: the account's notes
    * to itself do not name the operation that paid it (or cannot be read on this wallet). */
   readonly feeUnknowable?: true
+  /** `status.nativeFeeAtomic` covers only the transactions whose fee is known so far, as
+   * History's partial fee for the same send does; it is read again until it is complete. */
+  readonly feePartial?: true
+}
+
+/** A send's network fee as History shows it: everything known so far, and whether that is all. */
+interface NamedFee {
+  readonly feeWei: bigint
+  readonly partial: boolean
 }
 
 /** Nothing more will be learnt of it (`stealthPaymentFinal`), or all that can be has been: it
  * landed and its fee cannot be known here. */
 function settled(payment: SentStealthPayment): boolean {
   return (
-    stealthPaymentFinal(payment.status) ||
+    (payment.feePartial !== true && stealthPaymentFinal(payment.status)) ||
     (payment.feeUnknowable === true &&
       payment.status.members.length > 0 &&
       payment.status.members.every(
@@ -210,13 +219,13 @@ async function chainStatusOf(
  * The network fee of a payment another device of the account sent, as the account's notes to
  * itself show it: the fee History shows for the same send (`notedSendFeeWei` of the group of
  * noted sends these transfers are in), every transaction of the operation that paid them and of
- * the message's stamp. Undefined until the chain showed each of them; `unnamed` when no note
- * names the operation that paid them.
+ * the message's stamp. Partial while the chain has shown only some of them, as History's is;
+ * undefined until it showed any; `unnamed` when no note names the operation that paid them.
  */
 function notedFeeOf(
   noted: readonly NotedSendStatus[],
   transfers: readonly SentTransfer[],
-): bigint | 'unnamed' | undefined {
+): NamedFee | 'unnamed' | undefined {
   const hashes = new Set(transfers.map(transfer => prefixed(transfer.txId)))
   if (
     !noted.some(
@@ -232,22 +241,25 @@ function notedFeeOf(
     [...hashes].some(
       hash => !group.some(send => prefixed(send.txHash) === hash),
     ) ||
-    group.some(send => send.inclusion === undefined)
+    group.every(send => send.inclusion === undefined)
   )
     return undefined
-  return BigInt(notedSendFeeWei(group))
+  return {
+    feeWei: BigInt(notedSendFeeWei(group)),
+    partial: group.some(send => send.inclusion === undefined),
+  }
 }
 
 /**
  * The network fee of a contact payment this device sent, from its journal operation: the fee
  * History shows for the same send (`sendFees`), every transaction of the operation, its
- * message's stamp stage included. Undefined until every one of them is final; `unnamed` when
- * this wallet holds no such payment.
+ * message's stamp stage included. Partial while some of them have no fee yet, as History's
+ * is; undefined until any has one; `unnamed` when this wallet holds no such payment.
  */
 async function journalFeeOf(
   owner: StealthPaymentOwner,
   ephemeralPubKey: string | undefined,
-): Promise<bigint | 'unnamed' | undefined> {
+): Promise<NamedFee | 'unnamed' | undefined> {
   if (
     !ephemeralPubKey ||
     !owner.getContactPayments ||
@@ -264,13 +276,14 @@ async function journalFeeOf(
   const row = await owner.readNativeOperation(operationId)
   if (row === undefined) return undefined
   const operation = summarizeEvmNativeOperation(row)
-  if (
-    !operation.members.every(
+  const fees = sendFees(operation, summarizeEvmNativeStampStages(row))
+  if (fees.coverage === 'unknown') return undefined
+  return {
+    feeWei: BigInt(fees.feeWei),
+    partial: !operation.members.every(
       member => member.feeWei !== undefined || member.state === 'superseded',
-    )
-  )
-    return undefined
-  return BigInt(sendFees(operation, summarizeEvmNativeStampStages(row)).feeWei)
+    ),
+  }
 }
 
 /**
@@ -392,14 +405,17 @@ export async function refreshOutgoingStealthPayments(
     try {
       let status = await chainStatusOf(owner.evmReader!, transfers)
       let feeUnknowable = true
+      let feePartial = false
       // A contact payment this device sent: its journal operation names the fee.
       const journalFee = status
         ? await journalFeeOf(owner, contactKeyOf.get(digest))
         : 'unnamed'
       if (status && journalFee !== 'unnamed') {
         feeUnknowable = false
-        if (journalFee !== undefined)
-          status = { ...status, nativeFeeAtomic: journalFee }
+        if (journalFee !== undefined) {
+          status = { ...status, nativeFeeAtomic: journalFee.feeWei }
+          feePartial = journalFee.partial
+        }
       } else if (status && owner.getNotedSends) {
         let noted = notedOf.get(owner)
         if (noted === undefined) {
@@ -408,8 +424,10 @@ export async function refreshOutgoingStealthPayments(
         }
         const fee = notedFeeOf(await noted, transfers)
         feeUnknowable = fee === 'unnamed'
-        if (typeof fee === 'bigint')
-          status = { ...status, nativeFeeAtomic: fee }
+        if (fee !== undefined && fee !== 'unnamed') {
+          status = { ...status, nativeFeeAtomic: fee.feeWei }
+          feePartial = fee.partial
+        }
       }
       if (status)
         found.set(digest, [
@@ -418,6 +436,7 @@ export async function refreshOutgoingStealthPayments(
             operationId: `chain:${digest}`,
             status,
             ...(feeUnknowable ? { feeUnknowable: true as const } : {}),
+            ...(feePartial ? { feePartial: true as const } : {}),
           },
         ])
     } catch (error) {

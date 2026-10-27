@@ -12,8 +12,11 @@
       <q-list class="full-width">
         <q-separator />
         <q-item class="full-width">
+          <!-- Under the phone's app header the title is already there. -->
           <q-item-section>
-            <q-item-label>{{ $t('contactBookDialog.contacts') }}</q-item-label>
+            <q-item-label v-if="showTitle">{{
+              $t('contactBookDialog.contacts')
+            }}</q-item-label>
           </q-item-section>
           <q-space />
           <q-btn
@@ -254,7 +257,7 @@
             {{
               search
                 ? $t('contactItem.notFound')
-                : $t('chatList.noContactMessage')
+                : $t('contactBookDialog.empty')
             }}
           </q-item-section>
         </q-item>
@@ -332,6 +335,9 @@ export default defineComponent({
     DeleteContactDialog,
     AccountBadge,
     UsernameHandle,
+  },
+  props: {
+    showTitle: { type: Boolean, default: true },
   },
   emits: ['closeDrawer'],
   setup(props, { emit }) {

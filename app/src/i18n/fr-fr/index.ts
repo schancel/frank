@@ -589,6 +589,8 @@ export const rawFrFR = {
     forum: 'Forum',
     wallet: 'Portefeuille',
     dappBridge: 'Connexion dApp',
+    messagesTab: 'Messages',
+    qrTab: 'QR',
     railLabel: 'Sections de la barre latérale',
     chatsUnreadOne: 'Messages directs, {count} message non lu',
     chatsUnreadOther: 'Messages directs, {count} messages non lus',
@@ -890,7 +892,8 @@ export const rawFrFR = {
   },
   chatList: {
     senderPrefix: '{name} : {text}',
-    noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
+    noContactMessage:
+      'Aucune conversation pour l’instant. Commencez-en une avec le bouton + ci-dessus.',
     loadingConversations: 'Chargement des conversations…',
     initialConversationsFailed:
       'Impossible de charger les conversations. La boîte de réception réessaiera.',
@@ -1312,6 +1315,7 @@ export const rawFrFR = {
     sentLandedAmount: 'Arrivé sur la chaîne',
     sentNetworkFee: 'Frais de réseau',
     sentFeeNotKnown: 'pas encore connus',
+    sentFeeSoFar: '{fee} pour l’instant (partiels)',
     sentStamp: 'Timbre du message',
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',
@@ -1796,6 +1800,9 @@ export const rawFrFR = {
     contacts: 'Contacts',
     search: 'Recherche...',
     myQrCode: 'Mon code QR d’identité',
+    empty:
+      'Aucun contact pour l’instant. Ajoutez-en un avec le bouton + ci-dessus.',
+    pickContact: 'Choisissez un contact dans la liste.',
   },
   contactItem: {
     address: 'Adresse',
@@ -2486,6 +2493,7 @@ export const rawFrFR = {
     bridgedEmailLabel: 'Courriel relié :',
     signedInAs: 'Connecté en tant que',
     localFrankAccount: 'Compte Frank local',
+    nothingToImport: 'Ce lien n’a aucune conversation à importer.',
     importThreadAndOpenChat:
       'Importer la discussion et ouvrir le chat avec le pair',
     displayNameLabel: 'Nom affiché',
@@ -2663,6 +2671,7 @@ export const rawFrFR = {
     unnamedGroup: 'Groupe',
     systemInviteSent: 'Invitation au groupe « {group} » envoyée',
     systemInviteReceived: 'Invitation au groupe « {group} »',
+    openGroup: 'Ouvrir le groupe',
     systemMembershipUpdate: 'Groupe « {group} » : membres modifiés',
     systemRemovalSent: 'Retrait du groupe « {group} » notifié',
     systemRemovalReceived: 'Vous avez été retiré du groupe « {group} »',

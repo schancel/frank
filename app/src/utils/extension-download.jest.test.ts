@@ -46,6 +46,14 @@ it('keeps URLs stable within a build and encodes the build identifier as one que
   }
 })
 
+it('adds no version key when the build does not know its commit (never ?v=undefined)', () => {
+  const unknown = loadBuild('')
+  for (const target of targets)
+    expect(unknown.getExtensionDownloadInfo(target).url).toBe(
+      `/downloads/frank-extension-${target}.zip`,
+    )
+})
+
 it('uses the versioned URL and unchanged filename for imperative downloads', () => {
   const downloads = loadBuild('click-build')
   const click = jest

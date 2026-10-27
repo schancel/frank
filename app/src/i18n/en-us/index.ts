@@ -576,6 +576,8 @@ export const rawEnUS = {
     forum: 'Forum',
     wallet: 'Wallet',
     dappBridge: 'dApp Connect',
+    messagesTab: 'Messages',
+    qrTab: 'QR',
     railLabel: 'Sidebar sections',
     chatsUnreadOne: 'Direct Messages, {count} unread message',
     chatsUnreadOther: 'Direct Messages, {count} unread messages',
@@ -876,7 +878,8 @@ export const rawEnUS = {
   },
   chatList: {
     senderPrefix: '{name}: {text}',
-    noContactMessage: 'Add contacts from the drawer above...',
+    noContactMessage:
+      'No conversations yet. Start one with the + button above.',
     loadingConversations: 'Loading conversations…',
     initialConversationsFailed:
       'Could not load conversations. The inbox will keep trying.',
@@ -1288,6 +1291,7 @@ export const rawEnUS = {
     sentLandedAmount: 'Landed on chain',
     sentNetworkFee: 'Network fee',
     sentFeeNotKnown: 'not known yet',
+    sentFeeSoFar: '{fee} so far (partial)',
     sentStamp: 'Message stamp',
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',
@@ -1760,6 +1764,8 @@ export const rawEnUS = {
     search: 'Search...',
     close: 'Close',
     myQrCode: 'My Identity QR Code',
+    empty: 'No contacts yet. Add one with the + button above.',
+    pickContact: 'Choose a contact in the list.',
   },
   contactItem: {
     address: 'Address',
@@ -2419,6 +2425,7 @@ export const rawEnUS = {
     signedInAs: 'Signed in as',
     localFrankAccount: 'Local Frank Account',
     importThreadAndOpenChat: 'Import Thread & Open Chat with Peer',
+    nothingToImport: 'This link has no conversation to import.',
     displayNameLabel: 'Display Name',
     displayNameHint: 'Shown to contacts when you message them on Frank',
     createAccountAndOpenChat: 'Create Self-Custodial Account & Open Chat',
@@ -2586,6 +2593,7 @@ export const rawEnUS = {
     unnamedGroup: 'Group',
     systemInviteSent: 'Invitation to the group "{group}" sent',
     systemInviteReceived: 'Invitation to the group "{group}"',
+    openGroup: 'Open the group',
     systemMembershipUpdate: 'Group "{group}": members changed',
     systemRemovalSent: 'Told them they were removed from the group "{group}"',
     systemRemovalReceived: 'You were removed from the group "{group}"',

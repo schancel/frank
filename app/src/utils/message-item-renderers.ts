@@ -19,6 +19,7 @@
  */
 import { MessageItem } from '@frank/cashweb/types/messages'
 import { groupConversationUuid } from '@frank/cashweb/groups/group-crypto'
+import { isWakeupCapabilitySidecar } from '@frank/wallet/message-item-plugins/contact-card/plugin'
 
 export interface MessageItemRenderer<TRaw extends MessageItem = MessageItem> {
   type: TRaw['type']
@@ -41,11 +42,15 @@ export interface SystemLineContext {
   outbound: boolean
   /** The name of the group with this ID, if this account knows it. */
   groupName(groupIdHex: string): string | undefined
+  /** This account's conversation for the group with this ID, if it has one. */
+  groupConversationId?(groupIdHex: string): string | undefined
 }
 
 export interface SystemLine {
   key: string
   params?: Record<string, string>
+  /** The conversation the line is about, when this account has it: tapping the line opens it. */
+  conversationId?: string
 }
 
 const registry = new Map<string, MessageItemRenderer>()
@@ -83,15 +88,17 @@ registerMessageItemRenderer({
 
 registerMessageItemRenderer({
   type: 'group-welcome',
-  systemLine: (item, { outbound }) =>
-    item.type === 'group-welcome'
-      ? {
-          key: outbound
-            ? 'groupChat.systemInviteSent'
-            : 'groupChat.systemInviteReceived',
-          params: { group: item.groupName },
-        }
-      : undefined,
+  systemLine: (item, { outbound, groupConversationId }) => {
+    if (item.type !== 'group-welcome') return undefined
+    const conversationId = groupConversationId?.(item.groupId)
+    return {
+      key: outbound
+        ? 'groupChat.systemInviteSent'
+        : 'groupChat.systemInviteReceived',
+      params: { group: item.groupName },
+      ...(conversationId ? { conversationId } : {}),
+    }
+  },
 })
 
 registerMessageItemRenderer({
@@ -136,18 +143,34 @@ export function messageSystemLine(
 export function conversationSystemLine(
   items: readonly MessageItem[],
   outbound: boolean,
-  conversations: Readonly<Record<string, { name?: string } | undefined>>,
+  conversations: Readonly<
+    Record<string, { name?: string; deletedAt?: number } | undefined>
+  >,
 ): SystemLine | undefined {
-  return messageSystemLine(items, {
-    outbound,
-    groupName: groupIdHex => {
-      try {
-        return conversations[groupConversationUuid(groupIdHex)]?.name
-      } catch {
-        return undefined
-      }
+  // A received invitation carries the inviter's hidden wakeup capability with it; that sidecar
+  // is never shown, so it does not turn the record into a bubble.
+  return messageSystemLine(
+    items.filter(item => !isWakeupCapabilitySidecar(item)),
+    {
+      outbound,
+      groupName: groupIdHex => {
+        try {
+          return conversations[groupConversationUuid(groupIdHex)]?.name
+        } catch {
+          return undefined
+        }
+      },
+      groupConversationId: groupIdHex => {
+        try {
+          const id = groupConversationUuid(groupIdHex)
+          const conversation = conversations[id]
+          return conversation && !conversation.deletedAt ? id : undefined
+        } catch {
+          return undefined
+        }
+      },
     },
-  })
+  )
 }
 
 /** A system line in the user's language; a group this account has no name for is "unnamed". */

@@ -51,7 +51,16 @@ function mountHistory(
         {
           id: 'native',
           label: 'walletHistory.transfers',
-          rows: [{ id: 'row', kind: 'native', operation: row }],
+          rows: [
+            {
+              id: 'row',
+              kind: 'native',
+              operation: row,
+              stampWei: '0',
+              feeWei: row.observedFeeWei,
+              feeCoverage: row.feeCoverage,
+            },
+          ],
         },
       ],
       inspectionStatus: 'available',
@@ -162,6 +171,9 @@ it('shows the payment apart from the change returned to the wallet, each with it
               id: 'row',
               kind: 'native',
               timeMs: Date.UTC(2026, 9, 20),
+              stampWei: '0',
+              feeWei: '2100000000000000',
+              feeCoverage: 'partial',
               operation: {
                 ...operation('included'),
                 kind: 'transaction-set',
@@ -199,11 +211,11 @@ it('shows the payment apart from the change returned to the wallet, each with it
     },
   })
   const details = wrapper.get('[data-testid="wallet-native-operation"]')
-  // The payment's fee is complete: the unsent change does not make it partial.
-  expect(details.text()).toContain(
-    'Observed network fees: amt(2100000000000000) MONR',
-  )
-  expect(details.text()).not.toContain('Observed fees so far (partial)')
+  // The details name the card's own figure, the change's transaction included: with the
+  // change not in a block yet, it is a figure so far.
+  expect(
+    details.get('[data-testid="wallet-native-operation-fee"]').text(),
+  ).toBe('Observed fees so far (partial): amt(2100000000000000) MONR')
   const changeSection = details.get(
     '[data-testid="wallet-native-operation-change"]',
   )
@@ -458,4 +470,76 @@ it('reads a background merge of coins as "Merged N coins", with what it was and 
     'Small coins merged into one of your accounts',
   )
   expect(wrapper.get('[data-testid="wallet-activity-fee"]').exists()).toBe(true)
+})
+
+it('names one network fee for a send: the card and its details show the same figure', () => {
+  // A contact payment of two transactions and one that returned change, each charged 2142 µMON:
+  // History's card shows all three (0.006426), and so must the details (not 0.004284).
+  const fee = '2142000000000000'
+  const total = '6426000000000000'
+  const change = '0x' + 'c'.repeat(64)
+  const wrapper = shallowMount(History, {
+    props: {
+      chainIdentifier: 'monad-regtest',
+      groups: [
+        {
+          id: 'activity',
+          label: 'walletPanel.tabHistory',
+          rows: [
+            {
+              id: 'row',
+              kind: 'native',
+              timeMs: Date.UTC(2026, 9, 27),
+              stampWei: '0',
+              feeWei: total,
+              feeCoverage: 'complete',
+              operation: {
+                ...operation('included'),
+                chainIdentifier: 'monad-regtest',
+                kind: 'transaction-set',
+                purpose: 'contact-payment',
+                members: [
+                  ...hashes.map(transactionHash => ({
+                    role: 'payment' as const,
+                    transactionHash,
+                    state: 'included-success' as const,
+                    blockNumber: 7,
+                    feeWei: fee,
+                  })),
+                  {
+                    role: 'change' as const,
+                    transactionHash: change,
+                    state: 'included-success' as const,
+                    blockNumber: 8,
+                    feeWei: fee,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      inspectionStatus: 'available',
+      nativeUnit: 'MONR',
+      nativeAmount: value => `amt(${value})`,
+      networkName: () => 'Monad Regtest',
+      transactionExplorerLink: () => undefined,
+      formatSwapTime: () => 'Oct 27',
+    },
+    global: {
+      mocks: { $t: translate },
+      stubs: {
+        AddressText: {
+          props: ['address'],
+          template: '<span class="address-text">{{ address }}</span>',
+        },
+      },
+    },
+  })
+  expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toBe(
+    `Network fee amt(${total}) MONR`,
+  )
+  expect(
+    wrapper.get('[data-testid="wallet-native-operation-fee"]').text(),
+  ).toBe(`Observed network fees: amt(${total}) MONR`)
 })

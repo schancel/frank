@@ -30,6 +30,8 @@ const SAME_IN_FRENCH = new Set([
   'notificationPermission.title',
   'leftDrawer.contacts',
   'leftDrawer.forum',
+  'leftDrawer.messagesTab',
+  'leftDrawer.qrTab',
   'walletHistory.transaction',
   'sendAddressDialog.sendMax',
   'walletPanel.avuUnitValue',

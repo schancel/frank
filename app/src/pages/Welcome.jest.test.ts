@@ -22,10 +22,10 @@ function translator(messages: Messages) {
   }
 }
 
-function mountWelcome(messages: Messages) {
+function mountWelcome(messages: Messages, signedIn = false) {
   return mount(Welcome, {
     global: {
-      mocks: { $t: translator(messages) },
+      mocks: { $t: translator(messages), $status: { setup: signedIn } },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
         QToolbar: { template: '<div><slot /></div>' },
@@ -65,6 +65,17 @@ describe('Welcome: landing page for visitors without an account', () => {
     )
     expect(hero).toContain('Monad')
     expect(hero).toContain('Permissionless Identity')
+  })
+
+  it('offers a signed-in user no new account, only the forum and the docs', () => {
+    const wrapper = mountWelcome(enUS, true)
+    expect(wrapper.find('[data-test="btn-create-account"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-test="btn-connect-extension"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-test="btn-browse-forum"]').exists()).toBe(true)
   })
 
   it('provides navigation action buttons to setup, forum, and docs', () => {

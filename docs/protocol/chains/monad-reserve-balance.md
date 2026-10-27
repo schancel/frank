@@ -132,9 +132,13 @@ The client source explains both observations (monad-bft tag `v0.16.4`):
 What it means for the wallet: it counts these blocks on the finalized head, not on
 `eth_blockNumber` (`spendRuleHead: "finalized"` in the Monad rows of
 `packages/wallet/chain/chains-registry.ts`; `readSpendRuleHead` in
-`packages/wallet/chain/evm-spend-rule.ts`). The coin-list sync reads an account as of one
-numbered newest block, and money that the finalized head minus 4 does not show waits until the
-finalized head is 4 blocks past that newest block. It signs a transfer only against the balance
+`packages/wallet/chain/evm-spend-rule.ts`). The coin-list sync reads an account at `latest`,
+and by number only at or below the finalized block (a node answers a number above that only
+for blocks it voted on or the newest one, so a lagging replica would refuse it). Money that the
+finalized head minus 4 does not show waits until the finalized head is 4 past the block it
+arrived by: the finalized head when that shows it, else the newest block read after it. That is
+the node's 2 blocks and 2 more. The reserve rule's quiet window (`waitForSpendSpacing`, and
+`lastSpentInBlock` in the transaction set) is counted on the same head. It signs a transfer only against the balance
 the account already had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
 `packages/wallet/chain/evm-spend-rule.ts`) and waits those blocks otherwise. The window is the
 same for any amount, so it applies to every coin that just arrived: a deposit the coin-list sync

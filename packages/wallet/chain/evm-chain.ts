@@ -1068,7 +1068,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               wallet.provider,
               address,
               config.spendSpacingBlocks,
-              { reserveBalanceWei: config.reserveBalanceWei }
+              {
+                reserveBalanceWei: config.reserveBalanceWei,
+                spendRuleHead: config.spendRuleHead,
+              }
             );
         } catch (error) {
           internals.runningMainTasks -= 1;
@@ -3475,6 +3478,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               coinListSync: transactionSetRuntime.coinListSync,
               blockWatcher: transactionSetRuntime.blockWatcher,
               spendSpacingBlocks: config.spendSpacingBlocks,
+              spendRuleHead: config.spendRuleHead,
               reserveBalanceWei: config.reserveBalanceWei,
               sourceIsHeld,
               sourceHeldRefusalMessage: SOURCE_HELD_FOR_CONTACT_PAYMENT,

@@ -105,6 +105,8 @@ export interface InstallEvmStampCoordinatorParams {
   readonly coinListSync: EvmCoinListSync;
   readonly blockWatcher: EvmBlockWatcher;
   readonly spendSpacingBlocks?: number;
+  /** The head the spend rule counts from (`ChainRegistryEntry.spendRuleHead`). */
+  readonly spendRuleHead?: 'latest' | 'finalized';
   readonly reserveBalanceWei?: bigint;
   readonly sourceIsHeld: (wallet: object, address: string) => boolean;
   readonly sourceHeldRefusalMessage: string;
@@ -137,6 +139,7 @@ export function installEvmStampCoordinator(
     coinListSync,
     blockWatcher,
     spendSpacingBlocks,
+    spendRuleHead,
     reserveBalanceWei,
     sourceIsHeld,
     sourceHeldRefusalMessage,
@@ -170,6 +173,7 @@ export function installEvmStampCoordinator(
     waitForSpendSpacing(provider, address, spendSpacingBlocks, {
       reserveBalanceWei,
       spendValueWei,
+      spendRuleHead,
     })
   );
   // Quotes and construction share one chain-observation owner, including legacy keys.

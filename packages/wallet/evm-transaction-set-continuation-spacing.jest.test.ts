@@ -35,8 +35,7 @@ async function fixture(
     getTransactionCount: jest.fn(
       async (address: string, block?: number | string) => {
         if (address.toLowerCase() !== secondary) return 0
-        // The node's own head is its current state, not history.
-        if (typeof block === 'number' && block < head) {
+        if (typeof block === 'number') {
           if (!historyAvailable) throw new Error('historical state unavailable')
           return block < 100 ? 0 : 1
         }

@@ -5,7 +5,7 @@ import { installEvmWalletCoinList } from './evm-wallet-coin-list'
 import { EvmTransactionSetPolicyCache } from './evm-transaction-set-policy'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
-import { readSpendRuleHead } from './chain/evm-spend-rule'
+import { FinalizedHeadUnavailableError, spendRuleHeadReader } from './chain/evm-spend-rule'
 import type { EvmListCoin } from './evm-coin-list'
 import type {
   EvmTransactionSetJournal,
@@ -32,10 +32,12 @@ export function installEvmTransactionSetRuntime(
   // coin-list sync reads, what a waiting send waits for) is a block of the head the node judges
   // a new transaction from: on Monad the finalized one, not the proposed one.
   const spendRuleHead = {
-    getBlockNumber: () => readSpendRuleHead(provider, params.spendRuleHead),
+    getBlockNumber: spendRuleHeadReader(provider, params.spendRuleHead),
   }
   const blockWatcher = new EvmBlockWatcher({
     provider: spendRuleHead,
+    // A node that stopped reporting final blocks: sends say so instead of waiting for it.
+    endsWaits: error => error instanceof FinalizedHeadUnavailableError,
     intervalMs: params.paymentPollIntervalMs,
   })
   const coinListSync = installEvmWalletCoinList({

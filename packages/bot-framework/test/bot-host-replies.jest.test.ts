@@ -15,7 +15,16 @@ import {
   DirectMessageAlreadyAttemptedError,
   directMessageNotAttempted,
 } from "@frank/wallet/chain/active-chain";
-import { FAILED_REPLY_TEXT, FrankBotHost } from "../src/bot-host";
+import {
+  BotMessageTooLargeError,
+  FAILED_REPLY_TEXT,
+  FrankBotHost,
+} from "../src/bot-host";
+import { FundsInPendingSendError } from "@frank/wallet/evm-transaction-set-types";
+import { InsufficientStampFundsError } from "@frank/wallet/evm-account-pool";
+import { joinConsecutiveTextItems } from "@frank/wallet/message-item-plugins/text/long-text";
+import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
+import { MAX_SEALED_MESSAGE_CONTENT_BYTES } from "@frank/wallet/chain/direct-message-limits";
 import { replyMessageId } from "../src/inbound-operation-store";
 import { GAME_MAX_REPLIES_PER_PEER } from "../src/loop-guard";
 import type {
@@ -48,6 +57,8 @@ const mockFetchSince = jest.fn();
 const mockReconcile = jest.fn();
 const mockTxStatus = jest.fn();
 const mockCheckMessagePayment = jest.fn();
+const mockAttemptOf = jest.fn();
+const mockEndOf = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/evm-chain", () => {
@@ -61,6 +72,8 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
         fetchSince: mockFetchSince,
         send: mockSend,
         reconcileAttempts: mockReconcile,
+        attemptOf: mockAttemptOf,
+        endOf: mockEndOf,
       },
       nativeTransfers: { getTransactionStatus: mockTxStatus },
       topics: { post: jest.fn() },
@@ -293,6 +306,8 @@ describe("FrankBotHost replies", () => {
     mockReconcile.mockReset().mockResolvedValue({});
     mockTxStatus.mockReset().mockResolvedValue("confirmed");
     mockCheckMessagePayment.mockReset();
+    mockAttemptOf.mockReset().mockResolvedValue(undefined);
+    mockEndOf.mockReset().mockResolvedValue(undefined);
     deliveredPayments.clear();
     stateDir = mkdtempSync(join(tmpdir(), "bot-host-replies-"));
   });
@@ -731,6 +746,114 @@ describe("FrankBotHost replies", () => {
       await drain(instance);
       expect(mockSend).toHaveBeenCalledTimes(2);
       expect(effects).toHaveLength(2);
+    });
+
+    it("refused because the bot's funds are tied up in an earlier send is rejected to the handler at once, saying why, and never sent again by the host", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const outcomes: string[] = [];
+      const { host, instance } = await start(
+        bot("tied-bot", async (message) => {
+          try {
+            await message.reply([{ type: "text", text: "you won" }]);
+            outcomes.push("sent");
+          } catch (refusal) {
+            outcomes.push(
+              refusal instanceof InsufficientStampFundsError ? "refused" : "other"
+            );
+          }
+        })
+      );
+      // Labelled as having created nothing, the host would otherwise send it again on later
+      // polls; the tied-up refusal goes to the handler at once all the same.
+      mockSend.mockReset().mockRejectedValue(
+        Object.defineProperty(
+          new InsufficientStampFundsError("No free funds cover a stamp", {
+            cause: new FundsInPendingSendError(5_000n, 3n),
+          }),
+          directMessageNotAttempted,
+          { value: true }
+        )
+      );
+      const message = inbound("roll");
+      await poll(host, [message]);
+      await drain(instance);
+      for (let pass = 0; pass < 3; pass++) {
+        await poll(host, [message]);
+        await drain(instance);
+      }
+      expect(outcomes).toEqual(["refused"]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("is not sent again") &&
+            String(line).includes("5000 wei")
+        )
+      ).toBe(true);
+    });
+
+    it("of about 1 MB goes as consecutive text items that a reader shows as the one text", async () => {
+      const answer = "a long line of an answer\n".repeat(40_000);
+      const { host, instance } = await start(
+        bot("long-bot", async (message) => {
+          await message.reply([
+            { type: "reply", payloadDigest: message.payloadDigest },
+            { type: "text", text: answer },
+          ]);
+        })
+      );
+      const message = inbound("all of it");
+      await poll(host, [message]);
+      await drain(instance);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const items = mockSend.mock.calls[0][0].items;
+      expect(items.length).toBeGreaterThan(4);
+      expect(items[0]).toEqual({
+        type: "reply",
+        payloadDigest: message.payloadDigest,
+      });
+      expect(joinConsecutiveTextItems(items)).toEqual([
+        { type: "reply", payloadDigest: message.payloadDigest },
+        { type: "text", text: answer },
+      ]);
+      expect(await finished(instance, message)).toBe(true);
+    });
+
+    it("more than a sealed message carries is refused before the wallet is asked, saying why; the peer gets the failure reply", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const outcomes: unknown[] = [];
+      const { host, instance } = await start(
+        bot("huge-bot", async (message) => {
+          await message
+            .reply([
+              {
+                type: "text",
+                text: "y".repeat(MAX_SEALED_MESSAGE_CONTENT_BYTES),
+              },
+            ])
+            .catch((refusal) => {
+              outcomes.push(refusal);
+              throw refusal;
+            });
+        })
+      );
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toBeInstanceOf(BotMessageTooLargeError);
+      expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("is not sent again") &&
+            String(line).includes("too large to send")
+        )
+      ).toBe(true);
     });
 
     it.each([false, true])("waits for a poll: the handler stays suspended, and other peers are answered meanwhile (held journal completion: %s)", async (holdCompletion) => {
@@ -1801,6 +1924,191 @@ describe("FrankBotHost replies", () => {
         .map(([p]) => p.messageId);
       expect(ids.length).toBeGreaterThan(1);
       expect(new Set(ids).size).toBe(1);
+    });
+
+    /** A long reply: lines of text and some multi-byte characters, `bytes` UTF-8 bytes or so. */
+    const longText = (bytes: number) => {
+      const line = "Ünïcödé line of a long answer, with a 🙂 in it.\n";
+      return line.repeat(Math.ceil(bytes / Buffer.byteLength(line)));
+    };
+    /** The wallet's refusal of a send whose money is still in the bot's earlier sends: a stamp
+     * refusal with the tied-up refusal as its cause. Not labelled as having created nothing: the
+     * wallet recorded an intent for it (and ended it). */
+    const tiedUp = (tiedUpWei = 7_000_000_000_000_000n) =>
+      new InsufficientStampFundsError("No free funds cover a stamp", {
+        cause: new FundsInPendingSendError(tiedUpWei, 3n),
+      });
+    /** The wallet's record of the reply's send: ended for tied-up funds, nothing of it signed. */
+    const walletEndedForTiedUpFunds = (tiedUpWei: bigint) => {
+      const ended = "ab".repeat(32);
+      mockAttemptOf.mockResolvedValue({ payloadDigest: ended, paid: true });
+      mockEndOf.mockImplementation(async (params: { payloadDigest: string }) =>
+        params.payloadDigest === ended
+          ? { reason: "funds-tied-up", tiedUpWei }
+          : undefined
+      );
+    };
+
+    it("of about 1 MB goes as consecutive text items, each one a text item holds, that a reader shows as the one text", async () => {
+      const answer = longText(1_000_000);
+      const { host, instance } = await start(
+        bot("long-bot", async () => ({ kind: "prepared-reply", text: answer }))
+      );
+      const message = inbound("tell me everything");
+      await poll(host, [message]);
+      await drain(instance);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const items = mockSend.mock.calls[0][0].items;
+      expect(items.length).toBeGreaterThan(3);
+      for (const item of items) {
+        expect(item.type).toBe("text");
+        expect(Buffer.byteLength(item.text)).toBeLessThanOrEqual(
+          MAX_TEXT_STRING_BYTES
+        );
+      }
+      expect(joinConsecutiveTextItems(items)).toEqual([
+        { type: "text", text: answer },
+      ]);
+      expect(await finished(instance, message)).toBe(true);
+    });
+
+    it("sent again goes as the very same items under the same message ID", async () => {
+      const answer = longText(600_000);
+      const { host, instance } = await start(
+        bot("long-bot", async () => ({ kind: "prepared-reply", text: answer }))
+      );
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend
+        .mockReset()
+        .mockRejectedValueOnce(new Error("relay timed out"))
+        .mockImplementation(accept);
+      const message = inbound("again");
+      await poll(host, [message]);
+      await drain(instance);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      const [first, second] = mockSend.mock.calls.map(([params]) => params);
+      expect(second.items).toEqual(first.items);
+      expect(second.messageId).toBe(first.messageId);
+      expect(await finished(instance, message)).toBe(true);
+    });
+
+    it("more than a sealed message carries is refused with the reason logged, and the peer gets the failure reply once, never the long one", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const answer = "x".repeat(MAX_SEALED_MESSAGE_CONTENT_BYTES + 1);
+      const { host, instance } = await start(
+        bot("huge-bot", async () => ({ kind: "prepared-reply", text: answer }))
+      );
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("could not be stored") &&
+            String(line).includes("too large to send") &&
+            String(line).includes(String(MAX_SEALED_MESSAGE_CONTENT_BYTES))
+        )
+      ).toBe(true);
+    });
+
+    it("the wallet refused because the bot's funds are tied up in an earlier send is given up, saying so and how much, and not sent again on later polls", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const { host, instance } = await start(answering());
+      mockSend.mockReset().mockImplementation(async () => {
+        walletEndedForTiedUpFunds(7_000_000_000_000_000n);
+        throw tiedUp();
+      });
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      for (let pass = 0; pass < 3; pass++) {
+        await poll(host, [message]);
+        await drain(instance);
+      }
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("Giving up on the reply") &&
+            String(line).includes("7000000000000000 wei") &&
+            String(line).includes("tied up in a previous send")
+        )
+      ).toBe(true);
+      // The peer's next message is answered anew.
+      mockAttemptOf.mockReset().mockResolvedValue(undefined);
+      mockSend.mockReset().mockImplementation(accept);
+      const next = inbound("again");
+      await poll(host, [next]);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:again"]);
+    });
+
+    it("refused for tied-up funds that the wallet has not ended stays owed under its one message ID, and goes once the wallet takes it", async () => {
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(answering());
+      mockSend
+        .mockReset()
+        .mockRejectedValueOnce(tiedUp())
+        .mockImplementation(accept);
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      expect(await finished(instance, message)).toBe(false);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:hello", "re:hello"]);
+      const ids = mockSend.mock.calls.map(([params]) => params.messageId);
+      expect(new Set(ids).size).toBe(1);
+      expect(await finished(instance, message)).toBe(true);
+    });
+
+    it("whose earlier send the wallet ended for tied-up funds while the bot was down is given up after the restart, not sent again", async () => {
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const first = await start(answering());
+      mockSend.mockReset().mockRejectedValue(new Error("relay timed out"));
+      const message = inbound("hello");
+      await poll(first.host, [message]);
+      await drain(first.instance);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const messageId = mockSend.mock.calls[0][0].messageId;
+      await first.host.stop();
+
+      // Meanwhile the wallet's background pass found that send's intent and ended it: the
+      // bot's money was still in its earlier sends.
+      const ended = "ab".repeat(32);
+      mockAttemptOf.mockImplementation(async (params: { messageId: string }) =>
+        params.messageId === messageId
+          ? { payloadDigest: ended, paid: true }
+          : undefined
+      );
+      mockEndOf.mockImplementation(async (params: { payloadDigest: string }) =>
+        params.payloadDigest === ended
+          ? { reason: "funds-tied-up", tiedUpWei: 9n }
+          : undefined
+      );
+      mockSend.mockReset().mockImplementation(accept);
+      const second = await start(answering());
+      for (let pass = 0; pass < 3; pass++) {
+        await poll(second.host);
+        await drain(second.instance);
+      }
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(await finished(second.instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("Giving up on the reply") &&
+            String(line).includes("9 wei")
+        )
+      ).toBe(true);
     });
 
     it("replaces a reply text the journal cannot store by the failure reply", async () => {

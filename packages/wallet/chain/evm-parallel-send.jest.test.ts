@@ -1505,8 +1505,9 @@ describe('parallel paid messages', () => {
       // it ended, and nothing of it was signed.
       const intent = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })
       expect(intent?.paid).toBe(true)
+      // With the amount the failed send holds, as the refusal said.
       expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: intent!.payloadDigest }))
-        .toEqual({ reason: 'funds-tied-up' })
+        .toEqual({ reason: 'funds-tied-up', tiedUpWei: fundsInPendingSend(refused)!.tiedUpWei })
       // The node is back but no relay has the failed message: its payment is not broadcast
       // (it would pay for a message nobody can fetch), so the account stays held.
       offlineChain.broadcastDown = false
@@ -1540,6 +1541,63 @@ describe('parallel paid messages', () => {
       expect(graphBytes().filter(raw => original.includes(raw))).toEqual(original)
       expect(signedAtNonceOf(failed.payment)).toEqual(new Set([failed.payment.hash]))
       for (const operation of alice.getNativeOperations!()) expect(offlineChain.paymentsBroadcastEarly(operation)).toEqual([])
+      everySlotOnce()
+    })
+
+    it('a send left pending across a restart, whose money the background pass finds tied up in the failed send, ends saying so and how much, is never sent by a later pass, and goes out once on the user\'s retry', async () => {
+      const failed = await failFirst(1)
+      const original = graphBytes()
+      // Message 2's intent is recorded, then the process stops before anything of it is signed.
+      jest.spyOn(alice.transactionSetPreparer!, 'constructTransactionSet')
+        .mockRejectedValueOnce(new Error('crash before signing'))
+      await expect(sendIn(2, 1)).rejects.toThrow('crash before signing')
+      const intent = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) })
+      expect(intent?.paid).toBe(true)
+      await reopen()
+      const warn = jest.spyOn(console, 'warn')
+      // The background pass finds it, and its money is in the failed send (owner ruling
+      // 2026-10-26): it ends now with that reason and the amount, nothing of it signed.
+      expect((await tick([failed.digest, intent!.payloadDigest]))[intent!.payloadDigest]).toBe('dead')
+      const end = await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: intent!.payloadDigest })
+      expect(end).toMatchObject({ reason: 'funds-tied-up' })
+      expect((end as { tiedUpWei?: bigint }).tiedUpWei).toBeGreaterThan(0n)
+      expect(warn.mock.calls.some(([line]) =>
+        String(line).includes(`message ${intent!.payloadDigest} was not sent`) &&
+        String(line).includes('wei is tied up in a previous send'))).toBe(true)
+      expect(graphBytes()).toEqual(original)
+      // It stands for no payment: nobody is asked to answer for it.
+      expect(await f.chain.directMessages.unattributedAttempts({ wallet: alice, knownDigests: [failed.digest] }))
+        .toEqual([])
+      // The node and the relay are back: the failed message is delivered and its payment lands.
+      // The ended one is not sent by any pass, however many.
+      offlineChain.broadcastDown = false
+      relay.answer = undefined
+      for (let pass = 0; pass < 16 && !offlineChain.mined.has(failed.payment.hash!); pass++) await tick([failed.digest])
+      expect(offlineChain.mined.has(failed.payment.hash!)).toBe(true)
+      for (let pass = 0; pass < 6; pass++) await tick([failed.digest, intent!.payloadDigest])
+      expect(bobMailbox).toHaveLength(1)
+      expect(relayPayments().filter(tx => tx.hash !== failed.payment.hash)).toEqual([])
+      expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: intent!.payloadDigest }))
+        .toEqual(end)
+      // The user's Retry sends it under the same message ID, once.
+      let retried: unknown
+      for (let pass = 0; pass < 16; pass++) {
+        retried = await within(sendIn(2, 1), 8_000)
+        if (!(retried instanceof Error)) break
+        expect(fundsInPendingSend(retried)).toBeDefined()
+        await tick([failed.digest])
+      }
+      expect(retried).toMatchObject({ stampValueWei: STAMP })
+      for (let pass = 0; pass < 4; pass++) await tick([failed.digest])
+      expect(bobMailbox).toHaveLength(2)
+      expect(relayPayments().filter(tx => tx.hash !== failed.payment.hash)).toHaveLength(1)
+      expect(await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(2) }))
+        .toEqual({ payloadDigest: (retried as { payloadDigest: string }).payloadDigest, paid: true })
+      // A second Retry is the same attempt, never a second payment.
+      expect(await within(sendIn(2, 1), 8_000)).toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+      expect(bobMailbox).toHaveLength(2)
+      expect(graphBytes().filter(raw => original.includes(raw))).toEqual(original)
+      expect(signedAtNonceOf(failed.payment)).toEqual(new Set([failed.payment.hash]))
       everySlotOnce()
     })
 

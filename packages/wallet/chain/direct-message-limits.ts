@@ -10,7 +10,9 @@
  *
  * Pure constants and arithmetic: no wallet, no transport.
  */
-import { MAX_DM_CIPHERTEXT_BYTES } from '@frank/codec'
+import type { MessageItem } from '@frank/cashweb/types/messages'
+import { MAX_DM_CIPHERTEXT_BYTES, MAX_MESSAGE_ITEMS_TOTAL } from '@frank/codec'
+import { utf8ByteLength } from '../message-item-plugins/text/long-text'
 
 /** Counted for each item of a message on top of its content: a text item's frame adds 25 bytes
  * to its text, an image item's 44 to its data URI, and the note to self adds a few bytes per
@@ -37,3 +39,30 @@ export const SEALED_MESSAGE_FIELDS_ALLOWANCE_BYTES = 16 * 1024
  */
 export const MAX_SEALED_MESSAGE_CONTENT_BYTES =
   MAX_DM_CIPHERTEXT_BYTES - SEALED_MESSAGE_FIELDS_ALLOWANCE_BYTES
+
+/**
+ * What `items` take of a sealed message, counted as {@link MAX_SEALED_MESSAGE_CONTENT_BYTES}
+ * counts it: a text's UTF-8 bytes, an image's data URI, and {@link
+ * DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES} for every item. Other items count only their allowance;
+ * the wallet still refuses, when it encodes them, a message they make too large.
+ */
+export function sealedMessageContentBytes(items: readonly MessageItem[]): number {
+  let bytes = 0
+  for (const item of items) {
+    bytes += DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES
+    if (item.type === 'text') bytes += utf8ByteLength(item.text)
+    else if (item.type === 'image') bytes += item.image.length
+  }
+  return bytes
+}
+
+/** Why `items` (with long texts already split into text items) cannot be one sealed message:
+ * more items than a message holds, or more content than it carries. Undefined when they fit. */
+export function sealedMessageOverLimit(items: readonly MessageItem[]): string | undefined {
+  if (items.length > MAX_MESSAGE_ITEMS_TOTAL)
+    return `it has ${items.length} items and a message holds at most ${MAX_MESSAGE_ITEMS_TOTAL}`
+  const bytes = sealedMessageContentBytes(items)
+  if (bytes > MAX_SEALED_MESSAGE_CONTENT_BYTES)
+    return `it takes ${bytes} bytes and a sealed message carries at most ${MAX_SEALED_MESSAGE_CONTENT_BYTES}`
+  return undefined
+}

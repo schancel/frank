@@ -1,6 +1,8 @@
 import { createHash } from "crypto";
 import { computeAddress, getAddress } from "ethers";
-import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
+import { MAX_DM_CIPHERTEXT_BYTES } from "@frank/codec";
+import { textItemsOf } from "@frank/wallet/message-item-plugins/text/long-text";
+import { sealedMessageOverLimit } from "@frank/wallet/chain/direct-message-limits";
 import type { DirectMessageReceived } from "@frank/wallet/chain/active-chain";
 import { LevelBotStateStore } from "./state-store";
 
@@ -540,7 +542,8 @@ export class InboundOperationStore {
       await this.save(row);
     });
   }
-  /** Stages the one text reply the host owes for this message, with the row, in one batch. */
+  /** Stages the one text reply the host owes for this message, with the row, in one batch. A
+   * text more than one sealed message carries ({@link replyTextOverLimit}) is refused. */
   stageReply(
     digest: string,
     text: unknown,
@@ -553,12 +556,12 @@ export class InboundOperationStore {
         row.reply ||
         typeof text !== "string" ||
         !text ||
-        text.length > MAX_TEXT_STRING_BYTES ||
         // Well-formed Unicode only, so the stored bytes are the text that is sent.
         /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
           text
         ) ||
-        Buffer.byteLength(text, "utf8") > MAX_TEXT_STRING_BYTES
+        // No more than one sealed message carries: a long text goes as consecutive text items.
+        replyTextOverLimit(text) !== undefined
       )
         return hold();
       row.reply = { stampValue, since };
@@ -633,4 +636,13 @@ export class InboundOperationStore {
     this.closed = true;
     await this.tail;
   }
+}
+
+/** Why a reply text cannot be sent as one sealed message (as the consecutive text items it is
+ * sent as), or undefined when it can. */
+export function replyTextOverLimit(text: string): string | undefined {
+  // Cheap bound first: at most 3 UTF-8 bytes per UTF-16 unit.
+  if (text.length > MAX_DM_CIPHERTEXT_BYTES)
+    return `it is ${text.length} characters and a sealed message carries at most ${MAX_DM_CIPHERTEXT_BYTES} bytes`;
+  return sealedMessageOverLimit(textItemsOf(text));
 }

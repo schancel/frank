@@ -135,6 +135,11 @@ function fixture(financial = false) {
       events.push(`state:${status}:${delivery.attemptDigest ?? '-'}`)
       Object.assign(records.get(id)!, { status, delivery })
     }),
+    forgetTiedUpAttempt: jest.fn(async (_address, id, _digest, options) => {
+      options.assertCurrent()
+      events.push('forget-tied-up')
+      Object.assign(records.get(id)!, { status: 'pending', delivery: {} })
+    }),
     confirm: jest.fn(async params => {
       params.assertCurrent?.()
       events.push('confirm')

@@ -121,6 +121,16 @@ export interface OutgoingExecutionPorts<M extends ExecutionMessage>
     delivery: OutgoingDelivery,
     options?: { strict?: boolean; assertCurrent?: () => void },
   ): Promise<void>
+  /** Takes `digest` off the message, which goes back to pending, durably. Only for an attempt
+   * the wallet ended for funds tied up before anything of it was signed or handed out
+   * (`DirectMessageEnd` `funds-tied-up`): it stands for no payment. Refuses when the message
+   * records another attempt. */
+  forgetTiedUpAttempt(
+    address: string,
+    id: string,
+    digest: string,
+    options: { assertCurrent: () => void },
+  ): Promise<void>
   confirm(params: {
     address: string
     id: string
@@ -497,18 +507,37 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
               ? 'funds-in-pending-send'
               : 'rejected'
           assertCurrent()
-          await ports.setState(
-            address,
-            id,
-            'error',
-            {
-              attemptDigest: digest,
-              failureReason,
-              detail: previous?.detail,
-            },
-            { assertCurrent },
-          )
-          return { state: 'failed', reason: failureReason }
+          // Ended by the wallet because its money was still in an earlier send, before anything
+          // of it was signed or handed out: it stands for no payment, and the user's Retry sends
+          // it again under the same message ID (owner ruling 2026-10-26). Only a click does; a
+          // message carrying a payment of its own keeps that payment's attempt. Such a Retry
+          // takes the ended attempt off the message and goes on to step 2 below.
+          if (
+            end?.reason === 'funds-tied-up' &&
+            manual &&
+            !automatic &&
+            !financial
+          ) {
+            await ports.forgetTiedUpAttempt(address, id, digest, {
+              assertCurrent,
+            })
+          } else {
+            await ports.setState(
+              address,
+              id,
+              'error',
+              {
+                attemptDigest: digest,
+                failureReason,
+                detail:
+                  end?.reason === 'funds-tied-up' && end.tiedUpWei !== undefined
+                    ? end.tiedUpWei.toString()
+                    : previous?.detail,
+              },
+              { assertCurrent },
+            )
+            return { state: 'failed', reason: failureReason }
+          }
         } catch (error) {
           if (ports.isStale(error)) return { state: 'busy' }
           throw error

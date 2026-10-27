@@ -87,6 +87,9 @@ export interface StoredMessage {
   outcome?: 'delivered' | 'dead'
   /** Latest relay refusal; with no outcome the original request remains unresolved. */
   reason?: string
+  /** With `reason` `funds_tied_up` only: what this wallet's earlier sends, not on the chain yet,
+   * held when the message was refused (wei, decimal), so the app can say how much. */
+  tiedUpWei?: string
   /** A host message points at this attempt, or the user answered for it. */
   accounted?: boolean
   /** Complete bytes exist, but the host has not durably bound their financial effects. */
@@ -314,6 +317,8 @@ export function validateSharedStoredMessage(row: StoredMessage): void {
       (row.payments.length !== 0 || row.otherTransactions.length !== 0)) ||
     (row.outcome === 'delivered' && row.payments.length === 0) ||
     (row.request !== undefined && row.payments.length === 0) ||
+    (row.tiedUpWei !== undefined && (row.reason !== 'funds_tied_up' || row.outcome !== 'dead' ||
+      typeof row.tiedUpWei !== 'string' || !/^[0-9]+$/.test(row.tiedUpWei))) ||
     !Number.isSafeInteger(row.createdAt) || row.createdAt < 0
   )
     throw new Error('Inconsistent shared transaction-set sent-message state')

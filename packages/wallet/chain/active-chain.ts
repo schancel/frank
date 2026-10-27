@@ -342,7 +342,11 @@ export type DirectMessageEnd =
   | { readonly reason: "discarded" }
   /** Refused at once: the free coins did not cover it, and money of this wallet's earlier sends
    * that would have was not on the chain yet (`FundsInPendingSendError`). Nothing was paid. */
-  | { readonly reason: "funds-tied-up" }
+  | {
+      readonly reason: "funds-tied-up";
+      /** What the earlier sends held when it was refused, when the wallet recorded it. */
+      readonly tiedUpWei?: bigint;
+    }
   | { readonly reason: "relay"; readonly relayReason?: string };
 
 /** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only

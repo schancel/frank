@@ -6,7 +6,13 @@ import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import en from '../i18n/en-us'
 
 const mockPush = jest.fn(async () => undefined)
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
+// Setup's completions replace its entry: Back never returns to setup.
+const mockReplace = jest.fn(async () => undefined)
+// Nothing in setup leaves an entry Back would return to.
+afterEach(() => expect(mockPush).not.toHaveBeenCalled())
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+}))
 
 jest.mock('../accounts/session', () => ({
   accountStatus: jest.requireActual('vue').reactive({
@@ -50,7 +56,7 @@ const t = (key: string) =>
 function render() {
   return mount(Setup, {
     global: {
-      mocks: { $t: t, $router: { push: mockPush } },
+      mocks: { $t: t, $router: { push: mockPush, replace: mockReplace } },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
         QToolbar: { template: '<div><slot /></div>' },
@@ -85,6 +91,7 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     mockPush.mockClear()
+    mockReplace.mockClear()
     mockSession.retry.mockClear()
     Object.assign(mockAccount, {
       status: 'locked',
@@ -174,7 +181,7 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
 
     expect(takeoverSpy).toHaveBeenCalledTimes(1)
     expect(view.emitted('setupCompleted')).toBeTruthy()
-    expect(mockPush).toHaveBeenCalledWith('/wallet')
+    expect(mockReplace).toHaveBeenCalledWith('/wallet')
 
     view.unmount()
   })
@@ -211,7 +218,7 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     )
     expect(tabStore.otherTabActive).toBe(true)
     expect(mockSession.retry).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
 
     view.unmount()
   })
@@ -223,7 +230,7 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     const view = render()
     await flushPromises()
 
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
 
     // Simulate other tab closing
     tabStore.otherTabActive = false
@@ -231,7 +238,7 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     mockAccount.status = 'ready'
     await flushPromises()
 
-    expect(mockPush).toHaveBeenCalledWith('/wallet')
+    expect(mockReplace).toHaveBeenCalledWith('/wallet')
     expect(tabStore.wasAutoReleased).toBe(false)
 
     view.unmount()

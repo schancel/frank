@@ -76,10 +76,11 @@ jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
 }))
 
-jest.mock('src/utils/navigate-back', () => ({
-  navigateBack: jest.fn(),
+jest.mock('src/utils/navigation', () => ({
+  ...jest.requireActual('src/utils/navigation'),
+  goBack: jest.fn(),
 }))
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 
 /** A home relay as it would describe itself at `/relay/v1/info`. */
 const TEST_RELAY = {
@@ -769,7 +770,7 @@ describe('Profile.vue', () => {
 
     await (wrapper.vm as any).updateRelayData()
 
-    expect(navigateBack).not.toHaveBeenCalled()
+    expect(goBack).not.toHaveBeenCalled()
     expect(mockNotify).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'positive',
@@ -792,7 +793,7 @@ describe('Profile.vue', () => {
 
     ;(wrapper.vm as any).cancel()
 
-    expect(navigateBack).toHaveBeenCalledWith(expect.anything())
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/settings')
   })
 
   it('updates links via v-model:links and persists via updateRelayData', async () => {

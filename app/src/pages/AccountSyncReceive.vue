@@ -26,9 +26,8 @@
             icon="arrow_back"
             :label="$t('accountSync.back')"
             :disable="restoring"
-            :to="backTarget"
-            replace
             data-test="sync-back"
+            @click="returnTo(router, backTarget)"
           />
           <h1 class="text-h5">{{ $t('accountSync.receive') }}</h1>
           <p
@@ -57,9 +56,8 @@
             no-caps
             :label="$t('accountSync.cancel')"
             :disable="restoring"
-            :to="backTarget"
-            replace
             data-test="sync-cancel"
+            @click="returnTo(router, backTarget)"
           />
         </template>
       </main>
@@ -69,7 +67,8 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave, useRoute } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { returnTo } from '../utils/navigation'
 import SyncPinEntry from '../components/SyncPinEntry.vue'
 import { accountStatus } from '../accounts/session'
 import {
@@ -89,6 +88,8 @@ const onboardingReturn = computed(() =>
     ? route.query.returnTo
     : null,
 )
+// Back and Cancel return to where the sync was opened from; neither leaves an entry.
+const router = useRouter()
 const backTarget = computed(() => onboardingReturn.value ?? '/welcome')
 const doneTarget = computed(() => onboardingReturn.value ?? '/forum')
 const canReceive = computed(() => {

@@ -195,6 +195,7 @@ import ForumDrawer from '../components/panels/ForumDrawer.vue'
 import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
+import { backDismissible, goBack } from '../utils/navigation'
 
 const MIN_REFRESH_FEEDBACK_MS = 700
 const RESULT_FEEDBACK_MS = 900
@@ -209,6 +210,15 @@ type RefreshFeedbackContext = {
 }
 
 export default defineComponent({
+  // Phone Back closes these overlays (utils/navigation).
+  mixins: [
+    backDismissible({
+      isOpen: vm => Boolean(vm.showForumDrawer && vm.narrow),
+      close: vm => {
+        vm.showForumDrawer = false
+      },
+    }),
+  ],
   data() {
     return {
       showForumDrawer: false,
@@ -465,8 +475,9 @@ export default defineComponent({
       }
       void this.refreshContent()
     },
+    // The thread's (or new post's) back arrow: Back, or the forum when this was opened directly.
     navigateBack() {
-      void this.$router.push('/forum')
+      goBack(this.$router, '/forum')
     },
     clearTopic() {
       this.selectedTopic = ''

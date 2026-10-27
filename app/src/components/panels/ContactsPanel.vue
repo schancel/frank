@@ -299,7 +299,7 @@ import {
 } from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
-import { openChat, openContactProfile, openPage } from 'src/utils/routes'
+import { openChat, openContactProfile } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import DeleteContactDialog from 'src/components/dialogs/DeleteContactDialog.vue'
 import {
@@ -659,7 +659,7 @@ export default defineComponent({
       const target = from
         ? `/add-contact?from=${encodeURIComponent(from)}`
         : '/add-contact'
-      openPage(router, target)
+      router.push(target)
     }
 
     function openMyQr() {
@@ -672,7 +672,7 @@ export default defineComponent({
       if (from) {
         params.set('from', from)
       }
-      openPage(router, `/qr?${params.toString()}`)
+      router.push(`/qr?${params.toString()}`)
       if (isNarrow()) {
         emit('closeDrawer')
       }
@@ -689,7 +689,7 @@ export default defineComponent({
       if (from) {
         params.set('from', from)
       }
-      openPage(router, `/add-contact?${params.toString()}`)
+      router.push(`/add-contact?${params.toString()}`)
       if (isNarrow()) {
         emit('closeDrawer')
       }

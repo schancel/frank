@@ -34,7 +34,13 @@ jest.mock('../accounts/ceremony', () => ({
   recoveryErrorMessage: () => 'Account operation failed',
 }))
 const mockPush = jest.fn(async () => undefined)
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
+// Setup's completions replace its entry: Back never returns to setup.
+const mockReplace = jest.fn(async () => undefined)
+// Nothing in setup leaves an entry Back would return to.
+afterEach(() => expect(mockPush).not.toHaveBeenCalled())
+jest.mock('vue-router', () => ({
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
+}))
 const mockAccount = reactive(toRaw(accountStatus))
 const t = (locale: 'en' | 'fr') => (key: string) => {
   const value = key
@@ -60,7 +66,10 @@ const pending = {
 function render(locale: 'en' | 'fr' = 'en') {
   return mount(Setup, {
     global: {
-      mocks: { $t: t(locale), $router: { push: mockPush } },
+      mocks: {
+        $t: t(locale),
+        $router: { push: mockPush, replace: mockReplace },
+      },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
         QToolbar: { template: '<div><slot /></div>' },
@@ -119,6 +128,7 @@ beforeEach(async () => {
     },
   })
   mockPush.mockClear()
+  mockReplace.mockClear()
   mockPasskey.mockReset()
   mockCancel.mockClear()
   jest.spyOn(mockSession, 'retry').mockResolvedValue(undefined)
@@ -172,7 +182,7 @@ test.each(['en', 'fr'] as const)(
           )
           expect(mockSession.stage).not.toHaveBeenCalled()
           expect(mockSession.activatePending).not.toHaveBeenCalled()
-          expect(mockPush).not.toHaveBeenCalled()
+          expect(mockReplace).not.toHaveBeenCalled()
         }
       }
     } finally {
@@ -237,7 +247,7 @@ test('successful passkey login enters pending review without activation or navig
       'Its published profile will be loaded separately',
     )
     expect(mockSession.activatePending).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
     expect(view.emitted('setupCompleted')).toBeUndefined()
   } finally {
     view.unmount()
@@ -305,7 +315,7 @@ test.each([
       expect(getCustomRelayBaseUrl()).toBe(home)
       expect(probe).not.toHaveBeenCalled()
       expect(mockSession.activatePending).not.toHaveBeenCalled()
-      expect(mockPush).not.toHaveBeenCalled()
+      expect(mockReplace).not.toHaveBeenCalled()
     } finally {
       if (!unmounted) view.unmount()
       probe.mockClear()
@@ -455,8 +465,8 @@ test.each(['adopted', 'missing', 'unreachable'] as const)(
       // A relay that did not answer does not hold the account back: it opens, and the
       // profile is adopted in the background once the relay answers.
       if (profileOutcome === 'missing')
-        expect(mockPush).toHaveBeenCalledWith('/profile')
-      else expect(mockPush).toHaveBeenCalledWith('/wallet')
+        expect(mockReplace).toHaveBeenCalledWith('/profile')
+      else expect(mockReplace).toHaveBeenCalledWith('/wallet')
       expect(view.find('[data-test="account-error"]').exists()).toBe(false)
     } finally {
       view.unmount()

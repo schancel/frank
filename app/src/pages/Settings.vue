@@ -772,6 +772,7 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
+import { goBack } from '../utils/navigation'
 const msToMinutes = 60000
 
 const UI_SCALE_OPTIONS: readonly {
@@ -1443,17 +1444,9 @@ export default defineComponent({
       }
       if (row.route) this.openRoute(row.route)
     },
+    // The section's back arrow is Back; opened directly, it gives way to the list.
     closeSection() {
-      const previous = (
-        typeof window !== 'undefined'
-          ? (window.history.state as { back?: unknown } | null)?.back
-          : null
-      ) as string | null | undefined
-      if (previous === '/settings') {
-        this.$router.back()
-      } else {
-        void this.$router.replace('/settings')
-      }
+      goBack(this.$router, '/settings')
     },
   },
 })

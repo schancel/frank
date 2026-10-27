@@ -702,7 +702,6 @@ import { useChainBalance } from 'src/composables/useChainBalance'
 import { useBalance } from 'src/composables/useBalance'
 import { useMyDrawerOpen } from 'src/composables/useMyDrawerOpen'
 import { useWalletNames } from 'src/composables/useWalletNames'
-import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
 import {
@@ -1202,7 +1201,7 @@ export default defineComponent({
       openRenameDialog,
       saveWalletName,
       showReceiveQr: ref(false),
-      openAvuDetails: () => openPage(router, '/avu'),
+      openAvuDetails: () => router.push('/avu'),
       async copyAddress() {
         if (!displayAddress.value) return
         try {
@@ -1214,14 +1213,11 @@ export default defineComponent({
       },
       openSend() {
         if (sendChainIdentifier.value) {
-          openPage(router, `/send?chainIdentifier=${sendChainIdentifier.value}`)
+          router.push(`/send?chainIdentifier=${sendChainIdentifier.value}`)
         }
       },
       openSendContact() {
-        openPage(router, '/send-contact')
-      },
-      openReceive() {
-        openPage(router, '/wallet')
+        router.push('/send-contact')
       },
       nativeAsset,
       nonNativeTokens,

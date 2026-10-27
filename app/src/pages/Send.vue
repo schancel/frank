@@ -392,7 +392,7 @@
 import QrScannerDialog from 'src/components/dialogs/QrScannerDialog.vue'
 import { accountSession } from 'src/accounts/session'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import {
   nativeOperationOutcome,
   nativeOperationProgress,
@@ -780,7 +780,7 @@ export default defineComponent({
         isReviewing.value = false
       },
       cancelEdit: () => {
-        navigateBack(router)
+        goBack(router, '/wallet')
       },
       confirmSend: async () => {
         if (sending.value || dispatched.value || disposed) return
@@ -964,7 +964,7 @@ export default defineComponent({
             reviewed.context.chain.chainIdentifier,
             result.txHash,
           )
-          navigateBack(router)
+          goBack(router, '/wallet')
         } catch (err) {
           if (disposed) return
           if (!dispatched.value) {

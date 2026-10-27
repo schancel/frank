@@ -271,7 +271,7 @@ export default defineComponent({
   methods: {
     openConversation() {
       const target = this.effectiveId
-      this.chatStore.setActiveConversation(target)
+      // The route selects the conversation once it is committed.
       if (this.$router) {
         openChat(this.$router, target)
       }

@@ -16,9 +16,10 @@ jest.mock('vue-router', () => ({
     currentRoute: { value: { path: '/', params: {}, query: {} } },
     onError: jest.fn(),
   }),
-  createMemoryHistory: jest.fn(),
-  createWebHistory: jest.fn(),
-  createWebHashHistory: jest.fn(),
+  // The router listens to its history for Back (utils/navigation).
+  createMemoryHistory: jest.fn(() => ({ listen: jest.fn() })),
+  createWebHistory: jest.fn(() => ({ listen: jest.fn() })),
+  createWebHashHistory: jest.fn(() => ({ listen: jest.fn() })),
 }))
 jest.mock('./routes', () => ({ createRoutes: () => [] }))
 jest.mock('src/stores/chats', () => ({

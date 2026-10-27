@@ -1,0 +1,574 @@
+/** @jest-environment jsdom */
+import { createApp, defineComponent, h, nextTick, ref } from 'vue'
+import type { Router } from 'vue-router'
+
+import {
+  goBack,
+  handleHardwareBack,
+  navigationPending,
+  previousInAppLocation,
+  replaceFlow,
+  resetNavigationForTests,
+  returnTo,
+  switchTab,
+  useBackDismiss,
+} from './navigation'
+import {
+  afterNavigation,
+  flushHistory,
+  historyPosition,
+  openApp,
+  userBack,
+  userForward,
+} from '../../test/jest/navigation-harness'
+
+// vue-router 5 loads `nostics` and `@vue/devtools-api` (both ESM-only for Jest) just for dev
+// warnings and the devtools hook; the tests need the real router's history handling, not those.
+jest.mock(
+  require.resolve('@vue/devtools-api', {
+    paths: [require.resolve('vue-router')],
+  }),
+  () => ({ setupDevtoolsPlugin: () => undefined }),
+)
+jest.mock('nostics', () => ({
+  createConsoleReporter: () => ({}),
+  defineDiagnostics: () => new Proxy({}, { get: () => () => undefined }),
+}))
+
+const PATHS = [
+  '/',
+  '/chat',
+  '/chat/:id',
+  '/forum',
+  '/wallet',
+  '/send',
+  '/settings',
+  '/qr',
+  '/contacts',
+  '/add-contact',
+  '/welcome',
+  '/setup',
+]
+
+let router: Router
+let narrow = true
+let destroy: () => void = () => undefined
+
+async function start(path: string) {
+  ;({ router, destroy } = await openApp(PATHS, path, {
+    backClosesOverlays: () => narrow,
+  }))
+}
+
+beforeEach(() => {
+  narrow = true
+})
+afterEach(() => {
+  destroy()
+  resetNavigationForTests()
+})
+
+/** A drawer registered with `useBackDismiss`. */
+function mountOverlay() {
+  const open = ref(false)
+  const Overlay = defineComponent({
+    setup() {
+      useBackDismiss(
+        () => open.value,
+        () => {
+          open.value = false
+        },
+      )
+      return () => h('div')
+    },
+  })
+  const app = createApp(Overlay)
+  app.use(router)
+  app.mount(document.createElement('div'))
+  return { open, app }
+}
+
+describe('goBack: a back arrow is Back', () => {
+  it('goes back to the page it was opened from', async () => {
+    await start('/wallet')
+    const base = historyPosition()
+    await router.push('/send')
+    goBack(router, '/wallet')
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(base)
+    // Forward still reaches the page that was left, like the browser's own Back.
+    await userForward(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+  })
+
+  it('opened directly, replaces itself with its parent instead of pushing it', async () => {
+    await start('/send')
+    const base = historyPosition()
+    goBack(router, '/wallet')
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(base)
+  })
+})
+
+describe('returnTo: a finished form leaves no entry Back would reopen', () => {
+  it('goes back when the target is the page before the form', async () => {
+    await start('/contacts')
+    const base = historyPosition()
+    await router.push('/add-contact')
+    returnTo(router, '/contacts')
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/contacts')
+    expect(historyPosition()).toBe(base)
+  })
+
+  it('replaces the form when the target is elsewhere', async () => {
+    await start('/contacts')
+    await router.push('/add-contact')
+    const formPosition = historyPosition()
+    returnTo(router, '/chat')
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(historyPosition()).toBe(formPosition)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/contacts')
+  })
+})
+
+describe('switchTab: tabs do not stack (Android/Material)', () => {
+  it('Back from any tab lands on Messages, however many tabs were visited', async () => {
+    await start('/chat')
+    const base = historyPosition()
+    await switchTab(router, '/wallet')
+    expect(historyPosition()).toBe(base + 1)
+    await switchTab(router, '/settings')
+    await switchTab(router, '/forum')
+    await switchTab(router, '/qr')
+    expect(router.currentRoute.value.path).toBe('/qr')
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(historyPosition()).toBe(base)
+  })
+
+  it('a tab tapped deep inside another tab replaces that tab, not the page on top', async () => {
+    await start('/chat')
+    const base = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    expect(historyPosition()).toBe(base + 2)
+    await switchTab(router, '/settings')
+    expect(router.currentRoute.value.path).toBe('/settings')
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+  })
+
+  it('the Messages tab goes back to the Messages entry instead of stacking another', async () => {
+    await start('/chat')
+    const base = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    await switchTab(router, '/chat')
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(historyPosition()).toBe(base)
+  })
+
+  it('opened on another tab, the next tab takes its place: no Messages the user never saw goes under it', async () => {
+    await start('/forum')
+    const base = historyPosition()
+    await switchTab(router, '/wallet')
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(base)
+    // Back leaves the app, as from the tab the session started on.
+    expect(previousInAppLocation()).toBeNull()
+  })
+
+  it('opened on a page that is not a tab, a tab opens above it and Back returns to that page', async () => {
+    await start('/send')
+    const base = historyPosition()
+    await switchTab(router, '/settings')
+    expect(historyPosition()).toBe(base + 1)
+    // Tabs still do not stack among themselves.
+    await switchTab(router, '/wallet')
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+    expect(historyPosition()).toBe(base)
+  })
+
+  it('opened on a page that is not a tab, Messages opens above it', async () => {
+    await start('/send')
+    const base = historyPosition()
+    await switchTab(router, '/chat')
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+  })
+
+  it('remembers the Messages entry across Back and Forward', async () => {
+    await start('/chat')
+    const base = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    await userBack(router)
+    await userForward(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+    await switchTab(router, '/forum')
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+  })
+})
+
+describe('useBackDismiss: Back closes an overlay on a phone', () => {
+  it('Back closes the open overlay and stays on the page, in the same history entry', async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    const position = historyPosition()
+    const { open, app } = mountOverlay()
+    open.value = true
+    await nextTick()
+    await userBack(router)
+    expect(open.value).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/chat/a')
+    expect(historyPosition()).toBe(position)
+    // With nothing open, Back navigates again.
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    app.unmount()
+  })
+
+  it('a wide screen keeps Back for navigation', async () => {
+    narrow = false
+    await start('/chat')
+    await router.push('/chat/a')
+    const { open, app } = mountOverlay()
+    open.value = true
+    await nextTick()
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    app.unmount()
+  })
+
+  it("the app's own Back (an arrow) is not taken for the user's", async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    const { open, app } = mountOverlay()
+    open.value = true
+    await nextTick()
+    goBack(router, '/chat')
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    app.unmount()
+  })
+})
+
+describe('handleHardwareBack: Android Back in the native app', () => {
+  it('goes back, and on Messages leaves the app', async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    const exitApp = jest.fn()
+    handleHardwareBack(router, exitApp)
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(exitApp).not.toHaveBeenCalled()
+    handleHardwareBack(router, exitApp)
+    expect(exitApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes an open overlay first', async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    const open = ref(true)
+    const app = createApp(
+      defineComponent({
+        setup() {
+          useBackDismiss(
+            () => open.value,
+            () => {
+              open.value = false
+            },
+          )
+          return () => h('div')
+        },
+      }),
+    )
+    app.mount(document.createElement('div'))
+    const exitApp = jest.fn()
+    handleHardwareBack(router, exitApp)
+    expect(open.value).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/chat/a')
+    app.unmount()
+  })
+
+  it('on Messages opened above a page the user came from, goes back to it, as Back does on the web', async () => {
+    await start('/send')
+    await switchTab(router, '/chat')
+    const exitApp = jest.fn()
+    handleHardwareBack(router, exitApp)
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+    expect(exitApp).not.toHaveBeenCalled()
+    handleHardwareBack(router, exitApp)
+    expect(exitApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('on the first screen of the session leaves the app', async () => {
+    await start('/wallet')
+    const exitApp = jest.fn()
+    handleHardwareBack(router, exitApp)
+    expect(exitApp).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('switchTab never shows a page in between', () => {
+  function committed() {
+    const paths: string[] = []
+    router.afterEach((to, _from, failure) => {
+      if (!failure) paths.push(to.fullPath)
+    })
+    return paths
+  }
+
+  it('from a conversation, a tab opens above it and Back returns to the conversation', async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    const conversation = historyPosition()
+    const shown = committed()
+    await switchTab(router, '/wallet')
+    expect(shown).toEqual(['/wallet'])
+    expect(historyPosition()).toBe(conversation + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat/a')
+  })
+
+  it('deep inside a tab, the next tab replaces that tab without showing its root', async () => {
+    await start('/chat')
+    const messages = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    const shown = committed()
+    await switchTab(router, '/settings')
+    expect(shown).toEqual(['/settings'])
+    expect(historyPosition()).toBe(messages + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+  })
+
+  it('opened on a page that is not a tab, the tab is the only page shown', async () => {
+    await start('/send')
+    const base = historyPosition()
+    const shown = committed()
+    await switchTab(router, '/wallet')
+    expect(shown).toEqual(['/wallet'])
+    expect(historyPosition()).toBe(base + 1)
+    await userBack(router)
+    expect(shown).toEqual(['/wallet', '/send'])
+  })
+
+  it('a page that refuses to be left keeps its entry and its address', async () => {
+    await start('/chat')
+    const messages = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    // Like a restore in progress (AccountSyncReceive), the page does not let the user leave.
+    let refuse = true
+    router.beforeEach((_to, from) => !(refuse && from.path === '/send'))
+    const shown = committed()
+    await switchTab(router, '/settings')
+    expect(shown).toEqual([])
+    expect(router.currentRoute.value.path).toBe('/send')
+    expect(window.location.hash).toBe('#/send')
+    expect(historyPosition()).toBe(messages + 2)
+    // Once it does, the tab replaces the wallet tab as usual.
+    refuse = false
+    await switchTab(router, '/settings')
+    expect(shown).toEqual(['/settings'])
+    expect(historyPosition()).toBe(messages + 1)
+    expect(window.location.hash).toBe('#/settings')
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
+  })
+
+  it('a move the browser drops leaves Back and Forward working', async () => {
+    await start('/chat')
+    const messages = historyPosition()
+    await switchTab(router, '/wallet')
+    await router.push('/send')
+    const go = jest
+      .spyOn(window.history, 'go')
+      .mockImplementationOnce(() => undefined)
+    await switchTab(router, '/settings')
+    go.mockRestore()
+    expect(router.currentRoute.value.path).toBe('/settings')
+    expect(historyPosition()).toBe(messages + 2)
+    // The router follows the user's next Back instead of ignoring it.
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(window.location.hash).toBe('#/wallet')
+  })
+})
+
+describe('switchTab while another navigation is under way', () => {
+  it('a double tap on Messages goes back once', async () => {
+    await start('/chat')
+    const messages = historyPosition()
+    await switchTab(router, '/wallet')
+    await Promise.all([switchTab(router, '/chat'), switchTab(router, '/chat')])
+    await flushHistory()
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(historyPosition()).toBe(messages)
+  })
+
+  it('a tap during a Back waits for it instead of stacking a second Messages', async () => {
+    await start('/chat')
+    const messages = historyPosition()
+    await switchTab(router, '/wallet')
+    // The Back has moved the session history but the router has not committed it yet.
+    let tap: Promise<void> | undefined
+    window.addEventListener(
+      'popstate',
+      () => {
+        tap = switchTab(router, '/chat')
+      },
+      { once: true },
+    )
+    window.history.back()
+    await flushHistory()
+    await tap
+    await flushHistory()
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(historyPosition()).toBe(messages)
+    // No second Messages entry above the first.
+    await userForward(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+  })
+})
+
+describe('navigationPending', () => {
+  it('is false again after a router call that throws before it starts', async () => {
+    await start('/chat')
+    expect(() => router.push({ name: 'no-such-route' })).toThrow()
+    expect(() => router.replace({ name: 'no-such-route' })).toThrow()
+    expect(navigationPending()).toBe(false)
+  })
+
+  it("an app Back the browser drops is not mistaken for the user's next Back", async () => {
+    await start('/chat')
+    await router.push('/chat/a')
+    // The arrow's Back never happens.
+    goBack({ go: () => undefined, replace: router.replace }, '/chat')
+    expect(navigationPending()).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    expect(navigationPending()).toBe(false)
+    const position = historyPosition()
+    const { open, app } = mountOverlay()
+    open.value = true
+    await nextTick()
+    await userBack(router)
+    expect(open.value).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/chat/a')
+    expect(historyPosition()).toBe(position)
+    app.unmount()
+  })
+
+  it('is true from the moment of the router call, before any guard runs', async () => {
+    await start('/chat')
+    const navigation = router.push('/wallet')
+    expect(navigationPending()).toBe(true)
+    await navigation
+    expect(navigationPending()).toBe(false)
+  })
+
+  it('is true from the moment of a Back', async () => {
+    await start('/chat')
+    await router.push('/wallet')
+    // Right after the router has heard the Back, before any of its guards has run.
+    let pendingAtPop: boolean | undefined
+    window.addEventListener(
+      'popstate',
+      () => {
+        pendingAtPop = navigationPending()
+      },
+      { once: true },
+    )
+    await userBack(router)
+    expect(pendingAtPop).toBe(true)
+    expect(navigationPending()).toBe(false)
+  })
+})
+
+describe('a Back that only closes an overlay, onto an address that redirects', () => {
+  it('keeps the address bar on the page the user is on', async () => {
+    ;({ router, destroy } = await openApp(
+      [...PATHS, { path: '/receive', redirect: '/wallet' }],
+      '/wallet',
+      { backClosesOverlays: () => true },
+    ))
+    // An entry left at #/receive (an older visit to an address that now redirects).
+    const state = window.history.state as Record<string, unknown>
+    window.history.pushState(
+      {
+        ...state,
+        back: '/wallet',
+        current: '/receive',
+        forward: null,
+        position: (state.position as number) + 1,
+      },
+      '',
+      '#/receive',
+    )
+    await router.push('/chat')
+    const position = historyPosition()
+    const open = ref(true)
+    const app = createApp(
+      defineComponent({
+        setup() {
+          useBackDismiss(
+            () => open.value,
+            () => {
+              open.value = false
+            },
+          )
+          return () => h('div')
+        },
+      }),
+    )
+    app.mount(document.createElement('div'))
+    await nextTick()
+    await userBack(router)
+    await flushHistory()
+    expect(open.value).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(window.location.hash).toBe('#/chat')
+    expect(historyPosition()).toBe(position)
+    app.unmount()
+  })
+})
+
+describe('replaceFlow: a finished flow and the page it was opened from give way', () => {
+  it('after Welcome -> Setup, the wallet takes both entries and Back leaves the app', async () => {
+    await start('/welcome')
+    const welcome = historyPosition()
+    await router.push('/setup')
+    await replaceFlow(router, '/welcome', '/wallet')
+    await flushHistory()
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(welcome)
+    expect(previousInAppLocation()).toBeNull()
+  })
+
+  it('opened elsewhere, the flow only replaces itself', async () => {
+    await start('/forum')
+    const forum = historyPosition()
+    await router.push('/setup')
+    await replaceFlow(router, '/welcome', '/wallet')
+    await flushHistory()
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(forum + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/forum')
+  })
+})

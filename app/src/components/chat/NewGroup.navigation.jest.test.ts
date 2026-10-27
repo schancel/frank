@@ -2,7 +2,12 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent, h, reactive } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
-import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
+import {
+  createRouter,
+  createMemoryHistory,
+  createWebHashHistory,
+  RouterView,
+} from 'vue-router'
 const runtime = globalThis as typeof globalThis & {
   Vue: typeof import('vue')
   Quasar: typeof import('quasar')
@@ -91,10 +96,10 @@ jest.mock('../../utils/own-address', () => ({
 }))
 jest.mock('./ChatListItem.vue', () => ({ render: () => null }))
 
-async function start(path = '/chat') {
+async function start(path = '/chat', history = createMemoryHistory()) {
   setActivePinia(createPinia())
   const router = createRouter({
-    history: createMemoryHistory(),
+    history,
     routes: [
       { path: '/chat', component: ChatList, props: { compact: false } },
       { path: '/new-group', component: NewGroup },
@@ -192,6 +197,36 @@ it.each(['new-group-back', 'cancel-create-group'])(
       expect(mockCreate).not.toHaveBeenCalled()
     } finally {
       wrapper.unmount()
+    }
+  },
+)
+
+it.each(['new-group-back', 'cancel-create-group'])(
+  '%s returns to the chat list it was opened from, leaving no second list entry',
+  async control => {
+    // Real session history: Back after Cancel must leave the list, not show it again.
+    window.history.pushState(null, '', '#/before-the-app')
+    window.history.pushState(null, '', '#/chat')
+    const history = createWebHashHistory()
+    const { wrapper, router } = await start('/chat', history)
+    try {
+      const listPosition = (window.history.state as { position: number })
+        .position
+      await wrapper.get('[data-testid="new-group-btn"]').trigger('click')
+      await flushPromises()
+      expect(router.currentRoute.value.path).toBe('/new-group')
+      await wrapper.get(`[data-test="${control}"]`).trigger('click')
+      for (let i = 0; i < 5; i++) {
+        await flushPromises()
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(router.currentRoute.value.path).toBe('/chat')
+      expect((window.history.state as { position: number }).position).toBe(
+        listPosition,
+      )
+    } finally {
+      wrapper.unmount()
+      history.destroy()
     }
   },
 )

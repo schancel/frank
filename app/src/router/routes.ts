@@ -2,6 +2,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import { accountStatus } from '../accounts/session'
 import { resolveSavedExtensionRoute } from './extension-route-persistence'
 import AvuDetails from '../pages/AvuDetails.vue'
+import { NOT_FOUND_ROUTE } from './not-found'
 
 export function createRoutes(): RouteRecordRaw[] {
   const routes: RouteRecordRaw[] = [
@@ -125,6 +126,12 @@ export function createRoutes(): RouteRecordRaw[] {
             path: '/onboard',
             hash: `#claim=${String(to.params.token || '')}`,
           }),
+        },
+        // Last: any address no route above matches.
+        {
+          path: ':pathMatch(.*)*',
+          name: NOT_FOUND_ROUTE,
+          component: () => import('pages/NotFound.vue'),
         },
       ],
     },

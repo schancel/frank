@@ -9,7 +9,7 @@
     the same drawer as the chat list -- matches Telegram/WhatsApp/Signal's own left-hand nav
     strip. `q-tabs`' own `vertical` prop does the layout work; the tab names/click handlers below
     are otherwise unchanged from before this split, so none of that established navigation
-    behavior (openActiveOrRecentChat, the /forum push, the unread badge) needed touching. -->
+    behavior (the tab switches, the unread badge) needed touching. -->
     <div
       class="column items-center icon-rail"
       v-if="$status.setup"
@@ -28,14 +28,14 @@
         content-class="settings-pin-content"
         :aria-label="$t('leftDrawer.railLabel')"
       >
-        <!-- Navigates to the active (or most recently used) chat -->
+        <!-- Opens the conversation list, like the bottom Messages tab -->
         <q-tab
           name="chats"
           id="rail-tab-chats"
           aria-controls="rail-panel-chats"
           icon="forum"
           :aria-label="chatsLabel()"
-          @click="openActiveOrRecentChat"
+          @click="openChatsTab"
         >
           <q-tooltip>{{ $t('leftDrawer.chats') }}</q-tooltip>
           <q-badge
@@ -411,7 +411,8 @@ import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 import { isNarrowWidth } from '../../utils/layout'
 import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
-import { openChat, openPage } from '../../utils/routes'
+import { openChat } from '../../utils/routes'
+import { START_TAB, switchTab } from '../../utils/navigation'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
 import { useForumStore } from 'src/stores/forum'
@@ -458,8 +459,10 @@ export default defineComponent({
       'markRailNavigation',
       () => undefined, // standalone (outside MainLayout): nothing to mark
     )
+    // Rail tabs are the bottom tabs' wide-screen form: they switch tabs, they do not stack
+    // (utils/navigation `switchTab`).
+    const railStep = { beforeStep: markRailNavigation }
     function openForumTab() {
-      markRailNavigation()
       maybeRefreshTopics()
       if (forum.selectedTopic) {
         forum.setSelectedTopic('')
@@ -477,45 +480,33 @@ export default defineComponent({
           }
         })()
       }
-      return router.push('/forum')
+      return switchTab(router, '/forum', railStep)
     }
     function openSettingsTab() {
       if (isNarrow.value) emit('closeDrawer')
-      return router.push('/settings')
+      return switchTab(router, '/settings')
     }
     function openWalletTab() {
-      markRailNavigation()
       if (!route?.path?.startsWith('/wallet')) {
-        return router.push('/wallet')
+        return switchTab(router, '/wallet', railStep)
       }
     }
     function openDappBridgeTab() {
       if (isNarrow.value) emit('closeDrawer')
       if (!route?.path?.startsWith('/dapp-bridge')) {
-        return router.push('/dapp-bridge')
+        return switchTab(router, '/dapp-bridge')
       }
     }
     function openDappBridgeMainPage() {
       if (isNarrow.value) {
         emit('closeDrawer')
       }
-      openPage(router, '/dapp-bridge')
+      router.push('/dapp-bridge')
     }
-    function openActiveOrRecentChat() {
-      const target =
-        chats.activeConversationId ??
-        chats.activeChatAddr ??
-        chats.getSortedChatOrder[0]?.id ??
-        chats.getSortedChatOrder[0]?.address
-      markRailNavigation()
-      if (target) {
-        if (typeof chats.setActiveConversation === 'function') {
-          chats.setActiveConversation(target)
-        }
-        router.push(`/chat/${target}`)
-      } else {
-        router.push('/chat')
-      }
+    // The Messages tab opens the conversation list, as the bottom tab does: never a jump into
+    // the last conversation.
+    function openChatsTab() {
+      return switchTab(router, START_TAB, railStep)
     }
 
     // "forum" tab's own list -- real user-reported gap, see this file's template comment on the
@@ -540,6 +531,8 @@ export default defineComponent({
     async function browseForumTopic(name: string) {
       const targetTopic = name === forum.selectedTopic ? '' : name
       forum.setSelectedTopic(targetTopic)
+      // A topic is a destination: on a phone the drawer gives way to it, navigation or not.
+      if (isNarrow.value) emit('closeDrawer')
       if (route.path !== '/forum') {
         await router.push('/forum')
       }
@@ -702,7 +695,7 @@ export default defineComponent({
       if (isNarrow.value) {
         emit('closeDrawer')
       }
-      openPage(router, '/backup')
+      router.push('/backup')
     }
 
     function openProfileFromRail() {
@@ -710,7 +703,7 @@ export default defineComponent({
       if (isNarrow.value) {
         emit('closeDrawer')
       }
-      openPage(router, '/profile')
+      router.push('/profile')
     }
 
     function openReceive() {
@@ -718,7 +711,8 @@ export default defineComponent({
         openBackupFlow()
         return
       }
-      openPage(router, '/wallet')
+      // The Wallet tab, as a page: on a phone the drawer gives way to it.
+      return switchTab(router, '/wallet')
     }
 
     return {
@@ -729,7 +723,7 @@ export default defineComponent({
       isWelcomeActive,
       isDappBridgeActive,
       openWelcome,
-      openActiveOrRecentChat,
+      openChatsTab,
       openForumTab,
       openSettingsTab,
       openWalletTab,
@@ -790,9 +784,6 @@ export default defineComponent({
       this.myDrawerOpen = !this.myDrawerOpen
     },
     contactClicked(address: string) {
-      if (typeof this.chats?.setActiveConversation === 'function') {
-        this.chats.setActiveConversation(address)
-      }
       openChat(this.$router, address)
     },
     chatsLabel(): string {

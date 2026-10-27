@@ -246,10 +246,9 @@ describe('ChatList closeDrawer', () => {
       expect(
         wrapper.vm.setActiveChat(mockChatStore.getSortedChatOrder[0]),
       ).toBeUndefined()
-      expect(mockChatStore.setActiveConversation.mock.calls).toEqual([
-        ['other-thread'],
-        ['thread1'],
-      ])
+      // The committed route selects the conversation (router afterEach): selecting ahead of
+      // the navigation let the app's selection watcher race the route.
+      expect(mockChatStore.setActiveConversation).not.toHaveBeenCalled()
       expect(mockPush.mock.calls).toEqual([
         ['/chat/other-thread'],
         ['/chat/thread1'],
@@ -479,7 +478,7 @@ describe('ChatList conversation selection (#943)', () => {
     mockChatStore.setActiveConversation.mockClear()
   })
 
-  it('activates conversation by id and navigates to /chat/:id', async () => {
+  it('navigates to /chat/:id by conversation id', async () => {
     mockChatStore.getSortedChatOrder = [
       {
         id: 'conv-uuid-943',
@@ -506,9 +505,7 @@ describe('ChatList conversation selection (#943)', () => {
       },
     })
     await wrapper.find('[data-testid="chat-item"]').trigger('click')
-    expect(mockChatStore.setActiveConversation).toHaveBeenCalledWith(
-      'conv-uuid-943',
-    )
+    // Navigates by id; the committed route selects it.
     expect(mockPush).toHaveBeenCalledWith('/chat/conv-uuid-943')
   })
 })

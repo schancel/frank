@@ -243,7 +243,7 @@ const makeWallet = (address = '0xaaa') => ({
 })
 
 function mountPage(parentDigest?: string) {
-  const router = { go: jest.fn(), push: jest.fn() }
+  const router = { go: jest.fn(), push: jest.fn(), replace: jest.fn() }
   const wrapper = shallowMount(CreatePost, {
     global: {
       mocks: {
@@ -1513,8 +1513,12 @@ describe('CreatePost outcomes', () => {
 
     expect(infoNotify).toHaveBeenCalledWith('POSTED_REFRESH_FAILED')
     expect(errorNotify).not.toHaveBeenCalled()
-    // Not kept for a retry: the page goes back like any successful post.
-    expect(router.push.mock.calls.length + router.go.mock.calls.length).toBe(1)
+    // Not kept for a retry: the page goes back like any successful post (Back, or the forum in
+    // the form's place when it was opened directly), never pushing another page.
+    expect(router.replace.mock.calls.length + router.go.mock.calls.length).toBe(
+      1,
+    )
+    expect(router.push).not.toHaveBeenCalled()
   })
 
   it('a failed burn shows the error and keeps the draft page for a retry', async () => {
@@ -1527,6 +1531,7 @@ describe('CreatePost outcomes', () => {
       safeMessage: 'Nothing was sent',
     })
     expect(router.push).not.toHaveBeenCalled()
+    expect(router.replace).not.toHaveBeenCalled()
     expect(router.go).not.toHaveBeenCalled()
   }, 10000)
 

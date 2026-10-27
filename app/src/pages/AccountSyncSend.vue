@@ -25,9 +25,8 @@
             no-caps
             icon="arrow_back"
             :label="$t('accountSync.back')"
-            to="/profile"
-            replace
             data-test="sync-back"
+            @click="returnTo(router, '/profile')"
           />
           <h1 class="text-h5">{{ $t('accountSync.send') }}</h1>
           <template v-if="needsPersistentView">
@@ -111,9 +110,8 @@
             flat
             no-caps
             :label="$t('accountSync.cancel')"
-            to="/profile"
-            replace
             data-test="sync-cancel"
+            @click="returnTo(router, '/profile')"
           />
         </template>
       </main>
@@ -122,9 +120,13 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { returnTo } from '../utils/navigation'
 import { useAccountSyncSender } from '../composables/useAccountSyncSender'
 import { viewportPageStyle } from '../utils/layout'
+
+// Back and Cancel return to the profile the sync was opened from; neither leaves an entry.
+const router = useRouter()
 const {
   view,
   busy,

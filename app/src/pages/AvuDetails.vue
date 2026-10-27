@@ -10,7 +10,7 @@
           round
           dense
           icon="arrow_back"
-          to="/wallet"
+          @click="goBack(router, '/wallet')"
           :aria-label="t('walletPanel.backToWallet')"
           data-test="avu-back-wallet"
         />
@@ -254,8 +254,11 @@ import {
   seriesName,
 } from '@frank/wallet/oracle'
 import { viewportPageStyle } from '../utils/layout'
+import { goBack } from '../utils/navigation'
+import { useRouter } from 'vue-router'
 
 const pageStyle = viewportPageStyle
+const router = useRouter()
 const oracle = useSafeOracleStore()
 onMounted(() => {
   if (!oracle.current?.avuHash) {

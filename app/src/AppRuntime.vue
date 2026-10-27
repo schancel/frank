@@ -73,6 +73,7 @@ import { applyTheme } from 'src/utils/theme'
 import { applyViewportScaleAndMetrics } from 'src/utils/mobile-viewport-scale'
 import { invokeNotificationClickCallback } from 'src/utils/notifications'
 import { openChat } from 'src/utils/routes'
+import { navigationPending } from 'src/utils/navigation'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -468,10 +469,16 @@ export default defineComponent({
     provide(CHAT_SEARCH_SHORTCUT, chatSearchShortcut)
 
     watch(activeConversationId, conversationId => {
-      // Selection, including notification clicks, routes to its exact thread owner.
-      // Clearing selection while leaving chat must not navigate back into a thread.
-      if (!conversationId) return
-      const routeAddress = router.currentRoute.value.params.address
+      // Selection follows the committed route (router afterEach). The one thing this corrects
+      // is the open conversation's route when its thread is replaced by another (the peer's
+      // own): a redirect, so it replaces. It never navigates from another screen or while a
+      // navigation (a Back, a pick) is still being decided; notification clicks open their
+      // thread through `composeFocusRequest` below.
+      if (!conversationId || navigationPending()) return
+      const current = router.currentRoute.value
+      if (!current.path.startsWith('/chat/') || current.query.info === 'true')
+        return
+      const routeAddress = current.params.address
       const routedDefault =
         typeof routeAddress === 'string' && isChainAddress(routeAddress)
           ? chatStore.chats[toChainDisplayAddress(routeAddress)]
@@ -482,7 +489,7 @@ export default defineComponent({
         routeAddress !== conversationId &&
         routedDefault?.id !== conversationId
       ) {
-        void openChat(router, conversationId)
+        void openChat(router, conversationId, { replace: true })
       }
     })
 

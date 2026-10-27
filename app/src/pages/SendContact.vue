@@ -356,7 +356,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { useContactStore } from 'src/stores/contacts'
 import { useTranslate } from 'src/composables/useTranslate'
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import {
   sentTransactionNotify,
   errorNotify,
@@ -587,7 +587,7 @@ export default defineComponent({
         selectedContactAddress.value = ''
       },
       cancelEdit() {
-        navigateBack(router)
+        goBack(router, '/wallet')
       },
       reviewTransfer() {
         if (tooLarge.value) {
@@ -690,7 +690,7 @@ export default defineComponent({
           } else {
             infoNotify($t('sendContactDialog.pending'))
           }
-          navigateBack(router)
+          goBack(router, '/wallet')
         } catch (err) {
           // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
           // says so and shows the new quote, whose fee bounds the payment if confirmed again.

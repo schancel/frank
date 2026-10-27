@@ -67,7 +67,10 @@ import {
   BurnRefreshError,
   notifyBurnFailure,
 } from 'src/utils/burn-refresh-error'
-import { DRAWER_BREAKPOINT } from 'src/utils/layout'
+import { DRAWER_BREAKPOINT, isNarrowWidth } from 'src/utils/layout'
+import { useBackDismiss } from 'src/utils/navigation'
+import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
+import { useQuasar } from 'quasar'
 import { loadTopicDraft, saveTopicDraft } from 'src/utils/draft-storage'
 import assert from 'assert'
 
@@ -95,6 +98,23 @@ export default defineComponent({
     const routeParams = router.currentRoute.value.params
     const topic = routeParams['topic']
     const showTopicDrawer = ref(false)
+    // On a phone the topic drawer is an overlay: Back closes it.
+    // The same width as the drawer's own breakpoint and the router's (reactive: a resize
+    // that turns the drawer into an overlay registers it).
+    const $q = useQuasar()
+    useBackDismiss(
+      () =>
+        showTopicDrawer.value &&
+        isNarrowWidth(
+          getEffectiveScreenWidth(
+            $q?.screen?.width ??
+              (typeof window !== 'undefined' ? window.innerWidth : 1024),
+          ),
+        ),
+      () => {
+        showTopicDrawer.value = false
+      },
+    )
     const toggleTopicDrawer = () => {
       showTopicDrawer.value = !showTopicDrawer.value
     }

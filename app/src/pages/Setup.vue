@@ -431,7 +431,7 @@
               color="primary"
               no-caps
               :label="$t('accountRecovery.return_to_wallet')"
-              @click="$router.push('/wallet')"
+              @click="leaveSetup('/wallet')"
             />
           </template>
           <template v-else-if="account.status !== 'loading' && !activating">
@@ -593,7 +593,7 @@
                 color="primary"
                 no-caps
                 :label="$t('accountRecovery.return_to_wallet')"
-                @click="$router.push('/wallet')"
+                @click="leaveSetup('/wallet')"
               />
             </template>
             <q-form v-else-if="mode === 'legacy'" @submit="submitLegacyPhrase">
@@ -978,6 +978,7 @@ import {
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import meraLogo from '../assets/mera/mera-logo.svg'
 import { useRouter } from 'vue-router'
+import { replaceFlow } from 'src/utils/navigation'
 import { useTranslate } from '../composables/useTranslate'
 import {
   accountSession,
@@ -1038,6 +1039,11 @@ const emit = defineEmits([
   'setupNavigationLocked',
 ])
 const router = useRouter()
+// Setup is over: its result takes Setup's entry, and the Welcome page it was opened from goes
+// too, so Back neither offers to set up again nor shows the signed-out landing page.
+function leaveSetup(target: string) {
+  return replaceFlow(router, '/welcome', target)
+}
 const t = useTranslate()
 const ceremony = createAccountCeremony()
 const passkeysSupported = supportsMeraPasskeys()
@@ -1119,7 +1125,7 @@ async function takeoverHere() {
   await tabCoordinator.requestTakeover()
   if (account.status === 'ready') {
     emit('setupCompleted')
-    router.push('/wallet')
+    void leaveSetup('/wallet')
   }
 }
 
@@ -1141,7 +1147,7 @@ watch(
       if (tabCoordinator.wasAutoReleased) {
         tabCoordinator.wasAutoReleased = false
         emit('setupCompleted')
-        router.push('/wallet')
+        void leaveSetup('/wallet')
       }
     }
   },
@@ -1529,7 +1535,7 @@ async function activateStagedAccount(expectedAttemptId?: string) {
       identityAddress ?? undefined,
     ).catch(() => undefined)
     emit('setupCompleted')
-    await router.push('/wallet')
+    await leaveSetup('/wallet')
   } finally {
     activating.value = false
     stopChain()
@@ -1586,7 +1592,7 @@ async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
   }
   emit('setupCompleted')
   // Only a relay that answered "no profile" sends the owner to create one.
-  await router.push(outcome === 'missing' ? '/profile' : '/wallet')
+  await leaveSetup(outcome === 'missing' ? '/profile' : '/wallet')
 }
 function cancelPending() {
   return run(async () => {

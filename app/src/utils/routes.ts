@@ -1,39 +1,17 @@
 import type { Router } from 'vue-router'
 
-export const settingsRoutes = [
-  '/settings',
-  '/profile',
-  '/receive',
-  '/send',
-  '/add-contact',
-  '/new-conversation',
-  '/new-group',
-  '/qr',
-  '/backup',
-]
-
-export function openPage(router: Router, route: string) {
-  const currentRoute = router.currentRoute?.value?.path ?? ''
-  for (const settingsRoute of settingsRoutes) {
-    if (currentRoute.startsWith(settingsRoute)) {
-      return router.replace(route)
-    }
-  }
-  return router.push(route)
-}
-
+/** Opens a conversation the user picked: a page of its own, so Back returns here. `replace`
+ * when the conversation takes the place of the current screen (a finished form, a redirect). */
 export function openChat(
   router: Router,
   address: string,
   options?: { replace?: boolean },
 ) {
   const chatRoute = `/chat/${address}`
-  return options?.replace
-    ? router.replace(chatRoute)
-    : openPage(router, chatRoute)
+  return options?.replace ? router.replace(chatRoute) : router.push(chatRoute)
 }
 
+/** Opens a contact's profile (the conversation's Info view) as a page of its own. */
 export function openContactProfile(router: Router, address: string) {
-  const infoRoute = `/chat/${address}?info=true`
-  return openPage(router, infoRoute)
+  return router.push(`/chat/${address}?info=true`)
 }

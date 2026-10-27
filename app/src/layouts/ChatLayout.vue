@@ -382,11 +382,11 @@ import {
   ref,
 } from 'vue'
 import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
-import { RouteLocationNormalized } from 'vue-router'
 
 import GroupInfoDialog from '../components/chat/GroupInfoDialog.vue'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import { openChat } from '../utils/routes'
+import { goBack, returnTo } from '../utils/navigation'
 import { isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
@@ -495,9 +495,12 @@ export default defineComponent({
         | null,
     }
   },
+  // Everything here follows the committed route: a Back that is still being decided (or that
+  // only closes an overlay) changes nothing.
   watch: {
     '$route.fullPath'() {
       this.cancelSubjectEditor()
+      this.selectMode = false
       this.address = (this.$route?.params?.address as string) || ''
     },
     '$route.query.info'(val: string | undefined) {
@@ -507,29 +510,11 @@ export default defineComponent({
       this.address = val || ''
     },
   },
-  beforeRouteUpdate(to: RouteLocationNormalized) {
-    this.cancelSubjectEditor()
-    this.address = (to?.params?.address as string) || ''
-    // If navigating with ?info=true, show the info page; otherwise reset to plain chat view
-    this.infoOpen = to?.query?.info === 'true'
-    this.selectMode = false
-  },
   methods: {
-    // Like Settings' closeSection: when the chat list is the page we came from, go back to it
-    // (so back does not stack list → chat → list); otherwise (a deep link) replace with the list.
+    // The conversation's back arrow is Back (to the list, Contacts, wherever it was opened
+    // from); opened directly, the conversation gives way to the list.
     backToChats() {
-      const previous = (
-        typeof window !== 'undefined'
-          ? (window.history.state as { back?: unknown } | null)?.back
-          : null
-      ) as string | null | undefined
-      if (previous === '/chat') {
-        this.$router.back()
-      } else {
-        void Promise.resolve(this.$router.replace('/chat')).catch(
-          () => undefined,
-        )
-      }
+      goBack(this.$router, '/chat')
     },
     startWebRtcCall(withVideo: boolean) {
       this.webrtcCallHandler?.({ withVideo })
@@ -563,39 +548,39 @@ export default defineComponent({
         this.groupInfoOpen = true
         return
       }
-      this.infoOpen = true
+      // A page of its own: Back and the close button both return to the conversation.
       if (this.$route.query?.info !== 'true') {
-        void this.$router.replace({
-          query: { ...(this.$route.query ?? {}), info: 'true' },
-        })
-      }
+        void Promise.resolve(
+          this.$router.push({
+            query: { ...(this.$route.query ?? {}), info: 'true' },
+          }),
+        ).catch(() => undefined)
+      } else this.infoOpen = true
     },
+    /** The conversation, without its Info view. */
+    routeWithoutInfo() {
+      const query = { ...this.$route.query }
+      delete query.info
+      return { query }
+    },
+    // The close button is Back (to the conversation, or Contacts if the profile was opened from
+    // there); opened directly, Info gives way to its conversation.
     closeInfo() {
-      this.infoOpen = false
-      if (this.$route.query?.info) {
-        const query = { ...this.$route.query }
-        delete query.info
-        void this.$router.replace({ query })
-      }
+      if (this.$route.query?.info) goBack(this.$router, this.routeWithoutInfo())
+      else this.infoOpen = false
     },
+    // "Message" in Info: this conversation (back to it, or in Info's place), or another one
+    // opened above Info.
     onStartChatFromInfo(targetAddress?: string) {
-      this.closeInfo()
       const target = targetAddress || this.effectiveAddress || this.address
-      if (target) {
-        try {
-          const chatStore = useChatStore()
-          if (isChainAddress(target)) {
-            chatStore.setActiveChat(target)
-          } else {
-            chatStore.setActiveConversation(target)
-          }
-        } catch {
-          // In test environments without active pinia
-        }
-        if (this.$route?.params?.address !== target && this.$router) {
-          void openChat(this.$router, target)
-        }
+      if (!target || !this.$router) return
+      if (this.$route?.params?.address === target) {
+        this.infoOpen = false
+        if (this.$route.query?.info)
+          returnTo(this.$router, this.routeWithoutInfo())
+        return
       }
+      void openChat(this.$router, target)
     },
     // Deletion succeeds before selecting a neighbour. Contact removal in Info keeps the thread.
     onChatDeleted(conversationId: string) {

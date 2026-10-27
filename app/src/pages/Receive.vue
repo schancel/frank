@@ -76,7 +76,7 @@
 </template>
 
 <script lang="ts">
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import { computed, defineComponent, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -134,7 +134,7 @@ export default defineComponent({
       isEmpty,
       hasError,
       close() {
-        navigateBack(router)
+        goBack(router, '/wallet')
       },
       async copyAddress() {
         if (!displayAddress.value) return

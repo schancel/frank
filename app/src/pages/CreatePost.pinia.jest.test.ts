@@ -108,7 +108,7 @@ function mountPage(
       mocks: {
         $t,
         $route: { params: { parentDigest } },
-        $router: { go: jest.fn(), push: jest.fn() },
+        $router: { go: jest.fn(), push: jest.fn(), replace: jest.fn() },
         $q: { dark: { isActive: false } },
       },
       stubs: {
@@ -129,7 +129,7 @@ function mountRealPage(pinia: ReturnType<typeof createPinia>) {
       mocks: {
         $t,
         $route: { params: {} },
-        $router: { go: jest.fn(), push: jest.fn(), back: jest.fn() },
+        $router: { go: jest.fn(), push: jest.fn(), replace: jest.fn() },
       },
     },
   })

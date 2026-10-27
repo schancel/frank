@@ -138,7 +138,8 @@ test.each(['settings', 'wallet'] as const)(
 test.each([
   { path: '/forum', width: 390, closes: true, method: 'push' },
   { path: '/forum', width: 1024, closes: false, method: 'push' },
-  { path: '/settings', width: 390, closes: false, method: 'replace' },
+  // Already there: the same push is a no-op (a page is never replaced by a path-prefix rule).
+  { path: '/settings', width: 390, closes: false, method: 'push' },
 ])(
   'settings preserves drawer and $method navigation from $path at $width',
   async ({ path, width, closes, method }) => {

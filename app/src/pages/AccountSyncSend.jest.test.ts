@@ -17,7 +17,13 @@ const mockBackup = jest.fn(async () => [
   'unused-share',
 ])
 let mockLeaveGuard: (() => Promise<boolean>) | null = null
+const mockRouter = {
+  go: jest.fn(),
+  replace: jest.fn(),
+  resolve: (to: string) => ({ fullPath: to }),
+}
 jest.mock('vue-router', () => ({
+  useRouter: () => mockRouter,
   onBeforeRouteLeave: (guard: () => Promise<boolean>) => {
     mockLeaveGuard = guard
   },
@@ -610,5 +616,43 @@ describe('full-page account sender', () => {
       type: 'extension-sync-cancel',
       payload: { offerId },
     })
+  })
+})
+
+describe('leaving the sync page', () => {
+  afterEach(() => {
+    Object.defineProperty(window.history, 'state', {
+      value: null,
+      configurable: true,
+    })
+  })
+
+  it.each(['sync-back', 'sync-cancel'])(
+    '%s goes Back to the profile it was opened from instead of stacking another profile',
+    async testId => {
+      Object.defineProperty(window.history, 'state', {
+        value: { back: '/profile', position: 3 },
+        configurable: true,
+      })
+      mockRouter.go.mockClear()
+      mockRouter.replace.mockClear()
+      const wrapper = renderSender()
+      await flushPromises()
+      await wrapper.get(`[data-test="${testId}"]`).trigger('click')
+      expect(mockRouter.go).toHaveBeenCalledWith(-1)
+      expect(mockRouter.replace).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it('opened directly, Back gives way to the profile in place', async () => {
+    mockRouter.go.mockClear()
+    mockRouter.replace.mockClear()
+    const wrapper = renderSender()
+    await flushPromises()
+    await wrapper.get('[data-test="sync-back"]').trigger('click')
+    expect(mockRouter.replace).toHaveBeenCalledWith('/profile')
+    expect(mockRouter.go).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

@@ -2443,8 +2443,10 @@ export default defineComponent({
       if (!this.conversation) return
       const nextTargetId = this.findAdjacentThreadId(1)
       dismissScreenerConversation(this.conversation, this.chatStore)
+      // The dismissed thread gives way to the next one (as archiving does in a mail app): Back
+      // does not reopen what was just dismissed.
       if (nextTargetId) {
-        void openChat(this.$router, nextTargetId)
+        void openChat(this.$router, nextTargetId, { replace: true })
       }
     },
     focusReplyComposer() {
@@ -2471,6 +2473,8 @@ export default defineComponent({
       if (nextIdx < 0 || nextIdx >= list.length) return null
       return list[nextIdx]?.id ?? null
     },
+    // Next/previous thread (j/k, the email thread arrows) is a conversation the user asked for,
+    // as picking it in the list is: pushed, so Back walks back through the threads read.
     navigateThread(direction: -1 | 1) {
       const nextId = this.findAdjacentThreadId(direction)
       if (nextId) {
@@ -2872,8 +2876,8 @@ export default defineComponent({
     // Another conversation in the same page (/chat/<a> -> /chat/<b>). A watcher, not
     // `beforeRouteUpdate`: the router calls that guard on whatever instance its record holds
     // when the guard's turn comes, and ChatLayout can unmount this page earlier in the same
-    // navigation (its own `beforeRouteUpdate` shows the info view or the "conversation not
-    // found" page), so the guard ran with `this` null. A watcher stops with the page.
+    // navigation (it shows the info view or the "conversation not found" page instead), so the
+    // guard ran with `this` null. A watcher stops with the page.
     '$route.params.address'(next: unknown) {
       if (typeof next === 'string' && next) this.openRouteAddress(next)
     },
@@ -2945,19 +2949,8 @@ export default defineComponent({
       this.attachments = nextDraft?.attachments ?? []
       this.replyDigest = nextDraft?.replyDigest ?? null
       this.restoringDraft = false
-      if (
-        newAddr &&
-        typeof this.chatStore?.setActiveConversation === 'function'
-      ) {
-        if (
-          isChainAddress(newAddr) &&
-          typeof this.chatStore?.setActiveChat === 'function'
-        ) {
-          this.chatStore.setActiveChat(newAddr)
-        } else {
-          this.chatStore.setActiveConversation(newAddr)
-        }
-      }
+      // Selection follows the committed route (the router's afterEach), in one place: a second
+      // writer here raced the AppRuntime watcher that opens the selected conversation.
       void this.refreshMinimumStamp()
       // Another conversation opens on its newest message, wherever the last one was left.
       this.followBottom = true

@@ -288,7 +288,9 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     expect(open(wrapper)).toBe('true')
     await wrapper.get('#rail-tab-chats').trigger('click')
     await flushPromises()
-    expect(router.push).toHaveBeenCalledWith(`/chat/${mockConversationId}`)
+    // The Messages rail tab is the conversation list, never the last conversation.
+    expect(router.replace).toHaveBeenCalledWith('/chat')
+    expect(router.push).not.toHaveBeenCalledWith(`/chat/${mockConversationId}`)
     expect(open(wrapper)).toBe('true')
     // The marker does not leak: the next real destination still closes the overlay.
     await byText(wrapper, 'Profile')[0].trigger('click')
@@ -340,7 +342,7 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     await openDrawer(wrapper)
     await wrapper.find('[data-testid="chat-item"]').trigger('click')
     await flushPromises()
-    expect(mockSetActiveConversation).toHaveBeenCalledWith(mockConversationId)
+    // The committed route selects the conversation (router afterEach).
     expect(router.push).toHaveBeenCalledWith(`/chat/${mockConversationId}`)
     expect(open(wrapper)).toBe('false')
   })
@@ -848,9 +850,18 @@ describe('MainLayout mobile/extension bottom navigation bar', () => {
 
 describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => {
   it('the Messages tab opens the conversation list, not the last conversation', async () => {
-    const { wrapper, router } = await mountLayout(390)
+    const { wrapper, router } = await mountLayout(
+      390,
+      undefined,
+      true,
+      '/forum',
+    )
     await wrapper.find('[data-testid="mobile-nav-chats"]').trigger('click')
-    expect(router.push).toHaveBeenCalledWith('/chat')
+    await flushPromises()
+    // A tab switch (utils/navigation switchTab): from another tab's root, Messages takes its
+    // entry.
+    expect(router.replace).toHaveBeenCalledWith('/chat')
+    expect(router.push).not.toHaveBeenCalled()
     expect(mockSetActiveConversation).not.toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -920,6 +931,7 @@ describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => 
   it('the Contacts tab opens the contact list, not the add-contact form', async () => {
     const { wrapper, router } = await mountLayout(390)
     await wrapper.find('[data-testid="mobile-nav-contacts"]').trigger('click')
+    await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/contacts')
     expect(router.push).not.toHaveBeenCalledWith('/add-contact')
     wrapper.unmount()

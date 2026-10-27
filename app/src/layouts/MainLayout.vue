@@ -62,7 +62,7 @@
         :aria-label="$t('leftDrawer.forum')"
         :color="currentRoutePath.startsWith('/forum') ? 'primary' : undefined"
         data-testid="mobile-nav-forum"
-        @click="$router.push('/forum')"
+        @click="openTab('/forum')"
       />
       <q-btn
         flat
@@ -80,7 +80,7 @@
             : undefined
         "
         data-testid="mobile-nav-contacts"
-        @click="$router.push('/contacts')"
+        @click="openTab('/contacts')"
       />
       <q-btn
         flat
@@ -93,7 +93,7 @@
         :aria-label="$t('leftDrawer.wallet')"
         :color="activeMobileTab === 'wallet' ? 'primary' : undefined"
         data-testid="mobile-nav-wallet"
-        @click="$router.push('/wallet')"
+        @click="openTab('/wallet')"
       />
       <q-btn
         flat
@@ -106,7 +106,7 @@
         :aria-label="$t('contactBookDialog.myQrCode')"
         :color="currentRoutePath.startsWith('/qr') ? 'primary' : undefined"
         data-testid="mobile-nav-qr"
-        @click="$router.push('/qr')"
+        @click="openTab('/qr')"
       />
       <q-btn
         flat
@@ -119,7 +119,7 @@
         :aria-label="$t('leftDrawer.settings')"
         :color="activeMobileTab === 'settings' ? 'primary' : undefined"
         data-testid="mobile-nav-settings"
-        @click="$router.push('/settings')"
+        @click="openTab('/settings')"
       />
     </div>
   </q-layout>
@@ -142,6 +142,7 @@ import {
 } from '../../src-bex/runtime-adapter'
 
 import LeftDrawer from '../components/panels/LeftDrawer.vue'
+import { START_TAB, backDismissible, switchTab } from '../utils/navigation'
 
 const compactWidth = 70
 const compactCutoff = 325
@@ -160,6 +161,15 @@ export default defineComponent({
   components: {
     LeftDrawer,
   },
+  // On a phone the drawer is an overlay: Back closes it.
+  mixins: [
+    backDismissible({
+      isOpen: vm => Boolean(vm.overlayOpen),
+      close: vm => {
+        vm.myDrawerOpen = false
+      },
+    }),
+  ],
   setup() {
     return {}
   },
@@ -563,7 +573,11 @@ export default defineComponent({
     // The Messages tab is the conversation list (Telegram/WhatsApp), never a jump into the last
     // conversation: inside a conversation the bottom bar hides, so landing there lost it.
     openMobileChatsTab() {
-      void this.$router.push('/chat')
+      this.openTab(START_TAB)
+    },
+    // Tabs do not stack: Back from any tab is Messages, and from Messages leaves the app.
+    openTab(path: string) {
+      void switchTab(this.$router, path)
     },
   },
   computed: {

@@ -18,8 +18,8 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import IdentityQrDialog from '../components/dialogs/IdentityQrDialog.vue'
-import { openPage } from '../utils/routes'
 import { viewportPageStyle } from '../utils/layout'
+import { goBack } from '../utils/navigation'
 
 export default defineComponent({
   name: 'IdentityQrPage',
@@ -41,14 +41,15 @@ export default defineComponent({
         !from.startsWith('//')
           ? from
           : '/chat'
-      openPage(this.$router, returnPath)
+      goBack(this.$router, returnPath)
     },
     onScan(scanned: string) {
       const trimmed = (scanned || '').trim()
       if (!trimmed) return
       const mode = this.$route?.query?.mode
       const basePath = mode === 'contact' ? '/add-contact' : '/new-conversation'
-      openPage(this.$router, `${basePath}?to=${encodeURIComponent(trimmed)}`)
+      // The scan is done: its result takes this screen's place.
+      void this.$router.replace(`${basePath}?to=${encodeURIComponent(trimmed)}`)
     },
   },
 })

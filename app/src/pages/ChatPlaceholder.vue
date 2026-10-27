@@ -46,7 +46,6 @@
 
 <script lang="ts">
 import { computed, defineComponent } from 'vue'
-import { openPage } from 'src/utils/routes'
 import { pendingChatRoute } from 'src/router/pending-chat'
 import { isNarrowWidth, viewportPageStyle } from 'src/utils/layout'
 import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
@@ -69,7 +68,7 @@ export default defineComponent({
   methods: {
     pageStyle: viewportPageStyle,
     openAddContact() {
-      openPage(this.$router, '/add-contact')
+      this.$router.push('/add-contact')
     },
   },
 })

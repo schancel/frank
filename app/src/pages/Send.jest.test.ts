@@ -17,7 +17,7 @@ import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
 import type { NativeAssetChain } from '@frank/wallet/chain'
 import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
-import { navigateBack } from 'src/utils/navigate-back'
+import { goBack } from 'src/utils/navigation'
 import type { WalletHandle } from '@frank/wallet/chain'
 import enUS from '../i18n/en-us'
 import { RelayOperatorCheckpointUnavailableError } from 'src/accounts/relay-wallet-route'
@@ -97,8 +97,9 @@ jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
 }))
 
-jest.mock('src/utils/navigate-back', () => ({
-  navigateBack: jest.fn(),
+jest.mock('src/utils/navigation', () => ({
+  ...jest.requireActual('src/utils/navigation'),
+  goBack: jest.fn(),
 }))
 
 jest.mock('vue-router', () => ({
@@ -209,7 +210,8 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(mockCaptureWallet).not.toHaveBeenCalled()
     expect(mockSend).not.toHaveBeenCalled()
     expect(wrapper.vm.cancel()).toBeUndefined()
-    expect(navigateBack).toHaveBeenCalledTimes(1)
+    expect(goBack).toHaveBeenCalledTimes(1)
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it('retains explicit receiver dispatch and Promise rejection through mounted aliases', async () => {
@@ -223,7 +225,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(wrapper.vm.cancel.call({ cancelEdit })).toBeUndefined()
     expect(cancelEdit).toHaveBeenCalledTimes(1)
     expect(mockSend).not.toHaveBeenCalled()
-    expect(navigateBack).not.toHaveBeenCalled()
+    expect(goBack).not.toHaveBeenCalled()
   })
 
   beforeEach(() => {
@@ -561,7 +563,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       'monad-testnet',
       '0xhash123',
     )
-    expect(navigateBack).toHaveBeenCalled()
+    expect(goBack).toHaveBeenCalledWith(expect.anything(), '/wallet')
   })
 
   it('distinguishes definitely-not-broadcast when failure occurs before signing/broadcast', async () => {
@@ -1446,7 +1448,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         await vm.reviewTransfer()
         await vm.confirmSend()
         expect(mockSend).toHaveBeenCalledTimes(1)
-        expect(navigateBack).not.toHaveBeenCalled()
+        expect(goBack).not.toHaveBeenCalled()
         expect(errorNotify).not.toHaveBeenCalled()
         expect(
           JSON.stringify(
@@ -1608,7 +1610,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       finish({ txHash: 'original-result' })
       await flushPromises()
       expect(sentTransactionNotify).not.toHaveBeenCalled()
-      expect(navigateBack).not.toHaveBeenCalled()
+      expect(goBack).not.toHaveBeenCalled()
       expect(errorNotify).not.toHaveBeenCalled()
       if (change !== 'unmount') {
         expect(wrapper.find('[data-test="send-stale-card"]').exists()).toBe(
@@ -1760,7 +1762,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
             'monad-testnet',
             fixture.hash,
           )
-          expect(navigateBack).not.toHaveBeenCalled()
+          expect(goBack).not.toHaveBeenCalled()
           const outcome = wrapper.get('[data-test="native-operation-outcome"]')
           expect(outcome.text()).toContain('Sent on Monad Testnet.')
           expect(outcome.text()).toContain('Block 69526794')
@@ -1772,7 +1774,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
           ).toBe(false)
         } else {
           expect(sentTransactionNotify).not.toHaveBeenCalled()
-          expect(navigateBack).not.toHaveBeenCalled()
+          expect(goBack).not.toHaveBeenCalled()
           expect(
             wrapper.get('[data-test="native-operation-outcome"]').text(),
           ).toContain(enUS.nativeOperation.recoveryUnavailable)

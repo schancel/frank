@@ -245,12 +245,19 @@
           data-test="native-operation-outcome"
           role="status"
         >
+          <!-- While the send is under way its record is not read yet: a neutral line, never the
+               recovery wording a reopened, unresolved transfer gets. -->
           <p data-test="native-operation-line">
             {{
               sending
-                ? $t('nativeOperation.processing', { network: networkName })
+                ? $t('nativeOperation.submitting', { network: networkName })
                 : $t(outcomeLine.key, outcomeLine.params)
             }}
+          </p>
+          <!-- The recipient is paid, but the rest of the send (its change) is not in a block
+               yet: the page does not claim the send is final. -->
+          <p v-if="settling" data-test="native-operation-settling">
+            {{ $t('nativeOperation.changeSettling', settling) }}
           </p>
           <p
             v-if="outcomeHash && !operation"
@@ -300,7 +307,7 @@
           <p v-if="watching" data-test="native-operation-watching">
             {{ $t('nativeOperation.watching') }}
           </p>
-          <template v-else-if="operation?.payment !== 'included'">
+          <template v-else-if="!sending && operation?.payment !== 'included'">
             <!-- Only while the outcome is still open. A transfer that reverted, was replaced or
                  was cancelled is final, and its line above says so. -->
             <p
@@ -362,6 +369,7 @@ import { navigateBack } from 'src/utils/navigate-back'
 import {
   nativeOperationOutcome,
   nativeOperationProgress,
+  nativeOperationSettling,
 } from 'src/utils/native-operation-outcome'
 import {
   computed,
@@ -599,6 +607,9 @@ export default defineComponent({
         nativeOperationOutcome(operation.value, networkName.value),
       ),
       nativeOperationProgress,
+      settling: computed(() =>
+        operation.value ? nativeOperationSettling(operation.value) : undefined,
+      ),
       observedFee: computed(() =>
         operation.value && chain.value
           ? chain.value.toDisplayAmount(BigInt(operation.value.observedFeeWei))

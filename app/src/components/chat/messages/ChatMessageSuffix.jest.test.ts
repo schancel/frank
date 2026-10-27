@@ -702,8 +702,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
 
 describe('a message refused before anything was paid because it can never be sent as it is', () => {
   it.each([
-    [enUS, 'It is larger than one message can carry (8.0 MB).'],
-    [frFR, 'Il dépasse ce qu’un message peut contenir (8.0 MB).'],
+    [enUS, 'It is larger than one message can carry (8.0 MiB).'],
+    [frFR, 'Il dépasse ce qu’un message peut contenir (8.0 MiB).'],
   ])(
     'says it is too large, naming the limit, and offers Discard but no Retry',
     (messages, reason) => {

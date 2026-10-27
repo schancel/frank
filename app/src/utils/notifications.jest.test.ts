@@ -206,6 +206,30 @@ describe('desktopNotify', () => {
     expect(constructed[0].options.body).toBe('Lobby rooms')
   })
 
+  // QA on main 10390a333: a 5 MB message was handed to `new Notification` whole as its body.
+  it('shows the start of a long message, in whole words, never the whole message', () => {
+    const words = 'the quick brown fox jumps over the lazy dog '
+    const text = words.repeat(Math.ceil(5_000_000 / words.length))
+    desktopNotify('Bob', text, '', () => undefined)
+
+    const body = constructed[0].options.body!
+    expect(body.length).toBeLessThanOrEqual(201)
+    expect(body.endsWith('…')).toBe(true)
+    // Whole words: what precedes the ellipsis is the text's own start, cut between words.
+    const shown = body.slice(0, -1)
+    expect(text.startsWith(shown)).toBe(true)
+    expect(text[shown.length]).toBe(' ')
+  })
+
+  it('never cuts an emoji in two', () => {
+    // 'a' first, so the 200th unit is the first half of an emoji.
+    desktopNotify('Bob', 'a' + '\u{1F600}'.repeat(150), '', () => undefined)
+
+    const body = constructed[0].options.body!
+    expect(body.endsWith('…')).toBe(true)
+    expect(body.slice(0, -1)).toBe('a' + '\u{1F600}'.repeat(99))
+  })
+
   it('passes the tag so the browser replaces a repeat of the same message (#412)', () => {
     desktopNotify('Qwen', 'hi', 'icon.png', () => undefined, 'digest-1')
 

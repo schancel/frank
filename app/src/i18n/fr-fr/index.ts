@@ -111,7 +111,7 @@ export const rawFrFR = {
       attachImage: 'Attacher une image',
       imageProcessing: 'Traitement de l’image…',
       imageTooLarge:
-        'L’image est trop volumineuse pour le message (doit être inférieure à 120 Ko après compression)',
+        'L’image est trop volumineuse pour le message (doit être inférieure à 120 Kio après compression)',
       imageError: 'Échec du traitement de la pièce jointe',
       invalidImageType:
         'Veuillez sélectionner un fichier image valide (PNG, JPEG, WebP, GIF)',
@@ -176,6 +176,7 @@ export const rawFrFR = {
   chatLayout: {
     invalidSubject:
       'Utilisez un sujet de 512 octets UTF-8 maximum sans caractères de contrôle.',
+    participantCountOne: '1 personne',
     participantCount: '{count} personnes',
     editSubject: 'Modifier le sujet',
     subject: 'Sujet',
@@ -196,6 +197,8 @@ export const rawFrFR = {
     attachFile: 'Joindre un fichier',
     removeAttachment: 'Retirer {name}',
     imageRefused: '{name} ne peut pas être envoyée : {reason}.',
+    brokenCharacterReplaced:
+      'Un caractère invalide de votre message a été remplacé par �.',
     messageTooLarge:
       'Ce message est trop volumineux pour être envoyé : un message contient au plus {limit}, et celui-ci fait {size}. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
@@ -944,6 +947,7 @@ export const rawFrFR = {
     paymentRepaid: 'Timbre annulé par le réseau, payé de nouveau',
     paymentFailed: 'Échec du timbre du message',
     paymentUnsent: 'Timbre du message non payé',
+    amountNotPaid: '{amount}, non payé',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',
@@ -1649,7 +1653,10 @@ export const rawFrFR = {
     listTitle: 'Transferts natifs',
     intendedAmount: 'Montant prévu pour le destinataire',
     processing: 'Vérification du résultat du transfert initial…',
+    submitting: 'Envoi en cours sur {network}…',
     included: 'Envoyé sur {network}.',
+    changeSettling:
+      'Le rendu de la monnaie est en cours ({confirmed} transactions confirmées sur {total}).',
     reverted:
       'La transaction du destinataire a été annulée par le réseau {network}. Des frais de réseau peuvent avoir été payés.',
     partial:
@@ -1658,7 +1665,7 @@ export const rawFrFR = {
     sending:
       'Envoi en cours sur {network}… {confirmed} transactions confirmées sur {total}.',
     missing:
-      '{network} n’a pas encore ce transfert. Il lui est proposé de nouveau.',
+      'Envoi en cours sur {network} : en attente d’un bloc. Il est proposé de nouveau au réseau jusqu’à ce qu’il y soit inclus.',
     superseded:
       '{network} n’a plus ce transfert, et son compte l’a dépassé : il a été inclus plus tôt ou une autre transaction a pris sa place. Il n’est plus proposé.',
     watching:

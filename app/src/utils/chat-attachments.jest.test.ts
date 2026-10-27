@@ -238,7 +238,7 @@ describe('a text longer than one text item holds', () => {
         `${key} ${params?.limit} ${params?.size}`,
     )
     expect(messageTooLargeText('x'.repeat(9 * 1024 * 1024), [], t)).toBe(
-      'chatInput.messageTooLarge 8.0 MB 9.0 MB',
+      'chatInput.messageTooLarge 8.0 MiB 9.0 MiB',
     )
   })
 

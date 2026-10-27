@@ -831,6 +831,26 @@ describe('group info and a removed member, in mounted UI', () => {
     chat.unmount()
   })
 
+  // QA on main 10390a333: after an epoch change the roster carries members' addresses in lower
+  // case, and the dialog showed them so, unlike the checksummed addresses everywhere else.
+  it('shows a member address from a new epoch checksummed, as everywhere else', async () => {
+    const { wrapper: chat, chats } = await openConversation()
+    const conv = makeAdminGroup(chats)
+    const carol = '0x4C4c4C4c4C4c4C4c4C4c4C4c4C4c4C4c4C4c4C4c'
+    const { getAddress } = jest.requireActual('ethers')
+    const checksummed: string = getAddress(carol.toLowerCase())
+    conv.participants = [mockOwn, ALICE, carol.toLowerCase()]
+    const wrapper = mountInfo()
+    const row = wrapper
+      .findAll('[data-test="group-member-row"]')
+      .find(r => r.text().toLowerCase().includes('0x4c4c'))!
+    const short = `${checksummed.slice(0, 6)}...${checksummed.slice(-4)}`
+    expect(row.text()).toContain(short)
+    expect(row.text()).not.toContain(carol.toLowerCase().slice(0, 6))
+    wrapper.unmount()
+    chat.unmount()
+  })
+
   it('asks in an in-app dialog before removing a member, and removes only on Remove', async () => {
     const { wrapper: chat, chats } = await openConversation()
     makeAdminGroup(chats)

@@ -193,7 +193,8 @@ export function formatEmailParties(parties: EmailParty[]): string {
 export function formatAttachmentBytes(bytes: number | undefined): string {
   if (!bytes || bytes === 0) return '0 B'
   const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
+  // Binary multiples, named as such (as `formatAttachmentSize` does).
+  const sizes = ['B', 'KiB', 'MiB', 'GiB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }

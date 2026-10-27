@@ -134,7 +134,12 @@
                 v-else-if="isGroup"
                 data-testid="chat-header-participants"
                 >{{
-                  $t('chatLayout.participantCount', { count: participantCount })
+                  $t(
+                    participantCount === 1
+                      ? 'chatLayout.participantCountOne'
+                      : 'chatLayout.participantCount',
+                    { count: participantCount },
+                  )
                 }}</span
               >
               <span v-if="isGroup && subject"> · </span>

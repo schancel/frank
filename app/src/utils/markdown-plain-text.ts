@@ -168,3 +168,33 @@ export function markdownPlainText(input: string, imageLabel = ''): string {
 export function formatSnippet(input: string, imageLabel = ''): string {
   return markdownPlainText(input, imageLabel)
 }
+
+/** The most characters a desktop notification shows of a message (`previewOf`). */
+export const NOTIFICATION_PREVIEW_CHARS = 200
+
+/**
+ * The start of a message's plain text, for a desktop notification: the chat list's preview rule
+ * (whole words, never a word cut in two), at most `max` characters, with "…" when it was cut.
+ * Only the start of a long text is read, so a message of megabytes is never parsed whole or
+ * handed whole to the browser's notification.
+ */
+export function previewOf(
+  input: string,
+  max = NOTIFICATION_PREVIEW_CHARS,
+): string {
+  // Markdown syntax shortens the text it marks, so a few times `max` of source is plenty.
+  const source = input.length > max * 8 ? sliceWhole(input, max * 8) : input
+  const plain = markdownPlainText(source)
+  if (plain.length <= max && source === input) return plain
+  if (plain.length <= max) return `${plain}…`
+  const cut = sliceWhole(plain, max)
+  const space = cut.lastIndexOf(' ')
+  // One very long word: cut it rather than show nothing.
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/** The first `length` UTF-16 units of `text`, one fewer when that would split a character. */
+function sliceWhole(text: string, length: number): string {
+  const code = text.charCodeAt(length - 1)
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? length - 1 : length)
+}

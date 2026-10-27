@@ -184,7 +184,7 @@ describe('EmailThreadView', () => {
   const attachmentSizes: [number | undefined, string][] = [
     [undefined, '0 B'],
     [0, '0 B'],
-    [2048, '2 KB'],
+    [2048, '2 KiB'],
   ]
   it.each(attachmentSizes)(
     'preserves received attachment size display for %p bytes',
@@ -635,9 +635,9 @@ describe('EmailThreadView', () => {
         const chips = wrapper.findAll('.staged-attachment-chip')
         expect(chips.length).toBe(2)
         expect(chips[0].text()).toContain('test-document.pdf')
-        expect(chips[0].text()).toContain('24 KB')
+        expect(chips[0].text()).toContain('24 KiB')
         expect(chips[1].text()).toContain('avatar.png')
-        expect(chips[1].text()).toContain('1 MB')
+        expect(chips[1].text()).toContain('1 MiB')
 
         // Remove the first attachment via remove button
         const removeButtons = wrapper.findAll(

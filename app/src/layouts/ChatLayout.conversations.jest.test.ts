@@ -961,3 +961,36 @@ it('a group menu offers no mute it cannot honor; a direct chat offers Mute', asy
     app.root.unmount()
   }
 })
+
+// QA on main 10390a333: a group left with one member read "1 participants".
+it('counts a group of one as "1 participant", and more in the plural', async () => {
+  const app = await mountedConversations()
+  try {
+    const group = admittedGroup(app.chats, 'c', 'Solo Team')
+    await settle()
+    await app.select(group.id)
+    const participants = () =>
+      app.root
+        .getComponent(ChatLayout)
+        .get('[data-testid="chat-header-participants"]')
+        .text()
+    // This file's translator leaves `{count}` as it is: the key chosen is what is checked.
+    expect(participants()).toBe(en.chatLayout.participantCount)
+    // Everyone else left: the header counts this user alone. (This file's fixture addresses
+    // are not valid checksums, so the user's own entry would not compare equal; an empty list
+    // of others is the same count.)
+    app.chats.conversations[group.id]!.participants = []
+    await settle()
+    expect(
+      (
+        app.root.getComponent(ChatLayout).vm as unknown as {
+          participantCount: number
+        }
+      ).participantCount,
+    ).toBe(1)
+    expect(participants()).toBe('1 participant')
+    expect(en.chatLayout.participantCountOne).toBe('1 participant')
+  } finally {
+    app.root.unmount()
+  }
+})

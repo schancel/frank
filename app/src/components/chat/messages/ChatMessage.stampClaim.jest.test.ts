@@ -170,3 +170,54 @@ it('never labels or reads a stamp we paid', () => {
   expect(mockRead).not.toHaveBeenCalled()
   wrapper.unmount()
 })
+
+// QA on main 10390a333: a message the wallet refused before paying (`lone surrogate in text`)
+// showed its 0.05 MONR stamp beside "Failed" as if it had been paid.
+describe('a sent message refused before its stamp was paid', () => {
+  const tp = (key: string, params: Record<string, string> = {}) =>
+    t(key).replace(/\{(\w+)\}/g, (whole, name: string) => params[name] ?? whole)
+  function mountFailed(failureReason: string) {
+    return shallowMount(ChatMessage, {
+      props: {
+        address: '0xPEER',
+        name: 'peer',
+        chatWidth: 500,
+        payloadDigest: 'cd'.repeat(32),
+        message: {
+          outbound: true,
+          status: 'error',
+          delivery: { failureReason },
+          receivedTime: 1,
+          serverTime: 1,
+          items: [{ type: 'text', text: 'hi' }],
+          outpoints: [],
+          senderAddress: '0xME',
+          stampValueWei: 10n ** 16n,
+        },
+      },
+      global: { mocks: { $t: tp } },
+    })
+  }
+
+  it.each([
+    'unencodable',
+    'too-large',
+    'stamp-below-fee',
+    'fee-exceeded',
+    'blocked',
+    'funds-in-pending-send',
+  ])('%s: the stamp is shown as not paid', reason => {
+    const wrapper = mountFailed(reason)
+    expect(shown(wrapper)).toBe('0.01 MON, not paid')
+    wrapper.unmount()
+  })
+
+  it.each(['unverified', 'rejected-paid', 'unreachable', 'insufficient-funds'])(
+    '%s: nothing says it was not paid, so the amount stays as it was',
+    reason => {
+      const wrapper = mountFailed(reason)
+      expect(shown(wrapper)).toBe('0.01 MON')
+      wrapper.unmount()
+    },
+  )
+})

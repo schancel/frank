@@ -1028,6 +1028,110 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     }
   })
 
+  // QA on main 10390a333: every fresh send opened on "Checking the original transfer outcome… /
+  // Recovery is currently unavailable. / This review cannot send another payment." for up to 6 s,
+  // because the page read "no record" while the send was still under way as "nothing known".
+  it('a send under way reads as sending, with no recovery wording, until its record is read', async () => {
+    const fixture = await includedNativeTransfer()
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => fixture.journal.list(),
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    let finish!: () => void
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      await new Promise<void>(resolve => (finish = resolve))
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      const outcome = () =>
+        wrapper.get('[data-test="native-operation-outcome"]').text()
+      expect(wrapper.get('[data-test="native-operation-line"]').text()).toBe(
+        'Sending on Monad Testnet…',
+      )
+      expect(outcome()).not.toContain(enUS.nativeOperation.processing)
+      expect(outcome()).not.toContain(enUS.nativeOperation.recoveryUnavailable)
+      expect(outcome()).not.toContain(enUS.nativeOperation.reviewHeld)
+      expect(
+        wrapper.find('[data-test="native-operation-recovery"]').exists(),
+      ).toBe(false)
+      finish()
+      await flushPromises()
+      expect(outcome()).toContain('Sent on Monad Testnet.')
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
+  // QA on main 10390a333: a payment-plus-change send said "Sent on Monad Regtest." for 54 s while
+  // its change had not reached the node. Sent is right (the recipient is paid); the page also says
+  // the change is still settling, so it does not read as final, and drops that once it is.
+  it('a sent transfer whose change is not in a block yet says the change is still settling', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    const fixture = await includedNativeTransfer(true)
+    let changeLanded = false
+    const rows = () =>
+      fixture.journal.list().map(row =>
+        changeLanded
+          ? row
+          : {
+              ...row,
+              members: row.members.map((member, index) =>
+                index === 0
+                  ? { ...member, observation: { state: 'pending' as const } }
+                  : member,
+              ),
+            },
+      )
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: rows,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[data-test="native-operation-line"]').text()).toBe(
+        'Sent on Monad Testnet.',
+      )
+      expect(
+        wrapper.get('[data-test="native-operation-settling"]').text(),
+      ).toBe('Change still settling (1 of 2 transactions confirmed).')
+      changeLanded = true
+      jest.advanceTimersByTime(2_000)
+      await flushPromises()
+      expect(
+        wrapper.find('[data-test="native-operation-settling"]').exists(),
+      ).toBe(false)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+      jest.useRealTimers()
+    }
+  })
+
   // The same QA run saw "Not yet shared with your other devices." minutes after History said
   // the note had gone: the page stopped reading the journal once the payment was in a block.
   it('keeps reading a sent transfer until its note to the other devices has gone out', async () => {
@@ -1787,7 +1891,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         expect(outcome()).toContain(
           state === 'pending'
             ? 'In the mempool on Monad Testnet'
-            : 'Monad Testnet does not have this transfer yet',
+            : 'Sending on Monad Testnet: waiting for a block',
         )
         // Not "unresolved", and not "recovery unavailable": it is being watched.
         expect(outcome()).not.toContain('unresolved')

@@ -232,6 +232,10 @@ export type {
   NotedSendStatus,
 } from "../evm-noted-sends";
 export { notedSendGroupKeys, notedSendPurpose } from "../evm-noted-sends";
+export type {
+  EvmDepositAsset,
+  EvmExternalDeposit,
+} from "../evm-deposit-scan";
 
 export {
   deriveEvmStealthAddress,

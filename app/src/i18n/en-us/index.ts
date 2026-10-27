@@ -1579,6 +1579,11 @@ export const rawEnUS = {
     noted: 'Read from the notes your devices share with each other.',
     receivedPayment: 'Payment received',
     receivedStamp: 'Received',
+    deposit: 'Received from',
+    depositToken: 'Received {symbol} from',
+    depositsUnread:
+      'Deposits from outside Frank could not be read from the network just now. They are shown when it answers.',
+    depositNote: 'Read from block {block} of the network.',
     receivedClaimed:
       'The amount the sender stated. It is not confirmed on the network yet.',
     receivedPartial:

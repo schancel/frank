@@ -179,6 +179,12 @@ import {
 } from "../evm-noted-sends";
 import { SEED_DISCOVERY_GAP } from "../evm-seed-discovery";
 import {
+  EVM_EXTERNAL_DEPOSITS_NAMESPACE,
+  EvmDepositScanner,
+  type EvmDepositRow,
+  type EvmDepositToken,
+} from "../evm-deposit-scan";
+import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
@@ -1958,6 +1964,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             coinListState?.close(),
             evmCoinListStore?.close(),
             notedSendStore?.close(),
+            depositStore?.close(),
           ]);
         const pool = new EvmSubAccountPool({
           keyring,
@@ -1979,6 +1986,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           | undefined;
         let evmCoinListStore: RecordStore<StoredEvmListCoin> | undefined;
         let notedSendStore: RecordStore<NotedSend> | undefined;
+        let depositStore: RecordStore<EvmDepositRow> | undefined;
         let topicOwnerWallet: EvmChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
@@ -2161,8 +2169,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }>();
             evmCoinListStore = new MemoryRecordStore<StoredEvmListCoin>();
             notedSendStore = new MemoryRecordStore<NotedSend>();
+            depositStore = new MemoryRecordStore<EvmDepositRow>();
           } else {
-            [coins, preparations, contactPayments, coinListState, evmCoinListStore, notedSendStore] =
+            [coins, preparations, contactPayments, coinListState, evmCoinListStore, notedSendStore, depositStore] =
               await Promise.all([
                 LevelRecordStore.open<EvmCoin>(
                   storageLocation,
@@ -2187,6 +2196,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 LevelRecordStore.open<NotedSend>(
                   storageLocation,
                   EVM_NOTED_SENDS_NAMESPACE
+                ),
+                LevelRecordStore.open<EvmDepositRow>(
+                  storageLocation,
+                  EVM_EXTERNAL_DEPOSITS_NAMESPACE
                 ),
               ]);
           }
@@ -2333,6 +2346,55 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             );
             return sharedPersonaAddresses.has(key);
           };
+          // Deposits from outside Frank to the wallet's own addresses, read from the chain's node
+          // for History (`evm-deposit-scan.ts`). The chain's supported ERC20s are the tokens of
+          // its enabled exchanges, the same list a token payment is checked against.
+          const depositTokens: EvmDepositToken[] = (chainEntry.dex ?? []).flatMap((venue) =>
+            venue.adapter === "uniswap-v4" && venue.enabled && "tokens" in venue
+              ? venue.tokens.flatMap((token) =>
+                    token.address === null
+                      ? []
+                      : [{
+                          contract: token.address.toLowerCase(),
+                          symbol: token.symbol,
+                          decimals: token.decimals,
+                        }]
+                  )
+              : []
+          ).filter((token, index, all) =>
+            all.findIndex((other) => other.contract === token.contract) === index
+          );
+          const deposits = new EvmDepositScanner({
+            chainIdentifier,
+            rpc: provider,
+            store: depositStore!,
+            // The receive and identity accounts, and every dApp persona the wallet has opened.
+            watched: () => [
+              mainAccount.address,
+              identity.address.raw,
+              ...coinList
+                .all()
+                .filter((coin) => coin.origin === "legacy-subaccount")
+                .map((coin) => coin.account),
+            ],
+            tokens: depositTokens,
+            isOwnAccount: isOwnRecipient,
+            // A received coin's transfers are Frank payments, shown from the coin list.
+            knownTransactions: () =>
+              new Set(
+                coinStore.all().flatMap((coin) =>
+                  coin.transactions.flatMap((item) => {
+                    const bare = item.replace(/^0x/, "").toLowerCase();
+                    if (bare.length === 64) return [`0x${bare}`];
+                    try {
+                      return [Transaction.from(`0x${bare}`).hash!.toLowerCase()];
+                    } catch {
+                      return [];
+                    }
+                  })
+                )
+              ),
+          });
           const legacyTransactions = createLegacyTransactionSetPayments({
             isOwnAccount: isOwnRecipient,
             preparer: transactionSetPreparer,
@@ -2782,6 +2844,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   ? { ...row, toOwnAccount: true }
                   : row
               );
+            },
+            async refreshExternalDeposits() {
+              requireOpenWallet(wallet);
+              await deposits.refresh();
+            },
+            getExternalDeposits() {
+              return deposits.deposits();
             },
             nativeOperationSyncFailed(operationId) {
               return nativeOperationOwner(wallet).syncTransportFailed(

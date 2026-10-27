@@ -82,6 +82,12 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           # Absolute: the suite runs from the package directory.
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand --testMatch '<rootDir>/chain/received-payments.anvil.integration.ts'
+      # Deposits from outside Frank, found by reading the node: History's "Received from 0x…".
+      - name: Deposits from outside Frank on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-deposit-scan.anvil.jest.test.ts
 
   # Its own job, so it runs beside wallet-monad-chain instead of lengthening it, and so the
   # latency budgets are measured without other jest workers competing for the CPU.

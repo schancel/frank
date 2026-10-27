@@ -3,6 +3,7 @@ import {
   summarizeEvmNativeOperation,
   summarizeEvmNativeStampStages,
   type ContactPaymentInfo,
+  type EvmExternalDeposit,
   type EvmNativeOperationStatus,
   type NativeWalletHandle,
   type NotedSendPurpose,
@@ -35,10 +36,14 @@ import type { SwapActivityRow } from 'src/swap/useSwapActivity'
  *   same record the chat's payment card reads;
  * - received payments: the wallet's coin list (`getReceivedPayments`). The coins one message
  *   paid (a stamp or payment split over several transactions) are one row;
+ * - deposits from outside Frank (a faucet, an exchange, a plain transfer) to the wallet's own
+ *   addresses: the chain itself, read by the wallet's deposit scan (`refreshExternalDeposits`,
+ *   `getExternalDeposits`). One row per transfer, keyed by its transaction (and log), so every
+ *   device shows the same rows. A transfer the coin list or a send already shows is not one;
  * - swaps: swap activity (`useSwapActivity`);
  * - dates: the chain. A sent transaction is dated by the block that included it
- *   (`readBlockTimes`, or the noted send's own block); a received payment by when the wallet
- *   learned of it.
+ *   (`readBlockTimes`, or the noted send's own block), a deposit by its block; a received
+ *   payment by when the wallet learned of it.
  *
  * The view is rebuilt from those owners each time it is loaded: when the wallet page opens the
  * network's wallet, when the account or network changes, and whenever the History tab is opened.
@@ -89,6 +94,12 @@ export type WalletHistoryRow =
       timeMs: number
     }
   | {
+      kind: 'deposit'
+      id: string
+      deposit: EvmExternalDeposit
+      timeMs: number
+    }
+  | {
       kind: 'received'
       id: string
       payment: ReceivedPayment
@@ -122,6 +133,10 @@ export type WalletHistoryLoad =
       >[]
       /** Block hash -> epoch ms, for the blocks the operations' transactions are in. */
       blockTimes: ReadonlyMap<string, number>
+      /** Deposits from outside Frank the chain shows. Absent: the wallet has no deposit scan. */
+      deposits?: readonly EvmExternalDeposit[]
+      /** The chain could not be read for deposits this time: those found before are shown. */
+      depositsUnread?: boolean
     }
   | { status: 'unsupported' | 'unavailable' }
 
@@ -131,11 +146,14 @@ const HISTORY_PAGES = 20
 
 /**
  * Reads everything History shows for one wallet on one network. Read only: it never opens
- * custody, signs, resumes or sends anything.
+ * custody, signs, resumes or sends anything. Deposits are those the wallet's deposit scan has
+ * found so far (`readWalletDeposits` reads the chain for more); `depositsUnread` says the last
+ * such read failed.
  */
 export async function loadWalletHistory(
   wallet: NativeWalletHandle,
   chainIdentifier: string,
+  options: { depositsUnread?: boolean } = {},
 ): Promise<WalletHistoryLoad> {
   if (wallet.chainIdentifier !== chainIdentifier)
     return { status: 'unavailable' }
@@ -193,6 +211,9 @@ export async function loadWalletHistory(
         ? wallet.getNotedSends().catch(() => [])
         : Promise.resolve([]),
     ])
+    const deposits = (wallet.getExternalDeposits?.() ?? []).filter(
+      deposit => deposit.chainIdentifier === chainIdentifier,
+    )
     const contactPayments = (wallet.getContactPayments?.() ?? []).map(
       payment => ({ messageId: payment.messageId, state: payment.state }),
     )
@@ -204,9 +225,33 @@ export async function loadWalletHistory(
       noted,
       contactPayments,
       blockTimes,
+      deposits,
+      depositsUnread: options.depositsUnread ?? false,
     }
   } catch {
     return { status: 'unavailable' }
+  }
+}
+
+/**
+ * Reads the chain's node for deposits from outside Frank up to its head (the wallet's deposit
+ * scan). Chain reads only: nothing is signed or sent. Resolves false when the node could not be
+ * read (what was found before stays), true otherwise, and true for a wallet with no such scan.
+ */
+export async function readWalletDeposits(
+  wallet: NativeWalletHandle,
+  chainIdentifier: string,
+): Promise<boolean> {
+  if (
+    wallet.chainIdentifier !== chainIdentifier ||
+    !wallet.refreshExternalDeposits
+  )
+    return true
+  try {
+    await wallet.refreshExternalDeposits()
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -265,6 +310,7 @@ function operationTime(
 function finished(row: WalletHistoryRow): boolean {
   if (row.kind === 'swap') return row.swap.status !== 'pending'
   if (row.kind === 'received') return row.payment.status !== 'pending'
+  if (row.kind === 'deposit') return true
   if (row.kind === 'noted')
     return row.state !== 'pending' && row.state !== 'unknown'
   if (row.contactOutcome !== undefined) return true
@@ -613,6 +659,30 @@ export function buildWalletHistoryGroups(input: {
       if (group) group.push(payment)
       else payments.set(key, [payment])
     }
+    // Deposits from outside Frank: a transaction a send or a received coin already shows is not
+    // shown again (the deposit scan leaves out the wallet's own transfers and its coins' ones).
+    const coinTransactions = new Set(
+      load.received.flatMap(payment =>
+        (payment.settledTransactions ?? []).map(
+          hash => `0x${hash.replace(/^0x/, '').toLowerCase()}`,
+        ),
+      ),
+    )
+    for (const send of noted) shown.add(send.txHash.toLowerCase())
+    const listed = new Set<string>()
+    for (const deposit of load.deposits ?? [])
+      if (
+        !listed.has(deposit.id) &&
+        !shown.has(deposit.txHash) &&
+        !coinTransactions.has(deposit.txHash) &&
+        listed.add(deposit.id)
+      )
+        rows.push({
+          kind: 'deposit',
+          id: `deposit:${deposit.id}`,
+          deposit,
+          timeMs: deposit.blockTimeMs,
+        })
     for (const group of payments.values()) {
       const payment = combinedPayment(group)
       rows.push({

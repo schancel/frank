@@ -1,5 +1,6 @@
 import type { EvmNativeOperation } from "../storage/evm-native-operation-journal";
 import type { NotedSendStatus } from "../evm-noted-sends";
+import type { EvmExternalDeposit } from "../evm-deposit-scan";
 /** Canonical address value passed across the application/chain boundary. */
 export interface ChainAddress {
   readonly raw: string;
@@ -440,6 +441,15 @@ export interface NativeWalletHandle {
    * A device restored from the seed has these once it has read the mailbox. Read only.
    */
   getNotedSends?(): Promise<NotedSendStatus[]>;
+  /**
+   * Reads the chain's node for deposits from outside Frank to the wallet's own addresses (its
+   * receive and identity accounts and its dApp personas) up to the head
+   * (`EvmDepositScanner.refresh`). Chain reads and the scan's own record only: nothing is
+   * signed, sent or spent. Rejects when the node cannot be read; what was found is kept.
+   */
+  refreshExternalDeposits?(): Promise<void>;
+  /** The deposits from outside Frank found so far, newest first. Read only. */
+  getExternalDeposits?(): EvmExternalDeposit[];
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;

@@ -23,7 +23,8 @@
  *      transfers after the taken nonce were signed against money that is gone, and are given up.
  *   4. A's transaction lands while the relay already holds B's message (A's is on the network
  *      first; the relay's look at the account does not show it yet): B's message is delivered and
- *      its taken payment is paid again, the same amount to the same destination, once. When the
+ *      its taken payment is paid again, the same amount to the same destination, once (what bob's
+ *      wallet shows for that money is printed: it does not count it, see the round). When the
  *      relay saw A's transaction first and refused B's message, the round reports that and checks
  *      round 1's outcome instead: which of the two happens is a race the check does not control.
  *   5. B's message carries a payment to a contact together with its stamp (one combined set),
@@ -382,6 +383,13 @@ async function main() {
         assert.equal(b.chain.directMessages.paymentSummaryOf?.({ wallet: b.handle, payloadDigest: bDigest }), 'repaid', `${label}: B reads its payment as paid again`)
         const states = await waitSettled(b, row.transactionSetOperationId!, bDigest, label)
         console.log(`${label}: the relay held B's message; its taken payment was paid again to ${destination}; taken set: ${states.join('; ')}`)
+        // What bob's wallet makes of it. The message names the taken transaction, which never
+        // lands; the repayment is a different transaction, which the message does not name. Bob's
+        // wallet counts a received coin only once the transfer its message carries is included,
+        // so it does not count this money (shown, not asserted: an open owner question).
+        await bob.chain.directMessages.fetchSince({ wallet: bob.handle, sinceMs: 0 }).catch(() => [])
+        const seen = (await bob.handle.refreshReceivedPayments?.())?.find(payment => payment.address === destination.toLowerCase())
+        console.log(`${label}: bob's wallet shows the repaid stamp at ${destination} as ${seen?.status ?? 'unknown to it'} (spendable ${seen?.spendable ?? false})`)
         await nextSendGoesThrough(b, bob.address, label, row.repayments!.map(repayment => repayment.operationId))
         return
       }
@@ -547,7 +555,8 @@ async function main() {
       try {
         const device = await openDevice(stack, label)
         try {
-          await device.receive(() => false, 15_000).catch(() => undefined)
+          // Every message in its mailbox, not only those since it opened.
+          await device.chain.directMessages.fetchSince({ wallet: device.handle, sinceMs: 0 }).catch(() => undefined)
           for (let pass = 0; pass < 5; pass++) {
             await device.handle.reobserveNativeOperations?.().catch(() => undefined)
             await sleep(2000)

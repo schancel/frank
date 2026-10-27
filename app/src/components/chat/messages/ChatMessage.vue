@@ -33,7 +33,18 @@
       data-testid="chat-system-line"
       role="note"
     >
-      {{ systemLine }}
+      <!-- A line about a group this account has: tapping it opens that group. -->
+      <button
+        v-if="systemLineConversationId"
+        type="button"
+        class="chat-system-line-link"
+        data-testid="chat-system-line-link"
+        :title="$t('groupChat.openGroup')"
+        @click="openSystemLineConversation"
+      >
+        {{ systemLine }}
+      </button>
+      <template v-else>{{ systemLine }}</template>
     </div>
     <template v-else-if="payloadDigest">
       <q-chat-message
@@ -336,7 +347,9 @@ import {
   conversationSystemLine,
   getMessageItemRenderer,
   systemLineText,
+  type SystemLine,
 } from '../../../utils/message-item-renderers'
+import { openChat } from '../../../utils/routes'
 import { messageItems } from '../../../utils/message-items'
 import { failedBeforePayment } from '../../../utils/outgoing-failure'
 import { joinConsecutiveTextItemsIndexed } from '@frank/wallet/message-item-plugins/text/long-text'
@@ -469,6 +482,10 @@ export default defineComponent({
     },
   },
   methods: {
+    openSystemLineConversation() {
+      const id = this.systemLineConversationId
+      if (id) void openChat(this.$router, id)
+    },
     /** A sent `stealth-asset` payment as its paying wallet's journal shows it (see
      * `outgoingStealthPayments`, refreshed by the outgoing tick and read again after a reload). */
     sentStealthAsset(item: {
@@ -630,13 +647,19 @@ export default defineComponent({
         ? id
         : undefined
     },
-    systemLine(): string | undefined {
-      const line = conversationSystemLine(
+    systemLineRecord(): SystemLine | undefined {
+      return conversationSystemLine(
         this.message.items ?? [],
         this.message.outbound,
         this.chats.conversations,
       )
+    },
+    systemLine(): string | undefined {
+      const line = this.systemLineRecord
       return line ? systemLineText(line, this.$t) : undefined
+    },
+    systemLineConversationId(): string | undefined {
+      return this.systemLineRecord?.conversationId
     },
     /** Not the last bubble of its sender's run: it sits closer to the next one. Nothing at
      * all in a two-person chat, so that markup stays as it was. */
@@ -899,3 +922,20 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.chat-system-line-link {
+  font: inherit;
+  color: var(--q-primary);
+  background: none;
+  border: 0;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-system-line-link:focus-visible {
+  outline: 2px solid var(--q-primary);
+  outline-offset: 2px;
+}
+</style>

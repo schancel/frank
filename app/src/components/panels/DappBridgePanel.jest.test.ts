@@ -42,6 +42,8 @@ const ONE = 10n ** 18n
 const chainBalances = new Map<string, bigint>()
 const sentRaw: string[] = []
 let refuseSend: string | undefined
+/** Runs when a receipt is asked for: the moment the sent transaction is in a block. */
+let mined: (() => void) | undefined
 const rpcCalls: Array<{ url: string; method: string }> = []
 function answer(item: { id: number; method: string; params: unknown[] }) {
   rpcCalls.push({ url: '', method: item.method })
@@ -57,6 +59,10 @@ function answer(item: { id: number; method: string; params: unknown[] }) {
       return { jsonrpc: '2.0', id: item.id, result: '0x0' }
     case 'eth_gasPrice':
       return { jsonrpc: '2.0', id: item.id, result: '0x3b9aca00' } // 1 gwei
+    case 'eth_getTransactionReceipt':
+      // The block that includes it: what the chain reports from now on.
+      mined?.()
+      return { jsonrpc: '2.0', id: item.id, result: { status: '0x1' } }
     case 'eth_sendRawTransaction':
       if (refuseSend)
         return { jsonrpc: '2.0', id: item.id, error: { message: refuseSend } }
@@ -343,6 +349,32 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
       wrapper.get('[data-testid="dapp-funding-message"]').text(),
     ).toContain('Sent')
     expect(wrapper.emitted('sweep-to-pool')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('after a sweep, shows the balance the chain reports once the sweep is in a block', async () => {
+    chainBalances.set(persona(0).toLowerCase(), 2n * ONE)
+    const wrapper = mountPanel()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+      '2 MONR',
+    )
+    await wrapper.get('[data-testid="dapp-sweep-back-btn"]').trigger('click')
+    await flushPromises()
+    // Until its block, the chain still reports the amount before the sweep.
+    mined = () => chainBalances.set(persona(0).toLowerCase(), 0n)
+    try {
+      await wrapper
+        .get('[data-testid="dapp-sweep-confirm-btn"]')
+        .trigger('click')
+      await flushPromises()
+      expect(sentRaw).toHaveLength(1)
+      expect(wrapper.get('[data-testid="dapp-persona-balance"]').text()).toBe(
+        '0 MONR',
+      )
+    } finally {
+      mined = undefined
+    }
     wrapper.unmount()
   })
 

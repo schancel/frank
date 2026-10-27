@@ -558,6 +558,11 @@ export interface DiscoveredPersonaActivity {
   used: boolean
 }
 
+/** How often, and how many times, a sweep's receipt is asked for before its persona's balance
+ * is read again (about a minute in all). */
+const SWEEP_RECEIPT_POLL_MS = 1_000
+const SWEEP_RECEIPT_POLLS = 60
+
 function shortHexAddress(addr: string): string {
   if (!addr || addr.length < 12) return addr
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`
@@ -1422,6 +1427,26 @@ export default defineComponent({
       }
     }
 
+    /** Waits until `txHash` is in a block (or the wait runs out), then reads the persona's
+     * balance from the chain again. */
+    async function readBalanceAfterInclusion(
+      rpcUrl: string,
+      txHash: string,
+      slot: number,
+      address: string,
+    ) {
+      for (let attempt = 0; attempt < SWEEP_RECEIPT_POLLS; attempt += 1) {
+        const receipt = await rpc<unknown>(
+          rpcUrl,
+          'eth_getTransactionReceipt',
+          [txHash],
+        ).catch(() => null)
+        if (receipt) break
+        await new Promise(resolve => setTimeout(resolve, SWEEP_RECEIPT_POLL_MS))
+      }
+      await refreshPersonaBalance(slot, address)
+    }
+
     /** Reads the persona's balance and the fee now, and shows the exact amount to confirm. */
     async function reviewSweep() {
       fundingMessage.value = null
@@ -1527,9 +1552,15 @@ export default defineComponent({
           )} to your wallet. Transaction ${txHash}.`,
         }
         emit('sweep-to-pool', { txHash, valueWei: review.valueWei })
-        void refreshPersonaBalance(review.slot, review.from).catch(
-          () => undefined,
-        )
+        // The chain owns the balance: read it again once the sweep is in a block. Read at once,
+        // it would still be the amount before the sweep, and that figure would stay on screen.
+        if (txHash)
+          void readBalanceAfterInclusion(
+            review.rpcUrl,
+            txHash,
+            review.slot,
+            review.from,
+          ).catch(() => undefined)
       } catch (error) {
         sweepReview.value = null
         // Once handed to the network a refused answer does not prove nothing was sent.
@@ -1548,17 +1579,13 @@ export default defineComponent({
       }
     }
 
-    // The selected persona's balance is read from the chain once its address is known.
+    // The selected persona's balance is read from the chain each time it is selected: a figure
+    // read earlier may be out of date.
     watch(
       [activePersonaAddress, fundingSupported],
       ([address, supported]) => {
         const slot = personaIndex.value
-        if (
-          !address ||
-          !supported ||
-          personaBalancesByIndex.value[slot] !== undefined
-        )
-          return
+        if (!address || !supported) return
         void refreshPersonaBalance(slot, address).catch(() => undefined)
       },
       { immediate: true },

@@ -62,8 +62,10 @@
           </p>
 
           <!-- Primary Call to Actions -->
+          <!-- A signed-in user already has an account: no offer to make or receive another. -->
           <div class="welcome-actions q-mt-md">
             <q-btn
+              v-if="!signedIn"
               color="primary"
               unelevated
               no-caps
@@ -74,6 +76,7 @@
               data-test="btn-create-account"
             />
             <q-btn
+              v-if="!signedIn"
               color="secondary"
               outline
               no-caps
@@ -276,6 +279,13 @@ import {
 export default defineComponent({
   name: 'WelcomePage',
   emits: ['toggleMyDrawerOpen', 'setupCompleted'],
+  computed: {
+    signedIn(): boolean {
+      return Boolean(
+        (this as unknown as { $status?: { setup?: boolean } }).$status?.setup,
+      )
+    },
+  },
   setup(_, { emit }) {
     const selectedExtensionTarget = ref<ExtensionTargetBrowser>(
       detectPreferredExtensionTarget(),

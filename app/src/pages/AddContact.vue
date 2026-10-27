@@ -899,6 +899,8 @@ export default defineComponent({
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,
+              accountType: profileInfo.accountType,
+              botRole: profileInfo.botRole,
               pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
           },

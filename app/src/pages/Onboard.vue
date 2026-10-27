@@ -125,7 +125,9 @@
                   $t('onboard.localFrankAccount')
                 }}</strong>
               </p>
+              <!-- Without a claim, peer or bearer gift there is nothing to import. -->
               <q-btn
+                v-if="hasThreadToImport"
                 color="primary"
                 no-caps
                 unelevated
@@ -136,6 +138,13 @@
                 :disable="busy"
                 @click="importWithExistingAccount"
               />
+              <p
+                v-else
+                class="text-body2 text-grey-8 q-mb-none"
+                data-test="onboard-nothing-to-import"
+              >
+                {{ $t('onboard.nothingToImport') }}
+              </p>
             </q-card-section>
           </template>
 
@@ -382,6 +391,14 @@ watch([nameParam, emailParam], ([newName, newEmail]) => {
     displayName.value = deriveDefaultDisplayName(newName, newEmail)
   }
 })
+
+/** What `completeOnboardingMigration` imports: a gateway claim, a peer, or a bearer gift. */
+const hasThreadToImport = computed(
+  () =>
+    Boolean(claimParam.value) ||
+    Boolean(peerParam.value) ||
+    Boolean(bearerClaim.value),
+)
 
 const peerDisplayLabel = computed(() => {
   if (peerNameParam.value) return peerNameParam.value

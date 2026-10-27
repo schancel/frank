@@ -124,3 +124,54 @@ it('copies the full current address even when displayed in shortened form', asyn
   expect(addressCopiedNotify).toHaveBeenCalledTimes(1)
   wrapper.unmount()
 })
+
+it('widens again when its box is sized by its content (a History transaction hash)', async () => {
+  // A box sized by its content (WalletHistory's fit-content rows) is as wide as the widest text
+  // laid out in it, up to the room it has. Before the sizer, that text was the shortened form
+  // alone, so one narrow moment left a hash at "0…5" for good.
+  const wrapper = mount(AddressText, {
+    props: { address, copyable: true },
+    global: {
+      mocks: { $t: (key: string) => key },
+      stubs: {
+        QTooltip: { template: '<div><slot /></div>' },
+        QBtn: { template: '<button />' },
+      },
+    },
+  })
+  let room = 400
+  const box = wrapper.get('.address-value').element
+  const probe = wrapper.get('.address-measure').element
+  const inFlowWidth = () =>
+    Math.max(
+      ...Array.from(box.children)
+        // In flow: the text shown and the sizer (the probe is absolute; the tooltip floats).
+        .filter(
+          child =>
+            child.getAttribute('data-test') === 'address-text' ||
+            child.classList.contains('address-sizer'),
+        )
+        .map(child => (child.textContent?.length ?? 0) * 8),
+    )
+  Object.defineProperty(box, 'clientWidth', {
+    get: () => Math.min(room, inFlowWidth()),
+  })
+  jest
+    .spyOn(probe, 'getBoundingClientRect')
+    .mockImplementation(
+      () => ({ width: (probe.textContent?.length ?? 0) * 8 } as DOMRect),
+    )
+  const setRoom = async (value: number) => {
+    room = value
+    resize([], {} as ResizeObserver)
+    runFrames()
+    await nextTick()
+  }
+  await setRoom(400)
+  expect(wrapper.get('[data-test="address-text"]').text()).toBe(address)
+  await setRoom(24)
+  expect(wrapper.get('[data-test="address-text"]').text()).toContain('…')
+  await setRoom(400)
+  expect(wrapper.get('[data-test="address-text"]').text()).toBe(address)
+  wrapper.unmount()
+})

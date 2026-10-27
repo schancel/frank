@@ -1,33 +1,53 @@
 <template>
-  <q-page-container class="col full-height overflow-hidden">
-    <q-page
-      class="new-group-page q-pa-sm"
-      :style-fn="pageStyle"
-      data-test="new-group-page"
-    >
-      <template v-if="invalidMembers || unavailableReason">
+  <div class="column full-height overflow-hidden">
+    <q-header>
+      <q-toolbar class="q-pl-sm">
+        <!-- The form's own cancel when it is shown (it stops the member lookups first). -->
         <q-btn
+          class="q-px-sm"
           flat
+          dense
           icon="arrow_back"
-          :label="$t('groupChat.cancel')"
-          @click="cancel"
+          :aria-label="$t('a11y.backToChats')"
+          data-test="new-group-back"
+          @click="back"
         />
-        <q-banner class="text-negative" role="alert">{{
-          $t(invalidMembers ? 'groupChat.invalidMembers' : unavailableReason)
-        }}</q-banner>
-      </template>
-      <new-group-form
-        v-else
-        :key="$route.fullPath"
-        :initial-members="initialMembers"
-        @cancel="cancel"
-      />
-    </q-page>
-  </q-page-container>
+        <q-toolbar-title class="h6">{{
+          $t('groupChat.createGroupTitle')
+        }}</q-toolbar-title>
+      </q-toolbar>
+    </q-header>
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="new-group-page q-pa-sm"
+        :style-fn="pageStyle"
+        data-test="new-group-page"
+      >
+        <template v-if="invalidMembers || unavailableReason">
+          <q-btn
+            flat
+            icon="arrow_back"
+            :label="$t('groupChat.cancel')"
+            @click="cancel"
+          />
+          <q-banner class="text-negative" role="alert">{{
+            $t(invalidMembers ? 'groupChat.invalidMembers' : unavailableReason)
+          }}</q-banner>
+        </template>
+        <new-group-form
+          v-else
+          ref="form"
+          :key="$route.fullPath"
+          :initial-members="initialMembers"
+          @cancel="cancel"
+        />
+      </q-page>
+    </q-page-container>
+  </div>
 </template>
 
 <script lang="ts">
-import { computed, defineComponent } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NewGroupForm from '../components/chat/NewGroupForm.vue'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
@@ -72,7 +92,11 @@ export default defineComponent({
           : '/chat'
       void router.replace(target)
     }
+    const form = ref<{ cancel(): void } | null>(null)
+    const back = () => (form.value ? form.value.cancel() : cancel())
     return {
+      form,
+      back,
       pageStyle: viewportPageStyle,
       initialMembers,
       invalidMembers,

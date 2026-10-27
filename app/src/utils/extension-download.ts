@@ -1,7 +1,10 @@
 import { extensionDownloadBuild } from './extension-download-env'
 
 // Keep artifact names fixed while giving each deployed build its own CDN/browser cache key.
-const downloadVersion = encodeURIComponent(extensionDownloadBuild)
+// A build that does not know its commit adds no key rather than `?v=undefined`.
+const versionQuery = extensionDownloadBuild
+  ? `?v=${encodeURIComponent(extensionDownloadBuild)}`
+  : ''
 
 export type ExtensionTargetBrowser = 'chrome' | 'firefox' | 'safari'
 
@@ -29,7 +32,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Chrome / Brave Extension (.zip)',
     shortLabel: 'Chrome / Brave',
     filename: 'frank-extension-chrome.zip',
-    url: `/downloads/frank-extension-chrome.zip?v=${downloadVersion}`,
+    url: `/downloads/frank-extension-chrome.zip${versionQuery}`,
     installHint:
       'Unzip and load via chrome://extensions (enable Developer Mode -> Load unpacked or drag zip).',
   },
@@ -38,7 +41,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Firefox Extension (.zip)',
     shortLabel: 'Firefox',
     filename: 'frank-extension-firefox.zip',
-    url: `/downloads/frank-extension-firefox.zip?v=${downloadVersion}`,
+    url: `/downloads/frank-extension-firefox.zip${versionQuery}`,
     installHint:
       'Load via about:debugging#/runtime/this-firefox -> Load Temporary Add-on.',
   },
@@ -47,7 +50,7 @@ export const EXTENSION_DOWNLOAD_TARGETS: Record<
     label: 'Download Safari Extension (.zip)',
     shortLabel: 'Safari',
     filename: 'frank-extension-safari.zip',
-    url: `/downloads/frank-extension-safari.zip?v=${downloadVersion}`,
+    url: `/downloads/frank-extension-safari.zip${versionQuery}`,
     installHint:
       'Unzip and convert with xcrun safari-web-extension-converter or enable in Safari -> Settings -> Extensions.',
   },

@@ -1,320 +1,344 @@
 <template>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-sm">
-      <!-- Edit / Selection State -->
-      <q-card v-if="!isReviewing" data-test="send-contact-edit-card">
-        <q-card-section>
-          <div class="text-h6" data-test="send-contact-title">
-            {{ $t('sendContactDialog.title') }}
-          </div>
-        </q-card-section>
+  <div>
+    <!-- The page's app header: its back arrow does what the card's own Cancel / Edit button
+    does at this step, nothing else. -->
+    <q-header>
+      <q-toolbar class="q-pl-sm">
+        <q-btn
+          class="q-px-sm"
+          flat
+          dense
+          icon="arrow_back"
+          :aria-label="$t('settings.back')"
+          :disable="isReviewing && sending"
+          data-test="send-contact-header-back"
+          @click="isReviewing ? cancelReview() : cancelEdit()"
+        />
+        <q-toolbar-title class="h6" data-test="send-contact-title">{{
+          $t('sendContactDialog.title')
+        }}</q-toolbar-title>
+      </q-toolbar>
+    </q-header>
+    <q-page-container>
+      <q-page class="q-ma-none q-pa-sm">
+        <!-- Edit / Selection State -->
+        <q-card v-if="!isReviewing" data-test="send-contact-edit-card">
+          <!-- If no contact selected yet: Contact Picker -->
+          <q-card-section v-if="!selectedContactAddress">
+            <q-input
+              v-model="search"
+              filled
+              dense
+              :placeholder="$t('sendContactDialog.searchContacts')"
+              data-test="contact-search-input"
+              class="q-mb-md"
+            >
+              <template #prepend>
+                <q-icon name="search" />
+              </template>
+            </q-input>
 
-        <!-- If no contact selected yet: Contact Picker -->
-        <q-card-section v-if="!selectedContactAddress" class="q-pt-none">
-          <q-input
-            v-model="search"
-            filled
-            dense
-            :placeholder="$t('sendContactDialog.searchContacts')"
-            data-test="contact-search-input"
-            class="q-mb-md"
-          >
-            <template #prepend>
-              <q-icon name="search" />
-            </template>
-          </q-input>
+            <q-list
+              separator
+              bordered
+              class="rounded-borders"
+              style="max-height: 250px; overflow-y: auto"
+            >
+              <q-item
+                v-for="(contact, addr) in filteredContacts"
+                :key="addr"
+                clickable
+                data-test="contact-item"
+                @click="selectContact(String(addr))"
+              >
+                <q-item-section avatar>
+                  <q-avatar color="primary" text-color="white" size="36px">
+                    {{
+                      contact?.profile?.name
+                        ? contact.profile.name.charAt(0).toUpperCase()
+                        : '?'
+                    }}
+                  </q-avatar>
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label
+                    class="text-weight-bold"
+                    data-test="contact-name"
+                  >
+                    {{ contact?.profile?.name || shortAddress(String(addr)) }}
+                  </q-item-label>
+                  <q-item-label
+                    caption
+                    class="ellipsis"
+                    style="max-width: 250px"
+                  >
+                    {{ addr }}
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-icon name="chevron_right" />
+                </q-item-section>
+              </q-item>
+              <q-item v-if="Object.keys(filteredContacts).length === 0">
+                <q-item-section class="text-center text-grey-7 q-py-md">
+                  {{ $t('sendContactDialog.noContactsFound') }}
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-card-section>
 
-          <q-list
-            separator
-            bordered
-            class="rounded-borders"
-            style="max-height: 250px; overflow-y: auto"
-          >
+          <!-- Selected Contact Card -->
+          <q-card-section v-else>
+            <div class="text-caption text-grey-7 q-mb-xs">
+              {{ $t('sendContactDialog.selectedContact') }}
+            </div>
             <q-item
-              v-for="(contact, addr) in filteredContacts"
-              :key="addr"
-              clickable
-              data-test="contact-item"
-              @click="selectContact(String(addr))"
+              class="bg-grey-2 rounded-borders items-center q-pa-sm"
+              data-test="selected-contact-card"
             >
               <q-item-section avatar>
                 <q-avatar color="primary" text-color="white" size="36px">
                   {{
-                    contact?.profile?.name
-                      ? contact.profile.name.charAt(0).toUpperCase()
+                    selectedContactName
+                      ? selectedContactName.charAt(0).toUpperCase()
                       : '?'
                   }}
                 </q-avatar>
               </q-item-section>
               <q-item-section>
-                <q-item-label class="text-weight-bold" data-test="contact-name">
-                  {{ contact?.profile?.name || shortAddress(String(addr)) }}
+                <q-item-label
+                  class="text-weight-bold"
+                  data-test="selected-contact-name"
+                >
+                  {{ selectedContactName }}
                 </q-item-label>
-                <q-item-label caption class="ellipsis" style="max-width: 250px">
-                  {{ addr }}
+                <q-item-label caption class="ellipsis" style="max-width: 220px">
+                  {{ selectedContactAddress }}
                 </q-item-label>
               </q-item-section>
               <q-item-section side>
-                <q-icon name="chevron_right" />
+                <q-btn
+                  flat
+                  dense
+                  no-caps
+                  color="primary"
+                  :label="$t('sendContactDialog.changeContact')"
+                  data-test="change-contact-button"
+                  @click="clearSelectedContact"
+                />
               </q-item-section>
             </q-item>
-            <q-item v-if="Object.keys(filteredContacts).length === 0">
-              <q-item-section class="text-center text-grey-7 q-py-md">
-                {{ $t('sendContactDialog.noContactsFound') }}
-              </q-item-section>
-            </q-item>
-          </q-list>
-        </q-card-section>
+          </q-card-section>
 
-        <!-- Selected Contact Card -->
-        <q-card-section v-else class="q-pt-none">
-          <div class="text-caption text-grey-7 q-mb-xs">
-            {{ $t('sendContactDialog.selectedContact') }}
-          </div>
-          <q-item
-            class="bg-grey-2 rounded-borders items-center q-pa-sm"
-            data-test="selected-contact-card"
-          >
-            <q-item-section avatar>
-              <q-avatar color="primary" text-color="white" size="36px">
-                {{
-                  selectedContactName
-                    ? selectedContactName.charAt(0).toUpperCase()
-                    : '?'
-                }}
-              </q-avatar>
-            </q-item-section>
-            <q-item-section>
-              <q-item-label
-                class="text-weight-bold"
-                data-test="selected-contact-name"
-              >
-                {{ selectedContactName }}
-              </q-item-label>
-              <q-item-label caption class="ellipsis" style="max-width: 220px">
-                {{ selectedContactAddress }}
-              </q-item-label>
-            </q-item-section>
-            <q-item-section side>
-              <q-btn
-                flat
-                dense
-                no-caps
-                color="primary"
-                :label="$t('sendContactDialog.changeContact')"
-                data-test="change-contact-button"
-                @click="clearSelectedContact"
-              />
-            </q-item-section>
-          </q-item>
-        </q-card-section>
-
-        <!-- Amount & Memo Inputs -->
-        <q-card-section class="q-pt-none">
-          <div class="row justify-between items-center q-mb-xs">
-            <span class="text-caption text-grey-7">{{
-              $t('sendContactDialog.amount')
-            }}</span>
-            <span
-              class="text-caption text-grey-7"
-              :title="balanceText ? exactSpendable : undefined"
-              data-test="send-contact-available"
-              >{{
-                balanceText
-                  ? $t('sendContactDialog.available', { amount: balanceText })
-                  : ''
-              }}</span
-            >
-          </div>
-          <q-input
-            v-model="amount"
-            class="text-bold text-h6"
-            inputmode="decimal"
-            filled
-            dense
-            data-test="send-contact-amount-input"
-            :placeholder="$t('sendContactDialog.enterAmount', { unit })"
-          />
-          <div
-            v-if="tooLarge"
-            class="text-negative text-caption q-mt-xs"
-            role="alert"
-            data-test="send-contact-too-large"
-          >
-            {{ tooLargeText }}
-          </div>
-          <!-- The payment floor: the contact must be able to move what they receive. -->
-          <div
-            v-else-if="belowFloor"
-            class="text-negative text-caption q-mt-xs"
-            role="alert"
-            data-test="send-contact-below-floor"
-          >
-            {{ belowFloorText }}
-          </div>
-          <div
-            v-else-if="floorWei > 0n"
-            class="text-caption text-grey-7 q-mt-xs"
-            data-test="send-contact-minimum"
-          >
-            {{ minimumText }}
-          </div>
-        </q-card-section>
-
-        <q-card-section class="q-pt-none">
-          <q-input
-            v-model="memo"
-            filled
-            dense
-            data-test="send-contact-memo-input"
-            :placeholder="$t('sendContactDialog.memo')"
-          />
-        </q-card-section>
-
-        <q-card-actions align="right" class="wrap">
-          <q-btn
-            :label="$t('sendContactDialog.cancel')"
-            color="negative"
-            flat
-            data-test="send-contact-cancel-button"
-            @click="cancelEdit"
-          />
-          <q-btn
-            :disable="!isValid || sending"
-            :loading="sending"
-            :label="$t('sendContactDialog.reviewTransfer')"
-            color="primary"
-            data-test="send-contact-review-button"
-            @click="reviewTransfer"
-          />
-        </q-card-actions>
-      </q-card>
-
-      <!-- Review State -->
-      <q-card v-else data-test="send-contact-review-card">
-        <q-card-section>
-          <div class="text-h6" data-test="review-title">
-            {{ $t('sendContactDialog.reviewTransfer') }}
-          </div>
-        </q-card-section>
-
-        <q-card-section class="q-pt-none">
-          <div class="q-gutter-y-sm">
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendContactDialog.recipient')
-              }}</span>
-              <span
-                class="text-weight-bold text-body2"
-                data-test="review-recipient"
-              >
-                {{ selectedContactName }} ({{
-                  shortAddress(selectedContactAddress)
-                }})
-              </span>
-            </div>
-
-            <div class="row justify-between items-center q-py-xs">
+          <!-- Amount & Memo Inputs -->
+          <q-card-section class="q-pt-none">
+            <div class="row justify-between items-center q-mb-xs">
               <span class="text-caption text-grey-7">{{
                 $t('sendContactDialog.amount')
               }}</span>
               <span
-                class="text-weight-bold text-primary"
-                data-test="review-amount"
+                class="text-caption text-grey-7"
+                :title="balanceText ? exactSpendable : undefined"
+                data-test="send-contact-available"
+                >{{
+                  balanceText
+                    ? $t('sendContactDialog.available', { amount: balanceText })
+                    : ''
+                }}</span
               >
-                {{ amount }} {{ unit }}
-              </span>
             </div>
-
-            <div v-if="memo" class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendContactDialog.memo')
-              }}</span>
-              <span class="text-body2" data-test="review-memo">{{ memo }}</span>
+            <q-input
+              v-model="amount"
+              class="text-bold text-h6"
+              inputmode="decimal"
+              filled
+              dense
+              data-test="send-contact-amount-input"
+              :placeholder="$t('sendContactDialog.enterAmount', { unit })"
+            />
+            <div
+              v-if="tooLarge"
+              class="text-negative text-caption q-mt-xs"
+              role="alert"
+              data-test="send-contact-too-large"
+            >
+              {{ tooLargeText }}
             </div>
-
-            <!-- The message's stamp: paid to the contact beside the payment, never part of it. -->
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendContactDialog.stamp')
-              }}</span>
-              <span class="text-grey-7 text-right" data-test="review-stamp">
-                {{ stampText }}
-              </span>
+            <!-- The payment floor: the contact must be able to move what they receive. -->
+            <div
+              v-else-if="belowFloor"
+              class="text-negative text-caption q-mt-xs"
+              role="alert"
+              data-test="send-contact-below-floor"
+            >
+              {{ belowFloorText }}
             </div>
-
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-caption text-grey-7">{{
-                $t('sendAddressDialog.estimatedFee')
-              }}</span>
-              <span class="text-grey-7 text-right" data-test="review-fee">
-                {{ feeText }}
-              </span>
+            <div
+              v-else-if="floorWei > 0n"
+              class="text-caption text-grey-7 q-mt-xs"
+              data-test="send-contact-minimum"
+            >
+              {{ minimumText }}
             </div>
+          </q-card-section>
 
-            <q-separator />
+          <q-card-section class="q-pt-none">
+            <q-input
+              v-model="memo"
+              filled
+              dense
+              data-test="send-contact-memo-input"
+              :placeholder="$t('sendContactDialog.memo')"
+            />
+          </q-card-section>
 
-            <div class="row justify-between items-center q-py-xs">
-              <span class="text-subtitle2">{{
-                $t('sendContactDialog.total')
-              }}</span>
-              <span
-                class="text-subtitle1 text-weight-bold"
-                data-test="review-total"
-              >
-                {{ totalText }}
-              </span>
+          <q-card-actions align="right" class="wrap">
+            <q-btn
+              :label="$t('sendContactDialog.cancel')"
+              color="negative"
+              flat
+              data-test="send-contact-cancel-button"
+              @click="cancelEdit"
+            />
+            <q-btn
+              :disable="!isValid || sending"
+              :loading="sending"
+              :label="$t('sendContactDialog.reviewTransfer')"
+              color="primary"
+              data-test="send-contact-review-button"
+              @click="reviewTransfer"
+            />
+          </q-card-actions>
+        </q-card>
+
+        <!-- Review State -->
+        <q-card v-else data-test="send-contact-review-card">
+          <q-card-section>
+            <div class="text-h6" data-test="review-title">
+              {{ $t('sendContactDialog.reviewTransfer') }}
             </div>
-          </div>
-        </q-card-section>
+          </q-card-section>
 
-        <!-- Refused over the reviewed fee: nothing was sent; the fee and total above are the
-             new quote, which bounds the payment if the user confirms again. -->
-        <q-card-section
-          v-if="feeChanged"
-          class="q-pt-none"
-          role="alert"
-          data-test="review-fee-changed"
-        >
-          <q-banner dense rounded class="bg-amber-1 text-amber-10">
-            {{ $t('sendAddressDialog.feeChanged') }}
-          </q-banner>
-        </q-card-section>
+          <q-card-section class="q-pt-none">
+            <div class="q-gutter-y-sm">
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendContactDialog.recipient')
+                }}</span>
+                <span
+                  class="text-weight-bold text-body2"
+                  data-test="review-recipient"
+                >
+                  {{ selectedContactName }} ({{
+                    shortAddress(selectedContactAddress)
+                  }})
+                </span>
+              </div>
 
-        <q-card-section class="q-pt-none">
-          <q-banner
-            class="bg-blue-1 text-primary q-pa-sm"
-            rounded
-            data-test="review-stealth-notice"
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendContactDialog.amount')
+                }}</span>
+                <span
+                  class="text-weight-bold text-primary"
+                  data-test="review-amount"
+                >
+                  {{ amount }} {{ unit }}
+                </span>
+              </div>
+
+              <div v-if="memo" class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendContactDialog.memo')
+                }}</span>
+                <span class="text-body2" data-test="review-memo">{{
+                  memo
+                }}</span>
+              </div>
+
+              <!-- The message's stamp: paid to the contact beside the payment, never part of it. -->
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendContactDialog.stamp')
+                }}</span>
+                <span class="text-grey-7 text-right" data-test="review-stamp">
+                  {{ stampText }}
+                </span>
+              </div>
+
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-caption text-grey-7">{{
+                  $t('sendAddressDialog.estimatedFee')
+                }}</span>
+                <span class="text-grey-7 text-right" data-test="review-fee">
+                  {{ feeText }}
+                </span>
+              </div>
+
+              <q-separator />
+
+              <div class="row justify-between items-center q-py-xs">
+                <span class="text-subtitle2">{{
+                  $t('sendContactDialog.total')
+                }}</span>
+                <span
+                  class="text-subtitle1 text-weight-bold"
+                  data-test="review-total"
+                >
+                  {{ totalText }}
+                </span>
+              </div>
+            </div>
+          </q-card-section>
+
+          <!-- Refused over the reviewed fee: nothing was sent; the fee and total above are the
+               new quote, which bounds the payment if the user confirms again. -->
+          <q-card-section
+            v-if="feeChanged"
+            class="q-pt-none"
+            role="alert"
+            data-test="review-fee-changed"
           >
-            <template #avatar>
-              <q-icon name="lock" color="primary" />
-            </template>
-            {{ $t('sendContactDialog.stealthNotice') }}
-          </q-banner>
-        </q-card-section>
+            <q-banner dense rounded class="bg-amber-1 text-amber-10">
+              {{ $t('sendAddressDialog.feeChanged') }}
+            </q-banner>
+          </q-card-section>
 
-        <q-card-actions align="right" class="wrap">
-          <q-btn
-            :disable="sending"
-            :label="$t('sendContactDialog.edit')"
-            flat
-            color="primary"
-            data-test="review-cancel-button"
-            @click="cancelReview"
-          />
-          <q-btn
-            :disable="sending || quote.state === 'estimating'"
-            :loading="sending"
-            :label="$t('sendContactDialog.confirmAndSend')"
-            color="primary"
-            data-test="review-confirm-button"
-            @click="confirmSend"
-          />
-        </q-card-actions>
-      </q-card>
-    </q-page>
-  </q-page-container>
+          <q-card-section class="q-pt-none">
+            <q-banner
+              class="bg-blue-1 text-primary q-pa-sm"
+              rounded
+              data-test="review-stealth-notice"
+            >
+              <template #avatar>
+                <q-icon name="lock" color="primary" />
+              </template>
+              {{ $t('sendContactDialog.stealthNotice') }}
+            </q-banner>
+          </q-card-section>
+
+          <q-card-actions align="right" class="wrap">
+            <q-btn
+              :disable="sending"
+              :label="$t('sendContactDialog.edit')"
+              flat
+              color="primary"
+              data-test="review-cancel-button"
+              @click="cancelReview"
+            />
+            <q-btn
+              :disable="sending || quote.state === 'estimating'"
+              :loading="sending"
+              :label="$t('sendContactDialog.confirmAndSend')"
+              color="primary"
+              data-test="review-confirm-button"
+              @click="confirmSend"
+            />
+          </q-card-actions>
+        </q-card>
+      </q-page>
+    </q-page-container>
+  </div>
 </template>
 
 <script lang="ts">

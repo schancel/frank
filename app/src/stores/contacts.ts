@@ -1308,6 +1308,8 @@ export const useContactStore = defineStore('contacts', {
               location: profileInfo.location ?? null,
               links: profileInfo.links ?? [],
               isBot: profileInfo.bot === true,
+              accountType: profileInfo.accountType,
+              botRole: profileInfo.botRole,
               pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
             inbox: defaultRelayData.inbox,

@@ -357,6 +357,12 @@ export default configure(ctx => {
       env: {
         filter: filterPublicClientEnv,
       },
+      // Quasar reads the QCLI_* variables of the shell before this file runs, so the commit
+      // hash resolved above (when the shell did not set it) reached no client code: About
+      // showed "unknown" and the extension downloads carried `?v=undefined`. Define it here.
+      defineEnv: {
+        QCLI_GIT_COMMIT_HASH: process.env.QCLI_GIT_COMMIT_HASH,
+      },
       target: {
         browser: ['es2020'],
       },

@@ -407,6 +407,7 @@ import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
+  isAutomatedAccount,
   supportedCallMedia,
   type WebRtcCallMedia,
 } from 'src/utils/webrtc-call-support'
@@ -740,6 +741,7 @@ export default defineComponent({
       return supportedCallMedia({
         group: this.activeConversation?.kind === 'group' || this.isGroup,
         otherParticipantCount: this.participantCount - 1,
+        peerIsAutomated: isAutomatedAccount(this.contactProfile),
       })
     },
     subject(): string {

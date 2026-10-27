@@ -398,6 +398,26 @@ describe('Onboard.vue & /onboard route', () => {
     }
   })
 
+  test('when an account is already active and the link carries no thread, offers nothing to import', async () => {
+    Object.assign(mockAccount, {
+      status: 'ready',
+      revision: 1,
+      account: { accountId: 'existing-acc', displayName: 'Existing Alice' },
+    })
+    mockRoute.query = {}
+    const view = renderOnboard()
+    try {
+      expect(view.find('[data-test="onboard-import-existing"]').exists()).toBe(
+        false,
+      )
+      expect(view.get('[data-test="onboard-nothing-to-import"]').text()).toBe(
+        'onboard.nothingToImport',
+      )
+    } finally {
+      view.unmount()
+    }
+  })
+
   test('when an account is already active (status === ready), clicking Import Thread & Open Chat with Peer imports message and navigates to /chat/<peer>', async () => {
     Object.assign(mockAccount, {
       status: 'ready',

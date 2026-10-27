@@ -65,6 +65,24 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-parallel-send.anvil.jest.test.ts
 
+  # Payments between two wallets on a real EVM node (anvil): carried payments reach the node only
+  # after the relay stores their message, released payments never do, and what each side counts
+  # is what the chain holds. Its own job, beside wallet-monad-chain, so it does not lengthen it.
+  wallet-received-payments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Received payments on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          # Absolute: the suite runs from the package directory.
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand --testMatch '<rootDir>/chain/received-payments.anvil.integration.ts'
+
   # Its own job, so it runs beside wallet-monad-chain instead of lengthening it, and so the
   # latency budgets are measured without other jest workers competing for the CPU.
   wallet-budgets:

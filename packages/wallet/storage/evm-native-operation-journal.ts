@@ -1620,6 +1620,38 @@ export class EvmNativeOperationJournal {
       row.cancelled = true
     })
   }
+  /**
+   * Ends a transaction set whose first handoff the home relay refused before storing or
+   * broadcasting anything (the answers in `REFUSED_BEFORE_EXPOSURE`): the payments it was
+   * handed are its only exposed members, and nothing of the set is known on the chain. Its
+   * signed bytes are dropped and it is cancelled, as an unexposed one would be. A set any of
+   * whose own moves went to the node refuses this: those may land, and it stays reserved.
+   */
+  discardRefusedBeforeBroadcast(id: string): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      if (
+        row.kind !== 'transaction-set' ||
+        row.cancelled ||
+        row.members.some(m =>
+          (m.exposed && m.transactionSet?.role !== 'payment') ||
+          nativeMemberSuperseded(m) ||
+          !['unknown', 'missing'].includes(m.observation.state),
+        )
+      )
+        fail('conflict')
+      // The same tombstone as an unexposed discard: the bytes the relay refused are gone, and
+      // with them what their handoff authorized.
+      for (const m of row.members) {
+        m.signed = null
+        m.exposed = false
+        m.observation = { state: 'unknown' }
+        m.account = null
+      }
+      delete row.submissionAuthorized
+      row.reservedBytes = reservation(row)
+      row.cancelled = true
+    })
+  }
   beginCapture(operationId: string, memberIndex: number): EvmNativeCapture {
     if (this.closing) fail('closed')
     const row = this.get(operationId)

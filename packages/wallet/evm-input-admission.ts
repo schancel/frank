@@ -1001,6 +1001,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'markTransactionSetInventoryApplied'
     | 'cancelUnsigned'
     | 'discardUnexposed'
+    | 'discardRefusedBeforeBroadcast'
     | 'beginCapture'
     | 'recordObservation'
     | 'appendTransactionSet'
@@ -1063,6 +1064,7 @@ export function nativeAdmissionJournal(
       mutation(() => journal.markTransactionSetInventoryApplied(id, index)),
     cancelUnsigned: id => mutation(() => journal.cancelUnsigned(id)),
     discardUnexposed: id => mutation(() => journal.discardUnexposed(id)),
+    discardRefusedBeforeBroadcast: id => mutation(() => journal.discardRefusedBeforeBroadcast(id)),
     beginCapture: (id, index) => {
       owner.owners.assertLifetime(lifetime)
       return journal.beginCapture(id, index)

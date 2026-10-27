@@ -1247,6 +1247,109 @@ it('refuses to cancel exposed bytes and serializes cancellation behind an in-fli
   expect(await f.preparer.releaseUnexposed('unknown')).toBe(false)
 })
 
+it.each([0.01, 0.3, 0.5, 0.7, 0.99].flatMap(draw => [
+  [draw, 'no spend rule', undefined],
+  // Monad's reserve rule puts a payment first when its own change would otherwise delay it.
+  [draw, 'a reserve rule', { belowWei: 2000000n, waitBlocks: 3 }],
+] as const))('an appended stage is never funded by a move that stands behind a payment of the set (draw %s, %s)', async (draw, _rule, spendRule) => {
+  // A message's carried payments reach the chain only after the relay stores it, and the relay
+  // needs a stage's funding on the chain before it stores it. Funding behind a carried payment
+  // on the same account could therefore never land first.
+  const f = await setup([1000000n, 900000n], spendRule ? { ...policy, spendRule } : policy)
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => draw })
+  await f.preparer.constructTransactionSet({ operationId: 'staged', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })
+  await f.preparer.appendTransactionSet({ operationId: 'staged', stageId: 'stamp', amountWei: 70000n, kdf })
+  const members = f.preparer.getOperation('staged')!.members
+  const behindPayment = (index: number, stageId: string | undefined): boolean => {
+    const member = members[index]!
+    if (member.transactionSet?.role === 'payment' && member.transactionSet.stageId !== stageId) return true
+    return member.dependencies.some(dependency => behindPayment(dependency, stageId))
+  }
+  const stamps = members.flatMap((member, index) => member.transactionSet?.stageId === 'stamp' && member.transactionSet.role === 'payment' ? [index] : [])
+  expect(stamps.length).toBeGreaterThan(0)
+  for (const index of stamps) expect(behindPayment(index, 'stamp')).toBe(false)
+})
+
+it('a set that could fund its next stage only from behind its payment is refused at construction, holding nothing', async () => {
+  // One coin under the reserve rule: the payment goes first on that account, so all its change
+  // comes after it and none can fund the stamp the message also carries.
+  const f = await setup([1000000n], { ...policy, spendRule: { belowWei: 2000000n, waitBlocks: 3 } })
+  await expect(f.preparer.constructTransactionSet({ operationId: 'stuck', amountWei: 300000n, reserveForContinuationWei: 200000n, kdf })).rejects.toThrow()
+  expect(f.coins.heldBy('stuck')).toEqual([])
+  expect(f.journal.list()).toHaveLength(0)
+})
+
+it.each([0.01, 0.3, 0.5, 0.7, 0.99])('one coin under a reserve rule funds its continuation at the lowest nonce and pays at the next (draw %s)', async draw => {
+  // The owner's two-nonce ruling: the stamp's funding (the carved continuation account) is
+  // signed first on the coin's account, the payment the message carries directly after it, and
+  // the rest of the change behind the payment. Nothing else of the set comes between the two.
+  const spendRule = { belowWei: 2000000n, waitBlocks: 3 }
+  const f = await setup([1000000n], { ...policy, spendRule })
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => draw })
+  await f.preparer.constructTransactionSet({ operationId: 'one-coin', amountWei: 300000n,
+    reserveForContinuationWei: 51000n, continuationFeeWei: 21000n, kdf })
+  await f.preparer.appendTransactionSet({ operationId: 'one-coin', stageId: 'stamp', amountWei: 30000n, kdf })
+  const members = f.preparer.getOperation('one-coin')!.members
+  const nonce = (index: number) => Transaction.from(members[index]!.unsignedTransaction).nonce
+  const account = members[0]!.source.address
+  const onAccount = members.flatMap((member, index) => member.source.address === account ? [index] : [])
+    .sort((a, b) => nonce(a) - nonce(b))
+  const stamp = members.findIndex(member => member.transactionSet?.stageId === 'stamp' && member.transactionSet.role === 'payment')
+  const [funding] = members[stamp]!.dependencies
+  expect(funding).toBe(onAccount[0])
+  expect(members[funding!]!.transactionSet!.role).toBe('change')
+  expect(Transaction.from(members[funding!]!.unsignedTransaction).value).toBe(51000n)
+  const payment = onAccount[1]!
+  expect(members[payment]!.transactionSet).toMatchObject({ role: 'payment', predecessorWaitBlocks: 3 })
+  expect(members[payment]!.transactionSet!.stageId).toBeUndefined()
+  expect(nonce(payment)).toBe(nonce(funding!) + 1)
+  for (const index of onAccount.slice(2)) expect(members[index]!.transactionSet!.role).toBe('change')
+  // The stamp waits for its funding to mature, one block past the payment's quiet window.
+  expect(members[stamp]!.transactionSet!.fundingWaitBlocks).toBe(spendRule.waitBlocks + 1)
+})
+
+it('a relay refusal before any broadcast releases a set whose only exposed members are its payments, and never one whose own moves were exposed', async () => {
+  const f = await setup(), original = f.coins.all()
+  // A random draw that splits off no change first: the payment is the set's first move.
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => 0.99 })
+  const construct = async (operationId: string) => {
+    await f.preparer.constructTransactionSet({ operationId, amountWei: 300000n, kdf })
+    const row = f.preparer.getOperation(operationId)!
+    await f.preparer.authorizeSubmission(operationId)
+    return row.members.map((member, index) => ({ role: member.transactionSet?.role, index, dependencies: member.dependencies }))
+  }
+  // Handed to the relay (payments exposed), refused before the relay stored or broadcast it.
+  const members = await construct('refused')
+  // Only a payment standing on no move of the set's own can be handed over unbroadcast.
+  const payments = members.filter(member => member.role === 'payment' && member.dependencies.length === 0)
+  expect(payments.length).toBeGreaterThan(0)
+  for (const { index } of payments) await f.journal.markExposed(f.preparer.getOperation('refused')!.operationId, index)
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('refused')).toBe(true)
+  // Nothing signed survives, nothing is marked exposed, and the coins are back as they were.
+  const tombstone = f.journal.list().find(row => row.preparationId?.endsWith('refused'))!
+  expect(tombstone.cancelled).toBe(true)
+  expect(tombstone.members.every(member => member.signed === null && !member.exposed)).toBe(true)
+  expect(f.coins.heldBy('refused')).toEqual([])
+  const byAccount = (a: { account: string }, b: { account: string }) => a.account.localeCompare(b.account)
+  expect(f.coins.all().filter(coin => coin.origin !== 'change').sort(byAccount)).toEqual([...original].sort(byAccount))
+  // Idempotent: a repeat after a crash finds the tombstone and answers the same.
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('refused')).toBe(true)
+
+  // A set one of whose own moves (change) was exposed keeps its bytes and its reservation.
+  const exposedMembers = await construct('own-move-exposed')
+  const own = exposedMembers.find(member => member.role !== 'payment')
+  expect(own).toBeDefined()
+  const id = f.preparer.getOperation('own-move-exposed')!.operationId
+  // Expose it with what it stands on (the payment first in this draw), as a broadcast would.
+  for (let index = 0; index <= own!.index; index++) await f.journal.markExposed(id, index)
+  const before = f.coins.all(), graph = f.preparer.getTransactionSet('own-move-exposed')
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('own-move-exposed')).toBe(false)
+  expect(f.coins.all()).toEqual(before)
+  expect(f.preparer.getTransactionSet('own-move-exposed')).toEqual(graph)
+  await expect(f.journal.discardRefusedBeforeBroadcast(id)).rejects.toThrow()
+  expect(await f.preparer.releaseRefusedBeforeBroadcast('unknown')).toBe(false)
+})
+
 it.each([0n, 70000n, 800000n])('releases only uncommitted stage reservations after a journal precommit failure (append amount=%s)', async appendAmount => {
   const append = appendAmount > 0n
   const f = await setup(), operationId = 'precommit-fault'

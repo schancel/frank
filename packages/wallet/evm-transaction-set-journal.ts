@@ -59,6 +59,10 @@ export function evmTransactionSetJournal(
       owner.runLifetime(lifetime =>
         nativeAdmissionJournal(owner.inputAdmission, lifetime).discardUnexposed(id),
       ),
+    discardRefusedBeforeBroadcast: id =>
+      owner.runLifetime(lifetime =>
+        nativeAdmissionJournal(owner.inputAdmission, lifetime).discardRefusedBeforeBroadcast(id),
+      ),
     beginCapture: (id, index) =>
       owner.runLifetime(async lifetime =>
         nativeAdmissionJournal(owner.inputAdmission, lifetime).beginCapture(

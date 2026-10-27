@@ -692,6 +692,63 @@ export const REFUSED_BEFORE_EXPOSURE: ReadonlySet<string> = new Set([
 const MAX_REFUSAL_REPLANS = 2
 
 /**
+ * Before the relay has a message, the wallet puts its own self-sends of the set on the chain
+ * (change and the funding of this message's payments), observed until the payments may be handed
+ * over or nothing more moves. Recipient payments, the stamps and any contact transfer, are
+ * broadcast only once the relay has stored the message (`settleSharedPayments`): a relay that
+ * cannot be reached leaves none of them on the chain. There is no exception: the preparer never
+ * funds a stage from a move that comes after a payment of the set on the same account.
+ * Returns whether the stage's payments may be handed to the relay now.
+ */
+async function fundStagePayments(
+  shared: NonNullable<CanonicalMessagingOwner['transactionSets']>,
+  operationId: string,
+  stageId: string | undefined,
+): Promise<boolean> {
+  const progress = async () => {
+    const operation = await shared.preparer.readOperation(operationId)
+    return JSON.stringify(
+      operation?.members.map(member => [member.exposed, member.observation.state]) ?? [],
+    )
+  }
+  // Readiness counts blocks from the wallet's last look at the head (after a reopen there is
+  // none yet): each check follows a fresh look, so what landed in the previous pass is judged
+  // against the head that followed it. A node that cannot be reached leaves readiness to what
+  // is already known: a same-account predecessor counts once it left the wallet, as before.
+  // The head only grows, so a stage ready against the last look is ready against a fresh one:
+  // the fresh look (a round of node reads) is taken only when the last one does not suffice.
+  const ready = async () => {
+    if (await shared.lifecycle.readCanSubmitPayments(operationId, stageId).catch(() => false))
+      return true
+    await shared.refresh().catch(() => undefined)
+    return shared.lifecycle.readCanSubmitPayments(operationId, stageId)
+  }
+  // A handoff the node did not take is not lost: the bytes stay recorded and the resend pass
+  // hands them over again. Only readiness decides whether the relay gets the message now.
+  const attempt = async (step: () => Promise<void>) => {
+    try {
+      await step()
+    } catch (error) {
+      console.warn('[monad-canonical-dm] funding of a message payment did not go out yet:', error)
+    }
+  }
+  for (;;) {
+    if (await ready()) return true
+    const before = await progress()
+    await attempt(() => shared.lifecycle.replay(operationId, { payments: false }))
+    // A payment standing only on moves of its own account is ready once they left the wallet:
+    // reading the chain is then left to the pass after the relay stored the message.
+    if (await shared.lifecycle.readCanSubmitPayments(operationId, stageId).catch(() => false))
+      return true
+    await attempt(() => shared.lifecycle.observe(operationId, shared.provider))
+    // A self-send included now may make the next one on its account ready. A pass that
+    // changes nothing waits for blocks or the node. (No stage is funded from behind a payment
+    // of its set: the preparer never builds that, so no payment goes out before the relay.)
+    if ((await progress()) === before) return await ready()
+  }
+}
+
+/**
  * Hands one stored message to the relay, the same bytes every time, and saves the relay's
  * answer. Returns the row as it now stands. A request that fails or is not answered changes
  * nothing: the outcome is unknown and the message is submitted again later.
@@ -716,16 +773,15 @@ async function submitStored(
     row.outcome !== undefined ||
     row.request === undefined
   ) return { row }
-  if (row.transactionSetOperationId && owner.transactionSets) {
-    const shared = owner.transactionSets
-    await shared.sendTransaction(await shared.preparer.readTransactionSet(row.transactionSetOperationId))
-  }
   if (row.transactionSetOperationId) {
     const shared = owner.transactionSets
-    if (!shared || !row.transactionSetOperationId) throw new Error('Shared stamp operation unavailable')
+    if (!shared) throw new Error('Shared stamp operation unavailable')
+    // The complete message and its signed set are durable: the set is authorized for
+    // submission (as the wallet's submission boundary requires) before any of it leaves.
+    await shared.preparer.authorizeSubmission(row.transactionSetOperationId)
     // This message's own payments still wait on their funding transactions: nothing failed
     // and no other attempt competes. It is handed to the relay on a later pass.
-    if (!await shared.lifecycle.readCanSubmitPayments(row.transactionSetOperationId, row.transactionSetStageId)) {
+    if (!await fundStagePayments(shared, row.transactionSetOperationId, row.transactionSetStageId)) {
       // A payment whose nonce another transaction used is not waiting for anything: it can never
       // land, and the resend pass builds the payment again once the chain confirms that.
       const operation = await shared.preparer.readOperation(row.transactionSetOperationId)
@@ -736,9 +792,17 @@ async function submitStored(
       return taken ? { row, paymentTaken: true } : { row, awaitingFunding: true }
     }
   }
+  // A shared set whose own payments are all this message's and of which nothing has left the
+  // wallet yet: a first refusal before the relay stores anything frees it, as for version 1.
+  let sharedUnexposed = false
   if (row.transactionSetOperationId && owner.transactionSets) {
     const operation = await owner.transactionSets.preparer.readOperation(row.transactionSetOperationId)
     if (!operation) throw new Error('Shared stamp operation unavailable')
+    const carried = new Set(row.payments.map(payment => payment.rawTx))
+    sharedUnexposed = operation.members.every(member =>
+      !member.exposed &&
+      (member.transactionSet?.role !== 'payment' || carried.has(member.signed!.rawTransaction)),
+    )
     for (const payment of row.payments) {
       const index = operation.members.findIndex(member => member.signed?.rawTransaction === payment.rawTx)
       if (index < 0) throw new Error('Stamp bytes differ from original operation')
@@ -755,9 +819,9 @@ async function submitStored(
     const { unexposed: _unexposed, unstored: _unstored, ...possiblyOut } =
       owner.messages.get(row.consumerId)!
     await owner.messages.put(possiblyOut)
-    // Shared sets have already crossed the wallet's node submission boundary above.
-    // A first relay refusal says nothing about their financial effect or delivery obligation.
-    unexposed = row.unexposed === true && row.version === 1
+    // A carried payment reaches the chain only after the relay stores its message, so on a
+    // first submission the relay is the only party a shared set's payments were handed to.
+    unexposed = row.unexposed === true && (row.version === 1 || sharedUnexposed)
     row = possiblyOut
   }
   let accepted: CanonicalAcceptedBody
@@ -825,20 +889,36 @@ async function endRefusedUnexposed(
   row: StoredMessage,
 ): Promise<StoredMessage> {
   const refused = row.payments.filter(isPending)
+  // A shared set is freed by its preparer. When any of its own moves went to the node it is
+  // not: those may land, so it stays reserved and its payments pending until the chain says.
+  if (row.version === 2) {
+    const shared = owner.transactionSets
+    if (!shared || !row.transactionSetOperationId) return row
+    const released = await owner.lifetime(() =>
+      shared.preparer.releaseRefusedBeforeBroadcast(row.transactionSetOperationId!),
+    )
+    if (!released) return row
+  }
   const { request: _request, unexposed: _unexposed, ...kept } = row
   const ended: StoredMessage = {
     ...kept,
-    payments: row.payments.map(payment =>
-      payment.state === 'pending'
-        ? { ...payment, rawTx: '', state: 'unsent' as const }
-        : payment,
-    ),
+    // A shared set's signed bytes went with its cancelled operation: the record keeps none.
+    ...(row.version === 2
+      ? { payments: [], otherTransactions: [] }
+      : {
+          payments: row.payments.map(payment =>
+            payment.state === 'pending'
+              ? { ...payment, rawTx: '', state: 'unsent' as const }
+              : payment,
+          ),
+        }),
     outcome: 'dead',
   }
   await owner.lifetime(() => owner.messages.put(ended))
-  await owner.lifetime(() =>
-    owner.payer().releaseRefused(holderOf(owner, row.consumerId), refused),
-  )
+  if (row.version !== 2)
+    await owner.lifetime(() =>
+      owner.payer().releaseRefused(holderOf(owner, row.consumerId), refused),
+    )
   return ended
 }
 
@@ -1091,6 +1171,13 @@ async function releaseEndedPayment(
   await owner.messages.put({ ...owner.messages.get(row.consumerId)!, paymentReleased: true })
 }
 
+/** A shared message the relay refused before anything of it was broadcast: its set is cancelled
+ * and the record keeps no signed bytes (`endRefusedUnexposed`). */
+function sharedRefusedAndReleased(row: StoredMessage): boolean {
+  return row.version === 2 && row.outcome === 'dead' &&
+    row.payments.length === 0 && row.otherTransactions.length === 0
+}
+
 async function finishSharedConstruction(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
@@ -1220,11 +1307,14 @@ async function finishSharedConstruction(
 async function settleSharedPayments(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
+  broadcast = true,
 ): Promise<StoredMessage> {
   const shared = owner.transactionSets
   const operationId = row.transactionSetOperationId
   if (!shared || !operationId) throw new Error('Stored stamp transaction set is unavailable')
-  if (row.exposurePending)
+  // Until the relay has stored the message only what landed is read: its payments (and a
+  // contact transfer it carries) go to the chain once it is delivered, never before.
+  if (row.exposurePending || !broadcast)
     await shared.lifecycle.observe(operationId, shared.provider)
   else
     // Submission owns observation failures and retains the original graph for recovery.
@@ -1354,7 +1444,7 @@ async function settlePayments(
   row: StoredMessage,
   broadcast: boolean,
 ): Promise<StoredMessage> {
-  if (row.version === 2) return settleSharedPayments(owner, row)
+  if (row.version === 2) return settleSharedPayments(owner, row, broadcast)
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
   const resubmit: string[] = []
@@ -2180,6 +2270,10 @@ export async function restoreOutgoingClaims(
   const payer = owner.payer()
   for (let row of owner.messages.all()) {
     if (row.version === 2) {
+      if (sharedRefusedAndReleased(row)) {
+        validateSharedStoredMessage(row)
+        continue
+      }
       if (sharedConstructionPending(row))
         row = await finishSharedConstruction(owner, row, 'restore')
       const operationId = row.transactionSetOperationId
@@ -2691,11 +2785,16 @@ async function send(
       await params.onAttemptCreated?.(digest)
       const submitted = await owner.lifetime(() => submitStored(owner, directory, row))
       row = submitted.row
+      // Refused before the relay stored or broadcast anything: nothing of it left the wallet,
+      // so it ends and its coins are free.
+      if (submitted.refusedUnexposed) row = await endRefusedUnexposed(owner, row)
       if (row.outcome === 'dead') {
         if (row.reason === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
         if (row.reason === 'sender_unpublished') throw new CanonicalSenderUnpublishedError()
         throw new MonadStampTerminalError(
-          `The relay refused this message (${row.reason ?? 'no reason given'}). Its signed transaction set remains reserved until chain reconciliation.`,
+          submitted.refusedUnexposed && row.payments.every(payment => payment.state === 'unsent')
+            ? `The relay refused this message (${row.reason ?? 'no reason given'}) before broadcasting anything. Nothing was paid.`
+            : `The relay refused this message (${row.reason ?? 'no reason given'}). Its signed transaction set remains reserved until chain reconciliation.`,
           422, 'mailbox_terminal', undefined, row.reason,
         )
       }

@@ -78,6 +78,18 @@ export class EvmTransactionSetSourceHeldError extends Error {
 
 /** One family adapter: inventory owns reservations; the journal owns signed attempt bytes.
  * No provider is accepted here. Fee/gas observations and inclusion evidence arrive from outside. */
+/** Whether `member` comes after a payment of its set on its own account (a higher nonce). */
+function behindPayment(
+  members: readonly Pick<EvmNativeOperation['members'][number], 'source' | 'unsignedTransaction' | 'transactionSet'>[],
+  member: Pick<EvmNativeOperation['members'][number], 'source' | 'unsignedTransaction'>,
+): boolean {
+  const nonce = Transaction.from(member.unsignedTransaction).nonce
+  return members.some(other =>
+    other.transactionSet?.role === 'payment' &&
+    other.source.address === member.source.address &&
+    Transaction.from(other.unsignedTransaction).nonce < nonce)
+}
+
 export class EvmTransactionSetPreparer {
   private readonly recoverySpendRule: EvmTransactionSetPolicy['spendRule']
   constructor(private readonly options: EvmTransactionSetPreparerOptions) {
@@ -161,6 +173,28 @@ export class EvmTransactionSetPreparer {
       if (row.cancelled && !this.getOperation(operationId)) return true
       const originals = this.cancellationSources(row)
       if (!row.cancelled) row = await this.options.journal.discardUnexposed(row.operationId)
+      this.options.coins.restoreTransactionSetCancellation(operationId, originals)
+      await this.options.coins.checkpointTransactionSetCancellation(operationId, originals)
+      await this.options.onCancellationCheckpoint?.(row)
+      return true
+    })
+  }
+
+  /** A set whose first relay handoff was refused before the relay stored or broadcast anything
+   * (`discardRefusedBeforeBroadcast`): its coins are free again. False, and nothing changes,
+   * when any of its own moves went to the node or the chain knows any member. */
+  releaseRefusedBeforeBroadcast(operationId: string): Promise<boolean> {
+    return this.options.coins.runTransactionSetExclusive(operationId, async () => {
+      let row = await this.options.journal.refreshPreparation(prefix + operationId)
+      if (!row) return false
+      if (row.cancelled && !this.getOperation(operationId)) return true
+      if (!row.cancelled && row.members.some(member =>
+        (member.exposed && member.transactionSet?.role !== 'payment') ||
+        nativeMemberSuperseded(member) ||
+        !['unknown', 'missing'].includes(member.observation.state)))
+        return false
+      const originals = this.cancellationSources(row)
+      if (!row.cancelled) row = await this.options.journal.discardRefusedBeforeBroadcast(row.operationId)
       this.options.coins.restoreTransactionSetCancellation(operationId, originals)
       await this.options.coins.checkpointTransactionSetCancellation(operationId, originals)
       await this.options.onCancellationCheckpoint?.(row)
@@ -593,11 +627,16 @@ export class EvmTransactionSetPreparer {
       throw new Error('Transaction-set operation ID conflicts with original intent')
   }
 
+  /** The set's own change a later stage may be paid from. A move that comes after a payment of
+   * the set on the same account is left out: a message's payments reach the chain only after
+   * the relay stores it, and the relay stores it only once a stage's funding is on the chain,
+   * so funding behind a payment could never land first. */
   private privateOutputs(row: EvmNativeOperation): EvmListCoin[] {
     const sources = new Set(row.members.map(member => member.source.address))
     return row.members.flatMap(member => {
       const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
       if (meta.role !== 'change' || sources.has(tx.to!.toLowerCase())) return []
+      if (behindPayment(row.members, member)) return []
       const key = this.options.deriveChange(meta.changeIndex!)
       if (key.account.toLowerCase() !== tx.to!.toLowerCase()) throw new Error('Private change ownership mismatch')
       return [{ account: key.account.toLowerCase(), privateKey: key.privateKey, origin: 'change' as const,
@@ -713,8 +752,10 @@ export class EvmTransactionSetPreparer {
       // actual fees, so a nominal continuation balance is not yet a usable reserve.
       // Keep the completed source plans and add change-only sources for any shortfall;
       // never replace their destinations or expose a partly constructed operation.
+      // Only change a later stage can be paid from counts (see `privateOutputs`).
       const privateValue = () => members.reduce((sum, member) =>
-        member.plan.transactionSet!.role === 'change'
+        member.plan.transactionSet!.role === 'change' &&
+        !behindPayment(members.map(item => item.plan), member.plan)
           ? sum + Transaction.from(member.raw).value : sum, 0n)
       if (carve && !carved.member) {
         // No payment source had the reserve left over: one other coin that holds it moves it
@@ -779,7 +820,7 @@ export class EvmTransactionSetPreparer {
       const authorizedFee = totalFee + (carve?.feeWei ?? 0n)
       if ((request.maxFeeWei !== undefined && authorizedFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && authorizedFee > BigInt(stage.maxFeeWei))) throw new EvmTransactionSetFeeExceededError(authorizedFee)
       if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
-      if (members.filter(member => member.plan.transactionSet!.role === 'change').reduce((sum, member) => sum + Transaction.from(member.raw).value, 0n) < reserve) throw new Error('Insufficient private change for continuation')
+      if (privateValue() < reserve) throw new Error('Insufficient private change for continuation')
     } catch (error) {
       coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
       throw error
@@ -1361,6 +1402,28 @@ export class EvmTransactionSetPreparer {
         const paymentIndex = moves.findIndex(move => move.role === 'payment')
         moves.unshift(moves.splice(paymentIndex, 1)[0]!)
       }
+    }
+    // A continuation (the stamp of the message this payment travels in) is paid from this
+    // set's own change. Its funding goes to the chain before the relay has the message; the
+    // payment (a carried payment) only after the relay stored it. So the change that carries
+    // the continuation is signed on this account directly ahead of the payment, at the nonce
+    // below it: never behind it, where it could land only after the payment and the message
+    // could never be stored. Under a reserve rule this is the account's first move and the
+    // payment the next nonce: a payment it leaves below the reserve waits its quiet window
+    // after the funding (`predecessorWaitBlocks`), which has passed before the relay can have
+    // the message (the continuation's stage waits `fundingWaitBlocks`, one block more). Nothing
+    // else of the set comes between the two. The rest of the account's change follows the
+    // payment as above.
+    const continuation = request.reserveForContinuationWei ?? 0n
+    if (hasPayment && continuation > 0n) {
+      const paymentAt = moves.findIndex(move => move.role === 'payment')
+      const carries = (move: Move) => move.role === 'change' && move.value >= continuation
+      // A one-transfer continuation is paid from its carved account; otherwise any change that
+      // holds it will do, and one already ahead of the payment needs no move.
+      const carrier = request.continuationFeeWei !== undefined
+        ? moves.findIndex(move => move.carve === true)
+        : moves.slice(0, paymentAt).some(carries) ? -1 : moves.findIndex(carries)
+      if (carrier > paymentAt) moves.splice(paymentAt, 0, moves.splice(carrier, 1)[0]!)
     }
     let changeLogicalIndex = 0
     for (const move of moves)

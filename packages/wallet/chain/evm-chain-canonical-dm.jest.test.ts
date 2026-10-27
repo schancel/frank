@@ -1265,9 +1265,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect((pending as Error).message).toMatch(/relay has not confirmed/)
     expect((pending as Error).message).not.toMatch(/another|prior attempt/i)
     expect(f.requests).toHaveLength(1)
-    // Wallet submission can precede relay delivery; neither proves chain inclusion.
+    // The relay's answer was lost, so the wallet does not know it stored the message: it has
+    // not broadcast the payments, which stay pending and held.
     const storedPending = (await rowsOf(f.alice)).find(row => row.digest === digest)!
-    expect(storedPending.payments.every(payment => mockWalletBroadcasts.includes(payment.rawTx))).toBe(true)
+    expect(storedPending.payments.some(payment => mockWalletBroadcasts.includes(payment.rawTx))).toBe(false)
     expect(paymentStates(f.alice, digest)).toEqual(['pending'])
     const operationId = storedPending.transactionSetOperationId!
     expect(evmWalletInternals(f.alice).coinList!.heldBy(operationId).length)
@@ -4419,6 +4420,9 @@ describe('two typed wallets on the open directory', () => {
         recipient: f.bob.identity.address,
         items: text('across relays'),
       })
+      // Its payments go out once the relay has the message; the account's notes about them
+      // follow their settlement.
+      await f.alice.flushNativeSync!()
       // Submitted to Alice's own relay, sealed to the key in Bob's entry on the other relay.
       inboxRecordForMessage(sent.payloadDigest, 1)
       // The wallet-sync notes go out from the consolidator's own transport queue, which runs

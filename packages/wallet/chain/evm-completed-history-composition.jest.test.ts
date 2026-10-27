@@ -126,6 +126,15 @@ test('settled wallet history does not complete or discard an undelivered message
     }).catch(() => undefined)
     expect(stored?.request).toBeDefined()
     expect(stored!.outcome).toBeUndefined()
+    // The relay only retained it, so the wallet broadcast none of its payments.
+    const [active] = wallet.getNativeOperations!()
+    expect(offlineChain.paymentsBroadcastEarly(active!)).toEqual([])
+    expect(active!.members.filter(member => member.transactionSet?.role === 'payment')
+      .some(member => offlineChain.walletBroadcasts.includes(member.signed!.rawTransaction))).toBe(false)
+    // Another holder of the bytes (the relay, the recipient) puts them on the chain while the
+    // message is still undelivered: the set settles into history.
+    for (const member of active!.members) offlineChain.mine(member.signed!.rawTransaction)
+    await wallet.transactionSetLifecycle!.observe(active!.preparationId!.slice('evm-transaction-set:'.length), wallet.provider)
     await wallet.flushNativeSync!()
     expect(wallet.getNativeOperations!()).toEqual([])
     const history = (await wallet.getNativeOperationHistory!({ limit: 100 })).operations

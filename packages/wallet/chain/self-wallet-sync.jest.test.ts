@@ -50,6 +50,7 @@ import {
   mailboxes,
   mockBalances,
   mockFunded,
+  offlineChain,
   providerBroadcasts,
   roots,
   useProviderStandIns,
@@ -94,33 +95,43 @@ function minesNativeTransfers(wallet: EvmChainWalletHandle) {
   jest
     .spyOn(wallet.provider, 'getTransactionReceipt')
     .mockImplementation(async hash => receipts.get(hash) ?? null)
+  const included = (raw: string) => {
+    const tx = Transaction.from(raw)
+    transactions.set(
+      tx.hash!,
+      Object.assign(tx, {
+        blockHash,
+        blockNumber: 1,
+        index: 0,
+      }) as unknown as TransactionResponse,
+    )
+    receipts.set(tx.hash!, {
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      blockHash,
+      blockNumber: 1,
+      index: 0,
+      status: 1,
+      gasPrice: 1n,
+      gasUsed: 21000n,
+    } as TransactionReceipt)
+  }
   const broadcast = wallet.provider.broadcastTransaction.bind(wallet.provider)
   jest
     .spyOn(wallet.provider, 'broadcastTransaction')
     .mockImplementation(async raw => {
       const answer = await broadcast(raw)
-      const tx = Transaction.from(raw)
-      transactions.set(
-        tx.hash!,
-        Object.assign(tx, {
-          blockHash,
-          blockNumber: 1,
-          index: 0,
-        }) as unknown as TransactionResponse,
-      )
-      receipts.set(tx.hash!, {
-        hash: tx.hash,
-        from: tx.from,
-        to: tx.to,
-        blockHash,
-        blockNumber: 1,
-        index: 0,
-        status: 1,
-        gasPrice: 1n,
-        gasUsed: 21000n,
-      } as TransactionReceipt)
+      included(raw)
       return answer
     })
+  // A relay that stores a message broadcasts its payments too: they land the same way.
+  const mine = offlineChain.mine.bind(offlineChain)
+  jest.spyOn(offlineChain, 'mine').mockImplementation(raw => {
+    const hash = mine(raw)
+    included(raw)
+    return hash
+  })
 }
 
 // Resolve the original signed transaction across the active-to-history handoff.
@@ -1331,13 +1342,25 @@ describe("a wallet's sync note to itself", () => {
       one.setMailbox(mailbox)
       await one.alice.resumeLegacySend!(nativeOperationId)
       await until(async () => (await status(sent.txHash)).sharing === 'shared')
-      // The unresolved chat's payment can settle before delivery and also needs a self-note.
-      // Flush both original graphs and account for every signed member, without paying again.
+      // The unresolved chat's payment travels in that message: no relay has stored it, so it
+      // has not gone out and has nothing to share yet. Flush both original graphs: every
+      // settled member is shared once, without paying again.
       await expect(one.alice.flushNativeSync!()).resolves.toEqual([])
       const sharedOperations = await Promise.all([chatOperation.operationId, nativeOperationId]
         .map(id => one.alice.readNativeOperation!(id)))
+      const chatPayments = sharedOperations[0]!.members.filter(member => member.transactionSet?.role === 'payment')
+      expect(chatPayments.some(member => member.observation.state === 'included-success')).toBe(false)
+      expect(chatPayments.some(member => member.syncApplied)).toBe(false)
+      for (const member of chatPayments) {
+        const tx = Transaction.from(member.signed!.rawTransaction)
+        expect(providerBroadcasts.some(sent =>
+          sent.from === tx.from!.toLowerCase() && sent.to === tx.to!.toLowerCase() && sent.value === tx.value,
+        )).toBe(false)
+      }
       const sharedMembers = sharedOperations.flatMap(row => row!.members)
+        .filter(member => member.observation.state === 'included-success')
       expect(sharedMembers.every(member => member.syncApplied)).toBe(true)
+      expect(sharedOperations[1]!.members.every(member => member.syncApplied)).toBe(true)
       expect(sharedOperations[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(chatBytes)
       expect(sharedOperations[1]!.members.map(member => member.signed!.rawTransaction)).toEqual(nativeBytes)
       expect(mailbox).toHaveLength(sharedMembers.length)

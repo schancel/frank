@@ -88,8 +88,132 @@ afterEach(() => {
 })
 
 test.each(['undeliverable', 'stale_nonce', 'insufficient_total'])(
-  'a recovered shared payment keeps its original delivery after %s',
+  'a recovered shared message the relay refuses (%s) before anything was broadcast ends unpaid and frees its coins',
   async (reason) => {
+    // The payment takes the lower nonce: nothing of the set goes out before the relay is asked.
+    jest.spyOn(Math, 'random').mockReturnValue(0.99)
+    const f = await setup()
+    let active = f.alice
+    let latest: StoredMessage | undefined
+    let requests = 0
+    let reject = true
+    const originalPut = LevelOutgoingMessageStore.prototype.put
+    jest
+      .spyOn(LevelOutgoingMessageStore.prototype, 'put')
+      .mockImplementation(async function (row) {
+        latest = structuredClone(row)
+        return originalPut.call(this, row)
+      })
+    const fetch: CanonicalFetch = async (url, init) => {
+      requests++
+      if (!reject) return f.directory.fetch!(url, init)
+      const request = {
+        body: new Uint8Array(init.body!),
+        contentType: init.headers['Content-Type'],
+      }
+      const answer = new TextEncoder().encode(
+        JSON.stringify({
+          version: 1,
+          phase: 'dead',
+          identity: restoreCanonicalRequest(request).identity,
+          reason,
+        })
+      )
+      let read = false
+      return {
+        status: 200,
+        url,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'content-type' ? 'application/json' : null,
+        },
+        body: {
+          getReader: () => ({
+            read: async () =>
+              read
+                ? { done: true }
+                : ((read = true), { done: false, value: answer }),
+            cancel: async () => undefined,
+            releaseLock: () => undefined,
+          }),
+        },
+      }
+    }
+    const directory = { ...f.directory, fetch }
+    try {
+      installCanonicalDirectory(active, directory)
+      await expect(
+        f.chain.directMessages.send({
+          wallet: active,
+          recipient: f.bob.identity.address,
+          messageId: id,
+          stampValue: 300000n,
+          items: [{ type: 'text', text: 'must deliver once paid' }],
+          onAttemptCreated: async () => {
+            throw new Error('interrupted before exposure')
+          },
+        })
+      ).rejects.toThrow('interrupted before exposure')
+      expect(requests).toBe(0)
+      expect(offlineChain.walletBroadcasts).toHaveLength(0)
+      expect(latest!.unexposed).toBe(true)
+      const digest = latest!.digest
+      const originalRequest = structuredClone(latest!.request)
+      const originalPayments = latest!.payments.map((payment) => payment.rawTx)
+      const originalChange = latest!.otherTransactions.map(
+        (payment) => payment.rawTx
+      )
+      await active.close()
+      active = (await f.chain.createWallet(roots())) as EvmChainWalletHandle
+      installCanonicalDirectory(active, directory)
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: active,
+        payloadDigests: [digest],
+        maxPutAttempts: 1,
+      })
+      expect(requests).toBe(1)
+      // The resume handed the original request to the relay, which refused it before storing
+      // or broadcasting anything. The wallet broadcasts a message's set only after the relay
+      // stored it, so nothing of it ever left the wallet: the message ends, unpaid.
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      expect(latest!.outcome).toBe('dead')
+      expect(latest!.reason).toBe(reason)
+      expect(latest!.payments).toEqual([])
+      expect(latest!.otherTransactions).toEqual([])
+      const sources = [...originalPayments, ...originalChange].map(raw =>
+        Transaction.from(raw).from!.toLowerCase(),
+      )
+      for (const source of sources)
+        expect(active.transactionSetPreparer!.isSourceReserved(source)).toBe(false)
+      await active.close()
+      active = (await f.chain.createWallet(roots())) as EvmChainWalletHandle
+      installCanonicalDirectory(active, directory)
+      for (const source of sources)
+        expect(active.transactionSetPreparer!.isSourceReserved(source)).toBe(false)
+      // Ended: the resend pass never submits it again, and nothing is broadcast for it.
+      reject = false
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: active,
+        payloadDigests: [digest],
+        maxPutAttempts: 1,
+      })
+      expect(requests).toBe(1)
+      expect(f.requests).toHaveLength(0)
+      expect(offlineChain.walletBroadcasts).toEqual([])
+    } finally {
+      await active.close()
+      await f.close()
+    }
+  }
+)
+
+
+test.each(['undeliverable', 'stale_nonce', 'insufficient_total'])(
+  'a recovered shared payment whose own change went to the node first keeps its original delivery after %s',
+  async (reason) => {
+    // The change takes the lower nonce on the shared account, so it is broadcast before the
+    // relay is asked (the payment stands behind it); it may land, so a refusal frees nothing.
+    jest.spyOn(Math, 'random').mockReturnValue(0)
     const f = await setup()
     let active = f.alice
     let latest: StoredMessage | undefined
@@ -175,8 +299,11 @@ test.each(['undeliverable', 'stale_nonce', 'insufficient_total'])(
       const broadcastHashes = offlineChain.walletBroadcasts.map(
         (raw) => Transaction.from(raw).hash
       )
+      // Only the set's own move went out; its payment waits for the relay to store the message.
       for (const payment of latest!.payments)
-        expect(broadcastHashes).toContain(Transaction.from(payment.rawTx).hash)
+        expect(broadcastHashes).not.toContain(Transaction.from(payment.rawTx).hash)
+      for (const change of latest!.otherTransactions)
+        expect(broadcastHashes).toContain(Transaction.from(change.rawTx).hash)
       expect(latest!.request).toEqual(originalRequest)
       await active.close()
       active = (await f.chain.createWallet(roots())) as EvmChainWalletHandle
@@ -199,9 +326,13 @@ test.each(['undeliverable', 'stale_nonce', 'insufficient_total'])(
       expect(latest!.otherTransactions.map((payment) => payment.rawTx)).toEqual(
         originalChange
       )
-      expect(new Set(offlineChain.walletBroadcasts)).toEqual(
-        new Set([...originalPayments, ...originalChange])
-      )
+      // The relay that stored it broadcast the payment; the wallet had broadcast its change.
+      // Every original byte is on the chain, and nothing else was signed or broadcast.
+      for (const raw of [...originalPayments, ...originalChange])
+        expect(offlineChain.mined.has(Transaction.from(raw).hash!)).toBe(true)
+      expect(new Set(offlineChain.walletBroadcasts)).toEqual(new Set(originalChange))
+      for (const payment of originalPayments)
+        expect(offlineChain.broadcastBeforeStore.has(Transaction.from(payment).hash!.toLowerCase())).toBe(false)
     } finally {
       await active.close()
       await f.close()

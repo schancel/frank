@@ -8,6 +8,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import Send from './Send.vue'
 import {
   activeChain,
+  ContactPaymentBelowFloorError,
   NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
@@ -48,6 +49,9 @@ jest.mock('@frank/wallet/chain', () => ({
   ).NativeTransactionRefusedError,
   NativeFeeExceededError: jest.requireActual('@frank/wallet/chain/chain-wallet')
     .NativeFeeExceededError,
+  ContactPaymentBelowFloorError: jest.requireActual(
+    '@frank/wallet/chain/chain-wallet',
+  ).ContactPaymentBelowFloorError,
   activeChain: {
     chainIdentifier: 'monad-testnet',
     name: 'monad',
@@ -1777,6 +1781,138 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(wrapper.get('[data-test="review-total"]').text()).toContain(
       '(+ network fee)',
     )
+    wrapper.unmount()
+  })
+
+  // The payment floor at monad-regtest's 102 gwei: 10 x 21,000 gas x 102 gwei = 0.02142 MON.
+  const FLOOR = 21_420_000_000_000_000n
+
+  it('an amount below the payment floor is refused with the minimum, before review and with nothing signed', async () => {
+    const estimateLegacyFee = jest
+      .fn()
+      .mockRejectedValue(
+        new ContactPaymentBelowFloorError(10_000_000_000_000_000n, FLOOR),
+      )
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: { ...activeChain.nativeTransfers, estimateLegacyFee },
+    }
+    const wrapper = mountSend()
+    await flushPromises()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(estimateLegacyFee).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="send-below-floor"]').text()).toBe(
+      'That is below the smallest payment of 0.02142 MON: ten times the network fee to move it, so the recipient can spend it. Nothing was signed or sent: send at least 0.02142 MON.',
+    )
+    expect(mockSend).not.toHaveBeenCalled()
+    // A new amount clears the refusal.
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.03')
+    expect(wrapper.find('[data-test="send-below-floor"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('the refusal is said in French too', async () => {
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest
+          .fn()
+          .mockRejectedValue(
+            new ContactPaymentBelowFloorError(10_000_000_000_000_000n, FLOOR),
+          ),
+      },
+    }
+    const wrapper = mountSend(frFR)
+    await flushPromises()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="send-below-floor"]').text()).toContain(
+      'envoyez au moins 0.02142 MON',
+    )
+    wrapper.unmount()
+  })
+
+  it('a refusal at Confirm (the floor rose since review) goes back to the amount with the minimum', async () => {
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest.fn().mockResolvedValue({
+          totalFee: 2_142_000_000_000_000n,
+          deliveryFee: 2_142_000_000_000_000n,
+          inputCount: 1,
+        }),
+      },
+    }
+    mockCaptureWallet.mockResolvedValue({
+      wallet: mockWallet,
+      isCurrent: () => true,
+      assertCurrent: mockAssertCurrent,
+    })
+    mockSend.mockRejectedValueOnce(
+      new ContactPaymentBelowFloorError(21_000_000_000_000_000n, FLOOR),
+    )
+    const wrapper = mountSend()
+    await flushPromises()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.021')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(true)
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="send-below-floor"]').text()).toContain(
+      'send at least 0.02142 MON',
+    )
+    wrapper.unmount()
+  })
+
+  it('Max is refused with the minimum when everything the wallet can send is below the payment floor', async () => {
+    const estimateLegacyMax = jest
+      .fn()
+      .mockRejectedValue(
+        new ContactPaymentBelowFloorError(5_000_000_000_000_000n, FLOOR),
+      )
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: { ...activeChain.nativeTransfers, estimateLegacyMax },
+    }
+    const wrapper = mountSend()
+    await flushPromises()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-max-button"]').trigger('click')
+    await flushPromises()
+    expect(estimateLegacyMax).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-test="send-below-floor"]').text()).toBe(
+      'The most you can send now (0.005 MON) is below the smallest payment of 0.02142 MON: ten times the network fee to move it. Nothing was signed or sent.',
+    )
+    expect(wrapper.find('[data-test="send-max-unavailable"]').exists()).toBe(
+      false,
+    )
+    expect(
+      (
+        wrapper.get('[data-test="send-amount-input"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe('')
+    expect(mockSend).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

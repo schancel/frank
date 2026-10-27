@@ -1,4 +1,5 @@
 /** Actual wallet composition and LevelDB; only network effects and capacity are configured. */
+import { evmPaymentFloorWei } from './payment-floor'
 import { getBytes, SigningKey } from 'ethers'
 import { fixture, mockBalances, offlineChain, roots, useProviderStandIns } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
@@ -187,7 +188,8 @@ test('public shared legacy resumes archived original IDs without broadcasting or
       return result
     })
     const result = await wallet.sendLegacy!({
-      recipient: { raw: f.bob.mainAccount!.address }, value: 1000n,
+      // At the payment floor: a Send below it is refused.
+      recipient: { raw: f.bob.mainAccount!.address }, value: evmPaymentFloorWei(wallet.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
     })
     await wallet.flushNativeSync!()
     const history = (await wallet.getNativeOperationHistory!({ limit: 100 })).operations

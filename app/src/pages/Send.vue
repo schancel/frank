@@ -66,6 +66,16 @@
               })
             }}
           </p>
+          <!-- The payment floor: the wallet refused the amount (or everything it can send), and
+               says the minimum. Nothing was signed. -->
+          <p
+            v-if="belowFloorText"
+            class="text-caption text-negative q-mt-xs q-mb-none"
+            role="alert"
+            data-test="send-below-floor"
+          >
+            {{ belowFloorText }}
+          </p>
         </q-card-section>
         <q-card-actions align="right">
           <q-btn
@@ -372,6 +382,7 @@ import {
   NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
+  ContactPaymentBelowFloorError,
   findEvmNativeOperationStatus,
   type EvmNativeOperationStatus,
 } from '@frank/wallet/chain'
@@ -412,6 +423,29 @@ export default defineComponent({
     // "Max": the wallet's answer for the most one transfer can send now, and why it has none.
     const fillingMax = ref(false)
     const maxUnavailableReason = ref('')
+    // Set when the wallet refused the amount (or, for Max, everything it can send) below the
+    // payment floor: the message naming the minimum. Cleared when the amount changes.
+    const belowFloorText = ref('')
+    const floorRefusal = (
+      err: unknown,
+      captured: NativeTransferContext,
+      max: boolean,
+    ): string | undefined =>
+      err instanceof ContactPaymentBelowFloorError
+        ? $t(
+            max
+              ? 'sendAddressDialog.maxBelowMinimum'
+              : 'sendAddressDialog.belowMinimum',
+            {
+              amount: `${captured.chain.toDisplayAmount(err.floorWei)} ${
+                captured.chain.unit
+              }`,
+              max: `${captured.chain.toDisplayAmount(err.valueWei)} ${
+                captured.chain.unit
+              }`,
+            },
+          )
+        : undefined
     const isReviewing = ref(false)
     const sending = ref(false)
     const dispatched = ref(false)
@@ -451,6 +485,9 @@ export default defineComponent({
       outcomeHash.value = undefined
     }
     watch(() => route.fullPath, invalidate, { flush: 'sync' })
+    watch(amount, () => {
+      belowFloorText.value = ''
+    })
     watchEffect(() => {
       if (review.value && !review.value.binding.isCurrent()) invalidate()
     })
@@ -564,6 +601,7 @@ export default defineComponent({
       ),
       fillingMax,
       maxUnavailableReason,
+      belowFloorText,
       // Everything the wallet can send now in one transfer, less its fee: the same selection
       // the send makes, so reviewing this amount shows the fee that will be paid.
       fillMax: async () => {
@@ -588,7 +626,10 @@ export default defineComponent({
           if (disposed || context.value !== captured) return
           amount.value = captured.chain.toDisplayAmount(max.value)
         } catch (err) {
-          if (!disposed)
+          if (disposed) return
+          const refused = floorRefusal(err, captured, true)
+          if (refused) belowFloorText.value = refused
+          else
             maxUnavailableReason.value =
               err instanceof Error && err.message ? err.message : String(err)
         } finally {
@@ -617,6 +658,7 @@ export default defineComponent({
         feeUnavailableReason.value = ''
         reviewedFee = undefined
         feeChanged.value = false
+        belowFloorText.value = ''
         try {
           const binding = await captured.captureWallet()
           if (disposed) return
@@ -643,6 +685,17 @@ export default defineComponent({
               )} ${captured.chain.unit}`
             }
           } catch (err) {
+            // Below the payment floor: no review. The amount is refused, with the minimum, on
+            // the page where it is entered.
+            const refused = disposed
+              ? undefined
+              : floorRefusal(err, captured, false)
+            if (refused) {
+              review.value = undefined
+              isReviewing.value = false
+              belowFloorText.value = refused
+              return
+            }
             // Said, with the wallet's reason: never a silent "unavailable".
             if (!disposed) {
               estimatedFeeText.value = ''
@@ -821,6 +874,16 @@ export default defineComponent({
             errorNotify(err, {
               fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
             })
+            return
+          }
+          // Refused below the payment floor before anything was signed (the floor rose since
+          // the review): back to the amount, saying the minimum.
+          const refused = floorRefusal(err, reviewed.context, false)
+          if (refused && signedTxHash === undefined) {
+            dispatched.value = false
+            review.value = undefined
+            isReviewing.value = false
+            belowFloorText.value = refused
             return
           }
           // The one exception: the network answered and refused, so nothing was sent.

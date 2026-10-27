@@ -419,7 +419,8 @@ describe('a payment to a contact', () => {
       const carol = '0x' + 'c1'.repeat(20)
       const spent = await reloaded.sendLegacy!({
         recipient: { raw: carol },
-        value: 1_000n,
+        // At the payment floor: a Send below it is refused.
+        value: evmPaymentFloorWei(reloaded.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
       })
       expect(node.broadcasts.find(tx => tx.hash === spent.txHash)!.from).toBe(
         sent.stealthAddress.toLowerCase(),
@@ -849,7 +850,8 @@ describe('a payment to a contact', () => {
     mockBalances.set(spare.address.toLowerCase(), 1_000_000n)
     const small = await alice.sendLegacy!({
       recipient: { raw: '0x' + 'c4'.repeat(20) },
-      value: 100n,
+      // At the payment floor: a Send below it is refused.
+      value: evmPaymentFloorWei(alice.transactionSetPreparer!.transactionSetPolicy().gasPriceWei),
     })
     expect(node.broadcasts.find((tx) => tx.hash === small.txHash)!.from).toBe(
       spare.address.toLowerCase(),
@@ -1997,9 +1999,11 @@ describe('a payment to a contact', () => {
       bob.invalidateBalanceCache!()
       expect(await bob.getBalance()).toBe(BIG)
       const carol = '0x' + 'c3'.repeat(20)
-      const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: 100_000n })
+      // At the payment floor: a Send below it is refused.
+      const floor = evmPaymentFloorWei(bob.transactionSetPreparer!.transactionSetPolicy().gasPriceWei)
+      const spent = await bob.sendLegacy!({ recipient: { raw: carol }, value: floor })
       const spend = node.broadcasts.find(tx => tx.hash === spent.txHash)!
-      expect(spend).toMatchObject({ to: carol, value: 100_000n })
+      expect(spend).toMatchObject({ to: carol, value: floor })
       expect(stamps.map(coin => coin.address)).toContain(spend.from)
     })
 

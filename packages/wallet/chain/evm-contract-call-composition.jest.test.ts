@@ -167,8 +167,9 @@ test('a dApp legacy subaccount sends through the composed wallet journal from it
     node.fund(account.raw, 500_000n)
     wallet.invalidateBalanceCache?.()
     expect(await wallet.getBalance()).toBe(550_000n)
+    // At the payment floor, so only the main account's coins (not the subaccount's) can refuse it.
     await expect(wallet.sendLegacy!({
-      recipient: { raw: ROUTER }, value: 100_000n,
+      recipient: { raw: ROUTER }, value: wallet.transactionSetPreparer!.transactionSetPolicy().dustWei,
     })).rejects.toThrow('Insufficient')
     const sent = await wallet.sendLegacyFromSubAccount!({
       operationId: 'uniswap-call-one', source,

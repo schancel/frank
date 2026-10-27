@@ -46,9 +46,11 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { MonadRootBundle } from './active-chain'
 import {
+  ContactPaymentBelowFloorError,
   InMemoryNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
 } from './chain-wallet'
+import { deriveDappPersona } from '../dapp-bridge/persona-keys'
 import * as materialModule from '../evm-wallet-material'
 import * as providerModule from '../evm-provider'
 import { MonadAccountTxSigner } from '../evm-account-tx'
@@ -90,6 +92,8 @@ const config: EvmChainConfig = {
   // These tests count the balance reads of a stub node; the seed walk has its own suites
   // (evm-seed-discovery, chain/evm-seed-restore.anvil).
   seedDiscovery: false,
+  // Sends here are of 1,000,000 wei or more: a Send below the payment floor (ten transfers'
+  // fees, 210,000 wei at 1 wei per gas) is refused before anything is signed.
   // The stub node quotes gas at 1 wei and mines nothing on its own: a fixed policy with no
   // Monad spend-rule wait, so a Send of the coin list builds from what the stub reports. Dust
   // above every balance here keeps each residual on its account's next nonce, so a Send is the
@@ -641,7 +645,7 @@ test.each(["included", "pending", "uncertain"] as const)(
   async (outcome) => {
     const chain = createEvmChain(config);
     const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle;
-    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n });
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100_000_000n });
     jest
       .spyOn(chain.directMessages, "send")
       .mockResolvedValue({ payloadDigest: "aa" } as never);
@@ -651,14 +655,14 @@ test.each(["included", "pending", "uncertain"] as const)(
       await expect(
         wallet.sendLegacy!({
           recipient: { raw: expected[1].main },
-          value: 1000n,
+          value: 1_000_000n,
         })
       ).rejects.toThrow();
       const operation = wallet.getNativeOperations!()[0]!;
       const original = operation.members[0].signed!.rawTransaction;
       expect(operation.kind).toBe("transaction-set");
       // Not on chain yet: the balance is what the chain holds.
-      expect(await wallet.getBalance()).toBe(100000n);
+      expect(await wallet.getBalance()).toBe(100_000_000n);
 
       if (outcome === "pending") {
         rpc.broadcast.mockImplementation(
@@ -688,7 +692,7 @@ test.each(["included", "pending", "uncertain"] as const)(
       const balanceReads = jest.mocked(wallet.provider.getBalance).mock.calls
         .length;
       expect(await wallet.getBalance()).toBe(
-        outcome === "pending" ? 100000n : 78000n
+        outcome === "pending" ? 100_000_000n : 98_979_000n
       );
       expect(
         jest.mocked(wallet.provider.getBalance).mock.calls.length
@@ -716,7 +720,7 @@ test.each(["included", "pending", "uncertain"] as const)(
         .mocked(wallet.provider.getTransactionReceipt)
         .mockImplementation(async (hash) => rpc.receipts.get(hash) ?? null);
       await wallet.resumeNativeOperation!(operation.operationId);
-      expect(await wallet.getBalance()).toBe(78000n);
+      expect(await wallet.getBalance()).toBe(98_979_000n);
       expect(rpc.transactions.size).toBe(1);
       expect(rpc.broadcast.mock.calls.every(([raw]) => raw === original)).toBe(
         true
@@ -740,10 +744,10 @@ test('native signed bytes survive restart and authentication changes without an 
   )) as EvmChainWalletHandle
   let restored: EvmChainWalletHandle | undefined
   try {
-    const rpc = mockNativeRpc(first, { [expected[0].main]: 100000n })
+    const rpc = mockNativeRpc(first, { [expected[0].main]: 100_000_000n })
     rpc.broadcast.mockRejectedValueOnce(new Error('reply lost'))
     await expect(
-      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1000n }),
+      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1_000_000n }),
     ).rejects.toThrow('retained pending')
     const row = first.getNativeOperations!()[0]!
     expect(Transaction.from(row.members[0]!.signed!.rawTransaction).from).toBe(
@@ -763,7 +767,7 @@ test('native signed bytes survive restart and authentication changes without an 
       ...roots(),
       authentication: roots(1).authentication,
     })) as EvmChainWalletHandle
-    const next = mockNativeRpc(restored, { [expected[0].main]: 100000n })
+    const next = mockNativeRpc(restored, { [expected[0].main]: 100_000_000n })
     // The restored wallet finds the same Send unresolved and finishes it with its own bytes.
     const unresolved = restored.getUnresolvedLegacySend!()
     expect(unresolved.map(operation => operation.operationId)).toEqual([
@@ -802,13 +806,13 @@ test('a real Sepolia owner retries the original sync event without signing or br
   const chain = createEvmChain(cfg)
   let wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
   try {
-    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100_000_000n })
     jest.spyOn(wallet.provider, 'getNetwork')
       .mockResolvedValue(Network.from(11155111))
     const notesSettled = watchNotes()
     const sent = await wallet.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 1000n,
+      value: 1_000_000n,
     })
     await wallet.reobserveNativeOperations!()
     const operationId = wallet.getNativeOperations!()[0]!.operationId
@@ -941,7 +945,7 @@ test('close drains an in-flight native operation and rejects further work', asyn
     const wallet = await chain.createWallet(roots())
     const destroyHttp = jest.spyOn(MonadHttpClient.prototype, 'destroy')
     const rpc = mockNativeRpc(wallet as EvmChainWalletHandle, {
-      [expected[0].main]: 100000n,
+      [expected[0].main]: 100_000_000n,
     })
     let signedHash = ''
     let release!: () => void
@@ -950,7 +954,7 @@ test('close drains an in-flight native operation and rejects further work', asyn
     const wait = new Promise<void>(resolve => (release = resolve))
     const send = wallet.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 1n,
+      value: 1_000_000n,
       onSigned: async signed => {
         signedHash = signed.txHash
         started()
@@ -961,7 +965,7 @@ test('close drains an in-flight native operation and rejects further work', asyn
     const close = wallet.close()
     await expect(chain.createWallet(roots())).rejects.toThrow('closed')
     await expect(
-      wallet.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1n }),
+      wallet.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1_000_000n }),
     ).rejects.toThrow('closed')
     expect(rpc.broadcast).not.toHaveBeenCalled()
     expect(destroyHttp).not.toHaveBeenCalled()
@@ -1003,8 +1007,8 @@ test('cached callers share one durable owner, and a second Send spends another c
   const identity = (first as EvmChainWalletHandle).nativeSources!.identity.address.raw.toLowerCase()
   const main = expected[0].main.toLowerCase()
   const rpc = mockNativeRpc(first as EvmChainWalletHandle, {
-    [main]: 100000n,
-    [identity]: 100000n,
+    [main]: 100_000_000n,
+    [identity]: 100_000_000n,
   })
   jest
     .spyOn(chain.directMessages, 'send')
@@ -1020,7 +1024,7 @@ test('cached callers share one durable owner, and a second Send spends another c
   try {
     const a = first.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 1n,
+      value: 1_000_000n,
       onSigned: async () => {
         started()
         await gate
@@ -1031,7 +1035,7 @@ test('cached callers share one durable owner, and a second Send spends another c
     // other coin while the first still waits.
     const b = await second.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 2n,
+      value: 2_000_000n,
     })
     expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     release()
@@ -1060,8 +1064,8 @@ test(
     const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
     // Two coins: the first Send holds one while the second is built from the other.
     const rpc = mockNativeRpc(wallet, {
-      [expected[0].main]: 500000n,
-      [wallet.nativeSources!.identity.address.raw]: 500000n,
+      [expected[0].main]: 500_000_000n,
+      [wallet.nativeSources!.identity.address.raw]: 500_000_000n,
     })
     jest
       .spyOn(chain.directMessages, 'send')
@@ -1077,24 +1081,24 @@ test(
     try {
       const first = wallet.sendLegacy!({
         recipient: { raw: expected[1].main },
-        value: 1000n,
+        value: 1_000_000n,
         onSigned: async () => {
           entered()
           await wait
         },
       })
       await started
-      const params = { recipient: { raw: expected[1].main }, value: 100000n }
+      const params = { recipient: { raw: expected[1].main }, value: 100_000_000n }
       const second = wallet.sendLegacy!(params)
       params.recipient.raw = expected[1].auth
-      params.value = 150000n
+      params.value = 150_000_000n
       release()
       const [, sent] = await Promise.all([first, second])
       const tx = Transaction.from(
         rpc.broadcast.mock.calls.find(([raw]) => Transaction.from(raw).hash === sent.txHash)![0],
       )
       expect(tx.to).toBe(expected[1].main)
-      expect(tx.value).toBe(100000n)
+      expect(tx.value).toBe(100_000_000n)
     } finally {
       release?.()
       await wallet.close()
@@ -1105,7 +1109,7 @@ test(
 test('snapshots sendLegacy authorization before shared inventory refresh', async () => {
   const chain = createEvmChain(config)
   const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
-  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500_000_000n })
   jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(1)
   jest
     .spyOn(chain.directMessages, 'send')
@@ -1126,12 +1130,12 @@ test('snapshots sendLegacy authorization before shared inventory refresh', async
   })
   let sending: ReturnType<NonNullable<EvmChainWalletHandle['sendLegacy']>> | undefined
   try {
-    const params = { recipient: { raw: expected[1].main }, value: 100000n }
+    const params = { recipient: { raw: expected[1].main }, value: 100_000_000n }
     sending = wallet.sendLegacy!(params)
     await started
     expect(rpc.broadcast).not.toHaveBeenCalled()
     params.recipient.raw = expected[1].auth
-    params.value = 150000n
+    params.value = 150_000_000n
     release()
     const sent = await sending
     // Complete, and so archived: the payment the node received is the evidence.
@@ -1140,10 +1144,65 @@ test('snapshots sendLegacy authorization before shared inventory refresh', async
     )![0]
     const tx = Transaction.from(raw)
     expect(tx.to).toBe(expected[1].main)
-    expect(tx.value).toBe(100000n)
+    expect(tx.value).toBe(100_000_000n)
   } finally {
     release?.()
     await sending?.catch(() => undefined)
+    await wallet.close()
+  }
+})
+
+// Send to Address below the payment floor (210,000 wei at the stub's 1 wei per gas): refused to
+// an address the wallet does not own, sent to one of its own dApp personas (a top-up), which
+// the wallet recognises from its own keys, whatever the caller says.
+test('below the payment floor, a Send to an outside address is refused and a top-up of the wallet\'s own persona is sent', async () => {
+  const chain = createEvmChain(config)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100_000_000n })
+  jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({ payloadDigest: 'aa' } as never)
+  try {
+    const outside = { raw: '0x' + '5e'.repeat(20) }
+    const refused = await wallet
+      .sendLegacy!({ recipient: outside, value: 1_000n })
+      .catch(error => error)
+    expect(refused).toBeInstanceOf(ContactPaymentBelowFloorError)
+    expect(refused.floorWei).toBe(210_000n)
+    await expect(
+      wallet.estimateLegacyFee!({ recipient: outside, value: 1_000n }),
+    ).rejects.toBeInstanceOf(ContactPaymentBelowFloorError)
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    expect(wallet.getNativeOperations!()).toEqual([])
+
+    // A shared persona the Send page tops up (the dApp panel's burner #3): never registered
+    // with the wallet, derived from its own keys.
+    const master = evmWalletInternals(wallet).material!.keyring.masterNode
+    const persona = deriveDappPersona(master, { kind: 'shared', slot: 3 }).address
+    await expect(
+      wallet.estimateLegacyFee!({ recipient: { raw: persona }, value: 1_000n }),
+    ).resolves.toMatchObject({ inputCount: 1 })
+    const topUp = await wallet.sendLegacy!({ recipient: { raw: persona }, value: 1_000n })
+    const paid = Transaction.from(
+      rpc.broadcast.mock.calls.find(([raw]) => Transaction.from(raw).hash === topUp.txHash)![0],
+    )
+    expect(paid.to).toBe(persona)
+    expect(paid.value).toBe(1_000n)
+
+    // A site persona, as the dApp bridge funds it on first connection.
+    const site = await wallet.ensureLegacySubAccount!({ kind: 'site', origin: 'https://app.uniswap.org' })
+    const funded = await wallet.sendLegacy!({ recipient: site, value: 1_000n })
+    expect(
+      Transaction.from(
+        rpc.broadcast.mock.calls.find(([raw]) => Transaction.from(raw).hash === funded.txHash)![0],
+      ).to!.toLowerCase(),
+    ).toBe(site.raw.toLowerCase())
+
+    // Still refused to the outside address afterwards.
+    await expect(
+      wallet.sendLegacy!({ recipient: outside, value: 1_000n }),
+    ).rejects.toBeInstanceOf(ContactPaymentBelowFloorError)
+  } finally {
     await wallet.close()
   }
 })
@@ -1163,7 +1222,7 @@ test.each(['main', 'identity'] as const)(
         roots(),
       )) as EvmChainWalletHandle
       const source = origin === 'main' ? expected[0].main : expected[0].auth
-      mockNativeRpc(wallet, { [source]: 500000n })
+      mockNativeRpc(wallet, { [source]: 500_000_000n })
       const originalOperations = wallet.getNativeOperations!()
       jest
         .spyOn(wallet.provider, 'getNetwork')
@@ -1211,13 +1270,13 @@ test.each(['main', 'identity'] as const)(
             roots(),
           )) as EvmChainWalletHandle
         }
-        const rpc = mockNativeRpc(wallet, { [source]: 500000n })
+        const rpc = mockNativeRpc(wallet, { [source]: 500_000_000n })
         jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(1)
         const signed = jest.fn(async () => undefined)
         await expect(
           wallet.sendLegacy!({
             recipient: { raw: expected[1].main },
-            value: 100000n,
+            value: 100_000_000n,
             onSigned: signed,
           }),
         ).rejects.toThrow('Insufficient available EVM coins')
@@ -1608,7 +1667,7 @@ test.each([
           amount: 100000,
         })
       }
-      const rpc = mockNativeRpc(first, { [sourceAddress]: 100000n })
+      const rpc = mockNativeRpc(first, { [sourceAddress]: 100_000_000n })
       // A received coin is a source once the chain shows it funded.
       if (kind === 'identity-stealth-v1') await first.refreshReceivedPayments!()
       // Construction signs the whole set before anything is recorded: a signature that fails
@@ -1621,7 +1680,7 @@ test.each([
       await expect(
         first.sendLegacy!({
           recipient: { raw: expected[1].main },
-          value: 1000n,
+          value: 1_000_000n,
         }),
       ).rejects.toThrow('interrupted before signature')
       cannotSign.mockRestore()
@@ -1644,11 +1703,11 @@ test.each([
               a => a.address === sourceAddress.toLowerCase() && a.spendable,
             ),
         ).toBe(true)
-      const recovered = mockNativeRpc(second, { [sourceAddress]: 100000n })
+      const recovered = mockNativeRpc(second, { [sourceAddress]: 100_000_000n })
       // After the reopen the coin is spent through the wallet's own key for it.
       const sent = await second.sendLegacy!({
         recipient: { raw: expected[1].main },
-        value: 1000n,
+        value: 1_000_000n,
       })
       const tx = Transaction.from(recovered.broadcast.mock.calls[0]![0])
       expect(tx.from).toBe(sourceAddress)
@@ -1680,9 +1739,9 @@ test('a funded key-only imported account cannot become native custody authority'
         index: 0,
       }),
     ).toThrow('Native custody source address mismatch')
-    const rpc = mockNativeRpc(wallet, { [stranger.address]: 100000n })
+    const rpc = mockNativeRpc(wallet, { [stranger.address]: 100_000_000n })
     await expect(
-      wallet.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1000n }),
+      wallet.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1_000_000n }),
     ).rejects.toThrow('Insufficient')
     expect(rpc.broadcast).not.toHaveBeenCalled()
     expect(
@@ -1716,10 +1775,10 @@ test('a Send of a pool account coin holds that coin while its broadcast is unans
   try {
     first = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle
     // Only pool account 0 holds anything.
-    const rpc = mockNativeRpc(first, { [pool]: 200000n })
+    const rpc = mockNativeRpc(first, { [pool]: 200_000_000n })
     rpc.broadcast.mockRejectedValueOnce(new Error('reply lost'))
     await expect(
-      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1000n }),
+      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1_000_000n }),
     ).rejects.toThrow('retained pending')
     const row = first.getNativeOperations!()[0]!
     expect(row.kind).toBe('transaction-set')
@@ -1731,13 +1790,13 @@ test('a Send of a pool account coin holds that coin while its broadcast is unans
     expect(coinsOf(first).get(pool, 0)?.state).not.toBe('unspent')
     expect(coinsOf(first).isAccountReserved(pool)).toBe(true)
     await expect(
-      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1000n }),
+      first.sendLegacy!({ recipient: { raw: expected[1].main }, value: 1_000_000n }),
     ).rejects.toThrow('Insufficient available EVM coins')
     expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     await first.close()
 
     second = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle
-    const recovered = mockNativeRpc(second, { [pool]: 200000n })
+    const recovered = mockNativeRpc(second, { [pool]: 200_000_000n })
     // Still held after the reopen, by the same retained operation.
     expect(coinsOf(second).isAccountReserved(pool)).toBe(true)
     expect(second.getUnresolvedLegacySend!().map(op => op.operationId)).toEqual([
@@ -1748,14 +1807,14 @@ test('a Send of a pool account coin holds that coin while its broadcast is unans
     expect(recovered.broadcast.mock.calls.map(([raw]) => raw)).toEqual([
       signed.rawTransaction,
     ])
-    // The residual (200000 - 1000 - 21000 fee) is the same account's coin at nonce 1.
+    // The residual (200,000,000 - 1,000,000 - 21,000 fee) is the same account's coin at nonce 1.
     expect(coinsOf(second).get(pool, 1)).toMatchObject({
       state: 'unspent',
-      valueWei: 178000n,
+      valueWei: 198_979_000n,
     })
     const next = await second.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 2000n,
+      value: 2_000_000n,
     })
     const nextTx = Transaction.from(recovered.broadcast.mock.calls[1]![0])
     expect(nextTx.hash).toBe(next.txHash)
@@ -1784,7 +1843,7 @@ test('close during a Send\'s coin refresh: the Send signs, records and broadcast
   const wallet = (await createEvmChain(config).createWallet(
     roots(),
   )) as EvmChainWalletHandle
-  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100_000_000n })
   let entered!: () => void
   let release!: () => void
   const started = new Promise<void>(resolve => {
@@ -1803,7 +1862,7 @@ test('close during a Send\'s coin refresh: the Send signs, records and broadcast
   try {
     const send = wallet.sendLegacy!({
       recipient: { raw: expected[1].main },
-      value: 1000n,
+      value: 1_000_000n,
     })
     await started
     const close = wallet.close()
@@ -1849,7 +1908,7 @@ test('conflicting recovered owners remain read-only, and reopening builds and su
     wallet = (await createEvmChain(cfg).createWallet(
       roots(),
     )) as EvmChainWalletHandle
-    mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+    mockNativeRpc(wallet, { [expected[0].main]: 500_000_000n })
     // #1235 Stage C changed this fixture on purpose. It used to fail the signature and rely on
     // the never-signed plan staying in the journal, uncancelled, to conflict with the funding
     // attempt below. Such a plan is now cancelled by its own failed send (and at open), so that
@@ -1858,7 +1917,7 @@ test('conflicting recovered owners remain read-only, and reopening builds and su
     await expect(
       wallet.sendLegacy!({
         recipient: { raw: expected[1].main },
-        value: 1n,
+        value: 1_000_000n,
         onSigned: async () => {
           throw new Error('fixture signed, never exposed')
         },
@@ -1955,7 +2014,7 @@ test('signing throws for a contract call: the call throws its own error, its pla
     roots(),
   )) as EvmChainWalletHandle
   try {
-    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500_000_000n })
     const sign = jest
       .spyOn(Wallet.prototype, 'signTransaction')
       .mockRejectedValueOnce(new Error('fixture: signer unavailable'))
@@ -2015,8 +2074,8 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
     wallets.push(wallet)
     const identity = wallet.nativeSources!.identity.address.raw
     const rpc = mockNativeRpc(wallet, {
-      [expected[0].main]: 500000n,
-      [identity]: 500000n,
+      [expected[0].main]: 500_000_000n,
+      [identity]: 500_000_000n,
     })
     let withheldHash: string | undefined
     let withholdAll = true
@@ -2142,7 +2201,7 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
       // A Send of another coin is not held behind the unanswered lookup.
       const sent = await f.wallet.sendLegacy!({
         recipient: { raw: expected[1].main },
-        value: 1000n,
+        value: 1_000_000n,
       })
       const sentTx = Transaction.from(
         f.rpc.broadcast.mock.calls.find(

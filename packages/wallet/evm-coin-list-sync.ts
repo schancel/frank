@@ -34,6 +34,7 @@ import {
   RATE_LIMIT_MAX_BACKOFF_MS,
   isRateLimited,
 } from './evm-rpc-read-budget'
+import { fundsSettleBlocks } from './chain/evm-spend-rule'
 
 /** Failure key of the seed walk among the per-account observation failures. */
 const SEED_DISCOVERY = 'seed-discovery'
@@ -404,7 +405,7 @@ export class EvmCoinListSync {
     const account = source.account.toLowerCase()
     const generation = this.generations.get(account) ?? 0
     const spacing = this.config.spendSpacingBlocks ?? 0
-    const lag = spacing + 1
+    const lag = fundsSettleBlocks(spacing)
     const optionalHistoricalRead = (error: unknown): undefined => {
       if (isRateLimited(error)) {
         onRateLimit(error)

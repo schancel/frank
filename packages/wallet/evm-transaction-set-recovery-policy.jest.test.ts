@@ -147,7 +147,10 @@ it.each(['source residual', 'owned change'] as const)(
       expect(applied?.valueWei).toBe(
         scenario === 'source residual' ? 5555n : tx.value,
       )
-      expect(applied?.spendableFromBlock).toBe(104)
+      // The residual waits the reserve rule after its own transfer (3); change is fresh money (4).
+      expect(applied?.spendableFromBlock).toBe(
+        scenario === 'source residual' ? 104 : 105,
+      )
       expect(
         reopened.getOperation('original')!.members[memberIndex]!.transactionSet
           ?.inventoryApplied,

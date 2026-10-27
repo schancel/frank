@@ -129,8 +129,9 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
    * account's last transaction before the next transfer from it, unless the transfer leaves
    * the account at or above `reserveBalanceWei`. Absent: the network has no such rule.
    * The same delay governs incoming money: the node admits a transaction against the sender's
-   * balance of `spendSpacingBlocks + 1` blocks ago, so funds newer than that are not signed
-   * against (same document, "Money that has just arrived").
+   * balance of `spendSpacingBlocks + 1` blocks ago, whatever the amount, so funds newer than
+   * that are not signed against (same document, "Money that has just arrived";
+   * `fundsSettleBlocks` in `evm-spend-rule.ts`).
    */
   /** Decimal wei (a string: the registry is plain data). */
   readonly reserveBalanceWei?: string;

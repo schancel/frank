@@ -264,6 +264,12 @@ export interface StoredGroupWritePayment {
    * has authorized the set and tracks it as spent. The coin is never released, and the write
    * is retried with the same bytes until a relay holds it. */
   readonly spent?: true
+  /** The user asked to discard the write and the wallet is reading the chain before it gives
+   * the coin back; a restart finishes the discard instead of sending the write. */
+  readonly discarding?: true
+  /** The user discarded the write: the wallet found its payment neither pending nor mined and
+   * gave the coin back (`released`). The write is never sent. */
+  readonly discarded?: true
 }
 
 export function storedGroupWritePlan(

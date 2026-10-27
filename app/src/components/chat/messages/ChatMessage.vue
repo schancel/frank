@@ -331,7 +331,7 @@ import {
 } from '../../../utils/chain-amount'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
-import { errorNotify } from '../../../utils/notifications'
+import { errorNotify, infoNotify } from '../../../utils/notifications'
 import {
   conversationSystemLine,
   getMessageItemRenderer,
@@ -543,7 +543,12 @@ export default defineComponent({
       }
     },
     confirmDiscard() {
+      const groupWrite = this.groupWriteConversationId
       const doDelete = async () => {
+        if (groupWrite) {
+          await this.discardGroupWrite(groupWrite)
+          return
+        }
         try {
           await this.deleteMessage({
             address: this.address,
@@ -563,10 +568,11 @@ export default defineComponent({
         return
       }
 
-      const message =
-        this.message.status === 'error'
-          ? this.$t('outgoing.discardFailedConfirmMessage')
-          : this.$t('outgoing.discardConfirmMessage')
+      const message = groupWrite
+        ? this.$t('outgoing.discardGroupWriteConfirmMessage')
+        : this.message.status === 'error'
+        ? this.$t('outgoing.discardFailedConfirmMessage')
+        : this.$t('outgoing.discardConfirmMessage')
 
       this.$q
         .dialog({
@@ -577,6 +583,28 @@ export default defineComponent({
           persistent: true,
         })
         .onOk(doDelete)
+    },
+    /** A group write is discarded through its payment: the coin comes back only after the
+     * wallet read the chain; otherwise the write is kept and the reason shown. */
+    async discardGroupWrite(conversationId: string) {
+      try {
+        const outcome = await this.chats.discardGroupMessage(
+          conversationId,
+          this.payloadDigest,
+        )
+        if (outcome.state === 'kept') {
+          const keys = {
+            delivered: 'outgoing.discardKeptDelivered',
+            paid: 'outgoing.discardKeptPaid',
+            uncertain: 'outgoing.discardKeptUncertain',
+            unavailable: 'outgoing.discardKeptUnavailable',
+          } as const
+          infoNotify(this.$t(keys[outcome.reason]))
+        }
+      } catch (error) {
+        console.error('Failed to discard group message:', error)
+        errorNotify(error instanceof Error ? error : new Error(String(error)))
+      }
     },
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)
@@ -590,6 +618,16 @@ export default defineComponent({
     },
   },
   computed: {
+    /** The group this outgoing message is a write of, when it is one. */
+    groupWriteConversationId(): string | undefined {
+      const id = this.message.conversationId
+      return this.message.outbound &&
+        this.message.groupEnvelope &&
+        id &&
+        this.chats.conversations?.[id]?.kind === 'group'
+        ? id
+        : undefined
+    },
     systemLine(): string | undefined {
       const line = conversationSystemLine(
         this.message.items ?? [],

@@ -916,6 +916,9 @@ export const rawEnUS = {
     paymentChecking: 'Checking payment status…',
     waitingForPreviousPayment: 'Waiting for the previous payment to confirm…',
     waitingForChain: 'Queued: the network cannot be reached.',
+    waitingFundsOrChain: 'Waiting for funds or the chain…',
+    reasonWaitingFundsOrChain:
+      'The group’s server cannot see yet that its payment can go through: funds or an earlier payment have not reached the chain, or the chain cannot be read. It is sent again by itself, with the same payment.',
     waitingBlocks:
       'Waiting {blocks} more blocks after the previous payment before paying…',
     paymentSent: 'Sent',
@@ -961,6 +964,15 @@ export const rawEnUS = {
       'This removes it from your conversation. If its payment is still pending it may still be delivered.',
     discardFailedConfirmMessage:
       'This removes the failed message from your conversation. No funds were spent.',
+    discardGroupWriteConfirmMessage:
+      'This removes it from the group chat once the network shows its payment did not go out. Its funds then become available again.',
+    discardKeptDelivered: 'Not discarded: the group already has this message.',
+    discardKeptPaid:
+      'Not discarded: its payment has gone out, so it will still be sent to the group.',
+    discardKeptUncertain:
+      'Not discarded: an earlier attempt got no answer, so its payment may still go through. Its funds stay reserved, and it keeps trying to send.',
+    discardKeptUnavailable:
+      'Not discarded: this wallet cannot check its payment right now. Try again later.',
     sendAgainTitle: 'Send again?',
     sendAgainUnverified:
       'We could not confirm whether the first payment was delivered. Sending again may charge you a second time.',

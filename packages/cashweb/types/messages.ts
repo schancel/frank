@@ -933,6 +933,11 @@ export type OutgoingFailureReason =
   | 'recovered'
   /** The wallet could not prepare the message's stamp because the account lacks funds. */
   | 'insufficient-funds'
+  /** A group write whose host stored nothing yet: the node does not show that its payment can
+   * land (a nonce gap or a balance not seen yet), or the host cannot read the node. Not a
+   * failure: the same write and payment are sent again by themselves. Discard gives its coin
+   * back only after the wallet reads the chain. */
+  | 'waiting-funds-or-chain'
   /** Refused at once: the free funds do not cover it, but the change of an earlier send of this
    * wallet that has not reached the chain yet would (`detail` keeps that amount in wei, decimal).
    * Nothing was paid; the user's Retry sends it again (owner ruling 2026-10-26). */

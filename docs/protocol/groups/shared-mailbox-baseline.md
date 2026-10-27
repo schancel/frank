@@ -129,7 +129,11 @@ A payment the node already holds, pending or mined, passes.
 - Nonce above the window (`nonce_gap`, for example a stacked successor whose predecessor set has
   not reached the node) or too little balance (`insufficient_balance`, for example a deposit not
   yet seen): 503 `group_payment_not_ready` with `Retry-After`. Not a refusal: the writer keeps
-  the write pending and retries the same bytes.
+  the write pending and retries the same bytes. The client shows such a write as waiting for funds
+  or the chain. The user may discard it: since every answer said nothing was stored or handed
+  over, the coin is released once the wallet reads the chain and finds the payment neither pending
+  nor mined. After an attempt without an answer, or once the chain shows the payment, the discard
+  is refused and the reservation kept.
 - The node cannot be read, or the relay has no verified upstream for its network: 503
   `group_payment_check_unavailable` with `Retry-After`, so a relay never accepts writes it
   cannot check.

@@ -744,3 +744,48 @@ describe('a message refused before anything was paid because it can never be sen
     expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
   })
 })
+
+describe('a group write its host keeps deferring (owner ruling 2026-10-27)', () => {
+  it.each([
+    ['en-us', enUS, 'Waiting for funds or the chain…'],
+    ['fr-fr', frFR, 'En attente de fonds ou de la chaîne…'],
+  ])(
+    'shows waiting for funds or the chain, not a failure or "unreachable", with Discard (%s)',
+    (_name, messages, text) => {
+      const t = translator(messages)
+      const waiting = mountSuffix(
+        { status: 'error', failureReason: 'waiting-funds-or-chain' },
+        messages,
+      )
+      const status = waiting.get(
+        '[data-testid="outgoing-waiting-funds-or-chain"]',
+      )
+      expect(status.text()).toContain(text)
+      expect(status.text()).toContain(t('outgoing.reasonWaitingFundsOrChain'))
+      expect(waiting.find('[data-testid="outgoing-failed"]').exists()).toBe(
+        false,
+      )
+      expect(waiting.text()).not.toContain(t('outgoing.reasonUnreachable'))
+      expect(waiting.text()).not.toContain(t('chatMessage.failedShort'))
+      expect(waiting.find('[data-testid="outgoing-discard"]').exists()).toBe(
+        true,
+      )
+      expect(
+        (waiting.vm as unknown as { announcement: string }).announcement,
+      ).toBe(text)
+      // A relay that really cannot be reached still says so.
+      const unreachable = mountSuffix(
+        { status: 'error', failureReason: 'unreachable' },
+        messages,
+      )
+      expect(unreachable.find('[data-testid="outgoing-failed"]').exists()).toBe(
+        true,
+      )
+      expect(
+        unreachable
+          .find('[data-testid="outgoing-waiting-funds-or-chain"]')
+          .exists(),
+      ).toBe(false)
+    },
+  )
+})

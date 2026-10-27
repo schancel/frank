@@ -25,8 +25,23 @@
       <!-- The status at the start, then time, amount and actions as one row. A status too long to
       share that row wraps in full onto its own line above it. See the style block. -->
       <span class="outgoing-status-slot">
+        <!-- A group write whose host stored nothing yet: waiting, not failed. It is sent again by
+        itself; Discard gives its coin back only after a chain read. -->
         <span
-          v-if="status === 'error'"
+          v-if="status === 'error' && waitingFundsOrChain"
+          class="outgoing-status"
+          data-testid="outgoing-waiting-funds-or-chain"
+        >
+          <q-icon name="schedule" />
+          <span class="outgoing-status-text">{{
+            $t('outgoing.waitingFundsOrChain')
+          }}</span>
+          <q-tooltip max-width="260px">{{
+            $t('outgoing.reasonWaitingFundsOrChain')
+          }}</q-tooltip>
+        </span>
+        <span
+          v-else-if="status === 'error'"
           class="outgoing-status outgoing-status--failed"
           role="button"
           tabindex="0"
@@ -312,9 +327,15 @@ export default defineComponent({
         return this.sendingText
       }
       if (this.status === 'payment-pending') return this.paymentText
+      if (this.status === 'error' && this.waitingFundsOrChain)
+        return this.$t('outgoing.waitingFundsOrChain')
       if (this.status === 'error') return this.failureDetails
       if (this.showPaymentSuccess) return this.$t(this.paymentSuccessKey)
       return this.paymentSummaryText
+    },
+    /** A group write its host keeps deferring (`waiting-funds-or-chain`). */
+    waitingFundsOrChain(): boolean {
+      return this.failureReason === 'waiting-funds-or-chain'
     },
     /** A failed message that the same send would refuse again offers no Retry. */
     retryable(): boolean {

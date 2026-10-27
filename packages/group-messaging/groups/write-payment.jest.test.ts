@@ -15,6 +15,7 @@ import {
   GroupWritePaymentUnavailableError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
+  discardPaidGroupWrite,
   type GroupWritePayer,
 } from './write-payment'
 import { groupWriteTestPayer } from './write-payment.testutil'
@@ -475,5 +476,143 @@ describe('deliverPaidGroupWrite', () => {
       deliver(record(stored), groupWriteTestPayer().wallet, submit),
     ).rejects.toThrow('differs from the one already signed')
     expect(submit).not.toHaveBeenCalled()
+  })
+})
+
+describe('discardPaidGroupWrite', () => {
+  /** A write the host deferred once (`nonce_gap`): signed, its bytes handed to the relay, which
+   * stored and handed over nothing. */
+  async function deferredWrite(answer: 'gap' | 'timeout' = 'gap') {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    await expect(
+      deliver(message, payer.wallet, relay(payer.events, [answer]).submit),
+    ).rejects.toThrow()
+    expect(message.stored).toMatchObject({ submitted: true })
+    return { payer, message }
+  }
+  const discard = (
+    message: ReturnType<typeof record>,
+    wallet: GroupWritePayer | undefined,
+  ) =>
+    discardPaidGroupWrite({
+      stored: message.stored,
+      persist: message.persist,
+      wallet,
+    })
+
+  test('a deferred write whose payment the chain does not show gives its coin back, once', async () => {
+    const { payer, message } = await deferredWrite()
+    expect(await discard(message, payer.wallet)).toEqual({
+      state: 'discarded',
+    })
+    expect(message.stored).toMatchObject({ released: true, discarded: true })
+    expect(message.stored!.discarding).toBeUndefined()
+    // The wallet read the chain and released the set; nothing was ever broadcast.
+    expect(payer.events.filter(event => event.startsWith('release'))).toEqual([
+      `release:${message.stored!.operationId}`,
+    ])
+    expect(payer.events.some(event => event.startsWith('send'))).toBe(false)
+    // Repeating it changes nothing and asks the wallet nothing.
+    const events = payer.events.length
+    expect(await discard(message, payer.wallet)).toEqual({
+      state: 'discarded',
+    })
+    expect(payer.events).toHaveLength(events)
+    // A later delivery of the same write never sends it.
+    const submit = jest.fn()
+    expect(await deliver(message, payer.wallet, submit)).toEqual({
+      state: 'discarded',
+    })
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  test('after an attempt without an answer, a discard keeps the write and its coin', async () => {
+    const { payer, message } = await deferredWrite('timeout')
+    const before = message.stored
+    expect(await discard(message, payer.wallet)).toEqual({
+      state: 'kept',
+      reason: 'uncertain',
+    })
+    expect(message.stored).toBe(before)
+    expect(payer.events.some(event => event.startsWith('release'))).toBe(false)
+    expect(payer.sets.size).toBe(1)
+  })
+
+  test('a discard keeps the write when the chain shows its payment, and the write is still sent', async () => {
+    const { payer, message } = await deferredWrite()
+    payer.seenOnChain.add(message.stored!.operationId)
+    expect(await discard(message, payer.wallet)).toEqual({
+      state: 'kept',
+      reason: 'paid',
+    })
+    expect(message.stored!.discarding).toBeUndefined()
+    expect(message.stored!.released).toBeUndefined()
+    expect(payer.sets.size).toBe(1)
+    const host = relay(payer.events, ['ok'])
+    expect(await deliver(message, payer.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    expect(host.submitted.map(p => p.raw_transaction)).toEqual([
+      message.stored!.rawTransaction,
+    ])
+  })
+
+  test('a paid write, or a wallet that cannot read the chain, keeps the write', async () => {
+    const { payer, message } = await deferredWrite()
+    expect(
+      await discard(record({ ...message.stored!, spent: true }), payer.wallet),
+    ).toEqual({
+      state: 'kept',
+      reason: 'paid',
+    })
+    for (const wallet of [
+      undefined,
+      groupWriteTestPayer('ethereum-sepolia').wallet,
+    ])
+      expect(await discard(message, wallet)).toEqual({
+        state: 'kept',
+        reason: 'unavailable',
+      })
+    expect(payer.events.some(event => event.startsWith('release'))).toBe(false)
+  })
+
+  test('a restart in the middle of a discard finishes it instead of sending the write', async () => {
+    const { payer, message } = await deferredWrite()
+    let crash = true
+    await expect(
+      discardPaidGroupWrite({
+        stored: message.stored,
+        persist: async next => {
+          if (crash && next.discarded) throw new Error('process stopped')
+          await message.persist(next)
+        },
+        wallet: payer.wallet,
+      }),
+    ).rejects.toThrow('process stopped')
+    crash = false
+    expect(message.stored).toMatchObject({ discarding: true })
+    const restarted = record(message.stored)
+    const submit = jest.fn()
+    expect(await deliver(restarted, payer.wallet, submit)).toEqual({
+      state: 'discarded',
+    })
+    expect(restarted.stored).toMatchObject({ released: true, discarded: true })
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  test('a write never planned, or already refused and released, is simply discarded', async () => {
+    expect(await discard(record(), undefined)).toEqual({ state: 'discarded' })
+    const payer = groupWriteTestPayer()
+    const message = record()
+    await deliver(message, payer.wallet, relay(payer.events, ['refuse']).submit)
+    expect(message.stored).toMatchObject({ released: true })
+    const releases = payer.events.filter(e => e.startsWith('release')).length
+    expect(await discard(message, payer.wallet)).toEqual({ state: 'discarded' })
+    expect(message.stored).toMatchObject({ discarded: true })
+    expect(payer.events.filter(e => e.startsWith('release'))).toHaveLength(
+      releases,
+    )
   })
 })

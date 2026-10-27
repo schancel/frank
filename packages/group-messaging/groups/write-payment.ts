@@ -31,6 +31,12 @@
  * payment, the funds have moved: the wallet authorizes and tracks the set (`spent`) and the write
  * stays pending, retried with the same bytes, since a paid write is still owed. After an
  * uncertain attempt the coin is never released.
+ *
+ * A write the host keeps deferring waits for funds or the chain. The user may discard it
+ * (`discardPaidGroupWrite`): the host answered every attempt that it stored and handed over
+ * nothing, so the coin goes back once the wallet reads the chain and finds no member pending or
+ * mined. A discard is refused, keeping the coin, after an attempt without an answer or once the
+ * chain shows the payment.
  */
 import type { SealedGroupMessageEnvelope } from '@frank/cashweb/groups/group-crypto'
 import { bytesToHex, hexToBytes } from '@frank/cashweb/groups/group-crypto'
@@ -137,6 +143,79 @@ export type GroupWriteDelivery<Receipt> =
       readonly outcome: 'released'
       readonly error?: GroupWriteRefusedError
     }
+  /** The user discarded the write and its coin is back; it is never sent. Final. */
+  | { readonly state: 'discarded' }
+
+/** Why a discard kept the write and its coin. */
+export type GroupWriteDiscardRefusal =
+  /** An attempt had no answer from the relay (it may have stored the write and broadcast the
+   * payment), or the wallet cannot tell that its payment cannot land: it may still land. */
+  | 'uncertain'
+  /** The payment went out: the chain shows it pending or mined, or the wallet sent it. */
+  | 'paid'
+  /** This wallet cannot read the chain for this payment, or pays on another network. */
+  | 'unavailable'
+
+export type GroupWriteDiscard =
+  | { readonly state: 'discarded' }
+  | { readonly state: 'kept'; readonly reason: GroupWriteDiscardRefusal }
+
+export interface DiscardPaidGroupWriteParams {
+  /** The payment stored on this write's message, if any. */
+  readonly stored: StoredGroupWritePayment | undefined
+  /** Persist `next` on this write's message, durably, before returning. */
+  readonly persist: (next: StoredGroupWritePayment) => Promise<void>
+  readonly wallet: GroupWritePayer | undefined
+}
+
+/**
+ * Discard a write that is not delivered, at the user's request. The coin goes back only when no
+ * attempt of the write was without an answer (every answer said the relay stored and handed over
+ * nothing) and the wallet, reading the chain first, finds no member of its set pending or mined.
+ * Otherwise the write and its coin are kept, with the reason. Repeating a discard, or a restart in
+ * the middle of one, gives the same outcome and releases nothing twice. The caller must not call
+ * it for a write the relay already holds.
+ */
+export async function discardPaidGroupWrite(
+  params: DiscardPaidGroupWriteParams,
+): Promise<GroupWriteDiscard> {
+  const stored = params.stored
+  // Never planned: nothing was signed or claimed for it.
+  if (!stored) return { state: 'discarded' }
+  if (stored.discarded) return { state: 'discarded' }
+  if (stored.released) {
+    // Refused for good earlier, and its coin is already back.
+    await params.persist({ ...stored, discarded: true })
+    return { state: 'discarded' }
+  }
+  if (stored.spent) return { state: 'kept', reason: 'paid' }
+  if (stored.uncertain) return { state: 'kept', reason: 'uncertain' }
+  const wallet = params.wallet
+  if (
+    !wallet?.releaseTransactionSet ||
+    wallet.chainIdentifier !== stored.network
+  )
+    return { state: 'kept', reason: 'unavailable' }
+  const discarding: StoredGroupWritePayment = stored.discarding
+    ? stored
+    : { ...stored, discarding: true }
+  if (discarding !== stored) await params.persist(discarding)
+  const { discarding: _, ...rest } = discarding
+  // The wallet reads the chain for every member first and keeps any the node shows.
+  if (
+    (await wallet.releaseTransactionSet(stored.operationId)) ||
+    // `false` with no stored bytes is a plan whose set was never constructed.
+    stored.rawTransaction === undefined
+  ) {
+    await params.persist({ ...rest, released: true, discarded: true })
+    return { state: 'discarded' }
+  }
+  await params.persist(rest)
+  // The wallet kept the set: either the chain shows a member, or the wallet cannot tell that
+  // none can land (for example it authorized the set, or a member's nonce state is unknown).
+  const onChain = await wallet.observeTransactionSet?.(stored.operationId)
+  return { state: 'kept', reason: onChain ? 'paid' : 'uncertain' }
+}
 
 function samePlan(
   stored: StoredGroupWritePayment,
@@ -161,6 +240,7 @@ export async function deliverPaidGroupWrite<Receipt>(
   params: DeliverPaidGroupWriteParams<Receipt>,
 ): Promise<GroupWriteDelivery<Receipt>> {
   let stored = params.stored
+  if (stored?.discarded) return { state: 'discarded' }
   if (stored?.released) return { state: 'refused', outcome: 'released' }
   const wallet = params.wallet
   const payer =
@@ -173,6 +253,16 @@ export async function deliverPaidGroupWrite<Receipt>(
   const persist = async (next: StoredGroupWritePayment) => {
     stored = next
     await params.persist(next)
+  }
+  // A restart in the middle of a discard finishes it; a discard the chain refuses leaves the
+  // write to be sent as before.
+  if (stored?.discarding) {
+    const discard = await discardPaidGroupWrite({
+      stored,
+      persist,
+      wallet,
+    })
+    if (discard.state === 'discarded') return { state: 'discarded' }
   }
   // A restart between a refusal and its recorded outcome finishes the release.
   if (stored?.releasing) {

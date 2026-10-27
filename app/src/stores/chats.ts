@@ -128,8 +128,15 @@ import {
   groupAdminSecretMatches,
   deriveAdminEpochSecret,
   GroupWriteDeferredError,
+  GroupWritePriceRefusedError,
+  GroupWriteRefusedError,
   type CreateGroupOnRelayMemberInput,
 } from '@frank/cashweb/groups/group-relay-client'
+import {
+  signGroupWritePrice,
+  type GroupWritePolicy,
+  type GroupWritePriceRecord,
+} from '@frank/cashweb/groups/group-write-payment'
 import { sha256 } from '@noble/hashes/sha256.js'
 import {
   joinDeliveryStatus,
@@ -323,6 +330,45 @@ export interface GroupConversationState {
   >
   lastSyncedSeq: number
   roster: GroupRosterMember[]
+  /** What one write to this group pays its host, as the host last reported it: shown wherever a
+   * member writes and in group info. Display only; each write's payment plan asks the host
+   * again, so a stale value here never sets what is paid. */
+  writePrice?: GroupWritePriceView
+  /** A write price this administrator signed, persisted before it goes to the host and retried
+   * until the host holds it, refuses it, or holds a newer one. */
+  pendingWritePrice?: GroupWritePriceRecord
+}
+
+/** A group's write price as the app shows it. */
+export interface GroupWritePriceView {
+  /** Canonical chain identifier the price is paid on. */
+  network: string
+  /** Decimal wei: the price of one write now. */
+  priceWei: string
+  /** Decimal wei: the least price the host lets a creator set. */
+  minPriceWei: string
+  /** The creator's price record version; 0 while the creator has set none (the host's
+   * minimum applies). */
+  version: number
+  checkedAt: number
+}
+
+/** How a pending write price ended. */
+export type GroupWritePriceOutcome =
+  | { state: 'held' }
+  /** Another price at that version or later was set first (another administrator device). */
+  | { state: 'superseded' }
+  /** The host refused it (below its minimum, or otherwise); nothing changed. */
+  | { state: 'refused'; error: GroupWritePriceRefusedError }
+
+function writePriceView(policy: GroupWritePolicy): GroupWritePriceView {
+  return {
+    network: policy.network,
+    priceWei: policy.priceWei.toString(),
+    minPriceWei: policy.minPriceWei.toString(),
+    version: policy.priceVersion,
+    checkedAt: Date.now(),
+  }
 }
 
 export interface Conversation {
@@ -1578,6 +1624,8 @@ function applyAuthenticatedGroupEpoch(
     pendingMemberDeliveries,
     highestSyncedEpoch: previous?.highestSyncedEpoch,
     supersededMemberChange,
+    writePrice: previous?.writePrice,
+    pendingWritePrice: previous?.pendingWritePrice,
   }
   conv.groupEpochSecretHex = epochSecretHex
   conv.groupMemberIndex = own?.index
@@ -6291,6 +6339,9 @@ export const useChatStore = defineStore('chats', {
       relayUrl?: string
       relayClient?: GroupRelayClient
       creatorAddress?: string
+      /** The creator's price of one write, in the host's network's base unit. Omitted, the
+       * host's minimum applies until an administrator sets one. */
+      writePriceWei?: bigint
     }): Promise<Conversation> {
       return groupRun(
         this,
@@ -6306,6 +6357,7 @@ export const useChatStore = defineStore('chats', {
       relayUrl,
       relayClient,
       creatorAddress,
+      writePriceWei,
     }: {
       wallet?: WalletHandle
       groupName: string
@@ -6313,6 +6365,7 @@ export const useChatStore = defineStore('chats', {
       relayUrl?: string
       relayClient?: GroupRelayClient
       creatorAddress?: string
+      writePriceWei?: bigint
     }): Promise<Conversation> {
       const checkGroup = captureGroupContext(this)
       const trimmedName = groupName.trim()
@@ -6344,6 +6397,19 @@ export const useChatStore = defineStore('chats', {
         ),
       )
       const client = relayClient ?? this.getGroupRelayClient(relayUrl)
+      // The creator's price is checked against the host's minimum before anything is created,
+      // so a group is never created at a price its host refuses.
+      const hostPolicy =
+        writePriceWei === undefined
+          ? undefined
+          : await client.getWritePolicy('00'.repeat(32))
+      checkGroup()
+      if (hostPolicy && writePriceWei! < hostPolicy.minPriceWei)
+        throw new GroupWritePriceRefusedError(
+          'below_minimum',
+          422,
+          hostPolicy.minPriceWei,
+        )
       const created = prepareGroupCreation({
         client,
         groupName: trimmedName,
@@ -6404,6 +6470,17 @@ export const useChatStore = defineStore('chats', {
         pendingEpoch: {
           certificate: groupEpochCertificate(created.epochFrame),
         },
+        ...(hostPolicy && writePriceWei !== undefined
+          ? {
+              pendingWritePrice: signGroupWritePrice({
+                network: hostPolicy.network,
+                groupIdHex: created.identity.groupIdHex,
+                version: 1,
+                priceWei: writePriceWei,
+                rootSecretKey: created.identity.groupSecretKey,
+              }),
+            }
+          : {}),
       }
 
       const conv = newConversation({
@@ -6457,6 +6534,8 @@ export const useChatStore = defineStore('chats', {
       await this.flushPersistence?.()
       try {
         await this.retryGroupEpochPublication(conv.id, client)
+        // The price is on the host before any member is invited to write.
+        await this.retryGroupWritePrice(conv.id, client)
         await this.retryGroupMemberDeliveries(conv.id, resolvedWallet)
       } catch {
         checkGroup()
@@ -6677,7 +6756,15 @@ export const useChatStore = defineStore('chats', {
           return { state: 'busy' }
         }
         if (delivery.state === 'refused') {
-          // Final: the coin is back, and nothing of the write or its payment is out.
+          // Final: the coin is back, and nothing of the write or its payment is out. A write
+          // refused as underpaid met a price the creator changed meanwhile: show the new one.
+          if (
+            delivery.error instanceof GroupWriteRefusedError &&
+            delivery.error.reason === 'underpaid'
+          )
+            void this.refreshGroupWritePrice(conv.id, client).catch(
+              () => undefined,
+            )
           const reason: OutgoingFailureReason = 'rejected'
           message.status = 'error'
           message.delivery = {
@@ -6815,6 +6902,112 @@ export const useChatStore = defineStore('chats', {
     /** Reconcile the original signed epoch after timeout/restart before delivering its secret.
      * 'superseded' means another device of this administrator account published a different
      * successor first: it was adopted, and the prepared one was dropped unsent. */
+    /** Ask the group's host what one write costs now, and keep it for display. */
+    async refreshGroupWritePrice(
+      conversationId: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<GroupWritePriceView | undefined> {
+      const conv = this.conversations[conversationId]
+      const state = conv?.groupState
+      if (!state) return undefined
+      const checkGroup = captureGroupContext(this, conv)
+      const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      const view = writePriceView(await client.getWritePolicy(state.groupIdHex))
+      checkGroup()
+      // An epoch applied meanwhile replaces the state object; the group is the same.
+      const current = conv.groupState
+      if (current?.groupIdHex !== state.groupIdHex) return undefined
+      current.writePrice = view
+      return view
+    },
+    /** The least price `relayUrl` lets a creator set, and its network: for the New group form. */
+    async groupRelayWriteTerms(
+      relayUrl: string,
+    ): Promise<{ network: string; minPriceWei: bigint }> {
+      const policy = await this.getGroupRelayClient(relayUrl).getWritePolicy(
+        '00'.repeat(32),
+      )
+      return { network: policy.network, minPriceWei: policy.minPriceWei }
+    },
+    /** An administrator sets the group's write price. The signed record is persisted before it
+     * goes to the host. Rejects with `GroupWritePriceRefusedError` when the host refuses it, or
+     * when another administrator device set a newer price first. */
+    async setGroupWritePrice(
+      conversationId: string,
+      priceWei: bigint,
+      relayClient?: GroupRelayClient,
+    ): Promise<GroupWritePriceView | undefined> {
+      const conv = this.conversations[conversationId]
+      const state = conv?.groupState
+      if (!state?.groupSecretKeyHex || conv.membershipStatus !== 'joined')
+        throw new Error('Only the group administrator sets its write price')
+      const checkGroup = captureGroupContext(this, conv)
+      const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      // One price at a time: an earlier one still pending goes first.
+      const earlier = await this.retryGroupWritePrice(conversationId, client)
+      if (earlier.state === 'refused') throw earlier.error
+      const policy = await client.getWritePolicy(state.groupIdHex)
+      checkGroup()
+      if (priceWei < policy.minPriceWei)
+        throw new GroupWritePriceRefusedError(
+          'below_minimum',
+          422,
+          policy.minPriceWei,
+        )
+      const current = conv.groupState
+      if (current?.groupIdHex !== state.groupIdHex)
+        throw new Error('Group changed while setting its write price')
+      current.pendingWritePrice = signGroupWritePrice({
+        network: policy.network,
+        groupIdHex: state.groupIdHex,
+        version: policy.priceVersion + 1,
+        priceWei,
+        rootSecretKey: hexToBytes(state.groupSecretKeyHex),
+      })
+      await this.flushPersistence?.()
+      const outcome = await this.retryGroupWritePrice(conversationId, client)
+      if (outcome.state === 'refused') throw outcome.error
+      if (outcome.state === 'superseded')
+        throw new GroupWritePriceRefusedError('conflict', 409)
+      return conv.groupState?.writePrice
+    },
+    /** Send this administrator's pending write price to the host, until the host holds it,
+     * refuses it, or holds a newer one; then show what the host holds. Throws, keeping it
+     * pending, when the host cannot be reached. */
+    async retryGroupWritePrice(
+      conversationId: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<GroupWritePriceOutcome> {
+      return groupRun(this, `price:${conversationId}`, async () => {
+        const conv = this.conversations[conversationId]
+        const state = conv?.groupState
+        const pending = state?.pendingWritePrice
+        if (!state || !pending) return { state: 'held' as const }
+        const checkGroup = captureGroupContext(this, conv)
+        const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+        let outcome: GroupWritePriceOutcome = { state: 'held' }
+        try {
+          await client.setWritePrice(state.groupIdHex, pending)
+        } catch (error) {
+          if (!(error instanceof GroupWritePriceRefusedError)) throw error
+          outcome =
+            error.reason === 'conflict' &&
+            error.current !== undefined &&
+            error.current.version >= pending.version
+              ? { state: 'superseded' }
+              : { state: 'refused', error }
+        }
+        checkGroup()
+        const current = conv.groupState
+        if (current?.pendingWritePrice === pending)
+          current.pendingWritePrice = undefined
+        await this.flushPersistence?.()
+        await this.refreshGroupWritePrice(conversationId, client).catch(
+          () => undefined,
+        )
+        return outcome
+      })
+    },
     async retryGroupEpochPublication(
       conversationId: string,
       relayClient?: GroupRelayClient,
@@ -7041,6 +7234,8 @@ export const useChatStore = defineStore('chats', {
       )
         return 0
       await this.retryGroupEpochPublication(conversationId, options.relayClient)
+      if (options.lease?.isCancelled()) return 0
+      await this.retryGroupWritePrice(conversationId, options.relayClient)
       if (options.lease?.isCancelled()) return 0
       await this.retryGroupMemberDeliveries(conversationId)
       const conv = this.conversations[conversationId]

@@ -29,13 +29,15 @@ peers = []
 public_relay_urls = []
 
 # Every new write to a group this relay hosts carries one signed transaction on
-# `registry.network` paying `payee` at least `price_wei`. Each payment commits to the relay's
-# public origin, the top-level `url`, which the directory `endpoint` must equal.
-# `payee` is "burn", { address = "0x…" } or { xpub = "xpub…" }. OPERATOR: this image burns until
-# the owner provides the relay's payee address or xpub and the price.
+# `registry.network` paying `payee`, the relay's own address, at least the group's price. Each
+# group's creator sets that price and may change it; `min_price_wei` is the least price a
+# creator may set. Each payment commits to the relay's public origin, the top-level `url`, which
+# the directory `endpoint` must equal. OPERATOR: this image pays the burn address 0x…dEaD until
+# the owner provides the relay's own address; a real address needs a minimum of at least the
+# network's payment floor (0.021 MON on Monad).
 [registry.group_writes]
-price_wei = "1000000000000"
-payee = "burn"
+min_price_wei = "1000000000000"
+payee = "0x000000000000000000000000000000000000dEaD"
 
 # The account directory. The message, directory and relay-info routes (`/message*`,
 # `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody

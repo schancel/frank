@@ -28,6 +28,7 @@ import {
   parseGroupWritePolicy,
   type GroupWritePaymentWire,
   type GroupWritePolicy,
+  type GroupWritePriceRecord,
 } from './group-write-payment'
 
 export interface PublishEpochResponse {
@@ -105,7 +106,8 @@ export function normalizeGroupRelayOrigin(relayUrl: string): string {
  * - `GET /groups/:group_id/epochs` (public root-signed certificate)
  * - `PUT /groups/:group_id/messages` (authenticated via outer shared write signature `write_sig`,
  *   paid for with one signed transaction to the hosting relay's payee)
- * - `GET /groups/:group_id/write-policy` (the hosting relay's price and payee)
+ * - `GET /groups/:group_id/write-policy` (what a write to the group pays its host, and whom)
+ * - `PUT /groups/:group_id/write-price` (the creator sets or changes the group's price)
  * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Group-Read-Token`)
  */
 /**
@@ -143,6 +145,60 @@ export class GroupWriteDeferredError extends Error {
     super(`Group write deferred (${code}${reason ? `: ${reason}` : ''})`)
     this.name = 'GroupWriteDeferredError'
   }
+}
+
+/** The host refused a creator's write price: `below_minimum` (under the host's minimum,
+ * `minPriceWei`), `conflict` (another price already holds that version; `current` is the host's)
+ * or `refused` (anything else the host answered with a 4xx). Nothing was changed. */
+export class GroupWritePriceRefusedError extends Error {
+  constructor(
+    readonly reason: 'below_minimum' | 'conflict' | 'refused',
+    readonly status: number,
+    readonly minPriceWei?: bigint,
+    readonly current?: { readonly version: number; readonly priceWei: bigint },
+  ) {
+    super(
+      reason === 'below_minimum'
+        ? `The relay's minimum price is ${minPriceWei} wei`
+        : reason === 'conflict'
+        ? `The group's price changed meanwhile (version ${current?.version})`
+        : `The relay refused the price (${status})`,
+    )
+    this.name = 'GroupWritePriceRefusedError'
+  }
+}
+
+function groupWritePriceRefusal(
+  error: unknown,
+): GroupWritePriceRefusedError | undefined {
+  if (!axios.isAxiosError(error) || !error.response) return undefined
+  const status = error.response.status
+  if (status < 400 || status >= 500) return undefined
+  const body = error.response.data as Record<string, unknown> | undefined
+  if (
+    status === 422 &&
+    body?.error === 'write_price_below_minimum' &&
+    typeof body.min_price_wei === 'string' &&
+    /^[0-9]{1,39}$/.test(body.min_price_wei)
+  )
+    return new GroupWritePriceRefusedError(
+      'below_minimum',
+      status,
+      BigInt(body.min_price_wei),
+    )
+  const current = body?.current as Record<string, unknown> | undefined
+  if (
+    status === 409 &&
+    body?.error === 'write_price_conflict' &&
+    typeof current?.version === 'number' &&
+    typeof current.price_wei === 'string' &&
+    /^[0-9]{1,39}$/.test(current.price_wei)
+  )
+    return new GroupWritePriceRefusedError('conflict', status, undefined, {
+      version: current.version,
+      priceWei: BigInt(current.price_wei),
+    })
+  return new GroupWritePriceRefusedError('refused', status)
 }
 
 function groupWriteRefusal(
@@ -406,6 +462,33 @@ export class GroupRelayClient {
       { headers: this.routingHeaders() },
     )
     return parseGroupWritePolicy(response.data, this.relayUrl)
+  }
+
+  /** Set or change the group's write price on its host (proxied by a home relay). Resolves
+   * when the host holds `record`; rejects with `GroupWritePriceRefusedError` when it refused. */
+  async setWritePrice(
+    groupIdHex: string,
+    record: GroupWritePriceRecord,
+  ): Promise<void> {
+    const cleanGroupId = normalizeGroupId(groupIdHex)
+    if (record.group_id !== cleanGroupId)
+      throw new Error('Write price is for another group')
+    const response = await this.http
+      .put<unknown>(
+        `${this.transportUrl}/groups/${cleanGroupId}/write-price`,
+        record,
+        { headers: this.routingHeaders() },
+      )
+      .catch(error => {
+        throw groupWritePriceRefusal(error) ?? error
+      })
+    const held = response.data as Record<string, unknown> | null
+    if (
+      held?.version !== record.version ||
+      held.price_wei !== record.price_wei ||
+      held.group_id !== record.group_id
+    )
+      throw new Error('Invalid group write price acknowledgement')
   }
 
   /**

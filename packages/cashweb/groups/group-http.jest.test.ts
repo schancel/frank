@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import {
   GroupRelayClient,
+  GroupWritePriceRefusedError,
   GroupWriteRefusedError,
   createGroupOnRelay,
   rotateGroupEpochOnRelay,
@@ -14,6 +15,7 @@ import {
   sealGroupMessage,
   verifyEpochFrame,
 } from './group-crypto'
+import { signGroupWritePrice } from './group-write-payment'
 import {
   GROUP_TEST_ACCOUNTS,
   groupTestPaymentFor,
@@ -136,6 +138,55 @@ async function main() {
         error.status === 402 &&
         error.reason === 'underpaid',
     )
+    // The creator prices the group. Below the host's minimum is refused before anything
+    // changes; the price every member then reads is the creator's.
+    assert.equal(policy.priceVersion, 0)
+    assert.equal(policy.priceWei, policy.minPriceWei)
+    const price = (version: number, priceWei: bigint) =>
+      signGroupWritePrice({
+        network: policy.network,
+        groupIdHex: id,
+        version,
+        priceWei,
+        rootSecretKey: created.identity.groupSecretKey,
+      })
+    await assert.rejects(
+      client.setWritePrice(id, price(1, policy.minPriceWei - 1n)),
+      (error: unknown) =>
+        error instanceof GroupWritePriceRefusedError &&
+        error.reason === 'below_minimum' &&
+        error.minPriceWei === policy.minPriceWei,
+    )
+    await client.setWritePrice(id, price(1, policy.minPriceWei * 3n))
+    const priced = await reopened.getWritePolicy(id)
+    assert.equal(priced.priceWei, policy.minPriceWei * 3n)
+    assert.equal(priced.priceVersion, 1)
+    await assert.rejects(
+      client.setWritePrice(id, price(1, policy.minPriceWei * 2n)),
+      (error: unknown) =>
+        error instanceof GroupWritePriceRefusedError &&
+        error.reason === 'conflict' &&
+        error.current?.version === 1 &&
+        error.current.priceWei === policy.minPriceWei * 3n,
+    )
+    // A write paid at the minimum is now refused; paid at the creator's price it is accepted.
+    await assert.rejects(
+      client.sendGroupMessage(id, next, groupTestPaymentFor(policy, id, next)),
+      (error: unknown) =>
+        error instanceof GroupWriteRefusedError &&
+        error.status === 402 &&
+        error.reason === 'underpaid',
+    )
+    assert.equal(
+      (
+        await client.sendGroupMessage(
+          id,
+          next,
+          groupTestPaymentFor(priced, id, next),
+        )
+      ).server_seq,
+      2,
+    )
     const params = {
       client,
       groupIdHex: id,
@@ -189,10 +240,10 @@ async function main() {
     assert.equal(
       (await client.fetchGroupMessages(id, rotated.epochKeys.readTokenHex))
         .messages.length,
-      1,
+      2,
     )
     console.log(
-      'PASS real TS ↔ Rust HTTP create/read/send/signature/reopen/repeated-sync/removal/CAS boundary',
+      'PASS real TS ↔ Rust HTTP create/read/send/signature/reopen/repeated-sync/removal/CAS/price boundary',
     )
   } finally {
     server.kill()

@@ -851,6 +851,80 @@ describe('group info and a removed member, in mounted UI', () => {
     chat.unmount()
   })
 
+  it("shows the group's price per message, and lets only the administrator change it", async () => {
+    const { wrapper: chat, chats } = await openConversation()
+    const conv = makeAdminGroup(chats)
+    const view = {
+      network: 'monad-testnet',
+      priceWei: '3000000000000000',
+      minPriceWei: '1000000000000',
+      version: 1,
+      checkedAt: 1,
+    }
+    const refresh = jest
+      .spyOn(chats, 'refreshGroupWritePrice')
+      .mockImplementation(async () => {
+        conv.groupState!.writePrice = view
+        return view
+      })
+    const change = jest
+      .spyOn(chats, 'setGroupWritePrice')
+      .mockResolvedValue(undefined)
+    const QInput = defineComponent({
+      inheritAttrs: false,
+      props: ['modelValue', 'errorMessage'],
+      emits: ['update:modelValue'],
+      setup:
+        (props, { attrs, emit }) =>
+        () =>
+          h('div', [
+            h('input', {
+              'data-test': attrs['data-test'],
+              'value': props.modelValue,
+              'onInput': (e: Event) =>
+                emit('update:modelValue', (e.target as HTMLInputElement).value),
+            }),
+            props.errorMessage,
+          ]),
+    })
+    const GroupInfoDialog =
+      require('../components/chat/GroupInfoDialog.vue').default
+    const mountWith = () =>
+      mount(GroupInfoDialog, {
+        props: { modelValue: true, conversationId: CONVERSATION },
+        global: {
+          plugins: [getActivePinia()!],
+          components: { ...stubs, QInput },
+          mocks: { $t: translator(en) },
+        },
+      })
+    const wrapper = mountWith()
+    await flushPromises()
+    // Opening the dialog asks the host for the current price.
+    expect(refresh).toHaveBeenCalledWith(CONVERSATION)
+    expect(wrapper.get('[data-test="group-info-write-price"]').text()).toBe(
+      '0.003 MONT',
+    )
+    await wrapper.get('[data-test="group-write-price-input"]').setValue('0.005')
+    await wrapper.get('[data-test="group-write-price-btn"]').trigger('click')
+    await flushPromises()
+    expect(change).toHaveBeenCalledWith(CONVERSATION, 5_000_000_000_000_000n)
+    wrapper.unmount()
+
+    // A member who is not the administrator sees the price and no control.
+    conv.groupState!.groupSecretKeyHex = undefined
+    const member = mountWith()
+    await flushPromises()
+    expect(member.get('[data-test="group-info-write-price"]').text()).toBe(
+      '0.003 MONT',
+    )
+    expect(member.find('[data-test="group-write-price-input"]').exists()).toBe(
+      false,
+    )
+    member.unmount()
+    chat.unmount()
+  })
+
   it('asks in an in-app dialog before removing a member, and removes only on Remove', async () => {
     const { wrapper: chat, chats } = await openConversation()
     makeAdminGroup(chats)

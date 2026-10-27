@@ -76,10 +76,11 @@ Who applies it:
   multiple at `min_gas_price_wei`: 0.021 MON on every Monad network. The relay refuses, before
   anything is stored or broadcast, a direct message any of whose stamp payments is below it
   (`monad_dm_payment.rs`), and refuses to start with `[registry.monad_mailbox] min_value_wei` or a
-  non-burn `[registry.group_writes] price_wei` below it. It reads no chain for this, so every
+  `[registry.group_writes] min_price_wei` below it unless that section's payee is the burn
+  address `0x…dEaD`; a group's price is never below `min_price_wei`. It reads no chain for this, so every
   replica decides the same. Because a node's gas price is never below the network's minimum, a
-  payment at the sender's floor always passes the relay's. Burns (forum posts and votes, a burned
-  group write) are never moved and have no floor.
+  payment at the sender's floor always passes the relay's. Burns (forum posts and votes, a group
+  write to a relay whose payee is the burn address) are never moved and have no floor.
 - **Recipient.** A received coin below the wallet's current floor is shown on the Wallet page's
   balance breakdown as "Too small to move" and is not counted in the balance
   (`getBalanceParts().tooSmall`). The received payment says the same (`ReceivedPayment.tooSmall`,

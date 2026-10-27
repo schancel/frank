@@ -82,6 +82,42 @@
         >
           {{ hostingRelayDisplay }}
         </div>
+
+        <div class="text-caption text-grey-6 q-mt-sm">
+          {{ $t('groupChat.writePriceLabel') }}
+        </div>
+        <div class="text-caption" data-test="group-info-write-price">
+          {{ writePriceDisplay || $t('groupChat.writePriceUnknown') }}
+        </div>
+        <div
+          v-if="canSetPrice"
+          class="row items-start no-wrap q-gutter-xs q-mt-xs"
+        >
+          <q-input
+            v-model="newPrice"
+            filled
+            dense
+            class="col"
+            inputmode="decimal"
+            :label="$t('groupChat.changeWritePriceLabel', { unit: priceUnit })"
+            :error="Boolean(priceError)"
+            :error-message="
+              priceError ? $t(priceError.key, priceError.values ?? {}) : ''
+            "
+            data-test="group-write-price-input"
+            @keydown.enter.prevent="changePrice"
+          />
+          <q-btn
+            color="primary"
+            unelevated
+            no-caps
+            :disable="newPriceWei === undefined || busy"
+            :loading="busy"
+            :label="$t('groupChat.changeWritePriceBtn')"
+            data-test="group-write-price-btn"
+            @click="changePrice"
+          />
+        </div>
       </q-card-section>
 
       <q-separator />
@@ -237,7 +273,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import { useChatStore, type Conversation } from '../../stores/chats'
 import {
   isBlankName,
@@ -255,6 +291,12 @@ import {
 } from '../../utils/own-address'
 import { shortAddress } from '../../utils/short-address'
 import { errorNotify } from '../../utils/notifications'
+import { registryAmountAdapter } from '../../utils/chain-amount'
+import {
+  groupWritePriceRefusalMessage,
+  groupWritePriceViewLabel,
+  parseGroupWritePriceInput,
+} from '../../utils/group-write-price'
 
 interface MemberRow {
   address: string
@@ -393,6 +435,62 @@ export default defineComponent({
       )
     })
 
+    const newPrice = ref('')
+    const priceError = ref<{ key: string; values?: Record<string, string> }>()
+    const writePrice = computed(
+      () => conversation.value?.groupState?.writePrice,
+    )
+    const writePriceDisplay = computed(() =>
+      groupWritePriceViewLabel(writePrice.value),
+    )
+    const priceUnit = computed(() =>
+      writePrice.value
+        ? registryAmountAdapter(writePrice.value.network)?.unit ?? ''
+        : '',
+    )
+    // Only the group's administrator signs its price, and only on a network with a unit to
+    // type it in.
+    const canSetPrice = computed(
+      () =>
+        conversation.value?.membershipStatus === 'joined' &&
+        isSelfAdmin.value &&
+        Boolean(priceUnit.value),
+    )
+    const newPriceWei = computed(() =>
+      writePrice.value
+        ? parseGroupWritePriceInput(writePrice.value.network, newPrice.value)
+        : undefined,
+    )
+    // Opening the dialog asks the host for the current price.
+    watch(
+      () => [props.modelValue, conversation.value?.id] as const,
+      ([open, id]) => {
+        if (open && id && conversation.value?.groupState)
+          void chatStore.refreshGroupWritePrice(id).catch(() => undefined)
+      },
+      { immediate: true },
+    )
+    const changePrice = async () => {
+      const conv = conversation.value
+      const price = newPriceWei.value
+      if (!conv || price === undefined || busy.value) return
+      busy.value = true
+      priceError.value = undefined
+      try {
+        await chatStore.setGroupWritePrice(conv.id, price)
+        newPrice.value = ''
+      } catch (err) {
+        const refusal = groupWritePriceRefusalMessage(
+          err,
+          writePrice.value?.network ?? '',
+        )
+        if (refusal) priceError.value = refusal
+        else errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        busy.value = false
+      }
+    }
+
     const closeDialog = () => {
       emit('update:modelValue', false)
     }
@@ -466,6 +564,13 @@ export default defineComponent({
       currentEpoch,
       groupIdDisplay,
       hostingRelayDisplay,
+      writePriceDisplay,
+      priceUnit,
+      canSetPrice,
+      newPrice,
+      newPriceWei,
+      priceError,
+      changePrice,
       memberRows,
       inviteeAddress,
       busy,

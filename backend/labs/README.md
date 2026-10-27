@@ -231,8 +231,8 @@ Services:
   (`[registry.large_values]`, HA step 4).
 - The relays share one configuration: driver `foundationdb`, subspace
   `frank-cluster-lab/`, cluster `lab` (NATS subjects `frank.lab.…`), network
-  `monad-regtest` with solonet as its upstream, group writes paid to the burn address at
-  10^12 wei each, the solonet mailbox (message stamps of at least 10^12 wei to the burn
+  `monad-regtest` with solonet as its upstream, group writes paid to the relay address
+  `0x…dEaD` (nobody holds its key) at a floor of 10^12 wei, which a group's creator may raise, the solonet mailbox (message stamps of at least 10^12 wei to the burn
   address), large values in the MinIO bucket above, the open directory with the proxy origin
   as its endpoint, and the forum with the burn address. Each keeps its own RocksDB volume.
   Groups, direct messages, the registry database, the directory and the forum are shared
@@ -284,10 +284,14 @@ to all three relays and to the proxy:
   exact retry on B is answered from the row;
 - a paid append on B is accepted and its payment lands on solonet; that payment sent with
   another envelope to C is refused (`wrong_commitment`); one payer's payments to the wrong
-  payee, on the wrong chain, for the wrong network, short of the price, or committing to
-  another relay's origin are each refused (402 with that reason) by A, B or C, and then
+  payee, on the wrong chain, for the wrong network, short of the group's price, or committing
+  to another relay's origin are each refused (402 with that reason) by A, B or C, and then
   the same payer's correct payment is accepted at sequence 2, so a refusal consumed
-  nothing; two payments from one payer at one nonce, for two writes sent to A and C at
+  nothing; the creator's price, set on B at three times the floor, is read on C, a price
+  below the floor is refused 422 and a forged one 403, a payment at the floor but under the
+  group's price is refused `underpaid`; after the creator raises the price on C, a payment
+  at the old price is refused `underpaid` on A and the same payer's payment at the new price
+  is accepted, with no sequence consumed by the refusal; two payments from one payer at one nonce, for two writes sent to A and C at
   once, give one append and one 402 `nonce_used`;
 - 3 × 200 concurrent paid appends, 200 per relay and 60 in flight at a time, all
   acknowledged, with sequence numbers 1..=600, unique and gap-free on every relay (each

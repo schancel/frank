@@ -1,6 +1,7 @@
-//! Pure verifier checks on real signed transaction bytes. The fixed vectors were produced
-//! independently with ethers v6 (`HDNodeWallet.fromExtendedKey`, `Transaction`, `Wallet`), the
-//! library the TypeScript writer uses, so these tests also pin cross-language agreement.
+//! Pure verifier checks on real signed transaction bytes. The fixed transaction vector was
+//! produced independently with ethers v6 (`Transaction`, `Wallet`), the library the TypeScript
+//! writer uses, and the price digest vector with Python's `hashlib`, so these tests also pin
+//! cross-language agreement.
 
 use bitcoinsuite_core::ecc::{Ecc, SecKey};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
@@ -8,8 +9,12 @@ use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use super::*;
 use crate::monad_evm_tx::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx};
 
-/// BIP32 test vector 1, master public key.
-const XPUB: &str = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8";
+/// The burn address `0x…dEaD`, which the labs configure as their payee.
+const BURN_ADDRESS: [u8; 20] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xde, 0xad,
+];
+/// The price the fixed vectors pay: 10^12 wei.
+const PRICE: u128 = 1_000_000_000_000;
 const MONAD_TESTNET_CHAIN_ID: u64 = 10143;
 const HOST: &str = "https://relay.example";
 
@@ -24,13 +29,13 @@ fn target() -> GroupWriteTarget {
     }
 }
 
-fn policy(payee: GroupWritePayee) -> GroupWritePolicy {
+fn policy(payee: [u8; 20]) -> GroupWritePolicy {
     GroupWritePolicy {
         network: "monad-testnet".into(),
         chain_id: MONAD_TESTNET_CHAIN_ID,
         host_origin: HOST.into(),
-        price_wei: 1_000_000_000_000,
         payee,
+        min_price_wei: PRICE,
     }
 }
 
@@ -56,7 +61,7 @@ fn address(hex_address: &str) -> [u8; 20] {
 }
 
 #[test]
-fn commitment_calldata_and_xpub_children_match_the_independent_vectors() {
+fn commitment_and_calldata_match_the_independent_vectors() {
     let commitment = group_write_commitment("monad-testnet", HOST, &target());
     assert_eq!(
         hex::encode(commitment),
@@ -65,29 +70,14 @@ fn commitment_calldata_and_xpub_children_match_the_independent_vectors() {
     let calldata = group_write_calldata(&commitment);
     assert_eq!(&calldata[..5], b"GRPW\x01");
     assert_eq!(&calldata[5..], &commitment);
-    assert_eq!(xpub_payee_index(&commitment), 1_853_355_382);
-
-    let xpub = ExtendedPublicKey::parse(XPUB).unwrap();
-    for (index, expected) in [
-        (0, "4b7115ad9623a528f1845eaf85d166de1e869bfb"),
-        (1, "eb5a8ae75e395ef05c96839a3fb088b2f65e7662"),
-        (0x7fff_ffff, "4e515434b67eab43ca645b490c27dec06fc0e31f"),
-        (1_853_355_382, "b028a08facaae7f24adb103cc38b8ba433d629b4"),
-    ] {
-        assert_eq!(
-            hex::encode(xpub.payee_address(index).unwrap()),
-            expected,
-            "0/{index}"
-        );
-    }
-    assert_eq!(xpub.payee_address(HARDENED_CHILD), None);
 }
 
 #[test]
 fn the_ethers_signed_burn_verifies_and_reports_its_payer() {
     let raw = hex::decode(ETHERS_BURN_TX).unwrap();
     let verified = verify_group_write_payment(
-        &policy(GroupWritePayee::Burn),
+        &policy(BURN_ADDRESS),
+        PRICE,
         &target(),
         "monad-testnet",
         &raw,
@@ -107,91 +97,76 @@ fn the_ethers_signed_burn_verifies_and_reports_its_payer() {
 }
 
 #[test]
-fn each_payee_kind_accepts_exactly_its_address() {
+fn only_the_relay_address_is_paid_at_or_over_the_group_price() {
     let operator = address("00000000000000000000000000000000000000aa");
-    let xpub_child = address("b028a08facaae7f24adb103cc38b8ba433d629b4");
     let calldata = calldata_for(&target(), HOST);
-    for (payee, to) in [
-        (GroupWritePayee::Burn, BURN_ADDRESS),
-        (GroupWritePayee::Address(operator), operator),
-        (
-            GroupWritePayee::Xpub(ExtendedPublicKey::parse(XPUB).unwrap()),
-            xpub_child,
-        ),
-    ] {
-        let policy = policy(payee);
-        let raw = pay(MONAD_TESTNET_CHAIN_ID, to, policy.price_wei, &calldata);
-        assert!(verify_group_write_payment(&policy, &target(), "monad-testnet", &raw).is_ok());
+    let policy = policy(operator);
+    for price in [PRICE, PRICE * 5] {
+        let raw = pay(MONAD_TESTNET_CHAIN_ID, operator, price, &calldata);
+        assert!(
+            verify_group_write_payment(&policy, price, &target(), "monad-testnet", &raw).is_ok()
+        );
         // Over the price is fine: the price is a floor.
-        let raw = pay(MONAD_TESTNET_CHAIN_ID, to, policy.price_wei + 1, &calldata);
-        assert!(verify_group_write_payment(&policy, &target(), "monad-testnet", &raw).is_ok());
-        for wrong in [BURN_ADDRESS, operator, xpub_child] {
-            if wrong == to {
-                continue;
-            }
-            let raw = pay(MONAD_TESTNET_CHAIN_ID, wrong, policy.price_wei, &calldata);
-            assert_eq!(
-                verify_group_write_payment(&policy, &target(), "monad-testnet", &raw),
-                Err(GroupPaymentError::WrongPayee { expected: to })
-            );
-        }
+        let raw = pay(MONAD_TESTNET_CHAIN_ID, operator, price + 1, &calldata);
+        assert!(
+            verify_group_write_payment(&policy, price, &target(), "monad-testnet", &raw).is_ok()
+        );
+        let raw = pay(MONAD_TESTNET_CHAIN_ID, BURN_ADDRESS, price, &calldata);
+        assert_eq!(
+            verify_group_write_payment(&policy, price, &target(), "monad-testnet", &raw),
+            Err(GroupPaymentError::WrongPayee { expected: operator })
+        );
     }
+    // A group priced above the minimum refuses a payment of the minimum.
+    let raw = pay(MONAD_TESTNET_CHAIN_ID, operator, PRICE, &calldata);
+    assert_eq!(
+        verify_group_write_payment(&policy, PRICE * 5, &target(), "monad-testnet", &raw),
+        Err(GroupPaymentError::Underpaid {
+            required: PRICE * 5,
+            actual: PRICE
+        })
+    );
 }
 
 #[test]
 fn underpaid_wrong_chain_and_wrong_network_are_refused() {
-    let policy = policy(GroupWritePayee::Burn);
+    let policy = policy(BURN_ADDRESS);
     let calldata = calldata_for(&target(), HOST);
-    let raw = pay(
-        MONAD_TESTNET_CHAIN_ID,
-        BURN_ADDRESS,
-        policy.price_wei - 1,
-        &calldata,
-    );
-    let refused = verify_group_write_payment(&policy, &target(), "monad-testnet", &raw);
+    let raw = pay(MONAD_TESTNET_CHAIN_ID, BURN_ADDRESS, PRICE - 1, &calldata);
+    let refused = verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &raw);
     assert_eq!(
         refused,
         Err(GroupPaymentError::Underpaid {
-            required: policy.price_wei,
-            actual: policy.price_wei - 1
+            required: PRICE,
+            actual: PRICE - 1
         })
     );
     assert_eq!(refused.unwrap_err().reason(), "underpaid");
 
     // Signed for Ethereum Sepolia's native id: the same bytes would replay there, not here.
-    let raw = pay(11_155_111, BURN_ADDRESS, policy.price_wei, &calldata);
+    let raw = pay(11_155_111, BURN_ADDRESS, PRICE, &calldata);
     assert_eq!(
-        verify_group_write_payment(&policy, &target(), "monad-testnet", &raw),
+        verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &raw),
         Err(GroupPaymentError::WrongChain {
             expected: MONAD_TESTNET_CHAIN_ID,
             actual: Some(11_155_111)
         })
     );
     // An unprotected legacy transaction names no chain and could replay on any.
-    let legacy = signed_unprotected_legacy_tx(
-        &seckey(0x42),
-        0,
-        Address(BURN_ADDRESS),
-        policy.price_wei,
-        &calldata,
-    );
+    let legacy =
+        signed_unprotected_legacy_tx(&seckey(0x42), 0, Address(BURN_ADDRESS), PRICE, &calldata);
     assert_eq!(
-        verify_group_write_payment(&policy, &target(), "monad-testnet", &legacy),
+        verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &legacy),
         Err(GroupPaymentError::WrongChain {
             expected: MONAD_TESTNET_CHAIN_ID,
             actual: None
         })
     );
 
-    let raw = pay(
-        MONAD_TESTNET_CHAIN_ID,
-        BURN_ADDRESS,
-        policy.price_wei,
-        &calldata,
-    );
+    let raw = pay(MONAD_TESTNET_CHAIN_ID, BURN_ADDRESS, PRICE, &calldata);
     for network in ["monad-mainnet", "evm", "10143", "Monad-Testnet", ""] {
         assert!(matches!(
-            verify_group_write_payment(&policy, &target(), network, &raw),
+            verify_group_write_payment(&policy, PRICE, &target(), network, &raw),
             Err(GroupPaymentError::WrongNetwork { .. })
         ));
     }
@@ -199,11 +174,11 @@ fn underpaid_wrong_chain_and_wrong_network_are_refused() {
 
 #[test]
 fn a_payment_funds_only_the_write_and_relay_it_commits_to() {
-    let policy = policy(GroupWritePayee::Burn);
+    let policy = policy(BURN_ADDRESS);
     let raw = pay(
         MONAD_TESTNET_CHAIN_ID,
         BURN_ADDRESS,
-        policy.price_wei,
+        PRICE,
         &calldata_for(&target(), HOST),
     );
     let mut other_group = target();
@@ -214,7 +189,7 @@ fn a_payment_funds_only_the_write_and_relay_it_commits_to() {
     other_write.signing_digest[31] ^= 1;
     for target in [other_group, other_epoch, other_write] {
         assert_eq!(
-            verify_group_write_payment(&policy, &target, "monad-testnet", &raw),
+            verify_group_write_payment(&policy, PRICE, &target, "monad-testnet", &raw),
             Err(GroupPaymentError::WrongCommitment)
         );
     }
@@ -222,7 +197,7 @@ fn a_payment_funds_only_the_write_and_relay_it_commits_to() {
     let mut other_relay = policy.clone();
     other_relay.host_origin = "https://other.example".into();
     assert_eq!(
-        verify_group_write_payment(&other_relay, &target(), "monad-testnet", &raw),
+        verify_group_write_payment(&other_relay, PRICE, &target(), "monad-testnet", &raw),
         Err(GroupPaymentError::WrongCommitment)
     );
 
@@ -241,14 +216,9 @@ fn a_payment_funds_only_the_write_and_relay_it_commits_to() {
         good[..36].to_vec(),
         Vec::new(),
     ] {
-        let raw = pay(
-            MONAD_TESTNET_CHAIN_ID,
-            BURN_ADDRESS,
-            policy.price_wei,
-            &calldata,
-        );
+        let raw = pay(MONAD_TESTNET_CHAIN_ID, BURN_ADDRESS, PRICE, &calldata);
         assert_eq!(
-            verify_group_write_payment(&policy, &target(), "monad-testnet", &raw),
+            verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &raw),
             Err(GroupPaymentError::WrongCommitment)
         );
     }
@@ -256,7 +226,7 @@ fn a_payment_funds_only_the_write_and_relay_it_commits_to() {
 
 #[test]
 fn malformed_bytes_are_refused() {
-    let policy = policy(GroupWritePayee::Burn);
+    let policy = policy(BURN_ADDRESS);
     let raw = hex::decode(ETHERS_BURN_TX).unwrap();
     let mut trailing = raw.clone();
     trailing.push(0);
@@ -267,7 +237,7 @@ fn malformed_bytes_are_refused() {
         raw[..raw.len() - 1].to_vec(),
     ] {
         assert_eq!(
-            verify_group_write_payment(&policy, &target(), "monad-testnet", &bytes),
+            verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &bytes),
             Err(GroupPaymentError::Malformed),
             "{}",
             hex::encode(&bytes)
@@ -275,54 +245,139 @@ fn malformed_bytes_are_refused() {
     }
     let oversized = vec![0xc0; MAX_GROUP_PAYMENT_BYTES + 1];
     assert_eq!(
-        verify_group_write_payment(&policy, &target(), "monad-testnet", &oversized),
+        verify_group_write_payment(&policy, PRICE, &target(), "monad-testnet", &oversized),
         Err(GroupPaymentError::Malformed)
     );
 }
 
+/// A price record signed by the root key `[root; 32]`.
+fn price_record(root: u8, network: &str, version: u64, price_wei: u128) -> GroupWritePrice {
+    let group_id = crate::store::groups::derive_group_id(&root_pubkey(root));
+    let digest = group_write_price_digest(network, &group_id, version, price_wei);
+    let secp = secp256k1_abc::Secp256k1::new();
+    let secret = secp256k1_abc::SecretKey::from_slice(&[root; 32]).unwrap();
+    let signature = secp.sign(
+        &secp256k1_abc::Message::from_slice(&digest).unwrap(),
+        &secret,
+    );
+    GroupWritePrice {
+        group_id: hex::encode(group_id),
+        network: network.into(),
+        version,
+        price_wei,
+        admin_sig: hex::encode(signature.serialize_compact()),
+    }
+}
+
+fn root_pubkey(root: u8) -> [u8; 33] {
+    let secp = secp256k1_abc::Secp256k1::new();
+    let secret = secp256k1_abc::SecretKey::from_slice(&[root; 32]).unwrap();
+    secp256k1_abc::PublicKey::from_secret_key(&secp, &secret).serialize()
+}
+
 #[test]
-fn payees_parse_from_operator_configuration() {
-    use cashweb_config::GroupWritePayeeConf as C;
+fn the_price_digest_matches_the_independent_vector() {
     assert_eq!(
-        GroupWritePayee::from_conf(&C::Burn),
-        Ok(GroupWritePayee::Burn)
-    );
-    assert_eq!(
-        GroupWritePayee::from_conf(&C::Address(
-            "0x00000000000000000000000000000000000000AA".into()
+        hex::encode(group_write_price_digest(
+            "monad-testnet",
+            &[0x11; 32],
+            2,
+            5_000_000_000_000_000
         )),
-        Ok(GroupWritePayee::Address(address(
-            "00000000000000000000000000000000000000aa"
-        )))
+        "065e08125716f2a2fd1909ec95209a43cf738b259a76d967f591c8827c1ab757"
     );
-    for bad in [
-        "",
-        "0x",
-        "00000000000000000000000000000000000000aa00",
-        "0xzz00000000000000000000000000000000000000",
-    ] {
-        assert_eq!(
-            GroupWritePayee::from_conf(&C::Address(bad.into())),
-            Err(GroupPayeeError::InvalidAddress),
+}
+
+#[test]
+fn a_price_record_verifies_only_for_its_group_network_and_root_key() {
+    let pubkey = root_pubkey(7);
+    let record = price_record(7, "monad-testnet", 1, PRICE * 3);
+    let id = record.group_id.clone();
+    assert_eq!(record.verify(&id, "monad-testnet", &pubkey), Ok(()));
+    // The JSON a creator sends: the price is decimal wei text.
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["price_wei"], "3000000000000");
+    assert_eq!(
+        serde_json::from_value::<GroupWritePrice>(json).unwrap(),
+        record
+    );
+    for bad in [r#""-1""#, r#""1e3""#, r#""""#, "1000"] {
+        let mut json = serde_json::to_value(&record).unwrap();
+        json["price_wei"] = serde_json::from_str(bad).unwrap();
+        assert!(
+            serde_json::from_value::<GroupWritePrice>(json).is_err(),
             "{bad}"
         );
     }
+
+    // Another network, another group, version 0, a zero price: refused as input.
     assert!(matches!(
-        GroupWritePayee::from_conf(&C::Xpub(XPUB.into())),
-        Ok(GroupWritePayee::Xpub(_))
+        record.verify(&id, "monad-mainnet", &pubkey),
+        Err(GroupError::InvalidInput(_))
     ));
-    // A private key, a bad checksum, and plain garbage are not payees.
-    let xprv = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi";
-    let mut bad_checksum = XPUB.to_owned();
-    bad_checksum.pop();
-    bad_checksum.push('9');
-    for bad in [xprv, bad_checksum.as_str(), "xpub", "not base58 0OIl"] {
-        assert_eq!(
-            GroupWritePayee::from_conf(&C::Xpub(bad.into())),
-            Err(GroupPayeeError::InvalidXpub),
-            "{bad}"
-        );
+    assert!(matches!(
+        record.verify(&"22".repeat(32), "monad-testnet", &pubkey),
+        Err(GroupError::InvalidInput(_))
+    ));
+    for record in [
+        price_record(7, "monad-testnet", 0, PRICE),
+        price_record(7, "monad-testnet", 1, 0),
+    ] {
+        assert!(matches!(
+            record.verify(&id, "monad-testnet", &pubkey),
+            Err(GroupError::InvalidInput(_))
+        ));
     }
+    // Signed by another key, or a changed price under the old signature: refused.
+    let other = price_record(8, "monad-testnet", 1, PRICE * 3);
+    let forged = GroupWritePrice {
+        group_id: id.clone(),
+        ..other
+    };
+    assert!(matches!(
+        forged.verify(&id, "monad-testnet", &pubkey),
+        Err(GroupError::Forbidden(_))
+    ));
+    let changed = GroupWritePrice {
+        price_wei: PRICE,
+        ..record.clone()
+    };
+    assert!(matches!(
+        changed.verify(&id, "monad-testnet", &pubkey),
+        Err(GroupError::Forbidden(_))
+    ));
+    // The same signature in its high-S spelling is refused, as for epoch frames.
+    let mut high_s =
+        secp256k1_abc::Signature::from_compact(&hex::decode(&record.admin_sig).unwrap())
+            .unwrap()
+            .serialize_compact();
+    let order =
+        hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").unwrap();
+    let mut borrow = 0i16;
+    for index in (0..32).rev() {
+        let value = order[index] as i16 - high_s[32 + index] as i16 - borrow;
+        borrow = i16::from(value < 0);
+        high_s[32 + index] = value.rem_euclid(256) as u8;
+    }
+    let high_s = GroupWritePrice {
+        admin_sig: hex::encode(high_s),
+        ..record.clone()
+    };
+    assert!(matches!(
+        high_s.verify(&id, "monad-testnet", &pubkey),
+        Err(GroupError::Forbidden(_))
+    ));
+}
+
+#[test]
+fn a_group_is_priced_by_its_creator_never_below_the_minimum() {
+    let policy = policy(BURN_ADDRESS);
+    assert_eq!(policy.price_wei(None), PRICE);
+    let above = price_record(7, "monad-testnet", 1, PRICE * 4);
+    assert_eq!(policy.price_wei(Some(&above)), PRICE * 4);
+    // A record set before the operator raised its minimum pays the minimum.
+    let below = price_record(7, "monad-testnet", 2, PRICE / 2);
+    assert_eq!(policy.price_wei(Some(&below)), PRICE);
 }
 
 #[test]

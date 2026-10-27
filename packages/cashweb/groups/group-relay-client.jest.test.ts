@@ -3,7 +3,6 @@ import {
   groupTestPaymentFor,
   groupTestSigningKey,
 } from './group-test.testutil'
-import { GROUP_WRITE_BURN_ADDRESS } from './group-write-payment'
 import type { AxiosInstance } from 'axios'
 import {
   decryptGroupRoster,
@@ -298,8 +297,10 @@ describe('GroupRelayClient', () => {
       {
         network: 'monad-testnet',
         priceWei: 1000n,
+        priceVersion: 0,
+        minPriceWei: 1000n,
         hostOrigin: client.relayUrl,
-        payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+        payee: '0x000000000000000000000000000000000000dEaD',
       },
       created.identity.groupIdHex,
       sealed,

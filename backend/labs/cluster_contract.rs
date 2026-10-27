@@ -225,6 +225,23 @@ impl Group {
         self.epochs.last().unwrap()
     }
 
+    /// The creator's write price record `version` at `price_wei`, signed with the root key.
+    fn price(&self, version: u64, price_wei: u128) -> serde_json::Value {
+        let digest = cashweb_registry::group_write_payment::group_write_price_digest(
+            solonet_payer::SOLONET_NETWORK,
+            &derive_group_id(&self.root_pub),
+            version,
+            price_wei,
+        );
+        serde_json::json!({
+            "group_id": self.id,
+            "network": solonet_payer::SOLONET_NETWORK,
+            "version": version,
+            "price_wei": price_wei.to_string(),
+            "admin_sig": sign(&self.root, &digest),
+        })
+    }
+
     /// A fresh signed envelope for `epoch`.
     fn envelope(&self, epoch: &Epoch, body: &str) -> GroupMessageEnvelope {
         let mut envelope = GroupMessageEnvelope {
@@ -291,13 +308,42 @@ impl Payments {
 
     /// `envelope`, paid as the policy asks by `payer` at its nonce 0.
     fn pay_by(&self, payer: &Payer, envelope: GroupMessageEnvelope) -> Write {
-        let (payment, tx_hash) = self.solonet().payment(payer, &self.policy, &envelope);
+        self.pay_under(&self.policy, payer, envelope)
+    }
+
+    /// `envelope`, paid as `policy` (a group's own) asks by `payer` at its nonce 0.
+    fn pay_under(
+        &self,
+        policy: &WritePolicy,
+        payer: &Payer,
+        envelope: GroupMessageEnvelope,
+    ) -> Write {
+        let (payment, tx_hash) = self.solonet().payment(payer, policy, &envelope);
         Write {
             envelope,
             payment,
             tx_hash,
         }
     }
+}
+
+/// Send a creator's write price record to `origin`: the status and the JSON body.
+async fn put_price(
+    client: &reqwest::Client,
+    origin: &str,
+    group: &Group,
+    record: &serde_json::Value,
+) -> (u16, serde_json::Value) {
+    let response = client
+        .put(format!("{origin}/groups/{}/write-price", group.id))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(record).unwrap())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap_or_default();
+    (status, body)
 }
 
 async fn put_epoch(client: &reqwest::Client, origin: &str, frame: &GroupEpochFrame) -> u16 {
@@ -852,13 +898,36 @@ async fn one_signed_message_sent_to_a_and_b_gives_one_receipt() {
 async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     let [a, b, c]: [String; 3] = relays().try_into().unwrap();
     let client = http();
-    let payments = Payments::fund(3).await;
-    let policy = payments.policy.clone();
+    let payments = Payments::fund(4).await;
     let group = Group::new();
     create(&client, &a, &group).await;
 
-    // A paid append on B is accepted, and B hands the payment to solonet after the commit.
-    let first = payments.pay(group.envelope(group.current(), "paid"));
+    // The creator prices the group at three times the relays' minimum, on B; C reports it.
+    let minimum = payments.policy.min_price_wei;
+    assert_eq!(payments.policy.price_version, 0);
+    let (status, body) = put_price(&client, &b, &group, &group.price(1, minimum * 3)).await;
+    assert_eq!(status, 200, "{body}");
+    let policy = write_policy(&client, &c, &group.id).await;
+    assert_eq!((policy.price_wei, policy.price_version), (minimum * 3, 1));
+    // Below the minimum, or signed by another key: refused at change time, on any replica.
+    let (status, body) = put_price(&client, &c, &group, &group.price(2, minimum - 1)).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"], "write_price_below_minimum");
+    let mut forged = group.price(2, minimum);
+    forged["admin_sig"] = serde_json::Value::String(sign(&key().0, &[7; 32]));
+    assert_eq!(put_price(&client, &a, &group, &forged).await.0, 403);
+    assert_eq!(
+        write_policy(&client, &a, &group.id).await.price_wei,
+        minimum * 3
+    );
+
+    // A paid append on B at the group's price is accepted, and B hands the payment to solonet
+    // after the commit.
+    let first = payments.pay_under(
+        &policy,
+        payments.payer(),
+        group.envelope(group.current(), "paid"),
+    );
     let accepted = append(&client, &b, &first).await.unwrap();
     assert_eq!(accepted.status, 200, "{:?}", accepted.error);
     assert_eq!(accepted.disposition.as_deref(), Some("appended"));
@@ -876,7 +945,8 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     );
 
     // One payer's wrong payments, each refused by the replica that takes it. Refusals consume
-    // nothing: the same payer's correct payment is accepted afterwards.
+    // nothing: the same payer's correct payment is accepted afterwards. Underpaid is below the
+    // group's price, though above the relays' minimum.
     let payer = payments.payer();
     let envelope = group.envelope(group.current(), "checked");
     let calldata = commitment_calldata(&policy.network, &policy.host_origin, &envelope);
@@ -945,7 +1015,8 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
         assert_eq!(error["error"], "group_payment_invalid", "{error}");
         assert_eq!(error["reason"], reason, "{error}");
     }
-    let checked = payments.pay_by(payer, envelope);
+    assert!(price - 1 > minimum);
+    let checked = payments.pay_under(&policy, payer, envelope);
     let accepted = append(&client, &a, &checked).await.unwrap();
     assert_eq!(accepted.status, 200, "{:?}", accepted.error);
     assert_eq!(
@@ -957,8 +1028,16 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
     // Two payments at one payer nonce for two writes, sent to A and C at once: one funds a
     // write, the other is refused, whichever replica each reaches.
     let payer = payments.payer();
-    let one = payments.pay_by(payer, group.envelope(group.current(), "nonce 0, one"));
-    let two = payments.pay_by(payer, group.envelope(group.current(), "nonce 0, two"));
+    let one = payments.pay_under(
+        &policy,
+        payer,
+        group.envelope(group.current(), "nonce 0, one"),
+    );
+    let two = payments.pay_under(
+        &policy,
+        payer,
+        group.envelope(group.current(), "nonce 0, two"),
+    );
     let (to_a, to_c) = tokio::join!(append(&client, &a, &one), append(&client, &c, &two));
     let mut statuses = [to_a.unwrap(), to_c.unwrap()];
     statuses.sort_by_key(|answer| answer.status);
@@ -983,13 +1062,34 @@ async fn every_replica_checks_the_payment_and_a_refusal_consumes_nothing() {
         "{refusal}"
     );
 
+    // The creator raises the price on C. A write signed and paid at the old price, sent
+    // after the change, is refused on A before anything is stored or broadcast; the same payer
+    // pays the new price at the same nonce and is accepted at the next sequence.
+    let (status, body) = put_price(&client, &c, &group, &group.price(2, minimum * 5)).await;
+    assert_eq!(status, 200, "{body}");
+    let raised = write_policy(&client, &b, &group.id).await;
+    assert_eq!((raised.price_wei, raised.price_version), (minimum * 5, 2));
+    let payer = payments.payer();
+    let envelope = group.envelope(group.current(), "signed before the raise");
+    let stale = payments.pay_under(&policy, payer, envelope.clone());
+    let refused = append(&client, &a, &stale).await.unwrap();
+    assert_eq!(refused.status, 402, "{:?}", refused.error);
+    assert_eq!(refused.error.as_ref().unwrap()["reason"], "underpaid");
+    let repaid = payments.pay_under(&raised, payer, envelope);
+    let accepted = append(&client, &a, &repaid).await.unwrap();
+    assert_eq!(accepted.status, 200, "{:?}", accepted.error);
+    assert_eq!(accepted.message.unwrap().server_seq, 4);
+    payments.solonet().wait_landed(&repaid.tx_hash).await;
+
     let messages = read_from(&client, &b, &group.id, &group.current().token, 0).await;
     assert_gap_free(&messages, &b);
-    assert_eq!(messages.len(), 3);
+    assert_eq!(messages.len(), 4);
     println!(
-        "PASS a paid append landed on solonet; replayed, wrong-payee, wrong-chain, \
-         wrong-network, underpaid and other-relay payments were refused on every replica \
-         without consuming a sequence; two payments at one nonce gave one append"
+        "PASS a write paid at the creator's price landed on solonet; replayed, wrong-payee, \
+         wrong-chain, wrong-network, underpaid (below the group's price) and other-relay \
+         payments were refused on every replica without consuming a sequence; two payments at \
+         one nonce gave one append; a price below the minimum or by another key was refused; \
+         after a raise, a write paid at the old price was refused and repaid at the new one"
     );
 }
 

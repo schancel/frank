@@ -58,12 +58,13 @@ binding_expiry_ns = "1830297600000000000"
 # quota is still counted by each replica (HA step 10).
 enrollments_per_source_per_hour = 100000
 
-# Every new group write carries one signed transaction on solonet paying the burn address at least
-# price_wei and committing to the proxy origin above, which all three replicas share. Whichever
-# replica takes the write checks the payment against solonet before accepting it.
+# Every new group write carries one signed transaction on solonet paying the payee at least the
+# group's price (its creator's, never below min_price_wei) and committing to the proxy origin
+# above, which all three replicas share. Whichever replica takes the write checks the payment
+# against solonet before accepting it. The lab's payee is the burn address.
 [registry.group_writes]
-price_wei = "1000000000000"
-payee = "burn"
+min_price_wei = "1000000000000"
+payee = "0x000000000000000000000000000000000000dEaD"
 
 # solonet's upstream. compose passes FRANK_LAB_SOLONET_RPC_URL to the relays as
 # MONAD_REGTEST_HTTP_RPC_URL (default http://host.docker.internal:48080). The mailbox and the

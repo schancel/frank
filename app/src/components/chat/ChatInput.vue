@@ -1,5 +1,13 @@
 <template>
   <div class="row full-width items-center">
+    <!-- What one message to this group pays its host, shown before the member writes. -->
+    <div
+      v-if="groupMode && groupWritePrice"
+      class="col-12 text-caption text-grey-7 q-px-md q-pt-xs"
+      data-testid="group-write-price"
+    >
+      {{ $t('chatInput.groupWritePrice', { price: groupWritePrice }) }}
+    </div>
     <!-- Pictures held for the next message. Each is referenced in the text where it shows. -->
     <div
       v-if="attachments.length > 0 || attachError || overBudget"
@@ -608,6 +616,8 @@ export const STAMP_MULTIPLIER_TENTHS = [
 export default defineComponent({
   props: {
     groupMode: { type: Boolean, default: false },
+    /** The group's price of one write, with its unit; empty until the host has said. */
+    groupWritePrice: { type: String, default: '' },
     message: {
       type: String,
       default: () => '',

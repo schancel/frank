@@ -8,6 +8,9 @@
 //!   with the payment for the write ([`GroupWriteRequest`]). Only the hosting relay verifies it.
 //! - `GET /groups/:group_id/write-policy` — What a write to a group hosted here must pay
 //!   ([`GroupWritePolicyBody`]); proxied to the host with `X-Group-Upstream-Relay`.
+//! - `PUT /groups/:group_id/write-price` — The group's creator sets or changes its write price
+//!   ([`GroupWritePrice`], signed with the group's root key); proxied to the host with
+//!   `X-Group-Upstream-Relay`.
 //! - `GET /groups/:group_id/messages?after_seq=<u64>&limit=<u16>` — Sync ordered group messages
 //!   authenticated via `X-Group-Read-Token`, with automatic Home-Relay proxying (`< n` local
 //!   subscribers) and local mirror promotion (`>= n` local subscribers) when
@@ -19,9 +22,11 @@ mod nats_tests;
 mod payment;
 
 pub use payment::{
-    GroupWritePayeeBody, GroupWritePaymentWire, GroupWritePolicyBody, GroupWriteRefusal,
-    GroupWriteRequest, GroupWriteRuntime,
+    GroupWritePaymentWire, GroupWritePolicyBody, GroupWriteRefusal, GroupWriteRequest,
+    GroupWriteRuntime,
 };
+
+use crate::group_write_payment::GroupWritePrice;
 
 use crate::store::large_values::LargeValueError;
 use axum::{
@@ -134,6 +139,31 @@ fn group_error_response(err: GroupError) -> Response {
             }),
         )
             .into_response(),
+        GroupError::Underpaid { .. } => (
+            StatusCode::PAYMENT_REQUIRED,
+            Json(PaymentErrorBody {
+                error: "group_payment_invalid",
+                reason: "underpaid",
+                detail: err.to_string(),
+            }),
+        )
+            .into_response(),
+        GroupError::WritePriceConflict { current } => (
+            StatusCode::CONFLICT,
+            Json(WritePriceConflictBody {
+                error: "write_price_conflict",
+                current: *current,
+            }),
+        )
+            .into_response(),
+        GroupError::WritePriceBelowMinimum { minimum } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(WritePriceBelowMinimumBody {
+                error: "write_price_below_minimum",
+                min_price_wei: minimum.to_string(),
+            }),
+        )
+            .into_response(),
         GroupError::PaymentAlreadyUsed => (
             StatusCode::PAYMENT_REQUIRED,
             Json(PaymentErrorBody {
@@ -211,6 +241,18 @@ fn decode_write_request(headers: &HeaderMap, body: &[u8]) -> Result<GroupWriteRe
             GroupError::InvalidInput(format!("invalid GroupMessageEnvelope JSON: {e}"))
         })
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WritePriceConflictBody {
+    error: &'static str,
+    current: GroupWritePrice,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WritePriceBelowMinimumBody {
+    error: &'static str,
+    min_price_wei: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -530,6 +572,10 @@ pub fn router() -> Router {
             "/groups/:group_id/write-policy",
             routing::get(handle_get_write_policy),
         )
+        .route(
+            "/groups/:group_id/write-price",
+            routing::put(handle_put_write_price),
+        )
 }
 
 /// Standalone router backed directly by a [`GroupStore`] (convenient for isolated unit/integration
@@ -551,6 +597,10 @@ pub fn router_with_store(store: GroupStore, writes: std::sync::Arc<GroupWriteRun
         .route(
             "/groups/:group_id/write-policy",
             routing::get(handle_get_write_policy_store),
+        )
+        .route(
+            "/groups/:group_id/write-price",
+            routing::put(handle_put_write_price_store),
         )
         .layer(Extension(store))
         .layer(Extension(Some(writes)))
@@ -999,7 +1049,17 @@ async fn put_group_message_impl(
     let Some(payment) = payment else {
         return payment_required_response();
     };
-    let verified = match writes.verify(&group_id, &envelope, &payment) {
+    // The group's price as it stands now. The accept transaction checks it again, so a price
+    // change that commits first refuses this write before its payment is handed to anyone.
+    let creator_price = {
+        let group_id = group_id.clone();
+        on_store(&store, move |store| store.get_write_price(&group_id)).await
+    };
+    let creator_price = match creator_price {
+        Ok(price) => price,
+        Err(e) => return group_error_response(e),
+    };
+    let verified = match writes.verify(&group_id, &envelope, &payment, creator_price.as_ref()) {
         Ok(verified) => verified,
         Err(refusal) => return payment_refusal_response(refusal),
     };
@@ -1010,10 +1070,11 @@ async fn put_group_message_impl(
     // The payment's record is written in the write's acceptance transaction, so one payment
     // funds one write even when replicas race.
     let fact = writes.fact(&verified);
+    let min_price_wei = writes.policy().min_price_wei;
     let accepted = {
         let group_id = group_id.clone();
         on_store(&store, move |store| {
-            store.put_paid_message(&group_id, envelope, &fact)
+            store.put_paid_message(&group_id, envelope, &fact, min_price_wei)
         })
         .await
     };
@@ -1425,9 +1486,108 @@ async fn get_write_policy_impl(
             ))),
         };
     }
-    match writes {
-        Some(writes) => (StatusCode::OK, Json(writes.body().clone())).into_response(),
-        None => group_writes_unavailable_response(),
+    let Some(writes) = writes else {
+        return group_writes_unavailable_response();
+    };
+    let creator_price = {
+        let group_id = group_id.clone();
+        on_store(&store, move |store| store.get_write_price(&group_id)).await
+    };
+    match creator_price {
+        Ok(creator) => (StatusCode::OK, Json(writes.body(creator.as_ref()))).into_response(),
+        Err(error) => group_error_response(error),
+    }
+}
+
+async fn handle_put_write_price(
+    Path(group_id): Path<String>,
+    headers: HeaderMap,
+    Extension(server): Extension<RegistryServer>,
+    body: Bytes,
+) -> Response {
+    let store = match registry_group_store(&server).await {
+        Ok(s) => s,
+        Err(e) => return group_error_response(e),
+    };
+    put_write_price_impl(store, server.group_writes.clone(), group_id, headers, body).await
+}
+
+async fn handle_put_write_price_store(
+    Path(group_id): Path<String>,
+    headers: HeaderMap,
+    Extension(store): Extension<GroupStore>,
+    Extension(writes): Extension<Option<std::sync::Arc<GroupWriteRuntime>>>,
+    body: Bytes,
+) -> Response {
+    put_write_price_impl(store, writes, group_id, headers, body).await
+}
+
+/// Set or change a group's write price: on this relay when it hosts the group, or on the
+/// upstream the caller names.
+async fn put_write_price_impl(
+    store: GroupStore,
+    writes: Option<std::sync::Arc<GroupWriteRuntime>>,
+    group_id: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let group_id = group_id.to_lowercase();
+    if let Err(e) = parse_group_id_hex(&group_id) {
+        return group_error_response(e);
+    }
+    let record = match serde_json::from_slice::<GroupWritePrice>(&body) {
+        Ok(record) => record,
+        Err(error) => {
+            return group_error_response(GroupError::InvalidInput(format!(
+                "invalid write price JSON: {error}"
+            )))
+        }
+    };
+    if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
+        };
+        let response = match client
+            .put(format!("{upstream}/groups/{group_id}/write-price"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(&record).unwrap_or_default())
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => return group_error_response(upstream_send_error(error)),
+        };
+        let status =
+            StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let bytes = match read_upstream_body(response, UPSTREAM_EPOCH_BUDGET).await {
+            Ok(bytes) => bytes,
+            Err(error) => return group_error_response(error),
+        };
+        return (
+            status,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )],
+            bytes,
+        )
+            .into_response();
+    }
+    let Some(writes) = writes else {
+        return group_writes_unavailable_response();
+    };
+    let (network, min_price_wei) = (
+        writes.policy().network.clone(),
+        writes.policy().min_price_wei,
+    );
+    match on_store(&store, move |store| {
+        store.put_write_price(&group_id, record, &network, min_price_wei)
+    })
+    .await
+    {
+        Ok(stored) => (StatusCode::OK, Json(stored)).into_response(),
+        Err(error) => group_error_response(error),
     }
 }
 
@@ -1466,18 +1626,27 @@ mod tests {
 
     /// Host origin of the oneshot routers, which have no address of their own.
     pub(super) const TEST_HOST: &str = "http://group-host.test";
-    /// Price of a test group write, in wei.
+    /// The test relays' minimum price, and the price of a group whose creator set none, in wei.
     pub(super) const TEST_PRICE: u128 = 1_000;
+    /// The test relays' payee: the burn address, as the labs use.
+    pub(super) const TEST_PAYEE: [u8; 20] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xde, 0xad,
+    ];
 
-    /// Burn-paid group writes on monad-testnet hosted at `host_origin`, with no node.
+    /// The operator section with minimum `min_price_wei` paying `payee`.
+    pub(super) fn writes_conf(min_price_wei: u128, payee: &str) -> cashweb_config::GroupWritesConf {
+        cashweb_config::GroupWritesConf {
+            min_price_wei: min_price_wei.to_string(),
+            payee: payee.into(),
+        }
+    }
+
+    /// Group writes on monad-testnet paid to [`TEST_PAYEE`], hosted at `host_origin`, no node.
     pub(super) fn test_writes(host_origin: &str) -> Arc<GroupWriteRuntime> {
         Arc::new(
             GroupWriteRuntime::loopback_fixture(
                 "monad-testnet",
-                &cashweb_config::GroupWritesConf {
-                    price_wei: TEST_PRICE.to_string(),
-                    payee: cashweb_config::GroupWritePayeeConf::Burn,
-                },
+                &writes_conf(TEST_PRICE, cashweb_config::BURN_ADDRESS_HEX),
                 &host_origin.parse().unwrap(),
             )
             .unwrap(),
@@ -1537,7 +1706,7 @@ mod tests {
             envelope: envelope.clone(),
             payment: Some(payment_tx(
                 10143,
-                crate::group_write_payment::BURN_ADDRESS,
+                TEST_PAYEE,
                 TEST_PRICE,
                 "monad-testnet",
                 &canonical(host_origin),
@@ -2252,7 +2421,7 @@ mod tests {
         let message = sealed(&id, &write_sk, 1);
         let (host, task) = spawn_group_router(store.clone()).await;
         let url = format!("{host}/groups/{id}/messages");
-        let burn = crate::group_write_payment::BURN_ADDRESS;
+        let burn = TEST_PAYEE;
         let host_origin = canonical(&host);
         let other = |payment: GroupWritePaymentWire| GroupWriteRequest {
             envelope: message.clone(),
@@ -2430,13 +2599,11 @@ mod tests {
         .unwrap();
         assert_eq!(policy.host_origin, canonical(&host));
         assert_eq!(policy.network, "monad-testnet");
+        // No creator price yet: the host's minimum.
         assert_eq!(policy.price_wei, TEST_PRICE.to_string());
-        assert_eq!(
-            policy.payee,
-            GroupWritePayeeBody::Burn {
-                address: "0x000000000000000000000000000000000000dead".into()
-            }
-        );
+        assert_eq!(policy.price_version, 0);
+        assert_eq!(policy.min_price_wei, TEST_PRICE.to_string());
+        assert_eq!(policy.payee, "0x000000000000000000000000000000000000dead");
 
         // The same group and write hosted by another relay: the host's payment is refused there.
         let replica_of_group = GroupStore::new_temporary();
@@ -2512,7 +2679,7 @@ mod tests {
         assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![a.clone()]);
         // The payment's record was written with the write it funded.
         let verified = test_writes(TEST_HOST)
-            .verify(&id, &message, request.payment.as_ref().unwrap())
+            .verify(&id, &message, request.payment.as_ref().unwrap(), None)
             .unwrap();
         let record = store.payment_record(&verified.tx_hash.0).unwrap().unwrap();
         assert_eq!(
@@ -2599,6 +2766,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_creator_prices_a_group_through_its_home_relay_and_new_writes_pay_that_price() {
+        let host_store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&host_store, 7);
+        let (host, host_task) = spawn_group_router(host_store.clone()).await;
+        let home_store = GroupStore::new_temporary();
+        let (home, home_task) = spawn_group_router(home_store.clone()).await;
+        let (root_sk, _) = keypair(7);
+        let record = |version: u64, price: u128, network: &str| {
+            let digest = crate::group_write_payment::group_write_price_digest(
+                network,
+                &parse_group_id_hex(&id).unwrap(),
+                version,
+                price,
+            );
+            serde_json::json!({
+                "group_id": id,
+                "network": network,
+                "version": version,
+                "price_wei": price.to_string(),
+                "admin_sig": sign_digest(&root_sk, &digest),
+            })
+        };
+        let policy = || async {
+            let body: GroupWritePolicyBody = reqwest::Client::new()
+                .get(format!("{home}/groups/{id}/write-policy"))
+                .header(HEADER_GROUP_UPSTREAM_RELAY, &host)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+                .unwrap();
+            (body.price_wei, body.price_version)
+        };
+        let set = |body: serde_json::Value| {
+            let (url, host) = (format!("{home}/groups/{id}/write-price"), host.clone());
+            async move { put_json(url, Some(&host), &body).await }
+        };
+        assert_eq!(policy().await, (TEST_PRICE.to_string(), 0));
+
+        // The creator sets five times the minimum, through its home relay.
+        let response = set(record(1, TEST_PRICE * 5, "monad-testnet")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(policy().await, ((TEST_PRICE * 5).to_string(), 1));
+        assert!(home_store.get_write_price(&id).unwrap().is_none());
+
+        // Refused at create/change time: below the host's minimum, another network, version 0,
+        // a stale version, another key's signature.
+        let response = set(record(2, TEST_PRICE - 1, "monad-testnet")).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"], "write_price_below_minimum");
+        assert_eq!(body["min_price_wei"], TEST_PRICE.to_string());
+        for (body, status) in [
+            (
+                record(2, TEST_PRICE, "monad-mainnet"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                record(0, TEST_PRICE, "monad-testnet"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                record(1, TEST_PRICE * 2, "monad-testnet"),
+                StatusCode::CONFLICT,
+            ),
+        ] {
+            assert_eq!(set(body).await.status(), status);
+        }
+        let mut forged = record(2, TEST_PRICE, "monad-testnet");
+        forged["admin_sig"] = serde_json::Value::String(sign_digest(
+            &keypair(8).0,
+            &crate::group_write_payment::group_write_price_digest(
+                "monad-testnet",
+                &parse_group_id_hex(&id).unwrap(),
+                2,
+                TEST_PRICE,
+            ),
+        ));
+        assert_eq!(set(forged).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(policy().await, ((TEST_PRICE * 5).to_string(), 1));
+
+        // A write paying the minimum is now underpaid, and nothing is stored.
+        let message = sealed(&id, &write_sk, 1);
+        let refused = put_json(
+            format!("{home}/groups/{id}/messages"),
+            Some(&host),
+            &paid_for(&host, &message),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::PAYMENT_REQUIRED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&refused.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["reason"], "underpaid");
+        assert!(host_store.list_messages(&id, 0, 10).unwrap().is_empty());
+        let paid_at_price = GroupWriteRequest {
+            envelope: message.clone(),
+            payment: Some(payment_tx(
+                10143,
+                TEST_PAYEE,
+                TEST_PRICE * 5,
+                "monad-testnet",
+                &canonical(&host),
+                &message,
+            )),
+        };
+        let accepted = put_json(
+            format!("{home}/groups/{id}/messages"),
+            Some(&host),
+            &paid_at_price,
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert_eq!(host_store.list_messages(&id, 0, 10).unwrap().len(), 1);
+
+        // Lowered again at version 2: the next write pays the lower price.
+        assert_eq!(
+            set(record(2, TEST_PRICE * 2, "monad-testnet"))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(policy().await, ((TEST_PRICE * 2).to_string(), 2));
+        let next = sealed(&id, &write_sk, 2);
+        let response = put_json(
+            format!("{host}/groups/{id}/messages"),
+            None,
+            &GroupWriteRequest {
+                envelope: next.clone(),
+                payment: Some(payment_tx(
+                    10143,
+                    TEST_PAYEE,
+                    TEST_PRICE * 2,
+                    "monad-testnet",
+                    &canonical(&host),
+                    &next,
+                )),
+            },
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(host_store.list_messages(&id, 0, 10).unwrap().len(), 2);
+        host_task.abort();
+        home_task.abort();
+    }
+
+    #[tokio::test]
     async fn a_relay_without_an_upstream_refuses_new_writes_retryably() {
         let store = GroupStore::new_temporary();
         let (id, write_sk) = hosted_group(&store, 11);
@@ -2606,10 +2922,7 @@ mod tests {
         let writes = Arc::new(
             GroupWriteRuntime::without_upstream(
                 "monad-testnet",
-                &cashweb_config::GroupWritesConf {
-                    price_wei: TEST_PRICE.to_string(),
-                    payee: cashweb_config::GroupWritePayeeConf::Burn,
-                },
+                &writes_conf(TEST_PRICE, cashweb_config::BURN_ADDRESS_HEX),
                 &TEST_HOST.parse().unwrap(),
             )
             .unwrap(),
@@ -2667,19 +2980,17 @@ mod tests {
         let (status, disposition, receipt) = put(test_router(store.clone()), &id, &request).await;
         assert_eq!((status, disposition.as_str()), (StatusCode::OK, "appended"));
 
-        // The operator raises the price and moves the payee; the same relay, the same store.
+        // The operator raises its minimum and moves its address; the same relay, the same store.
         let changed = || {
             router_with_store(
                 store.clone(),
                 Arc::new(
                     GroupWriteRuntime::loopback_fixture(
                         "monad-testnet",
-                        &cashweb_config::GroupWritesConf {
-                            price_wei: (TEST_PRICE * 10).to_string(),
-                            payee: cashweb_config::GroupWritePayeeConf::Address(
-                                "0x00000000000000000000000000000000000000aa".into(),
-                            ),
-                        },
+                        &writes_conf(
+                            TEST_PRICE * 10,
+                            "0x00000000000000000000000000000000000000aa",
+                        ),
                         &TEST_HOST.parse().unwrap(),
                     )
                     .unwrap(),

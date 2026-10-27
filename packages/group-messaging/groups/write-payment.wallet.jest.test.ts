@@ -11,7 +11,6 @@ import {
   GroupWriteRefusedError,
 } from '@frank/cashweb/groups/group-relay-client'
 import {
-  GROUP_WRITE_BURN_ADDRESS,
   type GroupWritePaymentWire,
   type GroupWritePolicy,
   type StoredGroupWritePayment,
@@ -42,6 +41,8 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('@frank/wallet/chain/canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
+/** The labs' relay address: the burn address. */
+const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
 const policy: EvmTransactionSetPolicy = {
   sourceOrder: [
     'stealth',
@@ -64,8 +65,10 @@ const policy: EvmTransactionSetPolicy = {
 const HOST: GroupWritePolicy = {
   network: 'monad-testnet',
   priceWei: 1_000n,
+  priceVersion: 0,
+  minPriceWei: 1_000n,
   hostOrigin: 'https://relay.example',
-  payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+  payee: BURN_ADDRESS,
 }
 const GROUP = '11'.repeat(32)
 const envelope = (byte: string) => ({
@@ -134,12 +137,12 @@ function deliver(
 const walletPaymentBroadcasts = () =>
   offlineChain.walletBroadcasts
     .map(raw => hexlify(raw))
-    .filter(raw => Transaction.from(raw).to === GROUP_WRITE_BURN_ADDRESS)
+    .filter(raw => Transaction.from(raw).to === BURN_ADDRESS)
 
 /** Every payment to the burn address that is on the (stand-in) chain. */
 const minedPayments = () =>
   [...offlineChain.signedTransactions.values()].filter(
-    raw => Transaction.from(raw).to === GROUP_WRITE_BURN_ADDRESS,
+    raw => Transaction.from(raw).to === BURN_ADDRESS,
   )
 
 test('the wallet broadcasts only after the relay holds the write', async () => {

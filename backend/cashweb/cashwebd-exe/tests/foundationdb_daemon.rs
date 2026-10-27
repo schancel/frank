@@ -85,8 +85,8 @@ enabled = true
 url = "{nats}"
 
 [registry.group_writes]
-price_wei = "1000000000000"
-payee = "burn"
+min_price_wei = "1000000000000"
+payee = "0x000000000000000000000000000000000000dEaD"
 
 [registry.evm_rpc]
 enabled = true

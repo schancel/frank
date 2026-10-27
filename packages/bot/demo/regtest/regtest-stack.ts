@@ -94,8 +94,9 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     `url = "http://127.0.0.1:${port}"`,
     '',
     '[registry]',
-    // Group writes are always paid. The stack burns by default; a test names its own payee.
-    `group_writes = { price_wei = "1000000000000", payee = "burn" }`,
+    // Group writes are always paid. The stack pays 0xdead (nobody holds its key) at the least
+    // price; a group creator may set a higher one.
+    `group_writes = { min_price_wei = "1000000000000", payee = "0x000000000000000000000000000000000000dEaD" }`,
     `db_path = ${JSON.stringify(dbPath)}`,
     `network = "${mailbox?.chain.chainIdentifier ?? 'monad-regtest'}"`,
     'net = "regtest"',

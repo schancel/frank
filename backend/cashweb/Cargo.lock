@@ -542,7 +542,6 @@ dependencies = [
  "bitcoinsuite-test-utils",
  "bitcoinsuite-test-utils-blockchain",
  "bloom",
- "bs58",
  "cashweb-config",
  "cashweb-http-utils",
  "cashweb-payload",

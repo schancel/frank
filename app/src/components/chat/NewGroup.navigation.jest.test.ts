@@ -28,7 +28,14 @@ jest.mock('@frank/cashweb/relay/relay-discovery', () => ({
 const mockCreate = jest.fn()
 const mockSelect = jest.fn()
 const mockRelay = jest.fn(() => 'https://relay.example')
+// The hosting relay's least price per write (`GET /groups/:id/write-policy`).
+const MIN_PRICE = 1_000_000_000_000n
+const mockTerms = jest.fn(async (_relay: string) => ({
+  network: 'monad-testnet',
+  minPriceWei: MIN_PRICE,
+}))
 const mockStore = reactive({
+  groupRelayWriteTerms: mockTerms,
   getSortedChatOrder: [],
   getGroupHomeRelay: mockRelay,
   createGroupConversation: mockCreate,
@@ -136,6 +143,10 @@ beforeEach(() => {
   jest.clearAllMocks()
   mockCreate.mockReset()
   mockDiscover.mockReset().mockResolvedValue(['https://foreign.example'])
+  mockTerms.mockReset().mockResolvedValue({
+    network: 'monad-testnet',
+    minPriceWei: MIN_PRICE,
+  })
   mockSession.revision = 1
   mockRelay.mockReturnValue('https://relay.example')
   mockCapabilities.directMessages = true
@@ -173,6 +184,8 @@ it('opens the real group form from the toolbar, validates, selects a member, and
       groupName: 'Team',
       memberAddresses: ['0x1111111111111111111111111111111111111111'],
       relayUrl: 'https://relay.example',
+      // The relay's minimum, which the form starts from.
+      writePriceWei: MIN_PRICE,
     })
     expect(mockSelect).toHaveBeenCalledWith('returned-group')
     expect(router.currentRoute.value.path).toBe('/chat/returned-group')
@@ -440,6 +453,47 @@ it('uses a manually typed relay origin even when Create is clicked without press
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({ relayUrl: 'https://manual.example' }),
     )
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it("starts the price at the relay's minimum, refuses a lower one, and creates the group at the creator's price", async () => {
+  mockCreate.mockResolvedValueOnce({ id: 'priced-group' })
+  const { wrapper } = await start('/new-group')
+  try {
+    expect(mockTerms).toHaveBeenCalledWith('https://relay.example')
+    const price = wrapper.get('[data-testid="group-write-price-input"]')
+    expect((price.element as HTMLInputElement).value).toBe('0.000001')
+    await wrapper.get('[data-test="group-name-input"]').setValue('Priced')
+    await price.setValue('0.0000005')
+    await flushPromises()
+    expect(
+      wrapper.get('[data-test="create-group-submit"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(wrapper.text()).toContain('groupChat.writePriceInvalid')
+    await price.setValue('0.003')
+    await flushPromises()
+    await wrapper.get('[data-test="create-group-submit"]').trigger('click')
+    await flushPromises()
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ writePriceWei: 3_000_000_000_000_000n }),
+    )
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it("does not create a group while the relay's price terms are unknown", async () => {
+  mockTerms.mockRejectedValue(new Error('offline'))
+  const { wrapper } = await start('/new-group')
+  try {
+    await wrapper.get('[data-test="group-name-input"]').setValue('No terms')
+    await flushPromises()
+    expect(
+      wrapper.get('[data-test="create-group-submit"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(wrapper.text()).toContain('groupChat.writePriceTermsFailed')
   } finally {
     wrapper.unmount()
   }

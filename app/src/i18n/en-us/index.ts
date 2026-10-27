@@ -187,6 +187,8 @@ export const rawEnUS = {
     selectMessagesTitle: 'Delete messages',
   },
   chatInput: {
+    groupWritePrice:
+      'Each message to this group costs {price}, paid to its relay.',
     giveLotusSecretly: 'Give Lotus Secretly',
     sendStealth: 'Send Stealth',
     offerSwap: 'Offer Atomic Swap',
@@ -2589,6 +2591,20 @@ export const rawEnUS = {
     systemMembershipUpdate: 'Group "{group}": members changed',
     systemRemovalSent: 'Told them they were removed from the group "{group}"',
     systemRemovalReceived: 'You were removed from the group "{group}"',
+    writePriceLabel: 'Price per message',
+    writePriceUnknown: 'Not known yet',
+    changeWritePriceLabel: 'New price per message ({unit})',
+    changeWritePriceBtn: 'Change price',
+    writePriceInputLabel: 'Price per message ({unit})',
+    writePriceHint:
+      "Members pay this to the group's relay for each message. The relay's minimum is {minimum}.",
+    writePriceTermsFailed: "Could not read this relay's price terms.",
+    writePriceInvalid: 'Enter a price of at least {minimum}.',
+    writePriceBelowMinimum:
+      "The relay's minimum price per message is {minimum}.",
+    writePriceConflict:
+      'The price was changed on another device. Check it and try again.',
+    writePriceRefused: 'The relay refused the price.',
   },
   close: 'Close',
 }

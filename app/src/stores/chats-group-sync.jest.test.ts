@@ -26,7 +26,6 @@ import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
 import {
-  GROUP_WRITE_BURN_ADDRESS,
   GroupRelayClient,
   GroupWriteDeferredError,
   GroupWriteRefusedError,
@@ -51,6 +50,11 @@ jest.mock('../utils/notifications', () => ({
   insufficientStampNotify: jest.fn(),
   desktopNotify: jest.fn(),
 }))
+
+/** The lab relays' payee: an ordinary address nobody holds the key to. */
+const GROUP_WRITE_BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
+/** The relay's least price per write; a group with no creator price costs this. */
+const RELAY_MIN_PRICE = 1000n
 
 const [ALICE, BOB, CHARLIE, DAVE] = GROUP_TEST_ACCOUNTS.map(
   account => account.address,
@@ -80,6 +84,9 @@ function createSharedMockGroupRelay() {
   const epochs = new Map<string, Record<string, unknown>>()
   const history = new Map<string, Record<string, unknown>>()
   const messages = new Map<string, StoredGroupMessageWire[]>()
+  // Creator price records as the relay stored them. The relay's own checks of a record
+  // (signature, version order, minimum) are tested against the real relay; here it is held.
+  const prices = new Map<string, Record<string, unknown>>()
 
   const axiosMock = {
     put: jest.fn(
@@ -111,6 +118,11 @@ function createSharedMockGroupRelay() {
               epoch_hash: String(body.epoch_hash ?? ''),
             },
           }
+        }
+        const priceMatch = url.match(/\/groups\/([0-9a-f]{64})\/write-price$/)
+        if (priceMatch) {
+          prices.set(priceMatch[1], body)
+          return { data: body }
         }
         const msgMatch = url.match(/\/groups\/([0-9a-f]{64})\/messages$/)
         if (msgMatch) {
@@ -162,15 +174,20 @@ function createSharedMockGroupRelay() {
           if (!stored) throw new Error('Group not found')
           return { data: stored }
         }
-        if (/\/groups\/[0-9a-f]{64}\/write-policy$/.test(url))
+        const policyMatch = url.match(/\/groups\/([0-9a-f]{64})\/write-policy$/)
+        if (policyMatch) {
+          const record = prices.get(policyMatch[1])
           return {
             data: {
               network: 'monad-testnet',
-              price_wei: '1000',
+              price_wei: record?.price_wei ?? RELAY_MIN_PRICE.toString(),
+              price_version: record?.version ?? 0,
+              min_price_wei: RELAY_MIN_PRICE.toString(),
               host_origin: 'https://relay.frank.test',
-              payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+              payee: GROUP_WRITE_BURN_ADDRESS.toLowerCase(),
             },
           }
+        }
         const msgMatch = url.match(/\/groups\/([0-9a-f]{64})\/messages$/)
         if (msgMatch) {
           const groupId = msgMatch[1]
@@ -1325,6 +1342,147 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(
       restored.conversations[group.id].groupState.epochHistory[0],
     ).toBeUndefined()
+  })
+
+  it("signs the creator's price at creation, puts it on the host once the group exists, shows it, and the next write pays it", async () => {
+    currentOwnAddress = ALICE
+    const client = createSharedMockGroupRelay()
+    const order: string[] = []
+    const publish = client.publishEpoch.bind(client)
+    jest.spyOn(client, 'publishEpoch').mockImplementation(async (...args) => {
+      order.push('epoch')
+      return publish(...args)
+    })
+    const setPrice = client.setWritePrice.bind(client)
+    jest.spyOn(client, 'setWritePrice').mockImplementation(async (...args) => {
+      order.push(`price:${args[1].version}:${args[1].price_wei}`)
+      return setPrice(...args)
+    })
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', client)
+    const group = await chats.createGroupConversation({
+      groupName: 'Priced',
+      memberAddresses: [BOB],
+      relayUrl: 'https://relay.frank.test',
+      relayClient: client,
+      creatorAddress: ALICE,
+      writePriceWei: 5000n,
+    })
+    expect(order).toEqual(['epoch', 'price:1:5000'])
+    expect(group.groupState.pendingWritePrice).toBeUndefined()
+    expect(group.groupState.writePrice).toMatchObject({
+      network: 'monad-testnet',
+      priceWei: '5000',
+      minPriceWei: '1000',
+      version: 1,
+    })
+    await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'At the group price' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    const sent = Object.values(chats.messages).find(
+      m => m.groupWritePayment?.amountWei,
+    )
+    expect(sent.groupWritePayment).toMatchObject({
+      amountWei: '5000',
+      destination: GROUP_WRITE_BURN_ADDRESS,
+    })
+  })
+
+  it("refuses a creator price below the relay's minimum before anything is created or signed", async () => {
+    currentOwnAddress = ALICE
+    const client = createSharedMockGroupRelay()
+    const publishing = jest.spyOn(client, 'publishEpoch')
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', client)
+    await expect(
+      chats.createGroupConversation({
+        groupName: 'Too cheap',
+        memberAddresses: [BOB],
+        relayUrl: 'https://relay.frank.test',
+        relayClient: client,
+        creatorAddress: ALICE,
+        writePriceWei: RELAY_MIN_PRICE - 1n,
+      }),
+    ).rejects.toMatchObject({
+      name: 'GroupWritePriceRefusedError',
+      reason: 'below_minimum',
+      minPriceWei: RELAY_MIN_PRICE,
+    })
+    expect(publishing).not.toHaveBeenCalled()
+    expect(Object.keys(chats.conversations)).toEqual([])
+  })
+
+  it('an administrator changes the price: the signed record is kept until the host holds it, and only an administrator can sign one', async () => {
+    const { chats, group, client } = await makeGroup()
+    expect(group.groupState.writePrice).toBeUndefined()
+    const setPrice = client.setWritePrice.bind(client)
+    const sending = jest
+      .spyOn(client, 'setWritePrice')
+      .mockRejectedValueOnce(new Error('Network Error'))
+    await expect(
+      chats.setGroupWritePrice(group.id, 7000n, client),
+    ).rejects.toThrow('Network Error')
+    // Signed and kept: a sync sends the same record, not a new one.
+    const pending = group.groupState.pendingWritePrice
+    expect(pending).toMatchObject({ version: 1, price_wei: '7000' })
+    sending.mockImplementation(setPrice)
+    await chats.syncGroupConversation(group.id, { relayClient: client })
+    expect(sending).toHaveBeenLastCalledWith(
+      group.groupState.groupIdHex,
+      pending,
+    )
+    expect(group.groupState.pendingWritePrice).toBeUndefined()
+    expect(group.groupState.writePrice).toMatchObject({
+      priceWei: '7000',
+      version: 1,
+    })
+    // The next change is the next version.
+    await chats.setGroupWritePrice(group.id, 9000n, client)
+    expect(sending).toHaveBeenLastCalledWith(
+      group.groupState.groupIdHex,
+      expect.objectContaining({ version: 2, price_wei: '9000' }),
+    )
+    expect(group.groupState.writePrice).toMatchObject({
+      priceWei: '9000',
+      version: 2,
+    })
+    // Below the relay's minimum: refused here, nothing signed or sent.
+    sending.mockClear()
+    await expect(
+      chats.setGroupWritePrice(group.id, RELAY_MIN_PRICE - 1n, client),
+    ).rejects.toMatchObject({ reason: 'below_minimum' })
+    expect(sending).not.toHaveBeenCalled()
+    expect(group.groupState.pendingWritePrice).toBeUndefined()
+
+    // A member who is not the administrator holds no root key and signs nothing.
+    const { chats: bobChats, group: bobGroup } = await inviteBob(group, client)
+    await expect(
+      bobChats.setGroupWritePrice(bobGroup.id, 9000n, client),
+    ).rejects.toThrow('Only the group administrator sets its write price')
+    // The member sees the price.
+    await bobChats.refreshGroupWritePrice(bobGroup.id, client)
+    expect(bobGroup.groupState.writePrice).toMatchObject({ priceWei: '9000' })
+  })
+
+  it('a write refused as underpaid after a price change shows the new price', async () => {
+    const { chats, group, client } = await makeGroup()
+    const refreshing = jest.spyOn(chats, 'refreshGroupWritePrice')
+    jest
+      .spyOn(client, 'sendGroupMessage')
+      .mockRejectedValueOnce(
+        new GroupWriteRefusedError(402, 'group_payment_invalid', 'underpaid'),
+      )
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'At the old price' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome).toEqual({ state: 'failed', reason: 'rejected' })
+    expect(refreshing).toHaveBeenCalledWith(group.id, client)
   })
 
   it('signs a group write payment before the relay sees it, and only on the host network', async () => {

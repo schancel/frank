@@ -2335,7 +2335,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { account: target.account.toLowerCase(), changeIndex: target.changeIndex };
             },
             submit: (prepared) => transactionSetSubmission.sendTransaction(prepared),
-            refreshPolicy: () => transactionSetRuntime.refresh(),
+            refresh: () => transactionSetRuntime.refresh(),
             // Once a move has reached it, the fresh account is recorded the way the seed walk
             // records a funded change account (it holds money, so it is in use), which makes it
             // a source the coin list reads. An index this cannot find among the recent

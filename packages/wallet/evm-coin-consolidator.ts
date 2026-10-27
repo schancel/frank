@@ -25,7 +25,6 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils'
 import { ZeroAddress } from 'ethers'
 import type { EvmCoinList, EvmListCoin } from './evm-coin-list'
 import { EVM_MAX_POOL_COINS, EVM_POOL_COIN_ORIGINS, planEvmCoinMerge } from './evm-coin-distribution'
-import { EvmTransactionSetPolicyUnavailableError } from './evm-transaction-set-policy'
 import type { EvmTransactionSetPreparer } from './evm-transaction-set'
 import {
   EvmTransactionSetInsufficientFundsError,
@@ -67,8 +66,8 @@ export interface EvmCoinConsolidatorDeps {
   /** A merge's fresh account that a move has reached: list it as the wallet's own and read it
    * into the coin list from the chain (nothing when the chain shows it unused yet). */
   readonly listTarget?: (account: string) => Promise<void>
-  /** Reads what the wallet's fee quote needs from the node (gas price, head). */
-  readonly refreshPolicy?: () => Promise<void>
+  /** Reads the wallet's coins and what its fee quote needs (gas price, head) from the node. */
+  readonly refresh?: () => Promise<void>
 }
 
 /** The merge's logical ID: from the chain, the fresh account and the coins it moves, so the same
@@ -138,14 +137,10 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
     // merge: an idle wallet's step ends here, with no node request.
     const pooled = deps.coins.liveUnspent().filter(coin => EVM_POOL_COIN_ORIGINS.has(coin.origin)).length
     if (pooled <= EVM_MAX_POOL_COINS) return { outcome: 'idle' }
-    let policy
-    try {
-      policy = deps.preparer.transactionSetPolicy()
-    } catch (error) {
-      if (!(error instanceof EvmTransactionSetPolicyUnavailableError) || !deps.refreshPolicy) throw error
-      await deps.refreshPolicy()
-      policy = deps.preparer.transactionSetPolicy()
-    }
+    // There may be: read the coins, the head and the gas price now (a merge planned on a stale
+    // head could take a coin listed fewer than the confirmation depth ago).
+    await deps.refresh?.()
+    const policy = deps.preparer.transactionSetPolicy()
     const distribution = policy.coinDistribution
     if (distribution === undefined) return { outcome: 'idle' }
     const plan = planEvmCoinMerge({

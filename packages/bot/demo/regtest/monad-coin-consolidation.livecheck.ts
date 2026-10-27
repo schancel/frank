@@ -88,8 +88,10 @@ async function main(): Promise<boolean> {
     const held = async (account: string) => monad.provider.getBalance(account)
 
     // 1. Idle: merge.
-    // The wallet lists a coin found by reading the chain at the head it read; it waits the
-    // confirmation depth from there, as the app's idle tick would on its next passes.
+    // The wallet reads its coins (here: walks its seed, as a restored device does on its first
+    // read) and, idle, takes a maintenance step. A coin found by a chain read is listed at the
+    // head it was read at and waits the confirmation depth from there.
+    await wallet.handle.refreshTransactionSetInventory!()
     let first = await wallet.handle.maintainCoins!()
     for (let pass = 0; pass < 10 && first.outcome === 'idle'; pass++) {
       await monad.mine(1)

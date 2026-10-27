@@ -279,16 +279,15 @@ Still replica-local; each relay's startup log names them:
 4. **Sealed sender timing.** The note to self is sent unsealed right after the sealed original, so
    the relay can link the two by timing. Resolved (2026-10-27): "People are expected to use
    trusted relays." The timing link is accepted; the note to self is neither delayed nor batched.
-5. **Group payment exposure.** The relay accepts at most one write per (payer, nonce). Each
-   unlanded write costs one landed transaction at that nonce, and at most 64 can be outstanding
-   (nonce window 63). Accept this, or ask for a tighter rule?
+5. **Group payment exposure.** Withdrawn (2026-10-27): not an owner decision. The relay keeps
+   its rule: at most one write per (payer, nonce), at most 64 outstanding (nonce window 63).
 6. **Deferred group writes.** Resolved (owner ruling 2026-10-27): a write the host defers (`503
    group_payment_*`: nonce gap, balance not seen, node unreadable) shows "Waiting for funds or the
    chain…", not "unreachable", and keeps retrying the same bytes. Discard gives the coin back only
    after the wallet reads the chain and finds the payment neither pending nor mined, and only if no
    attempt went unanswered; otherwise it keeps the write and its reservation and says why.
-7. **Relay-to-relay forwarding (#1348).** It needs the #89 decisions: how relays authenticate each
-   other, who may retry, and how fees are kept separate from the recipient's payment.
+7. **Relay-to-relay forwarding (#1348).** Withdrawn (2026-10-27): "this isn't a question". It is
+   listed under "Not working, and known bugs".
 8. **One-coin wallet and its stamp.** Resolved (2026-10-26): "For a UTXO based coin, there's no
    problem. For the account based coin we should be able to just use two different nonces, no?"
    On an EVM account with one coin, the stamp's funding goes out at the lower nonce, before the
@@ -318,12 +317,15 @@ Still replica-local; each relay's startup log names them:
     node still serves state for (at most 1,000,000 blocks back). Not found: value moved by a
     contract (internal transfers), and blocks the node pruned before the wallet reached them (the
     cursor records them). The `fund` script's deposit shows in History as "Received from 0x…".
-11. **Cross-device rebuild (#1907) gaps:**
-    - a nonce taken by a transaction with a different value;
-    - a partial collision;
-    - combined operations;
-    - a message the relay already stored.
-12. **Operator blackjack minimum on the wire.** Should the dealer advertise it?
+11. **Cross-device rebuild (#1907) gaps.** Withdrawn (2026-10-27): "Not specific enough to
+    answer." These are bugs, not decisions, and are worked on in
+    [A coin another device spends at the same moment no longer leaves a message stuck or money tied up (#1945)](https://github.com/schancel/frank/pull/1945):
+    a nonce taken by a transaction with a different value, a partial collision, combined
+    operations, and a message the relay already stored.
+12. **Operator blackjack minimum on the wire.** Resolved (2026-10-27): the dealer's offer
+    carries its minimum and maximum bet. "No point in betting when you won't be paid out."
+    Implemented in
+    [The blackjack dealer's offer names its smallest and largest bet; the app shows them and refuses a bet outside them before paying (#1947)](https://github.com/schancel/frank/pull/1947).
 13. **Background coin consolidation.** Resolved: approved 2026-10-26 (a 20 MONR Send max had
     been split into 56 transfers costing 0.12 in fees); 2026-10-27: "It needs to be such that it
     doesn't sweep shit we just created as change... Like that would be silly if it's not designed

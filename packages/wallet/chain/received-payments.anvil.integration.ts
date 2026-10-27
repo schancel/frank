@@ -411,6 +411,78 @@ describe('payments between two wallets on a real EVM node', () => {
     }
   })
 
+  it('a deposit from outside Frank is listed once, read from the chain; a contact payment and the wallet moving its own money are not; balance, coin list and deposits agree; a reload and another device list the same', async () => {
+    const aliceMain = await mainOf(alice)
+    const bobMain = await mainOf(bob)
+    // A payment to a contact: a Frank payment from alice's main account to bob's one-time account.
+    const sent = await alice.sendToContact!({ recipient: bob.identity.address, value: VALUE })
+    await until(
+      'the contact payment to be in a block',
+      () => node.getTransactionReceipt(sent.txHash),
+      receipt => receipt !== null,
+    )
+    await poll(bob)
+    await settled(bob)
+    // A plain transfer from outside Frank to bob's receive address.
+    const outside = await (await dev.sendTransaction({ to: bobMain, value: parseEther('0.3') })).wait()
+    await node.send('evm_mine', [])
+
+    await bob.refreshExternalDeposits!()
+    const [deposit, ...more] = bob.getExternalDeposits!()
+    expect(more).toEqual([])
+    expect(deposit).toMatchObject({
+      id: `${outside!.hash.toLowerCase()}:native`,
+      chainIdentifier: 'monad-testnet',
+      txHash: outside!.hash.toLowerCase(),
+      to: bobMain,
+      from: dev.address.toLowerCase(),
+      asset: { kind: 'native' },
+      amount: parseEther('0.3').toString(),
+      blockNumber: outside!.blockNumber,
+      blockHash: outside!.blockHash.toLowerCase(),
+    })
+    // Alice's deposits: the faucet's funding only. Her payment to bob and its change moves are
+    // the wallet's own sends.
+    await alice.refreshExternalDeposits!()
+    expect(
+      alice.getExternalDeposits!().map(row => [row.to, row.from, row.amount]),
+    ).toEqual([[aliceMain, dev.address.toLowerCase(), parseEther('1').toString()]])
+
+    // The balance counts what the chain shows at the receive address, and that is the deposit;
+    // the received payment is counted once, from the coin list.
+    bob.invalidateBalanceCache!()
+    const parts = await bob.getBalanceParts!()
+    expect(parts.main).toBe(await node.getBalance(bobMain))
+    expect(parts.main).toBe(BigInt(deposit!.amount))
+    expect(stealthOf(bob)[0]).toMatchObject({ status: 'received', amountWei: VALUE })
+
+    // A reload reads no block again and lists nothing twice; another device (fresh storage,
+    // same seed) lists the same rows from the chain alone.
+    const listed = bob.getExternalDeposits!()
+    await bob.close()
+    const reloaded = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+    try {
+      expect(reloaded.getExternalDeposits!()).toEqual(listed)
+      const reads = jest.spyOn(reloaded.provider as JsonRpcProvider, 'send')
+      await reloaded.refreshExternalDeposits!()
+      expect(reads.mock.calls.map(([method]) => method)).not.toContain('eth_getBlockByNumber')
+      expect(reloaded.getExternalDeposits!()).toEqual(listed)
+    } finally {
+      await reloaded.close()
+    }
+    const root = mkdtempSync(join(tmpdir(), 'received-payments-deposits-'))
+    extraRoots.push(root)
+    const device = (await withDefaultMessageItems(
+      createEvmChain({ ...f.config, walletStorageLocation: join(root, 'wallet') }),
+    ).createWallet(roots(1))) as EvmChainWalletHandle
+    try {
+      await device.refreshExternalDeposits!()
+      expect(device.getExternalDeposits!()).toEqual(listed)
+    } finally {
+      await device.close()
+    }
+  })
+
   it('the relay cannot be reached: no transfer reaches the node and the source stays claimed; after a restart the same message is delivered and the transfer is broadcast once', async () => {
     const aliceMain = await mainOf(alice)
     f.setPhase('fail')

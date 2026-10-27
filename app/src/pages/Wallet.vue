@@ -632,6 +632,10 @@
                     :chain-identifier="sendChainIdentifier"
                     :groups="historyGroups"
                     :inspection-status="nativeOperations.status"
+                    :deposits-unread="
+                      nativeOperations.status === 'available' &&
+                      nativeOperations.depositsUnread
+                    "
                     :native-unit="nativeUnit"
                     :native-amount="nativeAmount"
                     :network-name="networkName"
@@ -723,6 +727,7 @@ import EarlierWalletStateNotice from 'src/components/wallet/EarlierWalletStateNo
 import {
   buildWalletHistoryGroups,
   loadWalletHistory,
+  readWalletDeposits,
   type WalletHistoryLoad,
 } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
@@ -1082,16 +1087,26 @@ export default defineComponent({
             let loads = 0
             const reload = () => {
               const load = ++loads
+              const show = (history: WalletHistoryLoad | undefined) => {
+                // Only the latest load for the still-current wallet is shown.
+                if (history && current && load === loads)
+                  nativeOperations.value = history
+              }
               void useActiveWallet()
-                .then(wallet =>
-                  current
-                    ? loadWalletHistory(wallet, capturedChain.chainIdentifier)
-                    : undefined,
-                )
-                .then(history => {
-                  // Only the latest load for the still-current wallet is shown.
-                  if (history && current && load === loads)
-                    nativeOperations.value = history
+                .then(async wallet => {
+                  if (!current) return
+                  const chainIdentifier = capturedChain.chainIdentifier
+                  // What is known shows at once; deposits from outside Frank are then read from
+                  // the chain, and History is shown again with what that read found.
+                  show(await loadWalletHistory(wallet, chainIdentifier))
+                  if (!wallet.refreshExternalDeposits) return
+                  const read = await readWalletDeposits(wallet, chainIdentifier)
+                  if (current && load === loads)
+                    show(
+                      await loadWalletHistory(wallet, chainIdentifier, {
+                        depositsUnread: !read,
+                      }),
+                    )
                 })
                 .catch(() => undefined)
             }

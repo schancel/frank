@@ -5,9 +5,11 @@ import {
   type EvmNativeOperationStatus,
   type NotedSendStatus,
 } from '@frank/wallet/chain'
+import type { EvmExternalDeposit } from '@frank/wallet/chain'
 import {
   buildWalletHistoryGroups,
   loadWalletHistory,
+  readWalletDeposits,
   type WalletHistoryRow,
 } from './wallet-history'
 
@@ -683,5 +685,111 @@ describe('buildWalletHistoryGroups', () => {
       operationId: 'evm-native-v1:06',
     })
     expect(rows([payment, repaid], [])).toEqual(expected)
+  })
+})
+
+describe('deposits from outside Frank', () => {
+  const deposit = (
+    txHash: string,
+    blockTimeMs: number,
+    chainIdentifier = 'monad-regtest',
+  ): EvmExternalDeposit => ({
+    id: `${txHash}:native`,
+    chainIdentifier,
+    txHash,
+    to: '0x' + '01'.repeat(20),
+    from: '0x' + '09'.repeat(20),
+    asset: { kind: 'native' },
+    amount: '20000000000000000000',
+    blockNumber: 7,
+    blockHash: '0x' + 'ab'.repeat(32),
+    blockTimeMs,
+  })
+
+  it('loads what the scan found on this network, and reads the chain only when asked', async () => {
+    const refreshExternalDeposits = jest.fn(async () => undefined)
+    const wallet = {
+      family: 'evm',
+      chainIdentifier: 'monad-regtest',
+      getNativeOperations: () => [],
+      refreshExternalDeposits,
+      getExternalDeposits: () => [
+        deposit('0x' + 'a1'.repeat(32), 1000),
+        deposit('0x' + 'a2'.repeat(32), 2000, 'monad-testnet'),
+      ],
+    } as unknown as NativeWalletHandle
+    const load = await loadWalletHistory(wallet, 'monad-regtest')
+    expect(refreshExternalDeposits).not.toHaveBeenCalled()
+    expect(
+      load.status === 'available' && load.deposits?.map(row => row.txHash),
+    ).toEqual(['0x' + 'a1'.repeat(32)])
+    expect(load.status === 'available' && load.depositsUnread).toBe(false)
+    expect(await readWalletDeposits(wallet, 'monad-regtest')).toBe(true)
+    expect(refreshExternalDeposits).toHaveBeenCalledTimes(1)
+    // A node that does not answer: History says so, and keeps what was found.
+    refreshExternalDeposits.mockRejectedValueOnce(new Error('node down'))
+    expect(await readWalletDeposits(wallet, 'monad-regtest')).toBe(false)
+    const unread = await loadWalletHistory(wallet, 'monad-regtest', {
+      depositsUnread: true,
+    })
+    expect(unread.status === 'available' && unread.depositsUnread).toBe(true)
+    expect(unread.status === 'available' && unread.deposits).toHaveLength(1)
+    // Another network's wallet is never read for this one.
+    expect(await readWalletDeposits(wallet, 'monad-testnet')).toBe(true)
+    expect(refreshExternalDeposits).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows each deposit once, dated by its block, and not a transfer a send or a received coin already shows', () => {
+    const outside = deposit('0x' + 'c1'.repeat(32), 5000)
+    const alsoNoted = deposit('0x' + 'c2'.repeat(32), 6000)
+    const alsoCoin = deposit('0x' + 'c3'.repeat(32), 7000)
+    const groups = buildWalletHistoryGroups({
+      chainIdentifier: 'monad-regtest',
+      swaps: [],
+      load: {
+        status: 'available',
+        operations: [],
+        stampStages: [],
+        received: [
+          {
+            address: '0x' + '05'.repeat(20),
+            origin: 'stealth',
+            status: 'received',
+            amountWei: 1n,
+            receivedAmountWei: 1n,
+            claimedAmountWei: 1n,
+            settledTransactions: ['c3'.repeat(32)],
+            spendable: true,
+            discoveredAtMs: 100,
+          },
+        ],
+        noted: [
+          {
+            txHash: alsoNoted.txHash,
+            from: '0x' + '01'.repeat(20),
+            nonce: 0,
+            to: '0x' + '01'.repeat(20),
+            valueWei: '1',
+            call: false,
+            purpose: 'transfer',
+            noteIndex: 0,
+            notedAtMs: 1,
+            state: 'included',
+          } as NotedSendStatus,
+        ],
+        contactPayments: [],
+        blockTimes: new Map(),
+        deposits: [outside, alsoNoted, alsoCoin, outside],
+      },
+    })
+    const rows = groups.flatMap(group => group.rows)
+    const deposits = rows.flatMap(row => (row.kind === 'deposit' ? [row] : []))
+    expect(deposits.map(row => [row.id, row.timeMs])).toEqual([
+      [`deposit:${outside.id}`, 5000],
+    ])
+    // Read from a block: finished, not pending.
+    expect(
+      groups.find(group => group.id === 'pending')?.rows ?? [],
+    ).not.toContainEqual(expect.objectContaining({ kind: 'deposit' }))
   })
 })

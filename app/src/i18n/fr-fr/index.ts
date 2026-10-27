@@ -1612,6 +1612,11 @@ export const rawFrFR = {
     noted: 'Lu dans les notes que vos appareils partagent entre eux.',
     receivedPayment: 'Paiement reçu',
     receivedStamp: 'Reçu',
+    deposit: 'Reçu de',
+    depositToken: '{symbol} reçu de',
+    depositsUnread:
+      'Les dépôts venus d’en dehors de Frank n’ont pas pu être lus sur le réseau pour l’instant. Ils s’afficheront quand il répondra.',
+    depositNote: 'Lu dans le bloc {block} du réseau.',
     receivedClaimed:
       'Le montant indiqué par l’expéditeur. Il n’est pas encore confirmé sur le réseau.',
     receivedPartial:

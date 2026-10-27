@@ -350,3 +350,99 @@ it('shows a send another device made: what it was for, to whom, when, and its tr
   expect(details.text()).toContain(txHash)
   expect(details.text()).toContain('Block 42')
 })
+
+it('shows a deposit from outside Frank: what arrived, from whom, its transaction and block; and says when deposits could not be read', () => {
+  const txHash = '0x' + 'e'.repeat(64)
+  const sender = '0x70997970c51812dc3a010c7d01b50e0d17dc79c8'
+  const deposit = (
+    asset:
+      | { kind: 'native' }
+      | { kind: 'erc20'; contract: string; symbol: string; decimals: number },
+    amount: string,
+    logIndex?: number,
+  ) => ({
+    id:
+      logIndex === undefined ? `${txHash}:native` : `${txHash}:log:${logIndex}`,
+    chainIdentifier: 'monad-regtest',
+    txHash,
+    ...(logIndex === undefined ? {} : { logIndex }),
+    to: recipient,
+    from: sender,
+    asset,
+    amount,
+    blockNumber: 77,
+    blockHash: '0x' + 'f'.repeat(64),
+    blockTimeMs: Date.UTC(2026, 9, 27),
+  })
+  const rows = [
+    deposit({ kind: 'native' }, '20000000000000000000'),
+    deposit(
+      { kind: 'erc20', contract: recipient, symbol: 'USDC', decimals: 6 },
+      '2500000',
+      3,
+    ),
+  ].map(item => ({
+    id: `deposit:${item.id}`,
+    kind: 'deposit' as const,
+    deposit: item,
+    timeMs: item.blockTimeMs,
+  }))
+  const wrapper = shallowMount(History, {
+    props: {
+      chainIdentifier: 'monad-regtest',
+      groups: [{ id: 'activity', label: 'walletPanel.tabHistory', rows }],
+      inspectionStatus: 'available',
+      depositsUnread: true,
+      nativeUnit: 'MONR',
+      nativeAmount: (value: string) =>
+        value === '20000000000000000000' ? '20.0' : value,
+      networkName: () => 'Monad Regtest',
+      transactionExplorerLink: (hash: string) =>
+        `https://explorer.example/${hash}`,
+      formatSwapTime: () => 'just now',
+    },
+    global: {
+      mocks: { $t: translate },
+      stubs: {
+        AddressText: {
+          props: ['address'],
+          template: '<span class="address-text">{{ address }}</span>',
+        },
+        ...Object.fromEntries(
+          [
+            'QCardSection',
+            'QList',
+            'QItemLabel',
+            'QItem',
+            'QItemSection',
+            'QIcon',
+            'QBadge',
+          ].map(name => [name, { template: '<div><slot /></div>' }]),
+        ),
+      },
+    },
+  })
+  const items = wrapper.findAll('[data-testid="wallet-activity-item"]')
+  expect(items).toHaveLength(2)
+  expect(items[0]!.get('[data-testid="wallet-deposit-amount"]').text()).toBe(
+    '+20 MONR',
+  )
+  expect(items[0]!.text()).toContain('Received from')
+  expect(items[0]!.text()).toContain(sender)
+  expect(items[0]!.get('[data-testid="wallet-activity-status"]').text()).toBe(
+    'Received',
+  )
+  const details = items[0]!.get('[data-testid="wallet-deposit"]')
+  expect(details.text()).toContain(txHash)
+  expect(details.text()).toContain('Read from block 77 of the network.')
+  expect(details.get('a').attributes('href')).toBe(
+    `https://explorer.example/${txHash}`,
+  )
+  expect(items[1]!.get('[data-testid="wallet-deposit-amount"]').text()).toBe(
+    '+2.5 USDC',
+  )
+  expect(items[1]!.text()).toContain('Received USDC from')
+  expect(
+    wrapper.get('[data-testid="wallet-deposits-unread"]').text(),
+  ).toContain('could not be read')
+})

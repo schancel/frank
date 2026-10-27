@@ -7,6 +7,14 @@
     >
       {{ $t(`nativeOperation.${inspectionStatus}`) }}
     </p>
+    <p
+      v-if="depositsUnread"
+      role="status"
+      class="text-caption text-grey-7"
+      data-testid="wallet-deposits-unread"
+    >
+      {{ $t('walletHistory.depositsUnread') }}
+    </p>
     <p v-if="!groups.length" data-testid="wallet-activity-empty">
       {{ $t('walletPanel.historyEmpty') }}
     </p>
@@ -25,7 +33,7 @@
               :name="
                 entry.kind === 'swap'
                   ? 'swap_horiz'
-                  : entry.kind === 'received'
+                  : entry.kind === 'received' || entry.kind === 'deposit'
                   ? 'south_west'
                   : 'north_east'
               "
@@ -49,6 +57,15 @@
                   )} ${nativeUnit}`"
                   >+{{ shortAmount(receivedAmount(entry.payment)) }}
                   {{ nativeUnit }}</span
+                >
+                <span
+                  v-else-if="entry.kind === 'deposit'"
+                  :title="`${depositAmount(entry.deposit)} ${depositUnit(
+                    entry.deposit,
+                  )}`"
+                  data-testid="wallet-deposit-amount"
+                  >+{{ shortenDisplayAmount(depositAmount(entry.deposit)) }}
+                  {{ depositUnit(entry.deposit) }}</span
                 >
                 <span
                   v-else-if="entry.kind === 'noted'"
@@ -116,6 +133,64 @@
               >
                 {{ $t('walletHistory.receivedClaimed') }}
               </p>
+            </template>
+            <template v-else-if="entry.kind === 'deposit'">
+              <q-item-label caption class="q-mt-xs">
+                {{
+                  entry.deposit.asset.kind === 'erc20'
+                    ? $t('walletHistory.depositToken', {
+                        symbol: entry.deposit.asset.symbol,
+                      })
+                    : $t('walletHistory.deposit')
+                }}
+                ·
+                <time
+                  :datetime="new Date(entry.timeMs).toISOString()"
+                  data-testid="wallet-activity-date"
+                  >{{ formatSwapTime(entry.timeMs) }}</time
+                >
+              </q-item-label>
+              <div class="wallet-history-address">
+                <address-text :address="entry.deposit.from" copyable />
+              </div>
+              <details
+                data-testid="wallet-deposit"
+                class="wallet-history-details q-mt-sm"
+              >
+                <summary class="wallet-history-action">
+                  {{ $t('walletHistory.details') }}
+                </summary>
+                <div class="wallet-history-detail-body">
+                  <div class="wallet-history-address">
+                    <address-text :address="entry.deposit.txHash" copyable />
+                  </div>
+                  <a
+                    v-if="
+                      transactionExplorerLink(
+                        entry.deposit.txHash,
+                        chainIdentifier,
+                      )
+                    "
+                    :href="
+                      transactionExplorerLink(
+                        entry.deposit.txHash,
+                        chainIdentifier,
+                      )
+                    "
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="wallet-history-action"
+                    >{{ $t('walletPanel.viewInExplorer') }}</a
+                  >
+                  <p class="text-caption q-mb-none">
+                    {{
+                      $t('walletHistory.depositNote', {
+                        block: entry.deposit.blockNumber,
+                      })
+                    }}
+                  </p>
+                </div>
+              </details>
             </template>
             <template v-else-if="entry.kind === 'noted'">
               <q-item-label caption class="q-mt-xs">
@@ -253,6 +328,7 @@
             <details
               v-if="
                 entry.kind !== 'received' &&
+                entry.kind !== 'deposit' &&
                 entry.kind !== 'noted' &&
                 entry.operation
               "
@@ -485,7 +561,8 @@
 </template>
 
 <script setup lang="ts">
-import type { ReceivedPayment } from '@frank/wallet/chain'
+import { formatUnits } from 'ethers'
+import type { EvmExternalDeposit, ReceivedPayment } from '@frank/wallet/chain'
 import AddressText from '../AddressText.vue'
 import { shortenDisplayAmount } from 'src/utils/chain-amount'
 import {
@@ -507,6 +584,8 @@ const props = defineProps<{
   chainIdentifier: string
   groups: WalletHistoryGroup[]
   inspectionStatus: WalletHistoryLoad['status']
+  /** The chain could not be read for deposits from outside Frank this time. */
+  depositsUnread?: boolean
   nativeUnit: string
   nativeAmount: (value: string) => string
   networkName: (chainIdentifier: string) => string
@@ -542,8 +621,23 @@ function receivedAmount(payment: ReceivedPayment): string {
   return String(payment.receivedAmountWei ?? payment.claimedAmountWei)
 }
 
+/** A deposit's amount in its asset's whole units: the network's coin, or the token's. */
+function depositAmount(deposit: EvmExternalDeposit): string {
+  return deposit.asset.kind === 'erc20'
+    ? formatUnits(deposit.amount, deposit.asset.decimals)
+    : props.nativeAmount(deposit.amount)
+}
+
+function depositUnit(deposit: EvmExternalDeposit): string {
+  return deposit.asset.kind === 'erc20'
+    ? deposit.asset.symbol
+    : props.nativeUnit
+}
+
 function statusLabel(entry: WalletHistoryRow) {
   if (entry.kind === 'swap') return `swap.status.${entry.swap.status}`
+  // Read from a block: it arrived.
+  if (entry.kind === 'deposit') return 'walletHistory.receivedStatus.received'
   if (entry.kind === 'received')
     return `walletHistory.receivedStatus.${entry.payment.status}`
   if (entry.kind === 'noted') return `walletHistory.status.${entry.state}`
@@ -564,6 +658,8 @@ function statusColor(entry: WalletHistoryRow) {
       ? entry.swap.status
       : entry.kind === 'received'
       ? entry.payment.status
+      : entry.kind === 'deposit'
+      ? 'received'
       : entry.kind === 'noted'
       ? entry.state
       : entry.contactOutcome === 'released'

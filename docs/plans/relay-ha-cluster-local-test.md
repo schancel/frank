@@ -239,8 +239,6 @@ Still replica-local; each relay's startup log names them:
   (job `wallet-received-payments`, added by #1894). It covers a one-coin wallet under the
   reserve rule on anvil: the stamp's funding lands at the account's lowest nonce before the
   relay has the message, and the contact transfer lands at the next nonce after it is stored.
-- **History doesn't list external deposits.** The `fund` script's deposit (the faucet's 20 MON)
-  never appears; the faucet bot's grant does.
 - **Format break:** notes to self written before #1916 read as unsupported. Start the
   deployment's wallets and bots from fresh stores.
 - **App:** unless the relay server is set by hand, the dev server's origin becomes a group's home
@@ -287,7 +285,20 @@ Still replica-local; each relay's startup log names them:
 9. **Send to Address below the floor** to an external address. Resolved: refuse (2026-10-26).
    The wallet refuses the transfer, and Send max when everything it can send is below the floor,
    before anything is signed, and the page names the minimum, as Send to Contact does.
-10. **External deposits in History** need a relay-side index or full block reads. Which one?
+10. **External deposits in History.** Resolved (2026-10-27): "Why can't the frontend just check
+    the fucking indexer?" … "EVM plain nodes ARE AND INDEXER."
+    The wallet reads the chain's own JSON-RPC node through the relay's chain-rpc proxy; there is
+    no indexer service and no relay-side index. Implemented in
+    `packages/wallet/evm-deposit-scan.ts`: for the receive and identity accounts and opened dApp
+    personas, the wallet keeps a cursor (a block and what the address held there), finds the
+    first block where that changed by bisecting historical `eth_getBalance` /
+    `eth_getTransactionCount` / `balanceOf` reads, and reads only that block: its transaction
+    hashes (`eth_getBlockByNumber` without transactions, since the proxy refuses full blocks), the
+    transactions, and `eth_getLogs` for a supported ERC20's `Transfer` in that one block. A first
+    scan starts at the head for an address that never held anything, else at the oldest block the
+    node still serves state for (at most 1,000,000 blocks back). Not found: value moved by a
+    contract (internal transfers), and blocks the node pruned before the wallet reached them (the
+    cursor records them). The `fund` script's deposit shows in History as "Received from 0x…".
 11. **Cross-device rebuild (#1907) gaps:**
     - a nonce taken by a transaction with a different value;
     - a partial collision;

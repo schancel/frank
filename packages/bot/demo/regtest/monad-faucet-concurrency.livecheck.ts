@@ -78,10 +78,12 @@ async function main(): Promise<void> {
   console.log(`PASS: ${FUNDERS} funders at once, ${ROUNDS} rounds, every payment landed once; all swept back`)
 }
 
-main().then(
-  () => process.exit(0),
-  error => {
-    console.error(error instanceof Error ? error.message : error)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    error => {
+      console.error(error instanceof Error ? error.message : error)
+      process.exit(1)
+    },
+  )
+}

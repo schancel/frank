@@ -12,10 +12,10 @@
  *   resumes the same set (the same bytes), never a second merge of the same coins;
  * - its transactions note themselves to the account's other devices like any send (composition
  *   wires the notes; this module has no transport);
- * - the fresh account's index is allocated durably from the wallet's change branch before anything
- *   is signed to it, so no later allocation reuses it. Once a move to it has landed it is listed
- *   as the wallet's own (`listTarget`, the same record the seed walk makes of a funded change
- *   account), and another device finds it by walking the change branch from the seed.
+ * - the fresh account is derived from the coins it merges (`evm-merge-targets.ts`): every device
+ *   of the account that plans the same merge signs the same transactions to the same account,
+ *   and nothing is allocated. Once a move to it has landed it is watched as the wallet's own
+ *   (`listTarget`); another device finds it from the accounts the merge emptied.
  *
  * One merge at a time: while one is still on its way, the next call only resumes it.
  * Composition calls `maintain` from a host's idle tick (no message being sent or reconciled).
@@ -35,6 +35,8 @@ import {
   type EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
+import { Transaction } from 'ethers'
+import { evmMergeAnchor, type EvmMergeAnchor } from './evm-merge-targets'
 import {
   NativeTransactionSubmissionError,
   type CoinMaintenanceResult,
@@ -59,13 +61,13 @@ export interface EvmCoinConsolidatorDeps {
   readonly preparer: EvmTransactionSetPreparer
   /** The wallet's active journal rows (no request). */
   readonly operations: () => readonly EvmNativeOperation[]
-  /** A fresh change account, its index durably allocated. */
-  readonly reserveTarget: () => Promise<{ account: string; changeIndex: number }>
+  /** The fresh account a merge with this anchor goes to (`EvmMergeTargets.targetFor`). */
+  readonly targetFor: (anchor: EvmMergeAnchor) => { account: string; changeIndex: number }
   /** Hands a journalled set to the network (the wallet's transaction-set submission). */
   readonly submit: (prepared: PreparedEvmTransactionSet) => Promise<TransactionSetSubmission>
   /** A merge's fresh account that a move has reached: list it as the wallet's own and read it
    * into the coin list from the chain (nothing when the chain shows it unused yet). */
-  readonly listTarget?: (account: string) => Promise<void>
+  readonly listTarget?: (target: { account: string; changeIndex: number }) => Promise<void>
   /** Reads the wallet's coins and what its fee quote needs (gas price, head) from the node. */
   readonly refresh?: () => Promise<void>
 }
@@ -110,6 +112,17 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
       coin.nonce === 0 ||
       (coin.lastSpentInBlock !== undefined && head >= coin.lastSpentInBlock + waitBlocks))
 
+  /** A journalled merge's target, from the coins it spends. */
+  const targetOf = (row: EvmNativeOperation) =>
+    deps.targetFor(
+      evmMergeAnchor(
+        row.members.map(member => ({
+          account: member.source.address,
+          nonce: Transaction.from(member.unsignedTransaction).nonce,
+        })),
+      ),
+    )
+
   /** Merges a move of which has landed whose fresh account is not a coin of the list yet. */
   const unlisted = () =>
     deps
@@ -123,14 +136,14 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
       )
 
   const once = async (): Promise<EvmCoinMaintenance> => {
-    for (const row of unlisted()) await deps.listTarget?.(row.recipient).catch(() => undefined)
+    for (const row of unlisted()) await deps.listTarget?.(targetOf(row)).catch(() => undefined)
     const open = unfinished()
     if (open.length > 0) {
       const row = open[0]!
       const logicalId = row.preparationId!.slice(PREPARATION_PREFIX.length)
       // The same signed set again, never a new one.
       await deps.submit(await deps.preparer.readTransactionSet(logicalId)).catch(pendingHandoff)
-      await deps.listTarget?.(row.recipient).catch(() => undefined)
+      await deps.listTarget?.(targetOf(row)).catch(() => undefined)
       return { outcome: 'waiting', operationId: logicalId }
     }
     // Without more pool coins than the band's top, whatever their value, there is nothing to
@@ -150,8 +163,7 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
       movable: movable(policy.head, policy.spendRule?.waitBlocks),
     })
     if (!plan) return { outcome: 'idle' }
-    // What the merge would move, before a fresh account is allocated for it: a refusal here
-    // costs no change index. The destination only names whose coin is not moved; the fresh
+    // What the merge would move. The destination only names whose coin is not moved; the fresh
     // account has none.
     let quote
     try {
@@ -165,20 +177,19 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
     }
     if (quote.sourceAccounts.length < 2) return { outcome: 'idle' }
     const moved = new Set(quote.sourceAccounts)
-    const target = await deps.reserveTarget()
-    const operationId = consolidationId(
-      deps.chainIdentifier,
-      target.account,
-      plan.filter(coin => moved.has(coin.account)),
-    )
+    const coins = plan.filter(coin => moved.has(coin.account))
+    // Everything below is a function of these coins: the same merge on every device.
+    const target = deps.targetFor(evmMergeAnchor(coins))
+    const operationId = consolidationId(deps.chainIdentifier, target.account, coins)
+    const sourceAccounts = coins.map(coin => coin.account).sort()
     let prepared: PreparedEvmTransactionSet
     try {
       prepared = await deps.preparer.constructTransactionSet({
         operationId,
         amountWei: quote.amountWei,
         kdf: () => target.account,
-        sourceAccounts: quote.sourceAccounts,
-        maxPaymentParts: quote.sourceAccounts.length,
+        sourceAccounts,
+        maxPaymentParts: sourceAccounts.length,
         maxFeeWei: quote.feeWei,
       })
     } catch (error) {

@@ -28,6 +28,7 @@
  *
  * One list per wallet, and one wallet per chain: a coin carries no chain field.
  */
+import { isMergeTargetIndex } from './evm-merge-targets'
 import { computeAddress } from 'ethers'
 import type { PreparedEvmTransactionSet } from './evm-transaction-set-types'
 import type { RecordStore } from './storage/evm-coin-store'
@@ -747,7 +748,9 @@ export class EvmCoinList {
   nextChangeIndex(): number {
     let index = 0
     for (const coin of this.coinsByKey.values())
-      if (coin.changeIndex !== undefined)
+      // A merge target's index is derived in the branch's reserved upper half, never allocated
+      // (`evm-merge-targets.ts`).
+      if (coin.changeIndex !== undefined && !isMergeTargetIndex(coin.changeIndex))
         index = Math.max(index, coin.changeIndex + 1)
     for (const reserved of this.changeTargets.keys())
       index = Math.max(index, reserved + 1)

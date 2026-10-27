@@ -22,17 +22,19 @@
  * Every wallet's funds go back to the faucet at the end, also after a failure (`returnToFaucet`).
  */
 import { randomBytes } from 'crypto'
-import { mkdirSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { dirname, join } from 'path'
 
-import { formatEther, parseEther, Wallet } from 'ethers'
+import { formatEther, parseEther, Transaction, Wallet } from 'ethers'
 
 import { deriveDomainRoot } from '@frank/domain-roots'
 import { MonadChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
 import { evmCoinDistribution } from '@frank/wallet/evm-coin-distribution'
+import { EvmMergeTargets, evmMergeAnchor, EVM_MERGE_TARGET_BASE } from '@frank/wallet/evm-merge-targets'
 import { classifyEvmOperation } from '@frank/wallet/chain/evm-native-operation-status'
 import { checkStampOnChain } from '../two-wallets'
-import { MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
+import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
 import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 
@@ -42,6 +44,21 @@ async function main(): Promise<boolean> {
   const stack = await startRegtestStack({ chains: ['monad-regtest'] })
   // The coins' keys, kept so the end sweeps them even when the wallet never listed them.
   const coinKeys: string[] = []
+  // Every key this check funds, or whose account its wallets pay, is written here before any
+  // money reaches it, so a crash cannot strand funds: FRANK_LIVECHECK_KEYS_FILE, else a file
+  // under the system temp folder. Removed only once everything in it is back at the faucet.
+  const keysFile =
+    process.env.FRANK_LIVECHECK_KEYS_FILE ?? join(tmpdir(), 'frank-livecheck-keys', `consolidation-${Date.now()}.json`)
+  const saved: { accountRoots: Record<string, string>; keys: string[] } = { accountRoots: {}, keys: coinKeys }
+  const saveKeys = () => {
+    mkdirSync(dirname(keysFile), { recursive: true, mode: 0o700 })
+    writeFileSync(keysFile, JSON.stringify(saved, null, 2), { mode: 0o600 })
+  }
+  const saveRoot = (label: string) => {
+    const file = join(stack.stateDir, 'wallets', label, 'account-root.hex')
+    if (existsSync(file)) saved.accountRoots[label] = readFileSync(file, 'utf8').trim()
+    saveKeys()
+  }
   const problems: string[] = []
   const check = (ok: boolean, what: string) => {
     console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`)
@@ -57,6 +74,7 @@ async function main(): Promise<boolean> {
       `${coinCount} coins of ${formatEther(coinWei)} MON; floor ${formatEther(distribution.floorWei)} MON, band top ${distribution.maxCoins}, merge down to ${distribution.mergeDownToCoins}`,
     )
     const recipient = await openMonadWallet(stack, 'recipient', { stampValueWei: stampWei })
+    saveRoot('recipient')
 
     // The account root first, so the coins are on the wallet's change branch before it opens.
     const label = `consolidating-${randomBytes(4).toString('hex')}`
@@ -72,6 +90,8 @@ async function main(): Promise<boolean> {
       coins.push(derived.address.toLowerCase())
       coinKeys.push(derived.privateKey)
     }
+    saveRoot(label)
+    console.log(`keys saved to ${keysFile} before funding`)
     // The shared node may answer "overloaded": try a funding again a few times.
     for (const account of coins)
       for (let attempt = 1; ; attempt++)
@@ -102,6 +122,17 @@ async function main(): Promise<boolean> {
     const expectedMerged = Math.min(coinCount - distribution.mergeDownToCoins + 1, coinCount - distribution.keepNewestCoins)
     check(first.coins === expectedMerged, `it merges ${expectedMerged} coins (merged ${first.coins})`)
     check(!coins.includes(first.target), 'into a fresh change account, not one of the coins')
+    // The target is derived from the coins merged: anyone holding the account's keys computes it
+    // from the merge's anchor alone (another device, a restored one). Its key is kept for the sweep.
+    {
+      const row = wallet.handle.getNativeOperations!().find(item => item.preparationId === `evm-transaction-set:${first.operationId}`)!
+      const anchor = evmMergeAnchor(row.members.map(member => ({ account: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce })))
+      const derived = new EvmMergeTargets(MONAD_REGTEST_CHAIN, change).targetFor(anchor)
+      coinKeys.push(change.deriveChangeAccount(derived.changeIndex).privateKey)
+      saveKeys()
+      check(derived.account === first.target && derived.changeIndex >= EVM_MERGE_TARGET_BASE,
+        `the target is the account derived from the merge's coins, in the change branch's reserved half (index ${derived.changeIndex})`)
+    }
 
     // 2. Straight after, while the merge is on its way: a paid message.
     const digest = await wallet.send(recipient.address, [{ type: 'text', text: 'sent during a merge' }], stampWei, 180_000)
@@ -145,7 +176,8 @@ async function main(): Promise<boolean> {
     await recipient.close()
   } finally {
     try {
-      // Coins the wallet never took over (a failure before it opened) go back first.
+      // The funded coins and the merge's account go back first, also when the wallet never
+      // took them over (a failure before it opened).
       const monad = monadOf(stack)
       await monad.mine(4)
       const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
@@ -162,13 +194,19 @@ async function main(): Promise<boolean> {
           /* returnToFaucet below tries the wallet's accounts again */
         }
       }
-      if (swept > 0n) console.log(`returned ${formatEther(swept)} MON of unmerged coins to the faucet`)
+      if (swept > 0n) console.log(`returned ${formatEther(swept)} MON from the funded coins and the merge's account to the faucet`)
     } catch {
       /* returnToFaucet below */
     }
     try {
       const { returnedWei, leftWei } = await returnToFaucet(stack)
       console.log(`returned ${formatEther(returnedWei)} MON to the faucet; ${formatEther(leftWei)} MON left as dust or unsweepable`)
+      // The saved keys go only once nothing worth a transfer is left on them.
+      const monad = monadOf(stack)
+      const fee = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
+      const left = (await Promise.all(coinKeys.map(key => monad.provider.getBalance(new Wallet(key).address)))).filter(value => value > 2n * fee)
+      if (left.length === 0 && leftWei === 0n) rmSync(keysFile, { force: true })
+      else console.log(`keys kept in ${keysFile}: funds are still on them`)
     } finally {
       await stack.stop()
     }

@@ -10,6 +10,7 @@ import type {
   MonadHdKeyring,
 } from './secp256k1-hd-keyring'
 import { discoverSeedBranch } from './evm-seed-discovery'
+import type { EvmMergeAnchor, EvmMergeTargets } from './evm-merge-targets'
 import type { MonadIdentity } from './evm-identity'
 import type { EvmCoin, RecordStore } from './storage/evm-coin-store'
 
@@ -27,6 +28,9 @@ export function installEvmWalletCoinList(params: {
   /** The deterministic branch keyring (`m/44'/60'/0'/0/i`). Given, every full refresh walks both
    * seed branches for accounts in use on chain, so a restored device finds them all. */
   seedDiscovery?: { keyring: MonadHdKeyring; gap?: number }
+  /** Where this wallet's background merges go: watched once found, and looked for by each walk
+   * from the accounts the merges emptied. */
+  mergeTargets?: EvmMergeTargets
 }): EvmCoinListSync {
   const {
     coinList,
@@ -78,9 +82,31 @@ export function installEvmWalletCoinList(params: {
       )
       await changePool.flush()
     }
+    // Merge targets: a merge's anchor is the last transaction of an account it emptied. Look for
+    // the target of each such account this walk or the list knows (`evm-merge-targets.ts`).
+    const merged: string[] = []
+    if (params.mergeTargets) {
+      const anchors: EvmMergeAnchor[] = [
+        ...change
+          .filter(found => found.nonce > 0 && found.balanceWei === 0n)
+          .map(found => ({ account: found.account, nonce: found.nonce - 1 })),
+        ...coinList
+          .all()
+          .filter(coin => coin.state === 'spent')
+          .map(coin => ({ account: coin.account, nonce: coin.nonce })),
+      ]
+      merged.push(...await params.mergeTargets.probeAnchors(anchors, async account => {
+        if (stopped()) return false
+        const [nonce, balance] = await Promise.all([
+          params.provider.getTransactionCount(account, 'latest'),
+          params.provider.getBalance(account, 'latest'),
+        ])
+        return nonce > 0 || balance > 0n
+      }))
+    }
     // Deterministic branch: nothing allocates here any more, but accounts an older wallet used
     // still belong to the seed. Only full walks look here; the periodic one is for change.
-    if (scope !== 'all') return []
+    if (scope !== 'all') return merged
     const knownDeterministic = new Set<number>(
       pool.records().map(record => record.index),
     )
@@ -99,7 +125,7 @@ export function installEvmWalletCoinList(params: {
     for (const found of funded)
       discoveredDeterministic.set(found.index, found.account)
     // Not yet coins of the list: read before the walk is recorded as done.
-    return funded.map(found => found.account)
+    return [...merged, ...funded.map(found => found.account)]
   })
   const sync = new EvmCoinListSync({
     discover,
@@ -176,6 +202,13 @@ export function installEvmWalletCoinList(params: {
           changeIndex: record.index,
           privateKey: () =>
             changeKeyring.deriveChangeAccount(record.index).privateKey,
+        })
+      for (const target of params.mergeTargets?.watchedTargets() ?? [])
+        add({
+          account: target.account,
+          origin: 'change',
+          changeIndex: target.changeIndex,
+          privateKey: target.privateKey,
         })
       if (params.seedDiscovery)
         for (const [index, account] of discoveredDeterministic)

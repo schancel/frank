@@ -27,6 +27,7 @@ import {
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
+  EvmTransactionSetFeeExceededError,
   EvmTransactionSetInsufficientFundsError,
   type EvmTransactionSetPolicy,
   type PreparedEvmTransactionSet,
@@ -35,6 +36,8 @@ import { MemoryRecordStore } from './storage/evm-coin-store'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
 import { classifyEvmOperation } from './chain/evm-native-operation-status'
+import { EVM_MERGE_TARGET_BASE, EvmMergeTargets, evmMergeAnchor } from './evm-merge-targets'
+import type { MonadChangeKeyring } from './secp256k1-hd-keyring'
 
 const PRICE = 1_000n
 const D = evmCoinDistribution(PRICE)
@@ -109,6 +112,10 @@ async function open(
     reserveChange: async (_operation, minimum) => allocate(minimum),
     onPaymentIncluded: account => included.push(account),
   })
+  const keyring = {
+    deriveChangeAccount: (index: number) => ({ address: derive(index).account, privateKey: derive(index).privateKey }),
+  } as unknown as Pick<MonadChangeKeyring, 'deriveChangeAccount'>
+  const targets = new EvmMergeTargets(chain, keyring)
   const submitted: PreparedEvmTransactionSet[] = []
   const listed: string[] = []
   let submitFailure: Error | undefined
@@ -117,12 +124,9 @@ async function open(
     coins,
     preparer,
     operations: () => journal.list(),
-    reserveTarget: async () => {
-      const target = allocate(coins.nextChangeIndex())
-      return { account: target.account, changeIndex: target.changeIndex }
-    },
-    listTarget: async account => {
-      listed.push(account)
+    targetFor: anchor => targets.targetFor(anchor),
+    listTarget: async target => {
+      listed.push(target.account)
     },
     submit: async prepared => {
       submitted.push(prepared)
@@ -146,6 +150,7 @@ async function open(
     nextIndex,
     included,
     listed,
+    targets,
     submitted,
     failSubmit: (error: Error | undefined) => {
       submitFailure = error
@@ -216,9 +221,9 @@ async function settle(f: Fixture, logicalId: string, block: number): Promise<voi
 /** A merge landed: what the chain read of its fresh account lists (`EvmCoinListSync`). */
 async function listMergeTarget(f: Fixture, set: PreparedEvmTransactionSet, block: number) {
   const target = set.bundle[0]!.destination.toLowerCase()
-  const index = Array.from({ length: f.nextIndex.value }, (_, i) => f.derive(i)).find(
-    derived => derived.account === target,
-  )!
+  const derived = f.targets.targetFor(evmMergeAnchor(all(set).map(tx => ({ account: tx.sourceAccount, nonce: tx.nonce }))))
+  expect(derived.account).toBe(target)
+  const index = { ...f.derive(derived.changeIndex), changeIndex: derived.changeIndex }
   await f.coins.put({
     account: target,
     privateKey: index.privateKey,
@@ -461,6 +466,127 @@ describe('background merge', () => {
     expect(consolidationId('monad-regtest', '0x' + '22'.repeat(20), coins).startsWith(EVM_CONSOLIDATION_PREFIX)).toBe(true)
     await monad.journal.Close()
     await sepolia.journal.Close()
+  })
+})
+
+describe('every device of the account makes the same merge', () => {
+  it('two devices with the same pool sign byte-identical merges to the same derived account, and the second settles as the first with no transaction of its own', async () => {
+    // One account (the same keys) on two devices; each lists the same coins, in another order.
+    const a = await open({ keyBase: 30_000 })
+    const b = await open({ keyBase: 30_000 })
+    a.head.value = b.head.value = 400
+    const coinKeys = Array.from({ length: 12 }, (_, i) => signer(60_000 + i))
+    const put = (f: Fixture, key: Wallet, i: number) =>
+      f.coins.put({ account: key.address, privateKey: key.privateKey, nonce: 0, valueWei: BigInt(3 + i) * FLOOR, origin: 'stamp', listedInBlock: 10 + i })
+    for (const [i, key] of coinKeys.entries()) await put(a, key, i)
+    for (const [i, key] of [...coinKeys.entries()].reverse()) await put(b, key, i)
+    const [first, second] = [await a.consolidator.maintain(), await b.consolidator.maintain()]
+    expect(first.outcome).toBe('merged')
+    expect(second).toEqual(first)
+    const hashes = (f: Fixture) => all(f.submitted[0]!).map(tx => tx.txHash).sort()
+    expect(hashes(b)).toEqual(hashes(a))
+    expect(all(b.submitted[0]!).map(tx => tx.rawTransaction).sort()).toEqual(all(a.submitted[0]!).map(tx => tx.rawTransaction).sort())
+    // Derived in the change branch's reserved half: never an index the allocator hands out, and
+    // the allocator's next index is unchanged by it.
+    const merged = first as { target: string; operationId: string }
+    const target = a.targets.targetFor(evmMergeAnchor(all(a.submitted[0]!).map(tx => ({ account: tx.sourceAccount, nonce: tx.nonce }))))
+    expect(target.account).toBe(merged.target)
+    expect(target.changeIndex).toBeGreaterThanOrEqual(EVM_MERGE_TARGET_BASE)
+    expect(a.nextIndex.value).toBe(0)
+    // Device A's broadcast lands. Device B sees its own (identical) transactions included.
+    for (const f of [a, b]) {
+      await settle(f, merged.operationId, 405)
+      await listMergeTarget(f, f.submitted[0]!, 405)
+    }
+    expect(b.coins.nextChangeIndex()).toBe(0)
+    f_head(a, b, 500)
+    expect(await a.consolidator.maintain()).toEqual({ outcome: 'idle' })
+    expect(await b.consolidator.maintain()).toEqual({ outcome: 'idle' })
+    expect(b.submitted).toHaveLength(1)
+    expect(b.coins.latestOf(merged.target)).toEqual(a.coins.latestOf(merged.target))
+    await a.journal.Close()
+    await b.journal.Close()
+  })
+
+  it('a device that knows only the emptied accounts finds where the merge went', async () => {
+    const a = await open({ keyBase: 40_000 })
+    a.head.value = 300
+    for (let i = 0; i < 12; i++) await putCoin(a, { valueWei: BigInt(3 + i) * FLOOR, listedInBlock: 10 })
+    const merged = (await a.consolidator.maintain()) as { target: string; operationId: string }
+    const moves = all(a.submitted[0]!)
+    // Restored from the seed: it knows (from its walk) each emptied account and the nonce the
+    // account is at now, nothing of the merge. The chain shows the target in use.
+    const restored = await open({ keyBase: 40_000 })
+    const emptied = moves.map(tx => ({ account: tx.sourceAccount, nonce: tx.nonce }))
+    const read: string[] = []
+    const found = await restored.targets.probeAnchors(emptied, async account => {
+      read.push(account)
+      return account === merged.target
+    })
+    expect(found).toEqual([merged.target])
+    expect(restored.targets.watchedTargets().map(target => target.account)).toEqual([merged.target])
+    // Every other emptied account names another (unused) account: read once each, not again.
+    expect(read).toHaveLength(moves.length)
+    expect(await restored.targets.probeAnchors(emptied, async () => true)).toEqual([])
+    await a.journal.Close()
+    await restored.journal.Close()
+  })
+})
+
+const f_head = (a: Fixture, b: Fixture, value: number) => {
+  a.head.value = b.head.value = value
+}
+
+describe('a payment carrying a stamp when the pool is at the top of the band', () => {
+  async function atTop() {
+    const f = await open()
+    f.head.value = 50
+    const root = signer(990_081)
+    await f.coins.put({ account: root.address, privateKey: root.privateKey, nonce: 0, valueWei: 10_000n * FLOOR, origin: 'root' })
+    // Eight pool coins (the band's top) this payment cannot use yet: stamps just received, which
+    // the chain's spacing rule keeps until a later block.
+    for (let i = 0; i < 8; i++) {
+      const key = signer(990_100 + i)
+      await f.coins.put({ account: key.address, privateKey: key.privateKey, nonce: 0, valueWei: 2n * FLOOR, origin: 'stamp', listedInBlock: 49, spendableFromBlock: 60 })
+    }
+    expect(pool(f)).toBe(8)
+    return { f, root }
+  }
+  const stamp = 3n * FLOOR
+  const request = {
+    amountWei: 2_000n * FLOOR,
+    kdf: recipient,
+    reserveForContinuationWei: stamp + FEE,
+    continuationFeeWei: FEE,
+  }
+
+  it('is built as quoted with its stamp: the stamp kept back in its own account, no change at all', async () => {
+    const { f, root } = await atTop()
+    // The review quotes the payment with its stamp (`quoteNative` with `stampWei`).
+    const quote = await f.preparer.quoteTransactionSet(request)
+    const set = await f.preparer.constructTransactionSet({ ...request, operationId: 'stamp-at-top', maxFeeWei: quote.feeWei })
+    expect(sources(set)).toEqual(new Set([root.address.toLowerCase()]))
+    // The quote is the construction, plus the stamp's own transfer (signed by its later stage).
+    expect(all(set).reduce((sum, tx) => sum + tx.gasLimit * PRICE, 0n) + FEE).toBe(quote.feeWei)
+    // One payment and one transfer keeping the stamp back (exactly its value and fee); no
+    // change: what the root holds beyond them stays on it at its next nonce.
+    expect(all(set)).toHaveLength(2)
+    expect(all(set).filter(tx => tx.valueWei === stamp + FEE)).toHaveLength(1)
+    expect(all(set).filter(tx => tx.valueWei === request.amountWei)).toHaveLength(1)
+    await f.journal.Close()
+  })
+
+  it('authorized without the fee of keeping the stamp back, it is refused before anything is signed or held', async () => {
+    const { f } = await atTop()
+    const bare = await f.preparer.quoteTransactionSet({ amountWei: request.amountWei, kdf: recipient })
+    await expect(f.preparer.constructTransactionSet({ ...request, operationId: 'stamp-unquoted', maxFeeWei: bare.feeWei + FEE }))
+      .rejects.toThrow(EvmTransactionSetFeeExceededError)
+    expect(await f.journal.list()).toHaveLength(0)
+    expect(f.coins.all().filter(coin => coin.holder !== undefined)).toHaveLength(0)
+    // Nothing held: the payment quoted with its stamp goes through straight after.
+    const quote = await f.preparer.quoteTransactionSet(request)
+    await f.preparer.constructTransactionSet({ ...request, operationId: 'stamp-quoted', maxFeeWei: quote.feeWei })
+    await f.journal.Close()
   })
 })
 

@@ -276,6 +276,7 @@ import {
 import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
 import { LevelChangePoolStore } from "../storage/level-change-pool-store";
 import { SEED_REWALK_MS } from "../evm-coin-list-sync";
+import { EvmMergeTargets } from "../evm-merge-targets";
 import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
@@ -721,10 +722,6 @@ async function reconcileNativeAdmission(
       )
     });
 }
-/** How many of the most recent change allocations a merge's fresh account is looked for among
- * (`listTarget`); one older than that is found by the seed walk of the change branch. */
-const MERGE_TARGET_SEARCH = 64;
-
 // One typed economic owner per EVM account/network in this runtime, across chain factories.
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
 const openTypedEvmAccounts = new Set<string>();
@@ -2217,7 +2214,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             burnAddress: config.stampBurnAddress,
           });
           const coinStore = coins;
+          const mergeTargets = new EvmMergeTargets(config.networkId, changeKeyring);
           const transactionSetRuntime = installEvmTransactionSetRuntime({
+            mergeTargets,
             coinList,
             coinStore,
             provider,
@@ -2328,45 +2327,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             coins: coinList,
             preparer: transactionSetPreparer,
             operations: () => transactionOwner.nativeJournal!.list(),
-            // A fresh account of the change branch, its index durably allocated before
-            // anything is signed to it.
-            reserveTarget: async () => {
-              const target = await changePool.reserveFreshChange(coinList.nextChangeIndex());
-              return { account: target.account.toLowerCase(), changeIndex: target.changeIndex };
-            },
+            // A merge's account is derived from the coins it moves: the same on every device.
+            targetFor: (anchor) => mergeTargets.targetFor(anchor),
             submit: (prepared) => transactionSetSubmission.sendTransaction(prepared),
             refresh: () => transactionSetRuntime.refresh(),
-            // Once a move has reached it, the fresh account is recorded the way the seed walk
-            // records a funded change account (it holds money, so it is in use), which makes it
-            // a source the coin list reads. An index this cannot find among the recent
-            // allocations is left to the next walk of the change branch.
-            listTarget: async (account) => {
-              const key = account.toLowerCase();
-              const known = [...changePool.records(), ...changePool.recoveredAccounts()]
-                .some((record) => record.address.toLowerCase() === key);
-              if (!known) {
-                const top = changePool.nextUnusedIndex();
-                let index: number | undefined;
-                for (let i = top - 1; i >= Math.max(0, top - MERGE_TARGET_SEARCH); i--)
-                  if (changeKeyring.deriveChangeAccount(i).address.toLowerCase() === key) {
-                    index = i;
-                    break;
-                  }
-                if (index === undefined) return;
-                const [nonce, balanceWei] = await Promise.all([
-                  provider.getTransactionCount(key, "latest"),
-                  provider.getBalance(key, "latest"),
-                ]);
-                if (nonce === 0 && balanceWei === 0n) return;
-                changePool.applyRecoveredAccounts([{
-                  index,
-                  address: changeKeyring.deriveChangeAccount(index).address,
-                  nonce,
-                  balanceWei: balanceWei.toString(),
-                }]);
-                await changePool.flush();
-              }
-              await transactionSetRuntime.coinListSync.refreshAccounts([key]);
+            // Once a move has reached it, the account is watched as the wallet's own and read.
+            listTarget: async (target) => {
+              mergeTargets.watch(target);
+              await transactionSetRuntime.coinListSync.refreshAccounts([target.account]);
             },
           });
           const publicTransactionSets = evmTransactionSetCapability(

@@ -325,6 +325,13 @@ Still replica-local; each relay's startup log names them:
       bytes after a restart, noted to the account's other devices like any send, and shown in
       History as one row, "Merged N coins", with its fee. Other sends pick other coins meanwhile;
       nothing waits for it.
+    - The merge's account is derived, not allocated (AGENTS.md §5): a keyed hash of the merge's
+      lowest [account, nonce] input and the chain, under a salt from the account's own keys,
+      picks an index in the upper half of the change branch, which the change allocator (counting
+      up from 0) never reaches. Two devices that see the same pool sign the same transactions to
+      the same account. A device that knows an emptied account (from its coin list or its seed
+      walk) reads the target of that account's last nonce, so a restored device finds the merged
+      money; `funds:sweep` reads it from the coin list.
     - Checked on solonet by `yarn --cwd packages/bot regtest:monad-consolidation` (30 coins are
       merged down to 5, a paid message sent during the merge is delivered, funds go back to the
       faucet). Not in CI.

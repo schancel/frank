@@ -245,7 +245,10 @@ import {
   useContactStore,
 } from '../../stores/contacts'
 import { useProfileStore } from '../../stores/my-profile'
-import { isChainAddress } from '../../utils/chain-address'
+import {
+  isChainAddress,
+  safeToChainDisplayAddress,
+} from '../../utils/chain-address'
 import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
@@ -347,11 +350,14 @@ export default defineComponent({
         const name = isSelf
           ? profileStore?.profile?.name
           : contactStore?.getContact?.(address)?.profile?.name
-        let shortAddr = address
+        // Shown in the network's display form (checksummed on EVM), as everywhere else: the
+        // roster of a new epoch carries members' addresses in lower case.
+        const display = safeToChainDisplayAddress(address) ?? address
+        let shortAddr = display
         try {
-          shortAddr = shortAddress(address)
+          shortAddr = shortAddress(display)
         } catch {
-          shortAddr = address
+          shortAddr = display
         }
         return {
           address,

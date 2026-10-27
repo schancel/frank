@@ -163,7 +163,7 @@ export const rawEnUS = {
       attachImage: 'Attach Image',
       imageProcessing: 'Processing image…',
       imageTooLarge:
-        'Image is too large for post (must be under 120 KB after compression)',
+        'Image is too large for post (must be under 120 KiB after compression)',
       imageError: 'Failed to process image attachment',
       invalidImageType:
         'Please select a valid image file (PNG, JPEG, WebP, GIF)',
@@ -173,6 +173,7 @@ export const rawEnUS = {
   chatLayout: {
     invalidSubject:
       'Use a subject of at most 512 UTF-8 bytes without control characters.',
+    participantCountOne: '1 participant',
     participantCount: '{count} participants',
     editSubject: 'Edit subject',
     subject: 'Subject',
@@ -193,6 +194,8 @@ export const rawEnUS = {
     attachFile: 'Attach File',
     removeAttachment: 'Remove {name}',
     imageRefused: '{name} cannot be sent: {reason}.',
+    brokenCharacterReplaced:
+      'A broken character in your message was replaced with �.',
     messageTooLarge:
       'This message is too large to send: one message holds at most {limit}, and this one is {size}. Remove a picture or shorten the text.',
     blackjackChallenge: 'Blackjack challenge',
@@ -928,6 +931,7 @@ export const rawEnUS = {
     paymentRepaid: 'Stamp reverted, paid again',
     paymentFailed: 'Message stamp failed',
     paymentUnsent: 'Message stamp not paid',
+    amountNotPaid: '{amount}, not paid',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',
@@ -1621,7 +1625,12 @@ export const rawEnUS = {
     listTitle: 'Native transfers',
     intendedAmount: 'Intended recipient amount',
     processing: 'Checking the original transfer outcome…',
+    submitting: 'Sending on {network}…',
     included: 'Sent on {network}.',
+    changeSettlingOne:
+      'Change still settling ({confirmed} of {total} transactions confirmed).',
+    changeSettling:
+      'Change still settling ({confirmed} of {total} transactions confirmed).',
     reverted:
       'Recipient transaction reverted on {network}. Network fees may have been paid.',
     partial:
@@ -1630,7 +1639,7 @@ export const rawEnUS = {
     sending:
       'Sending on {network}… {confirmed} of {total} transactions confirmed.',
     missing:
-      '{network} does not have this transfer yet. It is being offered again.',
+      'Sending on {network}: waiting for a block. It is offered to the network again until it is in one.',
     superseded:
       '{network} no longer has this transfer, and its account has moved past it: it was included earlier or another transaction took its place. It is not offered again.',
     watching:

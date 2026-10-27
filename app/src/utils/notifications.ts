@@ -1,6 +1,6 @@
 import { Notify, openURL } from 'quasar'
 import { transactionExplorerUrl } from './explorer'
-import { markdownPlainText } from './markdown-plain-text'
+import { previewOf } from './markdown-plain-text'
 import { translateMessage } from 'src/i18n'
 
 const $t = (key: string) => translateMessage(key)
@@ -136,7 +136,9 @@ export function desktopNotify(
   // same message never shows twice on a device even when two tabs or windows each notify for it.
   tag?: string,
 ) {
-  const plainBody = markdownPlainText(body)
+  // The start of the message, as the chat list previews it: a notification is not the message
+  // (a 5 MB message was handed to the browser whole).
+  const plainBody = previewOf(body)
   lastNotificationCallback = callback
   if (tag) {
     if (notificationCallbacksByTag.size >= 100) {

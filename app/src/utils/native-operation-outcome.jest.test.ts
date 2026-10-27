@@ -4,6 +4,7 @@ import frFR from '../i18n/fr-fr'
 import {
   nativeOperationOutcome,
   nativeOperationProgress,
+  nativeOperationSettling,
 } from './native-operation-outcome'
 
 type Member = EvmNativeOperationStatus['members'][number]
@@ -104,4 +105,86 @@ describe('the outcome line of a send', () => {
         .replace('{total}', '4'),
     ).toBe(expected)
   })
+})
+
+describe('a sent transfer whose change is still settling', () => {
+  // QA on main 10390a333: "Sent on Monad Regtest." for 54 s while the change (same account, next
+  // nonce) had not reached the node. Sent is right; the change is said to be settling.
+  it('counts what is in a block while the recipient is paid and the change is not', () => {
+    const operation = {
+      payment: 'included' as const,
+      members: [
+        member('included-success', true, 'payment'),
+        member('unknown', false, 'change'),
+      ],
+    }
+    expect(nativeOperationSettling(operation)).toEqual({
+      confirmed: 1,
+      total: 2,
+    })
+  })
+
+  it.each(['included-success', 'included-revert', 'superseded'] as const)(
+    'a change that is %s is final: nothing is settling',
+    state => {
+      expect(
+        nativeOperationSettling({
+          payment: 'included',
+          members: [
+            member('included-success', true, 'payment'),
+            member(state, true, 'change'),
+          ],
+        }),
+      ).toBeUndefined()
+    },
+  )
+
+  it.each(['unknown', 'pending', 'missing', 'partial'] as const)(
+    'an outcome of %s is not "sent": no settling line',
+    payment => {
+      expect(
+        nativeOperationSettling({
+          payment,
+          members: [member('pending', true, 'payment')],
+        }),
+      ).toBeUndefined()
+    },
+  )
+
+  // French agrees with the count confirmed: 0 or 1 is singular ("1 transaction confirmée").
+  it.each([
+    [
+      enUS,
+      'changeSettlingOne',
+      1,
+      'Change still settling (1 of 2 transactions confirmed).',
+    ],
+    [
+      enUS,
+      'changeSettling',
+      2,
+      'Change still settling (2 of 3 transactions confirmed).',
+    ],
+    [
+      frFR,
+      'changeSettlingOne',
+      1,
+      'Le rendu de la monnaie est en cours (1 transaction confirmée sur 2).',
+    ],
+    [
+      frFR,
+      'changeSettling',
+      2,
+      'Le rendu de la monnaie est en cours (2 transactions confirmées sur 3).',
+    ],
+  ] as const)(
+    'reads in each language (%#)',
+    (messages, key, confirmed, expected) => {
+      expect(
+        messages.nativeOperation[key]
+          .replace('{confirmed}', String(confirmed))
+          .replace('{total}', String(confirmed + 1)),
+      ).toBe(expected)
+    },
+  )
 })

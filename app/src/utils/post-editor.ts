@@ -455,11 +455,13 @@ export function tokenizeAttachmentDataUrls(
  * Formats byte count to a readable human string (e.g. 45.2 KB).
  */
 export function formatAttachmentSize(bytes: number): string {
+  // Binary multiples, named as such: 1 KiB is 1024 bytes and 1 MiB is 1024 KiB (the message
+  // limit is 8 MiB). "MB" here read 9,438,184 bytes as "9.0 MB", which is 9.4 MB.
   if (bytes < 1024) return `${bytes} B`
   const kb = bytes / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  if (kb < 1024) return `${kb.toFixed(1)} KiB`
   const mb = kb / 1024
-  return `${mb.toFixed(1)} MB`
+  return `${mb.toFixed(1)} MiB`
 }
 
 /**

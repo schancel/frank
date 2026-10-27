@@ -535,13 +535,52 @@ describe('ChatInput holds pictures for the message', () => {
     await flushPromises()
     expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
       enUS.chatInput.messageTooLarge
-        .replace('{limit}', '8.0 MB')
-        .replace('{size}', '9.0 MB'),
+        .replace('{limit}', '8.0 MiB')
+        .replace('{size}', '9.0 MiB'),
     )
     c.box().focus()
     enter()
     await flushPromises()
     expect(c.sent).toEqual([long])
+  })
+
+  // QA on main 10390a333: the Send button looked enabled while the refusal was shown.
+  it('the Send button is disabled while the message is too large, and enabled again once it fits', async () => {
+    const c = mountWithAttachments('x'.repeat(9 * 1024 * 1024))
+    await flushPromises()
+    const send = () =>
+      c.wrapper.get('.chat-send-btn').element as HTMLButtonElement
+    expect(
+      c.wrapper.find('[data-testid="chat-message-too-large"]').exists(),
+    ).toBe(true)
+    expect(send().disabled).toBe(true)
+    c.message.value = 'hi'
+    await flushPromises()
+    expect(send().disabled).toBe(false)
+  })
+
+  // QA on main 10390a333: a broken emoji paste (a lone UTF-16 surrogate) was accepted, and only
+  // the wallet refused it after Send (`lone surrogate in text`), leaving a failed message.
+  it('replaces a lone surrogate with "�" before Send and says so', async () => {
+    const c = mountWithAttachments('')
+    await flushPromises()
+    c.message.value = 'broken \uD83D emoji \uDE00 end'
+    await flushPromises()
+    expect(c.message.value).toBe('broken \uFFFD emoji \uFFFD end')
+    expect(
+      c.wrapper.get('[data-testid="chat-input-replaced-character"]').text(),
+    ).toBe(enUS.chatInput.brokenCharacterReplaced)
+    c.box().focus()
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual(['broken \uFFFD emoji \uFFFD end'])
+    // A whole emoji is left as it is, and nothing is said.
+    c.message.value = 'fine \u{1F600}'
+    await flushPromises()
+    expect(c.message.value).toBe('fine \u{1F600}')
+    expect(
+      c.wrapper.find('[data-testid="chat-input-replaced-character"]').exists(),
+    ).toBe(false)
   })
 
   it('sends a message that is only pictures', async () => {

@@ -315,12 +315,12 @@ describe('post-editor utilities', () => {
     })
 
     it('formats bytes in kilobytes', () => {
-      expect(formatAttachmentSize(45 * 1024)).toBe('45.0 KB')
-      expect(formatAttachmentSize(45.5 * 1024)).toBe('45.5 KB')
+      expect(formatAttachmentSize(45 * 1024)).toBe('45.0 KiB')
+      expect(formatAttachmentSize(45.5 * 1024)).toBe('45.5 KiB')
     })
 
     it('formats bytes in megabytes', () => {
-      expect(formatAttachmentSize(2.5 * 1024 * 1024)).toBe('2.5 MB')
+      expect(formatAttachmentSize(2.5 * 1024 * 1024)).toBe('2.5 MiB')
     })
   })
 

@@ -52,6 +52,14 @@
       </div>
     </div>
     <div
+      v-if="replacedCharacter"
+      class="col-12 text-caption q-px-md"
+      role="status"
+      data-testid="chat-input-replaced-character"
+    >
+      {{ $t('chatInput.brokenCharacterReplaced') }}
+    </div>
+    <div
       v-if="stampUnavailable && !stampUnavailablePending"
       class="col-12 text-negative text-caption q-px-md"
       role="alert"
@@ -523,7 +531,7 @@
           icon="send"
           class="chat-send-btn q-btn"
           :aria-label="$t('a11y.sendMessage')"
-          :disable="disable || Boolean(stampUnavailable)"
+          :disable="disable || Boolean(stampUnavailable) || overBudget"
           :loading="disable"
           @mousedown.prevent="sendMessage"
         />
@@ -546,8 +554,10 @@ import { defineComponent, type PropType } from 'vue'
 import emoji from 'node-emoji'
 import {
   fitsOneMessage,
+  hasLoneSurrogate,
   messageTooLargeText,
   prepareChatImage,
+  replaceLoneSurrogates,
 } from '../../utils/chat-attachments'
 import {
   parseIcsToCalendarInvite,
@@ -656,7 +666,23 @@ export default defineComponent({
       typedStamp: null as string | null,
       multiplierSteps: STAMP_MULTIPLIER_TENTHS,
       isInputFocused: false,
+      // A lone surrogate (a broken emoji paste) was replaced with "�": said under the text.
+      replacedCharacter: false,
     }
+  },
+  watch: {
+    // Text the wallet cannot send is fixed here, before Send, the way messaging apps show broken
+    // text: each half of a broken character becomes "�", and the composer says so. Before, the
+    // wallet refused it only after Send (`lone surrogate in text`), leaving a failed message.
+    message: {
+      immediate: true,
+      handler(text: string) {
+        if (hasLoneSurrogate(text)) {
+          this.replacedCharacter = true
+          this.$emit('update:message', replaceLoneSurrogates(text))
+        } else if (!text) this.replacedCharacter = false
+      },
+    },
   },
   emits: [
     'update:message',
@@ -882,7 +908,8 @@ export default defineComponent({
       }
       this.attachError = ''
       this.typedStamp = null
-      this.$emit('sendMessage', this.innerMessage)
+      this.replacedCharacter = false
+      this.$emit('sendMessage', replaceLoneSurrogates(this.innerMessage))
     },
     blackjackClicked() {
       this.closeAttachMenu()

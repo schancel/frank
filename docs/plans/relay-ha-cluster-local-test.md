@@ -259,7 +259,8 @@ Still replica-local; each relay's startup log names them:
    `i = u32_be(commitment[0..4]) & 0x7fffffff`.
 3. **The Docker image's group-write payee.** It is the placeholder `burn`.
 4. **Sealed sender timing.** The note to self is sent unsealed right after the sealed original, so
-   the relay can link the two by timing. Delay or batch it, or accept that under the threat model?
+   the relay can link the two by timing. Resolved (2026-10-27): "People are expected to use
+   trusted relays." The timing link is accepted; the note to self is neither delayed nor batched.
 5. **Group payment exposure.** The relay accepts at most one write per (payer, nonce). Each
    unlanded write costs one landed transaction at that nonce, and at most 64 can be outstanding
    (nonce window 63). Accept this, or ask for a tighter rule?

@@ -49,3 +49,33 @@ export function nativeOperationOutcome(
     params: { network },
   }
 }
+
+/**
+ * A send whose recipient is paid while the rest of it (the change returned to the wallet's own
+ * accounts, sent from the paying account at its next nonce) is not in a block yet: how many of
+ * its transactions are in a block, of how many. "Sent" is the outcome, and it is true, but the
+ * send is not final until every transaction is, so the page says the change is still settling.
+ * Undefined once every transaction is final (in a block, or known never to land) and for any
+ * outcome other than `included`.
+ *
+ * Presentation only: the journal's outcome and its reconciliation are unchanged.
+ */
+export function nativeOperationSettling(
+  operation: Pick<EvmNativeOperationStatus, 'payment' | 'members'>,
+): { confirmed: number; total: number } | undefined {
+  if (operation.payment !== 'included') return undefined
+  const { members } = operation
+  const final = (state: (typeof members)[number]['state']) =>
+    state === 'included-success' ||
+    state === 'included-revert' ||
+    state === 'superseded'
+  if (members.every(member => final(member.state))) return undefined
+  return {
+    confirmed: members.filter(
+      member =>
+        member.state === 'included-success' ||
+        member.state === 'included-revert',
+    ).length,
+    total: members.length,
+  }
+}

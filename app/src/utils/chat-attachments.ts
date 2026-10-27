@@ -119,8 +119,8 @@ export function fitsOneMessage(
   return sentMessageBytes(text, attachments) <= MAX_SENT_MESSAGE_BYTES
 }
 
-/** "This message is too large to send: one message holds at most 8.0 MB, and this one is
- * 9.1 MB. …" (`chatInput.messageTooLarge`). `t` is the app's translate function. */
+/** "This message is too large to send: one message holds at most 8.0 MiB, and this one is
+ * 9.1 MiB. …" (`chatInput.messageTooLarge`). `t` is the app's translate function. */
 export function messageTooLargeText(
   text: string,
   attachments: readonly PostAttachment[],
@@ -234,4 +234,25 @@ export function picturePreviewText(
       ? t('chatImage.onePhoto')
       : t('chatImage.manyPhotos', { count: preview.photos })
   return preview.text ? `${label} ${preview.text}` : label
+}
+
+/** Half of a UTF-16 surrogate pair with no other half: not a character, and not text the wallet
+ * can send (a message's text is UTF-8). */
+const LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
+ * The text with every lone surrogate (what a broken emoji paste leaves) replaced by U+FFFD, the
+ * replacement character "�", as a browser does when it writes such text as UTF-8 and as
+ * messaging apps do with broken text. Text without one is returned as it is.
+ */
+export function replaceLoneSurrogates(text: string): string {
+  return text.replace(LONE_SURROGATE, '�')
+}
+
+export function hasLoneSurrogate(text: string): boolean {
+  LONE_SURROGATE.lastIndex = 0
+  const found = LONE_SURROGATE.test(text)
+  LONE_SURROGATE.lastIndex = 0
+  return found
 }

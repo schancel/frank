@@ -125,7 +125,10 @@ async function main(): Promise<boolean> {
           return await player.send(dealer, items, stampWei)
         } catch (error) {
           const pending =
-            error instanceof FundsInPendingSendError || /tied up in a previous send/.test(String((error as Error)?.message))
+            error instanceof FundsInPendingSendError ||
+            // Also when every coin is change of a send so recent the node would not take it yet
+            // (docs/protocol/chains/monad-reserve-balance.md): the wallet then names no amount.
+            /tied up in a previous send|No funds cover a stamp/.test(String((error as Error)?.message))
           // A payment the node refused stays refused for up to about fifteen minutes.
           if (!pending || attempt >= 400) throw error
           if (attempt === 1) say('the previous send has not reached the chain yet; waiting for it')

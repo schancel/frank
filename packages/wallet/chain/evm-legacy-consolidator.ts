@@ -18,6 +18,7 @@ import {
   runNativeTransactionExclusive,
 } from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
+import { readSpendRuleHead } from './evm-spend-rule'
 import type {
   SwapRecordItem,
   WalletSyncItem,
@@ -126,6 +127,9 @@ export interface EvmLegacyConsolidatorConfig {
    * and those bytes stay refused). With `nextLook`, a member is not handed to the network until
    * its account held what it spends that many blocks ago. Absent or 0: no such rule. */
   fundsSettleBlocks?: number
+  /** The head those blocks are counted from (`ChainRegistryEntry.spendRuleHead`; Monad: the
+   * finalized one). Absent: the newest block. */
+  spendRuleHead?: 'latest' | 'finalized'
 }
 /**
  * The id every frontend of the account derives for a swap: from its chain and the transaction
@@ -749,7 +753,7 @@ export class EvmLegacyConsolidator {
       const tx = Transaction.from(member.unsignedTransaction)
       const needed = tx.value + nativeMaximumFee(tx)
       for (let looks = 0; looks < 30 && !this.reobserveStopped; looks++) {
-        const head = await provider.getBlockNumber()
+        const head = await readSpendRuleHead(provider, this.config.spendRuleHead)
         if (head < fundsSettleBlocks) return
         if (
           (await provider.getBalance(

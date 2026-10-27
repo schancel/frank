@@ -9,7 +9,10 @@
  *
  * The chain's spacing rule (Monad's reserve balance) is the adapter's: money that arrived less
  * than `spendSpacingBlocks + 1` blocks ago, or an account that sent less than
- * `spendSpacingBlocks` blocks ago, is listed with the block from which it may be spent.
+ * `spendSpacingBlocks` blocks ago, is listed with the block from which it may be spent. Those
+ * blocks are counted on the watcher's head: the head the node judges a new transaction from
+ * (`readSpendRuleHead`; on Monad the finalized one, which can be several blocks behind the
+ * newest).
  */
 import type { Provider } from 'ethers'
 import {
@@ -362,6 +365,13 @@ export class EvmCoinListSync {
 
   private async read(due: readonly CoinListSource[]): Promise<void> {
     const head = await this.config.watcher.current()
+    // Under a spend rule, accounts are read as of one numbered newest block, `tip`, so whatever
+    // is listed arrived by `tip`. The blocks a coin waits are counted from `tip` and judged on
+    // the watcher's head, which may be behind it.
+    const tip =
+      (this.config.spendSpacingBlocks ?? 0) > 0
+        ? Math.max(head, await this.config.provider.getBlockNumber())
+        : undefined
     let cursor = 0
     let limited: { error: unknown } | undefined
     await Promise.all(
@@ -370,7 +380,7 @@ export class EvmCoinListSync {
           const source = due[cursor++]!
           const account = source.account.toLowerCase()
           try {
-            await this.readOne(source, head, error => {
+            await this.readOne(source, head, tip, error => {
               limited ??= { error }
             })
           } catch (error) {
@@ -399,6 +409,7 @@ export class EvmCoinListSync {
   private async readOne(
     source: CoinListSource,
     head: number,
+    tip: number | undefined,
     onRateLimit: (error: unknown) => void,
   ): Promise<void> {
     const { list, provider } = this.config
@@ -420,10 +431,17 @@ export class EvmCoinListSync {
         if (isRateLimited(error)) onRateLimit(error)
         throw error
       })
+    const now = tip ?? 'latest'
+    // Later blocks are counted from the newest block the reads may reflect.
+    const newest = tip ?? head
     const reads = [
-      observeRead(provider.getTransactionCount(account, 'latest')),
+      observeRead(provider.getTransactionCount(account, now)),
       observeRead(provider.getTransactionCount(account, 'pending')),
-      observeRead(provider.getBalance(account)),
+      observeRead(
+        tip === undefined
+          ? provider.getBalance(account)
+          : provider.getBalance(account, tip),
+      ),
       spacing > 0 && head >= lag
         ? provider.getBalance(account, head - lag).catch(optionalHistoricalRead)
         : Promise.resolve(undefined),
@@ -494,10 +512,11 @@ export class EvmCoinListSync {
       return
     }
     let spendableFromBlock: number | undefined
+    // Money the node does not see at `head - lag` arrived after it, by `newest` at the latest.
     if (settledBalance !== undefined && settledBalance < balance)
-      spendableFromBlock = head + lag
+      spendableFromBlock = newest + lag
     if (before !== undefined && before !== latest)
-      spendableFromBlock = Math.max(spendableFromBlock ?? 0, head + spacing)
+      spendableFromBlock = Math.max(spendableFromBlock ?? 0, newest + spacing)
     // A read never makes the same coin spendable sooner than the list already knew (settlement
     // set it from the block that included the account's last spend).
     if (
@@ -532,10 +551,10 @@ export class EvmCoinListSync {
           ? {}
           : {
               lastSpentInBlock:
-                live?.nonce === latest ? live.lastSpentInBlock ?? head : head,
+                live?.nonce === latest ? live.lastSpentInBlock ?? newest : newest,
             }),
         ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
-        listedInBlock: head,
+        listedInBlock: newest,
       }),
     )
     if (!this.stopped && (this.generations.get(account) ?? 0) === generation) {

@@ -136,6 +136,17 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   /** Decimal wei (a string: the registry is plain data). */
   readonly reserveBalanceWei?: string;
   readonly spendSpacingBlocks?: number;
+  /**
+   * The head a node of this network counts the spend rule's blocks from: the newest block
+   * (`latest`, the default) or the newest finalized one. Monad's transaction pool judges a new
+   * transaction against the sender's balance at its last committed block minus
+   * `spendSpacingBlocks - 1` (monad-bft v0.16.4, `monad-eth-txpool/src/pool/mod.rs`, the
+   * `InsufficientBalance` drop), while `eth_blockNumber` reports the newest proposed block. The
+   * proposed head runs ahead of the committed one, by more than two blocks when the node is
+   * loaded, so on Monad the wallet counts from the finalized head
+   * (`docs/protocol/chains/monad-reserve-balance.md`, "Money that has just arrived").
+   */
+  readonly spendRuleHead?: "latest" | "finalized";
   /** Client wallet polling policy while payments wait for this network. Absent: 500 ms. */
   readonly paymentPollIntervalMs?: number;
   readonly exchange?: ChainExchangeConfig;
@@ -186,6 +197,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
+      spendRuleHead: "finalized",
       paymentPollIntervalMs: 200,
       dex: MONAD_TESTNET_DEX,
     }),
@@ -203,6 +215,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
+      spendRuleHead: "finalized",
       paymentPollIntervalMs: 200,
     }),
     "monad-mainnet": Object.freeze({
@@ -221,6 +234,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
+      spendRuleHead: "finalized",
       paymentPollIntervalMs: 200,
     }),
     "xec-testnet": Object.freeze({

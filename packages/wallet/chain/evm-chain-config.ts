@@ -37,6 +37,9 @@ export interface EvmChainConfig {
    * its message was delivered unpaid. Read from the network's registry row; absent: no spacing.
    */
   spendSpacingBlocks?: number;
+  /** The head the spend rule's blocks are counted from (the registry row's `spendRuleHead`;
+   * Monad: the finalized block). Absent: the newest block. */
+  spendRuleHead?: "latest" | "finalized";
   /** The reserve the spacing rule protects (Monad: 10 MON). A transfer that leaves its account
    * at or above it is never reverted by the rule, so it needs no spacing. Both facts come from
    * the network's registry row (`ChainRegistryEntry`). */

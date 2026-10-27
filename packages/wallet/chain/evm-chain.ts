@@ -502,6 +502,7 @@ export function loadMonadChainConfigFromEnv(overrides?: {
       "0x000000000000000000000000000000000000dEaD",
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
+    spendRuleHead: getChainRegistryEntry(rpcChain)?.spendRuleHead,
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
     reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
       getChainRegistryEntry(rpcChain)?.reserveBalanceWei
@@ -2238,6 +2239,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             kind: chainEntry.kind,
             knownNoCodeAddress: config.stampBurnAddress,
             spendSpacingBlocks: config.spendSpacingBlocks,
+            spendRuleHead: config.spendRuleHead,
             reserveBalanceWei: config.reserveBalanceWei,
             paymentPollIntervalMs: config.paymentPollIntervalMs,
             policy: config.transactionSetPolicy,
@@ -3343,6 +3345,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 new Promise((resolve) => setTimeout(resolve, 500)),
               // The node admits a transaction against the balance of spacing + 1 blocks ago.
               fundsSettleBlocks: fundsSettleBlocks(config.spendSpacingBlocks),
+              spendRuleHead: config.spendRuleHead,
               transactionBuilder,
               mainSource: { kind: "main", address: mainAccount.address.toLowerCase() },
               ownedSource: (address) => {

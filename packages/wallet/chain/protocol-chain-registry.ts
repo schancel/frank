@@ -47,6 +47,7 @@ const clientKeys = new Set([
   "gasChargedOn",
   "reserveBalanceWei",
   "spendSpacingBlocks",
+  "spendRuleHead",
   "paymentPollIntervalMs",
   "exchange",
   "wallet",

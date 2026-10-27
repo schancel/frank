@@ -104,8 +104,38 @@ and not at `head - 4`. An account funded with 5 MON was refused in the same way 
   already taken is answered with success, and a different transaction at a nonce the node holds
   is refused with "An existing transaction had higher priority".
 
-What it means for the wallet: it signs a transfer only against the balance the account already
-had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
+### Which head the node counts from
+
+The client source explains both observations (monad-bft tag `v0.16.4`):
+
+- `monad-eth-txpool/src/pool/mod.rs`, where a transaction is inserted: the pool reads the
+  sender's balance at its last committed block plus one, minus the execution delay `k` (3), and
+  drops the transaction with `InsufficientBalance` ("Signer had insufficient balance") when that
+  balance is below its gas cost (`compute_txn_max_gas_cost`: gas limit x gas price for a type 0
+  transaction). So money is admitted once its block is at or below the last committed block
+  minus 2.
+- `eth_blockNumber` and the `latest` tag name the newest proposed block
+  (`monad-rpc/src/data/buffer/view.rs`: `BlockTags::Latest => get_latest_proposed_block_num()`).
+  The committed (`finalized`) block is normally two behind it, which is why "four blocks after
+  the funding block" held in the table above. On a loaded node it is further behind. On
+  2026-10-27, on the local network under heavy load (VM load average above 500), `latest` was
+  349456 and `finalized` 349453 for minutes. In the blackjack livecheck the same day (#1947, run
+  13), a payout spending a bet mined in block 348579 was refused when the proposed head was
+  348587 or 348588, eight blocks later.
+- `monad-rpc/src/txpool/state.rs`: the RPC server keeps its answer for each transaction hash for
+  15 minutes (`TX_EVICT_DURATION_SECONDS`). While the answer is kept, the same bytes are not
+  passed to the pool again and the kept refusal is returned. That is why a refused transaction
+  stays refused: the livecheck's payout, first refused at 21:17:20 UTC, was mined at 21:32:27,
+  as soon as an offer of the same bytes came after the 15 minutes. A transaction signed again is
+  a new hash and is judged afresh.
+
+What it means for the wallet: it counts these blocks on the finalized head, not on
+`eth_blockNumber` (`spendRuleHead: "finalized"` in the Monad rows of
+`packages/wallet/chain/chains-registry.ts`; `readSpendRuleHead` in
+`packages/wallet/chain/evm-spend-rule.ts`). The coin-list sync reads an account as of one
+numbered newest block, and money that the finalized head minus 4 does not show waits until the
+finalized head is 4 blocks past that newest block. It signs a transfer only against the balance
+the account already had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
 `packages/wallet/chain/evm-spend-rule.ts`) and waits those blocks otherwise. The window is the
 same for any amount, so it applies to every coin that just arrived: a deposit the coin-list sync
 sees, change a send made (also change of 10 MON or more, which until 2026-10-27 was listed as

@@ -436,7 +436,8 @@ describe('settlement: the chain decides', () => {
   it('funds that just arrived are listed with the block from which they may be spent', async () => {
     const f = await make({ spendSpacingBlocks: 3 })
     f.node.balances.set(at(main), MON)
-    f.node.balanceAt = () => 0n
+    // Arrived in the head block: earlier blocks show nothing.
+    f.node.balanceAt = (_account, block) => (block < f.node.head ? 0n : MON)
     await f.sync.refresh()
     expect(f.list.get(at(main), 0)?.spendableFromBlock).toBe(1004)
   })

@@ -1,6 +1,7 @@
 import { includedNativeTransfer } from '../../../test/jest/utils/native-operation'
 import type { NativeWalletHandle } from '@frank/wallet/chain'
 import {
+  classifyEvmOperation,
   notedSendPurpose,
   type EvmNativeOperationStatus,
   type NotedSendStatus,
@@ -10,6 +11,7 @@ import {
   buildWalletHistoryGroups,
   loadWalletHistory,
   readWalletDeposits,
+  mergedCoins,
   type WalletHistoryRow,
 } from './wallet-history'
 
@@ -149,6 +151,103 @@ describe('buildWalletHistoryGroups', () => {
       sharing: 'not-shared',
       ...over,
     } as EvmNativeOperationStatus)
+
+  it('shows a background merge of coins as one row, "Merged N coins", with its fee, on this device and on another', () => {
+    const target = '0x' + '0e'.repeat(20)
+    const id = 'consolidate-' + 'ab'.repeat(16)
+    const preparation = `evm-transaction-set:${id}`
+    const moves = [1, 2, 3].map(n => ({
+      role: 'payment' as const,
+      account: '0x' + n.toString(16).padStart(2, '0').repeat(20),
+      nonce: 0,
+      transactionHash: '0x' + n.toString(16).padStart(2, '0').repeat(32),
+      state: 'included-success' as const,
+      feeWei: '21',
+    }))
+    const native = buildWalletHistoryGroups({
+      chainIdentifier: 'monad-regtest',
+      swaps: [],
+      load: {
+        status: 'available',
+        stampStages: [],
+        operations: [
+          operation({
+            operationId: 'merge',
+            purpose: classifyEvmOperation(preparation).purpose,
+            recipient: target,
+            intendedValueWei: '300',
+            payment: 'included',
+            members: moves,
+          }),
+        ],
+        received: [],
+        noted: [],
+        contactPayments: [],
+        blockTimes: new Map(),
+      },
+    }).flatMap(group => group.rows)
+    expect(native).toHaveLength(1)
+    expect(native[0]!.kind === 'native' && native[0]!.operation.purpose).toBe(
+      'consolidation',
+    )
+    expect(mergedCoins(native[0]!)).toBe(3)
+    expect(native[0]!.kind === 'native' && native[0]!.feeWei).toBe('63')
+    // Another device reads the same moves from the notes: all to an account of its own, yet one
+    // row, not hidden as a move between its accounts.
+    const notes = moves.map((move, index) => {
+      const facts = { operation: { id: preparation } }
+      return sent(move.transactionHash, {
+        from: move.account,
+        to: target,
+        valueWei: '100',
+        noteIndex: index,
+        ...facts,
+        purpose: notedSendPurpose(facts),
+        toOwnAccount: true,
+        inclusion: {
+          status: 'success',
+          blockNumber: 9,
+          blockHash: '0x' + '0d'.repeat(32),
+          blockTimeMs: 9000,
+          feeWei: '21',
+        },
+      })
+    })
+    const noted = buildWalletHistoryGroups({
+      chainIdentifier: 'monad-regtest',
+      swaps: [],
+      load: {
+        status: 'available',
+        stampStages: [],
+        operations: [],
+        received: [],
+        noted: notes,
+        contactPayments: [],
+        blockTimes: new Map(),
+      },
+    }).flatMap(group => group.rows)
+    expect(noted).toHaveLength(1)
+    expect(noted[0]!.kind === 'noted' && noted[0]!.purpose).toBe(
+      'consolidation',
+    )
+    expect(mergedCoins(noted[0]!)).toBe(3)
+    expect(noted[0]!.kind === 'noted' && noted[0]!.feeWei).toBe('63')
+    // Any other move between the wallet's own accounts is still no row of its own.
+    const plain = buildWalletHistoryGroups({
+      chainIdentifier: 'monad-regtest',
+      swaps: [],
+      load: {
+        status: 'available',
+        stampStages: [],
+        operations: [],
+        received: [],
+        noted: [sent('0x' + '77'.repeat(32), { toOwnAccount: true })],
+        contactPayments: [],
+        blockTimes: new Map(),
+      },
+    }).flatMap(group => group.rows)
+    expect(plain).toHaveLength(0)
+  })
 
   it("shows another device's sends once per message, dated by their payment's block, and this device's own once", () => {
     const own = '0x' + 'aa'.repeat(32)

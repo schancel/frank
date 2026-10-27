@@ -118,6 +118,19 @@ export class EvmCoinListSync {
     this.dirty.add(account.toLowerCase())
   }
 
+  /** A move of the wallet's own landed at `account` (a merge into a fresh change account):
+   * when the account is one of the wallet's change accounts, its coin is read again from the
+   * chain, now, rather than trusted as last read. Other accounts are left as they are. */
+  noteOwnTransferIncluded(account: string): void {
+    const key = account.toLowerCase()
+    const source = this.config
+      .sources()
+      .find(candidate => candidate.account.toLowerCase() === key)
+    if (source?.origin !== 'change' || this.stopped) return
+    this.markDirty(key)
+    void this.refresh().catch(() => undefined)
+  }
+
   /** What was read of `account` so far (its empty evidence, a read still out) no longer counts:
    * the next read decides. Its coin stays selectable meanwhile; only `markDirty` withdraws it. */
   private supersedeReads(account: string): void {
@@ -521,6 +534,7 @@ export class EvmCoinListSync {
                 live?.nonce === latest ? live.lastSpentInBlock ?? head : head,
             }),
         ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
+        listedInBlock: head,
       }),
     )
     if (!this.stopped && (this.generations.get(account) ?? 0) === generation) {

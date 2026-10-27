@@ -203,6 +203,44 @@ async function readLevelCopy(dbDir: string): Promise<PoolRecords | 'unreadable' 
   }
 }
 
+/** The accounts and keys of a wallet's coin list (`evm-coin-list`): every coin carries its own
+ * key, including the account a background merge went to, whose index lies in the change
+ * branch's reserved half and so is never reached by walking the change records. */
+async function readCoinListKeys(dbDir: string): Promise<{ address: string; privateKey: string; origin: string }[] | 'unreadable' | undefined> {
+  if (!existsSync(dbDir)) return undefined
+  const copy = mkdtempSync(join(tmpdir(), 'frank-funds-read-'))
+  const found = new Map<string, { address: string; privateKey: string; origin: string }>()
+  try {
+    cpSync(dbDir, join(copy, 'db'), { recursive: true })
+    rmSync(join(copy, 'db', 'LOCK'), { force: true })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = level(join(copy, 'db')) as any
+    try {
+      for await (const [, value] of db.iterator({})) {
+        let row: { account?: unknown; privateKey?: unknown; origin?: unknown }
+        try {
+          row = JSON.parse(value)
+        } catch {
+          continue
+        }
+        if (typeof row?.account !== 'string' || typeof row.privateKey !== 'string') continue
+        found.set(row.account.toLowerCase(), {
+          address: row.account,
+          privateKey: row.privateKey,
+          origin: typeof row.origin === 'string' ? row.origin : 'coin',
+        })
+      }
+    } finally {
+      await db.close()
+    }
+    return [...found.values()]
+  } catch {
+    return 'unreadable'
+  } finally {
+    rmSync(copy, { recursive: true, force: true })
+  }
+}
+
 function walk(root: string, visit: (dir: string, names: string[]) => void, depth = 0): void {
   if (depth > 8) return
   let names: string[]
@@ -260,6 +298,16 @@ async function poolAccounts(
   for (let i = 0; i < change.nextIndex + INDEX_MARGIN; i += 1) {
     const { address, privateKey } = changeKeyring.deriveSubAccount(i)
     accounts.push({ role: `change ${i}`, address, privateKey })
+  }
+  const listed = new Set(accounts.map(account => account.address.toLowerCase()))
+  for (const dir of storageDirs) {
+    const coins = await readCoinListKeys(join(dir, 'evm-coin-list'))
+    if (coins === 'unreadable') notes.push(`the coin list in ${dir} could not be read`)
+    for (const coin of coins === 'unreadable' ? [] : coins ?? [])
+      if (!listed.has(coin.address.toLowerCase())) {
+        listed.add(coin.address.toLowerCase())
+        accounts.push({ role: `coin (${coin.origin})`, address: coin.address, privateKey: coin.privateKey })
+      }
   }
   return {
     accounts,

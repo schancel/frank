@@ -37,6 +37,7 @@ import {
 } from "./evm-stealth-payments";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 import { createLegacyTransactionSetPayments } from "./evm-legacy-transaction-set";
+import { createEvmCoinConsolidator } from "../evm-coin-consolidator";
 import { createEvmTransactionSetSubmission } from "../evm-transaction-set-submission";
 import { EvmTransactionSetInsufficientFundsError } from "../evm-transaction-set-types";
 import { evmTransactionSetCapability } from "../evm-transaction-set-public";
@@ -275,6 +276,7 @@ import {
 import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
 import { LevelChangePoolStore } from "../storage/level-change-pool-store";
 import { SEED_REWALK_MS } from "../evm-coin-list-sync";
+import { EvmMergeTargets } from "../evm-merge-targets";
 import {
   InMemoryStampPaymentJournal,
   LevelStampPaymentJournal,
@@ -2212,7 +2214,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             burnAddress: config.stampBurnAddress,
           });
           const coinStore = coins;
+          const mergeTargets = new EvmMergeTargets(config.networkId, changeKeyring);
           const transactionSetRuntime = installEvmTransactionSetRuntime({
+            mergeTargets,
             coinList,
             coinStore,
             provider,
@@ -2315,6 +2319,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 return results;
               }).finally(() => invalidateBalanceRead()),
           };
+          // Background coin consolidation: merges the small coins stamps and payouts leave once
+          // the pool is above the coin distribution's band, through the same transaction sets
+          // as every payment. Hosts call it from their idle tick (`maintainCoins`).
+          const coinConsolidator = createEvmCoinConsolidator({
+            chainIdentifier: config.networkId,
+            coins: coinList,
+            preparer: transactionSetPreparer,
+            operations: () => transactionOwner.nativeJournal!.list(),
+            // A merge's account is derived from the coins it moves: the same on every device.
+            targetFor: (anchor) => mergeTargets.targetFor(anchor),
+            submit: (prepared) => transactionSetSubmission.sendTransaction(prepared),
+            refresh: () => transactionSetRuntime.refresh(),
+            // Once a move has reached it, the account is watched as the wallet's own and read.
+            listTarget: async (target) => {
+              mergeTargets.watch(target);
+              await transactionSetRuntime.coinListSync.refreshAccounts([target.account]);
+            },
+          });
           const publicTransactionSets = evmTransactionSetCapability(
             transactionSetPreparer,
             prepared => transactionSetSubmission.sendTransaction(prepared),
@@ -2929,6 +2951,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   admission
                 ).cancelUnsigned(operationId);
               });
+            },
+            // One step of background coin maintenance, from a host's idle tick: a merge of the
+            // pool's small coins when it is above the coin distribution's band, or the resume of
+            // the merge still on its way. Never at open; never holds a send.
+            async maintainCoins() {
+              const internals = evmWalletInternals(wallet);
+              if (internals.closed) return { outcome: "idle" as const };
+              try {
+                // From the coin list as the wallet's own reads keep it: an idle wallet's
+                // maintenance step makes no node request unless it may have a merge to make
+                // or finish.
+                return await transactionOwner.runLifetime(() => coinConsolidator.maintain());
+              } catch (error) {
+                if (isChainUnreachableError(error)) {
+                  throw error instanceof ChainUnreachableError
+                    ? error
+                    : new ChainUnreachableError(error);
+                }
+                throw error;
+              } finally {
+                invalidateBalanceRead();
+              }
             },
             // Bounded re-observation of broadcast members nothing has seen confirm. Called from
             // the hosts' existing polls, never at open. The network reads run under the wallet

@@ -4,6 +4,7 @@ import type {
   EvmCoinListOrigin,
   EvmListCoin,
 } from './evm-coin-list'
+import type { EvmCoinDistribution } from './evm-coin-distribution'
 import type {
   EvmNativeOperationJournal,
   EvmNativeOperation,
@@ -90,6 +91,11 @@ export interface EvmTransactionSetPolicy {
   readonly radix: number
   readonly jitterBps: number
   readonly maxChangeOutputs: number
+  /** The coin distribution (`evm-coin-distribution.ts`) the splitter and background
+   * consolidation both read. When present, a payment makes only as many change coins as keep
+   * the wallet's pool within its band. The production policy always sets it, with `dustWei` and
+   * `maxChangeOutputs` taken from it. */
+  readonly coinDistribution?: EvmCoinDistribution
   readonly head: number
   readonly spendRule?: {
     readonly belowWei: bigint
@@ -134,6 +140,9 @@ export interface EvmTransactionSetPreparerOptions {
    * independent durable derivation ownership before it retires the tombstone. */
   readonly onCancellationCheckpoint?: (operation: EvmNativeOperation) => Promise<void>
   readonly canSelectCoin?: (coin: EvmListCoin) => boolean
+  /** A payment of a set was seen included. Synchronous, no I/O: composition marks the
+   * destination for a chain read when it is one of the wallet's own fresh accounts. */
+  readonly onPaymentIncluded?: (destination: string) => void
   /** Synchronous cached observation check, only after insufficient selection. Never performs
    * RPC or changes reservations; throws the retained observation error when funding is unknown. */
   readonly assertFundingObserved?: () => void

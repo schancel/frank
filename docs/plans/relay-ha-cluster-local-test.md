@@ -306,10 +306,35 @@ Still replica-local; each relay's startup log names them:
     - combined operations;
     - a message the relay already stored.
 12. **Operator blackjack minimum on the wire.** Should the dealer advertise it?
-13. **Background coin consolidation** (approved 2026-10-26, not built yet). Proposed defaults:
-    - run only when idle, and never touch claimed coins;
-    - start above about 8 spendable coins, merging into one fresh account;
-    - skip coins that cost more to move than they're worth.
+13. **Background coin consolidation.** Resolved: approved 2026-10-26 (a 20 MONR Send max had
+    been split into 56 transfers costing 0.12 in fees); 2026-10-27: "It needs to be such that it
+    doesn't sweep shit we just created as change... Like that would be silly if it's not designed
+    with the same thresholds in mind." Built in `packages/wallet/evm-coin-distribution.ts` (one
+    policy read by both the change splitter and the merge) and `evm-coin-consolidator.ts`:
+    - A pool coin is a stealth, stamp, change or HD sub-account coin worth at least the payment
+      floor (10 transfer fees). The main and identity accounts are not counted or merged.
+    - The band's top is 8 pool coins (twice the 4 change outputs one payment may make). A
+      payment makes only as many change coins as fit under it; with no room its residual stays
+      on its source at the next nonce. Sends alone never start a merge.
+    - Above 8, an idle tick (app and bot host, nothing being sent or reconciled) merges the
+      smallest coins into one fresh change account until 5 are left (4 + the merged one), at most
+      64 per merge. It never takes the newest 4 coins, a coin listed fewer than 3 blocks ago, a
+      coin an operation holds, or a coin Monad's spend rule keeps; a coin worth less than its
+      move is skipped.
+    - A merge is an ordinary transaction set: journalled before broadcast, resumed with the same
+      bytes after a restart, noted to the account's other devices like any send, and shown in
+      History as one row, "Merged N coins", with its fee. Other sends pick other coins meanwhile;
+      nothing waits for it.
+    - The merge's account is derived, not allocated (AGENTS.md §5): a keyed hash of the merge's
+      lowest [account, nonce] input and the chain, under a salt from the account's own keys,
+      picks an index in the upper half of the change branch, which the change allocator (counting
+      up from 0) never reaches. Two devices that see the same pool sign the same transactions to
+      the same account. A device that knows an emptied account (from its coin list or its seed
+      walk) reads the target of that account's last nonce, so a restored device finds the merged
+      money; `funds:sweep` reads it from the coin list.
+    - Checked on solonet by `yarn --cwd packages/bot regtest:monad-consolidation` (30 coins are
+      merged down to 5, a paid message sent during the merge is delivered, funds go back to the
+      faucet). Not in CI.
 14. **DM size versus the 8 MiB acceptance line.** Resolved: the owner chose to raise the limit
     (2026-10-26). A DM holds up to 8 MiB of ciphertext and a relay reads requests up to 12 MiB.
     A sealed message's note to self now holds what a DM carries (owner, 2026-10-26: a note to

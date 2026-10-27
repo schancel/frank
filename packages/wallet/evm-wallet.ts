@@ -281,6 +281,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   resumeNativeOperation!: EvmChainWalletHandle["resumeNativeOperation"];
   cancelUnsignedNativeOperation!: EvmChainWalletHandle["cancelUnsignedNativeOperation"];
   reobserveNativeOperations!: EvmChainWalletHandle["reobserveNativeOperations"];
+  maintainCoins!: EvmChainWalletHandle["maintainCoins"];
   watchNativeOperation!: EvmChainWalletHandle["watchNativeOperation"];
   sendLegacy!: EvmChainWalletHandle["sendLegacy"];
   ensureLegacySubAccount!: EvmChainWalletHandle["ensureLegacySubAccount"];

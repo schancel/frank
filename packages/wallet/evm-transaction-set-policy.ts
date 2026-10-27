@@ -1,6 +1,6 @@
 /** Cached network observations. No construction call performs network I/O. */
 import type { Provider } from 'ethers'
-import { evmPaymentFloorWei } from './chain/payment-floor'
+import { evmCoinDistribution } from './evm-coin-distribution'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type EvmTransactionSetPolicy,
@@ -53,6 +53,8 @@ export class EvmTransactionSetPolicyCache {
     const price = this.gasPriceWei
     if (price === undefined)
       throw new EvmTransactionSetPolicyUnavailableError()
+    // One distribution for the splitter and background consolidation (owner, 2026-10-27).
+    const distribution = evmCoinDistribution(price)
     return {
       sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
       gasPriceWei: price,
@@ -85,12 +87,13 @@ export class EvmTransactionSetPolicyCache {
       changeGasLimit: 21_000n,
       // No change output below the payment floor: its owner could not move it for less
       // than a tenth of its value.
-      dustWei: evmPaymentFloorWei(price),
+      dustWei: distribution.floorWei,
       radix: 2,
       jitterBps: 1_500,
       // A small cap on change per payment: repeated sends add spendable coins a few at a
       // time, rather than one large residual splitting into many transactions at once.
-      maxChangeOutputs: 4,
+      maxChangeOutputs: distribution.maxChangeOutputs,
+      coinDistribution: distribution,
       head: this.head,
       ...(this.options.spendSpacingBlocks === undefined
         ? {}

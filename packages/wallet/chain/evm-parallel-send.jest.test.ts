@@ -1355,19 +1355,59 @@ describe('parallel paid messages', () => {
     ).toEqual(['pending'])
   })
 
-  it('a refused root-paid attempt keeps its reservation while the next send fails without a global wait', async () => {
+  /** A message paid from the funded root account alone: the root's balance is split into the
+   * payment and twenty change moves on consecutive nonces, in an order the wallet shuffles. The
+   * root's moves ahead of the payment go to the node before the relay has the message; those
+   * after it only once the relay stored it. Pins the payment at the root's nonce `position`
+   * (the wallet's entropy is fixed so its shuffle leaves it there) and refuses the message
+   * before the relay stores anything. Returns the send's outcome. */
+  async function refuseRootPaidAt(position: number) {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
     offlineChain.broadcastDown = true
     offlineChain.relayBroadcasts = false
+    // The shuffle swaps index i with floor(r * (i + 1)): with r fixed the payment, first in
+    // line, moves only at the highest i below 1/r - 1 and stays there.
+    jest.spyOn(Math, 'random').mockReturnValue(position === 0 ? 1 - 2 ** -20 : 1 / (position + 1.5))
+    const handed: Transaction[][] = []
+    relay.beforeResponse = async transactions => { handed.push(transactions) }
     refuseBeforeExposure('insufficient_total')
     const first = await send(1).catch(error => error)
-    expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
-    const original = graphBytes()
-    await expect(send(2)).rejects.toBeInstanceOf(InsufficientStampFundsError)
-    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
-    expect(graphBytes()).toEqual(original)
-    expect(f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: first.payloadHashes[0] })).toEqual(['pending'])
+    expect(handed).toHaveLength(1)
+    expect(handed[0]!.map(tx => [tx.from!.toLowerCase(), tx.nonce])).toEqual([[main, position]])
+    // Exactly the root's moves ahead of the payment were handed to the node.
+    expect(offlineChain.walletBroadcasts.map(raw => Transaction.from(raw).nonce))
+      .toEqual(Array.from({ length: position }, (_, nonce) => nonce))
+    return { main, first }
+  }
+
+  // The root account holds 21 moves; every place the shuffle can put the payment is covered.
+  it.each(Array.from({ length: 20 }, (_, index) => index + 1))(
+    'a refused root-paid attempt keeps its reservation while the next send fails without a global wait (payment at root nonce %i)',
+    async position => {
+      const { main, first } = await refuseRootPaidAt(position)
+      expect(first).toBeInstanceOf(MonadStampPendingAttemptError)
+      const original = graphBytes()
+      await expect(send(2)).rejects.toBeInstanceOf(InsufficientStampFundsError)
+      expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+      expect(graphBytes()).toEqual(original)
+      expect(f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: first.payloadHashes[0] })).toEqual(['pending'])
+    },
+  )
+
+  // The layout that made the old single-layout version of the test above flaky in CI: with the
+  // payment at the root's first nonce nothing of the set reached the node, so the home relay's
+  // refusal before storing proves every signed byte unexposed. The message ends and the root account is free again.
+  it('a refused root-paid attempt with the payment at the root\'s first nonce ends the message and frees the root account', async () => {
+    const { main, first } = await refuseRootPaidAt(0)
+    expect(first).toBeInstanceOf(MonadStampTerminalError)
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(graphBytes()).toEqual([])
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
+    // The next message is paid from the root again (and refused again): no reservation held it.
+    await expect(send(2)).rejects.toBeInstanceOf(MonadStampTerminalError)
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
   })
 
   describe('a failed earlier send does not hold later ones', () => {

@@ -953,6 +953,10 @@ export type OutgoingFailureReason =
   /** Sending it would have cost more network fee than the user approved; nothing was paid or
    * sent and its payment's funds are available again. Review and send it again. */
   | 'fee-exceeded'
+  /** Another device of this account spent a coin its payment (a payment to a contact together
+   * with its stamp) stood on before the relay stored it. Nothing was paid or sent and its funds
+   * are available again; the user sends it again. */
+  | 'payment-taken'
   /** The funds this message needs are held by an earlier message whose payment cannot finish by
    * itself (`detail` names its payload digest). Nothing was paid for this one; retrying the
    * earlier message (its same bytes) is what can free them. */

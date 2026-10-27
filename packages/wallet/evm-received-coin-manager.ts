@@ -44,7 +44,7 @@ import {
   type ReceivedCoinSweep,
 } from "./chain/chain-wallet";
 import {
-  nativeMemberSuperseded,
+  nativeMemberEnded,
   type EvmNativeOperation,
 } from "./storage/evm-native-operation-journal";
 import {
@@ -980,8 +980,8 @@ export function createEvmReceivedCoinAndContactManager(
     await getTopicOwner().runLifetime(() => lifecycle.observe(id, wallet.provider));
     const observed = await preparer.readOperation(id);
     const transfer = primaryMember(observed);
-    if (!observed || !transfer || !nativeMemberSuperseded(transfer) ||
-        !observed.members.every((member) => nativeMemberSuperseded(member) ||
+    if (!observed || !transfer || !nativeMemberEnded(transfer) ||
+        !observed.members.every((member) => nativeMemberEnded(member) ||
           member.observation.state === "included-success" ||
           member.observation.state === "included-revert"))
       return payment;

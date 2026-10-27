@@ -39,6 +39,7 @@ export function failedBeforePayment(
   return (
     reason === 'stamp-below-fee' ||
     reason === 'fee-exceeded' ||
+    reason === 'payment-taken' ||
     reason === 'blocked' ||
     reason === 'funds-in-pending-send' ||
     reason === 'group-price-changed'
@@ -73,6 +74,7 @@ const FAILURE_REASON_KEYS: Record<OutgoingFailureReason, string | undefined> = {
   'group-price-changed': 'outgoing.reasonGroupPriceChangedNoAmount',
   'stamp-below-fee': 'outgoing.reasonStampBelowFee',
   'fee-exceeded': 'outgoing.reasonFeeExceeded',
+  'payment-taken': 'outgoing.reasonPaymentTaken',
   'blocked': 'outgoing.reasonBlocked',
   'too-large': 'outgoing.reasonTooLarge',
   'unencodable': 'outgoing.reasonUnencodable',

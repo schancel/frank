@@ -207,6 +207,7 @@ function fromStored(row: StoredEvmListCoin): EvmListCoin {
 export interface EvmCoinAccountProjection {
   put: EvmCoinList['put']
   recordMined: EvmCoinList['recordMined']
+  recordGone: EvmCoinList['recordGone']
 }
 
 export class EvmCoinList {
@@ -375,6 +376,10 @@ export class EvmCoinList {
           recordMined: (coin, outcome) => {
             check(coin.account)
             return this.recordMinedAccount(coin, outcome)
+          },
+          recordGone: coin => {
+            check(coin.account)
+            return this.recordGoneAccount(coin)
           },
         })
       } catch (error) {

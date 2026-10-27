@@ -24,7 +24,7 @@ import type {
 import type { RecordStore } from '../storage/evm-coin-store'
 import {
   nativeMaximumFee,
-  nativeMemberSuperseded,
+  nativeMemberEnded,
   type EvmNativeOperation,
 } from '../storage/evm-native-operation-journal'
 import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
@@ -453,7 +453,7 @@ export function createEvmStealthPayments(
       if ('feeWei' in member.observation) fee += BigInt(member.observation.feeWei)
     const feeKnown =
       own.some((member) => 'feeWei' in member.observation) &&
-      own.every((member) => 'feeWei' in member.observation || nativeMemberSuperseded(member))
+      own.every((member) => 'feeWei' in member.observation || nativeMemberEnded(member))
     // Handed to the chain: the set's submission was authorized, or some transfer was exposed.
     const submitted =
       journal.submissionAuthorized === true ||
@@ -476,7 +476,7 @@ export function createEvmStealthPayments(
         ? BigInt(member.transactionSet!.intendedValueWei ?? tx.value)
         : BigInt(row.allocation!.sources[i]!.recipientAmountAtomic)
       const txHash = member.signed!.transactionHash
-      const superseded = nativeMemberSuperseded(member)
+      const superseded = nativeMemberEnded(member)
       if (observation.state === 'included-revert' || superseded) {
         known++
         failed++
@@ -952,7 +952,7 @@ export function createEvmStealthPayments(
             if (
               member.observation.state !== 'included-success' &&
               member.observation.state !== 'included-revert' &&
-              !nativeMemberSuperseded(member)
+              !nativeMemberEnded(member)
             )
               held.add(member.source.address)
       }

@@ -66,6 +66,15 @@ export interface StoredMessage {
    * used, the block that used it not holding this payment) while the relay held no copy of the
    * message. None of them can ever pay. The message's one payment is the current operation's. */
   replacedOperationIds?: string[]
+  /**
+   * Shared-set sends only, after delivery: a payment of the message whose nonce the chain showed
+   * used by a different transaction (another device of the account spent the same coin), so it
+   * can never land, paid again to the same destination with the same value from other coins.
+   * `payment` is its position in `payments`; `operationId` (`stamp-<message ID>-p<payment>`) the
+   * transaction set that pays it, written here before that set is built, so a payment is paid
+   * again once at most. `state` is what the chain shows of that set's payment.
+   */
+  repayments?: { payment: number; operationId: string; state: 'pending' | 'spent' | 'reverted' }[]
   /** A stamp stage inside an already prepared same-wallet payment operation. */
   transactionSetStageId?: string
   paymentOperationId?: string
@@ -317,6 +326,13 @@ export function validateSharedStoredMessage(row: StoredMessage): void {
       (row.payments.length !== 0 || row.otherTransactions.length !== 0)) ||
     (row.outcome === 'delivered' && row.payments.length === 0) ||
     (row.request !== undefined && row.payments.length === 0) ||
+    (row.repayments !== undefined && (row.outcome !== 'delivered' || !Array.isArray(row.repayments) ||
+      row.repayments.some((repayment, at) =>
+        !Number.isSafeInteger(repayment.payment) || repayment.payment < 0 ||
+        repayment.payment >= row.payments.length ||
+        row.repayments!.findIndex(other => other.payment === repayment.payment) !== at ||
+        repayment.operationId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}-p${repayment.payment}` ||
+        !['pending', 'spent', 'reverted'].includes(repayment.state)))) ||
     (row.tiedUpWei !== undefined && (row.reason !== 'funds_tied_up' || row.outcome !== 'dead' ||
       typeof row.tiedUpWei !== 'string' || !/^[0-9]+$/.test(row.tiedUpWei))) ||
     !Number.isSafeInteger(row.createdAt) || row.createdAt < 0

@@ -987,6 +987,8 @@ export const rawFrFR = {
       'Son paiement est inférieur au minimum de {amount} {unit} : dix fois ce que le réseau facture pour le déplacer. Rien n’a été payé.',
     reasonFeeExceeded:
       'L’envoyer coûterait plus de frais de réseau que vous n’en avez approuvé. Rien n’a été payé ; ses fonds sont de nouveau disponibles.',
+    reasonPaymentTaken:
+      'Un autre appareil de ce compte a dépensé les mêmes fonds au même moment. Rien n’a été payé ni envoyé ; ses fonds sont de nouveau disponibles. Envoyez-le de nouveau.',
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:
       "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Rien n'a été payé pour celui-ci. Réessayez une fois ce message parti.",

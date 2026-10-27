@@ -2,7 +2,7 @@ import { Transaction } from "ethers";
 import {
   landedSigning,
   memberSignings,
-  nativeMemberSuperseded,
+  nativeMemberEnded,
   type EvmNativeOperation,
 } from "../storage/evm-native-operation-journal";
 
@@ -40,7 +40,7 @@ export function classifyEvmOperation(
   stageId?: string
 ): { purpose: EvmSendPurpose; messageId?: string } {
   const stamp = (id: string | undefined) =>
-    /^stamp-([0-9a-f]{32})(?:-r[0-9]+)?$/.exec(id ?? "");
+    /^stamp-([0-9a-f]{32})(?:-[rp][0-9]+)?$/.exec(id ?? "");
   const staged = stamp(stageId);
   if (staged) return { purpose: "stamp", messageId: staged[1]! };
   if (preparationId?.startsWith("stealth-payment:"))
@@ -164,7 +164,10 @@ export function summarizeEvmNativeOperation(
   if (value.toString() !== row.intendedValueWei)
     throw new Error("Native operation recipient evidence does not match");
   const stateOf = (member: EvmNativeOperation["members"][number]) =>
-    nativeMemberSuperseded(member) ? ("superseded" as const) : member.observation.state;
+    // Abandoned (given up on chain evidence) reads as superseded: it will not land.
+    member.observation.state === "abandoned" || nativeMemberEnded(member)
+      ? ("superseded" as const)
+      : member.observation.state;
   const members = row.members.map((member) => {
     const observation = member.observation;
     const included = "transactionHash" in observation;

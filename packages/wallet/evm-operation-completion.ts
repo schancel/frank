@@ -1,7 +1,7 @@
 /** Local completion bookkeeping. A receipt never asserts atomic external settlement. */
 import {
   evmNativeOperationDigest,
-  nativeMemberSuperseded,
+  nativeMemberEnded,
   type EvmNativeCompletionReceipt,
   type EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
@@ -13,7 +13,7 @@ export function transactionSetFinanciallyComplete(operation: EvmNativeOperation)
       member.transactionSet?.inventoryApplied === true && (
         member.observation.state === 'included-success' ||
         member.observation.state === 'included-revert' ||
-        nativeMemberSuperseded(member)))
+        nativeMemberEnded(member)))
 }
 
 /** Successful members own a self-sync obligation until its transport checkpoint is

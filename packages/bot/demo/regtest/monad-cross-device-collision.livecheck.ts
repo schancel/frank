@@ -13,9 +13,22 @@
  *
  * Checked:
  *   1. B's message is delivered, paid once, in full, from another coin; its first signed payment
- *      never lands; B no longer offers the taken coin.
+ *      never lands; B no longer offers the taken coin. Every transaction of B's taken set is
+ *      decided by the chain (landed, its nonce used by another, or given up because one it stood
+ *      on was), none of it holds an account, and B's next message goes through (it is not
+ *      refused as money tied up in a send that can never land).
  *   2. The same with B's app closed in the middle: closed before it sent anything, reopened, and
  *      closed again just after it recorded that the payment is to be built again, then reopened.
+ *   3. The same when A's transaction moves a different value (most of the coin): B's change
+ *      transfers after the taken nonce were signed against money that is gone, and are given up.
+ *   4. A's transaction lands while the relay already holds B's message (A's is on the network
+ *      first; the relay's look at the account does not show it yet): B's message is delivered and
+ *      its taken payment is paid again, the same amount to the same destination, once. When the
+ *      relay saw A's transaction first and refused B's message, the round reports that and checks
+ *      round 1's outcome instead: which of the two happens is a race the check does not control.
+ *   5. B's message carries a payment to a contact together with its stamp (one combined set),
+ *      and A takes a coin of that set: the message ends saying another device spent the same
+ *      funds, nothing of it is paid, nothing stays held, and B's next message goes through.
  *
  * Every account the wallets used is swept back to the faucet at the end.
  */
@@ -27,6 +40,9 @@ import { join } from 'path'
 import { formatEther, parseEther, Transaction, Wallet } from 'ethers'
 
 import { evmWalletInternals } from '@frank/wallet/evm-wallet'
+import { evmStealthTransactionSetOperationId } from '@frank/wallet/chain/evm-stealth-payments'
+import { recipientAssetPaymentFromPrepared } from '@frank/wallet/message-item-plugins/stealth-asset/from-prepared'
+import type { StealthPaymentIntent } from '@frank/wallet/stealth-payment'
 import { nativeMemberSuperseded } from '@frank/wallet/storage/evm-native-operation-journal'
 import {
   LevelOutgoingMessageStore,
@@ -44,6 +60,10 @@ const FUND_WEI = parseEther('2')
 /** What bob pays gina each round: the coin both of gina's devices take first. */
 const SHARED_COIN_WEI = parseEther('0.3')
 const STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI * 3n
+/** Round 3: what A's message pays, most of the shared coin. */
+const A_LARGE_STAMP_WEI = parseEther('0.25')
+/** Round 5: what B pays bob's contact address together with its stamp. */
+const CONTACT_WEI = parseEther('0.01')
 
 /** Every row the wallets in this process write, by payload digest, in order. */
 const written = new Map<string, StoredMessage[]>()
@@ -127,6 +147,69 @@ async function reconcileUntilDelivered(device: RealWallet, digest: string, timeo
   }
 }
 
+/** The faucet pays `address`; other checks share the faucet, so a payment that lost the race for
+ * the faucet's nonce is sent again. */
+async function fundFromFaucet(stack: RegtestStack, address: string, amount: bigint): Promise<void> {
+  for (let tries = 0; ; tries++) {
+    try {
+      await monadOf(stack).fund(address, amount)
+      return
+    } catch (error) {
+      const text = `${(error as Error).message}`
+      if (tries >= 10 || !/nonce too low|nonce has already been used|higher priority|already known|replacement/i.test(text)) throw error
+      await sleep(2000)
+    }
+  }
+}
+
+/** Every transaction of `operationId` that the chain decided: landed, its nonce used by another
+ * transaction, or given up because one it stood on was. Waits up to `timeoutMs`; the wallet's
+ * own passes (reconcile and re-observation) are what decide them. */
+async function waitSettled(device: RealWallet, operationId: string, digest: string, label: string, timeoutMs = 180_000): Promise<string[]> {
+  const preparer = evmWalletInternals(device.handle).transactionSetPreparer!
+  const describe = async () => {
+    const operation = await preparer.readOperation(operationId)
+    return operation?.members.map(member =>
+      `${member.transactionSet?.role} ${member.source.address}:${Transaction.from(member.unsignedTransaction).nonce} ${
+        nativeMemberSuperseded(member) ? 'used by another' : member.observation.state}`) ?? []
+  }
+  const settled = (states: string[]) => states.every(state => /used by another|included-|abandoned/.test(state))
+  let states = await describe()
+  for (const deadline = Date.now() + timeoutMs; !settled(states) && Date.now() < deadline; ) {
+    await device.chain.directMessages.reconcileAttempts({ wallet: device.handle, payloadDigests: digest ? [digest] : [] }).catch(() => undefined)
+    await device.handle.reobserveNativeOperations?.().catch(() => undefined)
+    await sleep(3000)
+    states = await describe()
+  }
+  assert.ok(settled(states), `${label}: B's taken set ${operationId} is decided by the chain (${states.join('; ')})`)
+  // None of the set's coins is still held by it (another send may hold the same account since).
+  const held = evmWalletInternals(device.handle).coinList!.all().filter(coin => coin.holder === operationId && coin.state !== 'spent')
+  assert.deepEqual(
+    held.map(coin => `${coin.account}:${coin.nonce} ${coin.state}`), [],
+    `${label}: B's taken set ${operationId} holds no coin`,
+  )
+  return states
+}
+
+/** B's next message goes through once the sends before it are decided: it is not refused as
+ * money tied up in a send that can never land. `settled` are B's operations for this round (the
+ * taken one and the one that paid again), each waited for first. */
+async function nextSendGoesThrough(device: RealWallet, to: string, label: string, settled: string[]): Promise<void> {
+  const digest = '' // reconcile everything B holds
+  for (const id of settled) await waitSettled(device, id, digest, label)
+  for (let tries = 0; ; tries++) {
+    try {
+      await device.send(to, [{ type: 'text', text: `${label}: B's next message ${Date.now()}` }], STAMP_WEI)
+      return
+    } catch (error) {
+      // Change of B's own just-landed transactions may be spendable a few blocks later.
+      if (tries >= 20 || (error as Error).name !== 'InsufficientStampFundsError')
+        throw new Error(`${label}: B's next message was refused: ${(error as Error).name}: ${(error as Error).message}`)
+      await sleep(3000)
+    }
+  }
+}
+
 async function main() {
   const stack = await startRegtestStack({ chains: ['monad-regtest'] })
   const monad = monadOf(stack)
@@ -146,14 +229,13 @@ async function main() {
     let b = await openDevice(stack, 'gina-b', 'gina-a')
     devices.push(b)
     assert.equal(a.address, b.address, 'both devices are one account')
-    await monad.fund(bob.mainAccount, FUND_WEI)
-    await monad.fund(a.mainAccount, FUND_WEI)
+    await fundFromFaucet(stack, bob.mainAccount, FUND_WEI)
+    await fundFromFaucet(stack, a.mainAccount, FUND_WEI)
     console.log(`state ${stack.stateDir}; gina ${a.address} (main ${a.mainAccount}), bob ${bob.address}`)
 
-    const round = async (label: string, interruptions: boolean, giver: RealWallet) => {
-      // `giver` pays gina: both devices read the message and list the same received coin.
+    /** gina receives a coin both devices list (from `giver`). */
+    const shareCoin = async (label: string, giver: RealWallet) => {
       let gift: string
-      // bob's change from the last round may be spendable only a few blocks later.
       for (let tries = 0; ; tries++) {
         try {
           gift = await giver.send(a.address, [{ type: 'text', text: `${label} gift ${Date.now()}` }], SHARED_COIN_WEI)
@@ -165,6 +247,16 @@ async function main() {
       }
       await a.call({ op: 'receive', digest: gift })
       await b.receive(message => message.payloadDigest === gift)
+    }
+
+    const round = async (
+      label: string,
+      interruptions: boolean,
+      giver: RealWallet,
+      variant: 'same-coin' | 'different-value' | 'relay-stored' = 'same-coin',
+    ) => {
+      // `giver` pays gina: both devices read the message and list the same received coin.
+      await shareCoin(label, giver)
 
       // B signs its payment and is held just before it hands anything out.
       let reachedHold!: (digest: string) => void
@@ -193,11 +285,38 @@ async function main() {
       console.log(`${label}: B signed ${bTaken.map(tx => `${tx.hash} (${tx.from} nonce ${tx.nonce})`).join(', ')}`)
 
       // A pays from the same coin; the chain takes A's transaction.
-      const aSent = await a.call<{ digest: string; txHashes: string[] }>({
-        op: 'send', to: bob.address, text: `${label} from device A`, stampWei: STAMP_WEI,
-      })
+      let relayStored: boolean | undefined
+      let aHashes: string[]
+      if (variant === 'relay-stored') {
+        // A's transaction goes to the network first, and B is let go at once: the relay reads
+        // the account before the network shows A's transaction used the nonce, stores B's
+        // message, and B's payment then cannot land.
+        const keys = new Map(await a.call<[string, string][]>({ op: 'keys' }))
+        const victim = bTaken[0]!
+        const key = keys.get(victim.from!.toLowerCase())
+        assert.ok(key, `${label}: A holds the key of ${victim.from}`)
+        const signer = new Wallet(key!, monad.provider)
+        const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
+        const raw = await signer.signTransaction({
+          type: 0, chainId: (await monad.provider.getNetwork()).chainId, to: monad.faucetAddress,
+          value: STAMP_WEI * 2n, nonce: victim.nonce, gasLimit: TRANSFER_GAS, gasPrice,
+        })
+        const aHash = Transaction.from(raw).hash!
+        await monad.provider.send('eth_sendRawTransaction', [raw])
+        release()
+        const outcome = await bOutcome
+        relayStored = !/Another transaction used the coin/.test(outcome)
+        console.log(`${label}: A's ${aHash} sent first; B's send ended: ${outcome}`)
+        aHashes = [aHash]
+      } else {
+        const aSent = await a.call<{ digest: string; txHashes: string[] }>({
+          op: 'send', to: bob.address, text: `${label} from device A`,
+          stampWei: variant === 'different-value' ? A_LARGE_STAMP_WEI : STAMP_WEI,
+        })
+        aHashes = aSent.txHashes
+      }
       const aTxs = await Promise.all(
-        aSent.txHashes.map(async txHash => {
+        aHashes.map(async txHash => {
           const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
           assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
           const tx = (await monad.provider.getTransaction(txHash))!
@@ -210,7 +329,9 @@ async function main() {
       assert.ok(collided.length > 0, `${label}: A and B paid from the same coin (A ${aTxs.map(tx => `${tx.from}:${tx.nonce}`)})`)
       await monad.mine(4)
 
-      if (interruptions) {
+      if (variant === 'relay-stored') {
+        // Released above.
+      } else if (interruptions) {
         release()
         console.log(`${label}: B's send ended: ${await bOutcome}`)
         // Closed before anything left; reopened.
@@ -235,6 +356,30 @@ async function main() {
       }
       await reconcileUntilDelivered(b, bDigest)
 
+      if (relayStored) {
+        // The relay held B's message: its taken payment is paid again, the same amount to the
+        // same destination, once.
+        const destination = bTaken[0]!.to!
+        const deadline = Date.now() + 240_000
+        let row = written.get(bDigest)!.at(-1)!
+        while (!(row.repayments?.length && row.repayments.every(repayment => repayment.state === 'spent'))) {
+          if (Date.now() > deadline)
+            throw new Error(`${label}: B's taken payment was not paid again (${JSON.stringify(row.repayments)}, payments ${JSON.stringify(row.payments.map(p => p.state))})`)
+          await b.chain.directMessages.reconcileAttempts({ wallet: b.handle, payloadDigests: [bDigest] })
+          await sleep(3000)
+          row = written.get(bDigest)!.at(-1)!
+        }
+        assert.equal(row.repayments!.length, bTaken.length, `${label}: each taken payment is paid again once`)
+        for (const tx of bTaken)
+          assert.equal(await monad.provider.getTransactionReceipt(tx.hash!), null, `${label}: B's taken payment ${tx.hash} never landed`)
+        assert.equal(await monad.provider.getBalance(destination), STAMP_WEI, `${label}: the destination B's message names holds exactly the stamp`)
+        assert.equal(b.chain.directMessages.paymentSummaryOf?.({ wallet: b.handle, payloadDigest: bDigest }), 'repaid', `${label}: B reads its payment as paid again`)
+        const states = await waitSettled(b, row.transactionSetOperationId!, bDigest, label)
+        console.log(`${label}: the relay held B's message; its taken payment was paid again to ${destination}; taken set: ${states.join('; ')}`)
+        await nextSendGoesThrough(b, bob.address, label, row.repayments!.map(repayment => repayment.operationId))
+        return
+      }
+
       // Delivered, paid once, in full, by transactions other than the first signed ones.
       const got = await bob.receive(message => message.payloadDigest === bDigest)
       let onChain = 0n
@@ -250,24 +395,12 @@ async function main() {
         assert.equal(await monad.provider.getTransactionReceipt(tx.hash!), null, `${label}: B's taken payment ${tx.hash} never landed`)
       const last = written.get(bDigest)!.at(-1)!
       assert.ok((last.replacedOperationIds?.length ?? 0) === 1, `${label}: B built its payment again exactly once`)
-      // What becomes of the taken operation's other transactions (reported, not checked): its
-      // change transfers after the taken nonce were signed against a balance the other
-      // device's transactions changed.
+      // The taken operation's other transactions: its change transfers after the taken nonce
+      // were signed against a balance the other device's transaction changed. Each is decided
+      // by the chain, and none holds an account.
       for (const id of last.replacedOperationIds ?? []) {
-        const describe = async () => {
-          const operation = await evmWalletInternals(b.handle).transactionSetPreparer?.readOperation(id)
-          return operation?.members.map(member =>
-            `${member.transactionSet?.role} ${member.source.address}:${Transaction.from(member.unsignedTransaction).nonce} ${nativeMemberSuperseded(member) ? 'used by another' : member.observation.state}`)
-        }
-        const settled = (states: string[] | undefined) =>
-          states?.every(state => /used by another|included-/.test(state)) ?? true
-        let states = await describe()
-        for (let waited = 0; !settled(states) && waited < 120_000; waited += 5000) {
-          await b.handle.reobserveNativeOperations?.().catch(() => undefined)
-          await sleep(5000)
-          states = await describe()
-        }
-        console.log(`${label}: B's taken operation ${id} ${settled(states) ? 'settled' : 'NOT settled after 120s'}: ${states?.join('; ')}`)
+        const states = await waitSettled(b, id, bDigest, label)
+        console.log(`${label}: B's taken operation ${id} settled: ${states.join('; ')}`)
       }
       // B never offers the coin A spent.
       const list = evmWalletInternals(b.handle).coinList!
@@ -276,15 +409,106 @@ async function main() {
       console.log(
         `${label}: B's message delivered, paid ${formatEther(onChain)} by ${got.stampPayments.map(p => p.txHash).join(', ')}; its taken payment ${bTaken.map(tx => tx.hash).join(', ')} never landed`,
       )
+      await nextSendGoesThrough(b, bob.address, label, [last.transactionSetOperationId!])
+    }
+
+    /** B pays bob's contact address together with its message's stamp (one combined set); A
+     * takes a coin of that set. */
+    const combinedRound = async (label: string, giver: RealWallet) => {
+      await shareCoin(label, giver)
+      const payments = b.handle.stealthPayments!
+      const intent0 = {
+        operationId: `contact-${Date.now()}`,
+        chainIdentifier: 'monad-regtest',
+        asset: { kind: 'native' as const },
+        recipientSpendPublicKey: bob.handle.identity.compressedPubKey,
+        amountAtomic: CONTACT_WEI,
+      }
+      const quote = await payments.quote!(intent0)
+      const stamp = await b.chain.directMessages.quoteStamp!({ wallet: b.handle, stampValue: STAMP_WEI })
+      if (stamp.status !== 'available') throw new Error(`${label}: no stamp quote (${stamp.status})`)
+      const intent: StealthPaymentIntent = {
+        ...intent0,
+        maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+        messageStamp: { amountAtomic: STAMP_WEI, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic },
+      }
+      const prepared = await payments.prepare(intent)
+      let reachedHold!: (digest: string) => void
+      const held = new Promise<string>(resolve => (reachedHold = resolve))
+      let release!: () => void
+      const released = new Promise<void>(resolve => (release = resolve))
+      const bOutcome = b.chain.directMessages
+        .send({
+          wallet: b.handle,
+          recipient: { raw: bob.address },
+          items: [recipientAssetPaymentFromPrepared(prepared)],
+          sealedSender: true,
+          stampValue: STAMP_WEI,
+          paymentOperationId: intent.operationId,
+          onEnvelopeDurable: digest => payments.expose({ operationId: intent.operationId, payloadDigest: digest }),
+          onAttemptCreated: async digest => {
+            reachedHold(digest)
+            await released
+          },
+        })
+        .then(() => 'returned', (error: Error) => `${error.name}: ${error.message}`)
+      const bDigest = await held
+      const operationId = evmStealthTransactionSetOperationId(intent.operationId)
+      const preparer = evmWalletInternals(b.handle).transactionSetPreparer!
+      const signed = (await preparer.readOperation(operationId))!.members.map(member => Transaction.from(member.signed!.rawTransaction))
+      console.log(`${label}: B signed its combined set ${signed.map(tx => `${tx.hash} (${tx.from} nonce ${tx.nonce})`).join(', ')}`)
+      const aSent = await a.call<{ digest: string; txHashes: string[] }>({
+        op: 'send', to: bob.address, text: `${label} from device A`, stampWei: STAMP_WEI,
+      })
+      const aTxs = await Promise.all(aSent.txHashes.map(async txHash => {
+        const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
+        assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
+        const tx = (await monad.provider.getTransaction(txHash))!
+        return { from: tx.from, nonce: tx.nonce }
+      }))
+      assert.ok(
+        signed.some(tx => aTxs.some(other => other.from === tx.from && other.nonce === tx.nonce)),
+        `${label}: A paid from a coin of B's combined set (A ${aTxs.map(tx => `${tx.from}:${tx.nonce}`)})`,
+      )
+      await monad.mine(4)
+      release()
+      console.log(`${label}: B's send ended: ${await bOutcome}`)
+      const deadline = Date.now() + 240_000
+      for (;;) {
+        const status = (await b.chain.directMessages.reconcileAttempts({ wallet: b.handle, payloadDigests: [bDigest] }))[bDigest]
+        if (status === 'dead') break
+        if (status === 'delivered') throw new Error(`${label}: B's message was delivered though its combined payment was taken`)
+        if (Date.now() > deadline) throw new Error(`${label}: B's message is still ${status} after 240s`)
+        await sleep(3000)
+      }
+      assert.deepEqual(
+        await b.chain.directMessages.endOf!({ wallet: b.handle, payloadDigest: bDigest }),
+        { reason: 'payment-taken' },
+        `${label}: B's message ends saying another device spent the same funds`,
+      )
+      for (const tx of signed) {
+        const receipt = await monad.provider.getTransactionReceipt(tx.hash!)
+        if (receipt) {
+          const member = (await preparer.readOperation(operationId))!.members.find(m => m.signed!.transactionHash.toLowerCase() === tx.hash!.toLowerCase())!
+          assert.notEqual(member.transactionSet?.role, 'payment', `${label}: no payment of B's combined set landed (${tx.hash})`)
+        }
+      }
+      assert.equal(await monad.provider.getBalance(prepared.recipientAddress), 0n, `${label}: nothing reached bob's contact address`)
+      const states = await waitSettled(b, operationId, bDigest, label)
+      console.log(`${label}: B's message ended (payment-taken); its combined set: ${states.join('; ')}`)
+      await nextSendGoesThrough(b, bob.address, label, [])
     }
 
     await round('round 1', false, bob)
     // A fresh giver: bob's own change from round 1 may not be spendable as one coin yet.
     const carol = await openMonadWallet(stack, 'carol')
     devices.push(carol)
-    await monad.fund(carol.mainAccount, parseEther('1'))
+    await fundFromFaucet(stack, carol.mainAccount, parseEther('2'))
     await round('round 2 (B closed and reopened twice)', true, carol)
-    console.log('PASS: the losing device delivered its message, paid once from another coin, both times')
+    await round('round 3 (A moves most of the coin)', false, carol, 'different-value')
+    await round('round 4 (the relay already holds B\'s message)', false, carol, 'relay-stored')
+    await combinedRound('round 5 (a payment to a contact with its stamp)', carol)
+    console.log('PASS: every collision ended paid once, or ended saying so; nothing stayed held')
   } catch (err) {
     failed = true
     console.error(err)
@@ -296,6 +520,14 @@ async function main() {
       other.child.kill()
     }
     for (const device of devices) {
+      try {
+        // Coins received in messages this device has not read yet (a stamp paid to it, a gift)
+        // are listed once it reads them, so they are swept too.
+        // (Reading the mailbox is what lists them; no message is matched.)
+        await device.receive(() => false, 10_000)
+      } catch {
+        // Nothing more to read, or closed already.
+      }
       try {
         remember(device)
       } catch {

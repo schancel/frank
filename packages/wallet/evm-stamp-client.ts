@@ -426,7 +426,7 @@ export type MonadStampPendingReason =
 
 const PENDING_TEXT: Record<MonadStampPendingReason, string> = {
   'payment-taken':
-    "Another transaction used the coin this message's payment was signed from, so that payment will not go through and nothing was charged for it. Once the network confirms this, the message is paid from other funds and sent. It is paid once.",
+    "Another transaction used the coin this message's payment was signed from, so that payment will not go through and nothing was charged for it. Once the network confirms this, the message is paid from other funds and sent. It is paid once. A message that carries a payment to a contact is not sent this way: it ends, nothing paid, and you send it again.",
   'awaiting-funding':
     "This message's payment is waiting for its funding transfer to land; the message is handed to the relay once it has. Nothing failed.",
   'awaiting-delivery':

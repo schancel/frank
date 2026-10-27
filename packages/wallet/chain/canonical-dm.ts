@@ -153,8 +153,13 @@ import type { EvmStampPayer, StampClaim, StampPayment } from '../evm-stamp-payer
 import { InsufficientStampFundsError } from '../evm-stamp-payer'
 import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
-import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
+import {
+  nativeMemberAbandoned,
+  nativeMemberEnded,
+  nativeMemberSuperseded,
+} from '../storage/evm-native-operation-journal'
 import { findNonceConsumer } from '../evm-nonce-consumer'
+import { abandonTakenMembers, paymentsEnded, takenMembers } from '../evm-transaction-set-taken'
 import { EVM_FAILURE_CONFIRMATIONS } from './evm-settlement'
 import { RefusalLedger } from './evm-refused-resign'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
@@ -387,7 +392,10 @@ const isUnresolved = (row: StoredMessage) =>
   row.payments.some(isPending) ||
   row.otherTransactions.some(isPending) ||
   sharedConstructionPending(row) ||
-  owedRepayments(row).length > 0
+  owedRepayments(row).length > 0 ||
+  // A shared payment another transaction took, still to be paid again (or being paid again).
+  sharedRepaymentCandidates(row).length > 0 ||
+  (row.repayments?.some(repayment => repayment.state === 'pending') ?? false)
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
 function owedRepayments(row: StoredMessage): number[] {
@@ -421,6 +429,8 @@ interface MessageWork {
   chain: Pace
   repay: Pace
   rebuild: Pace
+  /** The earlier payment operations of a message whose payment was built again. */
+  replaced: Pace
   /** When a waiter last made the chain look at this message's payments, and how long the next
    * waiter's look must wait after it. One look serves every waiter. */
   lookedAtMs?: number
@@ -451,6 +461,7 @@ function workOf(owner: CanonicalMessagingOwner, consumerId: string): MessageWork
       chain: { passes: 0, next: 1, gap: 0 },
       repay: { passes: 0, next: 1, gap: 0 },
       rebuild: { passes: 0, next: 1, gap: 0 },
+      replaced: { passes: 0, next: 1, gap: 0 },
     }
     map.set(consumerId, work)
   }
@@ -459,6 +470,17 @@ function workOf(owner: CanonicalMessagingOwner, consumerId: string): MessageWork
 /** The background pass comes by on every host tick. A step that keeps finding nothing new is
  * taken on the 1st, 2nd, 4th, 8th pass and then every `every`-th: bounded work for a message
  * that stays stuck, without ever giving it up. A caller's explicit retry always acts. */
+/** How often the resend pass looks at each transaction set another transaction took a nonce
+ * of (`abandonTakenMembers`). Process memory. */
+const takenSetPaces = new WeakMap<object, Map<string, Pace>>()
+function takenSetPace(owner: CanonicalMessagingOwner, operationId: string): Pace {
+  let map = takenSetPaces.get(owner.messages)
+  if (!map) takenSetPaces.set(owner.messages, (map = new Map()))
+  let pace = map.get(operationId)
+  if (!pace) map.set(operationId, (pace = { passes: 0, next: 1, gap: 0 }))
+  return pace
+}
+
 function due(pace: Pace, every: number, always: boolean): boolean {
   pace.passes++
   if (!always && pace.passes < pace.next) return false
@@ -789,7 +811,7 @@ async function submitStored(
       const taken = operation?.members.some(member =>
         member.transactionSet?.role === 'payment' &&
         member.transactionSet.stageId === row.transactionSetStageId &&
-        nativeMemberSuperseded(member))
+        nativeMemberEnded(member))
       return taken ? { row, paymentTaken: true } : { row, awaitingFunding: true }
     }
   }
@@ -885,6 +907,38 @@ async function submitStored(
  * anything (`refusedUnexposed`): its signed payments never left the wallet. The record first
  * (dead, payments unsent, bytes dropped), then the coins are free and their accounts read again.
  */
+/**
+ * Whether the chain shows a nonce of the set `operationId` used while none of the set's own
+ * transactions has a receipt for it: another transaction took a coin of it. Reads the node only;
+ * when it does, the set is observed so the journal records that member superseded (what the
+ * rebuild acts on). False when the node cannot say.
+ */
+async function setNonceUsedElsewhere(
+  owner: CanonicalMessagingOwner,
+  operationId: string,
+): Promise<boolean> {
+  const shared = owner.transactionSets
+  if (!shared) return false
+  try {
+    const operation = await shared.preparer.readOperation(operationId)
+    if (!operation) return false
+    let used = false
+    for (const member of operation.members) {
+      if (!member.signed) continue
+      const nonce = Transaction.from(member.signed.rawTransaction).nonce
+      if ((await shared.provider.getTransactionCount(member.source.address, 'latest')) <= nonce) continue
+      if (await shared.provider.getTransactionReceipt(member.signed.transactionHash)) continue
+      used = true
+      break
+    }
+    if (!used) return false
+    await owner.lifetime(() => shared.lifecycle.observe(operationId, shared.provider))
+    return (await shared.preparer.readOperation(operationId))?.members.some(nativeMemberSuperseded) ?? false
+  } catch {
+    return false
+  }
+}
+
 async function endRefusedUnexposed(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
@@ -895,6 +949,11 @@ async function endRefusedUnexposed(
   if (row.version === 2) {
     const shared = owner.transactionSets
     if (!shared || !row.transactionSetOperationId) return row
+    // A refusal for a used nonce or a short account may come from another transaction taking a
+    // coin of the set (another device spent it at the same moment): the chain is read first.
+    // Such a message does not end here; once the chain confirms the take its payment is built
+    // again from other coins (`rebuildTakenPayment`).
+    if (await setNonceUsedElsewhere(owner, row.transactionSetOperationId)) return row
     const released = await owner.lifetime(() =>
       shared.preparer.releaseRefusedBeforeBroadcast(row.transactionSetOperationId!),
     )
@@ -972,6 +1031,10 @@ function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
   const word = (slot: number): DirectMessagePaymentSummary => {
     const signed = signedFor(slot)
     if (signed.some(({ payment }) => payment.state === 'spent')) return 'paid'
+    // Taken by another transaction after delivery, and paid again (`repayments`).
+    const again = row.repayments?.find(repayment => repayment.payment === slot)
+    if (again)
+      return again.state === 'spent' ? 'repaid' : again.state === 'pending' ? 'pending' : 'failed'
     const reverted = signed.find(({ payment }) => payment.state === 'reverted')
     if (reverted) {
       // Its one repeat, however often that was signed.
@@ -1307,7 +1370,7 @@ async function settleSharedPayments(
     if (!member) throw new Error('Stored stamp differs from durable transaction set')
     const state = member.observation.state === 'included-success' ? 'spent'
       : member.observation.state === 'included-revert' ? 'reverted'
-      : nativeMemberSuperseded(member) ? 'failed' : 'pending'
+      : nativeMemberEnded(member) ? 'failed' : 'pending'
     return { ...payment, state }
   }
   const next = {
@@ -1323,76 +1386,124 @@ async function settleSharedPayments(
 const MAX_PAYMENT_REBUILDS = 3
 
 /**
- * The payment operation of a shared-set message whose payments can never land, when the chain
- * shows it: every payment's nonce was used by a different transaction (another device of this
- * account spent the same coin at the same moment), at least `EVM_FAILURE_CONFIRMATIONS` blocks
- * deep, while the relay held no copy of the message (`unstored`). `undefined` in every other
- * case, including a chain that cannot say (a read failed, or the node no longer keeps the blocks
- * it would have to read): the message then stays as it is and is looked at again later.
- *
- * A payment whose own transaction is in the block that used its nonce did land: it is not taken,
- * and the message stays to be delivered with it.
+ * The relay's reason recorded on a message this wallet ended because another transaction took a
+ * coin its payment stood on, when the payment cannot be built again by itself (a stage of a
+ * combined payment operation: the payment it carries is part of the encrypted message). Nothing
+ * was paid for it and nothing of it is held; the user sends it again (`DirectMessageEnd`
+ * `payment-taken`).
  */
-async function takenOperation(
+export const PAYMENT_TAKEN_REASON = 'payment_taken'
+
+/**
+ * Whether a payment of `row` stands on a transaction another one took: the chain shows a payment
+ * of it (or a move it stands on) taken by a different transaction, at least
+ * `EVM_FAILURE_CONFIRMATIONS` deep. First gives up what the chain shows can never land
+ * (`abandonTakenMembers`). `undefined` when the chain cannot say.
+ */
+async function paymentTaken(
   owner: CanonicalMessagingOwner,
-  row: StoredMessage,
-): Promise<string | undefined> {
-  const shared = owner.transactionSets
-  const operationId = row.transactionSetOperationId
-  if (
-    !shared || !operationId || row.version !== 2 || row.outcome !== undefined ||
-    row.unstored !== true || row.transactionSetStageId !== undefined ||
-    row.request === undefined || row.payments.length === 0 ||
-    (row.replacedOperationIds?.length ?? 0) >= MAX_PAYMENT_REBUILDS
-  )
-    return undefined
+  operationId: string,
+  stageId: string | undefined,
+): Promise<boolean> {
+  const shared = owner.transactionSets!
+  const { taken } = await abandonTakenMembers({
+    authority: shared.preparer,
+    provider: shared.provider,
+    operationId,
+  })
+  if (taken.length === 0) return false
   const operation = await shared.preparer.readOperation(operationId)
-  if (!operation || operation.cancelled) return undefined
-  const payments = operation.members.filter(member =>
-    member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined)
-  if (
-    payments.length !== row.payments.length ||
-    payments.some((member, i) => member.signed?.rawTransaction !== row.payments[i]!.rawTx) ||
-    !payments.every(member => nativeMemberSuperseded(member))
-  )
-    return undefined
-  const head = await shared.provider.getBlockNumber()
-  for (const member of payments) {
-    const found = await findNonceConsumer(
-      shared.provider,
-      {
-        account: member.source.address,
-        nonce: Transaction.from(member.signed!.rawTransaction).nonce,
-        transactionHash: member.signed!.transactionHash,
-      },
-      member.account!.blockNumber,
+  if (!operation) return false
+  // Every member that stands, directly or through others, on a taken or abandoned one.
+  const dead = new Set<number>()
+  operation.members.forEach((member, index) => {
+    if (
+      taken.includes(index) ||
+      nativeMemberAbandoned(member) ||
+      member.dependencies.some(dependency => dead.has(dependency))
     )
-    if (found?.by !== 'another' || head - found.blockNumber + 1 < EVM_FAILURE_CONFIRMATIONS)
-      return undefined
-  }
-  return operationId
+      dead.add(index)
+  })
+  return operation.members.some(
+    (member, index) =>
+      member.transactionSet?.role === 'payment' &&
+      member.transactionSet.stageId === stageId &&
+      member.observation.state !== 'included-success' &&
+      member.observation.state !== 'included-revert' &&
+      dead.has(index),
+  )
 }
 
 /**
- * Builds the payment of a message again, from other coins, once the chain shows that its signed
- * payments can never land (`takenOperation`). Same message, same recipient, same amount: this is
- * the one payment of the message, finished, not a second one. The relay never held the message
- * and none of the earlier payments can pay, so the recipient is paid once. The record first: the
- * row then names the next operation and holds no request, and the resend pass constructs that
- * operation's payment (from coins no other operation holds; the taken coins are already retired
- * by what the chain showed) and submits the message with it, as it does after a restart. The
- * earlier operation stays in the wallet journal and settles there.
+ * A message the relay never held (`unstored`) whose payment stands on a coin another transaction
+ * took: another device of this account spent the same coin at the same moment, or a different
+ * transaction drained the account its later transactions were signed against. Its payments were
+ * handed to nobody but a relay that refused them before storing anything, and this wallet never
+ * broadcasts a payment before the relay stores its message: nobody can send them. Every payment
+ * of the set that has not landed is given up, with what stands on it (`abandonTakenMembers`), and
+ *
+ * - a stamp of its own is built again from other coins: same message, same recipient, same
+ *   amount, the one payment of the message, finished. The row first: it names the next
+ *   operation and holds no request, and the resend pass constructs that operation's payment and
+ *   submits the message with it, as after a restart.
+ * - a stage of a combined payment operation ends: the payment it joined is carried inside the
+ *   encrypted message, so paying it from other coins would be a different message. Nothing was
+ *   paid for it, nothing of it stays held, and the user sends it again
+ *   (`PAYMENT_TAKEN_REASON`).
+ *
+ * The earlier operation stays in the wallet journal and settles there. Returns the row as it now
+ * stands; unchanged when the chain does not show this (or cannot say).
  */
 async function rebuildTakenPayment(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
 ): Promise<StoredMessage> {
-  const taken = await takenOperation(owner, row)
-  if (taken === undefined) return row
+  const shared = owner.transactionSets
+  const operationId = row.transactionSetOperationId
+  if (
+    !shared || !operationId || row.version !== 2 || row.outcome !== undefined ||
+    row.unstored !== true || row.request === undefined || row.payments.length === 0 ||
+    (row.transactionSetStageId === undefined &&
+      (row.replacedOperationIds?.length ?? 0) >= MAX_PAYMENT_REBUILDS)
+  )
+    return row
+  const operation = await shared.preparer.readOperation(operationId)
+  if (!operation || operation.cancelled) return row
+  if (!(await paymentTaken(owner, operationId, row.transactionSetStageId))) return row
+  // Nobody holds these payments: every one that has not landed is given up.
+  await abandonTakenMembers({
+    authority: shared.preparer,
+    provider: shared.provider,
+    operationId,
+    withdrawPayments: true,
+  })
+  const settled = await shared.preparer.readOperation(operationId)
+  if (!settled || !paymentsEnded(settled, row.transactionSetStageId)) return row
   const current = owner.messages.get(row.consumerId)!
-  if (current.transactionSetOperationId !== taken || current.outcome !== undefined) return current
+  if (
+    current.transactionSetOperationId !== operationId || current.outcome !== undefined ||
+    current.unstored !== true
+  )
+    return current
+  const hashes = current.payments.map(payment => Transaction.from(payment.rawTx).hash).join(', ')
+  if (row.transactionSetStageId !== undefined) {
+    // Part of a combined payment operation: ends, as a refusal before anything was stored would.
+    const { request: _request, unexposed: _unexposed, unstored: _unstored, ...kept } = current
+    const ended: StoredMessage = {
+      ...kept,
+      payments: [],
+      otherTransactions: [],
+      outcome: 'dead',
+      reason: PAYMENT_TAKEN_REASON,
+    }
+    await owner.messages.put(ended)
+    console.warn(
+      `[monad-canonical-dm] message ${current.digest} was not sent: another transaction used a coin its combined payment stood on (${hashes}). Nothing was paid for it and its coins are free; it is sent again by the user.`,
+    )
+    return ended
+  }
   const { request: _request, reason: _reason, ...kept } = current
-  const replaced = [...(current.replacedOperationIds ?? []), taken]
+  const replaced = [...(current.replacedOperationIds ?? []), operationId]
   const next: StoredMessage = {
     ...kept,
     transactionSetOperationId: sharedStampOperationId(
@@ -1405,11 +1516,158 @@ async function rebuildTakenPayment(
   }
   await owner.messages.put(next)
   console.warn(
-    `[monad-canonical-dm] the payment of message ${current.digest} can never land: other transactions used the nonces of its coins (${current.payments
-      .map(payment => Transaction.from(payment.rawTx).hash)
-      .join(', ')}), and the relay never held the message. Its payment is built again from other coins, once, as ${next.transactionSetOperationId}.`,
+    `[monad-canonical-dm] the payment of message ${current.digest} can never land: another transaction used a coin it stood on (${hashes}), and the relay never held the message. Its payment is built again from other coins, once, as ${next.transactionSetOperationId}.`,
   )
   return next
+}
+
+/**
+ * The earlier payment operations of a message whose payment was built again
+ * (`replacedOperationIds`): the wallet's own moves of each still go to the node and are looked
+ * for until the chain decides them, and what can never land is given up. Never a payment: those
+ * were given up when the payment was built again.
+ */
+async function settleReplacedOperations(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<void> {
+  const shared = owner.transactionSets
+  if (!shared) return
+  for (const id of row.replacedOperationIds ?? []) {
+    if (!shared.preparer.getOperation(id)) continue
+    try {
+      await shared.lifecycle.replay(id, { payments: false }).catch(() => undefined)
+      await shared.lifecycle.observe(id, shared.provider)
+      await abandonTakenMembers({ authority: shared.preparer, provider: shared.provider, operationId: id })
+    } catch (error) {
+      console.warn(`[monad-canonical-dm] earlier payment operation ${id} was not settled yet; looked at again later:`, error)
+    }
+  }
+}
+
+/** Whether an earlier payment operation of `row` (`replacedOperationIds`) is still active. */
+function replacedUnsettled(owner: CanonicalMessagingOwner, row: StoredMessage): boolean {
+  return (row.replacedOperationIds ?? []).some(id => owner.transactionSets?.preparer.getOperation(id) !== undefined)
+}
+
+/** Payments of a delivered shared-set message that ended without landing (`failed`) and are not
+ * paid again yet: positions in `payments`. Whether one is owed is the chain's to say
+ * (`repayTakenPayments`). */
+function sharedRepaymentCandidates(row: StoredMessage): number[] {
+  if (row.version !== 2 || row.outcome !== 'delivered' || row.transactionSetStageId !== undefined) return []
+  return row.payments.flatMap((payment, index) =>
+    payment.state === 'failed' && !row.repayments?.some(repayment => repayment.payment === index)
+      ? [index]
+      : [],
+  )
+}
+
+/**
+ * A delivered message whose payment another transaction took: its nonce was used by a different
+ * transaction (another device of the account spent the same coin while the relay was storing the
+ * message), at least `EVM_FAILURE_CONFIRMATIONS` deep, so that payment can never land, and the
+ * relay holds the message: the recipient has it, and is still owed its payment. The same value
+ * goes to the same destination from other coins, once (`repayments`, written first). A payment
+ * the chain shows landed (its own transaction in the block that used its nonce) is recorded
+ * `spent`; one the chain cannot say about stays as it is and is looked at again.
+ */
+async function repayTakenPayments(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  const shared = owner.transactionSets
+  const operationId = row.transactionSetOperationId
+  const candidates = sharedRepaymentCandidates(row)
+  if (!shared || !operationId || candidates.length === 0) return row
+  const operation = await shared.preparer.readOperation(operationId)
+  if (!operation) return row
+  const head = await shared.provider.getBlockNumber()
+  const taken = await takenMembers(shared.provider, operation, head)
+  const messageId = row.consumerId.slice('frank-dm:'.length)
+  for (const index of candidates) {
+    const rawTx = row.payments[index]!.rawTx
+    const memberIndex = operation.members.findIndex(member => member.signed?.rawTransaction === rawTx)
+    if (memberIndex < 0) continue
+    if (!taken.has(memberIndex)) {
+      // The block that used its nonce holds this very payment: it landed (on a node that has
+      // since dropped it).
+      const member = operation.members[memberIndex]!
+      if (!nativeMemberSuperseded(member)) continue
+      const found = await findNonceConsumer(
+        shared.provider,
+        { account: member.source.address, nonce: Transaction.from(rawTx).nonce, transactionHash: member.signed!.transactionHash },
+        member.account!.blockNumber,
+      )
+      if (found?.by === 'this') {
+        const current = owner.messages.get(row.consumerId)!
+        await owner.messages.put({
+          ...current,
+          payments: current.payments.map((payment, at) => (at === index ? { ...payment, state: 'spent' as const } : payment)),
+        })
+      }
+      continue
+    }
+    const current = owner.messages.get(row.consumerId)!
+    const repayment = { payment: index, operationId: `stamp-${messageId}-p${index}`, state: 'pending' as const }
+    await owner.messages.put({ ...current, repayments: [...(current.repayments ?? []), repayment] })
+    console.warn(
+      `[monad-canonical-dm] payment ${Transaction.from(rawTx).hash} of delivered message ${row.digest} can never land: another transaction used its nonce. The same amount goes to the same destination from other coins, once, as ${repayment.operationId}.`,
+    )
+  }
+  return finishRepayments(owner, owner.messages.get(row.consumerId)!)
+}
+
+/**
+ * Builds (once, under its recorded operation ID), hands to the node and looks for every pending
+ * repayment of `row` (`repayments`). The message is delivered, so its payment goes to the chain at
+ * once. Funds that do not cover it yet leave it to a later pass.
+ */
+async function finishRepayments(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  const shared = owner.transactionSets
+  if (!shared) return row
+  for (const repayment of row.repayments ?? []) {
+    if (repayment.state !== 'pending') continue
+    const original = Transaction.from(row.payments[repayment.payment]!.rawTx)
+    try {
+      let operation = await shared.preparer.readOperation(repayment.operationId)
+      if (!operation) {
+        await shared.refresh()
+        await shared.preparer.constructTransactionSet({
+          operationId: repayment.operationId,
+          amountWei: original.value,
+          kdf: () => original.to!,
+          maxPaymentParts: 1,
+          minimumPaymentWei: original.value,
+        })
+        operation = await shared.preparer.readOperation(repayment.operationId)
+      }
+      if (!operation) continue
+      await shared.preparer.authorizeSubmission(repayment.operationId)
+      await shared.sendTransaction(await shared.preparer.readTransactionSet(repayment.operationId))
+      const settled = (await shared.preparer.readOperation(repayment.operationId))!
+      const payment = settled.members.find(member => member.transactionSet?.role === 'payment')!
+      const state =
+        payment.observation.state === 'included-success' ? 'spent'
+        : payment.observation.state === 'included-revert' ? 'reverted'
+        : 'pending'
+      if (state === 'pending') continue
+      const current = owner.messages.get(row.consumerId)!
+      await owner.messages.put({
+        ...current,
+        repayments: current.repayments!.map(entry =>
+          entry.payment === repayment.payment ? { ...entry, state } : entry),
+      })
+    } catch (error) {
+      console.warn(
+        `[monad-canonical-dm] the payment of delivered message ${row.digest} that another transaction took is still owed; ${repayment.operationId} is tried again later:`,
+        error,
+      )
+    }
+  }
+  return owner.messages.get(row.consumerId)!
 }
 
 /**
@@ -2150,7 +2408,7 @@ async function resend(
           // below, and the message is submitted with it in this same pass.
           if (
             row.version === 2 && row.outcome === undefined && row.unstored &&
-            !row.payments.some(isPending) && row.payments.length > 0 &&
+            row.request !== undefined && row.payments.length > 0 &&
             due(work.rebuild, CHAIN_EVERY, now)
           ) {
             const rebuilt = await owner.lifetime(() => rebuildTakenPayment(owner, row))
@@ -2214,6 +2472,25 @@ async function resend(
             )
             if (settled !== row) work.chain = { passes: 0, next: 1, gap: 0 }
           }
+          // Delivered, and the chain shows a payment of it taken by another transaction: the
+          // same amount goes to the same destination from other coins, once.
+          {
+            const current = owner.messages.get(stored.consumerId)!
+            if (
+              (sharedRepaymentCandidates(current).length > 0 ||
+                current.repayments?.some(repayment => repayment.state === 'pending')) &&
+              due(work.repay, CHAIN_EVERY, now)
+            )
+              await owner.lifetime(() => repayTakenPayments(owner, current)).catch(error =>
+                console.warn('[monad-canonical-dm] a taken payment was not paid again yet; tried later:', error),
+              )
+          }
+          // The earlier payment operations of a payment built again settle on the chain.
+          {
+            const current = owner.messages.get(stored.consumerId)!
+            if (replacedUnsettled(owner, current) && due(work.replaced, CHAIN_EVERY, now))
+              await owner.lifetime(() => settleReplacedOperations(owner, current))
+          }
           // A delivered sealed message whose note to self is still owed: sent now, paced like a
           // submission. Its failure leaves it owed for a later pass.
           {
@@ -2249,7 +2526,24 @@ async function resend(
         }
       }),
   )
-  await Promise.all([owedCopies, paidResends, releases])
+  // Any transaction set of this wallet another transaction took a nonce of: what stands on it
+  // and can never land is given up, so it no longer holds its account or counts as money on its
+  // way back (`FundsInPendingSendError`). Chain reads only.
+  const takenSets = owner.transactionSets
+    ? Promise.all(
+        owner.transactionSets.preparer.undecidedSupersededOperations().map(async id => {
+          if (!due(takenSetPace(owner, id), CHAIN_EVERY, options.now === true)) return
+          await owner.lifetime(() =>
+            abandonTakenMembers({
+              authority: owner.transactionSets!.preparer,
+              provider: owner.transactionSets!.provider,
+              operationId: id,
+            }),
+          )
+        }),
+      )
+    : Promise.resolve()
+  await Promise.all([owedCopies, paidResends, releases, takenSets])
 }
 
 /** At open, before the wallet is handed out: the coins every stored message with a pending
@@ -2795,10 +3089,16 @@ async function send(
           422, 'mailbox_terminal', undefined, row.reason,
         )
       }
+      // Refused because another transaction took a coin of the set: kept, and paid again from
+      // other coins once the chain confirms it (`endRefusedUnexposed`, `rebuildTakenPayment`).
+      const takenBeforeStore = async (): Promise<boolean> =>
+        row.outcome === undefined && row.reason !== undefined &&
+        row.transactionSetOperationId !== undefined &&
+        setNonceUsedElsewhere(owner, row.transactionSetOperationId)
       if (row.outcome !== 'delivered')
         throw new MonadStampPendingAttemptError(
           [digest],
-          submitted.paymentTaken
+          submitted.paymentTaken || await takenBeforeStore()
             ? 'payment-taken'
             : submitted.awaitingFunding ? 'awaiting-funding' : 'awaiting-delivery',
         )
@@ -3701,6 +4001,7 @@ export function canonicalDirectMessages(
             ...('tiedUpWei' in row && row.tiedUpWei !== undefined ? { tiedUpWei: BigInt(row.tiedUpWei) } : {}),
           }
       }
+      if ('payments' in row && row.reason === PAYMENT_TAKEN_REASON) return { reason: 'payment-taken' }
       return { reason: 'relay', ...(row.reason === undefined ? {} : { relayReason: row.reason }) }
     },
     /**

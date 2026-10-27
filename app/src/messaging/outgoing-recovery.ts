@@ -20,6 +20,7 @@ function failureOfEnd(
   if (end?.reason === 'fee-exceeded') return 'fee-exceeded'
   if (end?.reason === 'discarded') return 'error'
   if (end?.reason === 'funds-tied-up') return 'funds-in-pending-send'
+  if (end?.reason === 'payment-taken') return 'payment-taken'
   return 'rejected'
 }
 

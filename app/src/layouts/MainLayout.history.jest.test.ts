@@ -317,8 +317,8 @@ describe('finding 8: Profile from the drawer is a page above Settings', () => {
 
 describe("the drawer's balance opens the Wallet tab", () => {
   it('as a tab: Back from it lands on Messages', async () => {
-    const w = await phone('/forum')
-    const forum = historyPosition()
+    const w = await phone('/chat')
+    const messages = historyPosition()
     ;(w.vm as any).toggleMyDrawerOpen()
     await flushPromises()
     await tap(
@@ -326,7 +326,7 @@ describe("the drawer's balance opens the Wallet tab", () => {
       '.drawer-balance-item .q-item__section, .drawer-balance-item > *',
     )
     expect(router.currentRoute.value.path).toBe('/wallet')
-    expect(historyPosition()).toBe(forum + 1)
+    expect(historyPosition()).toBe(messages + 1)
     await userBack(router)
     expect(router.currentRoute.value.path).toBe('/chat')
   })

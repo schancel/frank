@@ -20,11 +20,13 @@ import type {
  * - Bottom tabs (and the drawer's rail) do not stack (`switchTab`): the Messages tab (the list,
  *   or the conversation open in it) rests at the bottom of the stack, any other tab sits right
  *   above it, so Back from a tab lands where the user left Messages and Back from Messages
- *   leaves the app (Android/Material). No page in between is ever shown.
+ *   leaves the app (Android/Material). No page in between is ever shown. Back never lands on a
+ *   screen the user was not on, and that wins over the Android convention: a session that did
+ *   not start on Messages gets no Messages entry slipped under it.
  * - On a phone, Back closes the overlay on top instead of navigating underneath it: any Quasar
  *   dialog, menu or select popup (found in the page, so none can be missed), or a drawer
- *   registered with `useBackDismiss`. A persistent dialog stays and Back does nothing, as with
- *   Quasar's own handling in a native app. Forward never closes anything.
+ *   registered with `useBackDismiss`. A persistent dialog or menu stays and Back does nothing,
+ *   as with Quasar's own handling in a native app. Forward never closes anything.
  *
  * The router's own entries carry `position` and `back` in `history.state` (vue-router); this
  * module adds `frankStartTab` to each entry: the position of the Messages entry under it, or
@@ -35,6 +37,17 @@ import type {
 export const START_TAB = '/chat'
 
 const START_KEY = 'frankStartTab'
+
+/** The bottom tabs' (and the rail's) root pages. */
+const TAB_ROOTS = new Set([
+  START_TAB,
+  '/forum',
+  '/contacts',
+  '/wallet',
+  '/qr',
+  '/settings',
+  '/dapp-bridge',
+])
 
 /** The Messages tab: the list, and the conversation open in it. */
 function isMessagesPath(path: string) {
@@ -72,8 +85,13 @@ let routerHistory: RouterHistory | null = null
 let userPop: { direction: string; delta: number } | null = null
 /** A Back or Forward has happened and the router's guards have not yet seen it. */
 let popPending = false
-/** Back/Forward steps the app itself asked for: never mistaken for the user's. */
-let programmaticPops = 0
+/**
+ * Back/Forward steps the app itself asked for, never mistaken for the user's: the position each
+ * lands on, until when it is expected. A step the browser drops expires, so the user's next Back
+ * is not taken for it.
+ */
+let appPops: { position: number | null; until: number }[] = []
+const APP_POP_TIMEOUT_MS = 1000
 /** `router.push`/`router.replace` calls not yet settled. */
 let callsInFlight = 0
 let pendingTarget: RouteLocationNormalized | null = null
@@ -119,13 +137,79 @@ function removeOverlay(entry: { close: () => void }) {
  * One on its way out (its leave transition) no longer counts; a closing dialog also stops being
  * modal at once.
  */
-function quasarOverlayShowing(): boolean {
-  if (typeof document === 'undefined') return false
+function showingQuasarOverlays(): Element[] {
+  if (typeof document === 'undefined') return []
   return Array.from(
     document.querySelectorAll('.q-dialog--modal, .q-menu'),
-  ).some(
+  ).filter(
     element => !/leave-(active|to)/.test(element.getAttribute('class') ?? ''),
   )
+}
+
+/** A Quasar dialog, menu or select popup is open: something above the page has the Escape key. */
+export function quasarOverlayShowing(): boolean {
+  return showingQuasarOverlays().length > 0
+}
+
+interface VNodeLike {
+  el?: unknown
+  component?: {
+    type?: { name?: string }
+    props?: Record<string, unknown>
+    subTree?: VNodeLike
+  } | null
+  suspense?: { activeBranch?: VNodeLike | null } | null
+  children?: unknown
+}
+
+/** Every element rendered under `vnode`. */
+function renderedElements(
+  vnode: VNodeLike | null | undefined,
+  into: Element[],
+) {
+  if (!vnode) return
+  if (vnode.el instanceof Element) into.push(vnode.el)
+  if (vnode.component) renderedElements(vnode.component.subTree, into)
+  else if (vnode.suspense) renderedElements(vnode.suspense.activeBranch, into)
+  else if (Array.isArray(vnode.children)) {
+    for (const child of vnode.children)
+      if (child && typeof child === 'object')
+        renderedElements(child as VNodeLike, into)
+  }
+}
+
+/**
+ * The open menus that Escape does not close (`persistent`, which Quasar leaves out of its Escape
+ * handling altogether, or `no-esc-dismiss`). Nothing in their markup says so, so this reads the
+ * props off the mounted component trees of every Vue app on the page (`Dialog.create` mounts its
+ * own).
+ */
+function menusEscapeDoesNotClose(): Set<Element> {
+  const found = new Set<Element>()
+  const visit = (vnode: VNodeLike | null | undefined) => {
+    if (!vnode) return
+    const component = vnode.component
+    if (component) {
+      const props = component.props ?? {}
+      if (
+        component.type?.name === 'QMenu' &&
+        (props.persistent === true || props.noEscDismiss === true)
+      ) {
+        const elements: Element[] = []
+        renderedElements(component.subTree, elements)
+        for (const element of elements)
+          if (element.classList.contains('q-menu')) found.add(element)
+      }
+      visit(component.subTree)
+    } else if (vnode.suspense) visit(vnode.suspense.activeBranch)
+    else if (Array.isArray(vnode.children)) {
+      for (const child of vnode.children)
+        if (child && typeof child === 'object') visit(child as VNodeLike)
+    }
+  }
+  for (const container of Array.from(document.querySelectorAll('[data-v-app]')))
+    visit((container as Element & { _vnode?: VNodeLike })._vnode)
+  return found
 }
 
 /**
@@ -147,9 +231,18 @@ function pressEscape() {
  * persistent dialog that stays included: Back then does nothing else.
  */
 export function dismissTopOverlay(): boolean {
-  // Quasar's overlays are portals above everything else, the drawers included.
-  if (quasarOverlayShowing()) {
-    pressEscape()
+  // Quasar's overlays are portals above everything else, the drawers included, each appended
+  // to the page as it opens: the last one is on top.
+  const overlays = showingQuasarOverlays()
+  const topOverlay = overlays[overlays.length - 1]
+  if (topOverlay) {
+    // A menu that Escape does not close stays, and Back does nothing, like a persistent dialog;
+    // the Escape would otherwise go past it to the overlay underneath.
+    if (
+      !topOverlay.classList.contains('q-menu') ||
+      !menusEscapeDoesNotClose().has(topOverlay)
+    )
+      pressEscape()
     return true
   }
   const top = openOverlays[openOverlays.length - 1]
@@ -226,9 +319,28 @@ export function navigationPending(): boolean {
   return (
     callsInFlight > 0 ||
     popPending ||
-    programmaticPops > 0 ||
+    expectedAppPops().length > 0 ||
     pendingTarget !== null
   )
+}
+
+/** The app's own Back/Forward steps still expected (a dropped one expires). */
+function expectedAppPops() {
+  const now = Date.now()
+  appPops = appPops.filter(pop => pop.until > now)
+  return appPops
+}
+
+/** Whether the Back/Forward that just landed on `position` is one the app asked for. */
+function takeAppPop(position: number | null): boolean {
+  const pops = expectedAppPops()
+  const index = pops.findIndex(
+    pop =>
+      pop.position === null || position === null || pop.position === position,
+  )
+  if (index === -1) return false
+  pops.splice(index, 1)
+  return true
 }
 
 /** Resolves once no navigation is pending (or after a second, whatever happens). */
@@ -262,7 +374,14 @@ export function installNavigation(
     const navigate = router[method].bind(router)
     router[method] = (to: RouteLocationRaw) => {
       callsInFlight++
-      const result = navigate(to)
+      let result: ReturnType<typeof navigate>
+      try {
+        result = navigate(to)
+      } catch (error) {
+        // Refused before it started (an unknown route name, a missing param).
+        callsInFlight--
+        throw error
+      }
       void settled(result).then(() => {
         callsInFlight--
       })
@@ -270,10 +389,7 @@ export function installNavigation(
     }
   }
   history.listen((_to, _from, info) => {
-    if (programmaticPops > 0) {
-      programmaticPops--
-      return
-    }
+    if (takeAppPop(entryPosition())) return
     userPop = { direction: info.direction, delta: info.delta }
     popPending = true
   })
@@ -322,7 +438,11 @@ function settled(navigation: unknown): Promise<unknown> {
 
 /** Back, asked for by the app (an arrow, a Cancel). */
 function historyGo(router: Pick<Router, 'go'>, delta: number) {
-  programmaticPops++
+  const position = entryPosition()
+  appPops.push({
+    position: position === null ? null : position + delta,
+    until: Date.now() + APP_POP_TIMEOUT_MS,
+  })
   router.go(delta)
 }
 
@@ -345,20 +465,57 @@ function goAndSettle(router: Router, delta: number): Promise<void> {
 
 /**
  * Moves the session history by `delta` without the router following: neither the pages in
- * between nor the one landed on are shown. The caller then replaces the entry landed on.
+ * between nor the one landed on are shown. Resolves true once moved, false when the browser
+ * dropped the move: the router then must not stay paused, or it would ignore the user's next
+ * Back or Forward.
  */
-function moveUnseen(delta: number): Promise<void> {
+function moveUnseen(delta: number): Promise<boolean> {
   return new Promise(resolve => {
-    const done = () => {
-      window.removeEventListener('popstate', done)
-      clearTimeout(timer)
-      resolve()
+    const history = routerHistory
+    if (!history) {
+      resolve(false)
+      return
     }
-    const timer = setTimeout(done, 1000)
-    window.addEventListener('popstate', done)
-    if (routerHistory) routerHistory.go(delta, false)
-    else done()
+    const finish = (moved: boolean) => {
+      window.removeEventListener('popstate', onPop)
+      clearTimeout(timer)
+      if (!moved) {
+        // vue-router stays paused until a popstate from the entry it paused on; this one, for
+        // the entry the session is still on, unpauses it and changes nothing else.
+        window.dispatchEvent(
+          new PopStateEvent('popstate', { state: window.history.state }),
+        )
+      }
+      resolve(moved)
+    }
+    const onPop = () => finish(true)
+    const timer = setTimeout(() => finish(false), APP_POP_TIMEOUT_MS)
+    window.addEventListener('popstate', onPop)
+    history.go(delta, false)
   })
+}
+
+/**
+ * The route just committed on this entry moves `delta` entries back, onto the entry there, so
+ * the entries in between drop out of Back. The router's guards have already let it through;
+ * none of the entries passed is shown.
+ */
+async function settleOnEarlierEntry(router: Router, delta: number) {
+  if (!(await moveUnseen(delta)) || !routerHistory) return
+  const current = router.currentRoute.value
+  // Keeps the landing entry's own `back` and record of the Messages entry under it.
+  routerHistory.replace(current.fullPath)
+  committedStart = null
+  recordStartTab(current.path)
+}
+
+/** A router call's outcome: true when it committed. */
+async function committed(navigation: unknown): Promise<boolean> {
+  try {
+    return (await navigation) === undefined
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -408,13 +565,12 @@ export async function replaceFlow(
   target: RouteLocationRaw,
 ): Promise<void> {
   const previous = previousInAppLocation()
-  if (
+  const leavesFrom =
     previous !== null &&
     router.resolve(previous).path === router.resolve(from).path
-  ) {
-    await moveUnseen(-1)
-  }
-  await settled(router.replace(target))
+  // The router's guards decide first; only a flow that did leave takes `from`'s entry too.
+  if ((await committed(router.replace(target))) && leavesFrom)
+    await settleOnEarlierEntry(router as Router, -1)
 }
 
 /**
@@ -462,32 +618,20 @@ async function switchTabNow(router: Router, tab: string, step: () => void) {
       await goAndSettle(router, start - position)
       return
     }
-    // Deeper inside another tab: back to that tab's root, right above Messages, unseen.
+    // Deeper inside another tab: the tab takes this entry (if the page here lets it go), then
+    // that tab's root entry right above Messages, unseen.
     step()
-    if (position - start > 1) await moveUnseen(start + 1 - position)
-    await settled(router.replace(tab))
+    if ((await committed(router.replace(tab))) && position - start > 1)
+      await settleOnEarlierEntry(router, start + 1 - position)
     return
   }
-  // No Messages under this screen (the app was opened elsewhere): Messages takes this entry,
-  // unseen, and the tab opens above it.
+  // No Messages under this screen (the app was opened elsewhere). Tabs do not stack, so a tab's
+  // root gives way to the tab; any other page stays under it, so Back returns to it, never to a
+  // Messages screen the user was not on.
   step()
-  if (tab === START_TAB) {
-    await settled(router.replace(START_TAB))
-    return
-  }
-  markEntryAsMessages()
-  await settled(router.push(tab))
-}
-
-/** Makes the current entry the Messages entry without showing Messages. */
-function markEntryAsMessages() {
-  const position = entryPosition()
-  if (!routerHistory || position === null) return
-  routerHistory.replace(START_TAB)
-  const state = entryState()
-  if (state)
-    window.history.replaceState({ ...state, [START_KEY]: position }, '')
-  committedStart = position
+  const current = router.currentRoute.value.path
+  if (TAB_ROOTS.has(current)) await settled(router.replace(tab))
+  else await settled(router.push(tab))
 }
 
 /**
@@ -514,7 +658,7 @@ export function resetNavigationForTests() {
   routerHistory = null
   userPop = null
   popPending = false
-  programmaticPops = 0
+  appPops = []
   callsInFlight = 0
   pendingTarget = null
   refusedPopDelta = null

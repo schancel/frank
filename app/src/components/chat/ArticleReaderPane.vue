@@ -310,6 +310,7 @@ import {
   type ArticlePayload,
   type ArticleTableAlignment,
 } from '@frank/wallet/message-item-plugins/article'
+import { quasarOverlayShowing } from 'src/utils/navigation'
 
 export default defineComponent({
   name: 'ArticleReaderPane',
@@ -414,7 +415,9 @@ export default defineComponent({
       this.$emit('close')
     },
     onWindowKeydown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
+      // A dialog or menu open above the reader takes Escape (and the phone's Back, which
+      // dismisses it with an Escape): the reader closes only when it is the top layer.
+      if (event.key === 'Escape' && !quasarOverlayShowing()) {
         event.stopPropagation()
         this.emitClose()
       }

@@ -261,11 +261,12 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     }
   })
 
-  // Rail tabs switch tabs like the bottom bar (utils/navigation switchTab). These mount with
-  // no history entry under the page, so Messages takes the current entry.
+  // Rail tabs switch tabs like the bottom bar (utils/navigation switchTab). This one mounts on
+  // another tab's root with no history entry under it, so Messages takes that entry.
   it('the Messages rail tab opens the conversation list in place, never a pushed conversation', async () => {
     mockRouterPush.mockReset()
     mockRouterReplace.mockReset()
+    mockRoute.path = '/forum'
     const wrapper = mountDrawer()
     await wrapper.get('#rail-tab-chats').trigger('click')
     await flushPromises()

@@ -850,10 +850,16 @@ describe('MainLayout mobile/extension bottom navigation bar', () => {
 
 describe('MainLayout bottom bar on the Messages tab (Telegram/WhatsApp)', () => {
   it('the Messages tab opens the conversation list, not the last conversation', async () => {
-    const { wrapper, router } = await mountLayout(390)
+    const { wrapper, router } = await mountLayout(
+      390,
+      undefined,
+      true,
+      '/forum',
+    )
     await wrapper.find('[data-testid="mobile-nav-chats"]').trigger('click')
     await flushPromises()
-    // A tab switch (utils/navigation switchTab): Messages takes this entry.
+    // A tab switch (utils/navigation switchTab): from another tab's root, Messages takes its
+    // entry.
     expect(router.replace).toHaveBeenCalledWith('/chat')
     expect(router.push).not.toHaveBeenCalled()
     expect(mockSetActiveConversation).not.toHaveBeenCalled()

@@ -328,10 +328,10 @@ import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
 import {
+  conversationSystemLine,
   getMessageItemRenderer,
-  messageSystemLine,
+  systemLineText,
 } from '../../../utils/message-item-renderers'
-import { groupConversationUuid } from '@frank/cashweb/groups/group-crypto'
 import { messageItems } from '../../../utils/message-items'
 import { profileAvatar } from '../../../utils/avatar'
 import {
@@ -585,22 +585,12 @@ export default defineComponent({
   },
   computed: {
     systemLine(): string | undefined {
-      const conversations = this.chats.conversations
-      const line = messageSystemLine(this.message.items ?? [], {
-        outbound: this.message.outbound,
-        groupName: groupIdHex => {
-          try {
-            return conversations[groupConversationUuid(groupIdHex)]?.name
-          } catch {
-            return undefined
-          }
-        },
-      })
-      if (!line) return undefined
-      return this.$t(line.key, {
-        ...line.params,
-        group: line.params?.group || this.$t('groupChat.unnamedGroup'),
-      })
+      const line = conversationSystemLine(
+        this.message.items ?? [],
+        this.message.outbound,
+        this.chats.conversations,
+      )
+      return line ? systemLineText(line, this.$t) : undefined
     },
     /** Not the last bubble of its sender's run: it sits closer to the next one. Nothing at
      * all in a two-person chat, so that markup stays as it was. */

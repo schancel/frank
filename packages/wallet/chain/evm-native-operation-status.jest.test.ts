@@ -297,3 +297,30 @@ it("names every kind of send the wallet makes from its operation identity", () =
     classifyEvmOperation(set(`stealth-${"ab".repeat(32)}`), `stamp-${MESSAGE}`)
   ).toEqual({ purpose: "stamp", messageId: MESSAGE });
 });
+
+// A member not yet handed to anyone is waiting its turn (a payment waits for the funding it
+// spends to land); the app reads that as a send under way, not an unresolved outcome.
+it("says which members were handed to the network", async () => {
+  const fixture = await retained(true);
+  try {
+    let status = summarizeEvmNativeOperation(
+      fixture.journal.get(fixture.row.operationId)
+    );
+    expect(status.members.map((member) => member.submitted)).toEqual([
+      false,
+      false,
+    ]);
+    await fixture.journal.markExposed(fixture.row.operationId, 0);
+    status = summarizeEvmNativeOperation(
+      fixture.journal.get(fixture.row.operationId)
+    );
+    expect(
+      status.members.map((member) => [member.submitted, member.state])
+    ).toEqual([
+      [true, "unknown"],
+      [false, "unknown"],
+    ]);
+  } finally {
+    await fixture.journal.Close();
+  }
+});

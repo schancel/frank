@@ -52,6 +52,7 @@ jest.mock('../../../utils/message-items', () => ({
 jest.mock('../../../utils/message-item-renderers', () => ({
   getMessageItemRenderer: () => undefined,
   messageSystemLine: () => undefined,
+  conversationSystemLine: () => undefined,
 }))
 
 const SERVER_TIME = Date.UTC(2026, 8, 30, 19, 0, 0)

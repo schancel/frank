@@ -96,6 +96,10 @@ export interface EvmNativeOperationStatus {
      * stamp after a payment). */
     readonly stageId?: string;
     readonly transactionHash?: string;
+    /** Its signed bytes were handed to the network (or to a relay that can broadcast them).
+     * A member that is not yet is waiting its turn in the operation (a payment waits for the
+     * funding it spends to land): its `unknown` state says only that it has not been sent. */
+    readonly submitted: boolean;
     readonly state:
       | "unknown"
       | "missing"
@@ -173,6 +177,7 @@ export function summarizeEvmNativeOperation(
         ? {}
         : { stageId: member.transactionSet.stageId }),
       transactionHash: member.signed?.transactionHash,
+      submitted: member.exposed,
       state: stateOf(member),
       ...(included
         ? {

@@ -491,6 +491,31 @@ describe('modernized chat input interface (#1003)', () => {
       expect(wrapper.emitted('update:stampAmount')).toBeUndefined()
     })
 
+    // A QA run read the action under the amount box ("Free") as the stamp's value while the
+    // stamp was 5. It says what it does, and is not offered once the stamp is 0.
+    it('the free action under the amount reads as an action, and only while the stamp is not 0', async () => {
+      const wrapper = mount(ChatInput, {
+        props: {
+          defaultStampWei: 5n * 10n ** 16n,
+          defaultStampMode: false,
+          stampAmount: '5',
+        },
+        global: globalOptions,
+      })
+      const action = wrapper.get('[data-testid="chat-input-stamp-free"]')
+      expect(action.attributes('label')).toBe(enUS.chatInput.stampMakeFree)
+      expect(
+        wrapper.get('[data-testid="chat-input-stamp-selection"]').text(),
+      ).toContain('5 MON')
+      await wrapper.setProps({ stampAmount: '0.0' })
+      expect(
+        wrapper.find('[data-testid="chat-input-stamp-free"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.get('[data-testid="chat-input-stamp-selection"]').text(),
+      ).toBe(enUS.chatInput.stampFree)
+    })
+
     it('the amount box takes 0, and keeps what was typed while it is the chosen amount', async () => {
       const wrapper = mount(ChatInput, {
         props: {

@@ -233,6 +233,7 @@ export const rawFrFR = {
     resetToDefault: 'Revenir au montant par défaut',
     stampReset: 'Par défaut',
     stampFree: 'Gratuit',
+    stampMakeFree: 'Rendre gratuit',
     stampChipFree: 'Sans timbre : ce message est gratuit',
     stampChip: 'Timbre : {amount}',
     stampChipMultiple: 'Timbre : {amount}, {multiplier}× le montant par défaut',
@@ -1638,6 +1639,8 @@ export const rawFrFR = {
     partial:
       'Certaines transactions de financement sont incluses sur {network} ; le paiement au destinataire n’est pas enregistré comme inclus.',
     pending: 'Dans le mempool sur {network} : envoyé, en attente d’un bloc.',
+    sending:
+      'Envoi en cours sur {network}… {confirmed} transactions confirmées sur {total}.',
     missing:
       '{network} n’a pas encore ce transfert. Il lui est proposé de nouveau.',
     superseded:

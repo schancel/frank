@@ -960,9 +960,10 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       expect(
         wrapper.get('[data-test="native-operation-outcome"]').text(),
       ).toContain('Sent on Monad Testnet.')
-      expect(wrapper.get('[data-test="native-operation-id"]').text()).toBe(
-        fixture.operationId,
-      )
+      // The journal's own identity of the transfer is not something the user reads.
+      expect(
+        wrapper.get('[data-test="native-operation-outcome"]').text(),
+      ).not.toContain(fixture.operationId)
       expect(readNativeOperation).toHaveBeenCalledWith(fixture.operationId)
       expect(sentTransactionNotify).toHaveBeenCalledWith(
         'monad-testnet',
@@ -972,6 +973,97 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     } finally {
       wrapper.unmount()
       await fixture.close()
+    }
+  })
+
+  // A QA run saw "Payment outcome is unresolved … Funds may have moved" while a Send max's
+  // funding had landed and its payment, not yet sent, waited for it.
+  it('a signed transfer not yet handed to the network reads as sending, not unresolved', async () => {
+    const fixture = await includedNativeTransfer(false, {
+      observed: false,
+      submitted: false,
+    })
+    const watchNativeOperation = jest.fn(
+      // The next look at the chain never comes in this test.
+      () => new Promise<void>(() => undefined),
+    )
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => fixture.journal.list(),
+        watchNativeOperation,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      throw new Error(
+        'Original legacy payment or owned redistribution is pending',
+      )
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      const outcome = wrapper.get('[data-test="native-operation-outcome"]')
+      expect(wrapper.get('[data-test="native-operation-line"]').text()).toBe(
+        t(enUS, 'nativeOperation.sending', {
+          network: getChainRegistryEntry(activeChain.chainIdentifier)!.name,
+          confirmed: '0',
+          total: '1',
+        }),
+      )
+      expect(outcome.text()).not.toContain('Funds may have moved')
+      expect(outcome.text()).not.toContain(fixture.operationId)
+      expect(
+        wrapper.find('[data-test="native-operation-recovery"]').exists(),
+      ).toBe(false)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+    }
+  })
+
+  // The same QA run saw "Not yet shared with your other devices." minutes after History said
+  // the note had gone: the page stopped reading the journal once the payment was in a block.
+  it('keeps reading a sent transfer until its note to the other devices has gone out', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    const fixture = await includedNativeTransfer()
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => fixture.journal.list(),
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      return { txHash: fixture.hash }
+    })
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      const sync = () =>
+        wrapper.get('[data-test="native-operation-sync"]').text()
+      expect(sync()).toBe(enUS.nativeOperation.syncNotShared)
+      for (const [index] of fixture.journal.list()[0]!.members.entries())
+        await fixture.journal.markSyncApplied(fixture.operationId, index)
+      jest.advanceTimersByTime(2_000)
+      await flushPromises()
+      expect(sync()).toBe(enUS.nativeOperation.syncShared)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+      await fixture.close()
+      jest.useRealTimers()
     }
   })
 
@@ -1211,7 +1303,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
           }),
         )
         expect(outcome.text()).toContain(fixture.hash)
-        expect(outcome.text()).toContain(fixture.operationId)
+        expect(outcome.text()).not.toContain(fixture.operationId)
         expect(outcome.text()).toContain('69526794')
         expect(outcome.text()).toContain('0.002142 MON')
         // The payment is included: the outcome reads as sent. Whether the wallet's other devices

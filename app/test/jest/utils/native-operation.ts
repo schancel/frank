@@ -59,10 +59,16 @@ function acquireFixtureLockHost(): () => void {
  * journal has no answer from the chain for it (`unknown`). That state cannot be reached by
  * recording `unknown` over an included member, because the journal does not let the absence of
  * an answer replace what the chain was already seen to say.
+ *
+ * `submitted: false` (with `observed: false`) leaves the last member signed but not yet handed
+ * to anyone: waiting its turn, as a payment waits for the funding it spends to land.
  */
 export async function includedNativeTransfer(
   fanIn = false,
-  { observed = true }: { observed?: boolean } = {},
+  {
+    observed = true,
+    submitted = true,
+  }: { observed?: boolean; submitted?: boolean } = {},
 ) {
   const location = await mkdtemp(join(tmpdir(), 'frank-native-ui-'))
   const signer = new Wallet('0x' + '41'.repeat(32))
@@ -118,8 +124,9 @@ export async function includedNativeTransfer(
         ),
       )
       hash = row.members[index]!.signed!.transactionHash
-      await journal.markExposed(row.operationId, index)
-      if (!observed && index === signers.length - 1) break
+      const last = index === signers.length - 1
+      if (submitted || !last) await journal.markExposed(row.operationId, index)
+      if (!observed && last) break
       await journal.recordObservation(
         journal.beginCapture(row.operationId, index),
         {

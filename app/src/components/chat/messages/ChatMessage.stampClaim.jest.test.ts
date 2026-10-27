@@ -46,6 +46,7 @@ jest.mock('../../../utils/message-items', () => ({
 jest.mock('../../../utils/message-item-renderers', () => ({
   getMessageItemRenderer: () => undefined,
   messageSystemLine: () => undefined,
+  conversationSystemLine: () => undefined,
 }))
 
 const t = (key: string) =>

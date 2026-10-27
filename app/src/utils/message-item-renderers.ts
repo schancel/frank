@@ -18,6 +18,7 @@
  * class of crash will recur.
  */
 import { MessageItem } from '@frank/cashweb/types/messages'
+import { groupConversationUuid } from '@frank/cashweb/groups/group-crypto'
 
 export interface MessageItemRenderer<TRaw extends MessageItem = MessageItem> {
   type: TRaw['type']
@@ -127,4 +128,35 @@ export function messageSystemLine(
     line ??= itemLine
   }
   return line
+}
+
+/** The system line for a message made only of record items, naming a group by this account's
+ * conversation for it. Shared by the chat view and the chat list's preview, so both say the
+ * same words. */
+export function conversationSystemLine(
+  items: readonly MessageItem[],
+  outbound: boolean,
+  conversations: Readonly<Record<string, { name?: string } | undefined>>,
+): SystemLine | undefined {
+  return messageSystemLine(items, {
+    outbound,
+    groupName: groupIdHex => {
+      try {
+        return conversations[groupConversationUuid(groupIdHex)]?.name
+      } catch {
+        return undefined
+      }
+    },
+  })
+}
+
+/** A system line in the user's language; a group this account has no name for is "unnamed". */
+export function systemLineText(
+  line: SystemLine,
+  t: (key: string, params?: Record<string, string>) => string,
+): string {
+  return t(line.key, {
+    ...line.params,
+    group: line.params?.group || t('groupChat.unnamedGroup'),
+  })
 }

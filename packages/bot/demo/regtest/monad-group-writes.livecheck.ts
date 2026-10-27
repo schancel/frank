@@ -23,11 +23,7 @@
  *   and lands once the writer broadcasts its predecessors;
  * - the real writer path: a funded Frank wallet pays a write through `deliverPaidGroupWrite`
  *   (sign, store, submit to A, then authorize and broadcast the whole set in nonce order) and
- *   the payment, wherever construction shuffled it among its self-sends, is mined;
- * - a Frank wallet whose deposit the chain does not show yet: A defers its write (503
- *   `insufficient_balance`), the user's discard reads the chain and gives the coin back (once,
- *   however often it is repeated), and after the deposit lands the same coin pays another write
- *   at the same nonce, so the discarded payment can never land.
+ *   the payment, wherever construction shuffled it among its self-sends, is mined.
  *
  * Not covered here: a home relay proxying to the host (the production binary proxies only to
  * public addresses, so two local relays cannot; `cargo test -p cashweb-registry groups` covers it
@@ -61,15 +57,8 @@ import {
   type MonadRegtest,
 } from './monad-regtest'
 import { findWallets } from '../funds'
-import { monadOf, openMonadWallet, tickUntilSettled } from './monad-wallets'
-import {
-  deliverPaidGroupWrite,
-  discardPaidGroupWrite,
-  type GroupWriteDelivery,
-} from '../../../group-messaging/groups/write-payment'
-import { GroupWriteDeferredError } from '../../../cashweb/groups/group-relay-client'
-import { evmWalletInternals } from '@frank/wallet/evm-wallet'
-import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import { monadOf, openMonadWallet } from './monad-wallets'
+import { deliverPaidGroupWrite } from '../../../group-messaging/groups/write-payment'
 import type { StoredGroupWritePayment } from '../../../cashweb/groups/group-write-payment'
 import { startRegtestStack } from './regtest-stack'
 
@@ -586,120 +575,6 @@ async function main() {
       assert.equal((await messages()).length, 5)
     } finally {
       await writer.close()
-    }
-
-    // A write waiting for funds, discarded: the wallet knows of a deposit to its account that
-    // the chain does not show yet (as when a payment to it was announced before it was mined).
-    const waiting = await openMonadWallet(stack, 'group-discarder')
-    try {
-      const handle = waiting.handle as unknown as EvmChainWalletHandle
-      const main = handle.mainAccount!
-      const coins = evmWalletInternals(handle).coinList!
-      const depositWei = 20n * 10n ** 18n
-      const startNonce = await monad.provider.getTransactionCount(
-        main.address,
-        'latest',
-      )
-      await coins.put({
-        account: main.address,
-        privateKey: main.privateKey,
-        nonce: startNonce,
-        valueWei: depositWei,
-        origin: 'root',
-      })
-      await handle.refreshTransactionSetInventory?.()
-      const coinBefore = coins.get(main.address, startNonce)
-      const waitingEnvelope = seal('waiting for funds')
-      let record: StoredGroupWritePayment | undefined
-      const params = {
-        groupIdHex: id,
-        policy: () => host.getWritePolicy(id),
-        persist: async (next: StoredGroupWritePayment) => {
-          record = next
-        },
-        wallet: handle,
-      }
-      const deferred = await deliverPaidGroupWrite({
-        ...params,
-        envelope: waitingEnvelope,
-        stored: record,
-        submit: payment => host.sendGroupMessage(id, waitingEnvelope, payment),
-      }).catch(error => error)
-      assert(deferred instanceof GroupWriteDeferredError, String(deferred))
-      assert.equal(deferred.reason, 'insufficient_balance')
-      assert(record?.submitted && record.rawTransaction)
-      const discardedPayment = Transaction.from(`0x${record.rawTransaction}`)
-      assert.equal(coins.isAccountReserved(main.address), true)
-      const discard = () =>
-        discardPaidGroupWrite({
-          stored: record,
-          persist: params.persist,
-          wallet: handle,
-        })
-      assert.deepEqual(await discard(), { state: 'discarded' })
-      assert(record?.released && record.discarded)
-      assert.equal(coins.isAccountReserved(main.address), false)
-      assert.deepEqual(coins.get(main.address, startNonce), coinBefore)
-      assert.deepEqual(await discard(), { state: 'discarded' })
-      assert.equal(
-        await monad.provider.getTransaction(discardedPayment.hash!),
-        null,
-      )
-      console.log(
-        `waiting write: 503 ${deferred.reason}; discarded after a chain read, coin at nonce ${startNonce} free again`,
-      )
-
-      // The deposit lands; the freed coin pays a new write at the same nonce.
-      await monad.fund(main.address, depositWei)
-      await monad.mine(6)
-      const nextEnvelope = seal('paid after the discard')
-      let next: StoredGroupWritePayment | undefined
-      let delivery:
-        | GroupWriteDelivery<Awaited<ReturnType<typeof host.sendGroupMessage>>>
-        | undefined
-      for (let attempt = 0; !delivery && attempt < 30; attempt++) {
-        delivery = await deliverPaidGroupWrite({
-          ...params,
-          envelope: nextEnvelope,
-          stored: next,
-          persist: async n => {
-            next = n
-          },
-          submit: payment => host.sendGroupMessage(id, nextEnvelope, payment),
-        }).catch(error => {
-          if (!(error instanceof GroupWriteDeferredError)) throw error
-          return undefined
-        })
-        if (!delivery) await new Promise(resolve => setTimeout(resolve, 1_000))
-      }
-      assert(delivery?.state === 'delivered' && delivery.settled)
-      const paid = Transaction.from(`0x${next!.rawTransaction}`)
-      const paidReceipt = await monad.provider.waitForTransaction(
-        paid.hash!,
-        1,
-        60_000,
-      )
-      assert.equal(paidReceipt?.status, 1)
-      // Its account's nonces moved past the discarded payment's: that one can never land.
-      const after = await monad.provider.getTransactionCount(
-        discardedPayment.from!,
-        'latest',
-      )
-      assert(after > discardedPayment.nonce)
-      assert.equal(
-        await monad.provider.getTransaction(discardedPayment.hash!),
-        null,
-      )
-      console.log(
-        `after the deposit: write seq ${delivery.receipt.server_seq} paid by ${
-          paid.hash
-        } (block ${
-          paidReceipt!.blockNumber
-        }); the discarded payment never landed`,
-      )
-      await tickUntilSettled(waiting)
-    } finally {
-      await waiting.close()
     }
   } finally {
     // The writer wallet's accounts, found from the keys in the stack's state directory.

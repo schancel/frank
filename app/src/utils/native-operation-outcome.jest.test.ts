@@ -91,20 +91,52 @@ describe('the outcome line of a send', () => {
     )
   })
 
+  // French agrees with the count confirmed: 0 or 1 is singular. Seen on QA 2026-10-27:
+  // "0 transactions confirmées sur 13".
   it.each([
-    [enUS, 'Sending on Monad Regtest… 2 of 4 transactions confirmed.'],
+    [enUS, 0, 'Sending on Monad Regtest… 0 of 13 transactions confirmed.'],
+    [enUS, 1, 'Sending on Monad Regtest… 1 of 13 transactions confirmed.'],
+    [enUS, 2, 'Sending on Monad Regtest… 2 of 13 transactions confirmed.'],
     [
       frFR,
-      'Envoi en cours sur Monad Regtest… 2 transactions confirmées sur 4.',
+      0,
+      'Envoi en cours sur Monad Regtest… 0 transaction confirmée sur 13.',
     ],
-  ])('reads in each language (%#)', (messages, expected) => {
-    expect(
-      messages.nativeOperation.sending
-        .replace('{network}', 'Monad Regtest')
-        .replace('{confirmed}', '2')
-        .replace('{total}', '4'),
-    ).toBe(expected)
-  })
+    [
+      frFR,
+      1,
+      'Envoi en cours sur Monad Regtest… 1 transaction confirmée sur 13.',
+    ],
+    [
+      frFR,
+      2,
+      'Envoi en cours sur Monad Regtest… 2 transactions confirmées sur 13.',
+    ],
+  ] as const)(
+    'reads in each language (%#)',
+    (messages, confirmed, expected) => {
+      const members = Array.from({ length: 13 }, (_, index) =>
+        index < confirmed
+          ? member('included-success', true)
+          : member('unknown', false, 'payment'),
+      )
+      const { key, params } = nativeOperationOutcome(
+        { payment: 'unknown', members },
+        'Monad Regtest',
+      )
+      const template = key
+        .split('.')
+        .reduce<unknown>(
+          (node, part) => (node as Record<string, unknown>)[part],
+          messages,
+        ) as string
+      expect(
+        template.replace(/\{(\w+)\}/g, (_, name: string) =>
+          String(params[name]),
+        ),
+      ).toBe(expected)
+    },
+  )
 })
 
 describe('a sent transfer whose change is still settling', () => {

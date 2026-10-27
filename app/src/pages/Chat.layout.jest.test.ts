@@ -392,6 +392,7 @@ describe('Chat history anchor restoration lifetime', () => {
       messagesToShow: number
       historyAnchorPending: boolean
       address: string
+      openRouteAddress(address: string): void
       scrollHandler(details: {
         verticalPosition: number
         verticalSize: number
@@ -453,10 +454,8 @@ describe('Chat history anchor restoration lifetime', () => {
       if (kind === 'target')
         scroll.vm.getScrollTarget = () => document.createElement('div')
       if (kind === 'route-return') {
-        ChatPage.beforeRouteUpdate.call(vm, {
-          params: { address: 'different-conversation' },
-        })
-        ChatPage.beforeRouteUpdate.call(vm, { params: { address: DEALER } })
+        vm.openRouteAddress('different-conversation')
+        vm.openRouteAddress(DEALER)
       }
       if (kind === 'unmount') wrapper.unmount()
       await wrapper.vm.$nextTick()

@@ -31,7 +31,7 @@
  */
 import { execFile } from 'child_process'
 
-import { JsonRpcProvider, parseEther, Wallet } from 'ethers'
+import { isError, JsonRpcProvider, parseEther, Transaction, TransactionRequest, Wallet } from 'ethers'
 
 import { RegtestChain, sleep } from './regtest-chain'
 
@@ -294,13 +294,7 @@ export async function startMonadRegtest(
     faucet,
     faucetAddress: faucet.address,
     fund: (address, amount) =>
-      exclusive(async () => {
-        const nonce = await provider.getTransactionCount(faucet.address, 'pending')
-        const tx = await faucet.sendTransaction({ to: address, value: amount, nonce, gasLimit: 21_000n })
-        const receipt = await tx.wait(1, 120_000)
-        if (!receipt || receipt.status !== 1) throw new Error(`faucet payment ${tx.hash} did not succeed`)
-        return tx.hash
-      }),
+      exclusive(() => payAtFreshNonce(faucet, { to: address, value: amount, gasLimit: 21_000n })),
     // Blocks come on their own; "mine" waits until that many more exist.
     mine: (blocks = 1) => waitBlocks(blocks),
     stop: async () => {
@@ -351,22 +345,206 @@ async function sendAll(signer: Wallet, to: string, rpcUrl: string, amount?: bigi
     }
     const wallet = signer.connect(provider)
     const fee = await provider.getFeeData()
-    const maxFeePerGas = (fee.maxFeePerGas ?? fee.gasPrice ?? 0n) * 2n
     const maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? 0n
+    let maxFeePerGas = (fee.maxFeePerGas ?? fee.gasPrice ?? 0n) * 2n
     let value = amount
     if (value === undefined) {
-      // Monad charges the gas limit at the max fee, so keep exactly that back.
+      // Monad charges the gas limit at base fee + tip, up to the fee cap, not the cap itself. A
+      // sweep caps the fee at base + tip + SWEEP_TIP_MARGIN_WEI and holds back exactly that;
+      // every signing tips at least the quoted tip, so at most 21,000 x the margin is left.
+      const base = (await provider.getBlock('latest'))?.baseFeePerGas
+      if (base == null) throw new Error('solonet reports no base fee')
+      maxFeePerGas = base + maxPriorityFeePerGas + SWEEP_TIP_MARGIN_WEI
       const balance = await provider.getBalance(wallet.address, 'pending')
       value = balance - 21_000n * maxFeePerGas
       if (value <= 0n) throw new Error('nothing to sweep')
     }
-    const nonce = await provider.getTransactionCount(wallet.address, 'pending')
-    const tx = await wallet.sendTransaction({ to, value, nonce, gasLimit: 21_000n, maxFeePerGas, maxPriorityFeePerGas })
-    const receipt = await tx.wait(1, 120_000)
-    if (!receipt || receipt.status !== 1) throw new Error(`payment ${tx.hash} did not succeed`)
-    return tx.hash
+    return await payAtFreshNonce(wallet, { to, value, gasLimit: 21_000n, maxFeePerGas, maxPriorityFeePerGas })
   } finally {
     provider.destroy()
+  }
+}
+
+/** How many times one payment is signed in all, at whatever nonces. */
+const MAX_SIGNINGS = 12
+/** The most the per-signing tip bump adds to the fee per gas (one wei per signing). */
+export const SWEEP_TIP_MARGIN_WEI = BigInt(MAX_SIGNINGS)
+/** How long a nonce the node may hold a signing at waits to be used, before the call fails. */
+const NONCE_USE_TIMEOUT_MS = 120_000
+
+/** The node's error, with what ethers wrapped around it. */
+function errorText(error: unknown): string {
+  const parts: string[] = []
+  for (let cause: unknown = error, depth = 0; cause && depth < 4; depth++) {
+    const record = cause as { message?: unknown; error?: unknown; info?: { error?: unknown } }
+    if (typeof record.message === 'string') parts.push(record.message)
+    cause = record.error ?? record.info?.error
+  }
+  return parts.join(' ')
+}
+
+/**
+ * How the node answered a transaction it did not take.
+ *  - `taken`: the sender already has another transaction at that nonce, or the nonce is used:
+ *    another process paying from the same account (the faucet is shared by every check on this
+ *    solonet) read the same pending nonce. Solonet says "An existing transaction had higher
+ *    priority" (-32000); other nodes "nonce too low" or "replacement transaction underpriced".
+ *  - `refused`: turned down for now and not held ("A newer transaction had higher priority";
+ *    "Signer had insufficient balance", which Monad says until money received is about four
+ *    blocks old: docs/protocol/chains/monad-reserve-balance.md).
+ *  - `maybe-held`: the node was busy or the answer was lost; it may hold the transaction anyway.
+ *  - undefined: anything else, which is not a nonce race.
+ */
+export function rejection(error: unknown): 'taken' | 'refused' | 'maybe-held' | undefined {
+  if (isError(error, 'NONCE_EXPIRED') || isError(error, 'REPLACEMENT_UNDERPRICED')) return 'taken'
+  const text = errorText(error)
+  if (/existing transaction had higher priority|nonce too low|nonce has already been used|replacement transaction underpriced/i.test(text))
+    return 'taken'
+  if (/newer transaction had higher priority|signer had insufficient balance/i.test(text)) return 'refused'
+  if (isError(error, 'TIMEOUT') || isError(error, 'NETWORK_ERROR') || /overloaded|try again|timed? ?out|busy|ECONNRESET|socket hang up/i.test(text))
+    return 'maybe-held'
+  return undefined
+}
+
+/**
+ * Pays `request` from `signer` and waits until it has landed, paying once even when other
+ * processes pay from the same account at the same time (the faucet is shared by every check on
+ * this solonet).
+ *
+ * The rule is the wallet's (packages/wallet/chain/evm-refused-resign.ts): every signing is the
+ * same payment, and every signing this call made is watched by hash, refused ones included (a
+ * Monad node can take bytes it refused thousands of blocks later). A signing is made at a higher
+ * nonce only once the chain shows the lower nonce was used by a transaction that is none of
+ * this call's signings: then none of them can ever land. Until then the payment is signed again
+ * at the same nonce (other bytes: one wei more tip) or waited on, so at most one signing can be
+ * mined. Bounded: `MAX_SIGNINGS` signings, and a nonce the node may hold a signing at that is
+ * not used within `NONCE_USE_TIMEOUT_MS` fails the call rather than move on. Returns the hash
+ * that landed.
+ */
+export async function payAtFreshNonce(
+  signer: Wallet,
+  request: Omit<TransactionRequest, 'nonce' | 'from'>,
+): Promise<string> {
+  const provider = signer.provider as JsonRpcProvider | null
+  if (!provider) throw new Error('payAtFreshNonce needs a connected signer')
+  /** Every signing of this call, by hash. */
+  const signed = new Set<string>()
+  // Read from a block before any nonce this call signs at could have been used.
+  const blocks = new SenderBlocks(provider, signer.address, await provider.getBlockNumber())
+  let nonce = await provider.getTransactionCount(signer.address, 'pending')
+  let why = ''
+  // Signings of an earlier call (another run sweeping the same key, say) are not repeated: the
+  // node may still refuse those bytes. The tip only ever rises, and a fee cap bounds the cost.
+  const tipOffset = BigInt(Math.floor(Math.random() * 1_000_000))
+  for (let signing = 1; signing <= MAX_SIGNINGS; signing++) {
+    const populated = await signer.populateTransaction({ ...request, nonce })
+    // Other bytes on each signing: the node keeps refusing bytes it once refused, even once they
+    // would be valid. One wei more of tip changes them, within the same fee cap (the most the
+    // payment can be charged per gas).
+    if (populated.maxPriorityFeePerGas != null && populated.maxFeePerGas != null) {
+      const tip = BigInt(populated.maxPriorityFeePerGas) + tipOffset + BigInt(signing - 1)
+      const cap = BigInt(populated.maxFeePerGas)
+      populated.maxPriorityFeePerGas = tip > cap ? cap : tip
+    }
+    const raw = await signer.signTransaction(populated)
+    signed.add(Transaction.from(raw).hash as string)
+    let answer: ReturnType<typeof rejection> | 'accepted' = 'accepted'
+    try {
+      await provider.send('eth_sendRawTransaction', [raw])
+    } catch (error) {
+      answer = rejection(error)
+      if (!answer) throw error
+      why = `nonce ${nonce}: ${errorText(error).slice(0, 160)}`
+    }
+    // Refused for now and held by nobody: signed again at the same nonce, unless it was used.
+    // Otherwise (taken, held, or perhaps held) the nonce is waited on until it is used.
+    const outcome = await nonceOutcome(provider, signer.address, nonce, signed, blocks, {
+      wait: answer !== 'refused',
+    })
+    if (outcome.kind === 'ours') return outcome.hash
+    if (outcome.kind === 'other') {
+      why = `nonce ${nonce} was used by another transaction (${outcome.hash})`
+      nonce = Math.max(nonce + 1, await provider.getTransactionCount(signer.address, 'pending'))
+    }
+    console.warn(`[solonet] ${signer.address}: ${why}; signing again at nonce ${nonce} (signing ${signing + 1})`)
+    // A refusal for a young balance lasts a few blocks; a little jitter keeps two funders from
+    // colliding in step.
+    await sleep((answer === 'refused' ? 1000 : 100) + Math.floor(Math.random() * 400))
+  }
+  throw new Error(`${signer.address} could not pay after ${MAX_SIGNINGS} signings: ${why}`)
+}
+
+/**
+ * What became of `sender`'s `nonce`: used by one of `ours` (`ours`, its hash), used by another
+ * transaction (`other`), or not used yet (`unused`, only when not told to `wait`). Waiting, it
+ * polls until the nonce is used, and fails after `NONCE_USE_TIMEOUT_MS`: one of ours could still
+ * be mined there, so nothing may be signed at a higher nonce. Which transaction used the nonce is
+ * read from the block that holds it (`blocks`), not guessed from a missing receipt.
+ */
+async function nonceOutcome(
+  provider: JsonRpcProvider,
+  sender: string,
+  nonce: number,
+  ours: ReadonlySet<string>,
+  blocks: SenderBlocks,
+  options: { wait: boolean },
+): Promise<{ kind: 'ours' | 'other'; hash: string } | { kind: 'unused' }> {
+  const deadline = Date.now() + NONCE_USE_TIMEOUT_MS
+  for (;;) {
+    if ((await provider.getTransactionCount(sender, 'latest')) > nonce) {
+      const hash = await blocks.find(nonce)
+      if (!ours.has(hash)) return { kind: 'other', hash }
+      const receipt = await provider.getTransactionReceipt(hash)
+      if (!receipt || receipt.status !== 1) throw new Error(`payment ${hash} did not succeed`)
+      return { kind: 'ours', hash }
+    }
+    if (!options.wait) return { kind: 'unused' }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `nonce ${nonce} of ${sender} was not used within ${NONCE_USE_TIMEOUT_MS / 1000} s; one of ${[...ours].join(', ')} could still land there`,
+      )
+    }
+    await sleep(250)
+  }
+}
+
+/**
+ * `sender`'s transactions in the blocks from `from` on, by nonce, read block by block (solonet
+ * keeps blocks but not the state of older ones, so a nonce cannot be looked up by block).
+ * `from` is a block before any nonce asked about was used.
+ */
+class SenderBlocks {
+  private next: number
+  private readonly byNonce = new Map<number, string>()
+
+  constructor(
+    private readonly provider: JsonRpcProvider,
+    private readonly sender: string,
+    from: number,
+  ) {
+    this.next = from
+  }
+
+  /** The hash of the transaction that used `nonce`, which the chain says is used. */
+  async find(nonce: number): Promise<string> {
+    const deadline = Date.now() + 30_000
+    for (;;) {
+      const known = this.byNonce.get(nonce)
+      if (known) return known
+      const head = await this.provider.getBlockNumber()
+      while (this.next <= head) {
+        const block = await this.provider.getBlock(this.next, true)
+        if (!block) break
+        for (const tx of block.prefetchedTransactions)
+          if (tx.from.toLowerCase() === this.sender.toLowerCase()) this.byNonce.set(tx.nonce, tx.hash)
+        this.next += 1
+      }
+      if (this.byNonce.has(nonce)) continue
+      if (Date.now() >= deadline) {
+        throw new Error(`no block from the start of this payment holds ${this.sender}'s nonce ${nonce}`)
+      }
+      await sleep(250)
+    }
   }
 }
 

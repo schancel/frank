@@ -1,7 +1,7 @@
 import type { RaffleItem } from "@frank/cashweb/types/messages";
 import { verifyRaffleDrawAgainstThread } from "@frank/wallet/message-item-plugins/raffle/draw";
 import { harness } from "./bot-harness.testutil";
-import { Outbox } from "./money";
+import { Outbox, RETRY_CAP_MS } from "./money";
 import { RaffleBot } from "./raffle-bot";
 
 const PRICE = 20_000_000_000_000_000n; // 0.02 MON
@@ -133,8 +133,11 @@ describe("RaffleBot", () => {
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE, BOB]);
 
     h.failSends();
+    // Failures in a row wait longer before the next try (at most RETRY_CAP_MS).
+    const now = jest.spyOn(Date, "now").mockReturnValue(Date.now() + RETRY_CAP_MS);
     for (const schedule of bot.schedules) await schedule.handler(h.ctx);
     for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    now.mockRestore();
     const pot = h.sent.findIndex((m) => m.valueWei === PRICE * 2n);
     const winner = h.sent[pot].to;
     expect(h.item("raffle", h.sent[pot]).winnerAddress).toBe(winner);

@@ -160,6 +160,11 @@ interface Index {
 
 /** How long an entry waits for transfers that are not mined before it goes without them. */
 const AWAIT_MS = 60 * 60 * 1000;
+/** After an owed message fails to go twice in a row, how long until it is tried again: doubled
+ * with each further failure, from the first to the cap. The schedule still runs every 10 s; an entry is
+ * skipped until its time. */
+export const RETRY_FIRST_MS = 10_000;
+export const RETRY_CAP_MS = 10 * 60_000;
 const K = "outbox:";
 
 function messageIdFor(botId: string, id: string, tries = 0): string {
@@ -192,6 +197,10 @@ export class Outbox {
   private base?: BotContext;
   /** Messages being handled right now: not left over, so not refunded by the timer. */
   private readonly active = new Set<string>();
+  /** Owed messages whose last try failed: how many times in a row, and when the next try is.
+   * Held in memory only: a restart tries every owed message again at once. A try reuses the
+   * entry's one message ID, so waiting changes when it is tried, never whether it pays twice. */
+  private readonly backoff = new Map<string, { failures: number; nextMs: number }>();
 
   constructor(private readonly botId: string) {}
 
@@ -490,11 +499,25 @@ export class Outbox {
       .then(() =>
         this.serial(async () => {
           for (const id of (await this.index(ctx.state)).owed) {
+            const waiting = this.backoff.get(id);
+            if (waiting && Date.now() < waiting.nextMs) continue;
             try {
               await this.send(sender, id);
+              this.backoff.delete(id);
             } catch (error) {
+              const failures = (waiting?.failures ?? 0) + 1;
+              // The first failure is tried again at once (the next pass): a wallet that made
+              // its attempt and then threw ("payment pending") is answered by that attempt's
+              // status then. Only failures in a row wait, longer each time.
+              const delayMs =
+                failures < 2
+                  ? 0
+                  : Math.min(RETRY_CAP_MS, RETRY_FIRST_MS * 2 ** Math.min(failures - 2, 20));
+              this.backoff.set(id, { failures, nextMs: Date.now() + delayMs });
               console.warn(
-                `[${this.botId}] owed message ${id} not sent yet; it stays owed:`,
+                `[${this.botId}] owed message ${id} not sent yet (failure ${failures} in a row); it stays owed and is tried again ${
+                  delayMs ? `in ${Math.round(delayMs / 1000)} s` : "on the next pass"
+                }:`,
                 error instanceof Error ? error.message : error
               );
             }

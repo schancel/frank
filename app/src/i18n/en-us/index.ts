@@ -1638,6 +1638,8 @@ export const rawEnUS = {
     partial:
       'Some funding transactions are included on {network}; recipient payment is not recorded as included.',
     pending: 'In the mempool on {network}: sent, waiting for a block.',
+    sendingOne:
+      'Sending on {network}… {confirmed} of {total} transactions confirmed.',
     sending:
       'Sending on {network}… {confirmed} of {total} transactions confirmed.',
     missing:

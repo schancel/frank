@@ -1578,7 +1578,9 @@ async function repayTakenPayments(
   const shared = owner.transactionSets
   const operationId = row.transactionSetOperationId
   const candidates = sharedRepaymentCandidates(row)
-  if (!shared || !operationId || candidates.length === 0) return row
+  if (!shared || !operationId) return row
+  // Repayments already recorded are finished (built, handed to the node, looked for) each pass.
+  if (candidates.length === 0) return finishRepayments(owner, row)
   const operation = await shared.preparer.readOperation(operationId)
   if (!operation) return row
   const head = await shared.provider.getBlockNumber()

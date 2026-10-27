@@ -34,7 +34,7 @@
  */
 import assert from 'assert'
 import { fork, type ChildProcess } from 'child_process'
-import { copyFileSync, mkdirSync } from 'fs'
+import { copyFileSync, mkdirSync, readdirSync } from 'fs'
 import { join } from 'path'
 
 import { formatEther, parseEther, Transaction, Wallet } from 'ethers'
@@ -241,7 +241,12 @@ async function main() {
           gift = await giver.send(a.address, [{ type: 'text', text: `${label} gift ${Date.now()}` }], SHARED_COIN_WEI)
           break
         } catch (err) {
-          if (tries >= 20 || (err as Error).name !== 'InsufficientStampFundsError') throw err
+          // The giver's change from its last gift lands and matures a few blocks later. Its own
+          // sends' later transfers go to the node from the wallet's background pass, which the
+          // app runs on a timer and this check runs here.
+          if (tries >= 100 || (err as Error).name !== 'InsufficientStampFundsError') throw err
+          await giver.chain.directMessages.reconcileAttempts({ wallet: giver.handle, payloadDigests: [] }).catch(() => undefined)
+          await giver.handle.reobserveNativeOperations?.().catch(() => undefined)
           await sleep(3000)
         }
       }
@@ -291,10 +296,11 @@ async function main() {
         // A's transaction goes to the network first, and B is let go at once: the relay reads
         // the account before the network shows A's transaction used the nonce, stores B's
         // message, and B's payment then cannot land.
-        const keys = new Map(await a.call<[string, string][]>({ op: 'keys' }))
+        // Both devices derive the same keys from the account; the coin's key is read from B's list.
         const victim = bTaken[0]!
-        const key = keys.get(victim.from!.toLowerCase())
-        assert.ok(key, `${label}: A holds the key of ${victim.from}`)
+        const key = evmWalletInternals(b.handle).coinList!.all()
+          .find(coin => coin.account.toLowerCase() === victim.from!.toLowerCase() && coin.privateKey)?.privateKey
+        assert.ok(key, `${label}: the account holds the key of ${victim.from}`)
         const signer = new Wallet(key!, monad.provider)
         const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
         const raw = await signer.signTransaction({
@@ -534,6 +540,25 @@ async function main() {
         // Closed already: its coins were remembered when it was open, or are swept below.
       }
       await device.close().catch(() => undefined)
+    }
+    // Coins received in messages (stamps paid to bob, the gifts) are listed by a wallet that reads
+    // its mailbox and settles; each account (gina once) is opened again for that, then swept.
+    for (const label of readdirSync(join(stack.stateDir, 'wallets')).filter(label => label !== 'gina-a')) {
+      try {
+        const device = await openDevice(stack, label)
+        try {
+          await device.receive(() => false, 15_000).catch(() => undefined)
+          for (let pass = 0; pass < 5; pass++) {
+            await device.handle.reobserveNativeOperations?.().catch(() => undefined)
+            await sleep(2000)
+          }
+          remember(device)
+        } finally {
+          await device.close().catch(() => undefined)
+        }
+      } catch (error) {
+        console.warn(`could not reopen ${label} to sweep its received coins: ${(error as Error).message}`)
+      }
     }
     let leftCoins: SolonetKeyRun | undefined
     const swept = await returnToFaucet(stack).catch(() => ({ returnedWei: 0n, leftWei: 0n, unswept: 1 }))

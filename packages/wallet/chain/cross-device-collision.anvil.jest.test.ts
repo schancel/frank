@@ -340,6 +340,9 @@ suite('another device of the account spends a message coin at the same moment (a
     held.release()
     expect(await held.sent).toBe('returned')
     expect(bobMailbox).toHaveLength(1)
+    // A node that includes transactions only in its next block (as Monad's does): the repayment
+    // is still waiting when the pass that sent it ends, and a later pass finishes it.
+    await chain.send('evm_setAutomine', [false])
     const done = await reconcileUntil(held.digest, row =>
       row.repayments?.every(repayment => repayment.state === 'spent') === true &&
       !row.otherTransactions.some(p => p.state === 'pending'))
@@ -358,7 +361,10 @@ suite('another device of the account spends a message coin at the same moment (a
     // The set's own transfers that the account can no longer cover are given up.
     const old = (await operationOf(first.transactionSetOperationId!))!
     expect(describe(old).filter(state => /change/.test(state)).every(state => state.endsWith('abandoned'))).toBe(true)
-    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
+    // None of the account's coins is held by the earlier set (the repayment may hold the account).
+    expect(evmWalletInternals(alice).coinList!.all().filter(coin =>
+      coin.holder === first.transactionSetOperationId && coin.state !== 'spent')).toEqual([])
+    await chain.send('evm_setAutomine', [true])
     // Resolved: nothing more is done for it, and it is paid again once only.
     for (let pass = 0; pass < 5; pass++) {
       await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [held.digest], maxPutAttempts: 2 })

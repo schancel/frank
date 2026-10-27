@@ -445,6 +445,7 @@
       <!-- Message box -->
       <chat-input
         :group-mode="conversation?.kind === 'group'"
+        :group-write-price="groupWritePriceLabel"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @mentalPokerClicked="sendMentalPokerChallenge"
@@ -616,6 +617,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, type Conversation, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
+import { groupWritePriceViewLabel } from 'src/utils/group-write-price'
 import { useBalance } from 'src/composables/useBalance'
 import {
   approveScreenerConversation,
@@ -2642,6 +2644,14 @@ export default defineComponent({
         ? { scrollMarginTop: `${this.bannerClearance}px` }
         : undefined
     },
+    /** What one message to this group pays its host, with its unit; empty for a direct chat
+     * or until the host has said. */
+    groupWritePriceLabel(): string {
+      const conv = this.conversation
+      return conv?.kind === 'group'
+        ? groupWritePriceViewLabel(conv.groupState?.writePrice)
+        : ''
+    },
     conversation(): Conversation | null {
       const byIdOrAddress =
         this.chatStore.conversations[this.address] ??
@@ -2881,6 +2891,18 @@ export default defineComponent({
     '$route.params.address'(next: unknown) {
       if (typeof next === 'string' && next) this.openRouteAddress(next)
     },
+    'conversation.id': {
+      immediate: true,
+      handler(_id: string | undefined, previous: string | undefined) {
+        if (previous !== undefined) this.sanitizeStaleEmailStampOverride()
+        // Opening a group asks its host what one write costs now.
+        const conv = this.conversation
+        if (conv?.kind === 'group' && conv.groupState)
+          void this.chatStore
+            .refreshGroupWritePrice(conv.id)
+            .catch(() => undefined)
+      },
+    },
     'availableBalanceWei': {
       immediate: true,
       handler() {
@@ -2888,9 +2910,6 @@ export default defineComponent({
       },
     },
     'defaultStampWei'() {
-      this.sanitizeStaleEmailStampOverride()
-    },
-    'conversation.id'() {
       this.sanitizeStaleEmailStampOverride()
     },
     'messagingState.status'() {

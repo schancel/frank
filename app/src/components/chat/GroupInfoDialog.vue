@@ -82,6 +82,103 @@
         >
           {{ hostingRelayDisplay }}
         </div>
+
+        <div class="text-caption text-grey-6 q-mt-sm">
+          {{ $t('groupChat.writePriceLabel') }}
+        </div>
+        <div class="text-caption" data-test="group-info-write-price">
+          {{ writePriceDisplay || $t('groupChat.writePriceUnknown') }}
+        </div>
+        <div
+          v-if="canSetPrice"
+          class="row items-start no-wrap q-gutter-xs q-mt-xs"
+        >
+          <q-input
+            v-model="newPrice"
+            filled
+            dense
+            class="col"
+            inputmode="decimal"
+            :label="$t('groupChat.changeWritePriceLabel', { unit: priceUnit })"
+            :error="Boolean(priceError)"
+            :error-message="
+              priceError ? $t(priceError.key, priceError.values ?? {}) : ''
+            "
+            data-test="group-write-price-input"
+            @keydown.enter.prevent="requestPriceChange"
+          />
+          <q-btn
+            color="primary"
+            unelevated
+            no-caps
+            :disable="newPriceWei === undefined || busy"
+            :loading="busy"
+            :label="$t('groupChat.changeWritePriceBtn')"
+            data-test="group-write-price-btn"
+            @click="requestPriceChange"
+          />
+        </div>
+        <!-- The typed price, read back in the network's unit with what it is now. -->
+        <div
+          v-if="canSetPrice && newPriceWei !== undefined"
+          class="text-caption q-mt-xs"
+          data-test="group-write-price-preview"
+        >
+          {{
+            $t('groupChat.writePricePreview', {
+              price: newPriceDisplay,
+              current: writePriceDisplay,
+            })
+          }}
+        </div>
+        <div
+          v-if="refusalText"
+          class="text-caption text-negative q-mt-xs"
+          role="alert"
+          data-test="group-info-price-refused"
+        >
+          {{ $t(refusalText.key, refusalText.values ?? {}) }}
+        </div>
+
+        <!-- A large raise is confirmed first: every member pays it for every message. -->
+        <q-dialog
+          :model-value="confirmingRaise"
+          @update:model-value="open => !open && (confirmingRaise = false)"
+        >
+          <q-card
+            style="min-width: 300px"
+            data-test="group-write-price-confirm"
+          >
+            <q-card-section class="text-h6">
+              {{ $t('groupChat.writePriceRaiseTitle') }}
+            </q-card-section>
+            <q-card-section class="q-pt-none">
+              {{
+                $t('groupChat.writePriceRaiseBody', {
+                  current: writePriceDisplay,
+                  price: newPriceDisplay,
+                })
+              }}
+            </q-card-section>
+            <q-card-actions align="right">
+              <q-btn
+                flat
+                no-caps
+                :label="$t('groupChat.cancel')"
+                data-test="group-write-price-confirm-cancel"
+                @click="confirmingRaise = false"
+              />
+              <q-btn
+                flat
+                no-caps
+                color="primary"
+                :label="$t('groupChat.changeWritePriceBtn')"
+                data-test="group-write-price-confirm-btn"
+                @click="confirmRaise"
+              />
+            </q-card-actions>
+          </q-card>
+        </q-dialog>
       </q-card-section>
 
       <q-separator />
@@ -237,7 +334,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import { useChatStore, type Conversation } from '../../stores/chats'
 import {
   isBlankName,
@@ -255,6 +352,16 @@ import {
 } from '../../utils/own-address'
 import { shortAddress } from '../../utils/short-address'
 import { errorNotify } from '../../utils/notifications'
+import { registryAmountAdapter } from '../../utils/chain-amount'
+import {
+  groupWritePriceLabel,
+  groupWritePriceRefusalMessage,
+  groupWritePriceViewLabel,
+  parseGroupWritePriceInput,
+} from '../../utils/group-write-price'
+
+/** A new price this many times the current one or more is confirmed before it is set. */
+const LARGE_RAISE_FACTOR = 10n
 
 interface MemberRow {
   address: string
@@ -393,6 +500,98 @@ export default defineComponent({
       )
     })
 
+    const newPrice = ref('')
+    const priceError = ref<{ key: string; values?: Record<string, string> }>()
+    const writePrice = computed(
+      () => conversation.value?.groupState?.writePrice,
+    )
+    const writePriceDisplay = computed(() =>
+      groupWritePriceViewLabel(writePrice.value),
+    )
+    const priceUnit = computed(() =>
+      writePrice.value
+        ? registryAmountAdapter(writePrice.value.network)?.unit ?? ''
+        : '',
+    )
+    // Only the group's administrator signs its price, and only on a network with a unit to
+    // type it in.
+    const canSetPrice = computed(
+      () =>
+        conversation.value?.membershipStatus === 'joined' &&
+        isSelfAdmin.value &&
+        Boolean(priceUnit.value),
+    )
+    const newPriceWei = computed(() =>
+      writePrice.value
+        ? parseGroupWritePriceInput(writePrice.value.network, newPrice.value)
+        : undefined,
+    )
+    // Opening the dialog asks the host for the current price.
+    watch(
+      () => [props.modelValue, conversation.value?.id] as const,
+      ([open, id]) => {
+        if (open && id && conversation.value?.groupState)
+          void chatStore.refreshGroupWritePrice(id).catch(() => undefined)
+      },
+      { immediate: true },
+    )
+    const newPriceDisplay = computed(() =>
+      writePrice.value && newPriceWei.value !== undefined
+        ? groupWritePriceLabel(writePrice.value.network, newPriceWei.value)
+        : '',
+    )
+    const confirmingRaise = ref(false)
+    const requestPriceChange = () => {
+      const price = newPriceWei.value
+      if (price === undefined || busy.value) return
+      const current = writePrice.value ? BigInt(writePrice.value.priceWei) : 0n
+      if (current > 0n && price >= current * LARGE_RAISE_FACTOR)
+        confirmingRaise.value = true
+      else void changePrice()
+    }
+    const confirmRaise = () => {
+      confirmingRaise.value = false
+      void changePrice()
+    }
+    // The host refused the last price an administrator signed (at creation, too).
+    const refusalText = computed<
+      { key: string; values?: Record<string, string> } | undefined
+    >(() => {
+      const refusal = conversation.value?.groupState?.writePriceRefusal
+      if (!refusal) return undefined
+      if (refusal.minPriceWei !== undefined && writePrice.value)
+        return {
+          key: 'groupChat.writePriceBelowMinimum',
+          values: {
+            minimum: groupWritePriceLabel(
+              writePrice.value.network,
+              refusal.minPriceWei,
+            ),
+          },
+        }
+      return { key: 'groupChat.writePriceNotSet' }
+    })
+    const changePrice = async () => {
+      const conv = conversation.value
+      const price = newPriceWei.value
+      if (!conv || price === undefined || busy.value) return
+      busy.value = true
+      priceError.value = undefined
+      try {
+        await chatStore.setGroupWritePrice(conv.id, price)
+        newPrice.value = ''
+      } catch (err) {
+        const refusal = groupWritePriceRefusalMessage(
+          err,
+          writePrice.value?.network ?? '',
+        )
+        if (refusal) priceError.value = refusal
+        else errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        busy.value = false
+      }
+    }
+
     const closeDialog = () => {
       emit('update:modelValue', false)
     }
@@ -466,6 +665,18 @@ export default defineComponent({
       currentEpoch,
       groupIdDisplay,
       hostingRelayDisplay,
+      writePriceDisplay,
+      priceUnit,
+      canSetPrice,
+      newPrice,
+      newPriceWei,
+      priceError,
+      changePrice,
+      requestPriceChange,
+      confirmRaise,
+      confirmingRaise,
+      newPriceDisplay,
+      refusalText,
       memberRows,
       inviteeAddress,
       busy,

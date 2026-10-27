@@ -1,7 +1,7 @@
 //! What a group write's payment must look like before the hosting relay appends the write.
 //!
 //! Every new write to a group this relay hosts carries one signed raw EVM transaction. It pays
-//! the operator's configured payee at least the configured price, on the relay's network, and
+//! the relay's own address at least the group's price, on the relay's network, and
 //! its calldata commits to this relay, the group, the epoch and the write's signing digest:
 //!
 //! ```text
@@ -14,24 +14,28 @@
 //! `network` is the canonical chain identifier (`docs/protocol/chains/v1.json`); `host_origin`
 //! is the hosting relay's public origin as `URL.origin` / [`url::Origin::ascii_serialization`]
 //! write it (`https://relay.example`, no trailing slash, default port omitted). Without the
-//! commitment one burn could fund writes on several relays.
+//! commitment one payment could fund writes on several relays.
 //!
-//! The payee is one of:
-//! - `burn`: [`BURN_ADDRESS`]. Funds nobody, so operators opt into it.
-//! - one fixed address;
-//! - an operator xpub. The address is the non-hardened child `xpub/0/i` with
-//!   `i = u32_be(commitment[0..4]) & 0x7fff_ffff` (PROPOSED rule, still open for the owner), so
-//!   writer and relay compute the same address without a round trip.
+//! The payee is the hosting relay's own address (`[registry.group_writes] payee`). The price is
+//! the group's: its creator sets it in a [`GroupWritePrice`] record signed with the group's root
+//! key, and may raise or lower it with a record of a higher version. The relay refuses a record
+//! below its operator minimum, and prices a group with no record at that minimum.
+//!
+//! ```text
+//! price digest = SHA256( lp("frank/group-write-price/v1") || lp(network) || group_id[32]
+//!                        || version_be[8] || price_wei_be[16] )
+//! ```
 //!
 //! Everything here is decided from the request bytes and the policy. Nothing is asked of the
 //! chain: as with direct-message stamps, confirmation is not awaited.
 
-use secp256k1_abc::{PublicKey, Secp256k1};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     monad_evm_tx::{decode_signed_transaction, has_no_trailing_bytes},
     monad_http::{Address, Hash32},
+    store::groups::{derive_group_id, parse_group_id_hex, verify_secp256k1_sig, GroupError},
 };
 
 /// Domain separator of the payment commitment.
@@ -42,16 +46,10 @@ pub const GROUP_WRITE_LOKAD_ID: [u8; 4] = *b"GRPW";
 pub const GROUP_WRITE_CALLDATA_VERSION: u8 = 0x01;
 /// Exact calldata length: tag, version, commitment.
 pub const GROUP_WRITE_CALLDATA_LEN: usize = 4 + 1 + 32;
-/// The burn payee: the conventional `0x…dEaD` address, as the forum uses.
-pub const BURN_ADDRESS: [u8; 20] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xde, 0xad,
-];
+/// Domain separator of a group's write-price record.
+pub const GROUP_WRITE_PRICE_DOMAIN: &str = "frank/group-write-price/v1";
 /// Largest raw transaction a write may carry, as for direct-message stamps.
 pub const MAX_GROUP_PAYMENT_BYTES: usize = 128 * 1024;
-
-const HARDENED_CHILD: u32 = 1 << 31;
-/// BIP32 version bytes of a mainnet (`xpub`) and testnet (`tpub`) extended public key.
-const XPUB_VERSIONS: [[u8; 4]; 2] = [[0x04, 0x88, 0xb2, 0x1e], [0x04, 0x35, 0x87, 0xcf]];
 
 fn length_prefixed(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update((bytes.len() as u16).to_be_bytes());
@@ -95,12 +93,6 @@ pub fn group_write_calldata(commitment: &[u8; 32]) -> [u8; GROUP_WRITE_CALLDATA_
     calldata
 }
 
-/// The xpub child index a payment with `commitment` pays (PROPOSED rule).
-pub fn xpub_payee_index(commitment: &[u8; 32]) -> u32 {
-    u32::from_be_bytes([commitment[0], commitment[1], commitment[2], commitment[3]])
-        & (HARDENED_CHILD - 1)
-}
-
 /// The hosting relay's public origin in the one spelling the commitment uses.
 pub fn canonical_host_origin(origin: &url::Url) -> Option<String> {
     match origin.origin() {
@@ -109,112 +101,7 @@ pub fn canonical_host_origin(origin: &url::Url) -> Option<String> {
     }
 }
 
-/// Why an operator payee could not be used.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum GroupPayeeError {
-    /// Not a `0x`-prefixed 20-byte hex address.
-    #[error("group write payee address must be 0x followed by 40 hex characters")]
-    InvalidAddress,
-    /// Not a base58check BIP32 extended public key (`xpub`/`tpub`).
-    #[error("group write payee xpub is not a valid BIP32 extended public key")]
-    InvalidXpub,
-}
-
-/// A BIP32 extended public key: watch-only, so only non-hardened children are derivable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtendedPublicKey {
-    public_key: PublicKey,
-    chain_code: [u8; 32],
-}
-
-impl ExtendedPublicKey {
-    /// Parse a base58check `xpub…`/`tpub…` string.
-    pub fn parse(encoded: &str) -> Result<Self, GroupPayeeError> {
-        let bytes = bs58::decode(encoded.trim())
-            .into_vec()
-            .map_err(|_| GroupPayeeError::InvalidXpub)?;
-        if bytes.len() != 82 {
-            return Err(GroupPayeeError::InvalidXpub);
-        }
-        let (payload, checksum) = bytes.split_at(78);
-        let check = Sha256::digest(Sha256::digest(payload));
-        if checksum != &check[..4] || !XPUB_VERSIONS.iter().any(|v| payload[..4] == *v) {
-            return Err(GroupPayeeError::InvalidXpub);
-        }
-        let mut chain_code = [0u8; 32];
-        chain_code.copy_from_slice(&payload[13..45]);
-        if !matches!(payload[45], 2 | 3) {
-            return Err(GroupPayeeError::InvalidXpub);
-        }
-        let public_key =
-            PublicKey::from_slice(&payload[45..78]).map_err(|_| GroupPayeeError::InvalidXpub)?;
-        Ok(Self {
-            public_key,
-            chain_code,
-        })
-    }
-
-    /// EVM address of the non-hardened child `0/index`. `None` for a hardened index, or the
-    /// rare index whose BIP32 tweak is invalid (no address is payable there).
-    pub fn payee_address(&self, index: u32) -> Option<[u8; 20]> {
-        if index >= HARDENED_CHILD {
-            return None;
-        }
-        let secp = Secp256k1::new();
-        let mut public_key = self.public_key;
-        let mut chain_code = self.chain_code;
-        for step in [0, index] {
-            crate::monad_stamp_stealth::derive_public_step(
-                &secp,
-                &mut public_key,
-                &mut chain_code,
-                step,
-            )
-            .ok()?;
-        }
-        Some(crate::monad_stamp_stealth::evm_address(&public_key))
-    }
-}
-
-/// Who a group write pays.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GroupWritePayee {
-    /// [`BURN_ADDRESS`].
-    Burn,
-    /// One fixed operator address.
-    Address([u8; 20]),
-    /// A per-write child of an operator xpub (see the module docs).
-    Xpub(ExtendedPublicKey),
-}
-
-impl GroupWritePayee {
-    /// Resolve the operator's configured payee.
-    pub fn from_conf(conf: &cashweb_config::GroupWritePayeeConf) -> Result<Self, GroupPayeeError> {
-        use cashweb_config::GroupWritePayeeConf as C;
-        Ok(match conf {
-            C::Burn => Self::Burn,
-            C::Address(address) => Self::Address(
-                Address::from_hex(address)
-                    .ok()
-                    .filter(|_| address.len() == 42 && address.starts_with("0x"))
-                    .ok_or(GroupPayeeError::InvalidAddress)?
-                    .0,
-            ),
-            C::Xpub(xpub) => Self::Xpub(ExtendedPublicKey::parse(xpub)?),
-        })
-    }
-
-    /// The address a payment carrying `commitment` must pay.
-    pub fn address_for(&self, commitment: &[u8; 32]) -> Option<[u8; 20]> {
-        match self {
-            Self::Burn => Some(BURN_ADDRESS),
-            Self::Address(address) => Some(*address),
-            Self::Xpub(xpub) => xpub.payee_address(xpub_payee_index(commitment)),
-        }
-    }
-}
-
-/// The hosting relay's group-write price and payee.
+/// The hosting relay's terms for group writes: its network, origin, own address and minimum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupWritePolicy {
     /// Canonical chain identifier payments are made on (the relay's `registry.network`).
@@ -223,10 +110,149 @@ pub struct GroupWritePolicy {
     pub chain_id: u64,
     /// This relay's public origin, as [`canonical_host_origin`] spells it.
     pub host_origin: String,
-    /// Least value, in wei, one write pays. Never zero.
+    /// The relay's own address: every write pays it.
+    pub payee: [u8; 20],
+    /// The operator's minimum, in wei: the least price a creator may set, and the price of a
+    /// group whose creator has set none. Never zero.
+    pub min_price_wei: u128,
+}
+
+impl GroupWritePolicy {
+    /// What one write to a group pays, given the group's creator price record, if any. A
+    /// creator price is never below the minimum when it is set; should the operator raise the
+    /// minimum later, the minimum applies.
+    pub fn price_wei(&self, creator: Option<&GroupWritePrice>) -> u128 {
+        effective_price_wei(creator, self.min_price_wei)
+    }
+}
+
+/// A group's price: its creator's, never below the operator's minimum; the minimum when the
+/// creator has set none.
+pub fn effective_price_wei(creator: Option<&GroupWritePrice>, min_price_wei: u128) -> u128 {
+    creator.map_or(min_price_wei, |record| record.price_wei.max(min_price_wei))
+}
+
+/// A group's write price, set by its creator and signed with the group's root key (whose holders
+/// also change its epochs). A record replaces the stored one only with a higher `version`; the
+/// same record again is accepted unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupWritePrice {
+    /// 64-character lowercase hex group identifier.
+    pub group_id: String,
+    /// Canonical chain identifier the price is paid on: the hosting relay's network.
+    pub network: String,
+    /// Counts the creator's prices, from 1.
+    pub version: u64,
+    /// Price of one write, in wei.
+    #[serde(with = "decimal_wei")]
     pub price_wei: u128,
-    /// Who is paid.
-    pub payee: GroupWritePayee,
+    /// Hex compact low-S secp256k1 signature by the group's root key over
+    /// [`group_write_price_digest`].
+    pub admin_sig: String,
+}
+
+mod decimal_wei {
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<u128, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(D::Error::custom("price_wei must be a decimal wei amount"));
+        }
+        text.parse().map_err(D::Error::custom)
+    }
+}
+
+/// The digest a group's root key signs to set its write price.
+pub fn group_write_price_digest(
+    network: &str,
+    group_id: &[u8; 32],
+    version: u64,
+    price_wei: u128,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    length_prefixed(&mut hasher, GROUP_WRITE_PRICE_DOMAIN.as_bytes());
+    length_prefixed(&mut hasher, network.as_bytes());
+    hasher.update(group_id);
+    hasher.update(version.to_be_bytes());
+    hasher.update(price_wei.to_be_bytes());
+    hasher.finalize().into()
+}
+
+impl GroupWritePrice {
+    /// The record with its hex fields in their one spelling.
+    pub fn normalized(mut self) -> Self {
+        self.group_id = self.group_id.to_lowercase();
+        self.admin_sig = self
+            .admin_sig
+            .strip_prefix("0x")
+            .unwrap_or(&self.admin_sig)
+            .to_lowercase();
+        self
+    }
+
+    /// Check the record is for `path_group_id` on `network`, at version 1 or more, above zero,
+    /// and signed by `group_pubkey`, the group's root key.
+    pub fn verify(
+        &self,
+        path_group_id: &str,
+        network: &str,
+        group_pubkey: &[u8; 33],
+    ) -> Result<(), GroupError> {
+        let group_id = parse_group_id_hex(path_group_id)?;
+        if self.group_id != path_group_id {
+            return Err(GroupError::InvalidInput(
+                "write price group_id does not match URL path :group_id".into(),
+            ));
+        }
+        if self.network != network {
+            return Err(GroupError::InvalidInput(format!(
+                "write price network {:?} is not this relay's {network}",
+                self.network
+            )));
+        }
+        if self.version == 0 {
+            return Err(GroupError::InvalidInput(
+                "write price version starts at 1".into(),
+            ));
+        }
+        if self.price_wei == 0 {
+            return Err(GroupError::InvalidInput(
+                "write price must be above zero".into(),
+            ));
+        }
+        if derive_group_id(group_pubkey) != group_id {
+            return Err(GroupError::Forbidden(
+                "group root key does not match group_id".into(),
+            ));
+        }
+        let signature: [u8; 64] = hex::decode(&self.admin_sig)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| GroupError::Forbidden("malformed write price admin_sig".into()))?;
+        let digest = group_write_price_digest(network, &group_id, self.version, self.price_wei);
+        if !is_low_s(&signature) || !verify_secp256k1_sig(group_pubkey, &digest, &signature) {
+            return Err(GroupError::Forbidden(
+                "write price is not signed by the group's root key".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a compact signature is in its one low-S spelling, as epoch signatures must be.
+fn is_low_s(signature: &[u8; 64]) -> bool {
+    secp256k1_abc::Signature::from_compact(signature).is_ok_and(|parsed| {
+        let mut normalized = parsed;
+        normalized.normalize_s();
+        normalized.serialize_compact() == *signature
+    })
 }
 
 /// Why a write's payment was refused. Each is final for those bytes.
@@ -251,19 +277,27 @@ pub enum GroupPaymentError {
         /// The signed chain id (`None`: an unprotected legacy transaction).
         actual: Option<u64>,
     },
-    /// Pays someone other than the configured payee.
-    #[error("payment does not pay this relay's payee {}", hex::encode(expected))]
+    /// Pays someone other than the relay's address.
+    #[error(
+        "payment does not pay this relay's address 0x{}",
+        hex::encode(expected)
+    )]
     WrongPayee {
         /// The payee this write must pay.
         expected: [u8; 20],
     },
-    /// Carries less than the price.
-    #[error("payment carries {actual} wei, the price is {required} wei")]
+    /// Carries less than the group's price.
+    #[error(
+        "payment 0x{} carries {actual} wei, the group's price is {required} wei",
+        hex::encode(tx_hash)
+    )]
     Underpaid {
         /// The price.
         required: u128,
         /// The signed value.
         actual: u128,
+        /// The payment's transaction hash, which the host records as refused.
+        tx_hash: [u8; 32],
     },
     /// The calldata is not exactly the commitment to this relay, group, epoch and write.
     #[error("payment calldata does not commit to this write on this relay")]
@@ -303,9 +337,11 @@ pub struct VerifiedGroupPayment {
     pub raw_transaction: Vec<u8>,
 }
 
-/// Check `raw_transaction` pays for `target` under `policy`. Pure: no chain or storage access.
+/// Check `raw_transaction` pays for `target` under `policy`, at least `price_wei` (the group's
+/// price, [`GroupWritePolicy::price_wei`]). Pure: no chain or storage access.
 pub fn verify_group_write_payment(
     policy: &GroupWritePolicy,
+    price_wei: u128,
     target: &GroupWriteTarget,
     network: &str,
     raw_transaction: &[u8],
@@ -328,23 +364,18 @@ pub fn verify_group_write_payment(
         });
     }
     let commitment = group_write_commitment(&policy.network, &policy.host_origin, target);
-    // The commitment chooses an xpub payee, so a wrong commitment usually shows as a wrong
-    // payee too. Check the calldata first so the reason names the real mistake.
     if signed.input != group_write_calldata(&commitment) {
         return Err(GroupPaymentError::WrongCommitment);
     }
-    let payee = policy
-        .payee
-        .address_for(&commitment)
-        // An invalid xpub child cannot be paid by anyone; the writer must change the write.
-        .ok_or(GroupPaymentError::WrongCommitment)?;
+    let payee = policy.payee;
     if signed.destination != Some(Address(payee)) {
         return Err(GroupPaymentError::WrongPayee { expected: payee });
     }
-    if signed.value_wei < policy.price_wei {
+    if signed.value_wei < price_wei {
         return Err(GroupPaymentError::Underpaid {
-            required: policy.price_wei,
+            required: price_wei,
             actual: signed.value_wei,
+            tx_hash: signed.tx_hash.0,
         });
     }
     Ok(VerifiedGroupPayment {

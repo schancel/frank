@@ -66,7 +66,8 @@ unchanged receipt sequences and historical retries after rotation.
 
 ## Paid group writes
 
-Every new write to a group carries one payment to the group's hosting relay: a signed EVM
+Every new write to a group carries one payment to the group's hosting relay, at the group's
+price (below): a signed EVM
 transaction, in the envelope's `payment` field (`group-write-payment` in
 `docs/protocol/message-types/fields/groups.json`: `network`, the canonical chain identifier, and
 `raw-transaction`; JSON carries the transaction as hex in `payment.raw_transaction`). Writes
@@ -77,21 +78,106 @@ and at startup before any database is opened:
 
 ```toml
 [registry.group_writes]
-price_wei = "1000000000000"  # decimal wei, more than zero
-payee = "burn"               # or { address = "0x…" } or { xpub = "xpub…" }
+min_price_wei = "1000000000000"                       # decimal wei, more than zero
+payee = "0x000000000000000000000000000000000000dEaD"  # this relay's own address
 ```
+
+`min_price_wei` is the operator's floor: the least a group's creator may charge, and the price
+of a group whose creator set none. Unless the payee is the burn address
+`0x000000000000000000000000000000000000dEaD`, the floor must also be at least the network's
+protocol payment floor (`docs/protocol/chains/README.md`). The removed `price_wei` field and
+the removed payee forms (`"burn"`, `{ address = … }`, `{ xpub = … }`) are refused at load.
 
 Payments commit to the relay's public origin, `host_origin` below. It is the configuration's
 top-level `url`, which must be a bare `http(s)` origin and equal the `[registry.directory]`
 endpoint; there is no second setting for it. The removed `[registry.groups]` section is
 refused at load with a message that says to delete it.
 
-The payment's network is the relay's `[registry] network`. The payee is exactly one of: the
-burn address `0x000000000000000000000000000000000000dEaD`; one operator address; or an extended
-public key (`xpub`/`tpub`), where each write pays its own child address. `GET
-/groups/:group_id/write-policy` reports `{network, price_wei, host_origin, payee}`; a home
-relay proxies it to the host like every other group route, and the client refuses a policy
-whose `host_origin` is not the relay it writes to.
+The payment's network is the relay's `[registry] network`. The payee is one plain address, the
+hosting relay's own (owner ruling 2026-10-27: "Probably better to send it to the relay"). There
+is no burn payee kind: a lab or Docker relay that should fund nobody names `0x…dEaD` as its
+address (owner ruling: "just use 0xdead"), and that address is treated specially only in being
+exempt from the protocol payment floor, since nobody moves coins sent there. `GET
+/groups/:group_id/write-policy` reports `{network, host_origin, payee, price_wei,
+price_version, min_price_wei, price_record}`: `network` is one of the protocol registry's ids,
+`payee` a lower-case `0x` address, `price_wei` the price of one write to that group now,
+`price_version` the creator's price record version (0 when the creator set none),
+`min_price_wei` the floor and `price_record` the creator's signed record itself (`null` when
+there is none). The client checks the record's signature against the group's public key, which
+the group id is derived from, and that `price_wei` is exactly the larger of the record's price
+and the floor. The record binds the creator's price; the floor is the host's own and unsigned,
+so a host can still ask more by raising it. The client also remembers the highest record
+version it has verified for each group and refuses a policy carrying an older record, so a host
+cannot replay a cheaper record the creator has replaced. What protects a member against any
+price the host names is the shown-price cap below: a write never pays more than the price the
+member was shown. It answers for any group id, so a client
+reads the floor before it creates a group. A home relay proxies it to the host like every
+other group route, and the client refuses a policy whose `host_origin` is not the relay it
+writes to.
+
+### The group's price
+
+The creator sets the price at creation and can change it (owner ruling 2026-10-27: "Should be
+set by the creator and adjustable? Also visible to users so they can avoid sending money that
+will fail."). The price is a record signed by the group's root key, the key whose public key
+names the group, which the creator holds and shares with the group's administrators:
+
+```text
+{ group_id, network, version >= 1, price_wei (decimal string), admin_sig }
+digest    = SHA256( lp("frank/group-write-price/v1") || lp(network) || group_id[32]
+                    || version_be[8] || price_wei_be[16] )
+admin_sig = compact secp256k1 signature of digest, low-S, hex
+```
+
+`PUT /groups/:group_id/write-price` stores it at `'G_price:' || group_id` on the hosting relay;
+a home relay proxies it like every other group route and a relay that only mirrors the group
+refuses it (403). The host refuses: a group it does not hold (404); another network, version 0
+or price 0 (400); a signature that is not the group's root key or is high-S (403); a price
+below `min_price_wei` (422 `write_price_below_minimum` with `min_price_wei`). A higher version
+replaces the stored record; the identical record is accepted again; any other record at the
+same or a lower version is 409 `write_price_conflict` with the `current` record, so two
+administrator devices cannot silently overwrite each other. The price of a write is the larger
+of the stored record's price and the current `min_price_wei`, so an operator who raises the
+floor raises every group under it.
+
+Ordering against writes in flight: the host checks a payment against the price it read, and
+the accept transaction reads `G_price` again and refuses, 402 `group_payment_invalid` reason
+`underpaid`, a write whose payment is below the price committed at that moment. A write that
+commits before a price change is accepted at the old price; one that commits after it is
+refused before anything is stored or broadcast. The client treats that 402 as a definitive
+refusal: the coin is released once the chain shows the payment did not land, and the member
+sees the new price. Nothing is lost silently.
+
+This holds after an earlier attempt of the same write went unanswered, too. The host answers
+`underpaid` only from inside a transaction that first looks for the write's acceptance: if an
+earlier attempt of the same bytes was accepted, the answer is that attempt's receipt, not a
+refusal. In the same transaction it records the payment's transaction hash as refused
+(`G_payrefused:` || tx hash), and every accept transaction reads that record and refuses a
+payment named in it, at any later price. An earlier attempt still in flight therefore either
+committed before the refusal, and the answer is its receipt, or can never commit afterwards.
+The host broadcasts a payment only after accepting its write, so after `underpaid` that payment
+is never broadcast by the host. A copy of the signed payment someone else broadcasts can still
+land; the client releases the coin only once the chain shows it did not.
+
+A member never pays more than the price shown. The app records, with each write, the price the
+composer showed when it was sent. A write not yet submitted re-reads the host's price; if that
+is higher, the write is refused before anything is planned, claimed or changed (reason
+`group-price-changed`, naming the new price), the new price is shown, and the member's Retry
+sends it at that price. A restart does not change this: the shown price is stored with the
+write. A price the host reports with no shown price (a group whose price has not been read
+yet) is refused the same way.
+
+The app shows the price in the composer of every group conversation and in group info, reads
+it again when a group is opened, and lets an administrator change it from group info, reading
+the typed price back in the network's unit and asking for confirmation of a raise to ten times
+the current price or more. A price the host refuses (also at creation) is shown to the
+administrator. A timeout (408) or rate limit (429) is not a refusal: the price stays pending
+and is retried. A pending price is sent beside each sync; reading messages never waits for it,
+only member invitations do. The
+creator chooses it in the New group form, which starts from the hosting relay's floor and
+refuses less. A new group's price record is signed at creation, kept with the group, and sent
+to the host after the group's first epoch and before any member is invited; a price an
+administrator signs is kept until the host holds it, refuses it, or holds a newer one.
 
 The transaction's calldata commits to exactly one write on exactly one relay:
 
@@ -103,13 +189,11 @@ lp(x)      = u16_be(len(x)) || x
 ```
 
 `write_signing_digest` is the digest the group write key signs (`computeOuterWriteSigningHash`).
-For an `xpub` payee the child is `xpub/0/i` (non-hardened), `i = u32_be(commitment[0..4]) &
-0x7fffffff`, so writer and relay agree on the address with no round trip. This rule is
-proposed and awaits the owner's confirmation.
 
 The hosting relay checks the payment from its bytes before anything is stored: the network
 string, a decodable signed transaction (legacy or EIP-1559) of at most 128 KiB with the native
-chain ID of that network, the calldata, the payee address and a value of at least the price.
+chain ID of that network, the calldata, the payee address and a value of at least the group's
+price.
 Refusals are HTTP 402 with `group_payment_required` (no payment) or `group_payment_invalid` and
 a `reason` of `wrong_network`, `malformed`, `wrong_chain`, `wrong_commitment`, `wrong_payee` or
 `underpaid`; no sequence is consumed. A relay without `group_writes` answers 503

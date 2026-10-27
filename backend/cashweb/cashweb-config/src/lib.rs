@@ -381,58 +381,93 @@ pub struct CashwebdConf {
     pub bitcoin_rpc: Option<BitcoindRpcClientConf>,
 }
 
-/// Who a group write pays: exactly one of the burn address, one operator address, or an
-/// operator xpub whose per-write child the writer and relay both derive from the write.
-///
-/// TOML: `payee = "burn"`, `payee = { address = "0x…" }` or `payee = { xpub = "xpub…" }`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum GroupWritePayeeConf {
-    /// The conventional `0x…dEaD` burn address. Funds nobody; an explicit operator choice.
-    Burn,
-    /// A `0x`-prefixed 20-byte address on `registry.network`.
-    Address(String),
-    /// A BIP32 extended public key (`xpub…`/`tpub…`); each write pays one non-hardened child.
-    Xpub(String),
-}
+/// The conventional burn address, `0x…dEaD`. Nobody moves what it is paid, so a relay that
+/// names it as its group-write payee (the labs do) has no payment floor under its minimum.
+pub const BURN_ADDRESS_HEX: &str = "0x000000000000000000000000000000000000dEaD";
 
-/// Mandatory price of a group write on groups this relay hosts (`[registry.group_writes]`).
-/// Every new write carries one signed transaction on `registry.network` paying `payee` at
-/// least `price_wei`. There is no free write.
+/// Group writes on groups this relay hosts (`[registry.group_writes]`). Every new write carries
+/// one signed transaction on `registry.network` paying `payee`, the relay's own address, at
+/// least the group's price. Each group's creator sets that price, signed with the group's root
+/// key, and may change it; `min_price_wei` is this operator's floor under it. There is no free
+/// write.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GroupWritesConf {
-    /// Least value of one write's payment, in wei, as a decimal string. Must be above zero.
-    /// Every payment also commits to the relay's public origin, the top-level `url` (see
+    /// Least price, in wei as a decimal string, a group's creator may set. Must be above zero.
+    /// A group whose creator has not set a price yet is priced at this minimum. Every payment
+    /// also commits to the relay's public origin, the top-level `url` (see
     /// [`CashwebdConf::public_origin`]), so one payment cannot fund a write on another relay.
-    pub price_wei: String,
-    /// Who is paid.
-    pub payee: GroupWritePayeeConf,
+    pub min_price_wei: String,
+    /// The relay's own `0x`-prefixed 20-byte address on `registry.network`: every write pays it.
+    #[serde(deserialize_with = "plain_payee_address")]
+    pub payee: String,
+}
+
+/// The payee is a plain address string. The removed table forms (`{ address = … }`,
+/// `{ xpub = … }`) are refused with a message that says what to write instead.
+fn plain_payee_address<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    struct PayeeVisitor;
+    impl<'de> serde::de::Visitor<'de> for PayeeVisitor {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("the relay's own address as a plain string, payee = \"0x…\"")
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
+            Ok(value.to_owned())
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, _map: A) -> Result<String, A::Error> {
+            Err(serde::de::Error::custom(
+                "registry.group_writes.payee is now a plain address string, the relay's own \
+                 address: write payee = \"0x…\" (the { address = … }, { xpub = … } and \"burn\" \
+                 forms were removed; a relay that funds nobody names \
+                 \"0x000000000000000000000000000000000000dEaD\")",
+            ))
+        }
+    }
+    deserializer.deserialize_any(PayeeVisitor)
 }
 
 impl GroupWritesConf {
-    /// The price in wei, refusing zero and anything that is not a plain decimal integer.
-    pub fn price_wei(&self) -> Result<u128, RegistryConfigError> {
-        if self.price_wei.is_empty() || !self.price_wei.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(RegistryConfigError::InvalidGroupWrites("price_wei"));
+    /// The minimum price in wei, refusing zero and anything that is not a plain decimal integer.
+    pub fn min_price_wei(&self) -> Result<u128, RegistryConfigError> {
+        if self.min_price_wei.is_empty() || !self.min_price_wei.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(RegistryConfigError::InvalidGroupWrites("min_price_wei"));
         }
-        match self.price_wei.parse::<u128>() {
+        match self.min_price_wei.parse::<u128>() {
             Ok(price) if price > 0 => Ok(price),
-            _ => Err(RegistryConfigError::InvalidGroupWrites("price_wei")),
+            _ => Err(RegistryConfigError::InvalidGroupWrites("min_price_wei")),
         }
     }
 
-    /// Structural checks; the relay parses an xpub payee itself before it starts.
-    pub fn validate(&self) -> Result<(), RegistryConfigError> {
-        self.price_wei()?;
-        if let GroupWritePayeeConf::Address(address) = &self.payee {
-            if address.len() != 42
-                || !address.starts_with("0x")
-                || !address[2..].bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(RegistryConfigError::InvalidGroupWrites("payee.address"));
-            }
+    /// The payee's 20 address bytes.
+    pub fn payee_address(&self) -> Result<[u8; 20], RegistryConfigError> {
+        let address = &self.payee;
+        if address.len() != 42
+            || !address.starts_with("0x")
+            || !address[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(RegistryConfigError::InvalidGroupWrites("payee"));
         }
+        let mut bytes = [0u8; 20];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&address[2 + 2 * index..4 + 2 * index], 16)
+                .map_err(|_| RegistryConfigError::InvalidGroupWrites("payee"))?;
+        }
+        Ok(bytes)
+    }
+
+    /// Whether the payee is the burn address, which never moves what it is paid.
+    pub fn pays_burn_address(&self) -> bool {
+        self.payee.eq_ignore_ascii_case(BURN_ADDRESS_HEX)
+    }
+
+    /// Structural checks.
+    pub fn validate(&self) -> Result<(), RegistryConfigError> {
+        self.min_price_wei()?;
+        self.payee_address()?;
         Ok(())
     }
 }
@@ -1284,8 +1319,9 @@ impl fmt::Display for RegistryConfigError {
                 .write_str("registry.forum.burn_address must be 0x followed by 40 hex characters"),
             Self::InvalidGroupWrites(field) => write!(
                 formatter,
-                "invalid registry.group_writes.{field}: price_wei is a decimal wei amount above \
-                 zero, payee \"burn\", {{ address = \"0x…\" }} or {{ xpub = \"xpub…\" }}"
+                "invalid registry.group_writes.{field}: min_price_wei is a decimal wei amount \
+                 above zero, payee is the relay's own address, 0x followed by 40 hex characters \
+                 (the labs use the burn address {BURN_ADDRESS_HEX})"
             ),
             Self::RemovedGroupsSection => formatter.write_str(
                 "[registry.groups] was removed: group writes are no longer priced in credits, \
@@ -1344,11 +1380,10 @@ impl RegistryConf {
                     });
                 }
             }
-            if self.group_writes.payee != GroupWritePayeeConf::Burn
-                && self.group_writes.price_wei()? < floor
+            if !self.group_writes.pays_burn_address() && self.group_writes.min_price_wei()? < floor
             {
                 return Err(RegistryConfigError::BelowPaymentFloor {
-                    field: "registry.group_writes.price_wei",
+                    field: "registry.group_writes.min_price_wei",
                     floor,
                 });
             }
@@ -2332,10 +2367,10 @@ mod tests {
     use crate::{
         parse_conf, protocol_chain_registry, protocol_payment_floor_wei, BitcoinProxyChainConf,
         BitcoinProxyConf, CashwebdConf, ClusterConf, ClusterNatsConf, CuratedContactConf,
-        EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError, ForumConf, GroupWritePayeeConf,
-        InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
-        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
-        SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
+        EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf,
+        MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode, PopConf, ProtocolChainFamily,
+        ProtocolProxyCapability, RegistryConf, RegistryConfigError, SolanaProxyChainConf,
+        SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -2747,19 +2782,22 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
-    fn group_writes_need_a_positive_wei_price_and_a_payee() {
-        use crate::{GroupWritePayeeConf, GroupWritesConf};
-        let conf = |price: &str, payee: GroupWritePayeeConf| GroupWritesConf {
-            price_wei: price.into(),
-            payee,
+    fn group_writes_need_a_positive_wei_minimum_and_an_address_payee() {
+        use crate::GroupWritesConf;
+        let conf = |price: &str, payee: &str| GroupWritesConf {
+            min_price_wei: price.into(),
+            payee: payee.into(),
         };
-        let address = || GroupWritePayeeConf::Address(format!("0x{}", "aB".repeat(20)));
-        assert_eq!(conf("1", GroupWritePayeeConf::Burn).validate(), Ok(()));
+        let address = format!("0x{}", "aB".repeat(20));
+        assert_eq!(conf("1", crate::BURN_ADDRESS_HEX).validate(), Ok(()));
+        assert!(conf("1", "0x000000000000000000000000000000000000DEAD").pays_burn_address());
+        assert!(!conf("1", &address).pays_burn_address());
         assert_eq!(
-            conf("340282366920938463463374607431768211455", address()).validate(),
+            conf("340282366920938463463374607431768211455", &address).validate(),
             Ok(())
         );
-        assert_eq!(conf("7", address()).price_wei(), Ok(7));
+        assert_eq!(conf("7", &address).min_price_wei(), Ok(7));
+        assert_eq!(conf("7", &address).payee_address(), Ok([0xab; 20]));
         for price in [
             "0",
             "",
@@ -2770,24 +2808,32 @@ continuity_file = "/var/lib/frank/continuity"
             "340282366920938463463374607431768211456",
         ] {
             assert_eq!(
-                conf(price, GroupWritePayeeConf::Burn).validate(),
-                Err(RegistryConfigError::InvalidGroupWrites("price_wei")),
+                conf(price, &address).validate(),
+                Err(RegistryConfigError::InvalidGroupWrites("min_price_wei")),
                 "{price}"
             );
         }
-        for bad in ["0xdead", "dead", &format!("0x{}", "zz".repeat(20))] {
+        // The removed payee kinds, and anything that is not one address, are refused.
+        for bad in [
+            "burn",
+            "0xdead",
+            "dead",
+            &format!("0x{}", "zz".repeat(20)),
+            "",
+        ] {
             assert_eq!(
-                conf("1", GroupWritePayeeConf::Address(bad.to_string())).validate(),
-                Err(RegistryConfigError::InvalidGroupWrites("payee.address")),
+                conf("1", bad).validate(),
+                Err(RegistryConfigError::InvalidGroupWrites("payee")),
                 "{bad}"
             );
         }
-        let parsed: CashwebdConf = toml::from_str(
-            r#"
+        let parse = |group_writes: &str| {
+            toml::from_str::<CashwebdConf>(&format!(
+                r#"
                 host = "127.0.0.1:6543"
                 url = "https://cashweb.registry"
                 [registry]
-                group_writes = { price_wei = "1", payee = "burn" }
+                group_writes = {group_writes}
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2800,13 +2846,32 @@ continuity_file = "/var/lib/frank/continuity"
                 hmac_secret = "unused"
                 payment_recipient = "0x0000000000000000000000000000000000000000"
                 min_value_wei = "0"
-            "#,
+            "#
+            ))
+        };
+        let parsed = parse(
+            r#"{ min_price_wei = "1", payee = "0x000000000000000000000000000000000000dEaD" }"#,
         )
         .unwrap();
-        assert_eq!(
-            parsed.registry.group_writes.payee,
-            GroupWritePayeeConf::Burn
-        );
+        assert!(parsed.registry.group_writes.pays_burn_address());
+        // The old fields are a format break: refused, not read.
+        for old in [
+            r#"{ price_wei = "1", payee = "0x000000000000000000000000000000000000dEaD" }"#,
+            r#"{ min_price_wei = "1", payee = { address = "0x000000000000000000000000000000000000dEaD" } }"#,
+        ] {
+            assert!(parse(old).is_err(), "{old}");
+        }
+        // The removed table forms say what to write instead.
+        for old in [
+            r#"{ min_price_wei = "1", payee = { address = "0x000000000000000000000000000000000000dEaD" } }"#,
+            r#"{ min_price_wei = "1", payee = { xpub = "xpub661MyMwAqRbc" } }"#,
+        ] {
+            let error = parse(old).unwrap_err().to_string();
+            assert!(
+                error.contains("payee is now a plain address string"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -2817,7 +2882,7 @@ continuity_file = "/var/lib/frank/continuity"
                 host = "127.0.0.1:6543"
                 url = "{url}"
                 [registry]
-                group_writes = {{ price_wei = "1", payee = "burn" }}
+                group_writes = {{ min_price_wei = "1", payee = "0x000000000000000000000000000000000000dEaD" }}
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2890,7 +2955,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
+                group_writes = { min_price_wei = "7", payee = "0x00000000000000000000000000000000000000aA" }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -2920,8 +2985,8 @@ continuity_file = "/var/lib/frank/continuity"
                 registry: RegistryConf {
                     groups: None,
                     group_writes: crate::GroupWritesConf {
-                        price_wei: "7".into(),
-                        payee: crate::GroupWritePayeeConf::Xpub("xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8".into()),
+                        min_price_wei: "7".into(),
+                        payee: "0x00000000000000000000000000000000000000aA".into(),
                     },
                     directory: None,
                     db_path: "/test/path".into(),
@@ -2979,7 +3044,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
+                group_writes = { min_price_wei = "7", payee = "0x00000000000000000000000000000000000000aA" }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -3011,8 +3076,8 @@ continuity_file = "/var/lib/frank/continuity"
                 registry: RegistryConf {
                     groups: None,
                     group_writes: crate::GroupWritesConf {
-                        price_wei: "7".into(),
-                        payee: crate::GroupWritePayeeConf::Xpub("xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8".into()),
+                        min_price_wei: "7".into(),
+                        payee: "0x00000000000000000000000000000000000000aA".into(),
                     },
                     directory: None,
                     db_path: "/test/path".into(),
@@ -3135,7 +3200,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "http://127.0.0.1:8098"
 
                 [registry]
-                group_writes = { price_wei = "1", payee = "burn" }
+                group_writes = { min_price_wei = "1", payee = "0x000000000000000000000000000000000000dEaD" }
                 db_path = "data/registry.rocksdb"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -3169,7 +3234,7 @@ continuity_file = "/var/lib/frank/continuity"
                 url = "https://cashweb.registry"
 
                 [registry]
-                group_writes = { price_wei = "7", payee = { xpub = "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8" } }
+                group_writes = { min_price_wei = "7", payee = "0x00000000000000000000000000000000000000aA" }
                 db_path = "/test/path"
                 network = "monad-testnet"
                 net = "mainnet"
@@ -3410,20 +3475,20 @@ continuity_file = "/var/lib/frank/continuity"
         assert!(conf.registry.validate_network().is_err());
         conf.registry.monad_mailbox.min_value_wei = Some(floor.to_string());
 
-        // A burned group write is never moved: any positive price. A paid operator moves it.
-        conf.registry.group_writes.price_wei = "1".into();
-        conf.registry.group_writes.payee = GroupWritePayeeConf::Burn;
+        // A group write paid to the burn address is never moved: any positive minimum. A relay
+        // paid at its own address moves it.
+        conf.registry.group_writes.min_price_wei = "1".into();
+        conf.registry.group_writes.payee = "0x000000000000000000000000000000000000dead".into();
         assert!(conf.registry.validate_network().is_ok());
-        conf.registry.group_writes.payee =
-            GroupWritePayeeConf::Address(format!("0x{}", "11".repeat(20)));
+        conf.registry.group_writes.payee = format!("0x{}", "11".repeat(20));
         assert_eq!(
             conf.registry.validate_network(),
             Err(RegistryConfigError::BelowPaymentFloor {
-                field: "registry.group_writes.price_wei",
+                field: "registry.group_writes.min_price_wei",
                 floor,
             })
         );
-        conf.registry.group_writes.price_wei = floor.to_string();
+        conf.registry.group_writes.min_price_wei = floor.to_string();
         assert!(conf.registry.validate_network().is_ok());
 
         // Disabled, the mailbox minimum is not checked.

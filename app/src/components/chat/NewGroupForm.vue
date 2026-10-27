@@ -116,6 +116,29 @@
       >
         {{ $t('groupChat.discoveryFailed') }}
       </div>
+      <!-- The creator sets what one write costs; members see it before they write. -->
+      <q-input
+        v-model="writePrice"
+        filled
+        dense
+        inputmode="decimal"
+        :loading="loadingTerms"
+        :disable="!relayTerms"
+        :label="$t('groupChat.writePriceInputLabel', { unit: priceUnit })"
+        :hint="
+          relayTerms
+            ? $t('groupChat.writePriceHint', { minimum: minimumLabel })
+            : termsFailed
+            ? $t('groupChat.writePriceTermsFailed')
+            : ''
+        "
+        :error="priceInvalid"
+        :error-message="
+          $t('groupChat.writePriceInvalid', { minimum: minimumLabel })
+        "
+        data-test="group-write-price-input"
+        data-testid="group-write-price-input"
+      />
     </q-card-section>
 
     <q-banner
@@ -184,6 +207,11 @@ import {
 import { sameCanonicalAddress } from '../../utils/own-address'
 import { openChat } from '../../utils/routes'
 import { errorNotify } from '../../utils/notifications'
+import { registryAmountAdapter } from '../../utils/chain-amount'
+import {
+  groupWritePriceLabel,
+  parseGroupWritePriceInput,
+} from '../../utils/group-write-price'
 import { shortAddress } from '../../utils/short-address'
 import { isNarrowWidth } from '../../utils/layout'
 import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
@@ -360,9 +388,91 @@ export default defineComponent({
       memberFilter.value = ''
     }
 
+    // The hosting relay's network and least price, read before the creator picks a price.
+    const writePrice = ref('')
+    const relayTerms = ref<{
+      relay: string
+      network: string
+      minPriceWei: bigint
+    }>()
+    const loadingTerms = ref(false)
+    const termsFailed = ref(false)
+    const chosenRelay = () => {
+      try {
+        return normalizeGroupRelayOrigin(
+          relayInput.value.trim() || relayBaseUrl.value.trim(),
+        )
+      } catch {
+        return ''
+      }
+    }
+    let termsRequest = 0
+    const loadTerms = async () => {
+      const relay = chosenRelay()
+      if (!relay || relayTerms.value?.relay === relay) return
+      const request = ++termsRequest
+      const previousMinimum = relayTerms.value
+        ? groupWritePriceLabel(
+            relayTerms.value.network,
+            relayTerms.value.minPriceWei,
+          )
+        : undefined
+      relayTerms.value = undefined
+      termsFailed.value = false
+      loadingTerms.value = true
+      try {
+        const terms = await chatStore.groupRelayWriteTerms(relay)
+        if (request !== termsRequest || !sameSession()) return
+        relayTerms.value = { relay, ...terms }
+        const chain = registryAmountAdapter(terms.network)
+        // The relay's minimum is the starting price; a price the creator typed stays unless it
+        // was the previous relay's minimum.
+        if (
+          chain &&
+          (!writePrice.value.trim() ||
+            `${writePrice.value.trim()} ${chain.unit}` === previousMinimum)
+        )
+          writePrice.value = chain.toDisplayAmount(terms.minPriceWei)
+      } catch {
+        if (request === termsRequest && sameSession()) termsFailed.value = true
+      } finally {
+        if (request === termsRequest) loadingTerms.value = false
+      }
+    }
+    watch([relayBaseUrl, relayInput], () => void loadTerms())
+    onMounted(() => void loadTerms())
+    const priceUnit = computed(() =>
+      relayTerms.value
+        ? registryAmountAdapter(relayTerms.value.network)?.unit ?? ''
+        : '',
+    )
+    const minimumLabel = computed(() =>
+      relayTerms.value
+        ? groupWritePriceLabel(
+            relayTerms.value.network,
+            relayTerms.value.minPriceWei,
+          )
+        : '',
+    )
+    const writePriceWei = computed(() =>
+      relayTerms.value
+        ? parseGroupWritePriceInput(relayTerms.value.network, writePrice.value)
+        : undefined,
+    )
+    const priceInvalid = computed(
+      () =>
+        Boolean(relayTerms.value) &&
+        (writePriceWei.value === undefined ||
+          writePriceWei.value < relayTerms.value!.minPriceWei),
+    )
+
     const canSubmit = computed(() => {
       return Boolean(
-        groupName.value.trim().length > 0 && installedHome && sameSession(),
+        groupName.value.trim().length > 0 &&
+          installedHome &&
+          sameSession() &&
+          relayTerms.value?.relay === chosenRelay() &&
+          !priceInvalid.value,
       )
     })
 
@@ -408,9 +518,15 @@ export default defineComponent({
           relayUrl: normalizeGroupRelayOrigin(
             relayInput.value.trim() || relayBaseUrl.value.trim(),
           ),
+          writePriceWei: writePriceWei.value,
         })
         // Leaving the page must not redirect a newer draft when creation settles.
         if (!currentHome()) return
+        // The group exists, but its relay refused the creator's price: say so.
+        if (conv.groupState?.writePriceRefusal)
+          errorNotify(new Error('Group write price refused'), {
+            fallbackKey: 'groupChat.writePriceRefusedAtCreation',
+          })
         chatStore.setActiveConversation(conv.id)
         await openChat(router, conv.id, { replace: true })
       } catch (err) {
@@ -446,6 +562,13 @@ export default defineComponent({
       narrow,
       creationError,
       submitCreateGroup,
+      writePrice,
+      relayTerms,
+      loadingTerms,
+      termsFailed,
+      priceUnit,
+      minimumLabel,
+      priceInvalid,
     }
   },
 })

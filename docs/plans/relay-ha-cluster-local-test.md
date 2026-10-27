@@ -263,10 +263,19 @@ Still replica-local; each relay's startup log names them:
 
 ## Owner questions
 
-1. **Group-write price.** The lab and dev use 1e12 wei.
+1. **Group-write price.** The lab and dev use 1e12 wei. Resolved (2026-10-27): "Should be set by
+   the creator and adjustable? Also visible to users so they can avoid sending money that will
+   fail." The creator signs the group's price with the group root key at creation and an
+   administrator can change it; the hosting relay's `min_price_wei` is the floor (1e12 wei in
+   the lab and dev), and the app shows the price in the composer and in group info.
 2. **xpub derivation for the group-write payee.** Proposed in #1847: pay child `xpub/0/i`, with
-   `i = u32_be(commitment[0..4]) & 0x7fffffff`.
-3. **The Docker image's group-write payee.** It is the placeholder `burn`.
+   `i = u32_be(commitment[0..4]) & 0x7fffffff`. Resolved (2026-10-27): "Probably better to send
+   it to the relay." Writes pay the hosting relay's own address; the xpub payee and the
+   `xpub/0/i` rule are removed with no compatibility path.
+3. **The Docker image's group-write payee.** It is the placeholder `burn`. Resolved (2026-10-27):
+   "just use 0xdead". The Docker, cluster-lab and dev configs name
+   `0x000000000000000000000000000000000000dEaD` as the relay's address; `burn` is no longer a
+   payee kind.
 4. **Sealed sender timing.** The note to self is sent unsealed right after the sealed original, so
    the relay can link the two by timing. Resolved (2026-10-27): "People are expected to use
    trusted relays." The timing link is accepted; the note to self is neither delayed nor batched.

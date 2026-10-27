@@ -4,7 +4,6 @@ import {
   GroupWriteRefusedError,
 } from '@frank/cashweb/groups/group-relay-client'
 import {
-  GROUP_WRITE_BURN_ADDRESS,
   groupWritePaymentPlan,
   type GroupWritePaymentWire,
   type GroupWritePolicy,
@@ -13,6 +12,7 @@ import {
 import {
   GroupWritePaidRefusalError,
   GroupWritePaymentUnavailableError,
+  GroupWritePriceChangedError,
   GroupWritePaymentUnresolvedError,
   deliverPaidGroupWrite,
   discardPaidGroupWrite,
@@ -20,6 +20,8 @@ import {
 } from './write-payment'
 import { groupWriteTestPayer } from './write-payment.testutil'
 
+/** The labs' relay address: the burn address. */
+const BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
 const GROUP = '11'.repeat(32)
 const ENVELOPE = {
   epoch: 2,
@@ -30,8 +32,10 @@ const ENVELOPE = {
 const POLICY: GroupWritePolicy = {
   network: 'monad-testnet',
   priceWei: 1_000n,
+  priceVersion: 0,
+  minPriceWei: 1_000n,
   hostOrigin: 'https://relay.example',
-  payee: { kind: 'burn', address: GROUP_WRITE_BURN_ADDRESS },
+  payee: BURN_ADDRESS,
 }
 
 function record(initial?: StoredGroupWritePayment) {
@@ -52,7 +56,9 @@ function record(initial?: StoredGroupWritePayment) {
 /** The hosting relay as the writer sees it: it records every submission in `events`. */
 function relay(
   events: string[],
-  answers: Array<'ok' | 'timeout' | 'refuse' | 'gap' | 'unfunded'>,
+  answers: Array<
+    'ok' | 'timeout' | 'refuse' | 'forbidden' | 'gap' | 'unfunded'
+  >,
 ) {
   const submitted: GroupWritePaymentWire[] = []
   return {
@@ -72,6 +78,8 @@ function relay(
           'group_payment_not_ready',
           'insufficient_balance',
         )
+      if (answer === 'forbidden')
+        throw new GroupWriteRefusedError(403, undefined, undefined)
       if (answer === 'refuse')
         throw new GroupWriteRefusedError(
           402,
@@ -182,6 +190,45 @@ describe('deliverPaidGroupWrite', () => {
     expect(later.submitted).toHaveLength(0)
   })
 
+  test("a write paid at the old price after the creator's raise is refused before broadcast, and the next write pays the new price", async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    // Planned at version 1; the creator raises the price before the host takes the write.
+    const atOld = { ...POLICY, priceWei: 2_000n, priceVersion: 1 }
+    const refused = await deliver(
+      message,
+      payer.wallet,
+      relay(payer.events, ['refuse']).submit,
+      async () => atOld,
+    )
+    expect(refused).toMatchObject({
+      state: 'refused',
+      outcome: 'released',
+      error: { status: 402, reason: 'underpaid' },
+    })
+    // Nothing of it went out, and its coin is back.
+    expect(payer.events.some(event => event.startsWith('send'))).toBe(false)
+    expect(message.stored).toMatchObject({ amountWei: '2000', released: true })
+    // The next write reads the new price and pays exactly it.
+    const raised = { ...POLICY, priceWei: 7_000n, priceVersion: 2 }
+    const next = record()
+    const host = relay(payer.events, ['ok'])
+    const delivered = await deliverPaidGroupWrite({
+      groupIdHex: GROUP,
+      envelope: { ...ENVELOPE, nonce: '66'.repeat(24) },
+      stored: undefined,
+      policy: async () => raised,
+      persist: next.persist,
+      wallet: payer.wallet,
+      submit: host.submit,
+    })
+    expect(delivered.state).toBe('delivered')
+    expect(next.stored).toMatchObject({
+      amountWei: '7000',
+      destination: BURN_ADDRESS,
+    })
+  })
+
   test('a refused write whose payment the chain shows is tracked as spent and retried until held', async () => {
     const payer = groupWriteTestPayer()
     const message = record()
@@ -242,7 +289,7 @@ describe('deliverPaidGroupWrite', () => {
   test('after an attempt without an answer, a refusal never releases the coin', async () => {
     const payer = groupWriteTestPayer()
     const message = record()
-    const host = relay(payer.events, ['timeout', 'refuse', 'refuse'])
+    const host = relay(payer.events, ['timeout', 'forbidden', 'forbidden'])
     await expect(deliver(message, payer.wallet, host.submit)).rejects.toThrow(
       'timeout',
     )
@@ -265,6 +312,121 @@ describe('deliverPaidGroupWrite', () => {
     expect(host.submitted.map(payment => payment.raw_transaction)).toEqual(
       Array(3).fill(message.stored!.rawTransaction),
     )
+  })
+
+  test("after an attempt without an answer, the host's underpaid for the same bytes is definitive: the coin goes back after a chain read", async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    // The creator raised the price while the first attempt went unanswered.
+    const host = relay(payer.events, ['timeout', 'refuse'])
+    await expect(deliver(message, payer.wallet, host.submit)).rejects.toThrow(
+      'timeout',
+    )
+    expect(message.stored).toMatchObject({ uncertain: true })
+    const refused = await deliver(message, payer.wallet, host.submit)
+    expect(refused).toMatchObject({ state: 'refused', outcome: 'released' })
+    expect(message.stored).toMatchObject({ released: true })
+    expect(payer.events).toContain(`release:${message.stored!.operationId}`)
+    expect(payer.events.some(event => event.startsWith('send'))).toBe(false)
+    // The wallet read the chain first: had it shown the payment, the coin stays spent.
+    const paid = groupWriteTestPayer()
+    const other = record()
+    const again = relay(paid.events, ['timeout', 'refuse'])
+    await expect(deliver(other, paid.wallet, again.submit)).rejects.toThrow(
+      'timeout',
+    )
+    paid.seenOnChain.add(other.stored!.operationId)
+    await expect(
+      deliver(other, paid.wallet, again.submit),
+    ).rejects.toBeInstanceOf(GroupWritePaidRefusalError)
+    expect(other.stored).toMatchObject({ spent: true })
+  })
+
+  test('a write never pays more than the price its writer was shown, after a restart too', async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    const raised = async () => ({ ...POLICY, priceWei: 1_000_000n })
+    const submit = jest.fn()
+    const send = (maxPriceWei: bigint) =>
+      deliverPaidGroupWrite({
+        groupIdHex: GROUP,
+        envelope: ENVELOPE,
+        stored: message.stored,
+        policy: raised,
+        maxPriceWei,
+        persist: message.persist,
+        wallet: payer.wallet,
+        submit,
+      })
+    const error = await send(1_000n).catch(e => e)
+    expect(error).toBeInstanceOf(GroupWritePriceChangedError)
+    expect(error).toMatchObject({ priceWei: 1_000_000n, shownPriceWei: 1_000n })
+    // Nothing planned, claimed or sent.
+    expect(message.writes).toEqual([])
+    expect(payer.events).toEqual([])
+    expect(submit).not.toHaveBeenCalled()
+
+    // A plan signed at the shown price, stopped before submission: the raise does not replan it
+    // upward, and its coin stays claimed for the writer's choice (send again or discard).
+    const stopped = record()
+    const persist = async (next: StoredGroupWritePayment) => {
+      if (next.submitted) throw new Error('process stopped')
+      await stopped.persist(next)
+    }
+    await expect(
+      deliverPaidGroupWrite({
+        groupIdHex: GROUP,
+        envelope: ENVELOPE,
+        stored: undefined,
+        policy: async () => POLICY,
+        maxPriceWei: 1_000n,
+        persist,
+        wallet: payer.wallet,
+        submit,
+      }),
+    ).rejects.toThrow('process stopped')
+    const before = stopped.stored!
+    const restarted = await deliverPaidGroupWrite({
+      groupIdHex: GROUP,
+      envelope: ENVELOPE,
+      stored: before,
+      policy: raised,
+      maxPriceWei: 1_000n,
+      persist: stopped.persist,
+      wallet: payer.wallet,
+      submit,
+    }).catch(e => e)
+    expect(restarted).toBeInstanceOf(GroupWritePriceChangedError)
+    expect(stopped.stored).toBe(before)
+    expect(payer.events.some(event => event.startsWith('release'))).toBe(false)
+    expect(submit).not.toHaveBeenCalled()
+    // The writer, shown the new price, sends again: now it pays it.
+    const host = relay(payer.events, ['ok'])
+    const delivered = await deliverPaidGroupWrite({
+      groupIdHex: GROUP,
+      envelope: ENVELOPE,
+      stored: stopped.stored,
+      policy: raised,
+      maxPriceWei: 1_000_000n,
+      persist: stopped.persist,
+      wallet: payer.wallet,
+      submit: host.submit,
+    })
+    expect(delivered.state).toBe('delivered')
+    expect(stopped.stored).toMatchObject({ amountWei: '1000000' })
+    // A lower price than shown is paid as it is.
+    const cheaper = record()
+    await deliverPaidGroupWrite({
+      groupIdHex: GROUP,
+      envelope: { ...ENVELOPE, nonce: '66'.repeat(24) },
+      stored: undefined,
+      policy: async () => POLICY,
+      maxPriceWei: 5_000n,
+      persist: cheaper.persist,
+      wallet: payer.wallet,
+      submit: relay(payer.events, ['ok']).submit,
+    })
+    expect(cheaper.stored).toMatchObject({ amountWei: '1000' })
   })
 
   test('a restart between the release and its record finishes the release', async () => {

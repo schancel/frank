@@ -15,13 +15,15 @@ peers = []
 public_relay_urls = []
 
 # Every new write to a group this relay hosts carries one signed transaction on
-# `registry.network` paying `payee` at least `price_wei` (1000000000000 wei = 0.000001 MON).
-# Each payment commits to the relay's public origin, the top-level `url` (which the directory
-# `endpoint` must equal), so one payment cannot fund a write on another relay. `payee` is "burn", { address = "0x…" } or { xpub = "xpub…" }. Development
-# burns, which funds nobody: give a deployed relay its own address or xpub.
+# `registry.network` paying `payee`, the relay's own address, at least the group's price. Each
+# group's creator sets that price and may change it; `min_price_wei` (1000000000000 wei =
+# 0.000001 MON) is the least price a creator may set. Each payment commits to the relay's public
+# origin, the top-level `url` (which the directory `endpoint` must equal), so one payment cannot
+# fund a write on another relay. Development pays the burn address 0x…dEaD, which funds nobody
+# and so has no payment floor: give a deployed relay its own address.
 [registry.group_writes]
-price_wei = "1000000000000"
-payee = "burn"
+min_price_wei = "1000000000000"
+payee = "0x000000000000000000000000000000000000dEaD"
 
 # The account directory. The message, directory and relay-info routes (`/message*`,
 # `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody

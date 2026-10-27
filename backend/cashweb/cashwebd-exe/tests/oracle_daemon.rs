@@ -18,7 +18,7 @@ host = "127.0.0.1:{port}"
 url = "http://127.0.0.1:{port}"
 
 [registry]
-group_writes = {{ price_wei = "1", payee = "burn" }}
+group_writes = {{ min_price_wei = "1", payee = "0x000000000000000000000000000000000000dEaD" }}
 db_path = "{db}"
 network = "monad-testnet"
 net = "mainnet"

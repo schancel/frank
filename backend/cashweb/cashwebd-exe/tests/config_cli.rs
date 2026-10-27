@@ -446,8 +446,8 @@ fn group_write_configuration_is_checked_before_database_effects() {
     let path =
         std::env::temp_dir().join(format!("frank-missing-group-writes-{}", std::process::id()));
     assert!(!path.exists());
-    let section = "[registry.group_writes]\nprice_wei = \"1000000000000\"\npayee = \"burn\"\n";
-    for removed in [section, "price_wei = \"1000000000000\"\n"] {
+    let section = "[registry.group_writes]\nmin_price_wei = \"1000000000000\"\npayee = \"0x000000000000000000000000000000000000dEaD\"\n";
+    for removed in [section, "min_price_wei = \"1000000000000\"\n"] {
         assert!(base.contains(removed));
         let invalid = base.replace(removed, "").replace(
             "data/registry.rocksdb",
@@ -477,25 +477,31 @@ fn group_write_configuration_is_checked_before_database_effects() {
 }
 
 #[test]
-fn group_writes_are_always_priced_and_paid_to_an_explicit_payee() {
+fn group_writes_have_a_minimum_price_and_pay_the_relays_own_address() {
     let base = include_str!("../../cashwebd.local.toml");
-    let section = "[registry.group_writes]\nprice_wei = \"1000000000000\"\npayee = \"burn\"\n";
+    let burn = "payee = \"0x000000000000000000000000000000000000dEaD\"";
+    let min = "min_price_wei = \"1000000000000\"";
+    let section = format!("[registry.group_writes]\n{min}\n{burn}\n");
     assert!(
-        base.contains(section),
+        base.contains(&section),
         "the shipped config states its group write policy"
     );
     assert!(check_stdin(base.as_bytes()).status.success());
-    // No free writes, no implicit payee, no missing policy.
+    // No free writes, no implicit payee, no missing policy, and the removed payee kinds and the
+    // old `price_wei` field are refused (a format break, no compatibility).
     for invalid in [
-        base.replace(section, ""),
-        base.replace("price_wei = \"1000000000000\"", "price_wei = \"0\""),
-        base.replace("price_wei = \"1000000000000\"", "price_wei = \"-1\""),
-        base.replace("price_wei = \"1000000000000\"", "price_wei = \"1e12\""),
-        base.replace("price_wei = \"1000000000000\"\n", ""),
-        base.replace("payee = \"burn\"\n", ""),
-        base.replace("payee = \"burn\"", "payee = \"free\""),
-        base.replace("payee = \"burn\"", "payee = { address = \"0xdead\" }"),
-        base.replace("payee = \"burn\"", "payee = { xpub = \"xpub-not-a-key\" }"),
+        base.replace(&section, ""),
+        base.replace(min, "min_price_wei = \"0\""),
+        base.replace(min, "min_price_wei = \"-1\""),
+        base.replace(min, "min_price_wei = \"1e12\""),
+        base.replace(min, "price_wei = \"1000000000000\""),
+        base.replace(&format!("{min}\n"), ""),
+        base.replace(&format!("{burn}\n"), ""),
+        base.replace(burn, "payee = \"burn\""),
+        base.replace(burn, "payee = \"free\""),
+        base.replace(burn, "payee = \"0xdead\""),
+        base.replace(burn, "payee = { address = \"0x000000000000000000000000000000000000dEaD\" }"),
+        base.replace(burn, "payee = { xpub = \"xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8\" }"),
         base.replace(
             "url = \"http://127.0.0.1:8098\"",
             "url = \"http://127.0.0.1:8098/groups\"",
@@ -511,24 +517,19 @@ fn group_writes_are_always_priced_and_paid_to_an_explicit_payee() {
             "{invalid}"
         );
     }
-    for payee in [
-        "payee = { address = \"0x00000000000000000000000000000000000000aA\" }",
-        "payee = { xpub = \"xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8\" }",
-    ] {
-        // A payee other than the burn address must move what it is paid: its price is at least
-        // the network's payment floor (0.021 MON on Monad).
-        let below_floor = base.replace("payee = \"burn\"", payee);
-        let below = check_stdin(below_floor.as_bytes());
-        assert!(!below.status.success(), "{payee}: price below the floor accepted");
-        assert!(
-            String::from_utf8_lossy(&below.stderr).contains("payment floor"),
-            "{payee}: {}",
-            String::from_utf8_lossy(&below.stderr)
-        );
-        let valid = below_floor.replace(
-            "price_wei = \"1000000000000\"",
-            "price_wei = \"21000000000000000\"",
-        );
-        assert!(check_stdin(valid.as_bytes()).status.success(), "{payee}");
-    }
+    // The relay's own address must move what it is paid: its minimum is at least the network's
+    // payment floor (0.021 MON on Monad). The burn address never moves it.
+    let own = base.replace(
+        burn,
+        "payee = \"0x00000000000000000000000000000000000000aA\"",
+    );
+    let below = check_stdin(own.as_bytes());
+    assert!(!below.status.success(), "minimum below the floor accepted");
+    assert!(
+        String::from_utf8_lossy(&below.stderr).contains("payment floor"),
+        "{}",
+        String::from_utf8_lossy(&below.stderr)
+    );
+    let valid = own.replace(min, "min_price_wei = \"21000000000000000\"");
+    assert!(check_stdin(valid.as_bytes()).status.success());
 }

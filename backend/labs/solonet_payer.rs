@@ -119,8 +119,14 @@ impl Payer {
 #[derive(Clone, Debug)]
 pub struct WritePolicy {
     pub network: String,
+    /// The group's price now: its creator's, or the relay's minimum while it has none.
     pub price_wei: u128,
+    /// The version of the creator's price record; 0 while there is none.
+    pub price_version: u64,
+    /// The relay's minimum: the least price a creator may set.
+    pub min_price_wei: u128,
     pub host_origin: String,
+    /// The relay's own address.
     pub payee: [u8; 20],
 }
 
@@ -133,12 +139,12 @@ pub async fn write_policy(client: &reqwest::Client, origin: &str, group_id: &str
         .unwrap();
     assert_eq!(response.status(), 200, "write policy from {origin}");
     let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    let payee = body["payee"]["address"]
-        .as_str()
-        .expect("the lab pays an address or the burn address, not an xpub");
+    let payee = body["payee"].as_str().expect("the payee is one address");
     WritePolicy {
         network: body["network"].as_str().unwrap().to_owned(),
         price_wei: body["price_wei"].as_str().unwrap().parse().unwrap(),
+        price_version: body["price_version"].as_u64().unwrap(),
+        min_price_wei: body["min_price_wei"].as_str().unwrap().parse().unwrap(),
         host_origin: body["host_origin"].as_str().unwrap().to_owned(),
         payee: hex::decode(payee.trim_start_matches("0x"))
             .unwrap()

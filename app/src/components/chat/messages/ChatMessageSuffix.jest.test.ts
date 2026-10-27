@@ -32,13 +32,14 @@ function translator(messages: unknown) {
     const value = key
       .split('.')
       .reduce<unknown>((o, k) => (o as Record<string, unknown>)?.[k], messages)
-    // Only the blocked-send and below-floor lines are filled in: the other tests compare with
+    // Only the blocked-send, below-floor and group-price lines are filled in: the other tests compare with
     // the raw template.
     return typeof value === 'string'
       ? key === 'outgoing.blockedBy' ||
         key === 'outgoing.reasonStampBelowFeeAmount' ||
         key === 'outgoing.reasonFundsInPendingSend' ||
-        key === 'outgoing.reasonTooLarge'
+        key === 'outgoing.reasonTooLarge' ||
+        key === 'outgoing.reasonGroupPriceChanged'
         ? Object.entries(named).reduce(
             (text, [name, part]) => text.split(`{${name}}`).join(part),
             value,
@@ -152,6 +153,23 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(
       bare.get('[data-testid="outgoing-failure-details"]').text(),
     ).toContain('below the minimum the network allows')
+  })
+
+  it("says a group write was refused because the group's price rose, names the new price, and says nothing was paid", () => {
+    const props = {
+      status: 'error',
+      failureReason: 'group-price-changed',
+      failureDetail: '1000000000000000000',
+    }
+    const en = mountSuffix(props, enUS)
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
+    expect(en).toContain("The group's price changed to 1")
+    expect(en).toContain('Nothing was paid')
+    const fr = mountSuffix(props, frFR)
+      .get('[data-testid="outgoing-failure-details"]')
+      .text()
+    expect(fr).toContain('Le prix du groupe est passé à 1')
   })
 
   it("says a send refused for money still in the last payment's change, with the amount, in English and French", () => {

@@ -874,3 +874,32 @@ describe('the group composer exposes conversation content capabilities', () => {
     wrapper.unmount()
   })
 })
+
+describe("the group composer shows the group's price of one message", () => {
+  it('shows the price before the member writes, and nothing in a direct chat', () => {
+    const group = mount(ChatInput, {
+      props: { groupMode: true, groupWritePrice: '0.003 MON' },
+      global: globalOptions,
+    })
+    expect(group.get('[data-testid="group-write-price"]').text()).toBe(
+      enUS.chatInput.groupWritePrice.replace('{price}', '0.003 MON'),
+    )
+    group.unmount()
+    const unknown = mount(ChatInput, {
+      props: { groupMode: true },
+      global: globalOptions,
+    })
+    expect(unknown.find('[data-testid="group-write-price"]').exists()).toBe(
+      false,
+    )
+    unknown.unmount()
+    const direct = mount(ChatInput, {
+      props: { groupMode: false, groupWritePrice: '0.003 MON' },
+      global: globalOptions,
+    })
+    expect(direct.find('[data-testid="group-write-price"]').exists()).toBe(
+      false,
+    )
+    direct.unmount()
+  })
+})

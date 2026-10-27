@@ -187,6 +187,8 @@ export const rawEnUS = {
     selectMessagesTitle: 'Delete messages',
   },
   chatInput: {
+    groupWritePrice:
+      'Each message to this group costs {price}, paid to its relay.',
     giveLotusSecretly: 'Give Lotus Secretly',
     sendStealth: 'Send Stealth',
     offerSwap: 'Offer Atomic Swap',
@@ -961,6 +963,8 @@ export const rawEnUS = {
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonStampBelowFee:
       'Its payment is below the minimum the network allows. Nothing was paid.',
+    reasonGroupPriceChanged:
+      "The group's price changed to {amount} {unit} per message. Nothing was paid; Retry sends it at the new price.",
     reasonStampBelowFeeAmount:
       'Its payment is below the minimum of {amount} {unit}: ten times what the network charges to move it. Nothing was paid.',
     reasonFeeExceeded:
@@ -2613,6 +2617,28 @@ export const rawEnUS = {
     systemMembershipUpdate: 'Group "{group}": members changed',
     systemRemovalSent: 'Told them they were removed from the group "{group}"',
     systemRemovalReceived: 'You were removed from the group "{group}"',
+    writePricePreview: 'New price: {price} per message (now {current}).',
+    writePriceRaiseTitle: 'Raise the price?',
+    writePriceRaiseBody:
+      'Every member will pay {price} for each message, instead of {current}.',
+    writePriceNotSet:
+      'The relay refused the last price you set; members pay the price shown.',
+    writePriceRefusedAtCreation:
+      "The group was created, but its relay refused your price. Members pay the relay's price; you can set yours in Group info.",
+    writePriceLabel: 'Price per message',
+    writePriceUnknown: 'Not known yet',
+    changeWritePriceLabel: 'New price per message ({unit})',
+    changeWritePriceBtn: 'Change price',
+    writePriceInputLabel: 'Price per message ({unit})',
+    writePriceHint:
+      "Members pay this to the group's relay for each message. The relay's minimum is {minimum}.",
+    writePriceTermsFailed: "Could not read this relay's price terms.",
+    writePriceInvalid: 'Enter a price of at least {minimum}.',
+    writePriceBelowMinimum:
+      "The relay's minimum price per message is {minimum}.",
+    writePriceConflict:
+      'The price was changed on another device. Check it and try again.',
+    writePriceRefused: 'The relay refused the price.',
   },
   close: 'Close',
 }

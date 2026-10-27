@@ -1,5 +1,5 @@
-//! Paid group writes on the hosting relay: the operator's policy, the payment carried by a
-//! write, and its broadcast after the write commits. The checks themselves are pure and live in
+//! Paid group writes on the hosting relay: the operator's policy, each group's creator price,
+//! the payment carried by a write, and its broadcast after the write commits. The checks themselves are pure and live in
 //! [`crate::group_write_payment`].
 
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chains::EvmChainAdapter,
     group_write_payment::{
-        canonical_host_origin, verify_group_write_payment, GroupPaymentError, GroupWritePayee,
-        GroupWritePolicy, GroupWriteTarget, VerifiedGroupPayment, BURN_ADDRESS,
+        canonical_host_origin, verify_group_write_payment, GroupPaymentError, GroupWritePolicy,
+        GroupWritePrice, GroupWriteTarget, VerifiedGroupPayment,
     },
     store::groups::{parse_group_id_hex, GroupError, GroupMessageEnvelope, GroupWritePaymentFact},
 };
@@ -79,39 +79,26 @@ impl GroupWriteRequest {
     }
 }
 
-/// Payee as `GET /groups/:group_id/write-policy` reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum GroupWritePayeeBody {
-    /// Every write pays `address`, the burn address.
-    Burn {
-        /// `0x`-prefixed burn address.
-        address: String,
-    },
-    /// Every write pays `address`.
-    Address {
-        /// `0x`-prefixed payee address.
-        address: String,
-    },
-    /// Each write pays `xpub/0/i`, `i = u32_be(commitment[0..4]) & 0x7fffffff`.
-    Xpub {
-        /// The operator's extended public key.
-        xpub: String,
-    },
-}
-
 /// Body of `GET /groups/:group_id/write-policy`: what a write to a group this relay hosts must
 /// pay. Every value is the hosting relay's; a home relay proxies the request to the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupWritePolicyBody {
     /// Canonical chain identifier payments are made on.
     pub network: String,
-    /// Least value of a payment, decimal wei.
-    pub price_wei: String,
     /// The origin every payment's commitment names.
     pub host_origin: String,
-    /// Who is paid.
-    pub payee: GroupWritePayeeBody,
+    /// The relay's own `0x`-prefixed lowercase address: every write pays it.
+    pub payee: String,
+    /// What one write to this group pays now, decimal wei: its creator's price, or
+    /// `min_price_wei` while the creator has set none.
+    pub price_wei: String,
+    /// Version of the creator's price record `price_wei` comes from; `0` while there is none.
+    pub price_version: u64,
+    /// The least price a creator may set on this relay, decimal wei.
+    pub min_price_wei: String,
+    /// The creator's signed price record `price_wei` comes from, so a member checks it against
+    /// the group's root key; `null` while there is none.
+    pub price_record: Option<GroupWritePrice>,
 }
 
 /// The relay's group-write policy and the node it checks and broadcasts payments through.
@@ -119,7 +106,6 @@ pub struct GroupWritePolicyBody {
 pub struct GroupWriteRuntime {
     node: PaymentNode,
     policy: GroupWritePolicy,
-    body: GroupWritePolicyBody,
 }
 
 /// Where the host reads a payer's account and sends a payment.
@@ -140,7 +126,7 @@ enum PaymentNode {
 const NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl GroupWriteRuntime {
-    /// Group writes on `chain` (the relay's `registry.network`), priced and paid as `conf` says,
+    /// Group writes on `chain` (the relay's `registry.network`), paid as `conf` says,
     /// committed to the relay's public origin `host_origin`.
     pub fn new(
         chain: Arc<EvmChainAdapter>,
@@ -182,35 +168,18 @@ impl GroupWriteRuntime {
             .evm_chain_id()
             .ok_or_else(|| format!("{network} is not an EVM chain"))?;
         conf.validate().map_err(|error| error.to_string())?;
-        let price_wei = conf.price_wei().map_err(|error| error.to_string())?;
+        let min_price_wei = conf.min_price_wei().map_err(|error| error.to_string())?;
+        let payee = conf.payee_address().map_err(|error| error.to_string())?;
         let host_origin = canonical_host_origin(host_origin)
             .ok_or_else(|| "the relay url is not an origin".to_owned())?;
-        let payee = GroupWritePayee::from_conf(&conf.payee).map_err(|error| error.to_string())?;
-        let payee_body = match &conf.payee {
-            cashweb_config::GroupWritePayeeConf::Burn => GroupWritePayeeBody::Burn {
-                address: format!("0x{}", hex::encode(BURN_ADDRESS)),
-            },
-            cashweb_config::GroupWritePayeeConf::Address(address) => GroupWritePayeeBody::Address {
-                address: address.to_lowercase(),
-            },
-            cashweb_config::GroupWritePayeeConf::Xpub(xpub) => GroupWritePayeeBody::Xpub {
-                xpub: xpub.trim().to_owned(),
-            },
-        };
         Ok(Self {
             node,
-            body: GroupWritePolicyBody {
-                network: chain.id.clone(),
-                price_wei: price_wei.to_string(),
-                host_origin: host_origin.clone(),
-                payee: payee_body,
-            },
             policy: GroupWritePolicy {
                 network: chain.id.clone(),
                 chain_id,
                 host_origin,
-                price_wei,
                 payee,
+                min_price_wei,
             },
         })
     }
@@ -220,17 +189,28 @@ impl GroupWriteRuntime {
         &self.policy
     }
 
-    /// The policy as `GET /groups/:group_id/write-policy` reports it.
-    pub fn body(&self) -> &GroupWritePolicyBody {
-        &self.body
+    /// The policy of a group whose creator price record is `creator`, as
+    /// `GET /groups/:group_id/write-policy` reports it.
+    pub fn body(&self, creator: Option<&GroupWritePrice>) -> GroupWritePolicyBody {
+        GroupWritePolicyBody {
+            network: self.policy.network.clone(),
+            host_origin: self.policy.host_origin.clone(),
+            payee: format!("0x{}", hex::encode(self.policy.payee)),
+            price_wei: self.policy.price_wei(creator).to_string(),
+            price_version: creator.map_or(0, |record| record.version),
+            min_price_wei: self.policy.min_price_wei.to_string(),
+            price_record: creator.cloned(),
+        }
     }
 
-    /// Check `payment` pays for exactly `envelope` on this relay.
+    /// Check `payment` pays for exactly `envelope` on this relay, at least the group's price
+    /// given its creator price record `creator`.
     pub fn verify(
         &self,
         path_group_id: &str,
         envelope: &GroupMessageEnvelope,
         payment: &GroupWritePaymentWire,
+        creator: Option<&GroupWritePrice>,
     ) -> Result<VerifiedGroupPayment, GroupWriteRefusal> {
         let target = GroupWriteTarget {
             group_id: parse_group_id_hex(path_group_id).map_err(GroupWriteRefusal::Group)?,
@@ -245,8 +225,14 @@ impl GroupWriteRuntime {
             .unwrap_or(&payment.raw_transaction);
         let raw = hex::decode(raw)
             .map_err(|_| GroupWriteRefusal::Payment(GroupPaymentError::Malformed))?;
-        verify_group_write_payment(&self.policy, &target, &payment.network, &raw)
-            .map_err(GroupWriteRefusal::Payment)
+        verify_group_write_payment(
+            &self.policy,
+            self.policy.price_wei(creator),
+            &target,
+            &payment.network,
+            &raw,
+        )
+        .map_err(GroupWriteRefusal::Payment)
     }
 
     /// What the store records of a verified payment, in the write's acceptance transaction.

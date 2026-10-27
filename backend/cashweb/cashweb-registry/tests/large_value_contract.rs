@@ -106,7 +106,7 @@ fn put_message(
         value_wei: 1,
         nonce: u64::from_be_bytes(digest[..8].try_into().unwrap()),
     };
-    store.put_paid_message(group_id, envelope, &payment)
+    store.put_paid_message(group_id, envelope, &payment, 1)
 }
 
 fn group_id() -> String {

@@ -190,6 +190,8 @@ export const rawFrFR = {
     selectMessagesTitle: 'Supprimer des messages',
   },
   chatInput: {
+    groupWritePrice:
+      'Chaque message à ce groupe coûte {price}, payé à son relais.',
     giveLotusSecretly: 'Donner des Lotus secrètement',
     sendStealth: 'Envoi furtif',
     offerSwap: 'Proposer un échange atomique',
@@ -980,6 +982,8 @@ export const rawFrFR = {
       "Le destinataire n'est pas enregistré sur ce relais.",
     reasonStampBelowFee:
       'Son paiement est inférieur au minimum autorisé par le réseau. Rien n’a été payé.',
+    reasonGroupPriceChanged:
+      'Le prix du groupe est passé à {amount} {unit} par message. Rien n’a été payé ; Réessayer l’envoie au nouveau prix.',
     reasonStampBelowFeeAmount:
       'Son paiement est inférieur au minimum de {amount} {unit} : dix fois ce que le réseau facture pour le déplacer. Rien n’a été payé.',
     reasonFeeExceeded:
@@ -2691,6 +2695,30 @@ export const rawFrFR = {
     systemMembershipUpdate: 'Groupe « {group} » : membres modifiés',
     systemRemovalSent: 'Retrait du groupe « {group} » notifié',
     systemRemovalReceived: 'Vous avez été retiré du groupe « {group} »',
+    writePricePreview:
+      'Nouveau prix : {price} par message (actuellement {current}).',
+    writePriceRaiseTitle: 'Augmenter le prix ?',
+    writePriceRaiseBody:
+      'Chaque membre paiera {price} par message, au lieu de {current}.',
+    writePriceNotSet:
+      'Le relais a refusé le dernier prix que vous avez fixé ; les membres paient le prix affiché.',
+    writePriceRefusedAtCreation:
+      'Le groupe a été créé, mais son relais a refusé votre prix. Les membres paient le prix du relais ; vous pouvez fixer le vôtre dans les infos du groupe.',
+    writePriceLabel: 'Prix par message',
+    writePriceUnknown: 'Pas encore connu',
+    changeWritePriceLabel: 'Nouveau prix par message ({unit})',
+    changeWritePriceBtn: 'Changer le prix',
+    writePriceInputLabel: 'Prix par message ({unit})',
+    writePriceHint:
+      'Les membres paient ce montant au relais du groupe pour chaque message. Le minimum du relais est {minimum}.',
+    writePriceTermsFailed:
+      'Impossible de lire les conditions de prix de ce relais.',
+    writePriceInvalid: 'Saisissez un prix d’au moins {minimum}.',
+    writePriceBelowMinimum:
+      'Le prix minimum du relais par message est {minimum}.',
+    writePriceConflict:
+      'Le prix a été changé sur un autre appareil. Vérifiez-le et réessayez.',
+    writePriceRefused: 'Le relais a refusé le prix.',
   },
   close: 'Fermer',
 }

@@ -184,7 +184,7 @@ fn read_and_validate_conf_with_env(
     // on, its `[[registry.evm_rpc.chains]]` row must have an upstream. Nothing defaults.
     let chains = RelayChains::from_conf(&conf.registry, env)
         .wrap_err("Invalid relay network or chain configuration")?;
-    // Group writes are always paid: the price, the payee (including an xpub) and the public
+    // Group writes are always paid: the minimum price, the relay's payee address and the public
     // origin payments commit to are checked here, before any database or session effect.
     let public_origin = conf.public_origin().wrap_err("Invalid relay url")?.clone();
     cashweb_registry::http::groups::GroupWriteRuntime::without_upstream(

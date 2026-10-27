@@ -1,5 +1,5 @@
 import type { ActiveChain } from '@frank/wallet/chain'
-import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
+import { formatBaseUnit, parseBaseUnit } from '@frank/wallet/chain/base-unit'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 
 type ChainAmountAdapter = Pick<
@@ -28,13 +28,14 @@ export function formatRawAmount(
  * coin: the caller shows no amount rather than guess a unit. */
 export function registryAmountAdapter(
   chainIdentifier: string,
-): Pick<ChainAmountAdapter, 'unit' | 'toDisplayAmount'> | undefined {
+): ChainAmountAdapter | undefined {
   const entry = getChainRegistryEntry(chainIdentifier)
   const decimals = entry?.nativeDecimals
   if (!entry || decimals === null || decimals === undefined) return undefined
   return {
     unit: entry.unit,
     toDisplayAmount: raw => formatBaseUnit(raw, decimals),
+    fromDisplayAmount: display => parseBaseUnit(display, decimals),
   }
 }
 

@@ -5,6 +5,8 @@
 # JSON-RPC as containers reach it, default http://host.docker.internal:48080, where
 # `yarn --cwd packages/bot regtest:monad-start` runs it). Every group write and message stamp pays
 # on solonet, so lab-init refuses to start the relays when solonet does not answer.
+# FRANK_LAB_SOLONET_KEY_HOST_DIR (where the contract saves the keys it funds, default
+# ~/.frank-lab-cluster/<COMPOSE_PROJECT_NAME>/solonet-keys).
 # scripts/lab-cluster-app.sh starts solonet first and refreshes the checkpoint for the app.
 name: frank-lab-cluster
 
@@ -248,9 +250,14 @@ services:
       # The relays' public origin, which is also their directory endpoint.
       FRANK_LAB_PUBLIC_ORIGIN: http://127.0.0.1:${FRANK_LAB_CLUSTER_PORT:-18080}
       FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-http://host.docker.internal:48080}
+      # Every key the contract funds on solonet is written here before it is funded and removed
+      # once swept; a killed run's keys are swept by the next run (README.md, "Paid group writes").
+      FRANK_LAB_SOLONET_KEY_DIR: /solonet-keys
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # On the host, so the keys outlive the container: this lab's state directory.
+      - ${FRANK_LAB_SOLONET_KEY_HOST_DIR:-${HOME}/.frank-lab-cluster/${COMPOSE_PROJECT_NAME:-frank-lab-cluster}/solonet-keys}:/solonet-keys
     networks: [cluster]
     depends_on:
       proxy:

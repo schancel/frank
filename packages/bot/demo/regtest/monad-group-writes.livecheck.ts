@@ -31,12 +31,18 @@
  * the cluster storage work.
  *
  * Test funds come back: at the end the writer wallet's accounts and the late payer are swept
- * back to the faucet.
+ * back to the faucet. The late payer's key is written to
+ * `<tmpdir>/monad-group-writes-livecheck-keys/<pid>.txt` before it is funded, and the file is
+ * removed once the key is swept; a run that was killed leaves its file, and the next run sweeps
+ * it first.
  *
  * The first run starts the VM and the chain (5 to 8 minutes, see monad-regtest.ts); later runs
  * reuse them. Not part of CI.
  */
 import assert from 'assert'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 import { Transaction, Wallet, getAddress, hexlify } from 'ethers'
 
@@ -55,6 +61,7 @@ import {
   MONAD_REGTEST_CHAIN,
   MONAD_REGTEST_CHAIN_ID,
   type MonadRegtest,
+  sweepToFaucet as sweepKeyToFaucet,
 } from './monad-regtest'
 import { findWallets } from '../funds'
 import { monadOf, openMonadWallet } from './monad-wallets'
@@ -170,6 +177,55 @@ async function sweepToFaucet(
   )
 }
 
+/** Keys this check funds outside the stack's wallets, one file per run (by process id). */
+const KEYS_DIR = join(tmpdir(), 'monad-group-writes-livecheck-keys')
+const KEYS_FILE = join(KEYS_DIR, `${process.pid}.txt`)
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Sweep the keys of earlier runs that ended before their sweep (a run still alive is left). */
+async function sweepLeftoverKeys(monad: MonadRegtest): Promise<void> {
+  const rpcUrl = monad.rpcUrl
+  const fee = TRANSFER_GAS * BigInt(await monad.provider.send('eth_gasPrice', []))
+  let files: string[] = []
+  try {
+    files = readdirSync(KEYS_DIR).filter(name => /^\d+\.txt$/.test(name))
+  } catch {
+    return
+  }
+  for (const name of files) {
+    if (processAlive(Number(name.slice(0, -4)))) continue
+    const file = join(KEYS_DIR, name)
+    const keys = readFileSync(file, 'utf8').split('\n').map(line => line.trim()).filter(Boolean)
+    let unswept = 0
+    for (const key of keys) {
+      const signer = new Wallet(key)
+      try {
+        const hash = await sweepKeyToFaucet(key, rpcUrl)
+        console.log(
+          hash
+            ? `swept ${signer.address}, left by an earlier run, to the faucet in ${hash}`
+            : `${signer.address}, left by an earlier run: nothing to sweep`,
+        )
+      } catch (error) {
+        unswept += 1
+        console.log(`could not sweep ${signer.address}, left by an earlier run: ${(error as Error).message}`)
+        continue
+      }
+      // A sweep that reverted leaves the funds: the file stays for the next run.
+      if ((await monad.provider.getBalance(signer.address, 'latest')) > fee) unswept += 1
+    }
+    if (unswept === 0) rmSync(file, { force: true })
+  }
+}
+
 async function main() {
   const startedAt = Date.now()
   const stack = await startRegtestStack({
@@ -178,6 +234,7 @@ async function main() {
   })
   // Accounts this run funds outside the stack's wallets, swept back with them at the end.
   const fundedKeys: string[] = []
+  await sweepLeftoverKeys(monadOf(stack))
   try {
     const [hostUrl, otherUrl] = stack.relayUrls as [string, string]
     const monad = monadOf(stack)
@@ -418,6 +475,9 @@ async function main() {
     // A payer without funds yet is deferred; once a deposit lands, the same bytes are accepted.
     const late = Wallet.createRandom() as unknown as Wallet
     fundedKeys.push(late.privateKey)
+    // Written down before it is funded, so a crash cannot strand its funds.
+    mkdirSync(KEYS_DIR, { recursive: true, mode: 0o700 })
+    appendFileSync(KEYS_FILE, `${late.privateKey}\n`, { mode: 0o600 })
     const lateEnvelope = seal('paid once funded')
     const latePayment = await sign(
       groupWritePaymentPlan(policy, id, lateEnvelope),
@@ -581,9 +641,26 @@ async function main() {
     const walletKeys = (await findWallets(stack.stateDir).catch(() => []))
       .flatMap(wallet => wallet.accounts)
       .flatMap(account => (account.privateKey ? [account.privateKey] : []))
-    await sweepToFaucet(monadOf(stack), [...walletKeys, ...fundedKeys]).catch(
-      err => console.error('the sweep back to the faucet failed:', err),
+    // The wallets' sweep also lets every account settle (it waits for their pending
+    // transactions, then six blocks), so the exact sweep of the late payer below is not
+    // reverted by Monad's reserve rule.
+    await sweepToFaucet(monadOf(stack), walletKeys).catch(err =>
+      console.error('the sweep back to the faucet failed:', err),
     )
+    // The key file is removed only once every key in it holds no more than a transfer's fee;
+    // otherwise the next run sweeps it.
+    const monad = monadOf(stack)
+    const fee = TRANSFER_GAS * BigInt(await monad.provider.send('eth_gasPrice', []))
+    let unswept = 0
+    for (const key of fundedKeys) {
+      const address = new Wallet(key).address
+      await sweepKeyToFaucet(key, monad.rpcUrl).catch(err =>
+        console.error(`could not sweep ${address}:`, err),
+      )
+      if ((await monad.provider.getBalance(address, 'latest')) > fee) unswept += 1
+    }
+    if (unswept === 0) rmSync(KEYS_FILE, { force: true })
+    else console.error(`${unswept} keys stay in ${KEYS_FILE}; the next run sweeps them`)
     await stack.stop()
   }
   console.log(

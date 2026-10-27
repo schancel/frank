@@ -25,7 +25,7 @@ import { formatEther, parseEther } from 'ethers'
 
 import { checkStampOnChain } from '../two-wallets'
 import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest } from './monad-regtest'
-import { monadOf, openMonadWallet } from './monad-wallets'
+import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 
@@ -130,7 +130,15 @@ async function main(): Promise<boolean> {
     }
     console.log(`sender main account ends with ${formatEther(await monad.provider.getBalance(sender.mainAccount))} MON`)
   } finally {
-    await stack.stop()
+    // Test funds come back: the wallets' keys are in the stack's directory, which stop() deletes.
+    try {
+      const { returnedWei, leftWei } = await returnToFaucet(stack)
+      console.log(`returned ${formatEther(returnedWei)} MON to the faucet; ${formatEther(leftWei)} MON left as dust or unsweepable`)
+    } catch (error) {
+      console.log(`the sweep back to the faucet failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      await stack.stop()
+    }
   }
   for (const problem of problems) console.log(`FAIL  ${problem}`)
   console.log(problems.length === 0 ? 'Monad reserve check: OK (every message delivered and paid, no reverted transaction)' : 'Monad reserve check: FAILED')

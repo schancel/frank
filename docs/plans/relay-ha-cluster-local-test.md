@@ -326,6 +326,9 @@ Still replica-local; each relay's startup log names them:
     carries its minimum and maximum bet. "No point in betting when you won't be paid out."
     Implemented in
     [The blackjack dealer's offer names its smallest and largest bet; the app shows them and refuses a bet outside them before paying (#1947)](https://github.com/schancel/frank/pull/1947).
+    The field is optional: the either-role bot (`packages/bot/blackjack-p2p-bot.ts`) still offers
+    without a minimum. An app older than #1947 rejects an offer carrying it, so the bots and the
+    app deploy together.
 13. **Background coin consolidation.** Resolved: approved 2026-10-26 (a 20 MONR Send max had
     been split into 56 transfers costing 0.12 in fees); 2026-10-27: "It needs to be such that it
     doesn't sweep shit we just created as change... Like that would be silly if it's not designed

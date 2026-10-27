@@ -97,6 +97,32 @@ export interface GroupWritePolicyGroup {
   readonly groupPubKeyHex: string
 }
 
+/** A host reported an older creator price record than one this client already verified for the
+ * group: a replay of a price the creator has replaced. */
+export class GroupWritePriceReplayError extends Error {
+  constructor(
+    readonly reportedVersion: number,
+    readonly verifiedVersion: number,
+  ) {
+    super(
+      `The host reported the group's price record version ${reportedVersion}, older than version ${verifiedVersion} already verified`,
+    )
+    this.name = 'GroupWritePriceReplayError'
+  }
+}
+
+/** The highest creator price record version verified for a group once `policy` is accepted.
+ * Throws `GroupWritePriceReplayError` when `policy` carries an older record than
+ * `verifiedVersion` (0 while none was verified). */
+export function acceptPriceRecordVersion(
+  policy: GroupWritePolicy,
+  verifiedVersion: number,
+): number {
+  if (policy.priceVersion < verifiedVersion)
+    throw new GroupWritePriceReplayError(policy.priceVersion, verifiedVersion)
+  return policy.priceVersion
+}
+
 function parsePriceRecord(raw: unknown): GroupWritePriceRecord | undefined {
   if (raw === null || raw === undefined) return undefined
   const r = raw as Record<string, unknown>

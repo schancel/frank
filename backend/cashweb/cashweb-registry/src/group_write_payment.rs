@@ -287,12 +287,17 @@ pub enum GroupPaymentError {
         expected: [u8; 20],
     },
     /// Carries less than the group's price.
-    #[error("payment carries {actual} wei, the group's price is {required} wei")]
+    #[error(
+        "payment 0x{} carries {actual} wei, the group's price is {required} wei",
+        hex::encode(tx_hash)
+    )]
     Underpaid {
         /// The price.
         required: u128,
         /// The signed value.
         actual: u128,
+        /// The payment's transaction hash, which the host records as refused.
+        tx_hash: [u8; 32],
     },
     /// The calldata is not exactly the commitment to this relay, group, epoch and write.
     #[error("payment calldata does not commit to this write on this relay")]
@@ -370,6 +375,7 @@ pub fn verify_group_write_payment(
         return Err(GroupPaymentError::Underpaid {
             required: price_wei,
             actual: signed.value_wei,
+            tx_hash: signed.tx_hash.0,
         });
     }
     Ok(VerifiedGroupPayment {

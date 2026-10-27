@@ -26,7 +26,7 @@ pub use payment::{
     GroupWriteRuntime,
 };
 
-use crate::group_write_payment::GroupWritePrice;
+use crate::group_write_payment::{GroupPaymentError, GroupWritePrice};
 
 use crate::store::large_values::LargeValueError;
 use axum::{
@@ -1061,6 +1061,27 @@ async fn put_group_message_impl(
     };
     let verified = match writes.verify(&group_id, &envelope, &payment, creator_price.as_ref()) {
         Ok(verified) => verified,
+        // Below the price read above. `underpaid` is final for the writer, so it is answered
+        // only from a transaction that finds no acceptance of this write and records the
+        // payment as refused: a stalled earlier attempt of the same write can then never
+        // commit with it.
+        Err(GroupWriteRefusal::Payment(GroupPaymentError::Underpaid {
+            required,
+            actual,
+            tx_hash,
+        })) => {
+            let refused = {
+                let group_id = group_id.clone();
+                on_store(&store, move |store| {
+                    store.refuse_underpaid(&group_id, envelope, tx_hash, required, actual)
+                })
+                .await
+            };
+            return match refused {
+                Ok(outcome) => local_write_response(false, outcome.message),
+                Err(e) => group_error_response(e),
+            };
+        }
         Err(refusal) => return payment_refusal_response(refusal),
     };
     // The payment must be able to land now; the node is asked before anything is stored.
@@ -2547,6 +2568,69 @@ mod tests {
             serde_json::from_slice::<StoredGroupMessage>(&retry.bytes().await.unwrap()).unwrap(),
             row
         );
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![row]);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn underpaid_is_answered_only_when_no_attempt_was_accepted_and_is_final_for_its_payment()
+    {
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 7);
+        let (host, task) = spawn_group_router(store.clone()).await;
+        let url = format!("{host}/groups/{id}/messages");
+        let price = |version: u64, price_wei: u128| {
+            let (root_sk, root_pk) = keypair(7);
+            crate::group_write_payment::GroupWritePrice {
+                group_id: id.clone(),
+                network: "monad-testnet".into(),
+                version,
+                price_wei,
+                admin_sig: sign_digest(
+                    &root_sk,
+                    &crate::group_write_payment::group_write_price_digest(
+                        "monad-testnet",
+                        &derive_group_id(&root_pk),
+                        version,
+                        price_wei,
+                    ),
+                ),
+            }
+        };
+        let reason = |body: &[u8]| {
+            serde_json::from_slice::<serde_json::Value>(body).unwrap()["reason"].clone()
+        };
+
+        // Accepted at the minimum; the creator then raises the price.
+        let accepted_write = sealed(&id, &write_sk, 1);
+        let accepted = put_json(url.clone(), None, &paid_for(&host, &accepted_write)).await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let row: StoredGroupMessage =
+            serde_json::from_slice(&accepted.bytes().await.unwrap()).unwrap();
+        store
+            .put_write_price(&id, price(1, TEST_PRICE * 5), "monad-testnet", TEST_PRICE)
+            .unwrap();
+        // A retry of the accepted write, short of the new price, is answered with its receipt.
+        let retry = put_json(url.clone(), None, &paid_for(&host, &accepted_write)).await;
+        assert_eq!(retry.status(), StatusCode::OK);
+        assert_eq!(retry.headers()[HEADER_GROUP_APPEND], "existing");
+        assert_eq!(
+            serde_json::from_slice::<StoredGroupMessage>(&retry.bytes().await.unwrap()).unwrap(),
+            row
+        );
+
+        // A write never accepted, short of it, is refused, and its payment for good: once the
+        // price falls back, an attempt with that payment still in flight is refused too.
+        let refused_write = sealed(&id, &write_sk, 2);
+        let refused = put_json(url.clone(), None, &paid_for(&host, &refused_write)).await;
+        assert_eq!(refused.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(reason(&refused.bytes().await.unwrap()), "underpaid");
+        store
+            .put_write_price(&id, price(2, TEST_PRICE), "monad-testnet", TEST_PRICE)
+            .unwrap();
+        let late = put_json(url.clone(), None, &paid_for(&host, &refused_write)).await;
+        assert_eq!(late.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(reason(&late.bytes().await.unwrap()), "underpaid");
         assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![row]);
         task.abort();
     }

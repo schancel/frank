@@ -674,6 +674,12 @@ fn payment_key(tx_hash: &[u8; 32]) -> Vec<u8> {
     [GROUP_PAYMENT_PREFIX, tx_hash.as_slice()].concat()
 }
 
+/// A payment the host refused as underpaid, by transaction hash: the write it was presented
+/// with can never be accepted afterwards, whatever the price becomes.
+fn refused_payment_key(tx_hash: &[u8; 32]) -> Vec<u8> {
+    [GROUP_REFUSED_PAYMENT_PREFIX, tx_hash.as_slice()].concat()
+}
+
 fn write_price_key(group_id: &[u8; 32]) -> Vec<u8> {
     [GROUP_WRITE_PRICE_PREFIX, group_id.as_slice()].concat()
 }
@@ -721,6 +727,7 @@ const GROUP_LARGE_VALUE_PREFIX: &[u8] = b"G_lv:";
 pub const GROUP_OBJECT_NAMESPACE: &str = "groups";
 const GROUP_PAYMENT_NONCE_PREFIX: &[u8] = b"G_pnonce:";
 const GROUP_WRITE_PRICE_PREFIX: &[u8] = b"G_price:";
+const GROUP_REFUSED_PAYMENT_PREFIX: &[u8] = b"G_payrefused:";
 const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     b"G:",
     b"G_meta:",
@@ -732,6 +739,7 @@ const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
     GROUP_PAYMENT_PREFIX,
     GROUP_PAYMENT_NONCE_PREFIX,
     GROUP_WRITE_PRICE_PREFIX,
+    GROUP_REFUSED_PAYMENT_PREFIX,
     GROUP_PART_PREFIX,
     GROUP_LARGE_VALUE_PREFIX,
 ];
@@ -1412,6 +1420,39 @@ impl GroupStore {
         result
     }
 
+    /// Refuse a new write whose payment `tx_hash` is below the group's price, as the host's
+    /// check before the accept transaction found. In one transaction: a write already accepted
+    /// gets its receipt instead; otherwise the payment is recorded as refused, so the write can
+    /// never be accepted with it afterwards, and `Underpaid` is returned.
+    pub fn refuse_underpaid(
+        &self,
+        path_group_id: &str,
+        envelope: GroupMessageEnvelope,
+        tx_hash: [u8; 32],
+        required: u128,
+        actual: u128,
+    ) -> Result<GroupAppendOutcome, GroupError> {
+        let (group_id, envelope, digest) = self.local_write(path_group_id, envelope)?;
+        let accept_key = acceptance_key(&group_id, &digest);
+        let refused_key = refused_payment_key(&tx_hash);
+        let accepted = self.kv.transact(|tx| {
+            if tx.get(&accept_key)?.is_some() {
+                return Ok::<_, GroupError>(true);
+            }
+            tx.set(&refused_key, &[1])?;
+            Ok(false)
+        })?;
+        if accepted {
+            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(GroupAppendOutcome {
+                    message,
+                    appended: false,
+                });
+            }
+        }
+        Err(GroupError::Underpaid { required, actual })
+    }
+
     /// The append loop of [`Self::put_paid_message`], after authentication and staging.
     #[allow(clippy::too_many_arguments)]
     fn append_staged(
@@ -1430,6 +1471,7 @@ impl GroupStore {
         let authority_key = meta_key(&group_id);
         let sequence_key = seq_key(&group_id);
         let pay_key = payment_key(&payment.tx_hash);
+        let refused_key = refused_payment_key(&payment.tx_hash);
         let nonce_key = payment_nonce_key(&payment.network, &payment.payer, payment.nonce)?;
         let strip = |value: &str| value.strip_prefix("0x").unwrap_or(value).to_lowercase();
         loop {
@@ -1441,6 +1483,18 @@ impl GroupStore {
                     || get_value(tx, &authority_key)?.as_deref() != Some(authority_snapshot)
                 {
                     return Ok::<_, GroupError>(None);
+                }
+                // A payment this host already refused as underpaid is refused for good: the
+                // writer was told so and may have let its coin go.
+                if tx.get(&refused_key)?.is_some() {
+                    let required = effective_price_wei(
+                        get_write_price(tx, &group_id)?.as_ref(),
+                        min_price_wei,
+                    );
+                    return Ok(Some(Err(GroupError::Underpaid {
+                        required,
+                        actual: payment.value_wei,
+                    })));
                 }
                 // Read in this transaction, so two writes racing on one payment conflict and
                 // the re-run of the loser finds the winner's record.
@@ -1458,10 +1512,13 @@ impl GroupStore {
                 let required =
                     effective_price_wei(get_write_price(tx, &group_id)?.as_ref(), min_price_wei);
                 if payment.value_wei < required {
-                    return Err(GroupError::Underpaid {
+                    // Committed with the refusal, after the acceptance check above: this
+                    // payment can never fund the write later, so "underpaid" is final.
+                    tx.set(&refused_key, &[1])?;
+                    return Ok(Some(Err(GroupError::Underpaid {
                         required,
                         actual: payment.value_wei,
-                    });
+                    })));
                 }
                 let server_seq = match tx.get(&sequence_key)? {
                     Some(bytes) => parse_sequence(&bytes, "G_seq value")?
@@ -1503,13 +1560,17 @@ impl GroupStore {
                     &row,
                     staged,
                 )?;
-                Ok(Some(stored))
+                Ok(Some(Ok(stored)))
             })?;
-            if let Some(message) = committed {
-                return Ok(GroupAppendOutcome {
-                    message,
-                    appended: true,
-                });
+            match committed {
+                Some(Ok(message)) => {
+                    return Ok(GroupAppendOutcome {
+                        message,
+                        appended: true,
+                    })
+                }
+                Some(Err(refusal)) => return Err(refusal),
+                None => {}
             }
             if let Some(message) = self.accepted_message(path_group_id, envelope, accept_key)? {
                 return Ok(GroupAppendOutcome {
@@ -2312,6 +2373,135 @@ mod tests {
     }
 
     #[test]
+    fn an_underpaid_refusal_is_final_for_its_payment_even_after_the_price_falls() {
+        let kv = temporary();
+        let store = GroupStore::new(kv.clone(), test_objects());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let payment = |tx: u8, value_wei: u128| GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: [tx; 32],
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei,
+            nonce: 0,
+        };
+        store
+            .put_write_price(&id, price_record(3, 1, 5_000), "monad-testnet", 1_000)
+            .unwrap();
+        // The host's check before the accept transaction finds it underpaid: refused, and the
+        // payment recorded as refused in the same transaction that found no acceptance.
+        assert_eq!(
+            store.refuse_underpaid(
+                &id,
+                message_for(&id, 0, 1, &write_sk),
+                [5; 32],
+                5_000,
+                1_000
+            ),
+            Err(GroupError::Underpaid {
+                required: 5_000,
+                actual: 1_000
+            })
+        );
+        // A stalled earlier attempt of the same write with that payment reaches the accept
+        // transaction after the creator lowered the price: still refused, nothing stored.
+        store
+            .put_write_price(&id, price_record(3, 2, 1_000), "monad-testnet", 1_000)
+            .unwrap();
+        assert_eq!(
+            store.put_paid_message(
+                &id,
+                message_for(&id, 0, 1, &write_sk),
+                &payment(5, 1_000),
+                1_000
+            ),
+            Err(GroupError::Underpaid {
+                required: 1_000,
+                actual: 1_000
+            })
+        );
+        assert_eq!(store.payment_record(&[5; 32]).unwrap(), None);
+        // Refused inside the accept transaction: recorded the same way.
+        store
+            .put_write_price(&id, price_record(3, 3, 5_000), "monad-testnet", 1_000)
+            .unwrap();
+        assert!(matches!(
+            store.put_paid_message(
+                &id,
+                message_for(&id, 0, 2, &write_sk),
+                &payment(6, 1_000),
+                1_000
+            ),
+            Err(GroupError::Underpaid { .. })
+        ));
+        store
+            .put_write_price(&id, price_record(3, 4, 1_000), "monad-testnet", 1_000)
+            .unwrap();
+        assert!(matches!(
+            store.put_paid_message(
+                &id,
+                message_for(&id, 0, 2, &write_sk),
+                &payment(6, 1_000),
+                1_000
+            ),
+            Err(GroupError::Underpaid { .. })
+        ));
+        // Another payment for the write is accepted.
+        assert!(
+            store
+                .put_paid_message(
+                    &id,
+                    message_for(&id, 0, 2, &write_sk),
+                    &payment(7, 1_000),
+                    1_000
+                )
+                .unwrap()
+                .appended
+        );
+    }
+
+    #[test]
+    fn an_underpaid_answer_for_an_accepted_write_is_its_receipt() {
+        let kv = temporary();
+        let store = GroupStore::new(kv.clone(), test_objects());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        let fact = GroupWritePaymentFact {
+            network: "monad-testnet".into(),
+            tx_hash: [5; 32],
+            payer: [1; 20],
+            payee: [2; 20],
+            value_wei: 1_000,
+            nonce: 0,
+        };
+        // An earlier attempt was accepted at the old price; the price then rose, and the
+        // retry's check before the accept transaction finds the payment short.
+        let accepted = store
+            .put_paid_message(&id, message_for(&id, 0, 1, &write_sk), &fact, 1_000)
+            .unwrap();
+        store
+            .put_write_price(&id, price_record(3, 1, 5_000), "monad-testnet", 1_000)
+            .unwrap();
+        let answer = store
+            .refuse_underpaid(
+                &id,
+                message_for(&id, 0, 1, &write_sk),
+                [5; 32],
+                5_000,
+                1_000,
+            )
+            .unwrap();
+        assert_eq!((answer.appended, answer.message), (false, accepted.message));
+        // Nothing recorded as refused for the payment that funded it.
+        assert_eq!(kv.get(&refused_payment_key(&[5; 32])).unwrap(), None);
+    }
+
+    #[test]
     fn a_price_raise_that_commits_first_refuses_a_write_paid_at_the_old_price() {
         let kv = temporary();
         let store = GroupStore::new(kv.clone(), test_objects());
@@ -2340,11 +2530,24 @@ mod tests {
                 actual: 999
             })
         );
+        // The refused payment is refused for good; another transaction at the price is accepted.
+        assert_eq!(
+            store.put_paid_message(
+                &id,
+                message_for(&id, 0, 1, &write_sk),
+                &payment(9, 0, 1_000),
+                1_000
+            ),
+            Err(GroupError::Underpaid {
+                required: 1_000,
+                actual: 1_000
+            })
+        );
         let accepted = store
             .put_paid_message(
                 &id,
                 message_for(&id, 0, 1, &write_sk),
-                &payment(9, 0, 1_000),
+                &payment(10, 0, 1_000),
                 1_000,
             )
             .unwrap();
@@ -2367,15 +2570,23 @@ mod tests {
                 actual: 1_000
             })
         );
-        // Nothing stored: no row, no sequence, no payment record, no nonce taken.
-        assert_eq!(kv.scan_prefix_range(&[], None, 100).unwrap(), before);
+        // Nothing stored but the refusal of that payment: no row, no sequence, no payment
+        // record, no nonce taken.
+        let after = kv.scan_prefix_range(&[], None, 100).unwrap();
+        let added: Vec<_> = after
+            .iter()
+            .filter(|entry| !before.contains(entry))
+            .collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].0, refused_payment_key(&[8; 32]));
+        assert_eq!(after.len(), before.len() + 1);
         assert_eq!(store.payment_record(&[8; 32]).unwrap(), None);
         // The accepted write's exact retry keeps its receipt at any price.
         let retry = store
             .put_paid_message(
                 &id,
                 message_for(&id, 0, 1, &write_sk),
-                &payment(9, 0, 1_000),
+                &payment(10, 0, 1_000),
                 1_000,
             )
             .unwrap();

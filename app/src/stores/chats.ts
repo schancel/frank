@@ -134,6 +134,7 @@ import {
   type CreateGroupOnRelayMemberInput,
 } from '@frank/cashweb/groups/group-relay-client'
 import {
+  acceptPriceRecordVersion,
   signGroupWritePrice,
   type GroupWritePolicy,
   type GroupWritePriceRecord,
@@ -345,6 +346,9 @@ export interface GroupConversationState {
     reason: GroupWritePriceRefusedError['reason']
     minPriceWei?: string
   }
+  /** The highest creator price record version this client verified for the group. A host
+   * reporting an older record (a replay of a price the creator replaced) is refused. */
+  writePriceVersionSeen?: number
 }
 
 /** A group's write price as the app shows it. */
@@ -1635,6 +1639,7 @@ function applyAuthenticatedGroupEpoch(
     writePrice: previous?.writePrice,
     pendingWritePrice: previous?.pendingWritePrice,
     writePriceRefusal: previous?.writePriceRefusal,
+    writePriceVersionSeen: previous?.writePriceVersionSeen,
   }
   conv.groupEpochSecretHex = epochSecretHex
   conv.groupMemberIndex = own?.index
@@ -2544,6 +2549,21 @@ export const rehydrateState = rehydrateChat
 export const freshChatState = freshChatsState
 
 const groupRuns = new WeakMap<object, Map<string, Promise<unknown>>>()
+/** Per store and conversation: the last price read issued and the last one applied, so a
+ * stale answer never replaces a newer one. */
+const groupPriceReadCounters = new WeakMap<
+  object,
+  { issued: Map<string, number>; applied: Map<string, number> }
+>()
+function groupPriceReads(store: object) {
+  const raw = toRaw(store)
+  let reads = groupPriceReadCounters.get(raw)
+  if (!reads) {
+    reads = { issued: new Map(), applied: new Map() }
+    groupPriceReadCounters.set(raw, reads)
+  }
+  return reads
+}
 function groupRun<T>(
   owner: object,
   key: string,
@@ -6749,8 +6769,15 @@ export const useChatStore = defineStore('chats', {
       if (!owner || !sameCanonicalAddress(owner.address, message.senderAddress))
         throw new Error('Group send belongs to another account')
       const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
-      if (acceptShownPrice && state.writePrice)
-        message.groupWriteShownPriceWei = state.writePrice.priceWei
+      // The user's Retry of a write refused because the price rose pays the price that
+      // refusal names, which is kept current as the price is read again. Any other Retry
+      // keeps the price shown when the write was sent; a higher one refuses it, naming it.
+      const namedPrice =
+        message.delivery?.failureReason === 'group-price-changed'
+          ? message.delivery.detail
+          : undefined
+      if (acceptShownPrice && namedPrice && /^\d+$/.test(namedPrice))
+        message.groupWriteShownPriceWei = namedPrice
       // Retry may follow a rejected initial receipt write. Re-establish durability before transport.
       await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
       checkGroup()
@@ -6765,8 +6792,7 @@ export const useChatStore = defineStore('chats', {
           envelope,
           stored: message.groupWritePayment,
           // The creator's signed price, checked against the group's key.
-          policy: () =>
-            client.getWritePolicy(state.groupIdHex, state.groupPubKeyHex),
+          policy: () => this.readGroupWritePolicy(conv.id, client),
           // Never more than the member was shown.
           maxPriceWei: BigInt(message.groupWriteShownPriceWei ?? '0'),
           persist: async next => {
@@ -6958,15 +6984,59 @@ export const useChatStore = defineStore('chats', {
       if (!state) return undefined
       const checkGroup = captureGroupContext(this, conv)
       const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      const reads = groupPriceReads(this)
+      const read = (reads.issued.get(conversationId) ?? 0) + 1
+      reads.issued.set(conversationId, read)
       const view = writePriceView(
-        await client.getWritePolicy(state.groupIdHex, state.groupPubKeyHex),
+        await this.readGroupWritePolicy(conversationId, client),
       )
       checkGroup()
       // An epoch applied meanwhile replaces the state object; the group is the same.
       const current = conv.groupState
       if (current?.groupIdHex !== state.groupIdHex) return undefined
+      // A read answered after a later one was applied is stale: it never replaces it.
+      if (read <= (reads.applied.get(conversationId) ?? 0))
+        return current.writePrice
+      reads.applied.set(conversationId, read)
       current.writePrice = view
+      // A write refused because the price rose names the price its Retry pays: the current one.
+      for (const digest of Object.keys(current.pendingMessages ?? {})) {
+        const message = this.messages[digest]
+        if (
+          message?.delivery?.failureReason !== 'group-price-changed' ||
+          message.delivery.detail === view.priceWei
+        )
+          continue
+        message.delivery = { ...message.delivery, detail: view.priceWei }
+        await this.saveOutgoing(conv.address, digest, { strict: true })
+        checkGroup()
+      }
       return view
+    },
+    /** The group's write policy from its host, its creator's record checked against the group's
+     * key. Refuses a record older than one already verified for the group, and remembers the
+     * newest verified. */
+    async readGroupWritePolicy(
+      conversationId: string,
+      client: GroupRelayClient,
+    ): Promise<GroupWritePolicy> {
+      const conv = this.conversations[conversationId]
+      const state = conv?.groupState
+      if (!state) throw new Error('Not a group conversation')
+      const policy = await client.getWritePolicy(
+        state.groupIdHex,
+        state.groupPubKeyHex,
+      )
+      const current = conv.groupState
+      if (current?.groupIdHex !== state.groupIdHex)
+        throw new Error('Group changed while reading its write price')
+      const seen = current.writePriceVersionSeen ?? 0
+      const version = acceptPriceRecordVersion(policy, seen)
+      if (version > seen) {
+        current.writePriceVersionSeen = version
+        await this.flushPersistence?.()
+      }
+      return policy
     },
     /** The least price `relayUrl` lets a creator set, and its network: for the New group form. */
     async groupRelayWriteTerms(
@@ -6994,10 +7064,7 @@ export const useChatStore = defineStore('chats', {
       // One price at a time: an earlier one still pending goes first.
       const earlier = await this.retryGroupWritePrice(conversationId, client)
       if (earlier.state === 'refused') throw earlier.error
-      const policy = await client.getWritePolicy(
-        state.groupIdHex,
-        state.groupPubKeyHex,
-      )
+      const policy = await this.readGroupWritePolicy(conversationId, client)
       checkGroup()
       if (priceWei < policy.minPriceWei)
         throw new GroupWritePriceRefusedError(
@@ -7305,12 +7372,21 @@ export const useChatStore = defineStore('chats', {
       const price = this.retryGroupWritePrice(
         conversationId,
         options.relayClient,
-      ).catch(() => undefined)
+      )
+      // Invitations follow only the host's answer to the price, and only while this sync's
+      // lease holds; a PUT that failed in transit leaves them for the next sync.
       if (pricePending)
         void price
-          .then(() => this.retryGroupMemberDeliveries(conversationId))
+          .then(() =>
+            options.lease?.isCancelled()
+              ? undefined
+              : this.retryGroupMemberDeliveries(conversationId),
+          )
           .catch(() => undefined)
-      else await this.retryGroupMemberDeliveries(conversationId)
+      else {
+        void price.catch(() => undefined)
+        await this.retryGroupMemberDeliveries(conversationId)
+      }
       const conv = this.conversations[conversationId]
       if (options.lease?.isCancelled() || !conv || conv.kind !== 'group')
         return 0

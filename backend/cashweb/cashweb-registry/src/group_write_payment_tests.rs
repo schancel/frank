@@ -123,7 +123,8 @@ fn only_the_relay_address_is_paid_at_or_over_the_group_price() {
         verify_group_write_payment(&policy, PRICE * 5, &target(), "monad-testnet", &raw),
         Err(GroupPaymentError::Underpaid {
             required: PRICE * 5,
-            actual: PRICE
+            actual: PRICE,
+            tx_hash: tx_hash_of(&raw),
         })
     );
 }
@@ -138,7 +139,8 @@ fn underpaid_wrong_chain_and_wrong_network_are_refused() {
         refused,
         Err(GroupPaymentError::Underpaid {
             required: PRICE,
-            actual: PRICE - 1
+            actual: PRICE - 1,
+            tx_hash: tx_hash_of(&raw),
         })
     );
     assert_eq!(refused.unwrap_err().reason(), "underpaid");
@@ -394,4 +396,10 @@ fn host_origins_have_one_spelling() {
             "{configured}"
         );
     }
+}
+
+/// The keccak hash of signed raw transaction bytes: its transaction hash.
+fn tx_hash_of(raw: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    Keccak256::digest(raw).into()
 }

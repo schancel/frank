@@ -8,7 +8,9 @@ import {
   hexToBytes,
 } from './group-crypto'
 import {
+  acceptPriceRecordVersion,
   assertGroupWritePayment,
+  GroupWritePriceReplayError,
   groupWriteCalldata,
   groupWriteCommitment,
   groupWritePaymentPlan,
@@ -290,5 +292,32 @@ describe('group write payment', () => {
           rootSecretKey: sk,
         }),
       ).toThrow()
+  })
+
+  it('refuses a policy carrying an older creator record than one already verified', () => {
+    const policy = parseGroupWritePolicy(
+      policyBody,
+      'https://relay.example',
+      GROUP,
+    )
+    expect(acceptPriceRecordVersion(policy, 0)).toBe(2)
+    expect(acceptPriceRecordVersion(policy, 2)).toBe(2)
+    expect(() => acceptPriceRecordVersion(policy, 3)).toThrow(
+      GroupWritePriceReplayError,
+    )
+    // A host that drops the record, falling back to its floor, replays "no record".
+    const noRecord = parseGroupWritePolicy(
+      {
+        ...policyBody,
+        price_wei: '1000',
+        price_version: 0,
+        price_record: null,
+      },
+      'https://relay.example',
+      GROUP,
+    )
+    expect(() => acceptPriceRecordVersion(noRecord, 2)).toThrow(
+      GroupWritePriceReplayError,
+    )
   })
 })

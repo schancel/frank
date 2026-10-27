@@ -379,9 +379,11 @@ export async function deliverPaidGroupWrite<Receipt>(
     }
     // Already out and tracked: the write is owed, so it is retried as it is.
     if (stored.spent) throw new GroupWritePaidRefusalError(error)
-    // `underpaid` for these exact bytes: the host checked for an accepted receipt first and
-    // found none, so no attempt was accepted, and an unaccepted write's payment is never
-    // broadcast by the host. Definitive, like a refusal with no unknown attempt.
+    // `underpaid` for these exact bytes: the host answers it only from a transaction that
+    // found no accepted attempt, and in that transaction records this payment as refused, so
+    // no attempt can be accepted with it later and the host never broadcasts it. Definitive,
+    // like a refusal with no unknown attempt; the coin is released only once the chain shows
+    // the payment did not land.
     const neverAccepted =
       error.status === 402 &&
       error.code === 'group_payment_invalid' &&

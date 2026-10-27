@@ -105,7 +105,12 @@ price_version, min_price_wei, price_record}`: `network` is one of the protocol r
 `min_price_wei` the floor and `price_record` the creator's signed record itself (`null` when
 there is none). The client checks the record's signature against the group's public key, which
 the group id is derived from, and that `price_wei` is exactly the larger of the record's price
-and the floor, so a host can name no other price. It answers for any group id, so a client
+and the floor. The record binds the creator's price; the floor is the host's own and unsigned,
+so a host can still ask more by raising it. The client also remembers the highest record
+version it has verified for each group and refuses a policy carrying an older record, so a host
+cannot replay a cheaper record the creator has replaced. What protects a member against any
+price the host names is the shown-price cap below: a write never pays more than the price the
+member was shown. It answers for any group id, so a client
 reads the floor before it creates a group. A home relay proxies it to the host like every
 other group route, and the client refuses a policy whose `host_origin` is not the relay it
 writes to.
@@ -141,10 +146,18 @@ the accept transaction reads `G_price` again and refuses, 402 `group_payment_inv
 commits before a price change is accepted at the old price; one that commits after it is
 refused before anything is stored or broadcast. The client treats that 402 as a definitive
 refusal: the coin is released once the chain shows the payment did not land, and the member
-sees the new price. Nothing is lost silently. This holds after an earlier attempt of the same
-write went unanswered, too: the host answers a write it accepted with its receipt before it
-looks at the price, and broadcasts a payment only after accepting its write, so `underpaid`
-for the same bytes means no attempt was accepted.
+sees the new price. Nothing is lost silently.
+
+This holds after an earlier attempt of the same write went unanswered, too. The host answers
+`underpaid` only from inside a transaction that first looks for the write's acceptance: if an
+earlier attempt of the same bytes was accepted, the answer is that attempt's receipt, not a
+refusal. In the same transaction it records the payment's transaction hash as refused
+(`G_payrefused:` || tx hash), and every accept transaction reads that record and refuses a
+payment named in it, at any later price. An earlier attempt still in flight therefore either
+committed before the refusal, and the answer is its receipt, or can never commit afterwards.
+The host broadcasts a payment only after accepting its write, so after `underpaid` that payment
+is never broadcast by the host. A copy of the signed payment someone else broadcasts can still
+land; the client releases the coin only once the chain shows it did not.
 
 A member never pays more than the price shown. The app records, with each write, the price the
 composer showed when it was sent. A write not yet submitted re-reads the host's price; if that

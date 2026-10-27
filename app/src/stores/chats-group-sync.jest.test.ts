@@ -29,7 +29,9 @@ import {
   GroupRelayClient,
   GroupWriteDeferredError,
   GroupWritePriceRefusedError,
+  GroupWritePriceReplayError,
   GroupWriteRefusedError,
+  signGroupWritePrice,
   type StoredGroupMessageWire,
 } from '@frank/cashweb/groups'
 import { groupWriteTestPayer } from '@frank/group-messaging/groups/write-payment.testutil'
@@ -1539,6 +1541,207 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(chats.messages[digest].groupWritePayment).toMatchObject({
       amountWei: '1000000',
     })
+  })
+
+  /** Another administrator device of the creator puts `priceWei` on the host as `version`. */
+  async function priceFromAnotherDevice(
+    group: ReturnType<typeof useChatStore>['conversations'][string],
+    client: GroupRelayClient,
+    version: number,
+    priceWei: bigint,
+  ) {
+    await client.setWritePrice(
+      group.groupState.groupIdHex,
+      signGroupWritePrice({
+        network: 'monad-testnet',
+        groupIdHex: group.groupState.groupIdHex,
+        version,
+        priceWei,
+        rootSecretKey: hexToBytes(group.groupState.groupSecretKeyHex),
+      }),
+    )
+  }
+
+  it('Retry pays the price named on the refused write, kept current as the price is read again, and never more', async () => {
+    const { chats, group, client } = await makeGroup()
+    expect(group.groupState.writePrice.priceWei).toBe('1000')
+    await priceFromAnotherDevice(group, client, 1, 2000n)
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Named price' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome).toEqual({ state: 'failed', reason: 'group-price-changed' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWriteShownPriceWei,
+    )!
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(chats.messages[digest].delivery).toEqual({
+      failureReason: 'group-price-changed',
+      detail: '2000',
+    })
+    // The message says 2000; the price then rises to 20000 before this device reads it again.
+    await priceFromAnotherDevice(group, client, 2, 20_000n)
+    expect(
+      await chats.retryGroupMessage(group.id, digest, client, undefined, true),
+    ).toEqual({ state: 'failed', reason: 'group-price-changed' })
+    // Nothing paid at a price the message did not name; it now names the new one.
+    expect(groupWritePayer.events).toEqual([])
+    expect(chats.messages[digest].groupWritePayment).toBeUndefined()
+    expect(chats.messages[digest].delivery).toEqual({
+      failureReason: 'group-price-changed',
+      detail: '20000',
+    })
+    // A read of the price updates the number shown beside Retry.
+    await priceFromAnotherDevice(group, client, 3, 1500n)
+    await chats.refreshGroupWritePrice(group.id, client)
+    expect(chats.messages[digest].delivery).toEqual({
+      failureReason: 'group-price-changed',
+      detail: '1500',
+    })
+    expect(
+      (await chats.retryGroupMessage(group.id, digest, client, undefined, true))
+        .state,
+    ).toBe('sent')
+    expect(chats.messages[digest].groupWritePayment).toMatchObject({
+      amountWei: '1500',
+    })
+  })
+
+  it('a Retry after an unreachable host keeps the price shown when the write was sent', async () => {
+    const { chats, group, client } = await makeGroup()
+    expect(group.groupState.writePrice.priceWei).toBe('1000')
+    jest
+      .spyOn(client, 'getWritePolicy')
+      .mockRejectedValueOnce(new Error('Network Error'))
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Unreachable first' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome).toEqual({ state: 'failed', reason: 'unreachable' })
+    const digest = Object.keys(chats.messages).find(
+      key => chats.messages[key].groupWriteShownPriceWei,
+    )!
+    // The price rises, and this device shows it, but the write was sent at 1000.
+    await priceFromAnotherDevice(group, client, 1, 5000n)
+    await chats.refreshGroupWritePrice(group.id, client)
+    expect(group.groupState.writePrice.priceWei).toBe('5000')
+    expect(
+      await chats.retryGroupMessage(group.id, digest, client, undefined, true),
+    ).toEqual({ state: 'failed', reason: 'group-price-changed' })
+    expect(groupWritePayer.events).toEqual([])
+    expect(chats.messages[digest].delivery).toEqual({
+      failureReason: 'group-price-changed',
+      detail: '5000',
+    })
+    // Retry from the message naming 5000 pays it.
+    expect(
+      (await chats.retryGroupMessage(group.id, digest, client, undefined, true))
+        .state,
+    ).toBe('sent')
+    expect(chats.messages[digest].groupWritePayment).toMatchObject({
+      amountWei: '5000',
+    })
+  })
+
+  it('a price PUT that fails in transit sends no member invitations until the host answers it', async () => {
+    const { chats, group, client } = await makeGroup()
+    const sending = jest
+      .spyOn(client, 'setWritePrice')
+      .mockRejectedValueOnce(new Error('Network Error'))
+    await expect(
+      chats.setGroupWritePrice(group.id, 7000n, client),
+    ).rejects.toThrow('Network Error')
+    const pending = group.groupState.pendingWritePrice
+    expect(pending).toBeDefined()
+    const delivering = jest.spyOn(chats, 'retryGroupMemberDeliveries')
+    sending.mockRejectedValueOnce(new Error('Network Error'))
+    await chats.syncGroupConversation(group.id, { relayClient: client })
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0))
+    expect(delivering).not.toHaveBeenCalled()
+    expect(group.groupState.pendingWritePrice).toBe(pending)
+    // The next sync's PUT is held: invitations follow it.
+    await chats.syncGroupConversation(group.id, { relayClient: client })
+    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0))
+    expect(group.groupState.pendingWritePrice).toBeUndefined()
+    expect(delivering).toHaveBeenCalledWith(group.id)
+  })
+
+  it("refuses a host's older price record than one already verified, across a restart", async () => {
+    const { chats, group, client } = await makeGroup()
+    await chats.setGroupWritePrice(group.id, 7000n, client)
+    await chats.setGroupWritePrice(group.id, 9000n, client)
+    expect(group.groupState.writePriceVersionSeen).toBe(2)
+    const restored = await rehydrateChat(chats.$state)
+    expect(
+      restored.conversations[group.id].groupState.writePriceVersionSeen,
+    ).toBe(2)
+    // The host answers with the replaced version 1 record (or with none at all).
+    const current = await client.getWritePolicy(
+      group.groupState.groupIdHex,
+      group.groupState.groupPubKeyHex,
+    )
+    const replay = jest
+      .spyOn(client, 'getWritePolicy')
+      .mockResolvedValue({ ...current, priceVersion: 1, priceWei: 7000n })
+    await expect(
+      chats.refreshGroupWritePrice(group.id, client),
+    ).rejects.toBeInstanceOf(GroupWritePriceReplayError)
+    expect(group.groupState.writePrice).toMatchObject({
+      priceWei: '9000',
+      version: 2,
+    })
+    // A write reads the same policy: nothing is planned or paid.
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Against a replay' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome.state).toBe('failed')
+    expect(groupWritePayer.events).toEqual([])
+    replay.mockResolvedValue({
+      ...current,
+      priceVersion: 0,
+      priceWei: 1000n,
+      priceRecord: undefined,
+    })
+    await expect(
+      chats.refreshGroupWritePrice(group.id, client),
+    ).rejects.toBeInstanceOf(GroupWritePriceReplayError)
+    expect(group.groupState.writePrice.priceWei).toBe('9000')
+  })
+
+  it('a price read answered after a later one never replaces it', async () => {
+    const { chats, group, client } = await makeGroup()
+    const current = await client.getWritePolicy(
+      group.groupState.groupIdHex,
+      group.groupState.groupPubKeyHex,
+    )
+    let answerFirst!: () => void
+    jest
+      .spyOn(client, 'getWritePolicy')
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            answerFirst = () => resolve({ ...current, priceWei: 1000n })
+          }),
+      )
+      .mockResolvedValueOnce({
+        ...current,
+        priceWei: 3000n,
+        minPriceWei: 3000n,
+      })
+    // The host raised its floor between the two reads; the first is answered last.
+    const first = chats.refreshGroupWritePrice(group.id, client)
+    await chats.refreshGroupWritePrice(group.id, client)
+    expect(group.groupState.writePrice.priceWei).toBe('3000')
+    answerFirst()
+    await first
+    expect(group.groupState.writePrice.priceWei).toBe('3000')
   })
 
   it("tells the creator when the relay refused the group's price at creation", async () => {

@@ -289,19 +289,28 @@ describe('phone web Back, every kind of Quasar overlay', () => {
     expect(router.currentRoute.value.path).toBe('/chat')
   })
 
-  it.each([{ persistent: true }, { noEscDismiss: true }])(
-    'a menu Escape does not close (%o) stays, and so does the dialog under it',
-    async menuProps => {
-      const { dialog, menu } = await menuInDialog(menuProps)
-      const position = historyPosition()
-      await userBack(router)
-      await transitions()
-      expect(menu.value).toBe(true)
-      expect(dialog.value).toBe(true)
-      expect(router.currentRoute.value.path).toBe('/chat/a')
-      expect(historyPosition()).toBe(position)
-    },
-  )
+  // Why the app has no persistent or no-esc-dismiss menu (src/utils/no-undismissable-menus
+  // jest test): Back cannot close one.
+  it('the restriction: Back cannot close a persistent or no-esc-dismiss menu', async () => {
+    const persistent = await menuInDialog({ persistent: true })
+    await userBack(router)
+    await transitions()
+    // Quasar leaves a persistent menu out of its Escape handling: the dialog under it closes.
+    expect(persistent.menu.value).toBe(true)
+    expect(persistent.dialog.value).toBe(false)
+    wrapper?.unmount()
+    wrapper = undefined
+    destroy()
+    resetNavigationForTests()
+    document.body.innerHTML = ''
+
+    const noEsc = await menuInDialog({ noEscDismiss: true })
+    await userBack(router)
+    await transitions()
+    // A no-esc-dismiss menu takes the Escape and ignores it: it never closes.
+    expect(noEsc.menu.value).toBe(true)
+    expect(noEsc.dialog.value).toBe(true)
+  })
 })
 
 describe('the article reader and Back', () => {

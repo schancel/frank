@@ -25,8 +25,8 @@ import type {
  *   not start on Messages gets no Messages entry slipped under it.
  * - On a phone, Back closes the overlay on top instead of navigating underneath it: any Quasar
  *   dialog, menu or select popup (found in the page, so none can be missed), or a drawer
- *   registered with `useBackDismiss`. A persistent dialog or menu stays and Back does nothing,
- *   as with Quasar's own handling in a native app. Forward never closes anything.
+ *   registered with `useBackDismiss`. A persistent dialog stays and Back does nothing, as with
+ *   Quasar's own handling in a native app. Forward never closes anything.
  *
  * The router's own entries carry `position` and `back` in `history.state` (vue-router); this
  * module adds `frankStartTab` to each entry: the position of the Messages entry under it, or
@@ -151,67 +151,6 @@ export function quasarOverlayShowing(): boolean {
   return showingQuasarOverlays().length > 0
 }
 
-interface VNodeLike {
-  el?: unknown
-  component?: {
-    type?: { name?: string }
-    props?: Record<string, unknown>
-    subTree?: VNodeLike
-  } | null
-  suspense?: { activeBranch?: VNodeLike | null } | null
-  children?: unknown
-}
-
-/** Every element rendered under `vnode`. */
-function renderedElements(
-  vnode: VNodeLike | null | undefined,
-  into: Element[],
-) {
-  if (!vnode) return
-  if (vnode.el instanceof Element) into.push(vnode.el)
-  if (vnode.component) renderedElements(vnode.component.subTree, into)
-  else if (vnode.suspense) renderedElements(vnode.suspense.activeBranch, into)
-  else if (Array.isArray(vnode.children)) {
-    for (const child of vnode.children)
-      if (child && typeof child === 'object')
-        renderedElements(child as VNodeLike, into)
-  }
-}
-
-/**
- * The open menus that Escape does not close (`persistent`, which Quasar leaves out of its Escape
- * handling altogether, or `no-esc-dismiss`). Nothing in their markup says so, so this reads the
- * props off the mounted component trees of every Vue app on the page (`Dialog.create` mounts its
- * own).
- */
-function menusEscapeDoesNotClose(): Set<Element> {
-  const found = new Set<Element>()
-  const visit = (vnode: VNodeLike | null | undefined) => {
-    if (!vnode) return
-    const component = vnode.component
-    if (component) {
-      const props = component.props ?? {}
-      if (
-        component.type?.name === 'QMenu' &&
-        (props.persistent === true || props.noEscDismiss === true)
-      ) {
-        const elements: Element[] = []
-        renderedElements(component.subTree, elements)
-        for (const element of elements)
-          if (element.classList.contains('q-menu')) found.add(element)
-      }
-      visit(component.subTree)
-    } else if (vnode.suspense) visit(vnode.suspense.activeBranch)
-    else if (Array.isArray(vnode.children)) {
-      for (const child of vnode.children)
-        if (child && typeof child === 'object') visit(child as VNodeLike)
-    }
-  }
-  for (const container of Array.from(document.querySelectorAll('[data-v-app]')))
-    visit((container as Element & { _vnode?: VNodeLike })._vnode)
-  return found
-}
-
 /**
  * Quasar's own dismissal of the overlay on top: the Escape key. A dismissible dialog or menu
  * closes; a persistent dialog stays (and shakes), as it does for Back in Quasar's native-app
@@ -236,13 +175,10 @@ export function dismissTopOverlay(): boolean {
   const overlays = showingQuasarOverlays()
   const topOverlay = overlays[overlays.length - 1]
   if (topOverlay) {
-    // A menu that Escape does not close stays, and Back does nothing, like a persistent dialog;
-    // the Escape would otherwise go past it to the overlay underneath.
-    if (
-      !topOverlay.classList.contains('q-menu') ||
-      !menusEscapeDoesNotClose().has(topOverlay)
-    )
-      pressEscape()
+    // A persistent or no-esc-dismiss QMenu would not close here (a persistent one would even
+    // let the Escape through to the overlay under it), so the app has none: see
+    // `src/utils/no-undismissable-menus.jest.test.ts`.
+    pressEscape()
     return true
   }
   const top = openOverlays[openOverlays.length - 1]
@@ -636,16 +572,18 @@ async function switchTabNow(router: Router, tab: string, step: () => void) {
 
 /**
  * The phone's own Back button (Capacitor). An open overlay closes first, and a persistent dialog
- * keeps Back from doing anything. The Messages list, the start screen, leaves the app, as does
- * the first screen of the session; anywhere else Back goes back.
+ * keeps Back from doing anything. Otherwise it does what Back does in a browser: back to the
+ * in-app entry under this one, and out of the app when there is none (Messages normally rests at
+ * the bottom, so Back from it leaves).
  */
 export function handleHardwareBack(
   router: Pick<Router, 'go' | 'currentRoute'>,
   exitApp: () => void,
 ): void {
   if (dismissTopOverlay()) return
-  const path = router.currentRoute.value.path
-  if (path === START_TAB || previousInAppLocation() === null) {
+  // Like Back in a browser: back while there is an in-app entry under this one (on Messages
+  // too, when it was opened above a page the user came from); only then out of the app.
+  if (previousInAppLocation() === null) {
     exitApp()
     return
   }

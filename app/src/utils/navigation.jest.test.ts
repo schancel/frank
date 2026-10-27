@@ -303,6 +303,18 @@ describe('handleHardwareBack: Android Back in the native app', () => {
     app.unmount()
   })
 
+  it('on Messages opened above a page the user came from, goes back to it, as Back does on the web', async () => {
+    await start('/send')
+    await switchTab(router, '/chat')
+    const exitApp = jest.fn()
+    handleHardwareBack(router, exitApp)
+    await afterNavigation(router)
+    expect(router.currentRoute.value.path).toBe('/send')
+    expect(exitApp).not.toHaveBeenCalled()
+    handleHardwareBack(router, exitApp)
+    expect(exitApp).toHaveBeenCalledTimes(1)
+  })
+
   it('on the first screen of the session leaves the app', async () => {
     await start('/wallet')
     const exitApp = jest.fn()

@@ -28,6 +28,7 @@ import {
   type EvmContractCallRecord,
   nativeMaximumFee,
   nativeMemberSuperseded,
+  landedSigning,
   type EvmNativeSource,
   type EvmNativePlan,
   type EvmNativeOperation,
@@ -1188,7 +1189,9 @@ export class EvmLegacyConsolidator {
             unapplied ??= id
             continue
           }
-          const tx = Transaction.from(member.signed!.rawTransaction)
+          // The signing the chain included: an earlier one, when the node took that after all.
+          const landed = landedSigning(member)!
+          const tx = Transaction.from(landed.rawTransaction)
           this.transport(
             id,
             i,
@@ -1196,8 +1199,8 @@ export class EvmLegacyConsolidator {
               type: 'wallet-sync',
               direction: 'out',
               chainIdentifier: journal.binding.chainIdentifier,
-              txHash: member.signed!.transactionHash,
-              rawTx: member.signed!.rawTransaction,
+              txHash: landed.transactionHash,
+              rawTx: landed.rawTransaction,
               spentInputs: [
                 {
                   address: member.source.address,

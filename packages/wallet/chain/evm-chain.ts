@@ -5,7 +5,7 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
+import { memberSignings, type EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
@@ -2413,7 +2413,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             try {
               const result = await transactionOwner.runLifetime(() => legacyTransactions.sendLegacy(params));
               if (!evmWalletInternals(wallet).closed) {
-                const operation = transactionOwner.nativeJournal!.list().find(row => row.members.some(member => member.signed?.transactionHash === result.txHash));
+                const operation = transactionOwner.nativeJournal!.list().find(row => row.members.some(member => memberSignings(member).some(signing => signing.transactionHash === result.txHash)));
                 if (operation) retryEarlierNotes(owner, operation.operationId, await owner.startSync(operation.operationId));
               }
               return result;

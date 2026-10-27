@@ -7,8 +7,9 @@ import type {
   EvmNativeObservation,
   EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
-import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { memberSignings, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
+import { RefusalLedger } from './chain/evm-refused-resign'
 
 export interface EvmTransactionSetAuthority {
   getOperation(id: string): EvmNativeOperation | undefined
@@ -20,6 +21,12 @@ export interface EvmTransactionSetAuthority {
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
   ): Promise<unknown>
+  /**
+   * Signs member `memberIndex` again at its nonce because the node keeps refusing its bytes
+   * (`chain/evm-refused-resign.ts`) and records the new signing durably. False, and nothing
+   * changes, when this operation's members are not signed again (only Send to Address is).
+   */
+  resignRefused?(id: string, memberIndex: number): Promise<boolean>
 }
 type ReplayProvider = Pick<Provider, 'getTransaction' | 'broadcastTransaction'>
 interface MemberMetadata {
@@ -47,6 +54,8 @@ export function predecessorConsumedAt(prior: EvmNativeMember): number | undefine
 }
 
 export class EvmTransactionSetLifecycle {
+  /** What the node said to each member's bytes this process: when one may be signed again. */
+  private readonly refusals = new RefusalLedger()
   constructor(
     private readonly options: {
       authority: EvmTransactionSetAuthority
@@ -123,23 +132,66 @@ export class EvmTransactionSetLifecycle {
     for (const index of [...selected].sort((a,b) => a-b)) {
       const row = this.validateOperation(await this.options.authority.readOperation(id)), member = row.members[index]!
       if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
-      const signed = member.signed!
       try {
         // Only a member that has left the wallet can already be on a node; one never exposed is
         // marked exposed (durably, before its bytes leave) and broadcast without asking first.
         if (member.exposed) {
-          if (await this.options.provider.getTransaction(signed.transactionHash)) continue
+          if (await this.knownOn(member, this.options.provider)) continue
         } else await this.options.authority.markExposed(id, index)
-        try {
-          const response = await this.options.provider.broadcastTransaction(signed.rawTransaction)
-          if (response.hash.toLowerCase() !== signed.transactionHash.toLowerCase()) throw new Error('Unexpected transaction-set broadcast hash')
-        } catch (error) {
-          const alreadyKnown = error instanceof Error && /already known|known transaction/i.test(error.message)
-          if (!alreadyKnown && !(await this.options.provider.getTransaction(signed.transactionHash))) throw error
-        }
+        const refusal = await this.hand(member.signed!)
+        if (refusal === undefined) continue
+        // The node keeps refusing these bytes: the same member is signed again at its nonce,
+        // recorded durably, and the new bytes are handed over instead. The old ones are still
+        // looked for (`observe`) until one of them lands.
+        if (
+          !this.options.authority.resignRefused ||
+          !this.refusals.due(member.signed!.rawTransaction, memberSignings(member).length) ||
+          !(await this.options.authority.resignRefused(id, index))
+        )
+          throw refusal
+        const again = (await this.options.authority.readOperation(id))!.members[index]!.signed!
+        console.warn(
+          `[evm-transaction-set] the node kept refusing ${member.signed!.transactionHash}; the same transaction is signed again at its nonce as ${again.transactionHash}`,
+        )
+        const refused = await this.hand(again)
+        if (refused !== undefined) throw refused
       } catch (error) { failures.push(error) }
     }
     if (failures.length) throw failures[0]
+  }
+
+  /** Hands `signing` to the node. Undefined when the node has it; else what the node said. */
+  private async hand(signing: { rawTransaction: string; transactionHash: string }): Promise<unknown> {
+    try {
+      const response = await this.options.provider.broadcastTransaction(signing.rawTransaction)
+      if (response.hash.toLowerCase() !== signing.transactionHash.toLowerCase()) throw new Error('Unexpected transaction-set broadcast hash')
+      this.refusals.note(signing.rawTransaction)
+      return undefined
+    } catch (error) {
+      const alreadyKnown = error instanceof Error && /already known|known transaction/i.test(error.message)
+      if (alreadyKnown || (await this.options.provider.getTransaction(signing.transactionHash))) {
+        this.refusals.note(signing.rawTransaction)
+        return undefined
+      }
+      this.refusals.note(signing.rawTransaction, error)
+      return error
+    }
+  }
+
+  /** Whether the node holds any signing of `member` (a node need not serve pending ones). */
+  private async knownOn(member: EvmNativeMember, provider: Pick<Provider, 'getTransaction'>): Promise<boolean> {
+    for (const signing of memberSignings(member))
+      if (await provider.getTransaction(signing.transactionHash)) return true
+    return false
+  }
+
+  /** The receipt of whichever signing of `member` the chain included, if any. */
+  private async receiptOf(member: EvmNativeMember, provider: Provider) {
+    for (const signing of memberSignings(member)) {
+      const receipt = await provider.getTransactionReceipt(signing.transactionHash)
+      if (receipt) return { receipt, signing }
+    }
+    return undefined
   }
 
   /** Read one canonical block's account state; never update inventory from relay answers. */
@@ -150,9 +202,8 @@ export class EvmTransactionSetLifecycle {
         signed = member.signed!
       // Terminal history must never be fed through inventory observation again.
       if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
-      const receipt = await provider.getTransactionReceipt(
-        signed.transactionHash,
-      )
+      const found = await this.receiptOf(member, provider)
+      const receipt = found?.receipt ?? null
       const block = await provider.getBlock(receipt?.blockNumber ?? 'latest')
       if (!block?.hash)
         throw new Error(
@@ -161,7 +212,7 @@ export class EvmTransactionSetLifecycle {
       if (
         receipt &&
         (receipt.blockHash !== block.hash ||
-          receipt.hash.toLowerCase() !== signed.transactionHash.toLowerCase())
+          receipt.hash.toLowerCase() !== found!.signing.transactionHash.toLowerCase())
       )
         throw new Error('Transaction-set receipt is not canonical')
       if (
@@ -183,7 +234,7 @@ export class EvmTransactionSetLifecycle {
       if (
         !receipt &&
         nonce > Transaction.from(signed.rawTransaction).nonce &&
-        (await provider.getTransactionReceipt(signed.transactionHash))
+        (await this.receiptOf(member, provider))
       )
         continue
       // A member whose bytes have not left the wallet cannot be on any node. With no receipt and
@@ -227,7 +278,7 @@ export class EvmTransactionSetLifecycle {
             // a set missing though they all land in the next block. Only a consumed nonce with no
             // receipt of ours is evidence the member will not land (`nativeMemberSuperseded`).
             state:
-              (await provider.getTransaction(signed.transactionHash)) ||
+              (await this.knownOn(member, provider)) ||
               (member.exposed && nonce <= Transaction.from(signed.rawTransaction).nonce)
                 ? 'pending'
                 : 'missing',

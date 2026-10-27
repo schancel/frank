@@ -17,6 +17,7 @@ import type {
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
 import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
+import { resignedTransaction } from './chain/evm-refused-resign'
 import type {
   ConstructEvmTransactionSetRequest,
   ConstructLegacySubAccountRequest,
@@ -1574,6 +1575,47 @@ export class EvmTransactionSetPreparer {
     return value
   }
 
+  /** The coin `member` spends, with its key: in the coin list, or (a private change account the
+   * same set funds) derived again. Undefined when neither holds it. */
+  private sourceOf(row: EvmNativeOperation, member: EvmNativeOperation['members'][number]): EvmListCoin | undefined {
+    const source = this.options.coins.all().find(coin => coin.account === member.source.address)
+    if (source) return source
+    const creator = row.members.find(candidate => candidate.transactionSet?.role !== 'payment' && Transaction.from(candidate.unsignedTransaction).to!.toLowerCase() === member.source.address)
+    if (!creator) return undefined
+    const key = this.options.deriveChange(creator.transactionSet!.changeIndex!)
+    if (key.account.toLowerCase() !== member.source.address) throw new Error('Private source key restoration mismatch')
+    return { account: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce, privateKey: key.privateKey, origin: 'change', changeIndex: key.changeIndex, valueWei: BigInt(member.transactionSet!.balanceBeforeWei), state: 'unspent' }
+  }
+
+  /**
+   * A member of a Send to Address set (`legacy-` operation) that the node keeps refusing is
+   * signed again at its nonce under the one re-signing rule (`chain/evm-refused-resign.ts`:
+   * the same transaction, only the tip one wei lower) and recorded as the member's current
+   * signing, durably, before anything hands it to the node; the bytes it replaces stay recorded
+   * and are looked for until one of them lands. False, and nothing changes, for any other set
+   * (a payment a message carries or a dApp asked for is known to others by its hash) or a member
+   * that cannot be signed again.
+   */
+  resignRefused(operationId: string, memberIndex: number): Promise<boolean> {
+    if (!operationId.startsWith('legacy-')) return Promise.resolve(false)
+    return this.options.coins.runTransactionSetExclusive(operationId, async () => {
+      const row = this.getOperation(operationId)
+      const member = row?.members[memberIndex]
+      if (!row || row.cancelled || !row.submissionAuthorized || !member?.signed || !member.exposed) return false
+      const source = this.sourceOf(row, member)
+      if (!source) return false
+      let tx: Transaction
+      try {
+        tx = resignedTransaction(Transaction.from(member.signed.rawTransaction))
+      } catch {
+        return false
+      }
+      tx.signature = new SigningKey(source.privateKey).sign(tx.unsignedHash)
+      this.restoreRow(await this.options.journal.recordResigned(row.operationId, memberIndex, tx.serialized))
+      return true
+    })
+  }
+
   private restoreRow(row: EvmNativeOperation): void {
     const logicalId = row.preparationId!.slice(prefix.length)
     const { coins } = this.options
@@ -1587,17 +1629,7 @@ export class EvmTransactionSetPreparer {
           meta.changeIndex!,
           tx.to!.toLowerCase(),
         )
-      let source = coins
-        .all()
-        .find(coin => coin.account === member.source.address)
-      if (!source) {
-        const creator = row.members.find(candidate => candidate.transactionSet?.role !== 'payment' && Transaction.from(candidate.unsignedTransaction).to!.toLowerCase() === member.source.address)
-        if (creator) {
-          const key = this.options.deriveChange(creator.transactionSet!.changeIndex!)
-          if (key.account.toLowerCase() !== member.source.address) throw new Error('Private source key restoration mismatch')
-          source = { account: member.source.address, nonce: tx.nonce, privateKey: key.privateKey, origin: 'change', changeIndex: key.changeIndex, valueWei: BigInt(meta.balanceBeforeWei), state: 'unspent' }
-        }
-      }
+      const source = this.sourceOf(row, member)
       const reconciled = meta.inventoryApplied === true
       if (
         !reconciled &&

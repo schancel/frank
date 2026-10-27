@@ -11,11 +11,12 @@ import {
 } from 'ethers'
 import { EvmCoinList, type StoredEvmListCoin } from './evm-coin-list'
 import { LevelRecordStore } from './storage/evm-coin-store'
-import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import { EvmNativeOperationJournal, type EvmNativeMember } from './storage/evm-native-operation-journal'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 import { evmTransactionSetCapability } from './evm-transaction-set-public'
+import { MAX_SIGNINGS, REFUSALS_BEFORE_RESIGN, RESIGN_AFTER_MS } from './chain/evm-refused-resign'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type PreparedEvmTransactionSet,
@@ -28,6 +29,9 @@ function node() {
   let automine = true
   let fail = false
   let beforeBroadcast: ((raw: string) => void) | undefined
+  // Bytes this node refuses, as a Monad node goes on refusing a transaction it has refused
+  // ("Signer had insufficient balance", docs/protocol/chains/monad-reserve-balance.md).
+  const refused = new Set<string>()
   const included = new Map<
     string,
     { tx: Transaction; block: number; index: number }
@@ -82,6 +86,11 @@ function node() {
     broadcastTransaction: jest.fn(async (raw: string) => {
       beforeBroadcast?.(raw)
       raws.push(raw)
+      if (refused.has(raw))
+        throw Object.assign(new Error('could not coalesce error'), {
+          code: 'UNKNOWN_ERROR',
+          error: { code: -32603, message: 'Signer had insufficient balance' },
+        })
       if (fail) throw new Error('ambiguous node response')
       if (automine) mine(raw)
       return { hash: Transaction.from(raw).hash! }
@@ -104,12 +113,17 @@ function node() {
     beforeBroadcast: (callback: (raw: string) => void) => {
       beforeBroadcast = callback
     },
+    refuse: (raw: string, enabled = true) => {
+      if (enabled) refused.add(raw)
+      else refused.delete(raw)
+    },
   }
 }
 async function fixture(
   location: string,
   chain: ReturnType<typeof node>,
   delayed = false,
+  gasPriceWei = 1n,
 ) {
   const store = await LevelRecordStore.open<StoredEvmListCoin>(
     location,
@@ -142,7 +156,7 @@ async function fixture(
     random: () => 0.01,
     policy: () => ({
       sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
-      gasPriceWei: 1n,
+      gasPriceWei,
       paymentGasLimit: () => 21000n,
       changeGasLimit: 21000n,
       paymentFeeIsExact: true,
@@ -714,4 +728,217 @@ test('completed history validates exact wrappers and never replays inventory or 
     expect(f.coins.all()).toEqual(inventory)
     await expect(f.submission.sendTransaction({ ...prepared, bundle: [] })).rejects.toThrow('complete wallet operation')
   } finally { await f.close() }
+})
+
+describe('a member the node keeps refusing (Send to Address)', () => {
+  const GAS_PRICE = 4n
+  let resignAfterMs: number
+  beforeEach(() => {
+    resignAfterMs = RESIGN_AFTER_MS.value
+    RESIGN_AFTER_MS.value = 0
+  })
+  afterEach(() => {
+    RESIGN_AFTER_MS.value = resignAfterMs
+  })
+  const constructLegacy = (f: Awaited<ReturnType<typeof fixture>>, operationId = 'legacy-refused') =>
+    f.preparer.constructLegacyTransactionSet({
+      operationId,
+      amountWei: 100000n,
+      kdf: () => key(50).address,
+    })
+  /** The set's one payment member (owned change comes first). */
+  const paymentOf = (row: { members: { transactionSet?: { role: string } }[] }) =>
+    row.members.find(member => member.transactionSet?.role === 'payment')! as EvmNativeMember
+  /** Everything the node was handed or mined at one account's nonce. */
+  const atNonce = (chain: ReturnType<typeof node>, raw: string) => {
+    const tx = Transaction.from(raw)
+    return (other: string) => {
+      const candidate = Transaction.from(other)
+      return candidate.from === tx.from && candidate.nonce === tx.nonce
+    }
+  }
+
+  test('is signed again at its nonce after the shared threshold, the new bytes land once, the old ones stay tracked', async () => {
+    const chain = node(),
+      f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      const prepared = await constructLegacy(f)
+      const payment = prepared.bundle[0]!
+      const original = Transaction.from(payment.rawTransaction)
+      chain.refuse(payment.rawTransaction)
+      const first = await f.submission.sendTransaction(prepared)
+      expect(first.status).toBe('pending')
+      // Refused fewer times than the threshold: nothing is signed again yet.
+      expect(REFUSALS_BEFORE_RESIGN).toBe(2)
+      expect(paymentOf(f.preparer.getOperation('legacy-refused')!).earlierSignings).toBeUndefined()
+      const result = (await f.submission.reconcileAuthorized())[0]!
+      const member = paymentOf(f.preparer.getOperation('legacy-refused')!)
+      expect(member.earlierSignings).toEqual([
+        { rawTransaction: payment.rawTransaction, transactionHash: payment.txHash },
+      ])
+      const again = Transaction.from(member.signed!.rawTransaction)
+      expect(again.hash).not.toBe(original.hash)
+      // The same transaction: account, nonce, recipient, value, data, gas limit and the most
+      // it can cost per gas. Only the tip is one wei lower.
+      expect(again.from).toBe(original.from)
+      expect(again.chainId).toBe(original.chainId)
+      expect(again.nonce).toBe(original.nonce)
+      expect(again.to).toBe(original.to)
+      expect(again.value).toBe(original.value)
+      expect(again.data).toBe(original.data)
+      expect(again.gasLimit).toBe(original.gasLimit)
+      expect(again.maxFeePerGas).toBe(original.gasPrice)
+      expect(again.maxPriorityFeePerGas).toBe(original.gasPrice! - 1n)
+      // Recorded durably before the node was handed it.
+      expect(member.observation).toMatchObject({ state: 'included-success', transactionHash: again.hash })
+      expect(result.status).toBe('confirmed')
+      // The old bytes were offered twice, the new once; one transaction at that nonce was mined.
+      const sameNonce = chain.raws.filter(atNonce(chain, payment.rawTransaction))
+      expect(sameNonce).toEqual([payment.rawTransaction, payment.rawTransaction, again.serialized])
+      expect(
+        await Promise.all(
+          [original.hash!, again.hash!].map(hash => chain.provider.getTransactionReceipt(hash)),
+        ).then(receipts => receipts.filter(Boolean).length),
+      ).toBe(1)
+      // Nothing more is handed to the node.
+      const handed = chain.raws.length
+      await f.submission.reconcileAuthorized()
+      expect(chain.raws).toHaveLength(handed)
+    } finally {
+      await f.close()
+    }
+  })
+
+  test('an earlier signing the node takes after all is recognized as the payment; nothing is paid again', async () => {
+    const chain = node(),
+      f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      const prepared = await constructLegacy(f)
+      const payment = prepared.bundle[0]!
+      chain.refuse(payment.rawTransaction)
+      await f.submission.sendTransaction(prepared)
+      // The new signing is taken but not mined; the node then mines the OLD bytes.
+      chain.automine(false)
+      await f.submission.reconcileAuthorized()
+      const member = paymentOf(f.preparer.getOperation('legacy-refused')!)
+      expect(member.earlierSignings).toHaveLength(1)
+      chain.mine(payment.rawTransaction)
+      const result = (await f.submission.reconcileAuthorized())[0]!
+      expect(result.status).toBe('confirmed')
+      const settled = paymentOf(
+        f.preparer.getOperation('legacy-refused') ?? (await f.preparer.readOperation('legacy-refused'))!,
+      )
+      expect(settled.observation).toMatchObject({ state: 'included-success', transactionHash: payment.txHash })
+      expect(settled.signed!.transactionHash).not.toBe(payment.txHash)
+    } finally {
+      await f.close()
+    }
+  })
+
+  test('a restart between recording the new signing and its broadcast hands over the new bytes', async () => {
+    const chain = node()
+    let f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      const prepared = await constructLegacy(f)
+      const payment = prepared.bundle[0]!
+      chain.refuse(payment.rawTransaction)
+      await f.submission.sendTransaction(prepared)
+      // The new signing is recorded, then the node does not answer and the wallet closes.
+      chain.fail(true)
+      await f.submission.reconcileAuthorized()
+      const recorded = paymentOf(f.preparer.getOperation('legacy-refused')!)
+      expect(recorded.earlierSignings).toHaveLength(1)
+      expect(recorded.observation.state).not.toBe('included-success')
+      await f.close()
+      chain.fail(false)
+      f = await fixture(location, chain, false, GAS_PRICE)
+      const reopened = paymentOf(f.preparer.getOperation('legacy-refused')!)
+      expect(reopened.signed).toEqual(recorded.signed)
+      expect(reopened.earlierSignings).toEqual(recorded.earlierSignings)
+      const result = (await f.submission.reconcileAuthorized())[0]!
+      expect(result.status).toBe('confirmed')
+      // After the restart the newest signing is what the node is handed; it is not signed a third time.
+      const sameNonce = chain.raws.filter(atNonce(chain, payment.rawTransaction))
+      expect(sameNonce.at(-1)).toBe(recorded.signed!.rawTransaction)
+      expect(new Set(sameNonce)).toEqual(new Set([payment.rawTransaction, recorded.signed!.rawTransaction]))
+    } finally {
+      await f.close()
+    }
+  })
+
+  test('is signed at most the shared number of times in all', async () => {
+    const chain = node(),
+      f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      // The node refuses every signing of the payment.
+      chain.beforeBroadcast(raw => {
+        const tx = Transaction.from(raw)
+        if (tx.to?.toLowerCase() === key(50).address.toLowerCase()) chain.refuse(raw)
+      })
+      const prepared = await constructLegacy(f)
+      await f.submission.sendTransaction(prepared)
+      for (let pass = 0; pass < 3 * MAX_SIGNINGS; pass++) await f.submission.reconcileAuthorized()
+      const member = paymentOf(f.preparer.getOperation('legacy-refused')!)
+      expect(member.earlierSignings).toHaveLength(MAX_SIGNINGS - 1)
+      expect(member.observation.state).not.toBe('included-success')
+      expect(new Set(chain.raws.filter(atNonce(chain, prepared.bundle[0]!.rawTransaction))).size).toBe(MAX_SIGNINGS)
+    } finally {
+      await f.close()
+    }
+  })
+
+  test('a set that is not a Send to Address is never signed again', async () => {
+    const chain = node(),
+      f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      const prepared = await f.construct('one')
+      const payment = prepared.bundle[0]!
+      chain.refuse(payment.rawTransaction)
+      await f.submission.sendTransaction(prepared)
+      for (let pass = 0; pass < 3; pass++) await f.submission.reconcileAuthorized()
+      expect(f.preparer.getOperation('one')!.members.every(member => member.earlierSignings === undefined)).toBe(true)
+      expect(new Set(chain.raws.filter(atNonce(chain, payment.rawTransaction)))).toEqual(new Set([payment.rawTransaction]))
+    } finally {
+      await f.close()
+    }
+  })
+
+  test('the journal refuses a "new signing" that changes anything but the tip', async () => {
+    const chain = node(),
+      f = await fixture(location, chain, false, GAS_PRICE)
+    try {
+      const prepared = await constructLegacy(f)
+      const payment = prepared.bundle[0]!
+      chain.refuse(payment.rawTransaction)
+      await f.submission.sendTransaction(prepared)
+      const row = f.preparer.getOperation('legacy-refused')!
+      const index = row.members.indexOf(paymentOf(row))
+      const original = Transaction.from(payment.rawTransaction)
+      const signer = new SigningKey(key(1).address === original.from ? key(1).privateKey : key(2).privateKey)
+      const variant = (change: Record<string, unknown>) => {
+        const tx = Transaction.from({
+          type: 2, chainId: original.chainId, nonce: original.nonce, to: original.to, value: original.value,
+          data: original.data, gasLimit: original.gasLimit, maxFeePerGas: original.gasPrice,
+          maxPriorityFeePerGas: original.gasPrice! - 1n, ...change,
+        })
+        tx.signature = signer.sign(tx.unsignedHash)
+        return tx.serialized
+      }
+      for (const change of [
+        { value: original.value + 1n },
+        { to: key(60).address },
+        { nonce: original.nonce + 1 },
+        { gasLimit: original.gasLimit + 1n },
+        { maxFeePerGas: original.gasPrice! + 1n },
+        { maxPriorityFeePerGas: original.gasPrice! },
+      ])
+        await expect(f.journal.recordResigned(row.operationId, index, variant(change))).rejects.toThrow()
+      expect(paymentOf(f.preparer.getOperation('legacy-refused')!).earlierSignings).toBeUndefined()
+      // The rule's own signing is accepted.
+      await f.journal.recordResigned(row.operationId, index, variant({}))
+      expect(f.journal.get(row.operationId).members[index]!.earlierSignings).toHaveLength(1)
+    } finally {
+      await f.close()
+    }
+  })
 })

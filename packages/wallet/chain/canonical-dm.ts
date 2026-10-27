@@ -156,6 +156,7 @@ import { inspectCanonicalPreparedEnvelope } from '../evm-stamp-stealth'
 import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
 import { findNonceConsumer } from '../evm-nonce-consumer'
 import { EVM_FAILURE_CONFIRMATIONS } from './evm-settlement'
+import { RefusalLedger } from './evm-refused-resign'
 import type { MonadCanonicalRoleOwner } from '../evm-wallet-material'
 import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
@@ -1007,47 +1008,13 @@ function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
   return order.find(found => words.includes(found)) ?? 'paid'
 }
 
-/** How often running the node has refused to take each signed payment (by its bytes). Process
- * memory: a restart starts counting again. */
-const refusals = new Map<string, { count: number; sinceMs: number }>()
-/** A payment is signed again once the node has refused its bytes this often, */
-const REFUSALS_BEFORE_RESIGN = 2
-/** over at least this long (what made the node refuse may pass in a few blocks: then the next
- * transaction is not refused for the same reason), */
-export const RESIGN_AFTER_MS = { value: 3_000 }
-/** and one payment is signed at most this many times in all. */
-const MAX_SIGNED_PER_PAYMENT = 4
-
-/** The node answered and refused the transaction (an error of its own), as opposed to not
- * answering at all. "Already known" and "nonce too low" never get here. */
-function isNodeRefusal(error: unknown): boolean {
-  const raised = error as {
-    code?: unknown
-    error?: { code?: unknown }
-    info?: { error?: { code?: unknown } }
-  }
-  if (
-    raised?.code === 'NETWORK_ERROR' ||
-    raised?.code === 'TIMEOUT' ||
-    raised?.code === 'SERVER_ERROR'
-  )
-    return false
-  return (
-    typeof raised?.error?.code === 'number' ||
-    typeof raised?.info?.error?.code === 'number'
-  )
-}
+/** What running the node said to each signed payment (by its bytes): when one may be signed
+ * again (`evm-refused-resign.ts`, the rule every wallet path that re-signs shares). */
+const refusals = new RefusalLedger()
 
 /** Notes what the node said to each payment handed to it. */
 function noteHandOver(handed: readonly { rawTx: string; error?: unknown }[]) {
-  for (const one of handed)
-    if (one.error !== undefined && isNodeRefusal(one.error)) {
-      const seen = refusals.get(one.rawTx)
-      refusals.set(one.rawTx, {
-        count: (seen?.count ?? 0) + 1,
-        sinceMs: seen?.sinceMs ?? Date.now(),
-      })
-    } else refusals.delete(one.rawTx)
+  for (const one of handed) refusals.note(one.rawTx, one.error)
 }
 
 /**
@@ -1063,18 +1030,15 @@ async function resignRefused(
 ): Promise<StoredMessage> {
   const payer = owner.payer()
   for (const [index, payment] of row.payments.entries()) {
-    if (
-      payment.state !== 'pending' ||
-      (refusals.get(payment.rawTx)?.count ?? 0) < REFUSALS_BEFORE_RESIGN ||
-      Date.now() - refusals.get(payment.rawTx)!.sinceMs < RESIGN_AFTER_MS.value ||
-      // Only the newest transaction of a payment is signed again.
-      row.payments.some(other => other.replaces === index)
-    )
-      continue
     const slot = slotOf(row, index)
     if (
-      row.payments.filter((_, at) => slotOf(row, at) === slot).length >=
-      MAX_SIGNED_PER_PAYMENT
+      payment.state !== 'pending' ||
+      // Only the newest transaction of a payment is signed again.
+      row.payments.some(other => other.replaces === index) ||
+      !refusals.due(
+        payment.rawTx,
+        row.payments.filter((_, at) => slotOf(row, at) === slot).length,
+      )
     )
       continue
     try {
@@ -1088,7 +1052,7 @@ async function resignRefused(
       }
       await owner.messages.put(next)
       row = next
-      refusals.delete(payment.rawTx)
+      refusals.forget(payment.rawTx)
       console.warn(
         `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
       )

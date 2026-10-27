@@ -23,6 +23,7 @@ import { getAddress, Transaction, type Provider } from 'ethers'
 import { selectStampAccounts } from './evm-stamp-account-selection'
 import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
+import { resignedTransaction } from './chain/evm-refused-resign'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -359,49 +360,32 @@ export class EvmStampPayer {
   }
 
   /**
-   * Signs the SAME payment again: the same account at the same nonce, the same destination and
-   * value. Only the fee fields differ (the current fee, never more than the account can pay),
-   * so the bytes and the hash differ. For a payment the node refuses to take: a node that has
-   * refused a transaction goes on refusing those bytes. At most one transaction of an account
-   * at a nonce is ever mined, so the two can never both pay. The coin carries the new
-   * transaction, durably, before this returns; nothing is broadcast here.
+   * Signs the SAME payment again under the one re-signing rule (`chain/evm-refused-resign.ts`):
+   * the same account at the same nonce, the same destination, value, gas limit and fee ceiling;
+   * only the tip is one wei lower, so the bytes and the hash differ and it never costs more than
+   * the first signing could. For a payment the node refuses to take: a node that has refused a
+   * transaction goes on refusing those bytes. At most one transaction of an account at a nonce
+   * is ever mined, so the two can never both pay. The coin carries the new transaction,
+   * durably, before this returns; nothing is broadcast here.
    */
   async resign(payment: StampPayment, chainId: bigint): Promise<StampPayment> {
     const old = Transaction.from(payment.rawTx)
     const coin = this.config.coins.get(payment.address, old.nonce)
     if (coin === undefined || coin.state !== 'pending_receipt')
       throw new Error('The payment has no coin out to sign again')
-    const [fee, balance] = await this.read(() =>
-      Promise.all([
-        this.currentFee(),
-        this.config.provider.getBalance(payment.address),
-      ]),
-    )
-    const affordable =
-      balance > old.value ? (balance - old.value) / STAMP_GAS_LIMIT : 0n
-    let cap = (fee.maxFeePerGas ?? fee.gasPrice)!
-    if (affordable < cap) cap = affordable
-    if (cap === (old.maxFeePerGas ?? old.gasPrice)) cap -= 1n
-    if (cap < fee.chargedPerGas)
-      throw new Error(
-        `${payment.address} cannot pay the fee of its payment again (it holds ${balance} wei)`,
-      )
-    const tip = fee.maxPriorityFeePerGas ?? cap
-    const rawTx = await this.signTransfer({
+    if (old.chainId !== chainId)
+      throw new Error('The payment was signed for another chain')
+    const unsigned = resignedTransaction(old)
+    const signer = new MonadAccountTxSigner({
       privateKey: coin.privateKey,
-      address: coin.account,
-      chainId,
-      nonce: old.nonce,
-      to: old.to!,
-      valueWei: old.value,
-      fee:
-        fee.maxFeePerGas !== undefined
-          ? {
-              chargedPerGas: fee.chargedPerGas,
-              maxFeePerGas: cap,
-              maxPriorityFeePerGas: tip < cap ? tip : cap,
-            }
-          : { chargedPerGas: fee.chargedPerGas, gasPrice: cap },
+      provider: this.config.provider,
+      httpClient: this.config.httpClient,
+    })
+    if (signer.address.toLowerCase() !== coin.account.toLowerCase())
+      throw new Error('Stamp account does not match its key')
+    const { rawTx } = await signer.signFrozenUnsigned({
+      from: coin.account.toLowerCase(),
+      unsignedSerialized: unsigned.unsignedSerialized,
     })
     if (Transaction.from(rawTx).hash === old.hash)
       throw new Error('The payment could not be signed again')

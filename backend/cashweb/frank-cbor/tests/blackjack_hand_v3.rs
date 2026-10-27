@@ -73,11 +73,15 @@ fn item(v: &Value) -> Option<BlackjackHandV3Item> {
     if v["type"] != "blackjack-hand" {
         return None;
     }
+    // The dealer's optional minimum bet counts as one more field when it is present.
+    let min = text("minBetWei");
+    let extra = usize::from(min.is_some());
     let (action, names): (_, &[&str]) = match v["action"].as_str()? {
         "challenge" => match v["role"].as_str()? {
             "dealer" => (
                 ChallengeDealer {
                     max_bet_wei: text("maxBetWei")?,
+                    min_bet_wei: min.clone(),
                     commitment: text("commitment")?,
                 },
                 &["role", "maxBetWei", "commitment"],
@@ -93,6 +97,7 @@ fn item(v: &Value) -> Option<BlackjackHandV3Item> {
         "accept" => (
             Accept {
                 max_bet_wei: text("maxBetWei")?,
+                min_bet_wei: min.clone(),
                 commitment: text("commitment")?,
                 prev: text("prev")?,
             },
@@ -122,7 +127,12 @@ fn item(v: &Value) -> Option<BlackjackHandV3Item> {
         ),
     };
     // Closed: exactly type, gameId, action, seq and the selected shape's fields.
-    if object.len() != names.len() + 4 {
+    let extra = match &action {
+        ChallengeDealer { .. } | Accept { .. } => extra,
+        _ if extra > 0 => return None,
+        _ => 0,
+    };
+    if object.len() != names.len() + 4 + extra {
         return None;
     }
     Some(BlackjackHandV3Fields {
@@ -137,10 +147,14 @@ fn application(item: &BlackjackHandV3Item) -> Value {
     let action = match &item.action {
         ChallengeDealer {
             max_bet_wei,
+            min_bet_wei,
             commitment,
         } => {
             v["role"] = json!("dealer");
             v["maxBetWei"] = json!(max_bet_wei);
+            if let Some(min) = min_bet_wei {
+                v["minBetWei"] = json!(min);
+            }
             v["commitment"] = json!(commitment);
             "challenge"
         }
@@ -151,10 +165,14 @@ fn application(item: &BlackjackHandV3Item) -> Value {
         }
         Accept {
             max_bet_wei,
+            min_bet_wei,
             commitment,
             prev,
         } => {
             v["maxBetWei"] = json!(max_bet_wei);
+            if let Some(min) = min_bet_wei {
+                v["minBetWei"] = json!(min);
+            }
             v["commitment"] = json!(commitment);
             v["prev"] = json!(prev);
             "accept"
@@ -238,7 +256,7 @@ fn shared_corpus_reader_projection_and_writer() {
             other => panic!("{id}: result {other}"),
         }
     }
-    assert_eq!((accepted, rejected), (11, 32));
+    assert_eq!((accepted, rejected), (14, 39));
     assert_eq!(actions.len(), 11, "every closed shape is exercised");
 }
 
@@ -389,6 +407,7 @@ fn writer_refuses_malformed_items() {
             1,
             ChallengeDealer {
                 max_bet_wei: "5".into(),
+                min_bet_wei: None,
                 commitment: ok.clone(),
             },
         ),
@@ -425,6 +444,7 @@ fn writer_refuses_malformed_items() {
             0,
             ChallengeDealer {
                 max_bet_wei: "5".into(),
+                min_bet_wei: None,
                 commitment: "a".repeat(63),
             },
         ),
@@ -457,6 +477,34 @@ fn writer_refuses_malformed_items() {
             1,
             Accept {
                 max_bet_wei: "0".into(),
+                min_bet_wei: None,
+                commitment: ok.clone(),
+                prev: ok.clone(),
+            },
+        ),
+        // The dealer's minimum bet: positive and at most its maximum.
+        (
+            0,
+            ChallengeDealer {
+                max_bet_wei: "5".into(),
+                min_bet_wei: Some("6".into()),
+                commitment: ok.clone(),
+            },
+        ),
+        (
+            1,
+            Accept {
+                max_bet_wei: "5".into(),
+                min_bet_wei: Some("0".into()),
+                commitment: ok.clone(),
+                prev: ok.clone(),
+            },
+        ),
+        (
+            1,
+            Accept {
+                max_bet_wei: "5".into(),
+                min_bet_wei: Some("0x1".into()),
                 commitment: ok.clone(),
                 prev: ok.clone(),
             },

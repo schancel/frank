@@ -381,8 +381,9 @@ fn check_blackjack_hand(
     }
     Ok(())
 }
-/// Stage 9 of the schema-3 hand shapes: a positive bounded maximum bet on challenge and accept.
-/// No shape carries a card or an outcome, so nothing else is checked here.
+/// Stage 9 of the schema-3 hand shapes: a positive bounded maximum bet on challenge and accept,
+/// and a dealer's minimum bet, when named, positive and at most that maximum. No shape carries a
+/// card or an outcome, so nothing else is checked here.
 fn check_blackjack_hand_v3(
     item: &crate::model::BlackjackHandV3MessageItem,
     path: &str,
@@ -394,6 +395,22 @@ fn check_blackjack_hand_v3(
     {
         if max_bet_wei.iter().all(|b| *b == 0) || max_bet_wei > &blackjack_quantity_limit() {
             return Err(semantic("blackjack max bet range", path));
+        }
+    }
+    if let BlackjackHandV3Action::ChallengeDealer {
+        max_bet_wei,
+        min_bet_wei: Some(min_bet_wei),
+        ..
+    }
+    | BlackjackHandV3Action::Accept {
+        max_bet_wei,
+        min_bet_wei: Some(min_bet_wei),
+        ..
+    } = &item.action
+    {
+        // Both are exact 32-byte quantities, so byte order is numeric order.
+        if min_bet_wei.iter().all(|b| *b == 0) || min_bet_wei > max_bet_wei {
+            return Err(semantic("blackjack min bet range/order", path));
         }
     }
     Ok(())

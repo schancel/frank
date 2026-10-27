@@ -117,7 +117,7 @@ pub mod blackjack_hand_item {
     };
 }
 
-/// `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).
+/// `blackjack-hand-v3-item` field keys: Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). The dealer's offer (a dealer challenge or an accept) carries the table's maximum bet (key 3) and may carry its minimum bet (key 14, positive and at most the maximum); the dealer returns a bet outside them instead of dealing it.
 pub mod blackjack_hand_v3_item {
     use super::MapShape;
 
@@ -139,10 +139,12 @@ pub mod blackjack_hand_v3_item {
     pub const PREV: u64 = 12;
     /// Field `link`.
     pub const LINK: u64 = 13;
+    /// Field `min-bet-wei`.
+    pub const MIN_BET_WEI: u64 = 14;
     /// `blackjack-hand-v3-item` challenge-dealer map shape.
     pub const CHALLENGE_DEALER_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, ROLE, MAX_BET_WEI, COMMITMENT],
-        optional: &[],
+        optional: &[MIN_BET_WEI],
         open: false,
         open_from: 0,
     };
@@ -156,7 +158,7 @@ pub mod blackjack_hand_v3_item {
     /// `blackjack-hand-v3-item` accept map shape.
     pub const ACCEPT_SHAPE: MapShape = MapShape {
         required: &[GAME_ID, ACTION, SEQ, MAX_BET_WEI, COMMITMENT, PREV],
-        optional: &[],
+        optional: &[MIN_BET_WEI],
         open: false,
         open_from: 0,
     };

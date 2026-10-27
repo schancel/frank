@@ -887,6 +887,98 @@ describe('amounts', () => {
     table.send(table.dealer, step.item, 1n)
     expect(table.state).toMatchObject({ phase: 'resolved', owedWei: WAGER * 2n, paidWei: 1n })
   })
+
+  it('keeps the smallest bet a dealer offer names, and returns a smaller bet like one above the max', () => {
+    const table = new Table(ALICE, BOB, DEALER_SEED, seeds.win)
+    table.send(
+      ALICE,
+      table.next({
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '1000',
+        minBetWei: '100',
+        commitment: commitmentOf(DEALER_SEED),
+      }),
+    )
+    expect(table.state).toMatchObject({ phase: 'open', minBetWei: 100n, maxBetWei: 1_000n })
+    const under = table.bet(99n)
+    expect(under.error).toBe('bad-amount')
+    expect(table.state).toMatchObject({
+      phase: 'open',
+      rejected: [{ digest: under.event.digest, stampWei: 99n }],
+    })
+    expect(dealerStep(table.state, table.dealerSeed)).toMatchObject({
+      item: { action: 'refund', ref: under.event.digest },
+      payWei: 99n,
+    })
+    table.dealerActs()
+    // At the minimum, the bet is taken.
+    expect(table.bet(100n).error).toBeUndefined()
+    expect(table.state).toMatchObject({ phase: 'awaiting_deal', wagerWei: 100n })
+    expect(foldHand(table.log).state).toEqual(table.state)
+  })
+
+  it('takes the smallest bet from the dealer accept of a player challenge', () => {
+    const table = new Table(BOB, ALICE, DEALER_SEED, seeds.win)
+    table.send(ALICE, table.next({ action: 'challenge', role: 'player', maxBetWei: '2000' }))
+    // A player challenge names no minimum.
+    expect(table.state?.minBetWei).toBeUndefined()
+    const accepted = table.send(
+      BOB,
+      table.next({ action: 'accept', maxBetWei: '1000', minBetWei: '500', commitment: commitmentOf(DEALER_SEED) }),
+    )
+    expect(accepted.error).toBeUndefined()
+    expect(table.state).toMatchObject({ phase: 'open', minBetWei: 500n, maxBetWei: 1_000n })
+    expect(table.bet(499n).error).toBe('bad-amount')
+  })
+
+  it('an offer that names no smallest bet is a whole offer: any positive bet up to the max is taken', () => {
+    const table = challenged()
+    expect(table.state?.minBetWei).toBeUndefined()
+    expect(table.bet(1n).error).toBeUndefined()
+  })
+
+  // Review F3: a smallest bet above the offer's max was silently dropped; it is malformed, as
+  // the codec says.
+  it('an offer whose smallest bet is above its max bet is not a hand, nor is such an accept', () => {
+    const table = new Table(ALICE, BOB, DEALER_SEED, seeds.win)
+    const challenge = table.send(
+      ALICE,
+      table.next({
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '1000',
+        minBetWei: '1001',
+        commitment: commitmentOf(DEALER_SEED),
+      }),
+    )
+    expect(challenge.error).toBe('bad-amount')
+    expect(table.state).toBeUndefined()
+    const accepting = new Table(BOB, ALICE, DEALER_SEED, seeds.win)
+    accepting.send(ALICE, accepting.next({ action: 'challenge', role: 'player', maxBetWei: '2000' }))
+    const accept = accepting.send(
+      BOB,
+      accepting.next({ action: 'accept', maxBetWei: '1000', minBetWei: '1500', commitment: commitmentOf(DEALER_SEED) }),
+    )
+    expect(accept.error).toBe('bad-amount')
+    expect(accepting.state?.phase).toBe('challenged')
+  })
+
+  it('an offer whose smallest bet is not an amount is not a hand', () => {
+    const table = new Table(ALICE, BOB, DEALER_SEED, seeds.win)
+    const result = table.send(
+      ALICE,
+      table.next({
+        action: 'challenge',
+        role: 'dealer',
+        maxBetWei: '1000',
+        minBetWei: '0',
+        commitment: commitmentOf(DEALER_SEED),
+      }),
+    )
+    expect(result.error).toBe('bad-amount')
+    expect(table.state).toBeUndefined()
+  })
 })
 
 describe('seeds', () => {
@@ -968,6 +1060,24 @@ describe('what a wallet may send', () => {
     ).toThrow('needs a seed')
   })
 
+  it('a dealer challenge names its smallest bet, which is positive and at most its max bet', () => {
+    const dealer = { ...base, role: 'dealer' as const, spendableWei: 4_100n, seed: DEALER_SEED }
+    expect(buildChallenge({ ...dealer, maxBetWei: 1_000n, minBetWei: 10n })).toMatchObject({
+      item: { action: 'challenge', role: 'dealer', maxBetWei: '1000', minBetWei: '10' },
+    })
+    expect(buildChallenge({ ...dealer, maxBetWei: 1_000n, minBetWei: 1_000n })).toMatchObject({
+      item: { minBetWei: '1000' },
+    })
+    expect(buildChallenge({ ...dealer, maxBetWei: 1_000n, minBetWei: 1_001n })).toEqual({ error: 'below-min-bet' })
+    expect(buildChallenge({ ...dealer, maxBetWei: 1_000n, minBetWei: 0n })).toEqual({ error: 'not-positive' })
+    // A player names no minimum.
+    expect(
+      buildChallenge({ ...base, role: 'player', maxBetWei: 1_000n, minBetWei: 10n, spendableWei: 4_100n }),
+    ).toEqual({
+      item: { type: 'blackjack-hand', gameId: GAME, action: 'challenge', seq: 0, role: 'player', maxBetWei: '1000' },
+    })
+  })
+
   it('accepts at the lower of the challenge and what the dealer can cover', () => {
     const table = new Table(BOB, ALICE, DEALER_SEED, seeds.win)
     table.send(ALICE, table.next({ action: 'challenge', role: 'player', maxBetWei: '2000' }))
@@ -990,6 +1100,12 @@ describe('what a wallet may send', () => {
     expect(accept(4_100n, 1_001n)).toEqual({ error: 'above-own-limit' })
     expect(accept(4_100n, 0n)).toEqual({ error: 'not-positive' })
     expect(accept(50n)).toEqual({ error: 'above-own-limit' })
+    const withMin = (minBetWei: bigint) =>
+      buildAccept({ state, spendableWei: 4_100n, reserveWei: 100n, seed: DEALER_SEED, minBetWei })
+    expect(withMin(10n)).toMatchObject({ item: { maxBetWei: '1000', minBetWei: '10' } })
+    // A smallest bet above what the dealer covers leaves no bet to take.
+    expect(withMin(1_001n)).toEqual({ error: 'below-min-bet' })
+    expect(withMin(0n)).toEqual({ error: 'not-positive' })
     const built = accept(4_100n) as { item: HandItem }
     expect(table.send(BOB, built.item).error).toBeUndefined()
   })
@@ -1000,6 +1116,10 @@ describe('what a wallet may send', () => {
     expect(checkWager(state, 1_001n, 5_000n, 100n)).toBe('above-max-bet')
     expect(checkWager(state, 1_000n, 1_050n, 100n)).toBe('above-own-limit')
     expect(checkWager(state, 1_000n, 1_100n, 100n)).toBeUndefined()
+    const limited = { maxBetWei: 1_000n, minBetWei: 100n }
+    expect(checkWager(limited, 99n, 5_000n, 100n)).toBe('below-min-bet')
+    expect(checkWager(limited, 100n, 5_000n, 100n)).toBeUndefined()
+    expect(checkWager(limited, 1_001n, 5_000n, 100n)).toBe('above-max-bet')
   })
 
   it('credits nothing when one message carries more than one hand item', () => {

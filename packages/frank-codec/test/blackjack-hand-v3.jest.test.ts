@@ -47,7 +47,7 @@ const outcome = (run: () => unknown) => {
 describe('blackjack hand items with entropy from both sides (type 26, schema 3)', () => {
   it('keeps the shared corpus equal to what the public writer and reader produce', () => {
     expect(corpus).toEqual(JSON.parse(JSON.stringify(blackjackHandV3Corpus())))
-    expect(corpus.frames.filter(f => f.expected.result === 'accept')).toHaveLength(11)
+    expect(corpus.frames.filter(f => f.expected.result === 'accept')).toHaveLength(14)
     // Every malformed frame is in fact rejected.
     expect(
       corpus.frames.filter(f => !('application' in f) && f.expected.result !== 'reject'),

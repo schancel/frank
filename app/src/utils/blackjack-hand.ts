@@ -303,6 +303,31 @@ export function chatHands(
   return hands
 }
 
+/**
+ * The hand of the newest dealer offer this user received in a chat: the last dealer challenge, or
+ * accept of this user's challenge, from the peer, among hands that exist. A dealer's limits move
+ * after it offers (its maximum follows its balance), so the app bets only on the newest offer.
+ */
+export function latestOfferGameId(
+  messages: readonly HandChatMessage[],
+  own: string,
+  peer: string,
+): string | undefined {
+  const hands = new Set(
+    chatHands(messages, own, peer).map(({ state }) => state.gameId),
+  )
+  let latest: string | undefined
+  for (const event of chatHandEvents(messages, own, peer)) {
+    const item = event.item
+    const offer =
+      (item.action === 'challenge' && item.role === 'dealer') ||
+      item.action === 'accept'
+    if (offer && event.from === peer && hands.has(item.gameId))
+      latest = item.gameId
+  }
+  return latest
+}
+
 const memorySeeds = new Map<string, string>()
 
 const seedKey = (own: string, peer: string, gameId: string) =>

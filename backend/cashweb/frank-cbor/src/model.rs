@@ -1020,6 +1020,8 @@ pub enum BlackjackHandV3Action<H, Q> {
     ChallengeDealer {
         /// Positive maximum bet.
         max_bet_wei: Q,
+        /// The dealer's minimum bet, when its offer names one: positive, at most the maximum.
+        min_bet_wei: Option<Q>,
         /// Exact 32-byte commitment.
         commitment: H,
     },
@@ -1032,6 +1034,8 @@ pub enum BlackjackHandV3Action<H, Q> {
     Accept {
         /// Positive maximum bet.
         max_bet_wei: Q,
+        /// The dealer's minimum bet, when its offer names one: positive, at most the maximum.
+        min_bet_wei: Option<Q>,
         /// Exact 32-byte commitment.
         commitment: H,
         /// Payload digest of the previous message.

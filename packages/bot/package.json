@@ -38,6 +38,7 @@
     "regtest:monad-faucet-concurrency": "node --import tsx demo/regtest/monad-faucet-concurrency.livecheck.ts",
     "regtest:monad-group-writes": "node --import tsx demo/regtest/monad-group-writes.livecheck.ts",
     "regtest:monad-consolidation": "node --import tsx demo/regtest/monad-coin-consolidation.livecheck.ts",
+    "regtest:blackjack-limits": "node --import tsx demo/regtest/blackjack-limits.livecheck.ts",
     "regtest:monad-parallel-send": "PSEND_STACK_MODULE=demo/regtest/monad-parallel-send-stack.ts PHASES=${PHASES:-a,d,e,h,r,w,m,n,b} FUNDED=${FUNDED:-10} BUDGET_WEI=1000000000000000000000 node --import tsx parallel-send.livecheck.ts",
     "regtest:monad-status": "node --import tsx demo/regtest/monad-regtest.ts status",
     "regtest:monad-start": "node --import tsx demo/regtest/monad-regtest.ts start",

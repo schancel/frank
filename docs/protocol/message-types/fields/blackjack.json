@@ -165,7 +165,7 @@
     },
     {
       "key": "blackjack-hand-v3-item",
-      "description": "Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action).",
+      "description": "Type 26 schema 3 (closed): a hand whose cards come from both sides' entropy. Key 1 is the action code (blackjack-hand-v3-action). The dealer's offer (a dealer challenge or an accept) carries the table's maximum bet (key 3) and may carry its minimum bet (key 14, positive and at most the maximum); the dealer returns a bet outside them instead of dealing it.",
       "fields": {
         "game-id": 0,
         "action": 1,
@@ -175,7 +175,8 @@
         "ref": 10,
         "seq": 11,
         "prev": 12,
-        "link": 13
+        "link": 13,
+        "min-bet-wei": 14
       },
       "shapes": [
         {
@@ -188,7 +189,7 @@
             "max-bet-wei",
             "commitment"
           ],
-          "optional": [],
+          "optional": ["min-bet-wei"],
           "open": false
         },
         {
@@ -207,7 +208,7 @@
             "commitment",
             "prev"
           ],
-          "optional": [],
+          "optional": ["min-bet-wei"],
           "open": false
         },
         {

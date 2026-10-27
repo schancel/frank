@@ -29,6 +29,10 @@ jest.mock(
   }),
   () => ({ setupDevtoolsPlugin: () => undefined }),
 )
+jest.mock('../accounts/backup-status', () => ({
+  ...jest.requireActual('../accounts/backup-status'),
+  isAccountBackedUp: () => true,
+}))
 jest.mock('nostics', () => ({
   createConsoleReporter: () => ({}),
   defineDiagnostics: () => new Proxy({}, { get: () => () => undefined }),
@@ -308,5 +312,22 @@ describe('finding 8: Profile from the drawer is a page above Settings', () => {
     await userBack(router)
     expect(router.currentRoute.value.path).toBe('/settings')
     expect(historyPosition()).toBe(settings)
+  })
+})
+
+describe("the drawer's balance opens the Wallet tab", () => {
+  it('as a tab: Back from it lands on Messages', async () => {
+    const w = await phone('/forum')
+    const forum = historyPosition()
+    ;(w.vm as any).toggleMyDrawerOpen()
+    await flushPromises()
+    await tap(
+      w,
+      '.drawer-balance-item .q-item__section, .drawer-balance-item > *',
+    )
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(forum + 1)
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/chat')
   })
 })

@@ -185,9 +185,10 @@
             :aria-expanded="chatMenuOpen"
           >
             <q-menu
-              v-model="chatMenuOpen"
               anchor="bottom right"
               self="top right"
+              @show="chatMenuOpen = true"
+              @hide="chatMenuOpen = false"
             >
               <q-list style="min-width: 180px">
                 <q-item clickable v-close-popup @click="openInfo">
@@ -385,7 +386,7 @@ import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 import GroupInfoDialog from '../components/chat/GroupInfoDialog.vue'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import { openChat } from '../utils/routes'
-import { goBack, returnTo, useBackDismiss } from '../utils/navigation'
+import { goBack, returnTo } from '../utils/navigation'
 import { isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
@@ -461,18 +462,8 @@ export default defineComponent({
           : '',
     )
 
-    // Phone Back closes the menu (utils/navigation).
-    const chatMenuOpen = ref(false)
-    useBackDismiss(
-      () => chatMenuOpen.value,
-      () => {
-        chatMenuOpen.value = false
-      },
-    )
-
     return {
       navigateAfterDeletion,
-      chatMenuOpen,
       myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
       contactStore,
@@ -489,6 +480,7 @@ export default defineComponent({
       // Full-pane Info swap, not a side drawer -- see this file's template header comment above
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
       infoOpen: this.$route.query?.info === 'true',
+      chatMenuOpen: false,
       groupInfoOpen: false,
       subjectEditorOpen: false,
       subjectEditorId: null as string | null,

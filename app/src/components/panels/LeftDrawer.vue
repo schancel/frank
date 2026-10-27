@@ -412,7 +412,7 @@ import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 import { isNarrowWidth } from '../../utils/layout'
 import { getEffectiveScreenWidth } from '../../utils/mobile-viewport-scale'
 import { openChat } from '../../utils/routes'
-import { START_TAB, backDismissible, switchTab } from '../../utils/navigation'
+import { START_TAB, switchTab } from '../../utils/navigation'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
 import { useForumStore } from 'src/stores/forum'
@@ -426,8 +426,6 @@ import { FA_PLUG_CIRCLE_PLUS_ICON } from '../../utils/extension-download'
 const compactCutoff = 325
 
 export default defineComponent({
-  // Phone Back closes these overlays (utils/navigation).
-  mixins: [backDismissible('relayConnectOpen')],
   setup(_, { emit }) {
     const q = inject<{ screen?: { width?: number } } | null>('_q_', null)
     const isNarrow = computed(() =>
@@ -713,7 +711,8 @@ export default defineComponent({
         openBackupFlow()
         return
       }
-      router.push('/wallet')
+      // The Wallet tab, as a page: on a phone the drawer gives way to it.
+      return switchTab(router, '/wallet')
     }
 
     return {

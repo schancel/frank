@@ -626,7 +626,6 @@ import {
 } from 'vue'
 import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
-import { useBackDismiss } from 'src/utils/navigation'
 import type { IScannerControls } from '@zxing/browser'
 import { getOwnCanonicalAddress } from 'src/utils/own-address'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
@@ -787,11 +786,6 @@ export default defineComponent({
       }
       emit('update:modelValue', val)
     }
-    // As a dialog (not the inline QR page), phone Back closes it.
-    useBackDismiss(
-      () => !props.inline && props.modelValue,
-      () => onModelValueUpdate(false),
-    )
 
     const startScanner = async () => {
       stopScanner()

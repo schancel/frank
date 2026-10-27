@@ -2436,8 +2436,10 @@ export default defineComponent({
       if (!this.conversation) return
       const nextTargetId = this.findAdjacentThreadId(1)
       dismissScreenerConversation(this.conversation, this.chatStore)
+      // The dismissed thread gives way to the next one (as archiving does in a mail app): Back
+      // does not reopen what was just dismissed.
       if (nextTargetId) {
-        void openChat(this.$router, nextTargetId)
+        void openChat(this.$router, nextTargetId, { replace: true })
       }
     },
     focusReplyComposer() {
@@ -2464,6 +2466,8 @@ export default defineComponent({
       if (nextIdx < 0 || nextIdx >= list.length) return null
       return list[nextIdx]?.id ?? null
     },
+    // Next/previous thread (j/k, the email thread arrows) is a conversation the user asked for,
+    // as picking it in the list is: pushed, so Back walks back through the threads read.
     navigateThread(direction: -1 | 1) {
       const nextId = this.findAdjacentThreadId(direction)
       if (nextId) {

@@ -75,6 +75,8 @@ jest.mock('../utils/own-address', () => ({
 }))
 
 const mockPush = jest.fn(async () => undefined)
+// Finishing onboarding replaces it with the conversation: Back does not reopen the form.
+const mockReplace = jest.fn(async () => undefined)
 const mockRoute = reactive<{
   path: string
   fullPath: string
@@ -97,7 +99,7 @@ let capturedBeforeEachGuards: Array<
 > = []
 
 jest.mock('vue-router', () => ({
-  useRouter: () => ({ push: mockPush }),
+  useRouter: () => ({ push: mockPush, replace: mockReplace }),
   onBeforeRouteLeave: jest.fn(),
   useRoute: () => mockRoute,
   createRouter: () => ({
@@ -125,7 +127,7 @@ function renderOnboard() {
     global: {
       mocks: {
         $t: (key: string) => key,
-        $router: { push: mockPush },
+        $router: { push: mockPush, replace: mockReplace },
       },
       stubs: {
         QHeader: { template: '<header><slot /></header>' },
@@ -185,6 +187,7 @@ beforeEach(() => {
     window.location.hash = ''
   }
   mockPush.mockClear()
+  mockReplace.mockClear()
   mockCreateDirect.mockReset()
   mockBeginPasskey.mockReset()
   mockCancel.mockClear()
@@ -360,7 +363,7 @@ describe('Onboard.vue & /onboard route', () => {
         },
       ])
 
-      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+      expect(mockReplace).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     } finally {
       view.unmount()
     }
@@ -485,7 +488,7 @@ describe('Onboard.vue & /onboard route', () => {
         },
       ])
 
-      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+      expect(mockReplace).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     } finally {
       view.unmount()
     }
@@ -556,7 +559,7 @@ describe('Onboard.vue & /onboard route', () => {
         },
       ])
 
-      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+      expect(mockReplace).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     } finally {
       view.unmount()
     }
@@ -632,7 +635,7 @@ describe('Onboard.vue & /onboard route', () => {
         },
       ])
 
-      expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+      expect(mockReplace).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     } finally {
       view.unmount()
     }
@@ -792,6 +795,7 @@ describe('Onboard.vue & /onboard route', () => {
       sourcePath,
     )
     expect(mockPush).not.toHaveBeenCalled()
+    expect(mockReplace).not.toHaveBeenCalled()
     receiver.unmount()
     mockRoute.path = '/onboard'
     mockRoute.fullPath = sourcePath
@@ -805,7 +809,7 @@ describe('Onboard.vue & /onboard route', () => {
       .get('[data-test="onboard-import-existing"]')
       .trigger('click')
     await flushPromises()
-    expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+    expect(mockReplace).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
     expect(mockCreateDirect).not.toHaveBeenCalled()
     continued.unmount()
   })

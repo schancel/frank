@@ -772,7 +772,7 @@ import {
   sendRuntimeMessage,
 } from '../../src-bex/runtime-adapter'
 import { FRANK_DAPP_BRIDGE_CHANNEL } from '../../src-bex/inpage'
-import { goBack, useBackDismiss } from '../utils/navigation'
+import { goBack } from '../utils/navigation'
 const msToMinutes = 60000
 
 const UI_SCALE_OPTIONS: readonly {
@@ -1074,12 +1074,6 @@ export default defineComponent({
     )
     const coldVaultError = ref('')
     const coldVaultConfirmOpen = ref(false)
-    useBackDismiss(
-      () => coldVaultConfirmOpen.value,
-      () => {
-        coldVaultConfirmOpen.value = false
-      },
-    )
     const coldVaultPendingAddress = ref('')
     const coldVaultDialogMode = ref<'use' | 'remove'>('use')
     // The user turned sweeping on before any address was saved. The store refuses that, so the

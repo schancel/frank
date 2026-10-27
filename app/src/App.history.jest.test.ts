@@ -229,7 +229,8 @@ controls.QDialog = defineComponent({
     () =>
       props.modelValue ? h('div', slots.default?.()) : null,
 })
-// Like QMenu: `open()` stands for the tap that shows it; v-model and show/hide follow.
+// Like QMenu: `open()` stands for the tap that shows it; v-model and show/hide follow. While
+// shown it is a `.q-menu` in the page and Escape closes it, as Quasar's does.
 const QMenuStub = defineComponent({
   name: 'QMenuStub',
   props: { modelValue: Boolean, anchor: String },
@@ -240,18 +241,30 @@ const QMenuStub = defineComponent({
       if (open !== this.shown) this.setShown(open)
     },
   },
+  beforeUnmount() {
+    window.removeEventListener('keyup', this.onKeyup)
+  },
   methods: {
     setShown(open: boolean) {
       this.shown = open
+      window[open ? 'addEventListener' : 'removeEventListener'](
+        'keyup',
+        this.onKeyup,
+      )
       this.$emit('update:modelValue', open)
       this.$emit(open ? 'show' : 'hide')
+    },
+    onKeyup(event: KeyboardEvent) {
+      if (event.keyCode === 27) this.setShown(false)
     },
     open() {
       this.setShown(true)
     },
   },
   render() {
-    return this.shown ? h('div', this.$slots.default?.()) : null
+    return this.shown
+      ? h('div', { class: 'q-menu' }, this.$slots.default?.())
+      : null
   },
 })
 controls.QMenu = QMenuStub
@@ -296,6 +309,9 @@ async function openFrank(start: string) {
   const chats = useChatStore()
   const a = chats.openDirectConversation(PEER)
   const b = chats.openDirectConversation(OTHER)
+  // Conversations that had messages: the list shows them.
+  a.lastReceived = 1
+  b.lastReceived = 2
   // A page from before the app, so that leaving the app is a real entry.
   window.history.pushState(null, '', '#/before-the-app')
   window.history.pushState(null, '', `#${start}`)
@@ -334,6 +350,8 @@ function mountPage(withList = false) {
         : '<router-view />',
     }),
     {
+      // In the document, as the app is: overlays are found in the page.
+      attachTo: document.body,
       global: {
         plugins: [router],
         components: controls,

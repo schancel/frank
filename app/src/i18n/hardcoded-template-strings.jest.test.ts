@@ -30,7 +30,6 @@ const BASELINE: Record<string, number> = {
   'components/forum/ForumPost.vue': 1,
   'components/panels/ForumDrawer.vue': 3,
   'components/panels/LeftDrawer.vue': 0,
-  'components/SubscribeDialog.vue': 9,
   'components/topic/TopicDrawer.vue': 2,
   'components/topic/TopicList.vue': 1,
   'components/topic/TopicMessage.vue': 0,

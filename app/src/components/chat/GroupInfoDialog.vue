@@ -238,7 +238,6 @@
 
 <script lang="ts">
 import { computed, defineComponent, ref } from 'vue'
-import { useBackDismiss } from 'src/utils/navigation'
 import { useChatStore, type Conversation } from '../../stores/chats'
 import {
   isBlankName,
@@ -296,17 +295,6 @@ export default defineComponent({
     const inviteeAddress = ref('')
     const busy = ref(false)
     const pendingRemoval = ref<MemberRow | null>(null)
-    // Phone Back closes the dialog (and first the removal confirmation inside it).
-    useBackDismiss(
-      () => props.modelValue,
-      () => emit('update:modelValue', false),
-    )
-    useBackDismiss(
-      () => pendingRemoval.value !== null,
-      () => {
-        pendingRemoval.value = null
-      },
-    )
 
     const conversation = computed<Conversation | null>(() => {
       if (props.conversationId)

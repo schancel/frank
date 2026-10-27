@@ -1,5 +1,5 @@
 <template>
-  <q-menu v-model="menuOpen" touch-position context-menu>
+  <q-menu touch-position context-menu>
     <q-list dense style="min-width: 140px">
       <q-item
         v-if="canReply"
@@ -80,7 +80,6 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { backDismissible } from 'src/utils/navigation'
 import { copyToClipboard } from 'quasar'
 import type { Message } from '@frank/cashweb/types/messages'
 import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
@@ -88,8 +87,6 @@ import { infoNotify } from 'src/utils/notifications'
 import { unretryableFailure } from 'src/utils/outgoing-failure'
 
 export default defineComponent({
-  // Phone Back closes these overlays (utils/navigation).
-  mixins: [backDismissible('menuOpen')],
   name: 'ChatMessageMenu',
   props: {
     address: {
@@ -109,9 +106,6 @@ export default defineComponent({
       required: false,
       default: () => 0,
     },
-  },
-  data() {
-    return { menuOpen: false }
   },
   emits: [
     'deleteClick',

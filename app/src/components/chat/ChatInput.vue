@@ -110,7 +110,6 @@
           >
             <q-menu
               ref="attachMenu"
-              v-model="attachMenuOpen"
               anchor="top left"
               self="bottom left"
               max-height="80vh"
@@ -207,11 +206,7 @@
                   <q-item-section side>
                     <q-icon name="keyboard_arrow_right" />
                   </q-item-section>
-                  <q-menu
-                    v-model="moreActionsMenuOpen"
-                    anchor="top end"
-                    self="top start"
-                  >
+                  <q-menu anchor="top end" self="top start">
                     <q-list dense style="min-width: 210px" class="q-py-xs">
                       <q-item
                         clickable
@@ -263,11 +258,7 @@
                   <q-item-section side>
                     <q-icon name="keyboard_arrow_right" />
                   </q-item-section>
-                  <q-menu
-                    v-model="gamesMenuOpen"
-                    anchor="top end"
-                    self="top start"
-                  >
+                  <q-menu anchor="top end" self="top start">
                     <q-list dense style="min-width: 220px" class="q-py-xs">
                       <!-- A blackjack challenge is one more message type, offered in every chat. -->
                       <q-item
@@ -396,11 +387,7 @@
                 {{ stampBasisNote }}
               </div>
             </q-tooltip>
-            <q-menu
-              v-model="stampMenuOpen"
-              anchor="top left"
-              self="bottom left"
-            >
+            <q-menu anchor="top left" self="bottom left">
               <div
                 class="q-pa-md"
                 style="
@@ -564,7 +551,6 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { backDismissible } from 'src/utils/navigation'
 import emoji from 'node-emoji'
 import {
   fitsOneMessage,
@@ -620,15 +606,6 @@ export const STAMP_MULTIPLIER_TENTHS = [
 ]
 
 export default defineComponent({
-  // Phone Back closes these overlays (utils/navigation).
-  mixins: [
-    backDismissible(
-      'attachMenuOpen',
-      'moreActionsMenuOpen',
-      'gamesMenuOpen',
-      'stampMenuOpen',
-    ),
-  ],
   props: {
     groupMode: { type: Boolean, default: false },
     message: {
@@ -683,10 +660,6 @@ export default defineComponent({
   },
   data() {
     return {
-      attachMenuOpen: false,
-      moreActionsMenuOpen: false,
-      gamesMenuOpen: false,
-      stampMenuOpen: false,
       // Why the last picture could not be attached; empty when it could.
       attachError: '',
       // The stamp as the user is typing it; shown while it still means the chosen amount.

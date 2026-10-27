@@ -73,7 +73,7 @@ import { applyTheme } from 'src/utils/theme'
 import { applyViewportScaleAndMetrics } from 'src/utils/mobile-viewport-scale'
 import { invokeNotificationClickCallback } from 'src/utils/notifications'
 import { openChat } from 'src/utils/routes'
-import { navigationPending, useBackDismiss } from 'src/utils/navigation'
+import { navigationPending } from 'src/utils/navigation'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
@@ -598,12 +598,6 @@ export default defineComponent({
       openChat(router, newAddress)
     }
     const contactBookOpen = ref(false)
-    useBackDismiss(
-      () => contactBookOpen.value,
-      () => {
-        contactBookOpen.value = false
-      },
-    )
     watch(
       [darkMode, theme, uiScale],
       ([isDark, currentTheme, currentScale]) => {

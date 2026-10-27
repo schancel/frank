@@ -750,11 +750,7 @@
                 {{ stampBasisNote }}
               </div>
             </q-tooltip>
-            <q-menu
-              v-model="stampMenuOpen"
-              anchor="top middle"
-              self="bottom middle"
-            >
+            <q-menu anchor="top middle" self="bottom middle">
               <div class="q-pa-md" style="min-width: 320px">
                 <div class="row items-center justify-between q-mb-xs">
                   <div class="text-subtitle2 text-weight-medium">
@@ -1210,7 +1206,6 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { backDismissible } from 'src/utils/navigation'
 import {
   useChatStore,
   type Conversation,
@@ -1283,8 +1278,6 @@ const DEFAULT_STAMP_MULTIPLIER_TENTHS = [
 const sanitizedEmails = new WeakMap<EmailItem, string>()
 
 export default defineComponent({
-  // Phone Back closes these overlays (utils/navigation).
-  mixins: [backDismissible('stampMenuOpen')],
   name: 'EmailThreadView',
   directives: { externalImages: vExternalImages },
   props: {
@@ -1337,7 +1330,6 @@ export default defineComponent({
   },
   data() {
     return {
-      stampMenuOpen: false,
       ownAddress: useReactiveOwnCanonicalAddress(),
       composerActive: true,
       composerInitialized: false,

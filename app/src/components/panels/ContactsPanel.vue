@@ -131,12 +131,7 @@
                   data-test="contact-actions"
                   @click.stop
                 >
-                  <q-menu
-                    :model-value="actionsMenuFor === item.address"
-                    @update:model-value="setActionsMenu(item.address, $event)"
-                    @click.stop
-                    @keydown.stop
-                  >
+                  <q-menu @click.stop @keydown.stop>
                     <q-list dense>
                       <q-item
                         clickable
@@ -294,7 +289,6 @@ import {
   watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
-import { useBackDismiss } from 'src/utils/navigation'
 import { storeToRefs } from 'pinia'
 import { useQuasar } from 'quasar'
 
@@ -353,18 +347,6 @@ export default defineComponent({
     const search = ref<string | null>('')
     const deleteTarget = ref<{ address: string; name: string } | null>(null)
     const showMyQrDialog = ref(false)
-    // The contact whose actions menu is open; phone Back closes it (utils/navigation).
-    const actionsMenuFor = ref<string | null>(null)
-    function setActionsMenu(address: string, open: boolean) {
-      if (open) actionsMenuFor.value = address
-      else if (actionsMenuFor.value === address) actionsMenuFor.value = null
-    }
-    useBackDismiss(
-      () => actionsMenuFor.value !== null,
-      () => {
-        actionsMenuFor.value = null
-      },
-    )
     const networkResults = ref<NetworkSearchResult[]>([])
     const isSearchingNetwork = ref(false)
     let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -714,8 +696,6 @@ export default defineComponent({
     }
 
     return {
-      actionsMenuFor,
-      setActionsMenu,
       search,
       filteredContacts,
       networkResults,

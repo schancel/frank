@@ -178,7 +178,6 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
-import { backDismissible } from 'src/utils/navigation'
 import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 import {
   readNewsletterArticle,
@@ -188,8 +187,6 @@ import {
 const EXCERPT_MAX_CHARS = 180
 
 export default defineComponent({
-  // Phone Back closes these overlays (utils/navigation).
-  mixins: [backDismissible('readerOpen')],
   name: 'ChatMessageNewsletterArticle',
   props: {
     item: {

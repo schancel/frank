@@ -49,7 +49,6 @@ import {
 } from 'vue'
 import type { PropType } from 'vue'
 import type { IScannerControls } from '@zxing/browser'
-import { useBackDismiss } from 'src/utils/navigation'
 
 // Only raw addresses are accepted. Cashaddr's protocol address prefix is part of the
 // address; payment URIs, parameters, URLs, structured data and scripts are not.
@@ -102,7 +101,6 @@ export default defineComponent({
       stop()
       emit('update:modelValue', false)
     }
-    useBackDismiss(() => props.modelValue, close)
     const start = async () => {
       stop()
       if (disposed || !props.modelValue || document.hidden) return

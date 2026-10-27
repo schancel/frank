@@ -279,7 +279,9 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     const wrapper = mountDrawer()
     await wrapper.get('#rail-tab-settings').trigger('click')
     await flushPromises()
-    expect(mockRouterReplace).toHaveBeenCalledWith('/chat')
+    // The current entry becomes Messages without showing it (the real-router history suites
+    // check where Back lands); Settings opens above it.
+    expect(mockRouterReplace).not.toHaveBeenCalled()
     expect(mockRouterPush).toHaveBeenCalledWith('/settings')
   })
 

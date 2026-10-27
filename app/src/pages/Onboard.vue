@@ -605,12 +605,13 @@ async function completeOnboardingMigration() {
     }
 
     emit('setupCompleted')
-    await router.push('/chat/' + encodeURIComponent(canonicalPeer))
+    // The finished onboarding gives way to the conversation: Back does not reopen it.
+    await router.replace('/chat/' + encodeURIComponent(canonicalPeer))
     return
   }
 
   emit('setupCompleted')
-  await router.push('/forum')
+  await router.replace('/forum')
 }
 
 async function activateStagedAndMigrate(outcome?: {

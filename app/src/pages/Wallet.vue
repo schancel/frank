@@ -1219,9 +1219,6 @@ export default defineComponent({
       openSendContact() {
         router.push('/send-contact')
       },
-      openReceive() {
-        router.push('/wallet')
-      },
       nativeAsset,
       nonNativeTokens,
       assetCount,

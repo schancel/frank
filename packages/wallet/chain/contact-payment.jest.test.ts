@@ -1555,6 +1555,108 @@ describe('a payment to a contact', () => {
       expect(await reread()).toEqual(stored)
     })
 
+    /** Closes `wallet`, leaves its one payment `failed` on disk (as a relay ending its message
+     * leaves it), and opens the wallet again. */
+    const reopenedFailed = async (wallet: EvmChainWalletHandle, name: string) => {
+      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(await mainOf(wallet)) })
+      await wallet.close()
+      const store = await LevelRecordStore.open<ContactPayment>(location, CONTACT_PAYMENT_NAMESPACE)
+      const [saved] = store.all()
+      await store.put(saved.stealthAddress, { ...saved, state: 'failed', failure: 'the relay ended the message' })
+      await store.close()
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      installCanonicalDirectory(reopened, await f.directoryFor(name, reopened, bob))
+      return reopened
+    }
+
+    it('a failed payment whose set never left the wallet is released by Finish, its coins free again', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      const reopened = await reopenedFailed(alice, 'alice-failed-unsent')
+      try {
+        expect(held(reopened)).toHaveLength(1)
+        await expect(
+          reopened.sendLegacy!({ recipient: { raw: '0x' + 'd1'.repeat(20) }, value: big }),
+        ).rejects.toThrow('Insufficient available EVM coins')
+        // Resume does not end it by itself: the user's Finish does.
+        await reopened.resumeContactPayments!()
+        expect(held(reopened)).toHaveLength(1)
+        expect(await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe('released')
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'released', holdsFunds: false }),
+        ])
+        expect(
+          reopened.getNativeOperations!()
+            .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase() && !row.cancelled),
+        ).toEqual([])
+        const spent = await reopened.sendLegacy!({ recipient: { raw: '0x' + 'd1'.repeat(20) }, value: big })
+        expect(node.broadcasts).toContainEqual(expect.objectContaining({ hash: spent.txHash }))
+        expect(node.broadcasts.some((tx) => tx.to === prepared.stealthAddress.toLowerCase())).toBe(false)
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('a failed payment whose transfer the chain shows included is paid', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: 0n,
+      })
+      await hostSends(prepared.item, { stampValue: 0n })
+      await alice.resumeContactPayments!()
+      await alice.resumeContactPayments!()
+      expect(toOneTimeAddresses()).toEqual([expect.objectContaining({ hash: prepared.txHash })])
+      const reopened = await reopenedFailed(alice, 'alice-failed-included')
+      try {
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'failed', holdsFunds: false }),
+        ])
+        const broadcasts = node.broadcasts.length
+        await reopened.resumeContactPayments!()
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'paid', holdsFunds: false }),
+        ])
+        // Recorded, not paid again.
+        expect(node.broadcasts).toHaveLength(broadcasts)
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('a failed payment whose set was handed out and never landed keeps holding, and Finish does not release it', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      node.unreachable.add(alice)
+      f.setPhase('fail')
+      await hostSends(prepared.item).catch(() => undefined)
+      expect(node.broadcasts).toEqual([])
+      const reopened = await reopenedFailed(alice, 'alice-failed-sent')
+      try {
+        const set = reopened.getNativeOperations!()
+          .find((row) => row.recipient === prepared.stealthAddress.toLowerCase())!
+        expect(set.submissionAuthorized || set.members.some((member) => member.exposed)).toBe(true)
+        expect(await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe('failed')
+        await reopened.resumeContactPayments!()
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'failed', holdsFunds: true }),
+        ])
+        expect(
+          reopened.getNativeOperations!()
+            .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
+            .map((row) => row.cancelled),
+        ).toEqual([false])
+        expect(node.broadcasts.some((tx) => tx.to === prepared.stealthAddress.toLowerCase())).toBe(false)
+      } finally {
+        await reopened.close()
+      }
+    })
+
     it('the outgoing message is deleted before anything was sent: settle releases it', async () => {
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,

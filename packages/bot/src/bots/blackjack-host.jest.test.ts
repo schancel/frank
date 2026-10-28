@@ -8,7 +8,14 @@ import { fixedStampDefault } from '../../../wallet/oracle/stamp-policy.testutil'
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { Wallet, getBytes } from "ethers";
+import { Wallet, getBytes, parseEther } from "ethers";
+import {
+  EvmCoinList,
+  type StoredEvmListCoin,
+} from "@frank/wallet/evm-coin-list";
+import { MemoryRecordStore } from "@frank/wallet/storage/evm-coin-store";
+import { EvmNativeOperationJournal } from "@frank/wallet/storage/evm-native-operation-journal";
+import { EvmTransactionSetPreparer } from "@frank/wallet/evm-transaction-set";
 import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import {
   buildBet,
@@ -41,8 +48,10 @@ const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
 const mockReconcileAttempts = jest.fn();
 const mockCheckMessagePayment = jest.fn();
-/** What the dealer's wallet can spend: every coin it pays from. */
+/** The dealer wallet's display balance (`getBalance`): what the app shows. */
 const mockWalletBalance = jest.fn();
+/** What the dealer wallet's sends can draw on now (`getSpendableBalance`). */
+const mockSpendable = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/evm-chain", () => {
@@ -76,6 +85,7 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
           identity,
           checkMessagePayment: mockCheckMessagePayment,
           getBalance: mockWalletBalance,
+          getSpendableBalance: mockSpendable,
           getReceiveAddress: jest.fn(async () => ({ raw: mockLocalAddress })),
           close: jest.fn().mockResolvedValue(undefined),
         };
@@ -216,9 +226,10 @@ describe("blackjack dealer behind the bot host", () => {
       stateDir,
       watchRegistrations: false,
     });
-    // The dealer sizes its table from what its wallet can spend; no RPC is reachable in this
-    // test.
+    // The dealer sizes its table from what its wallet can spend now; no RPC is reachable in
+    // this test.
     mockWalletBalance.mockResolvedValue(500_000_000_000_000_000n);
+    mockSpendable.mockResolvedValue(500_000_000_000_000_000n);
     (host as any).provider.getBalance = jest.fn(
       async () => 500_000_000_000_000_000n
     );
@@ -316,13 +327,70 @@ describe("blackjack dealer behind the bot host", () => {
     }
   );
 
+  /** The dealer wallet's coins, in a real coin list with its real transaction-set preparer:
+   * what `getSpendableBalance` reads in the wallet (`spendableNowWei`), at head 100. */
+  const coinListWallet = async () => {
+    const coins = await EvmCoinList.open(
+      new MemoryRecordStore<StoredEvmListCoin>()
+    );
+    const journal = new EvmNativeOperationJournal({
+      testOnlyEphemeral: true,
+      binding: {
+        chainIdentifier: "monad-testnet",
+        nativeChainId: "10143",
+        publicTuple: "blackjack-dealer",
+      },
+    });
+    await journal.Open();
+    const key = (index: number) =>
+      new Wallet("0x" + (7_000 + index).toString(16).padStart(64, "0"));
+    const preparer = new EvmTransactionSetPreparer({
+      coins,
+      journal,
+      policy: () => ({
+        sourceOrder: ["stealth", "stamp", "change", "deterministic", "root", "identity"],
+        gasPriceWei: 1_000n,
+        paymentGasLimit: () => 21_000n,
+        changeGasLimit: 21_000n,
+        paymentFeeIsExact: true,
+        dustWei: 1_000n,
+        radix: 2,
+        jitterBps: 0,
+        maxChangeOutputs: 1,
+        head: 100,
+      }),
+      random: () => 0.5,
+      deriveChange: (index: number) => ({
+        account: key(500 + index).address.toLowerCase(),
+        privateKey: key(500 + index).privateKey,
+        changeIndex: index,
+      }),
+    });
+    let next = 1;
+    const put = async (valueWei: bigint, extra: Partial<StoredEvmListCoin> = {}) => {
+      const signer = key(next++);
+      await coins.put({
+        account: signer.address,
+        privateKey: signer.privateKey,
+        nonce: 0,
+        valueWei,
+        origin: "change",
+        ...extra,
+      });
+      return signer.address.toLowerCase();
+    };
+    mockSpendable.mockImplementation(async () => preparer.spendableNowWei());
+    return { preparer, put, close: () => journal.Close() };
+  };
+
   // Solonet, 2026-10-27: the dealer's first payout spent from its identity account and
   // maintenance moved the rest of that account into its other coins. The identity account read
   // 0 while the wallet held 2 MON, and the next "deal me in" was told the dealer could not cover
   // a hand.
   it("offers a hand when its identity account is empty and its other coins cover it", async () => {
     (host as any).provider.getBalance = jest.fn(async () => 0n);
-    mockWalletBalance.mockResolvedValue(2_000_000_000_000_000_000n);
+    const dealer = await coinListWallet();
+    await dealer.put(parseEther("2"));
 
     const bet = await openTable();
     await deliver(inbound([bet], BET, BET));
@@ -333,13 +401,26 @@ describe("blackjack dealer behind the bot host", () => {
       action: "deal",
       gameId: bet.gameId,
     });
+    await dealer.close();
   });
 
-  it("offers nothing when its wallet cannot cover a hand, whatever its identity account holds", async () => {
-    (host as any).provider.getBalance = jest.fn(
-      async () => 2_000_000_000_000_000_000n
-    );
-    mockWalletBalance.mockResolvedValue(0n);
+  // Owner ruling on #1947: "No point in betting when you won't be paid out." The display balance
+  // counts money an operation holds and money still settling; neither can pay a payout now.
+  it("refuses a hand it could only cover with coins an operation holds or that are still settling", async () => {
+    (host as any).provider.getBalance = jest.fn(async () => parseEther("2"));
+    mockWalletBalance.mockResolvedValue(parseEther("2.5"));
+    const dealer = await coinListWallet();
+    const held = await dealer.put(parseEther("1"));
+    await dealer.put(parseEther("1.5"), {
+      spendableFromBlock: 10_000,
+      fundsVisibleFromBlock: 10_000,
+    });
+    await dealer.preparer.constructTransactionSet({
+      operationId: "a-payment-in-flight",
+      amountWei: parseEther("0.5"),
+      kdf: () => playerAddress,
+      sourceAccounts: [held],
+    });
 
     await deliver(inbound([{ type: "text", text: "deal me in" }], STAMP));
 
@@ -350,10 +431,11 @@ describe("blackjack dealer behind the bot host", () => {
         text: "The dealer cannot cover a hand right now. Try again later.",
       },
     ]);
+    await dealer.close();
   });
 
-  it("says it cannot check what it covers, and offers nothing, when its wallet's balance cannot be read", async () => {
-    mockWalletBalance.mockRejectedValue(new Error("node unreachable"));
+  it("says it cannot check what it covers, and offers nothing, when what its wallet can spend cannot be read", async () => {
+    mockSpendable.mockRejectedValue(new Error("node unreachable"));
 
     await deliver(inbound([{ type: "text", text: "deal me in" }], STAMP));
 

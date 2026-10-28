@@ -253,6 +253,7 @@ export class EvmWallet implements EvmChainWalletHandle {
   getBalance!: EvmChainWalletHandle["getBalance"];
   getBalanceObservation?: EvmChainWalletHandle["getBalanceObservation"];
   getBalanceParts!: EvmChainWalletHandle["getBalanceParts"];
+  getSpendableBalance!: EvmChainWalletHandle["getSpendableBalance"];
   getReceivedPayments!: EvmChainWalletHandle["getReceivedPayments"];
   refreshReceivedPayments!: EvmChainWalletHandle["refreshReceivedPayments"];
   getMessagePayment!: EvmChainWalletHandle["getMessagePayment"];

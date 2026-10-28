@@ -1420,6 +1420,36 @@ export class EvmTransactionSetPreparer {
   }
 
   /**
+   * What one send could draw on right now, from the coin list as selection sees it: every coin
+   * selection may take at the policy's head (unspent, of no operation, past its funds-settle and
+   * spendable blocks, not claimed in the journal, not planned on top of another operation's
+   * move), each less its own transfer fee and less what the chain's spend rule keeps back in an
+   * account that sent within its wait. Not the display balance: a reserved coin, a coin still
+   * waiting for its block, or money still on its way to the wallet is not in it. Reads only;
+   * nothing is reserved. The caller refreshes the coin list and the policy first.
+   */
+  spendableNowWei(): bigint {
+    const policy = this.options.policy()
+    const fee = policy.changeGasLimit * policy.gasPriceWei, rule = policy.spendRule
+    return this.options.coins
+      .selectableAt({
+        sourceOrder: policy.sourceOrder,
+        head: policy.head,
+        canSelect: coin =>
+          this.options.journal.canSelect(coin.account, coin.nonce) &&
+          (this.options.canSelectCoin?.(coin) ?? true) &&
+          this.dependencyReady(coin, policy),
+      })
+      .reduce((sum, coin) => {
+        let part = coin.valueWei - fee
+        if (rule?.waitBlocks && coin.nonce > 0 &&
+            !(coin.lastSpentInBlock !== undefined && policy.head >= coin.lastSpentInBlock + rule.waitBlocks))
+          part -= rule.belowWei
+        return part > 0n ? sum + part : sum
+      }, 0n)
+  }
+
+  /**
    * The refusal for a send the free coins do not cover. When what the wallet's own unfinished
    * sends will hand back to it (`pendingOwnValue`) would cover what is missing, it says the
    * money is tied up in a previous send (owner ruling 2026-10-26: refuse, the user tries again);

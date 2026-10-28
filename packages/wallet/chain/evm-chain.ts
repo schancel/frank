@@ -2768,6 +2768,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async getBalance() {
               return balanceOfParts(await wallet.getBalanceParts!());
             },
+            // What a send can draw on now: the coin list as selection sees it at the head just
+            // read. Not cached and not the display figure above.
+            async getSpendableBalance() {
+              requireOpenWallet(wallet);
+              await transactionSetRuntime.refresh();
+              return transactionSetPreparer.spendableNowWei();
+            },
             getBalanceObservation() {
               return lastBalanceObservation;
             },

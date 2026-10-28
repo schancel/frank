@@ -900,9 +900,13 @@ export class FrankBotHost {
           if (address) {
             return this.provider.getBalance(address);
           }
-          // What the bot can spend: every coin its wallet pays from, not only the identity
-          // account (which the wallet spends from and maintenance splits like any other).
-          return wallet.getBalance();
+          // What the bot can pay with now: the coins its wallet's sends draw on, unreserved and
+          // settled at the current head. Not the identity account alone (the wallet spends from
+          // it and maintenance splits it like any other), and not the display balance (which
+          // counts money held by an operation or still settling).
+          if (!wallet.getSpendableBalance)
+            throw new Error("This wallet cannot say what it can spend now");
+          return wallet.getSpendableBalance();
         },
 
         publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {

@@ -416,6 +416,8 @@ describe("several bots on one host", () => {
           ...(await createWallet(roots)),
           getReceiveAddress: async () => ({ raw: receive }),
           getBalance: jest.fn(async () => payerBalance),
+          // What the faucet's sends can draw on now: what the bot host sizes grants from.
+          getSpendableBalance: jest.fn(async () => payerBalance),
         })
       );
       chain.directMessages.minimumStamp = async () => 10_000_000_000_000_000n;

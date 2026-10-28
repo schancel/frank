@@ -498,6 +498,7 @@ import {
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import BlackjackCards from './BlackjackCards.vue'
+import { outgoingFailureReasonText } from '../../../utils/outgoing-failure'
 import { useChatStore } from '../../../stores/chats'
 import { useBalance } from '../../../composables/useBalance'
 import { getOwnCanonicalAddress } from '../../../utils/own-address'
@@ -896,21 +897,18 @@ export default defineComponent({
     },
     undeliveredReason(): string {
       const messages = useChatStore().activeConversation?.messages ?? []
-      const reason = messages.find(m => m.payloadDigest === this.payloadDigest)
-        ?.delivery?.failureReason
-      const keys: Record<string, string> = {
-        'unreachable': 'outgoing.reasonUnreachable',
-        'unavailable': 'outgoing.reasonUnavailable',
-        'rejected': 'outgoing.reasonRejected',
-        'rejected-paid': 'outgoing.reasonRejectedPaid',
-        'interrupted': 'outgoing.reasonInterrupted',
-        'unverified': 'outgoing.reasonUnverified',
-        'recovered': 'outgoing.reasonRecovered',
-        'insufficient-funds': 'outgoing.reasonInsufficientFunds',
-        'funds-in-pending-send': 'outgoing.reasonFundsInPendingSendNoAmount',
-        'recipient-unregistered': 'outgoing.reasonRecipientUnregistered',
-      }
-      return this.$t(keys[reason ?? ''] ?? 'outgoing.reasonError')
+      const delivery = messages.find(
+        m => m.payloadDigest === this.payloadDigest,
+      )?.delivery
+      // The shared mapping of every failure reason (`outgoing-failure.ts`).
+      return (
+        outgoingFailureReasonText(
+          delivery?.failureReason,
+          delivery?.detail,
+          (key, params) => this.$t(key, params ?? {}),
+          activeChain,
+        ) ?? this.$t('outgoing.reasonError')
+      )
     },
     statusText(): string {
       const state = this.state

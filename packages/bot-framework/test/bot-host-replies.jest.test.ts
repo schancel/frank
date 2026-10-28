@@ -22,6 +22,7 @@ import {
 } from "../src/bot-host";
 import { FundsInPendingSendError } from "@frank/wallet/evm-transaction-set-types";
 import { InsufficientStampFundsError } from "@frank/wallet/evm-account-pool";
+import { UnsupportedContactPaymentRecordError } from "@frank/wallet/chain/chain-wallet";
 import { joinConsecutiveTextItems } from "@frank/wallet/message-item-plugins/text/long-text";
 import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
 import { MAX_SEALED_MESSAGE_CONTENT_BYTES } from "@frank/wallet/chain/direct-message-limits";
@@ -789,6 +790,49 @@ describe("FrankBotHost replies", () => {
           ([line]) =>
             String(line).includes("is not sent again") &&
             String(line).includes("5000 wei")
+        )
+      ).toBe(true);
+    });
+
+    it("refused because it carries a payment an older version of the wallet made is rejected to the handler at once, saying why, and never sent again by the host", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const outcomes: string[] = [];
+      const { host, instance } = await start(
+        bot("older-payment-bot", async (message) => {
+          try {
+            await message.reply([{ type: "text", text: "you won" }]);
+            outcomes.push("sent");
+          } catch (refusal) {
+            outcomes.push(
+              refusal instanceof UnsupportedContactPaymentRecordError ? "refused" : "other"
+            );
+          }
+        })
+      );
+      // Labelled as having created nothing, the host would otherwise send it again on later
+      // polls; the same message is refused the same way every time.
+      mockSend.mockReset().mockRejectedValue(
+        Object.defineProperty(
+          new UnsupportedContactPaymentRecordError("0xabc", "m-1"),
+          directMessageNotAttempted,
+          { value: true }
+        )
+      );
+      const message = inbound("roll");
+      await poll(host, [message]);
+      await drain(instance);
+      for (let pass = 0; pass < 3; pass++) {
+        await poll(host, [message]);
+        await drain(instance);
+      }
+      expect(outcomes).toEqual(["refused"]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("is not sent again") &&
+            String(line).includes("older version of the wallet")
         )
       ).toBe(true);
     });
@@ -2015,6 +2059,32 @@ describe("FrankBotHost replies", () => {
             String(line).includes(String(MAX_SEALED_MESSAGE_CONTENT_BYTES))
         )
       ).toBe(true);
+    });
+
+    // The same error also comes out of a payment's submit or release, after its set was signed
+    // and perhaps handed out. Without the wallet's not-attempted label it is not a refusal made
+    // before anything was paid, so the reply is not given up: it stays owed under its one ID.
+    it("an older version's payment refusal the wallet did not label as not attempted is not given up", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(answering());
+      mockSend
+        .mockReset()
+        .mockRejectedValueOnce(new UnsupportedContactPaymentRecordError("0xabc", "m-1"))
+        .mockImplementation(accept);
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      expect(await finished(instance, message)).toBe(false);
+      expect(
+        error.mock.calls.some(([line]) => String(line).includes("Giving up on the reply"))
+      ).toBe(false);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:hello", "re:hello"]);
+      const ids = mockSend.mock.calls.map(([params]) => params.messageId);
+      expect(new Set(ids).size).toBe(1);
+      expect(await finished(instance, message)).toBe(true);
     });
 
     it("the wallet refused because the bot's funds are tied up in an earlier send is given up, saying so and how much, and not sent again on later polls", async () => {

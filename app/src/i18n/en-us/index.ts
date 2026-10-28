@@ -962,6 +962,8 @@ export const rawEnUS = {
       'Its payment is below the minimum the network allows. Nothing was paid.',
     reasonGroupPriceChanged:
       "The group's price changed to {amount} {unit} per message. Nothing was paid; Retry sends it at the new price.",
+    reasonGroupPriceChangedNoAmount:
+      "The group's price per message changed. Nothing was paid; Retry sends it at the new price.",
     reasonStampBelowFeeAmount:
       'Its payment is below the minimum of {amount} {unit}: ten times what the network charges to move it. Nothing was paid.',
     reasonFeeExceeded:
@@ -1031,6 +1033,7 @@ export const rawEnUS = {
     discardSend: 'Discard',
     insufficientFunds: 'Not enough {unit} — failed to send',
     stampBelowFee: 'Stamp below minimum fee',
+    paymentOlderVersion: 'Not sent: carries an older version’s payment',
     notInContacts: 'Not in your contacts',
     openSender: "Open {name}'s profile",
     noPayloadFound: 'Unable to find message payload',

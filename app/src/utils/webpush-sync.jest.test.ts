@@ -334,17 +334,29 @@ describe('coalesceRuns: one relay policy sync per burst of changes', () => {
     expect(run).toHaveBeenCalledTimes(3)
   })
 
+  // The settle time is counted on the clock jest controls. On the real clock the four 10 ms
+  // waits had to finish inside the 60 ms settle time; a pause of the test process of about 15 ms
+  // (garbage collection, or a loaded machine during the full suite) let the run start early and
+  // failed the test with "Expected number of calls: 0".
   it('with a settle time, calls spread over that time share one run', async () => {
-    const run = jest.fn(async () => undefined)
-    const request = coalesceRuns(run, 60)
-    const done = request()
-    for (let i = 0; i < 4; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-      void request()
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    try {
+      const run = jest.fn(async () => undefined)
+      const request = coalesceRuns(run, 60)
+      const done = request()
+      for (let i = 0; i < 4; i++) {
+        await jest.advanceTimersByTimeAsync(10)
+        void request()
+      }
+      expect(run).not.toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(19)
+      expect(run).not.toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(1)
+      await done
+      expect(run).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
     }
-    expect(run).not.toHaveBeenCalled()
-    await done
-    expect(run).toHaveBeenCalledTimes(1)
   })
 
   it('a failed run does not stop later ones', async () => {

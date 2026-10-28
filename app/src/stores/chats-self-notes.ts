@@ -2,7 +2,6 @@ import {
   CanonicalRecipientNotPublishedError,
   DirectMessageStampBelowFeeError,
   NativeFeeExceededError,
-  UnsupportedContactPaymentRecordError,
 } from '@frank/wallet/chain'
 import {
   MonadStampAbandonedError,
@@ -16,7 +15,10 @@ import {
   MonadMailboxUnavailableError,
 } from '@frank/cashweb/relay/mailbox-client'
 import { OpenDirectoryError } from '@frank/cashweb/relay/open-directory'
-import { unencodableReason } from '@frank/wallet/chain/direct-message-refusal'
+import {
+  permanentRefusalReason,
+  unencodableReason,
+} from '@frank/wallet/chain/direct-message-refusal'
 import { describeWalletFailure } from '@frank/wallet/wallet-failure'
 import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
 import type {
@@ -302,14 +304,11 @@ export function classifySendFailure(
       return { reason: 'stamp-below-fee' }
     if (error instanceof NativeFeeExceededError)
       return { reason: 'fee-exceeded' }
-    // It carries a payment an older version of the wallet made: refused before anything of
-    // the message existed, and refused the same way again.
-    if (error instanceof UnsupportedContactPaymentRecordError)
-      return { reason: 'payment-older-version' }
     // Refused before anything was paid or handed out, and the same message is refused again:
-    // larger than a message carries, or an item no plugin can encode.
-    const unencodable = unencodableReason(error)
-    if (unencodable) return { reason: unencodable }
+    // larger than a message carries, an item no plugin can encode, or a payment an older
+    // version of the wallet made.
+    const permanent = permanentRefusalReason(error)
+    if (permanent) return { reason: permanent }
   } catch {
     // Hostile unknown values have no presentation classification authority.
   }

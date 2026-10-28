@@ -858,12 +858,13 @@ export default defineComponent({
           activeChain,
           this.message.stampValueWei,
         )
-        // Refused before its stamp was paid: the amount is not shown as if it had been.
+        // Refused before its stamp was paid, with no earlier attempt that may have paid it:
+        // the amount is not shown as if it had been.
         if (
           this.message.outbound &&
           this.message.status === 'error' &&
           this.message.stampValueWei > 0n &&
-          failedBeforePayment(this.message.delivery?.failureReason)
+          failedBeforePayment(this.message.delivery)
         )
           return this.$t('outgoing.amountNotPaid', { amount })
         return !this.message.outbound &&

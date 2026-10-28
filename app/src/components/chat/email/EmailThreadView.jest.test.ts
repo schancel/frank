@@ -1590,6 +1590,46 @@ describe('EmailThreadView', () => {
         errorSpy.mockRestore()
       })
 
+      // Its own short label, and the full reason from the mapping every view shares, not just
+      // "Failed to send".
+      it('a card refused for carrying an older version’s payment says so', async () => {
+        const refused: ChatMessage = {
+          outbound: true,
+          status: 'error',
+          delivery: { failureReason: 'payment-older-version' },
+          receivedTime: 3000,
+          serverTime: 3000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<frank_3000_0dd0dd@frank.org>',
+              from: { address: 'me@frank.org', name: 'Me' },
+              to: [{ address: 'bob@example.com', name: 'Bob Jones' }],
+              subject: 'Re: Project Kickoff',
+              textBody: 'Refused reply text',
+            } as EmailItem,
+          ],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-older-payment',
+        }
+        const threadMessages = [...messages, refused]
+        const wrapper = mountView({
+          messages: threadMessages,
+          conversation: { ...conversation, messages: threadMessages },
+        })
+        const vm = wrapper.vm as any
+        await wrapper.vm.$nextTick()
+        const card = vm.parsedEmails.find(
+          (c: any) => c.payloadDigest === 'digest-older-payment',
+        )
+        const badge = vm.cardDeliveryBadge(card)
+        expect(badge?.label).toBe('Not sent: carries an older version’s payment')
+        expect(badge?.detail).toMatch(
+          /^It carries a payment made by an older version of the wallet\./,
+        )
+      })
+
       it('renders specific insufficient-funds badge and supports Retry, Discard, and Cancel on outbound cards', async () => {
         const { useChatStore } = await import('src/stores/chats')
         const chatStore = useChatStore()

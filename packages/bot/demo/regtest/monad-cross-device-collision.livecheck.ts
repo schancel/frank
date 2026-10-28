@@ -213,6 +213,15 @@ async function nextSendGoesThrough(device: RealWallet, to: string, label: string
   }
 }
 
+/** B's message reached its hold (its attempt is recorded), or B's send ended before that: a send
+ * that fails before recording an attempt never reaches the hold, and waiting for it alone would
+ * wait forever. */
+async function heldOrEnded(held: Promise<string>, outcome: Promise<string>, label: string): Promise<string> {
+  const first = await Promise.race([held.then(digest => ({ digest })), outcome.then(ended => ({ ended }))])
+  if ('digest' in first) return first.digest
+  throw new Error(`${label}: B's send ended before it recorded its message: ${first.ended}`)
+}
+
 async function main() {
   const stack = await startRegtestStack({ chains: ['monad-regtest'] })
   const monad = monadOf(stack)
@@ -297,7 +306,7 @@ async function main() {
         () => 'returned',
         (error: Error) => `${error.name}: ${error.message}`,
       )
-      const bDigest = await held
+      const bDigest = await heldOrEnded(held, bOutcome, label)
       const bFirst = written.get(bDigest)!.at(-1)!
       const bTaken = bFirst.payments.map(payment => Transaction.from(payment.rawTx))
       console.log(`${label}: B signed ${bTaken.map(tx => `${tx.hash} (${tx.from} nonce ${tx.nonce})`).join(', ')}`)
@@ -495,7 +504,7 @@ async function main() {
           },
         })
         .then(() => 'returned', (error: Error) => `${error.name}: ${error.message}`)
-      const bDigest = await held
+      const bDigest = await heldOrEnded(held, bOutcome, label)
       const operationId = evmStealthTransactionSetOperationId(intent.operationId)
       const preparer = evmWalletInternals(b.handle).transactionSetPreparer!
       const signed = (await preparer.readOperation(operationId))!.members.map(member => Transaction.from(member.signed!.rawTransaction))

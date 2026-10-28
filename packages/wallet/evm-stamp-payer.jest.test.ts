@@ -503,6 +503,29 @@ describe('settlement: the chain decides', () => {
     expect((await second).accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
   })
 
+  it('a coin stored without its funds-visible block is not spent before its whole wait, above the reserve too', async () => {
+    // A coin list written before `fundsVisibleFromBlock` existed: its wait may be money that just
+    // arrived, so the absent field means the whole of `spendableFromBlock`.
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    await f.list.put({
+      account: at(main),
+      nonce: 0,
+      privateKey: main.privateKey,
+      valueWei: 50n * MON,
+      origin: 'root',
+      spendableFromBlock: 1004,
+    })
+    let claimed = false
+    const claim = f.payer
+      .claim({ holder: 'one', stampValueWei: MON / 100n })
+      .then(made => ((claimed = true), made))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(claimed).toBe(false)
+    f.node.head = 1004
+    expect((await claim).accounts[0]).toMatchObject({ address: at(main), nonce: 0 })
+  })
+
   it('funds that just arrived are listed with the block from which they may be spent', async () => {
     const f = await make({ spendSpacingBlocks: 3 })
     f.node.balances.set(at(main), MON)

@@ -25,6 +25,7 @@ import type {
 import type { EvmCoinList } from './evm-coin-list'
 import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { constructWhenSpendable } from './evm-transaction-set'
+import { nextCoinWaits } from './chain/evm-spend-rule'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -238,6 +239,24 @@ export function bindRetainedForumAuthority(
   return { request, target, transactions: [transaction], record }
 }
 
+/** The waits of the account's next coin after a retained Forum burn, read at `head`. The
+ * account holds more than the burn left it (or what it held before is unknown): money arrived
+ * by `head`, and it waits like any money that just arrived (`nextCoinWaits`). */
+export function retainedForumNextCoinWaits(params: {
+  head: number
+  spendSpacingBlocks: number
+  balance: bigint
+  heldBefore?: bigint
+  burnValue: bigint
+}): { spendableFromBlock?: number; fundsVisibleFromBlock?: number } {
+  return nextCoinWaits(
+    params.head,
+    params.spendSpacingBlocks,
+    params.heldBefore === undefined ||
+      params.balance > params.heldBefore - params.burnValue,
+  )
+}
+
 /** Composition supplies the wallet's existing inventory; recovery never opens another store. */
 export async function observeRetainedForumSpend(
   wallet: EvmWalletHandle,
@@ -328,9 +347,15 @@ export async function observeRetainedForumSpend(
         ? {}
         : { changeIndex: original.changeIndex }),
       lastSpentInBlock: head.number,
-      ...(spendSpacingBlocks > 0
-        ? { spendableFromBlock: head.number + spendSpacingBlocks }
-        : {}),
+      ...retainedForumNextCoinWaits({
+        head: head.number,
+        spendSpacingBlocks,
+        balance,
+        ...(original === undefined
+          ? {}
+          : { heldBefore: original.valueWei }),
+        burnValue: tx.value,
+      }),
     })
     return true
   })

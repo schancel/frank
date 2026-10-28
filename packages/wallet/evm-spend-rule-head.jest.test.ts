@@ -27,6 +27,7 @@ import {
 import { describeWalletFailure } from './wallet-failure'
 import { waitForSpendSpacing } from './evm-stamp-payer'
 import { getChainRegistryEntry } from './chain/chains-registry'
+import { retainedForumNextCoinWaits } from './evm-forum-operation'
 
 const FUNDED = 348579
 const BET = 42_840_000_000_000_000n
@@ -439,4 +440,23 @@ it('counted from the proposed head, the same coin is signed at once into bytes t
     await f.runtime.stop()
     await f.journal.Close()
   }
+})
+
+it('after a Forum burn, money that arrived with it waits four blocks, whatever the reserve', () => {
+  // The burn of 0.01 MON left the account 0.99; at the head it holds 1.49: 0.5 arrived by then.
+  const MON = 10n ** 18n
+  const burn = { head: 500, spendSpacingBlocks: SPACING, burnValue: MON / 100n }
+  expect(
+    retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON + MON / 2n - MON / 100n }),
+  ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 504 })
+  // What it held before is not known: the same.
+  expect(retainedForumNextCoinWaits({ ...burn, balance: MON })).toEqual({
+    spendableFromBlock: 504,
+    fundsVisibleFromBlock: 504,
+  })
+  // Nothing arrived: the quiet window, with the same margin, which a transfer above the
+  // reserve may skip.
+  expect(
+    retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON - MON / 100n - 21_000n }),
+  ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 500 })
 })

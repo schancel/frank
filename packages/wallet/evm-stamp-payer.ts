@@ -24,7 +24,7 @@ import { selectStampAccounts } from './evm-stamp-account-selection'
 import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { resignedTransaction } from './chain/evm-refused-resign'
-import { fundsSettleBlocks, readSpendRuleHead } from './chain/evm-spend-rule'
+import { nextCoinWaits, readSpendRuleHead } from './chain/evm-spend-rule'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -360,12 +360,11 @@ export class EvmStampPayer {
   ): boolean {
     if (coin.spendableFromBlock === undefined) return true
     if (head !== undefined && head >= coin.spendableFromBlock) return true
-    // Money the node does not see yet cannot pay a transfer's gas, whatever the reserve.
-    if (
-      coin.fundsVisibleFromBlock !== undefined &&
-      (head === undefined || head < coin.fundsVisibleFromBlock)
-    )
-      return false
+    // Money the node does not see yet cannot pay a transfer's gas, whatever the reserve. A coin
+    // that does not say when its money is visible (one stored before it was recorded) waits its
+    // whole `spendableFromBlock`.
+    const visible = coin.fundsVisibleFromBlock ?? coin.spendableFromBlock
+    if (head === undefined || head < visible) return false
     // The quiet window only bites a transfer that takes the account below its reserve.
     const floor = this.config.reserveBalanceWei
     return (
@@ -1167,20 +1166,17 @@ export class EvmStampPayer {
           await coins.recordMined(coin, { block: included })
           this.config.sync.markDirty(account)
         } else {
-          const spacing = this.config.spendSpacingBlocks ?? 0
-          // The quiet window after the account's own transfer, with the margin the rest of the
-          // rule keeps (`fundsSettleBlocks`). What the account held at `included` beyond what the
-          // coin left it (its value less the payment; the fee came in at most at its ceiling) is
-          // money that arrived by that block: the node does not see it before the same block,
-          // whatever the reserve.
-          const settles = included + fundsSettleBlocks(spacing)
-          const fresh = spacing > 0 && balance > coin.valueWei - tx.value
+          // More than the coin left it (its value less the payment; the fee came in at most at
+          // its ceiling) is money that arrived by `included` (`nextCoinWaits`).
           await coins.recordMined(coin, {
             block: included,
             successor: {
               valueWei: balance,
-              ...(spacing > 0 ? { spendableFromBlock: settles } : {}),
-              ...(fresh ? { fundsVisibleFromBlock: settles } : {}),
+              ...nextCoinWaits(
+                included,
+                this.config.spendSpacingBlocks ?? 0,
+                balance > coin.valueWei - tx.value,
+              ),
             },
           })
         }

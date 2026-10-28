@@ -102,3 +102,22 @@ export function spendRuleHeadReader(
     return last.head
   }
 }
+
+/**
+ * The waits of an account's next coin, read at `block` after the account's own transfer was
+ * mined (at or before `block`). The quiet window, with the margin the rest of the rule keeps:
+ * `fundsSettleBlocks` after `block`. When the account holds more than that transfer left it
+ * (`freshMoney`), money arrived by `block` too; the node does not see it before the same
+ * block, and nothing relaxes that (`fundsVisibleFromBlock`), not even a transfer that leaves
+ * the account above the reserve. Otherwise its money is visible already (`block`) and only the
+ * quiet window holds it. Spacing 0: no wait.
+ */
+export function nextCoinWaits(
+  block: number,
+  spacing: number,
+  freshMoney: boolean,
+): { spendableFromBlock?: number; fundsVisibleFromBlock?: number } {
+  if (spacing <= 0) return {}
+  const settles = block + fundsSettleBlocks(spacing)
+  return { spendableFromBlock: settles, fundsVisibleFromBlock: freshMoney ? settles : block }
+}

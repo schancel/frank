@@ -530,7 +530,7 @@ export class EvmCoinListSync {
       // listed is no new money. Anything else may have arrived as late as the newest block.
       if (live?.state === 'unspent' && live.nonce === latest && balance <= live.valueWei) {
         spendableFromBlock = live.spendableFromBlock
-        fundsVisibleFromBlock = live.fundsVisibleFromBlock
+        fundsVisibleFromBlock = live.fundsVisibleFromBlock ?? live.spendableFromBlock
       } else fundsVisibleFromBlock = spendableFromBlock = (await newestBlock()) + lag
     }
     // The account sent after `head - spacing`: by the newest block at the latest, and the coin
@@ -544,6 +544,10 @@ export class EvmCoinListSync {
       spentBy = await newestBlock()
       spendableFromBlock = Math.max(spendableFromBlock ?? 0, spentBy + spacing)
     } else if (beforeUnknown && !spendDated) spentBy = await newestBlock()
+    // Only the quiet window holds the coin: its money is visible already, and a transfer that
+    // leaves the account above the reserve may go (an absent field would mean the whole wait).
+    if (spendableFromBlock !== undefined && fundsVisibleFromBlock === undefined)
+      fundsVisibleFromBlock = head
     // Marked dirty while those later reads were out: what they saw may predate the mark.
     if (
       (newest !== undefined || spendableFromBlock !== undefined) &&

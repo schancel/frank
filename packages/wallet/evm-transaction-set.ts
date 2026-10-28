@@ -465,7 +465,9 @@ export class EvmTransactionSetPreparer {
             ...(fresh === undefined && quiet === undefined
               ? {}
               : { spendableFromBlock: Math.max(fresh ?? 0, quiet ?? 0) }),
-            ...(fresh === undefined ? {} : { fundsVisibleFromBlock: fresh }),
+            ...(fresh === undefined && quiet === undefined
+              ? {}
+              : { fundsVisibleFromBlock: fresh ?? account.blockNumber }),
           })
         }
       }

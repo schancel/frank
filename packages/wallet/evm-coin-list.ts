@@ -72,10 +72,12 @@ export interface EvmListCoin {
   readonly spendingTx?: string
   /** Not selectable before the chain's head reaches this block. */
   readonly spendableFromBlock?: number
-  /** Money in this coin arrived so recently that the node does not see it before this block
-   * (the funds-settle rule, `fundsSettleBlocks`). Unlike the rest of `spendableFromBlock` (the
-   * reserve rule's quiet window, which a transfer that leaves the account above the reserve may
-   * skip), nothing relaxes it. At most `spendableFromBlock`. */
+  /** The block from which the node sees all the money in this coin (the funds-settle rule,
+   * `fundsSettleBlocks`). Unlike the rest of `spendableFromBlock` (the reserve rule's quiet
+   * window, which a transfer that leaves the account above the reserve may skip), nothing
+   * relaxes it. At most `spendableFromBlock`. Absent while `spendableFromBlock` is set: the
+   * same as `spendableFromBlock`, so a coin stored before this field existed is never spent
+   * before its whole wait. */
   readonly fundsVisibleFromBlock?: number
   /** `spent`: the block that included its spending transaction. */
   readonly spentInBlock?: number

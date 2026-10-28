@@ -162,6 +162,8 @@ async function settle() {
   await flushPromises()
 }
 
+const mountedRoots: Array<{ exists(): boolean; unmount(): void }> = []
+
 async function mountedConversations(bot = false) {
   const pinia = createPinia()
   let persistence: { save: (...args: unknown[]) => Promise<void> }
@@ -192,6 +194,7 @@ async function mountedConversations(bot = false) {
       },
     },
   )
+  mountedRoots.push(root)
   const chats = useChatStore()
   const contacts = useContactStore()
   for (const [address, name] of [
@@ -257,7 +260,12 @@ beforeEach(() => {
   jest.clearAllMocks()
   jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
 })
-afterEach(() => jest.restoreAllMocks())
+afterEach(() => {
+  // Every mounted list shares the receipt clock. Retire fixtures even when a test
+  // omits its own teardown so later tests cannot wake another Pinia instance.
+  for (const root of mountedRoots.splice(0)) if (root.exists()) root.unmount()
+  jest.restoreAllMocks()
+})
 
 it.each([false, true])(
   "Start Conversation without a subject opens the peer's one default thread (bot: %s)",

@@ -6,10 +6,12 @@
  *
  * `startRegtestStack` runs the relay (CASHWEBD_BIN, or this worktree's Cargo build) on the
  * long-running solonet. gina has two devices (`gina-a`, `gina-b`: one account root), bob is the
- * recipient. bob pays gina a stamp, so both of gina's devices list the same received coin, which
- * their selection takes first. Device B signs its message's payment from that coin and is held
- * just before it hands anything out; device A then sends from the same coin, and the chain takes
- * A's transaction. B is let go: its own transaction can never land (its nonce is used by A's).
+ * recipient. bob pays gina a stamp, so both of gina's devices list the same received coin. Device
+ * B signs its message's payment and is held just before it hands anything out; device A (the same
+ * account keys) then signs a transfer from the account and nonce B's payment was signed from, and
+ * the chain takes A's transaction. (A's own wallet does not always choose the same coin as B, so
+ * A signs with that coin's key directly.) B is let go: its own transaction can never land (its
+ * nonce is used by A's).
  *
  * Checked:
  *   1. B's message is delivered, paid once, in full, from another coin; its first signed payment
@@ -227,6 +229,26 @@ async function main() {
   const devices: RealWallet[] = []
   let other: OtherDevice | undefined
   const keys = new Map<string, string>()
+  /** Another device of gina's account (A: the same account keys, read here from B's list) signs
+   * a transfer to the faucet from the account and nonce of `victim`, one of B's signed
+   * transactions, and hands it to the network. Signing from B's very account and nonce means the
+   * two always collide, whichever coin B chose. */
+  const takeAccount = async (
+    device: RealWallet, victim: Transaction, value: (balance: bigint, fee: bigint) => bigint, label: string,
+  ): Promise<string> => {
+    const key = evmWalletInternals(device.handle).coinList!.all()
+      .find(coin => coin.account.toLowerCase() === victim.from!.toLowerCase() && coin.privateKey)?.privateKey
+    assert.ok(key, `${label}: the account holds the key of ${victim.from}`)
+    const signer = new Wallet(key!, monad.provider)
+    const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
+    const balance = await monad.provider.getBalance(victim.from!)
+    const raw = await signer.signTransaction({
+      type: 0, chainId: (await monad.provider.getNetwork()).chainId, to: monad.faucetAddress,
+      value: value(balance, TRANSFER_GAS * gasPrice), nonce: victim.nonce, gasLimit: TRANSFER_GAS, gasPrice,
+    })
+    await monad.provider.send('eth_sendRawTransaction', [raw])
+    return Transaction.from(raw).hash!
+  }
   const remember = (device: RealWallet) => {
     for (const coin of evmWalletInternals(device.handle).coinList?.all() ?? [])
       if (coin.privateKey) keys.set(coin.account.toLowerCase(), coin.privateKey)
@@ -313,23 +335,7 @@ async function main() {
       // A pays from the same coin; the chain takes A's transaction.
       let relayStored: boolean | undefined
       let aHashes: string[]
-      /** A, holding the same account keys (read here from B's list), signs a transfer from the
-       * account and nonce of B's first payment and hands it to the network. */
-      const takeB = async (value: (balance: bigint, fee: bigint) => bigint): Promise<string> => {
-        const victim = bTaken[0]!
-        const key = evmWalletInternals(b.handle).coinList!.all()
-          .find(coin => coin.account.toLowerCase() === victim.from!.toLowerCase() && coin.privateKey)?.privateKey
-        assert.ok(key, `${label}: the account holds the key of ${victim.from}`)
-        const signer = new Wallet(key!, monad.provider)
-        const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
-        const balance = await monad.provider.getBalance(victim.from!)
-        const raw = await signer.signTransaction({
-          type: 0, chainId: (await monad.provider.getNetwork()).chainId, to: monad.faucetAddress,
-          value: value(balance, TRANSFER_GAS * gasPrice), nonce: victim.nonce, gasLimit: TRANSFER_GAS, gasPrice,
-        })
-        await monad.provider.send('eth_sendRawTransaction', [raw])
-        return Transaction.from(raw).hash!
-      }
+      const takeB = (value: (balance: bigint, fee: bigint) => bigint) => takeAccount(b, bTaken[0]!, value, label)
       if (variant === 'relay-stored') {
         // A's transaction goes to the network first, and B is let go at once: the relay reads
         // the account before the network shows A's transaction used the nonce, stores B's
@@ -343,21 +349,18 @@ async function main() {
       } else if (variant === 'different-value') {
         // A moves most of the account B's payment was signed from (B is let go only after it
         // landed): B's later transfers from that account were signed against money that is gone.
-        // A signs from B's very account, so the two always collide, whichever coin B chose.
         aHashes = [await takeB((balance, fee) => balance - fee * 4n)]
       } else {
-        const aSent = await a.call<{ digest: string; txHashes: string[] }>({
-          op: 'send', to: bob.address, text: `${label} from device A`, stampWei: STAMP_WEI,
-        })
-        aHashes = aSent.txHashes
+        // A pays the same value from the same account and nonce (B is let go only after it
+        // landed).
+        aHashes = [await takeB(() => STAMP_WEI)]
       }
       const aTxs = await Promise.all(
         aHashes.map(async txHash => {
           const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
-          // A's raw transfer (rounds 3 and 4) only has to use the nonce: included either way.
-          // Solonet has included one reverted (status 0) right after the coin's funding.
-          if (variant !== 'same-coin') assert.ok(receipt, `A's transaction ${txHash} was included`)
-          else assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
+          // A's transfer only has to use the nonce: included either way. Solonet has included
+          // one reverted (status 0) right after the coin's funding.
+          assert.ok(receipt, `A's transaction ${txHash} was included`)
           const tx = (await monad.provider.getTransaction(txHash))!
           return { from: tx.from, nonce: tx.nonce }
         }),
@@ -517,12 +520,11 @@ async function main() {
       const preparer = evmWalletInternals(b.handle).transactionSetPreparer!
       const signed = (await preparer.readOperation(operationId))!.members.map(member => Transaction.from(member.signed!.rawTransaction))
       console.log(`${label}: B signed its combined set ${signed.map(tx => `${tx.hash} (${tx.from} nonce ${tx.nonce})`).join(', ')}`)
-      const aSent = await a.call<{ digest: string; txHashes: string[] }>({
-        op: 'send', to: bob.address, text: `${label} from device A`, stampWei: STAMP_WEI,
-      })
-      const aTxs = await Promise.all(aSent.txHashes.map(async txHash => {
+      // A takes the account and nonce of the set's first transaction.
+      const aHash = await takeAccount(b, signed[0]!, () => STAMP_WEI, label)
+      const aTxs = await Promise.all([aHash].map(async txHash => {
         const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
-        assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
+        assert.ok(receipt, `A's transaction ${txHash} was included`)
         const tx = (await monad.provider.getTransaction(txHash))!
         return { from: tx.from, nonce: tx.nonce }
       }))

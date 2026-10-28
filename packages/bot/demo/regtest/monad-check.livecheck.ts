@@ -102,7 +102,8 @@ async function main() {
   } finally {
     // The wallets' keys go with the stack's directory: what they hold goes back first.
     try {
-      const { returnedWei, leftWei } = await returnToFaucet(stack)
+      const { returnedWei, leftWei, unswept } = await returnToFaucet(stack)
+      if (unswept === 0) stack.fundsReturned()
       const [returned, left] = [formatEther(returnedWei), formatEther(leftWei)]
       console.log(
         `returned ${returned} MON to the faucet; ${left} MON left (dust, or a failed transfer)`,

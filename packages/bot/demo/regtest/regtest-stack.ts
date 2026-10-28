@@ -19,6 +19,13 @@
  * Ctrl-C (SIGINT), SIGTERM and SIGHUP stop the stack the same way before the process ends, and
  * however the process ends its children are killed and the run's directory removed.
  *
+ * Test funds are never deleted with it: solonet (`monad-regtest`) outlives the stack, so a stack
+ * on it removes its directory, wallet keys and all, only once the check has called
+ * `fundsReturned()` (every account it funded is swept). Otherwise, also on a signal or a crash,
+ * the directory (without the relay databases) is first copied to
+ * `~/.frank-regtest/kept-stacks/<name>` (FRANK_REGTEST_KEPT_DIR, absolute only), and where it went is printed with
+ * the command that sweeps it: `yarn --cwd packages/bot regtest:monad-sweep-state <that directory>`.
+ *
  * The relay binary is CASHWEBD_BIN, otherwise this worktree's Cargo build (built first if needed).
  *
  * Networks: `xec-regtest` (eCash, Chronik; a node of this run) and `monad-regtest` (monad-solonet,
@@ -27,11 +34,12 @@
  * pay stamps: monad-wallets.ts opens them.
  */
 import { execFile } from 'child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join, resolve } from 'path'
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { homedir, tmpdir } from 'os'
+import { basename, isAbsolute, join, resolve } from 'path'
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
+import { REGTEST_GROUP_WRITE_PAYEE } from './chain-reach'
 import { Supervisor } from '../supervisor'
 import { startEcashRegtest } from './ecash-regtest'
 import { startMonadRegtest } from './monad-regtest'
@@ -49,6 +57,12 @@ export interface RegtestStack {
   readonly chains: Readonly<Record<string, RegtestChain>>
   readonly stateDir: string
   readonly relayLogPath: string
+  /**
+   * The check has swept every account it funded on solonet back to the faucet: `stop()` may then
+   * delete the state directory. Until it is called, a stack on solonet keeps its wallet keys
+   * (see the file comment).
+   */
+  fundsReturned(): void
   /** Stops the relay and every node, and checks their ports are closed. Safe to call twice. */
   stop(): Promise<void>
 }
@@ -96,7 +110,7 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     '[registry]',
     // Group writes are always paid. The stack pays 0xdead (nobody holds its key) at the least
     // price; a group creator may set a higher one.
-    `group_writes = { min_price_wei = "1000000000000", payee = "0x000000000000000000000000000000000000dEaD" }`,
+    `group_writes = { min_price_wei = "1000000000000", payee = "${REGTEST_GROUP_WRITE_PAYEE}" }`,
     `db_path = ${JSON.stringify(dbPath)}`,
     `network = "${mailbox?.chain.chainIdentifier ?? 'monad-regtest'}"`,
     'net = "regtest"',
@@ -231,8 +245,28 @@ export async function startRegtestStack(
   const chains: RegtestChain[] = []
   const relayPorts: number[] = []
   let stopped: Promise<void> | undefined
+  const onSolonet = (options.chains ?? []).includes('monad-regtest')
+  let fundsReturned = false
   const removeState = () => {
-    if (env.FRANK_REGTEST_KEEP !== '1') rmSync(stateDir, { recursive: true, force: true })
+    if (env.FRANK_REGTEST_KEEP === '1') return
+    if (onSolonet && !fundsReturned) {
+      // Funds may remain in this stack's wallets: their keys go somewhere durable first.
+      const keptRoot = env.FRANK_REGTEST_KEPT_DIR?.trim() || join(homedir(), '.frank-regtest', 'kept-stacks')
+      const kept = join(keptRoot, basename(stateDir))
+      try {
+        if (!isAbsolute(keptRoot)) throw new Error(`FRANK_REGTEST_KEPT_DIR must be an absolute path, not ${keptRoot}`)
+        cpSync(stateDir, kept, { recursive: true, filter: source => !/[/\\]relay-db[^/\\]*$/.test(source) })
+      } catch (err) {
+        console.error(
+          `[regtest] could not copy ${stateDir} to ${kept} (${err instanceof Error ? err.message : String(err)}); it is left in place, wallet keys and all`,
+        )
+        return
+      }
+      console.error(
+        `[regtest] funds may remain in this stack's solonet wallets; their keys are kept in ${kept}. Sweep them with: yarn --cwd packages/bot regtest:monad-sweep-state ${kept}`,
+      )
+    }
+    rmSync(stateDir, { recursive: true, force: true })
   }
   // Children run in their own process group, so the terminal's Ctrl-C reaches only this process.
   const onExit = () => {
@@ -293,6 +327,9 @@ export async function startRegtestStack(
       chains: Object.fromEntries(chains.map(chain => [chain.chainIdentifier, chain])),
       stateDir,
       relayLogPath,
+      fundsReturned: () => {
+        fundsReturned = true
+      },
       stop,
     }
   } catch (err) {

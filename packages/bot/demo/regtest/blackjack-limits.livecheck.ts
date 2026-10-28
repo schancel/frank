@@ -321,7 +321,7 @@ async function main(): Promise<boolean> {
       return undefined
     })
     if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
-    say(`keys stay in ${stack.stateDir} until it is removed: sweep again with yarn --cwd packages/bot funds:sweep ${stack.stateDir}`)
+    say(`keys stay in ${stack.stateDir} until it is removed: sweep again with yarn --cwd packages/bot regtest:monad-sweep-state ${stack.stateDir}`)
     await stack.stop()
   }
   say(problems.length ? `FAILED:\n  ${problems.join('\n  ')}` : 'all checks passed')

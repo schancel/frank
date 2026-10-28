@@ -199,12 +199,13 @@ async function main(): Promise<boolean> {
       /* returnToFaucet below */
     }
     try {
-      const { returnedWei, leftWei } = await returnToFaucet(stack)
+      const { returnedWei, leftWei, unswept } = await returnToFaucet(stack)
       console.log(`returned ${formatEther(returnedWei)} MON to the faucet; ${formatEther(leftWei)} MON left as dust or unsweepable`)
       // The saved keys go only once nothing worth a transfer is left on them.
       const monad = monadOf(stack)
       const fee = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
       const left = (await Promise.all(coinKeys.map(key => monad.provider.getBalance(new Wallet(key).address)))).filter(value => value > 2n * fee)
+      if (unswept === 0 && left.length === 0) stack.fundsReturned()
       if (left.length === 0 && leftWei === 0n) rmSync(keysFile, { force: true })
       else console.log(`keys kept in ${keysFile}: funds are still on them`)
     } finally {

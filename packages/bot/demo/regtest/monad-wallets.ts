@@ -15,8 +15,10 @@ import { join, resolve } from 'path'
 
 import { Wallet } from 'ethers'
 
+import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { findWallets, TRANSFER_GAS } from '../funds'
 import { openRealWallet, RealWallet } from '../real-stack'
+import { describeRanges, followTransfers, notTheWallets, type ReachBlock } from './chain-reach'
 import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_NETWORK_TAG, MonadRegtest } from './monad-regtest'
 import type { RegtestStack } from './regtest-stack'
 import { deployContracts, type DeploymentRecord } from '../../../contracts/scripts/deploy'
@@ -107,19 +109,32 @@ export async function deployMonadContracts(stack: RegtestStack): Promise<Deploym
 /**
  * Sends everything the stack's wallets hold back to the faucet, so a check leaves nothing in
  * accounts whose keys go with the stack's directory: each wallet's main, identity and change
- * accounts, found and derived the way `funds:sweep` finds them. It first lets the wallets' last
+ * accounts, found and derived the way `findWallets` (`funds.ts`) finds them. It first lets the wallets' last
  * transactions settle (Monad refuses to empty an account within a few blocks of its last one),
- * then moves one account at a time. Returns what came back and what stayed (dust or a failure).
+ * then moves one account at a time. Returns what came back, what stayed (dust or a failure), and
+ * how many accounts still hold more than dust (`unswept`). A check calls `stack.fundsReturned()`
+ * only when that is 0, so the stack keeps the keys otherwise.
+ *
+ * The keys found in the state directory are checked against the chain, not trusted: every
+ * transaction the found accounts sent since the solonet handle was opened (`startBlock`) is read
+ * block by block, and so are the transactions of every account those reached. A reached account
+ * that is none of the found ones (a coin the wallet holds whose key `findWallets` does not see)
+ * and holds more than dust afterwards counts in `unswept` and is named: the stack then keeps the
+ * wallets' state, from which the wallet itself can still spend it. So does each block range the
+ * node no longer has. The faucet, the burn address, the relays' group-write payee and `payees`
+ * are not the wallets' and are not counted.
  */
 export async function returnToFaucet(
   stack: RegtestStack,
-): Promise<{ returnedWei: bigint; leftWei: bigint }> {
+  payees: Iterable<string> = [],
+): Promise<{ returnedWei: bigint; leftWei: bigint; unswept: number }> {
   const monad = monadOf(stack)
   await monad.mine(4)
   const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
   const fee = TRANSFER_GAS * gasPrice
   let returnedWei = 0n
   let leftWei = 0n
+  let unswept = 0
   const seen = new Set<string>()
   for (const wallet of await findWallets(stack.stateDir))
     for (const account of wallet.accounts) {
@@ -145,10 +160,65 @@ export async function returnToFaucet(
         })
         const receipt = await tx.wait(1, 120_000)
         if (receipt?.status === 1) returnedWei += held - fee
-        else leftWei += held
+        else {
+          leftWei += held
+          unswept += 1
+        }
       } catch {
         leftWei += held
+        unswept += 1
       }
     }
-  return { returnedWei, leftWei }
+  const { missed, missing } = await accountsOutsideTheKeys(monad, seen, fee * 2n, payees)
+  for (const { address, held } of missed) {
+    leftWei += held
+    unswept += 1
+    console.warn(`[regtest] ${address} received money from the wallets and holds ${held} wei, but its key is not among those found: the stack's state is kept`)
+  }
+  if (missing.length > 0) {
+    unswept += missing.length
+    console.warn(`[regtest] the node no longer has ${describeRanges(missing)}, so where the wallets' money went there is unknown: the stack's state is kept`)
+  }
+  return { returnedWei, leftWei, unswept }
+}
+
+/**
+ * Check the keys a sweep found against the chain: every account the `found` accounts' transactions
+ * reached since `monad.startBlock`, followed through the accounts reached in turn, that is not
+ * itself found and holds more than `dust` now (`missed`), and the block ranges the node no longer
+ * has (`missing`). A check that ran longer than solonet's history window cannot tell where its
+ * wallets' money went in those blocks, so a caller counts each missing range as unswept and keeps
+ * the stack. The faucet, the burn address, the relays' group-write payee and `payees` are not the
+ * wallets' (`notTheWallets`).
+ */
+export async function accountsOutsideTheKeys(
+  monad: MonadRegtest,
+  found: Set<string>,
+  dust: bigint,
+  payees: Iterable<string> = [],
+): Promise<{ missed: { address: string; held: bigint }[]; missing: Array<[number, number]> }> {
+  const head = await monad.provider.getBlockNumber()
+  const numbers = Array.from({ length: head - monad.startBlock + 1 }, (_, i) => monad.startBlock + i)
+  const blocks: ReachBlock[] = []
+  for (let at = 0; at < numbers.length; at += 16) {
+    const batch = numbers.slice(at, at + 16)
+    const read = await Promise.all(batch.map(n => monad.provider.send('eth_getBlockByNumber', [`0x${n.toString(16)}`, true])))
+    batch.forEach((number, i) => blocks.push({ number, block: read[i] ?? null }))
+  }
+  const { reached, missing } = followTransfers(
+    blocks,
+    found,
+    notTheWallets(monad.faucetAddress, DEMO_DEFAULT_BURN_ADDRESS, payees),
+  )
+  const missed: { address: string; held: bigint }[] = []
+  for (const address of reached) {
+    const held = await monad.provider.getBalance(address)
+    if (held > dust) missed.push({ address, held })
+  }
+  console.log(
+    `[regtest] the wallets' transactions since block ${monad.startBlock} reached ${reached.size} accounts outside the ${found.size} found keys; ${missed.length} of those hold more than dust${
+      missing.length ? `; the node no longer has ${describeRanges(missing)}` : ''
+    }`,
+  )
+  return { missed, missing }
 }

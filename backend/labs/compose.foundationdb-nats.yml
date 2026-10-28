@@ -39,9 +39,16 @@ services:
       # The daemon test's group write pays on solonet: its JSON-RPC as this container reaches
       # it, for example http://host.docker.internal:48080 (see README.md).
       FRANK_LAB_SOLONET_RPC_URL: ${FRANK_LAB_SOLONET_RPC_URL:-}
+      # Every key the daemon test funds on solonet is written here before it is funded and
+      # removed once swept; a killed run's keys are swept by the next run (README.md).
+      FRANK_LAB_SOLONET_KEY_DIR: /solonet-keys
+      # Passed in only so the test can refuse a relative one (which lands in the checkout).
+      FRANK_LAB_SOLONET_KEY_HOST_DIR: ${FRANK_LAB_SOLONET_KEY_HOST_DIR:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - fdb-cluster:/cluster:ro
+      # On the host, so the keys outlive the container.
+      - ${FRANK_LAB_SOLONET_KEY_HOST_DIR:-${HOME}/.frank-lab-foundationdb-nats/${COMPOSE_PROJECT_NAME:-frank-lab-foundationdb-nats}/solonet-keys}:/solonet-keys
     depends_on:
       nats:
         condition: service_healthy

@@ -37,6 +37,8 @@ async function main() {
     chains: { [monad.chainIdentifier]: monad },
     stateDir,
     relayLogPath: '',
+    // This check never deletes its state directory, so the wallets' keys always stay.
+    fundsReturned: () => {},
     stop: async () => {},
   }
   const floor = evmPaymentFloorWei(BigInt(await monad.provider.send('eth_gasPrice', [])))
@@ -103,6 +105,7 @@ async function main() {
   } finally {
     for (const wallet of wallets) await wallet.close().catch(() => undefined)
     const swept = await returnToFaucet(stack)
+    if (swept.unswept === 0) stack.fundsReturned()
     console.log(`swept ${formatEther(swept.returnedWei)} back to the faucet; left ${formatEther(swept.leftWei)} (dust or in flight)`)
     monad.provider.destroy()
   }

@@ -9,10 +9,23 @@
 //! Docker Desktop, `http://host.docker.internal:48080` while `yarn --cwd packages/bot
 //! regtest:monad-start` runs it). Shared by `cluster_contract.rs` and
 //! `cashwebd-exe/tests/foundationdb_daemon.rs` through `#[path]`.
+//!
+//! No funded key is ever only in memory. `FRANK_LAB_SOLONET_KEY_DIR` names a directory that
+//! outlives the process (the lab composes bind-mount one from the host). Each process writes
+//! into a run directory of its own there, locked for its lifetime: every key this module
+//! generates is written to its own file before anything funds it, and its file is removed only
+//! once the key's sweep back to the faucet has landed. Payers are swept when their [`Funded`] is
+//! dropped, also while a failed test unwinds; a run that was killed leaves its files behind, and
+//! a later run's first [`Solonet::from_env`] sweeps every run directory whose lock is stale
+//! before it funds anything (backend/labs/README.md, "The keys the labs fund").
 #![allow(dead_code)]
 
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -47,6 +60,27 @@ const RPC_PATIENCE: Duration = Duration::from_secs(60);
 /// How long a funding send is retried while the node does not yet see its sender funded or is
 /// too busy to take it. On a quiet solonet the first retry, a block later, is taken.
 const FUNDING_PATIENCE: Duration = Duration::from_secs(180);
+/// Rounds of sweep sends; an account still holding funds after the last keeps its key file.
+const SWEEP_ATTEMPTS: u128 = 5;
+/// What a sweep's fee cap adds above base fee + tip: each round tips one wei more (other bytes:
+/// Monad keeps refusing bytes it refused once), so the cap covers every round's tip and the
+/// sweep holds back exactly `21,000 x cap`. Monad charges base fee + tip per gas, up to the cap
+/// (docs/protocol/chains/monad-reserve-balance.md), so at most `21,000 x` this is left behind.
+const SWEEP_TIP_MARGIN_WEI: u128 = SWEEP_ATTEMPTS;
+/// Gas limit of a plain transfer, which is what Monad charges.
+const TRANSFER_GAS: u128 = 21_000;
+/// How long a sent sweep is waited on to land.
+const SWEEP_LAND_PATIENCE: Duration = Duration::from_secs(60);
+/// How long the file of a key that holds nothing and never sent anything is kept. Its funding
+/// may still come: Monad has taken bytes it refused about 2,500 blocks (fifteen minutes) later
+/// (docs/protocol/chains/monad-reserve-balance.md), so a run that panicked while funding may
+/// yet see a refused funding land.
+const UNUSED_EMPTY_KEY_KEPT: Duration = Duration::from_secs(3600);
+
+/// This process's run directory: one per process, shared by its tests.
+static PROCESS_KEYS: std::sync::OnceLock<Arc<KeyFiles>> = std::sync::OnceLock::new();
+/// Leftover keys of earlier runs are swept once per process, before it funds anything.
+static LEFTOVERS_SWEPT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 /// A JSON-RPC call that did not succeed.
 #[derive(Debug)]
@@ -105,13 +139,330 @@ fn address(key: &SecretKey) -> [u8; 20] {
 pub struct Payer {
     key: SecretKey,
     pub address: [u8; 20],
+    /// Where its key is saved.
+    file: Arc<KeyFile>,
 }
 
-impl Payer {
-    fn fresh() -> Self {
+/// Where one key is saved, and what the faucet has signed to it.
+struct KeyFile {
+    /// `0x<address>.key`, or the `.0x<address>.partial` an interrupted save left behind.
+    path: PathBuf,
+    /// `0x<address>.funding`: one more than the highest faucet nonce a payment to this account
+    /// was signed at, written before that payment is sent.
+    funding: PathBuf,
+    /// Whether `path` is a save that never finished: then nothing was ever paid to the key.
+    partial: bool,
+    /// The value `funding` holds; 0 when the faucet never signed a payment to this account.
+    faucet_signed_below: AtomicU64,
+}
+
+/// How long a run's `.lock` may go untouched before the run counts as gone.
+const RUN_LOCK_STALE: Duration = Duration::from_secs(60);
+/// How often a live run touches its `.lock`.
+const RUN_LOCK_HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// Write `contents` to `path` durably: a fresh file beside it, flushed to disk, then renamed.
+fn write_durably(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let partial = dir.join(format!(".{name}.{:08x}.partial", rand::random::<u32>()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&partial)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    std::fs::rename(&partial, path)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// The keys of this process, in a run directory of their own under `FRANK_LAB_SOLONET_KEY_DIR`
+/// (see the module docs). The run holds `.lock` in it for its lifetime by touching it every few
+/// seconds: Docker Desktop's bind mounts do not carry `flock` between containers, so a lock is
+/// held while it is fresh. Another run's directory is taken over only once its lock is stale.
+struct KeyFiles {
+    root: PathBuf,
+    dir: PathBuf,
+}
+
+impl KeyFiles {
+    /// A new run directory under `FRANK_LAB_SOLONET_KEY_DIR`, locked; fails with what to do when
+    /// the variable is not set, or when the lab was given a relative host directory.
+    fn from_env() -> Self {
+        let root = std::env::var("FRANK_LAB_SOLONET_KEY_DIR")
+            .ok()
+            .map(|dir| dir.trim().to_owned())
+            .filter(|dir| !dir.is_empty())
+            .expect(
+                "FRANK_LAB_SOLONET_KEY_DIR: the keys this lab funds on solonet are written to a \
+                 directory that outlives the test process before they are funded (the lab \
+                 composes mount one from the host; see backend/labs/README.md)",
+            );
+        // Compose resolves a relative bind source against the compose file, inside the checkout.
+        if let Ok(host) = std::env::var("FRANK_LAB_SOLONET_KEY_HOST_DIR") {
+            let host = host.trim();
+            assert!(
+                host.is_empty() || host.starts_with('/'),
+                "FRANK_LAB_SOLONET_KEY_HOST_DIR must be an absolute path, not {host:?}: a relative \
+                 one is a directory in the git checkout"
+            );
+        }
+        let root = PathBuf::from(root);
+        let dir = root.join(format!(
+            "run-{}-{:08x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|error| panic!("solonet key directory {}: {error}", dir.display()));
+        let lock = dir.join(".lock");
+        write_durably(&dir, &lock, std::process::id().to_string().as_bytes())
+            .unwrap_or_else(|error| panic!("solonet: could not lock {}: {error}", lock.display()));
+        std::thread::spawn(move || loop {
+            std::thread::sleep(RUN_LOCK_HEARTBEAT);
+            if let Ok(file) = std::fs::File::options().write(true).open(&lock) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+        });
+        KeyFiles { root, dir }
+    }
+
+    /// A fresh key, already written to its own file (flushed to disk) and so safe to fund.
+    fn fresh(&self) -> Payer {
         let key = SecretKey::from_slice(&rand::random::<[u8; 32]>()).unwrap();
         let address = address(&key);
-        Payer { key, address }
+        let name = format!("0x{}", hex::encode(address));
+        let file = KeyFile {
+            path: self.dir.join(format!("{name}.key")),
+            funding: self.dir.join(format!("{name}.funding")),
+            partial: false,
+            faucet_signed_below: AtomicU64::new(0),
+        };
+        write_durably(&self.dir, &file.path, hex::encode(&key[..]).as_bytes()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "solonet: could not save key {}: {error}",
+                    file.path.display()
+                )
+            },
+        );
+        Payer {
+            key,
+            address,
+            file: Arc::new(file),
+        }
+    }
+
+    /// Record, before it is sent, that the faucet signs a payment to `payer` at `nonce`: its
+    /// file is then kept until the faucet's nonce has passed it, whichever transaction took it.
+    fn note_faucet_signing(&self, payer: &Payer, nonce: u64) {
+        let bound = nonce + 1;
+        if payer.file.faucet_signed_below.load(Ordering::SeqCst) >= bound {
+            return;
+        }
+        let dir = payer.file.funding.parent().unwrap();
+        write_durably(dir, &payer.file.funding, bound.to_string().as_bytes()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "solonet: could not save {}: {error}",
+                    payer.file.funding.display()
+                )
+            },
+        );
+        payer
+            .file
+            .faucet_signed_below
+            .store(bound, Ordering::SeqCst);
+    }
+
+    /// The run directories of earlier runs whose lock is stale, each taken over (renamed) by
+    /// this process first. A run that is still alive (its lock fresh) is left alone and named.
+    fn stale_runs(&self) -> Vec<PathBuf> {
+        let mut runs = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return runs;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_run = path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("run-"));
+            if !is_run || path == self.dir {
+                continue;
+            }
+            let touched = std::fs::metadata(path.join(".lock"))
+                .or_else(|_| std::fs::metadata(&path))
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.elapsed().ok());
+            match touched {
+                Some(age) if age > RUN_LOCK_STALE => {
+                    if let Some(taken) = Self::take(&path) {
+                        runs.push(taken)
+                    }
+                }
+                _ => println!(
+                    "solonet: {} belongs to a run that is still alive (its lock is fresh); left \
+                     to a later run",
+                    path.display()
+                ),
+            }
+        }
+        runs
+    }
+
+    /// Take over the stale run directory `stale`, so no other starter sweeps it too: its lock is
+    /// touched (fresh, so a starter that lists it now leaves it), then the directory is renamed,
+    /// which only one starter can do. This process keeps the lock fresh for the rest of its life;
+    /// a directory it leaves keys in goes stale again when it ends. `None` when another starter
+    /// took it first.
+    fn take(stale: &std::path::Path) -> Option<PathBuf> {
+        let lock = stale.join(".lock");
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+        if touched.is_err() && write_durably(stale, &lock, b"taking").is_err() {
+            return None;
+        }
+        let name = stale.file_name()?.to_string_lossy().into_owned();
+        let base = match name.rfind("-taken-") {
+            Some(at) => name[..at].to_owned(),
+            None => name,
+        };
+        let taken = stale.with_file_name(format!("{base}-taken-{:08x}", rand::random::<u32>()));
+        std::fs::rename(stale, &taken).ok()?;
+        let taken_lock = taken.join(".lock");
+        std::thread::spawn(move || loop {
+            if let Ok(file) = std::fs::File::options().write(true).open(&taken_lock) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+            std::thread::sleep(RUN_LOCK_HEARTBEAT);
+        });
+        Some(taken)
+    }
+
+    /// The keys a stale run left in `dir`: its `.key` files, and the `.partial` files of saves
+    /// it never finished. A file that cannot be read as a key is named and left in place.
+    fn saved(dir: &std::path::Path) -> Vec<Payer> {
+        let mut saved = Vec::new();
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                println!(
+                    "solonet: cannot read {}: {error}; left in place",
+                    dir.display()
+                );
+                return saved;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let (stem, partial) = if let Some(stem) = name.strip_suffix(".key") {
+                (stem.to_owned(), false)
+            } else if name.starts_with(".0x")
+                && name.ends_with(".partial")
+                && name.contains(".key.")
+            {
+                (name[1..name.find(".key.").unwrap()].to_owned(), true)
+            } else {
+                continue;
+            };
+            let key = std::fs::read_to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|text| hex::decode(text.trim()).map_err(|error| error.to_string()))
+                .and_then(|bytes| SecretKey::from_slice(&bytes).map_err(|error| error.to_string()));
+            let key = match key {
+                Ok(key) => key,
+                Err(error) => {
+                    println!(
+                        "solonet: {} is not a readable private key ({error}); skipped and left in \
+                         place",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+            let address = address(&key);
+            if format!("0x{}", hex::encode(address)) != stem {
+                println!(
+                    "solonet: {} holds the key of 0x{}, not of its name; swept as that account",
+                    path.display(),
+                    hex::encode(address)
+                );
+            }
+            let funding = dir.join(format!("0x{}.funding", hex::encode(address)));
+            let signed_below = std::fs::read_to_string(&funding)
+                .ok()
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            saved.push(Payer {
+                key,
+                address,
+                file: Arc::new(KeyFile {
+                    path,
+                    funding,
+                    partial,
+                    faucet_signed_below: AtomicU64::new(signed_below),
+                }),
+            });
+        }
+        saved
+    }
+
+    /// Remove a stale run's directory once nothing but its lock (and funding records of keys
+    /// already gone) is left in it.
+    fn remove_if_done(dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let names: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let done = names.iter().all(|name| {
+            name == ".lock"
+                || (name.ends_with(".funding")
+                    && !names.contains(&name.replace(".funding", ".key")))
+                // An unfinished save of a lock or funding record, never of a key.
+                || (name.ends_with(".partial") && !name.contains(".key."))
+        });
+        if done {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Whether `payer`'s file was written more than `age` ago.
+    fn older_than(payer: &Payer, age: Duration) -> bool {
+        std::fs::metadata(&payer.file.path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|written| written.elapsed().ok())
+            .is_some_and(|elapsed| elapsed > age)
+    }
+
+    /// Remove `payer`'s files: called only once its sweep has landed (or it holds nothing).
+    fn forget(payer: &Payer) {
+        for path in [&payer.file.path, &payer.file.funding] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => println!(
+                    "solonet: could not remove {} after its sweep: {error}",
+                    path.display()
+                ),
+            }
+        }
     }
 }
 
@@ -161,10 +512,14 @@ pub struct Solonet {
     faucet: SecretKey,
     /// Max fee per gas every payment offers: three times the gas price when connected.
     max_fee: u128,
+    /// Where every key this module generates is saved before it is funded.
+    keys: Arc<KeyFiles>,
 }
 
 impl Solonet {
-    /// solonet at `FRANK_LAB_SOLONET_RPC_URL`; fails with what to do when it is not set.
+    /// solonet at `FRANK_LAB_SOLONET_RPC_URL`, with its keys saved in
+    /// `FRANK_LAB_SOLONET_KEY_DIR`; fails with what to do when either is not set. The first call
+    /// of a process sweeps the keys an earlier run left there back to the faucet.
     pub async fn from_env() -> Self {
         // Compose always sets the variable, empty when the host leaves it unset.
         let rpc = std::env::var("FRANK_LAB_SOLONET_RPC_URL")
@@ -185,6 +540,9 @@ impl Solonet {
             http,
             faucet: SecretKey::from_slice(&hex::decode(FAUCET_KEY).unwrap()).unwrap(),
             max_fee: 0,
+            keys: PROCESS_KEYS
+                .get_or_init(|| Arc::new(KeyFiles::from_env()))
+                .clone(),
         };
         let chain_id = solonet.quantity("eth_chainId", serde_json::json!([])).await;
         assert_eq!(
@@ -196,7 +554,28 @@ impl Solonet {
         solonet.max_fee = 3 * solonet
             .quantity("eth_gasPrice", serde_json::json!([]))
             .await;
+        LEFTOVERS_SWEPT
+            .get_or_init(|| solonet.sweep_leftovers())
+            .await;
         solonet
+    }
+
+    /// Sweep the keys earlier runs saved and never swept (a run that was killed, or whose sweep
+    /// did not land), from every run directory whose lock is stale, and remove each directory
+    /// that is left with nothing to keep.
+    async fn sweep_leftovers(&self) {
+        for run in self.keys.stale_runs() {
+            let leftovers = KeyFiles::saved(&run);
+            if !leftovers.is_empty() {
+                println!(
+                    "solonet: {} keys of an earlier run left in {}; sweeping them first",
+                    leftovers.len(),
+                    run.display()
+                );
+                self.sweep(leftovers).await;
+            }
+            KeyFiles::remove_if_done(&run);
+        }
     }
 
     async fn try_call(
@@ -429,6 +808,10 @@ impl Solonet {
         let mut sent = Vec::new();
         for attempt in 0u128.. {
             let nonce = self.pending_nonce(faucet).await;
+            // Recorded before the payment exists: the treasury's file then stays until the
+            // faucet's nonce has passed every payment signed to it, so one that lands late is
+            // still swept.
+            self.keys.note_faucet_signing(treasury, nonce);
             let (raw, hash) = sign_eip1559(
                 &self.faucet,
                 SOLONET_CHAIN_ID,
@@ -548,22 +931,33 @@ impl Solonet {
     /// every payer, and the probe's own send back to the faucet is retried until the node
     /// admits it. The node admits it only against state that holds the probe's funding, which
     /// is in the same block as the last payer's or a later one.
+    ///
+    /// Every key (payers, treasury, probe) is saved before the faucet pays anything, and the
+    /// returned [`Funded`] owns them all from that moment: a panic while funding unwinds through
+    /// its drop, which sweeps them.
     pub async fn fund(&self, count: usize) -> Funded {
         let started = Instant::now();
-        let payers: Vec<Payer> = (0..count).map(|_| Payer::fresh()).collect();
-        let treasury = Payer::fresh();
-        let probe = Payer::fresh();
+        let payers: Vec<Payer> = (0..count).map(|_| self.keys.fresh()).collect();
+        let treasury = self.keys.fresh();
+        let probe = self.keys.fresh();
+        let funded = Funded {
+            solonet: self.clone(),
+            payers,
+            helpers: vec![treasury.clone(), probe.clone()],
+            next: AtomicUsize::new(0),
+        };
         // Every transfer's value and its gas at the fee cap, the probe's included, and a margin
         // that keeps the treasury above Monad's 10 MON reserve: the node budgets the gas of a
         // sender's transactions in flight against `min(10 MON, balance)`, and a transfer that
         // took the treasury below the reserve while others are in flight would be reverted.
-        let need = (count as u128 + 1) * (PAYER_FUNDING_WEI + 21_000 * self.max_fee)
+        let need = (count as u128 + 1) * (PAYER_FUNDING_WEI + TRANSFER_GAS * self.max_fee)
             + TREASURY_RESERVE_WEI;
         self.fund_treasury(&treasury, need).await;
         // A new account is usually admitted four blocks after its funding; send_funding retries
         // the ones that take longer.
         self.wait_blocks(4).await;
-        let recipients: Vec<[u8; 20]> = payers
+        let recipients: Vec<[u8; 20]> = funded
+            .payers
             .iter()
             .chain([&probe])
             .map(|payer| payer.address)
@@ -577,32 +971,34 @@ impl Solonet {
             }
             self.wait_nonce(treasury.address, nonce).await;
         }
-        let unfunded: Vec<String> = futures::stream::iter(payers.iter().map(|payer| async move {
-            let balance = loop {
-                match self.balance(payer.address).await {
-                    Ok(balance) => break balance,
-                    Err(error) if error.busy() => {
-                        tokio::time::sleep(Duration::from_millis(500)).await
+        let unfunded: Vec<String> =
+            futures::stream::iter(funded.payers.iter().map(|payer| async move {
+                let balance = loop {
+                    match self.balance(payer.address).await {
+                        Ok(balance) => break balance,
+                        Err(error) if error.busy() => {
+                            tokio::time::sleep(Duration::from_millis(500)).await
+                        }
+                        Err(error) => panic!("solonet: {error}"),
                     }
-                    Err(error) => panic!("solonet: {error}"),
-                }
-            };
-            // A resent funding pays a few wei less than PAYER_FUNDING_WEI.
-            (balance < PAYER_FUNDING_WEI - 1_000_000)
-                .then(|| format!("0x{} holds {balance} wei", hex::encode(payer.address)))
-        }))
-        .buffer_unordered(SWEEP_IN_FLIGHT)
-        .filter_map(|unfunded| async move { unfunded })
-        .collect()
-        .await;
+                };
+                // A resent funding pays a few wei less than PAYER_FUNDING_WEI.
+                (balance < PAYER_FUNDING_WEI - 1_000_000)
+                    .then(|| format!("0x{} holds {balance} wei", hex::encode(payer.address)))
+            }))
+            .buffer_unordered(SWEEP_IN_FLIGHT)
+            .filter_map(|unfunded| async move { unfunded })
+            .collect()
+            .await;
         assert!(
             unfunded.is_empty(),
             "solonet: the treasury's transfers landed but {} payers are not funded: {:?}",
             unfunded.len(),
             &unfunded[..unfunded.len().min(5)]
         );
-        // The probe pays back what it holds: admitted only once the node sees it funded.
-        let gas = 21_000 * self.max_fee;
+        // The probe pays back most of what it holds: admitted only once the node sees it funded.
+        // Its remainder is swept with the payers.
+        let gas = TRANSFER_GAS * self.max_fee;
         // Below what it holds by more than any resent funding took off it.
         self.send_funding(
             &probe,
@@ -614,21 +1010,34 @@ impl Solonet {
         println!("solonet: funded {count} payers in {:?}", started.elapsed());
         // The treasury's reserve goes back now; the payers' leftovers when they are dropped.
         self.sweep(vec![treasury]).await;
-        Funded {
-            solonet: self.clone(),
-            payers,
-            next: AtomicUsize::new(0),
-        }
+        funded
     }
 
-    /// Send what each of `accounts` holds, less the transfer's gas, back to the faucet, so
-    /// test funds come back. Waits for each account's own transactions to land first (a
-    /// payment a relay broadcast may still be pending), then lets them settle a few blocks:
-    /// Monad lets an account spend below its reserve only some blocks after its last
-    /// transaction. An account holding less than twice the transfer's gas is left alone.
+    /// Base fee of the latest block.
+    async fn base_fee(&self) -> u128 {
+        let block = self
+            .call("eth_getBlockByNumber", serde_json::json!(["latest", false]))
+            .await;
+        let base = block["baseFeePerGas"]
+            .as_str()
+            .expect("solonet reports no base fee");
+        u128::from_str_radix(base.trim_start_matches("0x"), 16).unwrap()
+    }
+
+    /// Send what each of `accounts` holds back to the faucet, so test funds come back, and
+    /// remove each account's key file once its sweep has landed (or it holds nothing worth a
+    /// transfer). Exact: the fee cap is base fee + tip + [`SWEEP_TIP_MARGIN_WEI`], Monad charges
+    /// base fee + tip per gas, and the sweep holds back `21,000 x cap`, so at most
+    /// `21,000 x SWEEP_TIP_MARGIN_WEI` wei stays behind.
+    ///
+    /// Waits for each account's own transactions to land first (a payment a relay broadcast may
+    /// still be pending), then lets them settle a few blocks: Monad admits a transaction against
+    /// a balance a few blocks old, and lets an account spend below its reserve only three blocks
+    /// after its last transaction. A sweep that is refused, reverted or superseded is signed
+    /// again a few blocks later; an account still holding funds after [`SWEEP_ATTEMPTS`] rounds
+    /// keeps its key file, and the next run sweeps it.
     pub async fn sweep(&self, accounts: Vec<Payer>) {
         let faucet = address(&self.faucet);
-        let gas = 21_000 * self.max_fee;
         let deadline = Instant::now() + Duration::from_secs(120);
         futures::stream::iter(accounts.iter().map(|account| async move {
             while self.pending_nonce(account.address).await
@@ -644,36 +1053,17 @@ impl Solonet {
         self.wait_blocks(6).await;
         let mut left = accounts;
         let (mut swept, mut total) = (0usize, 0u128);
-        for attempt in 0..3u128 {
-            let results: Vec<(Payer, Result<Option<u128>, RpcError>)> =
+        for attempt in 0..SWEEP_ATTEMPTS {
+            let tip = self
+                .quantity("eth_maxPriorityFeePerGas", serde_json::json!([]))
+                .await;
+            let cap = self.base_fee().await + tip + SWEEP_TIP_MARGIN_WEI;
+            let held_back = TRANSFER_GAS * cap;
+            let results: Vec<(Payer, Result<Swept, String>)> =
                 futures::stream::iter(left.into_iter().map(|account| async move {
-                    let result = async {
-                        let balance = self.balance(account.address).await?;
-                        if balance < 2 * gas {
-                            return Ok(None);
-                        }
-                        // A retry sends other bytes: Monad keeps turning down bytes it once
-                        // turned down.
-                        let value = balance - gas - attempt;
-                        let nonce = self.latest_nonce(account.address).await;
-                        let (raw, _) = sign_eip1559(
-                            &account.key,
-                            SOLONET_CHAIN_ID,
-                            nonce,
-                            self.max_fee,
-                            21_000,
-                            faucet,
-                            value,
-                            &[],
-                        );
-                        self.try_call(
-                            "eth_sendRawTransaction",
-                            serde_json::json!([format!("0x{}", hex::encode(raw))]),
-                        )
-                        .await?;
-                        Ok(Some(value))
-                    }
-                    .await;
+                    let result = self
+                        .sweep_one(&account, faucet, tip + attempt, cap, held_back)
+                        .await;
                     (account, result)
                 }))
                 .buffer_unordered(SWEEP_IN_FLIGHT)
@@ -683,11 +1073,20 @@ impl Solonet {
             let mut last_error = None;
             for (account, result) in results {
                 match result {
-                    Ok(Some(value)) => {
+                    Ok(Swept::Landed(value)) => {
+                        KeyFiles::forget(&account);
                         swept += 1;
                         total += value;
                     }
-                    Ok(None) => {}
+                    Ok(Swept::Empty) => KeyFiles::forget(&account),
+                    Ok(Swept::NotYetFunded) => {
+                        // An unfinished save was never paid to; a saved key may still be.
+                        if account.file.partial
+                            || KeyFiles::older_than(&account, UNUSED_EMPTY_KEY_KEPT)
+                        {
+                            KeyFiles::forget(&account);
+                        }
+                    }
                     Err(error) => {
                         last_error = Some(error);
                         left.push(account);
@@ -698,11 +1097,9 @@ impl Solonet {
                 break;
             }
             println!(
-                "solonet: {} sweeps refused ({}); again in a few blocks",
+                "solonet: {} sweeps did not land ({}); again in a few blocks",
                 left.len(),
-                last_error
-                    .map(|error| error.to_string())
-                    .unwrap_or_default()
+                last_error.unwrap_or_default()
             );
             self.wait_blocks(4).await;
         }
@@ -711,9 +1108,97 @@ impl Solonet {
             if left.is_empty() {
                 String::new()
             } else {
-                format!("; {} could not be swept", left.len())
+                format!(
+                    "; {} could not be swept and keep their key files in {} for the next run",
+                    left.len(),
+                    self.keys.dir.display()
+                )
             }
         );
+    }
+
+    /// Sweep `account` once; `Err` when it still holds funds.
+    async fn sweep_one(
+        &self,
+        account: &Payer,
+        faucet: [u8; 20],
+        tip: u128,
+        cap: u128,
+        held_back: u128,
+    ) -> Result<Swept, String> {
+        // A faucet payment signed to the account may still land until the faucet's nonce has
+        // passed it; until then the account is not done, whatever it holds now.
+        let signed_below = account.file.faucet_signed_below.load(Ordering::SeqCst);
+        if signed_below > 0 {
+            let faucet_nonce = self.latest_nonce(address(&self.faucet)).await;
+            if faucet_nonce < signed_below {
+                return Err(format!(
+                    "0x{}: the faucet signed it a payment at nonce {} and its nonce is {faucet_nonce}",
+                    hex::encode(account.address),
+                    signed_below - 1
+                ));
+            }
+        }
+        let balance = self
+            .balance(account.address)
+            .await
+            .map_err(|e| e.to_string())?;
+        let nonce = self.latest_nonce(account.address).await;
+        if balance <= held_back {
+            return Ok(if nonce == 0 {
+                Swept::NotYetFunded
+            } else {
+                Swept::Empty
+            });
+        }
+        let value = balance - held_back;
+        let (raw, _) = sign_eip1559_tip(
+            &account.key,
+            SOLONET_CHAIN_ID,
+            nonce,
+            tip.min(cap),
+            cap,
+            TRANSFER_GAS as u64,
+            faucet,
+            value,
+            &[],
+        );
+        match self
+            .try_call(
+                "eth_sendRawTransaction",
+                serde_json::json!([format!("0x{}", hex::encode(raw))]),
+            )
+            .await
+        {
+            Ok(_) => {}
+            // An earlier round's sweep (or another transaction of the account) holds the nonce:
+            // whether it emptied the account is read below.
+            Err(error) if error.nonce_held() || error.busy() => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        // Landed means the nonce is used and the account holds no more than a sweep's fee.
+        let started = Instant::now();
+        while self.latest_nonce(account.address).await <= nonce {
+            if started.elapsed() >= SWEEP_LAND_PATIENCE {
+                return Err(format!(
+                    "0x{}'s sweep at nonce {nonce} not mined within {SWEEP_LAND_PATIENCE:?}",
+                    hex::encode(account.address)
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let after = self
+            .balance(account.address)
+            .await
+            .map_err(|e| e.to_string())?;
+        if after <= held_back {
+            Ok(Swept::Landed(balance - after))
+        } else {
+            Err(format!(
+                "0x{} still holds {after} wei after nonce {nonce} (reverted or superseded)",
+                hex::encode(account.address)
+            ))
+        }
     }
 
     async fn latest_nonce(&self, account: [u8; 20]) -> u64 {
@@ -814,6 +1299,16 @@ impl Solonet {
     }
 }
 
+/// What one sweep round found for one account.
+enum Swept {
+    /// A sweep of this many wei landed.
+    Landed(u128),
+    /// Holds nothing worth a transfer, and has sent transactions: spent or swept before.
+    Empty,
+    /// Holds nothing and has never sent anything: perhaps never funded, or its funding is late.
+    NotYetFunded,
+}
+
 /// The calldata of a payment for `envelope` on the relay at `host_origin`.
 pub fn commitment_calldata(
     network: &str,
@@ -833,6 +1328,8 @@ pub fn commitment_calldata(
 pub struct Funded {
     solonet: Solonet,
     payers: Vec<Payer>,
+    /// The treasury and the probe of the funding: swept with the payers.
+    helpers: Vec<Payer>,
     next: AtomicUsize,
 }
 
@@ -854,7 +1351,8 @@ impl Funded {
 impl Drop for Funded {
     fn drop(&mut self) {
         let solonet = self.solonet.clone();
-        let payers = std::mem::take(&mut self.payers);
+        let mut payers = std::mem::take(&mut self.payers);
+        payers.append(&mut self.helpers);
         // Drop cannot await, and may run on a runtime thread: sweep on a thread of its own.
         let swept = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
@@ -865,7 +1363,11 @@ impl Drop for Funded {
         })
         .join();
         if swept.is_err() {
-            println!("solonet: the sweep back to the faucet failed");
+            println!(
+                "solonet: the sweep back to the faucet failed; the keys stay in {} and the next \
+                 run sweeps them",
+                self.solonet.keys.dir.display()
+            );
         }
     }
 }
@@ -877,7 +1379,7 @@ pub fn paid_body(envelope: &GroupMessageEnvelope, payment: &serde_json::Value) -
     serde_json::to_vec(&body).unwrap()
 }
 
-/// A signed EIP-1559 transaction and its hash.
+/// A signed EIP-1559 transaction and its hash, tipping up to 2 gwei.
 #[allow(clippy::too_many_arguments)]
 fn sign_eip1559(
     key: &SecretKey,
@@ -890,6 +1392,24 @@ fn sign_eip1559(
     data: &[u8],
 ) -> (Vec<u8>, [u8; 32]) {
     let priority = max_fee.min(2_000_000_000);
+    sign_eip1559_tip(
+        key, chain_id, nonce, priority, max_fee, gas, to, value, data,
+    )
+}
+
+/// A signed EIP-1559 transaction tipping `priority` per gas, and its hash.
+#[allow(clippy::too_many_arguments)]
+fn sign_eip1559_tip(
+    key: &SecretKey,
+    chain_id: u64,
+    nonce: u64,
+    priority: u128,
+    max_fee: u128,
+    gas: u64,
+    to: [u8; 20],
+    value: u128,
+    data: &[u8],
+) -> (Vec<u8>, [u8; 32]) {
     let fields = |stream: &mut RlpStream| {
         stream.append(&chain_id);
         stream.append(&nonce);

@@ -8,9 +8,17 @@
  * A reverted payment is still mined: the gas limit is paid, the nonce is used, no value moves.
  *
  * The check: a wallet whose main account holds 5 MON (under the reserve) and nothing else sends
- * several paid messages through the real relay, first one after another (each the moment the one
- * before is delivered) and then all at once. It passes only if every message is
- * delivered with its stamp paid on chain AND no transaction from the wallet's accounts reverted.
+ * several paid messages through the real relay, first one after another and then all at once. It
+ * passes only if every message is delivered with its stamp paid on chain AND no transaction from
+ * the wallet's accounts reverted.
+ *
+ * The wallet is ticked as the app and the bot host tick it (`tickUntilSettled`): on Monad the
+ * change behind a delivered message goes out only on later ticks, and until it lands the wallet's
+ * next paid send is refused with `FundsInPendingSendError` (owner ruling 2026-10-26: refused,
+ * never queued). So in turn, each send follows the previous message's settling; at once, every
+ * message is sent together and one the wallet refuses for that reason is sent again once the
+ * wallet has settled, as a person does who is told "try again in a moment". Any other refusal,
+ * or a message still refused after that many tries, fails the check.
  * Every transaction of the wallet's accounts is read from the chain itself, block by block, so a
  * revert the wallet did not report is still counted.
  *
@@ -25,7 +33,8 @@ import { formatEther, parseEther } from 'ethers'
 
 import { checkStampOnChain } from '../two-wallets'
 import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest } from './monad-regtest'
-import { monadOf, openMonadWallet } from './monad-wallets'
+import { monadOf, openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
+import { fundsInPendingSend } from '@frank/wallet/evm-transaction-set-types'
 import { startRegtestStack } from './regtest-stack'
 import { evmPaymentFloorWei } from '@frank/wallet/chain/payment-floor'
 
@@ -89,11 +98,30 @@ async function main(): Promise<boolean> {
       `sender main account ${sender.mainAccount} holds ${formatEther(await monad.provider.getBalance(sender.mainAccount))} MON; sending ${count} paid messages in turn and then ${count} at once, from block ${firstBlock}`,
     )
 
-    const sendOne = async (round: string, i: number) => {
+    // One tick pass at a time: concurrent senders waiting to retry share it.
+    let settling: Promise<number> | undefined
+    const settle = () =>
+      (settling ??= tickUntilSettled(sender).finally(() => {
+        settling = undefined
+      }))
+    // `retryRefused`: only the "at once" round sends while earlier change is out; in turn, every
+    // send follows a settle, so a refusal there fails the check.
+    const sendOne = async (round: string, i: number, retryRefused = false) => {
       const text = `reserve check ${round} ${i}`
       const at = Date.now()
       try {
-        const digest = await sender.send(recipient.address, [{ type: 'text', text }], STAMP_WEI, 90_000)
+        let digest: string | undefined
+        for (let attempt = 1; digest === undefined; attempt++) {
+          try {
+            digest = await sender.send(recipient.address, [{ type: 'text', text }], STAMP_WEI, 90_000)
+          } catch (err) {
+            // Refused only because an earlier message's change is not on the chain yet: nothing
+            // was signed or recorded. Sent again once the wallet has settled.
+            if (!retryRefused || !fundsInPendingSend(err) || attempt > count + 1) throw err
+            console.log(`${round} message ${i}: refused while an earlier send settles (try ${attempt}); again once settled`)
+            await settle()
+          }
+        }
         const got = await recipient.receive(message => message.payloadDigest === digest, 60_000)
         const unpaid = await checkStampOnChain(monad.provider, got, STAMP_WEI)
         if (unpaid) problems.push(`${round} message ${i}: delivered, but ${unpaid}`)
@@ -107,10 +135,13 @@ async function main(): Promise<boolean> {
       }
     }
     const numbers = Array.from({ length: count }, (_, i) => i + 1)
-    // One after another: each send starts the moment the one before is delivered.
-    for (const i of numbers) await sendOne('in turn', i)
+    // One after another: each send starts once the one before is delivered and settled.
+    for (const i of numbers) {
+      await sendOne('in turn', i)
+      await settle()
+    }
     // All at once: what a person does who sends several messages without waiting.
-    await Promise.all(numbers.map(i => sendOne('at once', i)))
+    await Promise.all(numbers.map(i => sendOne('at once', i, true)))
 
     await monad.mine(4)
     const lastBlock = await monad.provider.getBlockNumber()
@@ -130,7 +161,16 @@ async function main(): Promise<boolean> {
     }
     console.log(`sender main account ends with ${formatEther(await monad.provider.getBalance(sender.mainAccount))} MON`)
   } finally {
-    await stack.stop()
+    // Test funds come back: the wallets' keys are in the stack's directory, which stop() deletes.
+    try {
+      const { returnedWei, leftWei, unswept } = await returnToFaucet(stack)
+      if (unswept === 0) stack.fundsReturned()
+      console.log(`returned ${formatEther(returnedWei)} MON to the faucet; ${formatEther(leftWei)} MON left as dust or unsweepable`)
+    } catch (error) {
+      console.log(`the sweep back to the faucet failed: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      await stack.stop()
+    }
   }
   for (const problem of problems) console.log(`FAIL  ${problem}`)
   console.log(problems.length === 0 ? 'Monad reserve check: OK (every message delivered and paid, no reverted transaction)' : 'Monad reserve check: FAILED')

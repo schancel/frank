@@ -45,6 +45,7 @@
     "regtest:monad-stop": "node --import tsx demo/regtest/monad-regtest.ts stop",
     "regtest:monad-fund": "node --import tsx demo/regtest/monad-regtest.ts fund",
     "regtest:monad-sweep": "node --import tsx demo/regtest/monad-regtest.ts sweep",
+    "regtest:monad-sweep-state": "node --import tsx demo/regtest/solonet-keys.ts sweep-state",
     "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
     "test": "jest"
   },

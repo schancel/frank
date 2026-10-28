@@ -25,6 +25,7 @@ import {
   type EvmDepositRow,
   type EvmDepositToken,
 } from './evm-deposit-scan'
+import { readCanonicalNativeTransfers } from './evm-native-receipt'
 import { LevelRecordStore, MemoryRecordStore } from './storage/evm-coin-store'
 
 /* TOKEN_SOURCE
@@ -230,19 +231,68 @@ suite('deposits from outside Frank (anvil)', () => {
         blockTimeMs: blocks.get(plain!.blockNumber)!.timestamp * 1000,
       },
     ])
-    // Only the two blocks that changed what the address holds were read.
+    // Only changed blocks are read; native evidence adds two canonical binding reads.
     expect(
       requests
         .filter(call => call.method === 'eth_getBlockByNumber')
         .map(call => Number(BigInt(call.params[0] as string)))
         .sort(),
-    ).toEqual([plain!.blockNumber, tokenTx!.blockNumber].sort())
+    ).toEqual([plain!.blockNumber, plain!.blockNumber, plain!.blockNumber, tokenTx!.blockNumber].sort())
 
     // Nothing new: the next refresh reads no block and lists the same deposits.
     requests.length = 0
     await scan.refresh()
     expect(requests.map(call => call.method)).not.toContain('eth_getBlockByNumber')
     expect(scan.deposits()).toHaveLength(2)
+  })
+
+  it('reads own-origin evidence below an explicit canonical maximum, independently of history filters', async () => {
+    const watched = Wallet.createRandom().address.toLowerCase()
+    const receipt = await (
+      await dev.sendTransaction({ to: watched, value: 12345n })
+    ).wait()
+    const options = {
+      rpc,
+      chainIdentifier: 'monad-testnet',
+      address: watched,
+      blockNumber: receipt!.blockNumber,
+      maximumBlock: receipt!.blockNumber,
+    }
+    expect(await readCanonicalNativeTransfers(options)).toEqual([
+      expect.objectContaining({
+        txHash: receipt!.hash.toLowerCase(),
+        from: dev.address.toLowerCase(),
+        to: watched,
+        amount: '12345',
+        blockHash: receipt!.blockHash.toLowerCase(),
+      }),
+    ])
+    await expect(
+      readCanonicalNativeTransfers({
+        ...options,
+        maximumBlock: receipt!.blockNumber - 1,
+      }),
+    ).rejects.toThrow('maximum head')
+    const scan = scanner(
+      new MemoryRecordStore<EvmDepositRow>(),
+      [watched],
+      [dev.address.toLowerCase()],
+    )
+    await scan.refresh()
+    expect(scan.deposits()).toEqual([])
+  })
+
+  it('retains canonical unprotected legacy deposits without a transaction chain ID', async () => {
+    const watched = Wallet.createRandom().address.toLowerCase()
+    const raw = await dev.signTransaction({
+      type: 0, chainId: 0, nonce: await chain.getTransactionCount(dev.address, 'pending'),
+      to: watched, value: 123n, gasLimit: 21000n,
+      gasPrice: (await chain.getFeeData()).gasPrice!,
+    })
+    const receipt = await (await chain.broadcastTransaction(raw)).wait()
+    const facts = await readCanonicalNativeTransfers({ rpc, chainIdentifier: 'monad-testnet',
+      address: watched, blockNumber: receipt!.blockNumber, maximumBlock: receipt!.blockNumber })
+    expect(facts).toEqual([expect.objectContaining({ txHash: receipt!.hash.toLowerCase(), amount: '123' })])
   })
 
   it('a restart reads no block again and lists nothing twice; two devices list the same rows', async () => {
@@ -267,7 +317,7 @@ suite('deposits from outside Frank (anvil)', () => {
     const read = requests
       .filter(call => call.method === 'eth_getBlockByNumber')
       .map(call => Number(BigInt(call.params[0] as string)))
-    expect(read).toEqual([second!.blockNumber])
+    expect(read).toEqual([second!.blockNumber, second!.blockNumber, second!.blockNumber])
     const rows = scan.deposits()
     expect(rows.map(row => row.amount)).toEqual([
       parseEther('0.75').toString(),

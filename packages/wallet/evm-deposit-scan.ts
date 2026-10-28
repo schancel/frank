@@ -44,6 +44,7 @@
 import { getAddress, Interface, zeroPadValue } from 'ethers'
 import type { RecordStore } from './storage/evm-coin-store'
 import { isRateLimited } from './evm-rpc-read-budget'
+import { MAX_NATIVE_BLOCK_TRANSACTION_READS, readCanonicalNativeTransfers } from './evm-native-receipt'
 
 export const EVM_EXTERNAL_DEPOSITS_NAMESPACE = 'evm-external-deposits'
 
@@ -52,10 +53,7 @@ export const FIRST_SCAN_WINDOW_BLOCKS = 1_000_000
 /** The most state changes one refresh follows per address. */
 export const MAX_CHANGES_PER_REFRESH = 16
 /** The most transactions read from one block to find the ones sent to the address. */
-export const MAX_BLOCK_TRANSACTION_READS = 2_000
-/** How many transactions are read at the same time. */
-const READS_AT_ONCE = 20
-
+export const MAX_BLOCK_TRANSACTION_READS = MAX_NATIVE_BLOCK_TRANSACTION_READS
 const erc20 = new Interface([
   'function balanceOf(address owner) view returns (uint256)',
   'event Transfer(address indexed from, address indexed to, uint256 value)',
@@ -188,16 +186,6 @@ function holdsNothing(state: AddressState): boolean {
   )
 }
 
-async function inChunks<T, R>(
-  items: readonly T[],
-  read: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out: R[] = []
-  for (let start = 0; start < items.length; start += READS_AT_ONCE)
-    out.push(...(await Promise.all(items.slice(start, start + READS_AT_ONCE).map(read))))
-  return out
-}
-
 export interface EvmDepositScannerOptions {
   readonly chainIdentifier: string
   readonly rpc: EvmDepositRpc
@@ -213,6 +201,9 @@ export interface EvmDepositScannerOptions {
   /** Transactions the wallet already knows as Frank payments (received coins' transfers): never
    * listed again as deposits. Lower-case 0x hashes. */
   readonly knownTransactions?: () => ReadonlySet<string>
+  /** Explicit canonical scan boundary. Financial consumers must provide their configured
+   * spend-rule head; the history default reads the proposed RPC head and is not payment authority. */
+  readonly maximumBlock?: () => Promise<number>
   readonly firstScanWindowBlocks?: number
 }
 
@@ -252,7 +243,10 @@ export class EvmDepositScanner {
   }
 
   private async run(): Promise<void> {
-    const head = Number(BigInt((await this.options.rpc.send('eth_blockNumber', [])) as string))
+    const head = this.options.maximumBlock
+      ? await this.options.maximumBlock()
+      : Number(BigInt((await this.options.rpc.send('eth_blockNumber', [])) as string))
+    if (!Number.isSafeInteger(head) || head < 0) throw new Error('Invalid deposit scan maximum block')
     const addresses = [...new Set(this.options.watched().map(lower))]
     const failures: unknown[] = []
     for (const address of addresses) {
@@ -368,7 +362,7 @@ export class EvmDepositScanner {
         await this.options.store.put(key, { kind: 'cursor', ...cursor })
         continue
       }
-      const read = await this.depositsIn(address, change.block, cursor, change.state)
+      const read = await this.depositsIn(address, change.block, cursor, change.state, head)
       for (const deposit of read.deposits)
         await this.options.store.put(`deposit:${deposit.id}`, { kind: 'deposit', ...deposit })
       cursor = {
@@ -411,6 +405,7 @@ export class EvmDepositScanner {
     blockNumber: number,
     before: AddressState,
     after: AddressState,
+    maximumBlock: number,
   ): Promise<{ deposits: EvmExternalDeposit[]; unread: boolean }> {
     const block = (await this.options.rpc.send('eth_getBlockByNumber', [
       hex(blockNumber),
@@ -435,35 +430,28 @@ export class EvmDepositScanner {
     // A block with more transactions than one read may cover is passed over, and recorded so.
     const unread = nativeArrived && block.transactions.length > MAX_BLOCK_TRANSACTION_READS
     if (nativeArrived && !unread) {
-      const transactions = await inChunks(block.transactions, hash =>
-        this.options.rpc.send('eth_getTransactionByHash', [hash]),
-      )
-      const candidates = (
-        transactions as ({ hash: string; from: string; to: string | null; value: string } | null)[]
-      ).filter(
-        (tx): tx is { hash: string; from: string; to: string; value: string } =>
-          tx !== null &&
-          typeof tx.to === 'string' &&
-          tx.to.toLowerCase() === address &&
-          BigInt(tx.value) > 0n &&
-          !this.options.isOwnAccount(tx.from.toLowerCase()) &&
-          !known.has(tx.hash.toLowerCase()),
-      )
-      const receipts = await inChunks(candidates, tx =>
-        this.options.rpc.send('eth_getTransactionReceipt', [tx.hash]),
-      )
-      candidates.forEach((tx, index) => {
-        const receipt = receipts[index] as { status?: string; blockHash?: string } | null
-        if (!receipt || BigInt(receipt.status ?? '0x0') !== 1n) return
-        found.push({
-          ...common,
-          id: depositId(tx.hash),
-          txHash: tx.hash.toLowerCase(),
-          from: tx.from.toLowerCase(),
-          asset: { kind: 'native' },
-          amount: BigInt(tx.value).toString(),
-        })
+      const transfers = await readCanonicalNativeTransfers({
+        rpc: this.options.rpc,
+        chainIdentifier: this.options.chainIdentifier,
+        address,
+        blockNumber,
+        maximumBlock,
       })
+      // This earlier block read also supplies the token-history projection below.
+      if (transfers.some(transfer => transfer.blockHash !== blockHash))
+        throw new Error('Deposit block changed during native evidence read')
+      for (const transfer of transfers) {
+        if (
+          this.options.isOwnAccount(transfer.from) ||
+          known.has(transfer.txHash)
+        )
+          continue
+        found.push({
+          ...transfer,
+          id: depositId(transfer.txHash),
+          asset: { kind: 'native' },
+        })
+      }
     }
 
     for (const token of this.options.tokens) {

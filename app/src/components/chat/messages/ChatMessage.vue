@@ -268,6 +268,7 @@
             :waiting-for-chain="waitingForChain"
             :waiting-blocks="waitingBlocks"
             :payment-summary="paymentSummary"
+            :recovery-fee-required="recoveryFeeRequired"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
@@ -299,6 +300,7 @@ import {
 } from '../../../utils/outgoing-waiting'
 import {
   outgoingPaymentSummaries,
+  outgoingRecoveryFeeReviews,
   sendsWaitingBlocks,
 } from 'src/utils/outgoing-payments'
 
@@ -533,6 +535,23 @@ export default defineComponent({
         this.$refs.suffix as { focusStatus?: () => void } | undefined
       )?.focusStatus?.()
       try {
+        if (this.recoveryFeeRequired) {
+          const digest =
+            this.message.delivery?.attemptDigest ?? this.payloadDigest
+          if (!digest)
+            throw new Error(this.$t('outgoing.recoveryFeeUnavailable'))
+          const review = await activeChain.directMessages.recoveryFeeReview?.({
+            wallet: useMonadWallet(),
+            payloadDigest: digest,
+          })
+          if (!review || review.chainIdentifier !== activeChain.chainIdentifier)
+            throw new Error(this.$t('outgoing.recoveryFeeUnavailable'))
+          await this.$router.push({
+            path: '/send-contact',
+            query: { recovery: digest, chain: review.chainIdentifier },
+          })
+          return
+        }
         const outcome = await this.retryOutgoing({
           wallet: useMonadWallet(),
           address: this.address,
@@ -774,6 +793,17 @@ export default defineComponent({
           },
         ]
       })
+    },
+    recoveryFeeRequired(): boolean {
+      return (
+        this.message.outbound &&
+        ((this.message.status !== 'confirmed' &&
+          this.message.delivery?.failureReason ===
+            'stamp-recovery-fee-required') ||
+          outgoingRecoveryFeeReviews.has(
+            this.message.delivery?.attemptDigest ?? this.payloadDigest,
+          ))
+      )
     },
     paymentSummary(): string {
       if (!this.message.outbound) return ''

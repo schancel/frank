@@ -18,8 +18,18 @@ import enUS from '../i18n/en-us'
 let mockStampWei: bigint | undefined = 0n
 // The wallet's payment floor (`directMessages.minimumStamp`); not known unless a test sets it.
 let mockFloorWei = 0n
+let mockCapacity = {
+  loaded: true,
+  error: false,
+  supported: true,
+  formatted: '10.5 MON',
+}
 const mockPrepare = jest.fn()
 const mockSendMessage = jest.fn()
+const mockRecoveryReview = jest.fn()
+const mockApproveRecovery = jest.fn()
+const mockReconcileAttempts = jest.fn()
+const mockReconcileOutgoing = jest.fn()
 const PREPARED = {
   stampValue: 0n,
   item: { type: 'stealth', amount: 1.5e18, ephemeralPubKey: '02ab' },
@@ -34,6 +44,7 @@ jest.mock('src/utils/clients', () => ({
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
     sendMessage: mockSendMessage,
+    reconcileOutgoing: mockReconcileOutgoing,
     // The stamp chosen for the conversation with the contact: here, free messages.
     getStampWei: () => mockStampWei,
   }),
@@ -51,6 +62,7 @@ jest.mock('@frank/wallet/chain', () => ({
   },
   ContactPaymentPendingError: class ContactPaymentPendingError extends Error {},
   activeChain: {
+    chainIdentifier: 'monad-testnet',
     name: 'monad',
     unit: 'MON',
     toDisplayAmount: (raw: bigint) => {
@@ -63,6 +75,9 @@ jest.mock('@frank/wallet/chain', () => ({
       return BigInt((whole || '0') + frac.padEnd(18, '0'))
     },
     directMessages: {
+      recoveryFeeReview: (...args: unknown[]) => mockRecoveryReview(...args),
+      approveRecoveryFee: (...args: unknown[]) => mockApproveRecovery(...args),
+      reconcileAttempts: (...args: unknown[]) => mockReconcileAttempts(...args),
       minimumStamp: async () => mockFloorWei,
     },
     formatAddress: (addr: { raw: string }) => addr.raw,
@@ -83,8 +98,11 @@ jest.mock('src/composables/useBalance', () => ({
   useBalance: () => ({
     // The shown balance (with the profile address) and what a contact payment can draw on.
     formattedBalance: { value: '10.6 MON' },
-    formattedSpendable: { value: '10.5 MON' },
-    exactSpendable: { value: '10.5 MON' },
+    formattedSpendable: { value: mockCapacity.formatted },
+    exactSpendable: { value: mockCapacity.formatted },
+    availableLoaded: { value: mockCapacity.loaded },
+    availableError: { value: mockCapacity.error },
+    availableSupported: { value: mockCapacity.supported },
     loaded: { value: true },
   }),
 }))
@@ -195,6 +213,12 @@ describe('SendContact.vue (dual-send model)', () => {
     jest.clearAllMocks()
     ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
     mockRoute.query = {}
+    mockCapacity = {
+      loaded: true,
+      error: false,
+      supported: true,
+      formatted: '10.5 MON',
+    }
 
     const contactStore = useContactStore()
     contactStore.contacts = {
@@ -212,6 +236,153 @@ describe('SendContact.vue (dual-send model)', () => {
         inbox: {},
       },
     }
+  })
+
+  const recoveryDigest = 'a'.repeat(64)
+  const recoveryReview = {
+    chainIdentifier: 'monad-testnet',
+    payloadDigest: recoveryDigest,
+    messageId: '00000000-0000-4000-8000-000000000001',
+    recoveryOperationId: 'stamp-original',
+    purpose: 'deliver-message',
+    recipientAddress: aliceAddress,
+    paidContactAtomic: 1500000000000000000n,
+    stampAtomic: 1000000000000000n,
+    paidStampAtomic: 0n,
+    pendingStampAtomic: 1000000000000000n,
+    priorNetworkFeeAtomic: 30000000000000n,
+    reservedNetworkFeeAtomic: 0n,
+    additionalNetworkFeeAtomic: 50000000000000n,
+    maximumTotalNetworkFeeAtomic: 40000000000000n,
+    requiredTotalNetworkFeeAtomic: 80000000000000n,
+  }
+  const mountRecovery = async () => {
+    mockRoute.query = { recovery: recoveryDigest, chain: 'monad-testnet' }
+    mockRecoveryReview.mockResolvedValue(recoveryReview)
+    mockApproveRecovery.mockResolvedValue(undefined)
+    mockReconcileAttempts.mockResolvedValue({ [recoveryDigest]: 'delivered' })
+    mockReconcileOutgoing.mockResolvedValue({ pending: 0 })
+    const wrapper = mountSendContact()
+    await flushPromises()
+    return wrapper
+  }
+
+  it('reviews already paid contact separately and approves/resumes only its original operation', async () => {
+    const wrapper = await mountRecovery()
+    expect(wrapper.find('[data-test="send-contact-title"]').text()).toBe(
+      'Finish delivering payment',
+    )
+    expect(wrapper.find('[data-test="review-amount"]').text()).toBe('1.5 MON')
+    expect(wrapper.find('[data-test="review-total"]').text()).toBe(
+      '0.00105 MON',
+    )
+    expect(
+      wrapper.find('[data-test="recovery-maximum-network-fees"]').text(),
+    ).toBe('0.00008 MON')
+    expect(
+      wrapper.find('[data-test="recovery-fee-explanation"]').text(),
+    ).toContain('already on chain')
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockApproveRecovery).toHaveBeenCalledWith({
+      wallet: mockWallet,
+      payloadDigest: recoveryDigest,
+      recoveryOperationId: 'stamp-original',
+      maximumTotalNetworkFeeAtomic: 80000000000000n,
+    })
+    expect(mockReconcileAttempts).toHaveBeenCalledWith({
+      wallet: mockWallet,
+      payloadDigests: [recoveryDigest],
+      maxPutAttempts: 2,
+    })
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(leaveForm).toHaveBeenCalled()
+  })
+
+  it('reviews a delivered message’s exact owed stamp part and repeats approval without a new contact payment', async () => {
+    const wrapper = await mountRecovery()
+    mockRecoveryReview.mockResolvedValue({
+      ...recoveryReview,
+      purpose: 'repay-stamp',
+      recoveryOperationId: 'stamp-original-p1',
+      paidStampAtomic: 2000000000000000n,
+      pendingStampAtomic: 1000000000000000n,
+    })
+    // Reopen the same operation review with the delivered wallet state.
+    wrapper.unmount()
+    const delivered = mountSendContact()
+    await flushPromises()
+    expect(
+      delivered.get('[data-test="recovery-fee-explanation"]').text(),
+    ).toContain('message is delivered')
+    expect(delivered.get('[data-test="recovery-stamp-paid"]').text()).toBe(
+      '0.002 MON',
+    )
+    expect(delivered.get('[data-test="recovery-stamp-pending"]').text()).toBe(
+      '0.001 MON',
+    )
+    for (let confirmation = 0; confirmation < 2; confirmation++) {
+      await delivered
+        .get('[data-test="review-confirm-button"]')
+        .trigger('click')
+      await flushPromises()
+    }
+    expect(mockApproveRecovery).toHaveBeenCalledTimes(2)
+    expect(mockApproveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloadDigest: recoveryDigest,
+        recoveryOperationId: 'stamp-original-p1',
+      }),
+    )
+    expect(mockReconcileAttempts).toHaveBeenCalledWith(
+      expect.objectContaining({ payloadDigests: [recoveryDigest] }),
+    )
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('cancelling fee review leaves the original payment alone', async () => {
+    const wrapper = await mountRecovery()
+    await wrapper.find('[data-test="review-cancel-button"]').trigger('click')
+    expect(mockApproveRecovery).not.toHaveBeenCalled()
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(leaveForm).toHaveBeenCalled()
+  })
+
+  it('a changed fee is reviewed again without preparing or sending a contact payment', async () => {
+    const wrapper = await mountRecovery()
+    const { NativeFeeExceededError } = await import('@frank/wallet/chain')
+    mockApproveRecovery.mockRejectedValueOnce(
+      new NativeFeeExceededError(90000000000000n),
+    )
+    mockRecoveryReview.mockResolvedValueOnce({
+      ...recoveryReview,
+      requiredTotalNetworkFeeAtomic: 90000000000000n,
+    })
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="review-fee-changed"]').exists()).toBe(true)
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockReconcileAttempts).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(
+      mockApproveRecovery.mock.calls[1][0].maximumTotalNetworkFeeAtomic,
+    ).toBe(90000000000000n)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('a wallet switch during fee review cannot authorize either a replacement or a new payment', async () => {
+    const wrapper = await mountRecovery()
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({ ...mockWallet })
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockApproveRecovery).not.toHaveBeenCalled()
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalled()
   })
 
   it('renders contact selection list and allows selecting a contact', async () => {
@@ -374,6 +545,67 @@ describe('SendContact.vue (dual-send model)', () => {
     const available = wrapper.get('[data-test="send-contact-available"]').text()
     expect(available).toBe('Available for this payment: 10.5 MON')
     expect(wrapper.text()).not.toContain('10.6 MON')
+  })
+
+  it.each(['loading', 'error', 'unsupported'] as const)(
+    'hides unavailable capacity (%s) while a supported action quote still permits the send',
+    async state => {
+      mockCapacity.loaded = state !== 'loading'
+      mockCapacity.error = state === 'error'
+      mockCapacity.supported = state !== 'unsupported'
+      const quoteContactPayment = jest.fn().mockResolvedValue({
+        valueWei: PREPARED.value,
+        stampWei: 0n,
+        networkFeeWei: 100_000_000_000_000n,
+        totalWei: PREPARED.value + 100_000_000_000_000n,
+        floorWei: 1n,
+      })
+      ;(useActiveWallet as jest.Mock).mockResolvedValue({
+        ...mockWallet,
+        quoteContactPayment,
+      })
+      mockPrepare.mockResolvedValueOnce(PREPARED)
+      mockSendMessage.mockResolvedValueOnce({
+        state: 'sent',
+        payloadDigest: 'dd',
+      })
+      const wrapper = mountSendContact()
+      await flushPromises()
+      const capacity = wrapper.get('[data-test="send-contact-available"]')
+      expect(capacity.text()).toBe('')
+      expect(capacity.attributes('title')).toBeUndefined()
+      await wrapper.find('[data-test="contact-item"]').trigger('click')
+      await wrapper
+        .find('[data-test="send-contact-amount-input"]')
+        .setValue('1.5')
+      await wrapper
+        .find('[data-test="send-contact-review-button"]')
+        .trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="review-fee"]').text()).toContain('MON')
+      await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(mockPrepare).toHaveBeenCalledTimes(1)
+      expect(mockPrepare.mock.calls[0][0].maxFeeWei).toBe(100_000_000_000_000n)
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('shows a successfully observed zero capacity without blocking the original operation quote', async () => {
+    mockCapacity.formatted = '0 MON'
+    const wrapper = mountSendContact()
+    await flushPromises()
+    expect(wrapper.get('[data-test="send-contact-available"]').text()).toBe(
+      'Available for this payment: 0 MON',
+    )
+    wrapper.unmount()
+    const recovery = await mountRecovery()
+    await recovery.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockApproveRecovery).toHaveBeenCalledTimes(1)
+    expect(mockReconcileAttempts).toHaveBeenCalledTimes(1)
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('Confirm never does nothing: details that are no longer a payment are said, and the form returns', async () => {

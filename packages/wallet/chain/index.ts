@@ -183,6 +183,7 @@ export type {
   DirectMessagePaymentSummary,
   DirectMessageClient,
   DirectMessageStampQuote,
+  DirectMessageRecoveryFeeReview,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,

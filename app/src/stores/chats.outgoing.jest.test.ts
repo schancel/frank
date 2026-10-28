@@ -24,6 +24,10 @@ import { accountSession } from '../accounts/session'
 
 import { outgoingMessageId, rehydateChat, useChatStore } from './chats'
 import {
+  outgoingRecoveryFeeReviews,
+  refreshOutgoingPaymentSummaries,
+} from '../utils/outgoing-payments'
+import {
   activeChain,
   CanonicalMessagingPendingError,
 } from '@frank/wallet/chain'
@@ -257,8 +261,62 @@ describe('outgoing direct messages (#269, #270)', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
 
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+
+  it('marks a live already-paid original for fee review without replacing its payment or message', async () => {
+    const send = sendJournalsThenPending()
+    const chats = useChatStore()
+    await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+    const before = only(chats)[0]
+    const id = before.payloadDigest
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(true)
+    reconcileReturns({ [HASH]: 'live' })
+    await chats.reconcileOutgoing({ wallet })
+    const after = only(chats)[0]
+    expect(after.payloadDigest).toBe(id)
+    expect(after.status).toBe('error')
+    expect(after.delivery).toMatchObject({
+      attemptDigest: HASH,
+      live: true,
+      failureReason: 'stamp-recovery-fee-required',
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('a delivered message keeps its confirmed store identity while its stamp repayment needs review', async () => {
+    const send = sendJournalsThenPending()
+    const chats = useChatStore()
+    await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+    reconcileReturns({ [HASH]: 'delivered' })
+    await chats.reconcileOutgoing({ wallet })
+    const delivered = only(chats)[0]
+    expect(delivered.status).toBe('confirmed')
+    const original = delivered.items.map(item => ({ ...item }))
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue([HASH])
+    refreshOutgoingPaymentSummaries(wallet, only(chats))
+    expect(outgoingRecoveryFeeReviews.has(HASH)).toBe(true)
+    await chats.reconcileOutgoing({ wallet })
+    expect(only(chats)[0]).toMatchObject({
+      status: 'confirmed',
+      payloadDigest: HASH,
+      items: original,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue([])
+    refreshOutgoingPaymentSummaries(wallet, only(chats))
+    expect(outgoingRecoveryFeeReviews.has(HASH)).toBe(false)
+    expect(only(chats)[0].status).toBe('confirmed')
   })
 
   // These suspension fixtures must release their gates even if an assertion or Jest
@@ -3160,6 +3218,9 @@ describe('outgoing direct messages (#269, #270)', () => {
       db.clear()
       survived.forEach((value, key) => db.set(key, value))
       jest.restoreAllMocks()
+      jest
+        .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+        .mockReturnValue(false)
 
       jest.spyOn(console, 'warn').mockImplementation(() => undefined)
       return reload()
@@ -3253,6 +3314,9 @@ describe('outgoing direct messages (#269, #270)', () => {
         ;(await durable()).clear()
         setActivePinia(createPinia())
         jest.restoreAllMocks()
+        jest
+          .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+          .mockReturnValue(false)
 
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         // A bet whose payment set exists and whose delivery could not be confirmed.
@@ -3277,6 +3341,9 @@ describe('outgoing direct messages (#269, #270)', () => {
           }),
         )
         jest.restoreAllMocks()
+        jest
+          .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+          .mockReturnValue(false)
 
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         const send = jest.spyOn(activeChain.directMessages, 'send')
@@ -3516,6 +3583,9 @@ describe('outgoing direct messages (#269, #270)', () => {
         const chats = useChatStore()
         await chats.sendMessage({ wallet, address: PEER, items: DEAL })
         jest.restoreAllMocks()
+        jest
+          .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+          .mockReturnValue(false)
 
         jest.spyOn(console, 'warn').mockImplementation(() => undefined)
         const [message] = only(chats)
@@ -3592,6 +3662,9 @@ describe('outgoing direct messages (#269, #270)', () => {
         const chats = useChatStore()
         await chats.sendMessage({ wallet, address: PEER, items: DEAL })
         jest.restoreAllMocks()
+        jest
+          .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+          .mockReturnValue(false)
 
         const [message] = only(chats)
         expect(message.status).toBe('error')
@@ -3628,6 +3701,9 @@ describe('financial outbox envelope barrier', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
     installFinancialSession(false)
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     expose = jest.fn(async () => undefined)
@@ -4284,6 +4360,9 @@ describe('financial UI cancellation', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
     installFinancialSession()
 
     const expose = jest.fn(),
@@ -4346,6 +4425,9 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
 
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
@@ -4481,6 +4563,9 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
 
     const chats = useChatStore()
     let calls = 0
@@ -4511,6 +4596,9 @@ describe('persisted application message handoff', () => {
     ;(await durable()).clear()
     setActivePinia(createPinia())
     jest.restoreAllMocks()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredOf')
+      .mockReturnValue(false)
 
     const chats = useChatStore()
     jest.spyOn(activeChain.directMessages, 'send').mockImplementation(() => {

@@ -15,7 +15,13 @@
           @click="isReviewing ? cancelReview() : cancelEdit()"
         />
         <q-toolbar-title class="h6" data-test="send-contact-title">{{
-          $t('sendContactDialog.title')
+          $t(
+            recoveryMode
+              ? recoveryRepayment
+                ? 'outgoing.repayStampTitle'
+                : 'outgoing.recoveryTitle'
+              : 'sendContactDialog.title',
+          )
         }}</q-toolbar-title>
       </q-toolbar>
     </q-header>
@@ -237,7 +243,11 @@
 
               <div class="row justify-between items-center q-py-xs">
                 <span class="text-caption text-grey-7">{{
-                  $t('sendContactDialog.amount')
+                  $t(
+                    recoveryMode
+                      ? 'outgoing.contactAlreadyPaid'
+                      : 'sendContactDialog.amount',
+                  )
                 }}</span>
                 <span
                   class="text-weight-bold text-primary"
@@ -259,7 +269,11 @@
               <!-- The message's stamp: paid to the contact beside the payment, never part of it. -->
               <div class="row justify-between items-center q-py-xs">
                 <span class="text-caption text-grey-7">{{
-                  $t('sendContactDialog.stamp')
+                  $t(
+                    recoveryRepayment
+                      ? 'outgoing.stampPartBeingResumed'
+                      : 'sendContactDialog.stamp',
+                  )
                 }}</span>
                 <span class="text-grey-7 text-right" data-test="review-stamp">
                   {{ stampText }}
@@ -275,11 +289,46 @@
                 </span>
               </div>
 
+              <div
+                v-if="recoveryMode"
+                class="row justify-between items-center q-py-xs"
+              >
+                <span class="text-caption text-grey-7">{{
+                  $t('outgoing.recoveryMaximumNetworkFees')
+                }}</span>
+                <span
+                  class="text-grey-7 text-right"
+                  data-test="recovery-maximum-network-fees"
+                  >{{ recoveryMaximumNetworkFees }}</span
+                >
+              </div>
+
+              <template v-if="recoveryRepayment">
+                <div class="row justify-between items-center q-py-xs">
+                  <span>{{ $t('outgoing.stampAlreadyPaid') }}</span>
+                  <span data-test="recovery-stamp-paid">{{
+                    recoveryPaidStamp
+                  }}</span>
+                </div>
+                <div class="row justify-between items-center q-py-xs">
+                  <span>{{ $t('outgoing.stampStillOwed') }}</span>
+                  <span data-test="recovery-stamp-pending">{{
+                    recoveryPendingStamp
+                  }}</span>
+                </div>
+              </template>
+
               <q-separator />
 
               <div class="row justify-between items-center q-py-xs">
                 <span class="text-subtitle2">{{
-                  $t('sendContactDialog.total')
+                  $t(
+                    recoveryMode
+                      ? recoveryRepayment
+                        ? 'outgoing.repayStampPartTotal'
+                        : 'outgoing.recoveryRemainingTotal'
+                      : 'sendContactDialog.total',
+                  )
                 }}</span>
                 <span
                   class="text-subtitle1 text-weight-bold"
@@ -289,6 +338,21 @@
                 </span>
               </div>
             </div>
+          </q-card-section>
+
+          <q-card-section
+            v-if="recoveryMode"
+            class="q-pt-none"
+            role="status"
+            data-test="recovery-fee-explanation"
+          >
+            {{
+              $t(
+                recoveryRepayment
+                  ? 'outgoing.repayStampExplanation'
+                  : 'outgoing.reasonStampRecoveryFeeRequired',
+              )
+            }}
           </q-card-section>
 
           <!-- Refused over the reviewed fee: nothing was sent; the fee and total above are the
@@ -327,9 +391,19 @@
               @click="cancelReview"
             />
             <q-btn
-              :disable="sending || quote.state === 'estimating'"
+              :disable="
+                sending ||
+                quote.state === 'estimating' ||
+                (recoveryMode && quote.state !== 'known')
+              "
               :loading="sending"
-              :label="$t('sendContactDialog.confirmAndSend')"
+              :label="
+                $t(
+                  recoveryMode
+                    ? 'outgoing.approveAndResume'
+                    : 'sendContactDialog.confirmAndSend',
+                )
+              "
               color="primary"
               data-test="review-confirm-button"
               @click="confirmSend"
@@ -359,6 +433,7 @@ import {
   type ContactPaymentInfo,
   type ContactPaymentQuote,
   type PreparedContactPayment,
+  type DirectMessageRecoveryFeeReview,
 } from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
 import { useMonadWallet } from 'src/utils/clients'
@@ -409,8 +484,26 @@ export default defineComponent({
     const router = useRouter()
     const contactStore = useContactStore()
     const chatStore = useChatStore()
+    // A recovery URL can only finish its original message; malformed/unavailable recovery
+    // never falls through into preparing another contact payment.
+    const recoveryMode = route.query.recovery !== undefined
+    const recoveryDigest =
+      typeof route.query.recovery === 'string' ? route.query.recovery : ''
+    const recoveryChain =
+      typeof route.query.chain === 'string' ? route.query.chain : ''
+    const recoveryReview = ref<DirectMessageRecoveryFeeReview>()
+    const recoveryRepayment = computed(
+      () => recoveryReview.value?.purpose === 'repay-stamp',
+    )
+    let recoveryWallet: Awaited<ReturnType<typeof useActiveWallet>> | undefined
     // What a payment to a contact can draw on: the wallet's own figure, not the shown total.
-    const { formattedSpendable, exactSpendable, loaded } = useBalance()
+    const {
+      formattedSpendable,
+      exactSpendable,
+      availableLoaded,
+      availableError,
+      availableSupported,
+    } = useBalance()
 
     const search = ref('')
     const selectedContactAddress = ref<string>(
@@ -418,7 +511,7 @@ export default defineComponent({
     )
     const amount = ref('')
     const memo = ref('')
-    const isReviewing = ref(false)
+    const isReviewing = ref(recoveryMode)
     // The wallet's own quote for this payment, shown before the user confirms: the payment,
     // the message's stamp and the network fee of both, each apart.
     const quote = ref<
@@ -430,6 +523,10 @@ export default defineComponent({
     // it is not known. The wallet refuses less itself; this says so before review.
     const floorWei = ref(0n)
     onMounted(async () => {
+      if (recoveryMode) {
+        requote()
+        return
+      }
       try {
         const wallet = await useActiveWallet()
         floorWei.value =
@@ -444,7 +541,9 @@ export default defineComponent({
     const feeChanged = ref(false)
 
     const balanceText = computed(() =>
-      loaded.value ? formattedSpendable.value : '',
+      availableSupported.value && availableLoaded.value && !availableError.value
+        ? formattedSpendable.value
+        : '',
     )
     const unit = computed(() => activeChain.unit)
 
@@ -557,11 +656,68 @@ export default defineComponent({
         ? display(quote.value.quote.totalWei)
         : pendingText(),
     )
+    const recoveryMaximumNetworkFees = computed(() =>
+      quote.value.state === 'known' && recoveryReview.value
+        ? display(recoveryReview.value.requiredTotalNetworkFeeAtomic)
+        : pendingText(),
+    )
+    const recoveryPaidStamp = computed(() =>
+      display(recoveryReview.value?.paidStampAtomic ?? 0n),
+    )
+    const recoveryPendingStamp = computed(() =>
+      display(recoveryReview.value?.pendingStampAtomic ?? 0n),
+    )
 
     /** Asks the wallet for this payment's quote (shown in the review); a later request wins. */
     function requote() {
       const request = ++feeRequest
       quote.value = { state: 'estimating' }
+      if (recoveryMode) {
+        void (async () => {
+          try {
+            const wallet = await useActiveWallet()
+            if (
+              recoveryChain !== activeChain.chainIdentifier ||
+              !/^[0-9a-f]{64}$/.test(recoveryDigest) ||
+              (recoveryWallet !== undefined && recoveryWallet !== wallet)
+            )
+              throw new Error($t('outgoing.recoveryFeeUnavailable'))
+            recoveryWallet = wallet
+            const review = await activeChain.directMessages.recoveryFeeReview?.(
+              { wallet, payloadDigest: recoveryDigest },
+            )
+            if (!review || review.chainIdentifier !== recoveryChain)
+              throw new Error($t('outgoing.recoveryFeeUnavailable'))
+            if (request !== feeRequest) return
+            recoveryReview.value = review
+            selectedContactAddress.value = review.recipientAddress
+            amount.value = activeChain.toDisplayAmount(review.paidContactAtomic)
+            quote.value = {
+              state: 'known',
+              quote: {
+                valueWei: review.paidContactAtomic,
+                stampWei: review.stampAtomic,
+                networkFeeWei: review.additionalNetworkFeeAtomic,
+                totalWei:
+                  review.stampAtomic + review.additionalNetworkFeeAtomic,
+                floorWei: 0n,
+              },
+            }
+          } catch (error) {
+            if (request === feeRequest) {
+              recoveryReview.value = undefined
+              quote.value = {
+                state: 'unavailable',
+                reason:
+                  error instanceof Error
+                    ? error.message
+                    : $t('outgoing.recoveryFeeUnavailable'),
+              }
+            }
+          }
+        })()
+        return
+      }
       const value = parsedValue.value!
       // The message carries the stamp chosen for the conversation with this contact, as a
       // payment sent from the chat itself does (the wallet's default when none is chosen).
@@ -650,6 +806,7 @@ export default defineComponent({
     watch(
       () => formStep(route),
       step => {
+        if (recoveryMode) return
         if (step === REVIEW_STEP) {
           if (isReviewing.value) return
           if (sending.value || !isValid.value)
@@ -665,11 +822,16 @@ export default defineComponent({
     )
 
     return {
+      recoveryMode,
+      recoveryRepayment,
+      recoveryPaidStamp,
+      recoveryPendingStamp,
       quote,
       feeChanged,
       feeText,
       stampText,
       totalText,
+      recoveryMaximumNetworkFees,
       floorWei,
       belowFloor,
       minimumText,
@@ -702,6 +864,10 @@ export default defineComponent({
         reviewTransfer()
       },
       cancelReview() {
+        if (recoveryMode) {
+          leaveForm(router, start, '/wallet')
+          return
+        }
         if (formStep(route) === REVIEW_STEP) {
           // Back, as from the review: the form shows when its entry does.
           goBack(router, formStepLocation(route, null))
@@ -713,6 +879,47 @@ export default defineComponent({
       async confirmSend() {
         // While the fee is being quoted again there is no reviewed fee to bound the payment by.
         if (sending.value || quote.value.state === 'estimating') return
+        if (recoveryMode) {
+          const reviewed = recoveryReview.value
+          if (!reviewed || quote.value.state !== 'known') return
+          sending.value = true
+          try {
+            const wallet = await useActiveWallet()
+            if (
+              wallet !== recoveryWallet ||
+              activeChain.chainIdentifier !== recoveryChain ||
+              !activeChain.directMessages.approveRecoveryFee
+            )
+              throw new Error($t('outgoing.recoveryFeeUnavailable'))
+            await activeChain.directMessages.approveRecoveryFee({
+              wallet,
+              payloadDigest: recoveryDigest,
+              recoveryOperationId: reviewed.recoveryOperationId,
+              maximumTotalNetworkFeeAtomic:
+                reviewed.requiredTotalNetworkFeeAtomic,
+            })
+            await activeChain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [recoveryDigest],
+              maxPutAttempts: 2,
+            })
+            await chatStore.reconcileOutgoing({ wallet: useMonadWallet() })
+            if (!disposed) leaveForm(router, start, '/wallet')
+          } catch (error) {
+            if (error instanceof NativeFeeExceededError) {
+              feeChanged.value = true
+              requote()
+            } else {
+              errorNotify(error, {
+                fallbackKey: 'outgoing.recoveryFeeUnavailable',
+              })
+              requote()
+            }
+          } finally {
+            sending.value = false
+          }
+          return
+        }
         if (!isValid.value) {
           // The details stopped being a payment that can be sent (the contact or the amount
           // is gone): said, and back to the form, never a button that does nothing.

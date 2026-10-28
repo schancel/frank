@@ -67,6 +67,21 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
   })
 }
 
+it('keeps delivered status and exposes only stamp fee review for a confirmed payment', async () => {
+  const wrapper = mountSuffix({
+    status: 'confirmed',
+    recoveryFeeRequired: true,
+  })
+  expect(
+    wrapper.get('[data-testid="delivered-stamp-fee-required"]').text(),
+  ).toContain('Delivered')
+  expect(wrapper.find('[data-testid="outgoing-failed"]').exists()).toBe(false)
+  expect(wrapper.find('[data-testid="outgoing-discard"]').exists()).toBe(false)
+  await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
+  expect(wrapper.emitted('resendClick')).toHaveLength(1)
+  expect(wrapper.props('status')).toBe('confirmed')
+})
+
 describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
   it.each([
     ['en-us', enUS],

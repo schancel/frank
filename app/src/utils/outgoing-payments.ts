@@ -14,6 +14,8 @@ import {
 export const outgoingPaymentSummaries = reactive(
   new Map<string, DirectMessagePaymentSummary>(),
 )
+/** Current fee-review obligations projected from the wallet owner; never persisted. */
+export const outgoingRecoveryFeeReviews = reactive(new Set<string>())
 
 /** How many blocks a send still has to wait before its coin may be spent (the chain's spacing
  * after the account's last transaction), by the message's store key, as the wallet last said. */
@@ -47,15 +49,31 @@ export function refreshOutgoingPaymentSummaries(
   messages: Iterable<SentMessage>,
   now = Date.now(),
 ): number {
+  const feeCandidates = new Set(outgoingRecoveryFeeReviews)
+  try {
+    const required = new Set(
+      activeChain.directMessages.recoveryFeeRequiredDigests?.({ wallet }) ?? [],
+    )
+    for (const digest of outgoingRecoveryFeeReviews)
+      if (!required.has(digest)) outgoingRecoveryFeeReviews.delete(digest)
+    for (const digest of required) {
+      outgoingRecoveryFeeReviews.add(digest)
+      feeCandidates.add(digest)
+    }
+  } catch {
+    // Required wallet restoration/session failures remain visible through its owner.
+  }
   let open = 0
   for (const message of messages) {
     if (!message.outbound || (message.stampValueWei ?? 0n) <= 0n) continue
     const digest = message.delivery?.attemptDigest ?? message.payloadDigest
     if (digest.startsWith('pending:')) continue
     const known = outgoingPaymentSummaries.get(digest)
-    if (known !== undefined && FINAL.has(known)) continue
+    if (known !== undefined && FINAL.has(known) && !feeCandidates.has(digest))
+      continue
     if (
       known === undefined &&
+      !feeCandidates.has(digest) &&
       now - message.serverTime > PAYMENT_SUMMARY_WINDOW_MS
     )
       continue

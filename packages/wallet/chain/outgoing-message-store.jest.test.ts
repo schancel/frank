@@ -366,4 +366,37 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
     const store = await open()
     expect(store.all()).toEqual([row('attempt-a')])
   })
+
+  it('persists original combined binding and reviewed recovery fee without writes at reopen', async () => {
+    const store = await open()
+    const recovery: Row = {
+      ...sharedRow('recovery'), originalCombinedOperationId: 'contact-original',
+      paymentOperationId: 'application-original', stampRecoveryFeeCeiling: '100',
+      construction: {...sharedRow('recovery').construction!, maxFeeWei: '40'},
+    }
+    await store.put(recovery)
+    await close(store)
+    const before = await rawEntries(location)
+    const reopened = await open()
+    expect(reopened.get(key('recovery'))).toEqual(recovery)
+    await close(reopened)
+    expect(await rawEntries(location)).toEqual(before)
+  })
+
+  it.each([
+    {paymentOperationId: undefined}, {originalCombinedOperationId: 'stamp-recovery'},
+    {stampRecoveryFeeCeiling: '-1'}, {stampRecoveryFeeCeiling: 100},
+    {outcome: 'dead'}, {transactionSetOperationId: 'unrelated'},
+    {construction: {...sharedRow('recovery').construction!, maxFeeWei: '101'}},
+  ])('rejects inconsistent original-payment recovery metadata %j', async invalid => {
+    const store = await open()
+    const recovery = JSON.parse(JSON.stringify({
+      ...sharedRow('recovery'), originalCombinedOperationId: 'contact-original',
+      paymentOperationId: 'application-original', stampRecoveryFeeCeiling: '100',
+      construction: {...sharedRow('recovery').construction!, maxFeeWei: '40'}, ...invalid,
+    })) as Row
+    await expect(store.put(recovery)).rejects.toThrow()
+    expect(store.all()).toEqual([])
+  })
+
 })

@@ -28,7 +28,13 @@
         <!-- A group write whose host stored nothing yet: waiting, not failed. It is sent again by
         itself; Discard gives its coin back only after a chain read. -->
         <span
-          v-if="status === 'error' && waitingFundsOrChain"
+          v-if="status === 'confirmed' && recoveryFeeRequired"
+          class="outgoing-status"
+          data-testid="delivered-stamp-fee-required"
+          >{{ $t('outgoing.deliveredStampFeeRequired') }}</span
+        >
+        <span
+          v-else-if="status === 'error' && waitingFundsOrChain"
           class="outgoing-status"
           data-testid="outgoing-waiting-funds-or-chain"
         >
@@ -109,6 +115,11 @@
             class="outgoing-actions"
             :status="status"
             :retryable="retryable"
+            :fee-review="
+              recoveryFeeRequired ||
+              (status !== 'confirmed' &&
+                failureReason === 'stamp-recovery-fee-required')
+            "
             @replyClick="$emit('replyClick')"
             @forwardClick="$emit('forwardClick')"
             @infoClick="$emit('infoClick')"
@@ -142,6 +153,7 @@ export default defineComponent({
     ChatMessageSuffixButtons,
   },
   props: {
+    recoveryFeeRequired: { type: Boolean, default: false },
     stamp: {
       type: String,
       required: true,

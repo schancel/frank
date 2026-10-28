@@ -369,3 +369,27 @@ it('uses the existing derived identity when no sealed ID exists and lookup is ab
   expect(f.lookup).toHaveBeenCalledWith(wallet, 'derived:local')
   expect(row.delivery?.failureReason).toBe('interrupted')
 })
+
+it('exposes same-operation fee review for a live paid original, then clears it after approval', async () => {
+  const f = fixture()
+  f.context.recoveryFeeRequired = jest.fn(() => true)
+  f.reconcile.mockResolvedValue({ original: 'live' })
+  await f.recovery.reconcileOutgoing({ wallet })
+  expect(f.records.get('local')).toMatchObject({
+    status: 'error',
+    delivery: {
+      attemptDigest: 'original',
+      live: true,
+      failureReason: 'stamp-recovery-fee-required',
+    },
+  })
+  expect(f.ports.run).not.toHaveBeenCalled()
+  expect(f.ports.runExclusive).not.toHaveBeenCalled()
+  f.context.recoveryFeeRequired = jest.fn(() => false)
+  await f.recovery.reconcileOutgoing({ wallet })
+  expect(f.records.get('local')).toMatchObject({
+    status: 'payment-pending',
+    delivery: { attemptDigest: 'original', live: true },
+  })
+  expect(f.records.get('local')!.delivery!.failureReason).toBeUndefined()
+})

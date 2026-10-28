@@ -47,6 +47,7 @@ export interface RecoveryConversation<M extends RecoveryMessage> {
   messages: M[]
 }
 export interface RecoveryContext {
+  recoveryFeeRequired?(wallet: WalletHandle, payloadDigest: string): boolean
   current(): boolean
   parseAddress(address: string): boolean
   attemptOf(
@@ -125,12 +126,14 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
 ) {
   const recovery = {
     async applyAttemptStatus({
+      wallet,
       address,
       id,
       status,
       digest,
       assertCurrent,
     }: {
+      wallet?: WalletHandle
       address: string
       id: string
       digest: string
@@ -149,17 +152,27 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
           })
           return 'sent'
         }
+        const feeReview =
+          status === 'live' &&
+          wallet !== undefined &&
+          ports.captureContext().recoveryFeeRequired?.(wallet, digest) === true
         if (
           status === 'live' &&
-          (message.status !== 'payment-pending' || !message.delivery?.live)
+          (message.status !== (feeReview ? 'error' : 'payment-pending') ||
+            !message.delivery?.live ||
+            message.delivery?.failureReason !==
+              (feeReview ? 'stamp-recovery-fee-required' : undefined))
         ) {
           await ports.setState(
             address,
             id,
-            'payment-pending',
+            feeReview ? 'error' : 'payment-pending',
             {
               attemptDigest: digest,
               live: true,
+              ...(feeReview
+                ? { failureReason: 'stamp-recovery-fee-required' as const }
+                : {}),
             },
             { assertCurrent },
           )
@@ -373,6 +386,7 @@ export function createOutgoingRecovery<M extends RecoveryMessage>(
           for (const entry of withAttempt) {
             try {
               const applied = await recovery.applyAttemptStatus({
+                wallet,
                 address: entry.address,
                 id: entry.id,
                 status: statuses[entry.digest as string] ?? 'unknown',

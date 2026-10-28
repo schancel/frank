@@ -989,6 +989,25 @@ export const rawFrFR = {
       'L’envoyer coûterait plus de frais de réseau que vous n’en avez approuvé. Rien n’a été payé ; ses fonds sont de nouveau disponibles.',
     reasonPaymentTaken:
       'Un autre appareil de ce compte a dépensé les mêmes fonds au même moment. Rien n’a été payé ni envoyé ; ses fonds sont de nouveau disponibles. Envoyez-le de nouveau.',
+    reasonStampRecoveryFeeRequired:
+      'Le paiement au contact est déjà sur la chaîne. Vérifiez les frais de réseau supplémentaires pour terminer la livraison de ce même message.',
+    reviewRecoveryFee: 'Vérifier les frais de livraison',
+    recoveryFeeUnavailable:
+      'La récupération de ce paiement est indisponible dans le portefeuille ou le réseau actuel. Le paiement initial reste enregistré.',
+    recoveryTitle: 'Terminer la livraison du paiement',
+    deliveredStampFeeRequired:
+      'Livré. Vérifiez les frais du timbre restant dû.',
+    repayStampTitle: 'Terminer le paiement du timbre du message livré',
+    repayStampExplanation:
+      'Votre message est livré et le paiement au contact est déjà sur la chaîne. Approuvez les frais réseau du timbre restant dû à sa destination d’origine.',
+    stampAlreadyPaid: 'Timbre déjà reçu',
+    stampStillOwed: 'Timbre restant dû',
+    stampPartBeingResumed: 'Paiement de timbre repris',
+    repayStampPartTotal: 'Pour ce paiement de timbre',
+    contactAlreadyPaid: 'Déjà payé au contact',
+    recoveryRemainingTotal: 'Pour terminer la livraison',
+    recoveryMaximumNetworkFees: 'Frais réseau maximum pour ce message',
+    approveAndResume: 'Approuver les frais et reprendre',
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:
       "Un message précédent dont le paiement est bloqué retient les fonds nécessaires à celui-ci. Rien n'a été payé pour celui-ci. Réessayez une fois ce message parti.",

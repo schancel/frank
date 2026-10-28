@@ -2662,6 +2662,11 @@ function createChatOutgoingRecovery(owner: RecoveryOwner) {
       return {
         current: () => current(),
         parseAddress: address => !!messagingChain.parseAddress(address),
+        recoveryFeeRequired: (wallet, payloadDigest) =>
+          messagingChain.directMessages.recoveryFeeRequiredOf?.({
+            wallet,
+            payloadDigest,
+          }) ?? false,
         attemptOf: (wallet, messageId) =>
           messagingChain.directMessages.attemptOf?.({ wallet, messageId }) ??
           Promise.resolve(undefined),
@@ -4393,12 +4398,14 @@ export const useChatStore = defineStore('chats', {
     },
     /** Applies what the wallet knows about a message's earlier payment attempt. */
     async applyAttemptStatus({
+      wallet,
       address,
       id,
       status,
       digest,
       assertCurrent,
     }: {
+      wallet?: WalletHandle
       address: string
       id: string
       digest: string
@@ -4406,6 +4413,7 @@ export const useChatStore = defineStore('chats', {
       status: DirectMessageAttemptStatus
     }): Promise<'sent' | 'live' | 'dead' | 'unknown' | 'stale'> {
       return createChatOutgoingRecovery(this).applyAttemptStatus({
+        wallet,
         address,
         id,
         status,

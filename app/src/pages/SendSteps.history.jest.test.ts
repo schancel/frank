@@ -118,6 +118,9 @@ jest.mock('src/composables/useBalance', () => ({
     formattedBalance: { value: '10 MON' },
     formattedSpendable: { value: '10 MON' },
     exactSpendable: { value: '10 MON' },
+    availableLoaded: { value: true },
+    availableError: { value: false },
+    availableSupported: { value: true },
     loaded: { value: true },
   }),
 }))

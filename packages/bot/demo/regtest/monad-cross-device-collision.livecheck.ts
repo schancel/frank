@@ -19,8 +19,9 @@
  *      refused as money tied up in a send that can never land).
  *   2. The same with B's app closed in the middle: closed before it sent anything, reopened, and
  *      closed again just after it recorded that the payment is to be built again, then reopened.
- *   3. The same when A's transaction moves a different value (most of the coin): B's change
- *      transfers after the taken nonce were signed against money that is gone, and are given up.
+ *   3. The same when A's transaction moves a different value (most of the account B's payment
+ *      was signed from, at B's nonce): B's change transfers after the taken nonce were signed
+ *      against money that is gone, and are given up.
  *   4. A's transaction lands while the relay already holds B's message (A's is on the network
  *      first; the relay's look at the account does not show it yet): B's message is delivered and
  *      its taken payment is paid again, the same amount to the same destination, once (what bob's
@@ -62,8 +63,6 @@ const FUND_WEI = parseEther('2')
 /** What bob pays gina each round: the coin both of gina's devices take first. */
 const SHARED_COIN_WEI = parseEther('0.3')
 const STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI * 3n
-/** Round 3: what A's message pays, most of the shared coin. */
-const A_LARGE_STAMP_WEI = parseEther('0.25')
 /** Round 5: what B pays bob's contact address together with its stamp (well above the payment
  * floor, which follows the gas price). */
 const CONTACT_WEI = parseEther('0.1')
@@ -314,41 +313,50 @@ async function main() {
       // A pays from the same coin; the chain takes A's transaction.
       let relayStored: boolean | undefined
       let aHashes: string[]
-      if (variant === 'relay-stored') {
-        // A's transaction goes to the network first, and B is let go at once: the relay reads
-        // the account before the network shows A's transaction used the nonce, stores B's
-        // message, and B's payment then cannot land.
-        // Both devices derive the same keys from the account; the coin's key is read from B's list.
+      /** A, holding the same account keys (read here from B's list), signs a transfer from the
+       * account and nonce of B's first payment and hands it to the network. */
+      const takeB = async (value: (balance: bigint, fee: bigint) => bigint): Promise<string> => {
         const victim = bTaken[0]!
         const key = evmWalletInternals(b.handle).coinList!.all()
           .find(coin => coin.account.toLowerCase() === victim.from!.toLowerCase() && coin.privateKey)?.privateKey
         assert.ok(key, `${label}: the account holds the key of ${victim.from}`)
         const signer = new Wallet(key!, monad.provider)
         const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
+        const balance = await monad.provider.getBalance(victim.from!)
         const raw = await signer.signTransaction({
           type: 0, chainId: (await monad.provider.getNetwork()).chainId, to: monad.faucetAddress,
-          value: STAMP_WEI * 2n, nonce: victim.nonce, gasLimit: TRANSFER_GAS, gasPrice,
+          value: value(balance, TRANSFER_GAS * gasPrice), nonce: victim.nonce, gasLimit: TRANSFER_GAS, gasPrice,
         })
-        const aHash = Transaction.from(raw).hash!
         await monad.provider.send('eth_sendRawTransaction', [raw])
+        return Transaction.from(raw).hash!
+      }
+      if (variant === 'relay-stored') {
+        // A's transaction goes to the network first, and B is let go at once: the relay reads
+        // the account before the network shows A's transaction used the nonce, stores B's
+        // message, and B's payment then cannot land.
+        const aHash = await takeB(() => STAMP_WEI * 2n)
         release()
         const outcome = await bOutcome
         relayStored = !/Another transaction used the coin/.test(outcome)
         console.log(`${label}: A's ${aHash} sent first; B's send ended: ${outcome}`)
         aHashes = [aHash]
+      } else if (variant === 'different-value') {
+        // A moves most of the account B's payment was signed from (B is let go only after it
+        // landed): B's later transfers from that account were signed against money that is gone.
+        // A signs from B's very account, so the two always collide, whichever coin B chose.
+        aHashes = [await takeB((balance, fee) => balance - fee * 4n)]
       } else {
         const aSent = await a.call<{ digest: string; txHashes: string[] }>({
-          op: 'send', to: bob.address, text: `${label} from device A`,
-          stampWei: variant === 'different-value' ? A_LARGE_STAMP_WEI : STAMP_WEI,
+          op: 'send', to: bob.address, text: `${label} from device A`, stampWei: STAMP_WEI,
         })
         aHashes = aSent.txHashes
       }
       const aTxs = await Promise.all(
         aHashes.map(async txHash => {
           const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
-          // A's raw transfer (round 4) only has to use the nonce: included either way. Solonet
-          // has included one reverted (status 0) right after the coin's funding.
-          if (variant === 'relay-stored') assert.ok(receipt, `A's transaction ${txHash} was included`)
+          // A's raw transfer (rounds 3 and 4) only has to use the nonce: included either way.
+          // Solonet has included one reverted (status 0) right after the coin's funding.
+          if (variant !== 'same-coin') assert.ok(receipt, `A's transaction ${txHash} was included`)
           else assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
           const tx = (await monad.provider.getTransaction(txHash))!
           return { from: tx.from, nonce: tx.nonce }

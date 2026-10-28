@@ -978,6 +978,7 @@ export const rawEnUS = {
     recoveryTitle: 'Finish delivering payment',
     contactAlreadyPaid: 'Already paid to contact',
     recoveryRemainingTotal: 'To finish delivery',
+    recoveryMaximumNetworkFees: 'Maximum network fees for this message',
     approveAndResume: 'Approve fee and resume',
     blockedBy: 'It waits for your message “{preview}” ({time}).',
     reasonBlocked:

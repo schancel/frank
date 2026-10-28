@@ -997,6 +997,7 @@ export const rawFrFR = {
     recoveryTitle: 'Terminer la livraison du paiement',
     contactAlreadyPaid: 'Déjà payé au contact',
     recoveryRemainingTotal: 'Pour terminer la livraison',
+    recoveryMaximumNetworkFees: 'Frais réseau maximum pour ce message',
     approveAndResume: 'Approuver les frais et reprendre',
     blockedBy: 'Il attend votre message « {preview} » ({time}).',
     reasonBlocked:

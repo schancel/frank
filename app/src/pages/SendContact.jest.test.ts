@@ -259,6 +259,9 @@ describe('SendContact.vue (dual-send model)', () => {
       '0.00105 MON',
     )
     expect(
+      wrapper.find('[data-test="recovery-maximum-network-fees"]').text(),
+    ).toBe('0.00008 MON')
+    expect(
       wrapper.find('[data-test="recovery-fee-explanation"]').text(),
     ).toContain('already on chain')
     await wrapper.find('[data-test="review-confirm-button"]').trigger('click')

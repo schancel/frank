@@ -281,6 +281,20 @@
                 </span>
               </div>
 
+              <div
+                v-if="recoveryMode"
+                class="row justify-between items-center q-py-xs"
+              >
+                <span class="text-caption text-grey-7">{{
+                  $t('outgoing.recoveryMaximumNetworkFees')
+                }}</span>
+                <span
+                  class="text-grey-7 text-right"
+                  data-test="recovery-maximum-network-fees"
+                  >{{ recoveryMaximumNetworkFees }}</span
+                >
+              </div>
+
               <q-separator />
 
               <div class="row justify-between items-center q-py-xs">
@@ -600,6 +614,11 @@ export default defineComponent({
         ? display(quote.value.quote.totalWei)
         : pendingText(),
     )
+    const recoveryMaximumNetworkFees = computed(() =>
+      quote.value.state === 'known' && recoveryReview.value
+        ? display(recoveryReview.value.requiredTotalNetworkFeeAtomic)
+        : pendingText(),
+    )
 
     /** Asks the wallet for this payment's quote (shown in the review); a later request wins. */
     function requote() {
@@ -761,6 +780,7 @@ export default defineComponent({
       feeText,
       stampText,
       totalText,
+      recoveryMaximumNetworkFees,
       floorWei,
       belowFloor,
       minimumText,

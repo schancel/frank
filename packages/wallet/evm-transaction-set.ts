@@ -1565,12 +1565,15 @@ export class EvmTransactionSetPreparer {
       const signed = row.members.filter(member => member.signed)
       if (!signed.length) continue
       if (signed.some(member => member.transactionSet
-          ? member.transactionSet.inventoryApplied !== true
+          ? member.transactionSet.inventoryApplied !== true || nativeMemberNeedsOwnMoveRecovery(member)
           : !['included-success', 'included-revert'].includes(member.observation.state) && !nativeMemberSuperseded(member)))
         pendingOperations++
       generations.push([row.operationId, signed.map(member => [member.signed!.transactionHash,
-        member.observation.state, member.transactionSet?.inventoryApplied])])
-      if (row.kind !== 'transaction-set' || signed.every(member => member.transactionSet?.inventoryApplied === true)) continue
+        member.observation.state, member.exposed, member.transactionSet?.inventoryApplied])])
+      // Active exposed own moves can retain old applied checkpoints while recovery is owed.
+      // They still discover actual owned addresses; planned transfer values never enter totals.
+      if (row.kind !== 'transaction-set' || signed.every(member =>
+          member.transactionSet?.inventoryApplied === true && !nativeMemberNeedsOwnMoveRecovery(member))) continue
       const merge = this.options.mergeTarget?.(row)
       if (merge && computeAddress(merge.privateKey).toLowerCase() !== merge.account.toLowerCase())
         throw new Error('Merge balance ownership mismatch')

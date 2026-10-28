@@ -1,6 +1,6 @@
 import { fixture, mockBalances, START_BALANCE, offlineChain, roots } from './canonical-two-wallets.testutil'
 import { evmWalletInternals } from '../evm-wallet'
-beforeEach(() => mockBalances.clear())
+beforeEach(() => { mockBalances.clear(); offlineChain.reset() })
 
 jest.mock('../evm-provider', () => require('./canonical-two-wallets.testutil').offlineProviderModule())
 jest.mock('../evm-http', () => require('./canonical-two-wallets.testutil').offlineHttpModule())
@@ -231,4 +231,197 @@ it('uses the configured finalized spend-rule head for every amount instead of th
       expect(f.alice.getBalanceObservation!()!.parts!.observedBlock).toBe(42)
     } finally { clock.mockRestore() }
   } finally { await f.close() }
+}, 30000)
+
+it('retains actual owned funds and pending debt for exposed abandoned own moves across reopen and recovery', async () => {
+  const { Transaction, Wallet } = await import('ethers')
+  const { nativeMemberNeedsOwnMoveRecovery } = await import(
+    '../storage/evm-native-operation-journal'
+  )
+  const f = await fixture()
+  let wallet = f.alice
+  try {
+    const main = wallet.mainAccount.address.toLowerCase(),
+      initial = 10n * START_BALANCE
+    let head = 2
+    const originalBlock = await wallet.provider.getBlock(1)
+    const bindReads = () => {
+      jest
+        .spyOn(wallet.provider, 'getBlockNumber')
+        .mockImplementation(async () => head)
+      jest
+        .spyOn(wallet.provider, 'getBlock')
+        .mockImplementation(
+          async tag =>
+            ({
+              ...originalBlock!,
+              number: Number(tag),
+              hash: '0x' + Number(tag).toString(16).padStart(64, '0'),
+            } as typeof originalBlock),
+        )
+      return jest
+        .spyOn(wallet.provider, 'getBalance')
+        .mockImplementation(
+          async address =>
+            mockBalances.get(String(address).toLowerCase()) ?? 0n,
+        )
+    }
+    let reads = bindReads()
+    mockBalances.set(main, initial)
+    await wallet.refreshTransactionSetInventory!()
+    let preparer = wallet.transactionSetPreparer!
+    const id = 'balance-active-own-debt'
+    const set = await preparer.constructTransactionSet({
+      operationId: id,
+      amountWei: START_BALANCE / 10n,
+      sourceAccounts: [main],
+      kdf: () => f.bob.mainAccount.address,
+    })
+    await preparer.authorizeSubmission(id)
+    const original = (await preparer.readOperation(id))!
+    const bytes = original.members.map(member => member.signed!.rawTransaction)
+    expect(
+      original.members.filter(
+        member => member.transactionSet?.role === 'change',
+      ).length,
+    ).toBeGreaterThan(1)
+    for (let index = 0; index < original.members.length; index++)
+      await preparer.markExposed(id, index)
+    const foreign = await new Wallet(
+      wallet.mainAccount.privateKey,
+    ).signTransaction({
+      type: 0,
+      chainId: 10143,
+      nonce: 0,
+      to: f.bob.mainAccount.address,
+      value: initial - 1n,
+      gasLimit: 21000n,
+      gasPrice: 1000n,
+    })
+    offlineChain.mine(foreign)
+    const account = () => ({
+      blockNumber: head,
+      blockHash: '0x' + head.toString(16).padStart(64, '0'),
+      nonce: [...offlineChain.mined.values()].filter(
+        address => address === main,
+      ).length,
+      balanceWei: (mockBalances.get(main) ?? 0n).toString(),
+    })
+    // Genuine exposure and a foreign nonce preceded this old-baseline abandonment. Reproduce
+    // the active all-applied row through its authority; C2 no longer generates it itself.
+    for (let index = 0; index < original.members.length; index++) {
+      const member = (await preparer.readOperation(id))!.members[index]!
+      const nonce = Transaction.from(member.unsignedTransaction).nonce
+      await preparer.recordObservation(
+        id,
+        index,
+        nonce === 0
+          ? { state: 'missing' }
+          : { state: 'abandoned', blockNumber: head },
+        account(),
+        member,
+      )
+    }
+    const old = (await preparer.readOperation(id))!
+    expect(
+      old.members.every(member => member.transactionSet!.inventoryApplied),
+    ).toBe(true)
+    expect(old.members.some(nativeMemberNeedsOwnMoveRecovery)).toBe(true)
+    const check = async (expected: bigint) => {
+      wallet.invalidateBalanceCache!()
+      reads.mockClear()
+      expect(await wallet.getBalance()).toBe(expected)
+      expect(wallet.getBalanceObservation!()!.parts!.pendingOwnOperations).toBe(
+        1,
+      )
+      expect(
+        new Set(
+          reads.mock.calls.map(([address]) => String(address).toLowerCase()),
+        ).size,
+      ).toBe(reads.mock.calls.length)
+      expect(await wallet.getSpendableBalance!()).toBe(0n)
+    }
+    await check(1n)
+    await wallet.close()
+    wallet = (await f.chain.createWallet(roots(0))) as typeof wallet
+    preparer = wallet.transactionSetPreparer!
+    reads = bindReads()
+    await check(1n)
+    // An independent deposit restores actual holdings, not the planned graph's raw values.
+    mockBalances.set(main, initial + 1n)
+    head++
+    await check(initial + 1n)
+    const pending = (await preparer.readOperation(id))!
+    const own = pending.members.flatMap((member, index) =>
+      nativeMemberNeedsOwnMoveRecovery(member) ? [index] : [],
+    )
+    expect(own.length).toBeGreaterThan(0)
+    // The already-exposed original recipient transaction also remains executable. Mine the
+    // original contiguous nonce sequence, never a replacement payment or newly signed own move.
+    const landed = pending.members
+      .flatMap((member, index) =>
+        Transaction.from(member.unsignedTransaction).nonce > 0 ? [index] : [],
+      )
+      .sort(
+        (a, b) =>
+          Transaction.from(bytes[a]!).nonce - Transaction.from(bytes[b]!).nonce,
+      )
+    for (const index of landed) offlineChain.mine(bytes[index]!)
+    head++
+    const addresses = new Set([
+      main,
+      wallet.identity.address.raw.toLowerCase(),
+      ...own.map(index => Transaction.from(bytes[index]!).to!.toLowerCase()),
+    ])
+    const actual = [...addresses].reduce(
+      (sum, address) => sum + (mockBalances.get(address) ?? 0n),
+      0n,
+    )
+    // This established node stand-in transfers value without charging gas; compare its actual
+    // holdings and exact original recipient value, never a predicted change sum.
+    expect(actual).toBe(initial + 1n - START_BALANCE / 10n)
+    // Before inventory projection, the journal's original owned destinations supply discovery.
+    await check(actual)
+    for (const index of landed) {
+      const member = (await preparer.readOperation(id))!.members[index]!
+      expect(member.signed!.rawTransaction).toBe(bytes[index])
+      await preparer.recordObservation(
+        id,
+        index,
+        {
+          state: 'included-success',
+          transactionHash: member.signed!.transactionHash,
+          blockHash: account().blockHash,
+          blockNumber: head,
+          transactionIndex: index,
+          feeWei: '0',
+        },
+        account(),
+        member,
+      )
+    }
+    wallet.invalidateBalanceCache!()
+    expect(await wallet.getBalance()).toBe(actual)
+    expect(wallet.getBalanceObservation!()!.parts!.pendingOwnOperations).toBe(0)
+    expect(
+      (await preparer.readOperation(id))!.members.map(
+        member => member.signed!.rawTransaction,
+      ),
+    ).toEqual(bytes)
+    expect(await wallet.getSpendableBalance!()).toBeGreaterThan(0n)
+    await wallet.close()
+    wallet = (await f.chain.createWallet(roots(0))) as typeof wallet
+    reads = bindReads()
+    expect(await wallet.getBalance()).toBe(actual)
+    expect(wallet.getBalanceObservation!()!.parts!.pendingOwnOperations).toBe(0)
+    expect(
+      new Set(
+        reads.mock.calls.map(([address]) => String(address).toLowerCase()),
+      ).size,
+    ).toBe(reads.mock.calls.length)
+    expect(await wallet.getSpendableBalance!()).toBeGreaterThan(0n)
+  } finally {
+    await wallet.close()
+    await f.close()
+  }
 }, 30000)

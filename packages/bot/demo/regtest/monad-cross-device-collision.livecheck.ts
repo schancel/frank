@@ -414,7 +414,7 @@ async function main() {
       if (relayStored) {
         // The relay held B's message: its taken payment is paid again, the same amount to the
         // same destination, once.
-        const destination = bTaken[0]!.to!
+        const destination = collided[0]!.to!
         const deadline = Date.now() + 240_000
         let row = written.get(bDigest)!.at(-1)!
         while (!(row.repayments?.length && row.repayments.every(repayment => repayment.state === 'spent'))) {
@@ -424,10 +424,19 @@ async function main() {
           await sleep(3000)
           row = written.get(bDigest)!.at(-1)!
         }
-        assert.equal(row.repayments!.length, bTaken.length, `${label}: each taken payment is paid again once`)
-        for (const tx of bTaken)
-          assert.equal(await monad.provider.getTransactionReceipt(tx.hash!), null, `${label}: B's taken payment ${tx.hash} never landed`)
-        assert.equal(await monad.provider.getBalance(destination), STAMP_WEI, `${label}: the destination B's message names holds exactly the stamp`)
+        // Only what A took is paid again; a payment of the same message A did not take lands as
+        // signed (the relay holds it too).
+        assert.equal(row.repayments!.length, collided.length, `${label}: each taken payment is paid again once`)
+        for (const tx of bTaken) {
+          const receipt = await monad.provider.getTransactionReceipt(tx.hash!)
+          if (collided.includes(tx)) assert.equal(receipt, null, `${label}: B's taken payment ${tx.hash} never landed`)
+          else assert.equal(receipt?.status, 1, `${label}: B's untaken payment ${tx.hash} landed as signed`)
+        }
+        // Every destination the message names holds exactly what the message pays it, once.
+        const owed = new Map<string, bigint>()
+        for (const tx of bTaken) owed.set(tx.to!, (owed.get(tx.to!) ?? 0n) + tx.value)
+        for (const [to, value] of owed)
+          assert.equal(await monad.provider.getBalance(to), value, `${label}: ${to}, named by B's message, holds exactly what it is paid`)
         assert.equal(b.chain.directMessages.paymentSummaryOf?.({ wallet: b.handle, payloadDigest: bDigest }), 'repaid', `${label}: B reads its payment as paid again`)
         const states = await waitSettled(b, row.transactionSetOperationId!, bDigest, label)
         console.log(`${label}: the relay held B's message; its taken payment was paid again to ${destination}; taken set: ${states.join('; ')}`)

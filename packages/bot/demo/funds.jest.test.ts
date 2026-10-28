@@ -1,9 +1,14 @@
+import fs from 'fs'
+import { createHash } from 'crypto'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
 import { Wallet } from 'ethers'
-import level from 'level'
+import level, { type LevelDB } from 'level'
+import { returnToFaucet } from './regtest/monad-wallets'
+import type { RegtestStack } from './regtest/regtest-stack'
+import { MONAD_REGTEST_CHAIN } from './regtest/monad-regtest'
 
 import { placementNotice } from './demo'
 import { Holding, TRANSFER_GAS, USAGE, findWallets, isDemoState, main, parseArgs, planSweep, usersOf } from './funds'
@@ -283,4 +288,246 @@ describe('placementNotice', () => {
     expect(lines.join('\n')).toContain('yarn demo:sweep /home/u/.frank-demo --send')
     expect(placementNotice('/s', 1n, false)[0]).toMatch(/^state directory \/s:/)
   })
+})
+
+
+describe('original closed Level records are scanned in place', () => {
+  let root: string
+  let storage: string
+  const stores = [
+    'sub-account-pool',
+    'change-pool',
+    'evm-coin-list',
+    'received-coins',
+  ] as const
+  const open = (path: string, createIfMissing = false): Promise<LevelDB> =>
+    new Promise((resolve, reject) => {
+      const db = level(path, { createIfMissing }, error =>
+        error ? reject(error) : resolve(db),
+      )
+    })
+  const digest = async (path: string) => {
+    const db = await open(path)
+    try {
+      const rows: [string, string][] = []
+      for await (const row of db.iterator({})) rows.push(row)
+      return createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+    } finally {
+      await db.close()
+    }
+  }
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'funds-original-test-'))
+    writeFileSync(join(root, 'account-root.hex'), '55'.repeat(32))
+    const [wallet] = await findWallets(root)
+    const main = wallet.accounts.find(
+      account => account.role === 'main',
+    )!.address
+    storage = join(root, `chain-storage-evm-${main.toLowerCase()}`)
+    mkdirSync(storage)
+  })
+  afterEach(() => {
+    jest.restoreAllMocks()
+    rmSync(root, { recursive: true, force: true })
+  })
+  const forbidCopies = () => {
+    const copying = jest.spyOn(fs, 'cpSync').mockImplementation(() => {
+      throw new Error('database copy forbidden')
+    })
+    const temporary = jest.spyOn(fs, 'mkdtempSync').mockImplementation(() => {
+      throw new Error('temporary custody forbidden')
+    })
+    const removing = jest.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw new Error('removing an original lock forbidden')
+    })
+    return () => {
+      expect(copying).not.toHaveBeenCalled()
+      expect(temporary).not.toHaveBeenCalled()
+      expect(removing).not.toHaveBeenCalled()
+    }
+  }
+
+  it('preserves every original record and discovers held pool, high change, merge and received keys without copies', async () => {
+    const merge = new Wallet('0x' + '66'.repeat(32)),
+      received = new Wallet('0x' + '77'.repeat(32))
+    const rows: Record<(typeof stores)[number], [string, string][]> = {
+      'sub-account-pool': [
+        ['__next_index__', '5'],
+        [
+          'sender',
+          JSON.stringify({ index: 4, address: A(4), status: 'available' }),
+        ],
+      ],
+      'change-pool': [['change', JSON.stringify({ index: 7, address: A(7) })]],
+      'evm-coin-list': [
+        [
+          'merge',
+          JSON.stringify({
+            account: merge.address,
+            privateKey: merge.privateKey,
+            origin: 'change',
+            changeIndex: 1073741824,
+          }),
+        ],
+      ],
+      'received-coins': [
+        [
+          'received',
+          JSON.stringify({
+            address: received.address,
+            privateKey: received.privateKey,
+            origin: 'stamp',
+          }),
+        ],
+      ],
+    }
+    for (const store of stores) {
+      const db = await open(join(storage, store), true)
+      try {
+        for (const [key, value] of [...rows[store], ['sentinel', 'not-json']])
+          await db.put(key, value)
+      } finally {
+        await db.close()
+      }
+    }
+    const before = await Promise.all(
+      stores.map(store => digest(join(storage, store))),
+    )
+    const unchanged = forbidCopies()
+    const [wallet] = await findWallets(root)
+    expect(
+      wallet.accounts.find(account => account.role === 'sender 4 (available)')
+        ?.heldByRecords,
+    ).toBe(true)
+    expect(wallet.accounts.some(account => account.role === 'change 9')).toBe(
+      true,
+    )
+    expect(
+      wallet.accounts.find(account => account.address === merge.address)?.role,
+    ).toBe('coin (change)')
+    expect(
+      wallet.accounts.find(account => account.address === received.address)
+        ?.role,
+    ).toBe('received (stamp)')
+    expect(
+      await Promise.all(stores.map(store => digest(join(storage, store)))),
+    ).toEqual(before)
+    unchanged()
+  })
+
+  it('does not initialize absent record databases or an existing directory without a database', async () => {
+    const unchanged = forbidCopies()
+    await findWallets(root)
+    expect(fs.readdirSync(storage)).toEqual([])
+    mkdirSync(join(storage, 'evm-coin-list'))
+    await expect(findWallets(root)).rejects.toThrow(/records could not be read/)
+    expect(fs.readdirSync(join(storage, 'evm-coin-list'))).toEqual([])
+    unchanged()
+  })
+
+  it.each(stores)(
+    'refuses an active original %s lock before any return signing',
+    async store => {
+      const db = await open(join(storage, store), true)
+      try {
+        await db.put('sentinel', 'private contents must never be logged')
+        const lock = fs.statSync(join(storage, store, 'LOCK'))
+        const unchanged = forbidCopies()
+        const signature = jest
+          .spyOn(Wallet.prototype, 'sendTransaction')
+          .mockRejectedValue(new Error('unexpected signer'))
+        const stack = {
+          stateDir: root,
+          chains: {
+            [MONAD_REGTEST_CHAIN]: {
+              mine: jest.fn(async () => undefined),
+              provider: {
+                send: jest.fn(async () => '0x1'),
+                getBalance: jest.fn(async () => 10n ** 18n),
+              },
+            },
+          },
+        } as unknown as RegtestStack
+        await expect(returnToFaucet(stack)).rejects.toThrow(
+          /records could not be read/,
+        )
+        expect(signature).not.toHaveBeenCalled()
+        expect(await db.get('sentinel')).toBe(
+          'private contents must never be logged',
+        )
+        expect(fs.statSync(join(storage, store, 'LOCK')).ino).toBe(lock.ino)
+        unchanged()
+      } finally {
+        await db.close()
+      }
+      // The scanner's failed handle is closed as well; an ordinary owner can reopen afterwards.
+      const reopened = await open(join(storage, store))
+      await reopened.close()
+    },
+  )
+
+  it('propagates inaccessible record paths without quoting their contents', async () => {
+    writeFileSync(
+      join(storage, 'received-coins'),
+      'private contents must never be logged',
+    )
+    const unchanged = forbidCopies()
+    await expect(findWallets(root)).rejects.toThrow(/records could not be read/)
+    unchanged()
+  })
+  it('fails closed on actual filesystem access denial without leaking contents', async () => {
+    const path = join(storage, 'received-coins')
+    const db = await open(path, true)
+    await db.put('sentinel', 'private contents must never be logged')
+    await db.close()
+    const unchanged = forbidCopies()
+    fs.chmodSync(path, 0)
+    try {
+      await expect(findWallets(root)).rejects.toThrow(
+        /records could not be read/,
+      )
+      unchanged()
+    } finally {
+      fs.chmodSync(path, 0o700)
+    }
+  })
+
+  it.each(['iteration', 'close'] as const)(
+    'closes the original handle and sanitizes an injected %s failure',
+    async fault => {
+      const path = join(storage, 'evm-coin-list')
+      const db = await open(path, true)
+      await db.put('sentinel', 'private contents must never be logged')
+      await db.close()
+      const unchanged = forbidCopies()
+      // Exercise real Level open/lock/close, injecting only the exceptional boundary.
+      const { prototype } = jest.requireActual('levelup') as {
+        prototype: Pick<LevelDB, 'iterator' | 'close'>
+      }
+      const originalClose = prototype.close
+      const closing = jest.spyOn(prototype, 'close')
+      if (fault === 'iteration')
+        jest.spyOn(prototype, 'iterator').mockImplementationOnce(() => {
+          throw new Error('private contents must never be logged')
+        })
+      else
+        closing.mockImplementationOnce(async function (this: LevelDB) {
+          await originalClose.call(this)
+          throw new Error('private contents must never be logged')
+        })
+      const error = await findWallets(root).then(
+        () => undefined,
+        error => error as Error,
+      )
+      expect(error?.message).toMatch(/records could not be read/)
+      expect(error?.message).not.toContain('private contents')
+      expect(closing).toHaveBeenCalledTimes(1)
+      unchanged()
+      const reopened = await open(path)
+      expect(await reopened.get('sentinel')).toBe(
+        'private contents must never be logged',
+      )
+      await reopened.close()
+    },
+  )
 })

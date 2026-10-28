@@ -15,7 +15,8 @@
  * address is read). With no directory, `funds:report` looks in the known places under the home
  * and temp directories.
  *
- * A state directory is never written to: a wallet's pool records are read from a temporary copy.
+ * Closed original Level stores are opened in place without creating databases or changing
+ * application records. The backend takes its normal lock; no private store is copied.
  * Keys are used to sign and are never printed. One transfer per account, one at a time, each
  * waited for: on Monad a second transfer from a small account within a few blocks reverts. An
  * account holding less than twice the transfer fee is left alone (dust). A sweep refuses a
@@ -30,12 +31,12 @@
  * everything, for a state that will never be opened again (`yarn demo:sweep` passes it).
  */
 import { execFileSync } from 'child_process'
-import { appendFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
+import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, join, resolve } from 'path'
 
 import { JsonRpcProvider, Wallet, formatEther, getAddress } from 'ethers'
-import level from 'level'
+import level, { type LevelDB } from 'level'
 
 import { deriveDomainRoot } from '@frank/domain-roots'
 import { MonadChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
@@ -164,43 +165,88 @@ interface PoolRecords {
   addresses: Map<number, string>
 }
 
-/** Reads a wallet's `level` records from a temporary copy, so the state directory is untouched. */
-async function readLevelCopy(dbDir: string): Promise<PoolRecords | 'unreadable' | undefined> {
-  if (!existsSync(dbDir)) return undefined
-  const copy = mkdtempSync(join(tmpdir(), 'frank-funds-read-'))
-  const records: PoolRecords = { nextIndex: 0, status: new Map(), addresses: new Map() }
+class FundsRecordsReadError extends Error {
+  constructor(path: string) {
+    // Backend/parser failures may contain private values. Only the store path is reported.
+    super(
+      `Wallet records could not be read at ${path}; close their owner and retry. Nothing was swept.`,
+    )
+    this.name = 'FundsRecordsReadError'
+  }
+}
+
+/** Inspect a closed original store, never a copy or a newly initialized database. Level7 has
+ * no read-only option: only iteration is used here, under the backend's normal original lock. */
+async function readOriginalLevel<T>(
+  dbDir: string,
+  read: (db: LevelDB) => Promise<T>,
+): Promise<T | undefined> {
+  let db: LevelDB | undefined
   try {
-    cpSync(dbDir, join(copy, 'db'), { recursive: true })
-    rmSync(join(copy, 'db', 'LOCK'), { force: true })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = level(join(copy, 'db')) as any
+    let directory
     try {
-      for await (const [key, value] of db.iterator({})) {
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(value)
-        } catch {
-          continue
-        }
-        if (key === '__next_index__' && typeof parsed === 'number') {
-          records.nextIndex = Math.max(records.nextIndex, parsed)
-          continue
-        }
-        const row = parsed as { index?: unknown; address?: unknown; status?: unknown }
-        if (typeof row?.index !== 'number' || typeof row.address !== 'string') continue
-        records.nextIndex = Math.max(records.nextIndex, row.index + 1)
-        records.addresses.set(row.index, row.address)
-        if (typeof row.status === 'string') records.status.set(row.index, row.status)
+      directory = lstatSync(dbDir)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+    if (!directory.isDirectory() || !lstatSync(join(dbDir, 'CURRENT')).isFile())
+      throw new Error('Not an existing Level database')
+    // Constructor opens immediately. A second db.open() can wait forever on an initial open
+    // failure in LevelUP5, so await the supported constructor callback instead.
+    await new Promise<void>((resolve, reject) => {
+      db = level(dbDir, { createIfMissing: false }, error =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    return await read(db!)
+  } catch {
+    throw new FundsRecordsReadError(dbDir)
+  } finally {
+    if (db) {
+      try {
+        await db.close()
+      } catch {
+        throw new FundsRecordsReadError(dbDir)
       }
-    } finally {
-      await db.close()
+    }
+  }
+}
+
+async function readPoolRecords(
+  dbDir: string,
+): Promise<PoolRecords | undefined> {
+  return readOriginalLevel(dbDir, async db => {
+    const records: PoolRecords = {
+      nextIndex: 0,
+      status: new Map(),
+      addresses: new Map(),
+    }
+    for await (const [key, value] of db.iterator({})) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(value)
+      } catch {
+        continue
+      }
+      if (key === '__next_index__' && typeof parsed === 'number') {
+        records.nextIndex = Math.max(records.nextIndex, parsed)
+        continue
+      }
+      const row = parsed as {
+        index?: unknown
+        address?: unknown
+        status?: unknown
+      }
+      if (typeof row?.index !== 'number' || typeof row.address !== 'string')
+        continue
+      records.nextIndex = Math.max(records.nextIndex, row.index + 1)
+      records.addresses.set(row.index, row.address)
+      if (typeof row.status === 'string')
+        records.status.set(row.index, row.status)
     }
     return records
-  } catch {
-    return 'unreadable'
-  } finally {
-    rmSync(copy, { recursive: true, force: true })
-  }
+  })
 }
 
 /** The accounts and keys of a wallet's coin list (`evm-coin-list`): every coin carries its own
@@ -209,40 +255,40 @@ async function readLevelCopy(dbDir: string): Promise<PoolRecords | 'unreadable' 
  * received coins (`received-coins`: stamps and stealth payments a message delivered, each with
  * its one-time key, rows keyed by `address`), which reach the coin list only once the wallet has
  * ticked: a recipient that never ticks holds them there alone. */
-async function readCoinListKeys(dbDir: string): Promise<{ address: string; privateKey: string; origin: string }[] | 'unreadable' | undefined> {
-  if (!existsSync(dbDir)) return undefined
-  const copy = mkdtempSync(join(tmpdir(), 'frank-funds-read-'))
-  const found = new Map<string, { address: string; privateKey: string; origin: string }>()
-  try {
-    cpSync(dbDir, join(copy, 'db'), { recursive: true })
-    rmSync(join(copy, 'db', 'LOCK'), { force: true })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const db = level(join(copy, 'db')) as any
-    try {
-      for await (const [, value] of db.iterator({})) {
-        let row: { account?: unknown; address?: unknown; privateKey?: unknown; origin?: unknown }
-        try {
-          row = JSON.parse(value)
-        } catch {
-          continue
-        }
-        const account = typeof row?.account === 'string' ? row.account : row?.address
-        if (typeof account !== 'string' || typeof row.privateKey !== 'string') continue
-        found.set(account.toLowerCase(), {
-          address: account,
-          privateKey: row.privateKey,
-          origin: typeof row.origin === 'string' ? row.origin : 'coin',
-        })
+async function readCoinListKeys(
+  dbDir: string,
+): Promise<
+  { address: string; privateKey: string; origin: string }[] | undefined
+> {
+  return readOriginalLevel(dbDir, async db => {
+    const found = new Map<
+      string,
+      { address: string; privateKey: string; origin: string }
+    >()
+    for await (const [, value] of db.iterator({})) {
+      let row: {
+        account?: unknown
+        address?: unknown
+        privateKey?: unknown
+        origin?: unknown
       }
-    } finally {
-      await db.close()
+      try {
+        row = JSON.parse(value)
+      } catch {
+        continue
+      }
+      const account =
+        typeof row?.account === 'string' ? row.account : row?.address
+      if (typeof account !== 'string' || typeof row.privateKey !== 'string')
+        continue
+      found.set(account.toLowerCase(), {
+        address: account,
+        privateKey: row.privateKey,
+        origin: typeof row.origin === 'string' ? row.origin : 'coin',
+      })
     }
     return [...found.values()]
-  } catch {
-    return 'unreadable'
-  } finally {
-    rmSync(copy, { recursive: true, force: true })
-  }
+  })
 }
 
 function walk(root: string, visit: (dir: string, names: string[]) => void, depth = 0): void {
@@ -282,12 +328,10 @@ async function poolAccounts(
   const notes: string[] = []
   if (storageDirs.length === 0) notes.push('no wallet records were found beside the key')
   for (const dir of storageDirs) {
-    const s = await readLevelCopy(join(dir, 'sub-account-pool'))
-    if (s === 'unreadable') notes.push(`the sender-account records in ${dir} could not be read`)
-    else if (s && s.nextIndex >= senders.nextIndex) senders = s
-    const c = await readLevelCopy(join(dir, 'change-pool'))
-    if (c === 'unreadable') notes.push(`the change-account records in ${dir} could not be read`)
-    else if (c && c.nextIndex >= change.nextIndex) change = c
+    const s = await readPoolRecords(join(dir, 'sub-account-pool'))
+    if (s && s.nextIndex >= senders.nextIndex) senders = s
+    const c = await readPoolRecords(join(dir, 'change-pool'))
+    if (c && c.nextIndex >= change.nextIndex) change = c
   }
   for (let i = 0; i < senders.nextIndex + INDEX_MARGIN; i += 1) {
     const { address, privateKey } = keyring.deriveSubAccount(i)
@@ -305,13 +349,12 @@ async function poolAccounts(
   }
   const listed = new Set(accounts.map(account => account.address.toLowerCase()))
   for (const dir of storageDirs)
-    for (const [store, what] of [
-      ['evm-coin-list', 'the coin list'],
-      ['received-coins', 'the received coins'],
+    for (const store of [
+      'evm-coin-list',
+      'received-coins',
     ] as const) {
       const coins = await readCoinListKeys(join(dir, store))
-      if (coins === 'unreadable') notes.push(`${what} in ${dir} could not be read`)
-      for (const coin of coins === 'unreadable' ? [] : coins ?? [])
+      for (const coin of coins ?? [])
         if (!listed.has(coin.address.toLowerCase())) {
           listed.add(coin.address.toLowerCase())
           accounts.push({ role: `${store === 'received-coins' ? 'received' : 'coin'} (${coin.origin})`, address: coin.address, privateKey: coin.privateKey })
@@ -378,7 +421,8 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
       } finally {
         material.dispose()
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof FundsRecordsReadError) throw error
       // The reason is not repeated: a parser's message can quote the file, which holds a key.
       found.push({ path, kind, accounts: [], problem: UNREADABLE })
     }
@@ -424,7 +468,8 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
         const { mnemonic } = JSON.parse(readFileSync(join(dir, 'stamp-pool-seed.json'), 'utf8')) as { mnemonic: string }
         const pool = await poolAccounts(MonadHdKeyring.fromMnemonic(mnemonic), MonadChangeKeyring.fromMnemonic(mnemonic), [dir])
         found.push({ path: dir, kind: 'pool seed', accounts: pool.accounts, note: pool.note })
-      } catch {
+      } catch (error) {
+        if (error instanceof FundsRecordsReadError) throw error
         found.push({ path: join(dir, 'stamp-pool-seed.json'), kind: 'pool seed', accounts: [], problem: UNREADABLE })
       }
     }
@@ -449,14 +494,14 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
     if (claimed.has(main)) continue
     const accounts: FoundAccount[] = [{ role: 'main', address: getAddress(main) }]
     for (const dir of dirs) {
-      const senders = await readLevelCopy(join(dir, 'sub-account-pool'))
-      if (senders && senders !== 'unreadable') {
+      const senders = await readPoolRecords(join(dir, 'sub-account-pool'))
+      if (senders) {
         for (const [index, address] of senders.addresses) {
           accounts.push({ role: `sender ${index}${senders.status.get(index) ? ` (${senders.status.get(index)})` : ''}`, address })
         }
       }
-      const change = await readLevelCopy(join(dir, 'change-pool'))
-      if (change && change !== 'unreadable') for (const [index, address] of change.addresses) accounts.push({ role: `change ${index}`, address })
+      const change = await readPoolRecords(join(dir, 'change-pool'))
+      if (change) for (const [index, address] of change.addresses) accounts.push({ role: `change ${index}`, address })
     }
     found.push({ path: dirs[0], kind: 'records without a key', accounts })
   }

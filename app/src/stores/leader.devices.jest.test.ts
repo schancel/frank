@@ -16,6 +16,7 @@ const globals = global as any
 const standIn = { hasFocus: () => true, visibilityState: 'visible' }
 globals.document = standIn
 
+import { createHash } from 'crypto'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageItem, MessageWrapper } from '@frank/cashweb/types/messages'
@@ -72,12 +73,26 @@ interface Device {
     isActiveMaster: boolean
     noteUserActivity(send: unknown): Promise<void>
     claimIdle(): Promise<void>
+    resetForTesting(): void
   }
   /** The user acts on this device (a tap, a key, a send). */
   userActs: () => Promise<void>
   receive: (rows: ReceivedMessageWrapper[], own?: string) => Promise<void>
   /** The messages of each conversation the device shows. */
   shown: () => string[][]
+  /** Sends a free automatic step to the peer, as the chat page does. */
+  sendStep: (
+    conversationId: string,
+    stepKey: string,
+    items: MessageItem[],
+  ) => Promise<unknown>
+  /** The messages of one conversation, as the device holds them. */
+  messagesOf: (conversationId: string) => Array<{
+    outbound: boolean
+    status: string
+    items: MessageItem[]
+    payloadDigest: string
+  }>
   /** The message ID an automatic step is sent under, as this device derives it. */
   automaticStepMessageId: (conversationId: string, stepKey: string) => string
   startReconciliation: () => { stop: () => void }
@@ -89,6 +104,9 @@ interface Device {
 
 let relayClock = 0
 let mailbox: Array<{ by: string; row: ReceivedMessageWrapper }> = []
+/** The copies of messages to the peer that the sending wallets hand the account's other
+ * frontends (a note to self in place of the relay's outbox row), as the mailbox holds them. */
+let sentCopies: Array<{ by: string; row: ReceivedMessageWrapper }> = []
 const opened: Device[] = []
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
 
@@ -111,6 +129,38 @@ function noteRow(digest: string, items: MessageItem[]): ReceivedMessageWrapper {
       serverTime: relayClock,
       receivedTime: relayClock,
       outpoints: [],
+    },
+  } as unknown as ReceivedMessageWrapper
+}
+
+/** A free automatic step sent from this account to the peer, as the peer's mailbox holds it. */
+function stepCopy(
+  conversationId: string,
+  logicalMessageId: string,
+  digest: string,
+  time: number,
+  contentDigest: string,
+): ReceivedMessageWrapper {
+  return {
+    conversationId,
+    outbound: false,
+    senderAddress: ME,
+    copartyAddress: ME,
+    copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+    index: digest,
+    stampValue: 0,
+    message: {
+      conversationId,
+      outbound: false,
+      status: 'confirmed',
+      senderAddress: ME,
+      destinationAddress: PEER,
+      items: [{ type: 'text', text: `content ${contentDigest}` }],
+      serverTime: time,
+      receivedTime: time,
+      outpoints: [],
+      logicalMessageId,
+      contentDigest,
     },
   } as unknown as ReceivedMessageWrapper
 }
@@ -160,7 +210,7 @@ function device(
     const journal: PendingSet[] = []
     const wallet = {
       chainIdentifier: activeChain.chainIdentifier,
-      identity: { address: { raw: ME } },
+      identity: { address: { raw: ME }, displayAddress: ME },
       maintainCoins: jest.fn(async () => ({ outcome: 'idle' })),
       reobserveNativeOperations: jest.fn(async () => undefined),
       getNativeOperations: () => journal,
@@ -168,8 +218,51 @@ function device(
     jest
       .spyOn(activeChain.directMessages, 'send')
       .mockImplementation(async (params: any) => {
-        // A note to self, and free.
         expect(params.wallet).toBe(wallet)
+        if (params.recipient?.raw !== ME) {
+          // A free message to the peer. Each wallet seals its own copy: its own digest.
+          expect(params.stampValue ?? 0n).toBe(0n)
+          relayClock += 1
+          const digest = `dm-${name}-${relayClock}`
+          const items = JSON.parse(JSON.stringify(params.items))
+          sentCopies.push({
+            by: name,
+            row: {
+              outbound: true,
+              senderAddress: ME,
+              copartyAddress: PEER,
+              copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+              index: digest,
+              stampValue: 0,
+              conversationId: params.conversationId,
+              message: {
+                outbound: true,
+                status: 'confirmed',
+                senderAddress: ME,
+                destinationAddress: PEER,
+                items,
+                serverTime: relayClock,
+                receivedTime: relayClock,
+                outpoints: [],
+                stampValueWei: 0n,
+                stampPayments: [],
+                conversationId: params.conversationId,
+                logicalMessageId: params.messageId,
+                // The same content, whichever device sealed it.
+                contentDigest: createHash('sha256')
+                  .update(JSON.stringify(items))
+                  .digest('hex'),
+              },
+            } as unknown as ReceivedMessageWrapper,
+          })
+          return {
+            payloadDigest: digest,
+            stampValueWei: 0n,
+            stampPayments: [],
+            preparationTxHashes: [],
+          }
+        }
+        // A note to self, and free.
         expect(params.recipient).toEqual({ raw: ME })
         expect(params.stampValue).toBe(0n)
         const digest = `note-${hex(params.messageId as Uint8Array)}`
@@ -216,6 +309,20 @@ function device(
         )
           .filter(c => c !== undefined)
           .map(c => c!.messages.map(m => m.payloadDigest)),
+      sendStep: (conversationId, stepKey, items) => {
+        setActivePinia(pinia)
+        return chatsModule.useChatStore(pinia).sendMessage({
+          wallet,
+          address: PEER,
+          conversationId,
+          items,
+          stampValue: 0n,
+          operationId: games.automaticStepOperationId(conversationId, stepKey),
+        })
+      },
+      messagesOf: conversationId =>
+        chatsModule.useChatStore(pinia).conversations[conversationId]
+          ?.messages ?? [],
       automaticStepMessageId: (conversationId, stepKey) =>
         chatsModule.outgoingMessageId(
           games.automaticStepOperationId(conversationId, stepKey),
@@ -239,6 +346,8 @@ function device(
       stopClaims: () => claims.stop(),
       dispose: () => {
         claims.stop()
+        // Closes this device's BroadcastChannel and cancels any claim retry.
+        leader.resetForTesting()
         chatsModule.useChatStore(pinia).$dispose()
       },
     }
@@ -279,6 +388,7 @@ let running: Array<{ stop: () => void }> = []
 beforeEach(() => {
   relayClock = 10_000
   mailbox = []
+  sentCopies = []
   read.clear()
   running = []
   jest.spyOn(console, 'log').mockImplementation(() => undefined)
@@ -533,6 +643,149 @@ describe('the active device of an account', () => {
     Object.assign(paid.message, { stampValueWei: 10n ** 15n })
     await peer.receive([paid], PEER)
     expect(peer.shown().flat()).toHaveLength(2)
+  })
+
+  it('keeps a copy of a step that carries any value: a stamp, UTXO outpoints or account-chain payments', async () => {
+    const peer = device('peer', { foreground: false })
+    const conversationId = '11111111-1111-4111-8111-111111111111'
+    const id = peer.automaticStepMessageId(conversationId, 'dice:roll-1')
+    const content = 'cd'.repeat(32)
+    await peer.receive(
+      [stepCopy(conversationId, id, 'a'.repeat(64), 20_000, content)],
+      PEER,
+    )
+    const valued: Array<[string, (row: ReceivedMessageWrapper) => void]> = [
+      ['b', row => Object.assign(row, { stampValue: 546 })],
+      [
+        'c',
+        row =>
+          Object.assign(row.message, {
+            outpoints: [{ txid: 'ee'.repeat(32), outIdx: 1 }],
+          }),
+      ],
+      ['d', row => Object.assign(row.message, { stampValueWei: 10n ** 15n })],
+      [
+        'e',
+        row =>
+          Object.assign(row.message, {
+            stampPayments: [
+              {
+                txHash: '0x' + 'ff'.repeat(32),
+                destinationAddress: PEER,
+                valueWei: 10n ** 15n,
+              },
+            ],
+          }),
+      ],
+    ]
+    for (const [letter, addValue] of valued) {
+      const row = stepCopy(
+        conversationId,
+        id,
+        letter.repeat(64),
+        20_001,
+        content,
+      )
+      addValue(row)
+      await peer.receive([row], PEER)
+    }
+    expect(peer.shown().flat()).toEqual(
+      ['a', 'b', 'c', 'd', 'e'].map(letter => letter.repeat(64)),
+    )
+    // A free copy is still dropped.
+    await peer.receive(
+      [stepCopy(conversationId, id, 'f'.repeat(64), 20_002, content)],
+      PEER,
+    )
+    expect(peer.shown().flat()).toHaveLength(5)
+  })
+
+  it('keeps a return to earlier content: A, then B, then A again are three revisions, in one batch or in three', async () => {
+    const conversationId = '11111111-1111-4111-8111-111111111111'
+    const a = 'aa'.repeat(32)
+    const b = 'bb'.repeat(32)
+    const revisions = (id: string) => [
+      stepCopy(conversationId, id, '1'.repeat(64), 20_000, a),
+      stepCopy(conversationId, id, '2'.repeat(64), 20_001, b),
+      stepCopy(conversationId, id, '3'.repeat(64), 20_002, a),
+    ]
+    const together = device('together', { foreground: false })
+    const id = together.automaticStepMessageId(conversationId, 'edit:1')
+    await together.receive(revisions(id), PEER)
+    expect(together.shown().flat()).toEqual(
+      ['1', '2', '3'].map(digit => digit.repeat(64)),
+    )
+    const apart = device('apart', { foreground: false })
+    for (const row of revisions(id)) await apart.receive([row], PEER)
+    expect(apart.shown().flat()).toEqual(
+      ['1', '2', '3'].map(digit => digit.repeat(64)),
+    )
+    // A copy of the latest revision is still one message.
+    await apart.receive(
+      [stepCopy(conversationId, id, '4'.repeat(64), 20_003, a)],
+      PEER,
+    )
+    expect(apart.shown().flat()).toHaveLength(3)
+  })
+
+  it("on the account that sent a step from both devices, each device reads the other's copy as the one message it sent", async () => {
+    const phone = device('phone', { foreground: true })
+    const laptop = device('laptop', { foreground: false })
+    const tablet = device('tablet', { foreground: false })
+    const conversationId = '11111111-1111-4111-8111-111111111111'
+    const items = [{ type: 'text', text: 'the reveal' }] as MessageItem[]
+    // Around a hand-over both devices sent the same step: one sealed message ID, two copies.
+    await phone.sendStep(conversationId, 'dice:roll-1', items)
+    await laptop.sendStep(conversationId, 'dice:roll-1', items)
+    await settle()
+    expect(sentCopies.map(copy => copy.by)).toEqual(['phone', 'laptop'])
+    const [fromPhone, fromLaptop] = sentCopies.map(copy => copy.row)
+    expect(fromPhone.message.logicalMessageId).toBe(
+      phone.automaticStepMessageId(conversationId, 'dice:roll-1'),
+    )
+    expect(fromLaptop.message.logicalMessageId).toBe(
+      fromPhone.message.logicalMessageId,
+    )
+    const sentOnce = (each: Device) => {
+      const held = each.messagesOf(conversationId)
+      expect(held).toHaveLength(1)
+      expect(held[0].outbound).toBe(true)
+      expect(held[0].status).toBe('confirmed')
+      expect(held[0].items).toEqual(items)
+    }
+    // Each sender reads both copies: the phone its own first, the laptop the other's first
+    // (its own copy has no content digest yet: its echo has not been read).
+    await phone.receive([fromPhone])
+    await phone.receive([fromLaptop])
+    await laptop.receive([fromPhone])
+    await laptop.receive([fromLaptop])
+    for (const each of [phone, laptop]) sentOnce(each)
+    // Read again (a reload, a second poll), still one message, sent.
+    await phone.receive([fromLaptop, fromPhone])
+    await laptop.receive([fromLaptop])
+    for (const each of [phone, laptop]) sentOnce(each)
+    // A third device of the account, which sent nothing, reads one message too.
+    await tablet.receive([fromLaptop, fromPhone])
+    sentOnce(tablet)
+
+    // The next step, sent from both again, each device reading both copies in one read, the
+    // other device's first.
+    const next = [{ type: 'text', text: 'the next reveal' }] as MessageItem[]
+    await phone.sendStep(conversationId, 'dice:roll-2', next)
+    await laptop.sendStep(conversationId, 'dice:roll-2', next)
+    await settle()
+    const [nextFromPhone, nextFromLaptop] = sentCopies
+      .slice(2)
+      .map(copy => copy.row)
+    await phone.receive([nextFromLaptop, nextFromPhone])
+    await laptop.receive([nextFromPhone, nextFromLaptop])
+    await tablet.receive([nextFromPhone, nextFromLaptop])
+    for (const each of [phone, laptop, tablet]) {
+      const held = each.messagesOf(conversationId)
+      expect(held.map(message => message.items)).toEqual([items, next])
+      expect(held.every(message => message.outbound)).toBe(true)
+      expect(held.every(message => message.status === 'confirmed')).toBe(true)
+    }
   })
 
   it('a claim in a row from anyone else is not read', async () => {

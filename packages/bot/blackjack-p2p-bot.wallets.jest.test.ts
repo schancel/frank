@@ -17,9 +17,11 @@
 import {
   STAMP,
   START_BALANCE,
+  mockBalances,
   table,
   type Seat,
 } from '@frank/wallet/chain/canonical-two-wallets.testutil'
+import { evmWalletInternals } from '@frank/wallet/evm-wallet'
 import { handValue } from '@frank/wallet/message-item-plugins/blackjack/deck'
 import {
   buildBet,
@@ -210,4 +212,67 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
     expect(user.hand(gameId)!.phase).toBe('resolved')
     expect(bot.hand(user.address, gameId)).toEqual(user.hand(gameId))
   })
+})
+
+// Parked adapter coverage: held funds belong in gross holdings, never in an offered bankroll.
+it('advertises only strict free capacity when most owned funds are held by another operation', async () => {
+  const t = await table()
+  try {
+    const wallet = t.f.alice
+    const state = evmWalletInternals(wallet)
+    wallet.pool.ensureSize(1)
+    wallet.pool.setStatus(0, 'available')
+    const key = state.material!.keyring.deriveSubAccount(0)
+    const held = 4n * START_BALANCE
+    mockBalances.set(key.address.toLowerCase(), held)
+    await state.coinList!.put({
+      account: key.address,
+      privateKey: key.privateKey,
+      nonce: 0,
+      valueWei: held,
+      origin: 'deterministic',
+    })
+    wallet.pool.restoreClaim('other-pending-operation', [0])
+    expect(await wallet.getBalance()).toBe(5n * START_BALANCE)
+    const available = await wallet.getSpendableBalance!()
+    expect(available).toBeLessThanOrEqual(START_BALANCE)
+    const real = walletBotAccount(t.f.chain as never, wallet)
+    expect(await real.spendableWei()).toBe(available)
+    const dealer = new BlackjackP2pBot(
+      {
+        ...real,
+        send: async params => {
+          t.f.setMailbox(t.bob.mailbox)
+          try {
+            return await real.send(params)
+          } finally {
+            t.f.setMailbox(undefined)
+          }
+        },
+      },
+      new MemoryBotStore(),
+      {
+        maxBetWei: START_BALANCE,
+        stampWei: STAMP,
+        reserveWei: RESERVE,
+        newAccounts: async () => [t.bob.address],
+      },
+    )
+    await dealer.tick()
+    await t.bob.poll()
+    const offered = t.bob.events.find(e => e.item.action === 'challenge')!.item
+    expect(BigInt(offered.maxBetWei!)).toBe((available - RESERVE) / 4n)
+    expect(BigInt(offered.maxBetWei!)).toBeLessThan(START_BALANCE)
+    expect(wallet.pool.isAccountClaimed(key.address.toLowerCase())).toBe(true)
+  } finally {
+    await t.f.close()
+  }
+}, 30_000)
+
+it('rejects unavailable strict capacity rather than using gross holdings in the parked adapter', async () => {
+  const chain = {} as Parameters<typeof walletBotAccount>[0]
+  const gross = jest.fn(async () => START_BALANCE)
+  const wallet = { identity: { address: { raw: '0x123' } }, getBalance: gross }
+  await expect(walletBotAccount(chain, wallet).spendableWei()).rejects.toThrow()
+  expect(gross).not.toHaveBeenCalled()
 })

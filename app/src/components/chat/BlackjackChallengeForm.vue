@@ -109,8 +109,9 @@ export default defineComponent({
     },
   },
   setup() {
-    const { balance } = useBalance()
-    return { balance }
+    const { available, availableLoaded, availableError, availableSupported } =
+      useBalance()
+    return { available, availableLoaded, availableError, availableSupported }
   },
   data() {
     // The player role first: it is the one the hosted dealer bot can answer.
@@ -128,9 +129,12 @@ export default defineComponent({
       return activeChain.unit
     },
     limitWei(): bigint | null {
-      return this.balance === null
+      return !this.availableSupported ||
+        !this.availableLoaded ||
+        this.availableError ||
+        this.available === null
         ? null
-        : challengeLimitWei(this.role, this.balance, HAND_FEE_RESERVE_WEI)
+        : challengeLimitWei(this.role, this.available, HAND_FEE_RESERVE_WEI)
     },
     limitDisplay(): string {
       return this.limitWei === null

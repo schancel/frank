@@ -9,8 +9,18 @@ import { HAND_FEE_RESERVE_WEI } from '../../utils/blackjack-hand'
 import BlackjackChallengeForm from './BlackjackChallengeForm.vue'
 
 const mockBalance = ref<bigint | null>(null)
+const mockAvailable = ref<bigint | null>(null)
+const mockAvailableLoaded = ref(true)
+const mockAvailableError = ref(false)
+const mockAvailableSupported = ref(true)
 jest.mock('../../composables/useBalance', () => ({
-  useBalance: () => ({ balance: mockBalance }),
+  useBalance: () => ({
+    balance: mockBalance,
+    available: mockAvailable,
+    availableLoaded: mockAvailableLoaded,
+    availableError: mockAvailableError,
+    availableSupported: mockAvailableSupported,
+  }),
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -78,7 +88,11 @@ const error = (w: ReturnType<typeof mountForm>) =>
 
 describe('BlackjackChallengeForm', () => {
   beforeEach(() => {
-    mockBalance.value = HAND_FEE_RESERVE_WEI + 4_000n
+    mockBalance.value = HAND_FEE_RESERVE_WEI + 40_000n
+    mockAvailable.value = HAND_FEE_RESERVE_WEI + 4_000n
+    mockAvailableLoaded.value = true
+    mockAvailableError.value = false
+    mockAvailableSupported.value = true
   })
 
   it('distinguishes the table limit from the later paid bet and makes pending preparation cancellable', async () => {
@@ -164,12 +178,26 @@ describe('BlackjackChallengeForm', () => {
   })
 
   it('refuses everything while the balance is unknown or only covers the reserve', async () => {
-    mockBalance.value = null
+    mockAvailable.value = null
     const w = mountForm()
     await w.find('[data-testid="blackjack-challenge-max"]').setValue('10')
     expect(send(w).attributes('disabled')).toBeDefined()
-    mockBalance.value = HAND_FEE_RESERVE_WEI
+    mockAvailable.value = HAND_FEE_RESERVE_WEI
     await w.vm.$nextTick()
     expect(error(w).text()).toContain('at most 0')
   })
+  it.each(['loading', 'error', 'unsupported'] as const)(
+    'refuses %s capacity despite a large owned balance',
+    async state => {
+      mockAvailableLoaded.value = state !== 'loading'
+      mockAvailableError.value = state === 'error'
+      mockAvailableSupported.value = state !== 'unsupported'
+      const w = mountForm()
+      await w.find('[data-testid="blackjack-challenge-max"]').setValue('10')
+      expect(send(w).attributes('disabled')).toBeDefined()
+      ;(w.vm as any).submit()
+      expect(w.emitted('submit')).toBeUndefined()
+      w.unmount()
+    },
+  )
 })

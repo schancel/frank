@@ -82,7 +82,10 @@ function stubNode(
   const p = wallet.provider
   jest
     .spyOn(p, 'getBlock')
-    .mockResolvedValue({ hash: blockHash, number: 1 } as Block)
+    .mockImplementation(async tag => ({
+      hash: blockHash,
+      number: typeof tag === 'number' ? tag : 100,
+    }) as Block)
   jest.spyOn(p, 'getBlockNumber').mockResolvedValue(100)
   jest
     .spyOn(p, 'getBalance')

@@ -2,7 +2,9 @@
 // Wiring tests for Chat.vue's follow-up sends and its blackjack methods: the real component
 // methods run against a minimal `this`.
 
-let mockWallet = { id: 'wallet-a' }
+let mockWallet: { id: string; getSpendableBalance?: () => Promise<bigint> } = {
+  id: 'wallet-a',
+}
 const mockAccountState = { revision: 1, status: 'ready', account: {} }
 const mockCaptureFinancialWallet = jest.fn()
 const mockCreateFinancialContext = jest.fn(async (chainIdentifier: string) => ({
@@ -883,7 +885,7 @@ describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', 
 })
 
 describe('Chat.vue blackjack challenge', () => {
-  const balance = jest.mocked(activeChain.nativeTransfers.getBalance)
+  const balance = jest.fn<Promise<bigint>, []>()
   const challengeThis = (over: Record<string, unknown> = {}) => {
     // Challenge methods capture an incrementing preparation token, initialized by Chat.data.
     const self = fakeThis({
@@ -900,6 +902,7 @@ describe('Chat.vue blackjack challenge', () => {
   beforeEach(() => {
     jest.mocked(errorNotify).mockReset()
     balance.mockReset()
+    mockWallet.getSpendableBalance = balance
   })
 
   it('sends a dealer challenge with a commitment, keeps the seed, and pays nothing', async () => {
@@ -962,6 +965,62 @@ describe('Chat.vue blackjack challenge', () => {
       await methods.sendBlackjackChallenge.call(self, { role, maxBetWei })
       expect(self.sendFollowUpItems).not.toHaveBeenCalled()
       expect(errorNotify).toHaveBeenCalled()
+    },
+  )
+
+  it('refuses held gross funds and never consults the gross balance for capacity', async () => {
+    jest
+      .mocked(activeChain.nativeTransfers.getBalance)
+      .mockResolvedValue(HAND_FEE_RESERVE_WEI + 4_000n)
+    jest.mocked(activeChain.nativeTransfers.getBalance).mockClear()
+    balance.mockResolvedValue(HAND_FEE_RESERVE_WEI + 100n)
+    const self = challengeThis()
+    await methods.sendBlackjackChallenge.call(self, {
+      role: 'dealer',
+      maxBetWei: 1_000n,
+    })
+    expect(balance).toHaveBeenCalledTimes(1)
+    expect(activeChain.nativeTransfers.getBalance).not.toHaveBeenCalled()
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+  })
+
+  it('refuses unsupported capacity rather than falling back to gross owned', async () => {
+    delete mockWallet.getSpendableBalance
+    const self = challengeThis()
+    await methods.sendBlackjackChallenge.call(self, {
+      role: 'dealer',
+      maxBetWei: 1n,
+    })
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+  })
+
+  it.each(['wallet', 'session', 'dialog'] as const)(
+    'does not send after %s context changes during the capacity read',
+    async context => {
+      let release!: (amount: bigint) => void
+      balance.mockImplementation(
+        () =>
+          new Promise(resolve => {
+            release = resolve
+          }),
+      )
+      const self = challengeThis()
+      const original = mockWallet
+      const revision = accountStatus.revision
+      const pending = methods.sendBlackjackChallenge.call(self, {
+        role: 'dealer',
+        maxBetWei: 1n,
+      })
+      for (let i = 0; i < 8; i++) await Promise.resolve()
+      expect(release).toBeDefined()
+      if (context === 'wallet') mockWallet = { id: 'new-wallet' }
+      if (context === 'session') accountStatus.revision++
+      if (context === 'dialog') methods.cancelBlackjackPreparation.call(self)
+      release(HAND_FEE_RESERVE_WEI + 4_000n)
+      await pending
+      expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+      mockWallet = original
+      accountStatus.revision = revision
     },
   )
 

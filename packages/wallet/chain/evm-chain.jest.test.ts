@@ -577,7 +577,6 @@ describe("createEvmChain: createWallet", () => {
 
   it("caches primary balance reads within TTL while inventory refresh observes its own chain state", async () => {
     const builder = new NativeEvmTransactionBuilder();
-    const readPrimary = jest.spyOn(builder, "getBalance");
     const localChain = createEvmChain({ ...TEST_CONFIG, transactionBuilder: builder });
     const wallet = (await localChain.createWallet({
       mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -589,18 +588,20 @@ describe("createEvmChain: createWallet", () => {
     );
     wallet.provider.getTransactionCount = jest.fn(async () => 0);
     wallet.provider.getBlockNumber = jest.fn(async () => 100);
+    wallet.provider.getBlock = jest.fn(async () => ({ number: 100, hash: "0x" + "ab".repeat(32) }) as never);
+    const primaryReads = () => jest.mocked(wallet.provider.getBalance).mock.calls
+      .filter(([address]) => String(address).toLowerCase() === main).length;
     wallet.provider.getFeeData = jest.fn(async () => new FeeData(1n, 1n, 1n));
     try {
       expect(await wallet.getBalance()).toBe(100_000n);
-      expect(readPrimary).toHaveBeenCalledTimes(1);
+      expect(primaryReads()).toBe(1);
       expect(await wallet.getBalance()).toBe(100_000n);
-      expect(readPrimary).toHaveBeenCalledTimes(1);
+      expect(primaryReads()).toBe(1);
       wallet.invalidateBalanceCache?.();
       balance = 250_000n;
       expect(await wallet.getBalance()).toBe(250_000n);
-      expect(readPrimary).toHaveBeenCalledTimes(2);
+      expect(primaryReads()).toBe(2);
     } finally {
-      readPrimary.mockRestore();
       await wallet.close();
     }
   });

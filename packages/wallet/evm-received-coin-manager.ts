@@ -519,7 +519,9 @@ export function createEvmReceivedCoinAndContactManager(
     const observation = await stampRecovery.read(coin);
     assertFinancialActive();
     if (observation.kind === 'recovery') {
-      await applyStoredNativeStampRecovery(coinStore, coin.address, { ...observation, recovery: observation.recovery });
+      const recorded = await applyStoredNativeStampRecovery(coinStore, coin.address, { ...observation, recovery: observation.recovery });
+      assertFinancialActive();
+      if (!observation.unavailable) stampRecovery.markRecorded(recorded);
     } else if (observation.kind === 'original') {
       await applyStoredNativeCoinObservation(coinStore, coin.address, { ...observation,
         transfer: 'included', transferValueWei: BigInt(observation.original.amount) });

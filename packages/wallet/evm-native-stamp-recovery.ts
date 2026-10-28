@@ -19,9 +19,15 @@ import {
 
 export class NativeStampEvidenceUnavailable extends Error {}
 
+interface NativeStampScan {
+  readonly scanner: EvmDepositScanner
+  ready: boolean
+  candidates: readonly EvmNativeTransfer[]
+}
+
 /** The received owner serializes passes; RPC waits never hold spend reservations. */
 export class EvmNativeStampRecoveryReader {
-  private readonly scans = new Map<string, { scanner: EvmDepositScanner; ready: boolean }>()
+  private readonly scans = new Map<string, NativeStampScan>()
   private readonly recheckOffsets = new Map<string, number>()
   constructor(
     private readonly options: {
@@ -41,6 +47,37 @@ export class EvmNativeStampRecoveryReader {
    * stamp whose normal observation backoff has not elapsed. No network or durable mutation. */
   needsRefresh(address: string): boolean {
     return this.scans.get(address)?.ready !== true
+  }
+
+  /** A successful read is not consumption: only the received owner's actual CAS result can
+   * acknowledge newly discovered receipt identities and release the background work queue. */
+  markRecorded(coin: EvmCoin): void {
+    const scan = this.scans.get(coin.address)
+    if (!scan) return
+    validateNativeStampRecovery(coin, this.options.chainIdentifier)
+    scan.ready =
+      scan.scanner.cursorOf(coin.address)?.block === this.scanHeads.get(coin.address) &&
+      this.allRecorded(scan, coin)
+  }
+
+  private allRecorded(scan: NativeStampScan, coin: EvmCoin): boolean {
+    const recorded = new Map(
+      coin.nativeStampRecovery?.receipts.map(receipt => [receipt.txHash, receipt]),
+    )
+    const fields = [
+      'chainIdentifier',
+      'txHash',
+      'from',
+      'to',
+      'amount',
+      'blockNumber',
+      'blockHash',
+      'blockTimeMs',
+    ] as const
+    return scan.candidates.every(candidate => {
+      const receipt = recorded.get(candidate.txHash)
+      return receipt !== undefined && fields.every(field => receipt[field] === candidate[field])
+    })
   }
 
   async read(coin: EvmCoin) {
@@ -172,7 +209,7 @@ export class EvmNativeStampRecoveryReader {
         isOwnAccount: () => false,
         maximumBlock: async () => this.scanHeads.get(coin.address)!,
       })
-      scan = { scanner, ready: false }
+      scan = { scanner, ready: false, candidates: [] }
       this.scans.set(coin.address, scan)
     }
     const { scanner } = scan
@@ -257,7 +294,10 @@ export class EvmNativeStampRecoveryReader {
     ])
     await this.checkHead(maximumBlock, pinnedHash)
     assertActive()
-    if (!unavailable && scanner.cursorOf(coin.address)?.block === maximumBlock) scan.ready = true
+    scan.candidates = [...receipts.values()]
+    if (scanner.cursorOf(coin.address)?.block !== maximumBlock || !this.allRecorded(scan, coin))
+      scan.ready = false
+    else if (!unavailable) scan.ready = true
     const recovery: EvmNativeStampRecovery = {
       chainIdentifier,
       originalTransactionHash: tx.hash!,

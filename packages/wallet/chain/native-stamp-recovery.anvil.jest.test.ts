@@ -7,6 +7,8 @@ import { JsonRpcProvider, Wallet, Transaction, getBytes, hexlify, parseEther } f
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { fixture, roots, type Fixture } from './canonical-two-wallets.testutil'
 import { evmWalletInternals } from '../evm-wallet'
+import { EvmNativeStampRecoveryReader } from '../evm-native-stamp-recovery'
+import { MAX_CHANGES_PER_REFRESH } from '../evm-deposit-scan'
 import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 const mockNode = { url: '' }
@@ -530,4 +532,113 @@ suite('repaid native stamp receiver (real Anvil)', () => {
       }
     },
   )
+  async function repaymentSet(original: Awaited<ReturnType<typeof stamp>>, count: number) {
+    const value = parseEther('0.001')
+    const raws: string[] = []
+    let nonce = await node.getTransactionCount(dev.address)
+    for (let i = 0; i < count; i++) {
+      const raw = await dev.signTransaction({
+        type: 0,
+        chainId: 10143,
+        nonce: nonce++,
+        to: original.address,
+        value,
+        gasLimit: 21000n,
+        gasPrice: 1000000000n,
+      })
+      raws.push(raw)
+      await (await node.broadcastTransaction(raw)).wait()
+    }
+    return { raws, value, total: value * BigInt(count) }
+  }
+  it.each([17, 33])(
+    'consumes %s receipts through bounded background passes before resuming age backoff',
+    async count => {
+      const original = await stamp(f.bob, parseEther('0.1'), Date.now() - 3 * 24 * 60 * 60 * 1000)
+      const set = await repaymentSet(original, count)
+      const read = jest.spyOn(EvmNativeStampRecoveryReader.prototype, 'read')
+      const owner = evmWalletInternals(f.bob).receivedCoinOwner!
+      await owner.checkPendingCoins()
+      expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(
+        set.value * BigInt(MAX_CHANGES_PER_REFRESH),
+      )
+      for (let pass = 0; pass < 6; pass++) {
+        if (f.bob.getReceivedPayments!()[0]!.receivedAmountWei === set.total) break
+        const before = read.mock.calls.length
+        await owner.checkPendingCoins()
+        expect(read.mock.calls.length).toBe(before + 1)
+        const observation = await read.mock.results.at(-1)!.value
+        expect(
+          new Set(observation.receipts.map(receipt => receipt.blockNumber)).size,
+        ).toBeLessThanOrEqual(MAX_CHANGES_PER_REFRESH)
+      }
+      const [payment] = f.bob.getReceivedPayments!()
+      expect(payment).toMatchObject({
+        status: 'received',
+        partial: true,
+        receivedAmountWei: set.total,
+      })
+      expect(payment!.nativeStampRecovery!.receipts).toHaveLength(count)
+      const calls = read.mock.calls.length
+      for (let pass = 0; pass < 4; pass++) await owner.checkPendingCoins()
+      expect(read.mock.calls.length).toBe(calls)
+      // A genuine partial payment has no pending receipt work merely because its claim is larger.
+      await f.bob.refreshReceivedPayments!()
+      expect(read.mock.calls.length).toBe(calls + 1)
+      expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(set.total)
+    },
+  )
+  it('continues unconsumed receipt work after unavailable evidence and a reopen without duplicate credit', async () => {
+    const original = await stamp(f.bob, parseEther('0.1'), Date.now() - 3 * 24 * 60 * 60 * 1000)
+    const set = await repaymentSet(original, 17)
+    const owner = evmWalletInternals(f.bob).receivedCoinOwner!
+    await owner.checkPendingCoins()
+    const recorded = set.value * 16n
+    expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(recorded)
+    const send = (f.bob.provider as JsonRpcProvider).send.bind(f.bob.provider)
+    const spy = jest
+      .spyOn(f.bob.provider as JsonRpcProvider, 'send')
+      .mockImplementation(async (method, params) =>
+        method === 'eth_getTransactionReceipt' && params[0] === Transaction.from(set.raws[16]!).hash
+          ? null
+          : send(method, params),
+      )
+    await expect(f.bob.refreshReceivedPayments!()).rejects.toThrow()
+    expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(recorded)
+    spy.mockRestore()
+    await f.bob.close()
+    const reopened = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+    try {
+      for (let pass = 0; pass < 6; pass++)
+        await evmWalletInternals(reopened).receivedCoinOwner!.checkPendingCoins()
+      const [payment] = reopened.getReceivedPayments!()
+      expect(payment!.receivedAmountWei).toBe(set.total)
+      expect(payment!.nativeStampRecovery!.receipts).toHaveLength(17)
+      expect(
+        new Set(payment!.nativeStampRecovery!.receipts.map(receipt => receipt.txHash)).size,
+      ).toBe(17)
+      expect(payment!.transactions).toEqual([original.raw.slice(2)])
+    } finally {
+      await reopened.close()
+    }
+  })
+  it('converges bounded receipt work after reorg rediscovery spans more than one validation batch', async () => {
+    const original = await stamp(f.bob, parseEther('0.1'), Date.now() - 3 * 24 * 60 * 60 * 1000)
+    const snapshot = await node.send('evm_snapshot', [])
+    const set = await repaymentSet(original, 17)
+    const owner = evmWalletInternals(f.bob).receivedCoinOwner!
+    await owner.checkPendingCoins()
+    expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(set.value * 16n)
+    await node.send('evm_revert', [snapshot])
+    await node.send('evm_mine', [])
+    for (const raw of set.raws) await (await node.broadcastTransaction(raw)).wait()
+    for (let pass = 0; pass < 8; pass++) await owner.checkPendingCoins()
+    const [payment] = f.bob.getReceivedPayments!()
+    expect(payment!.receivedAmountWei).toBe(set.total)
+    expect(payment!.nativeStampRecovery!.receipts).toHaveLength(17)
+    expect(
+      new Set(payment!.nativeStampRecovery!.receipts.map(receipt => receipt.txHash)).size,
+    ).toBe(17)
+    expect(payment!.nativeStampRecovery!.receipts[0]!.blockNumber).toBe(3)
+  })
 })

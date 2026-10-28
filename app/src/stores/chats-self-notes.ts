@@ -24,6 +24,7 @@ import type {
   SwapRecordItem,
   ConversationStateItem,
   ContactStateItem,
+  DeviceClaimItem,
   OutboxMessageItem,
   MessageTombstoneItem,
   JournalCheckpointItem,
@@ -90,6 +91,24 @@ export function ownContactStates(
     return []
   return wrapper.message.items.filter(
     (item): item is ContactStateItem => !!item && item.type === 'contact-state',
+  )
+}
+
+/** The device claims of a row the account sent to itself: which of its devices the user acts on
+ * now. Anyone else's row carries none. */
+export function ownDeviceClaims(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): DeviceClaimItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is DeviceClaimItem => !!item && item.type === 'device-claim',
   )
 }
 

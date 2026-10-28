@@ -37,6 +37,10 @@ jest.mock('../accounts/native-transfer', () => ({
     mockCreateFinancialContext(chainIdentifier),
 }))
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => mockWallet }))
+// This is the account's active device (`stores/leader.ts`).
+jest.mock('../stores/leader', () => ({
+  useLeaderStore: () => ({ isActiveMaster: true }),
+}))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),

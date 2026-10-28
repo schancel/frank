@@ -64,6 +64,10 @@ jest.mock('../stores/my-profile', () => ({
 }))
 
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
+// This is the account's active device (`stores/leader.ts`).
+jest.mock('../stores/leader', () => ({
+  useLeaderStore: () => ({ isActiveMaster: true }),
+}))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),

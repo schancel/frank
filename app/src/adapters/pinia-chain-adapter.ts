@@ -70,6 +70,7 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
+import { useLeaderStore } from '../stores/leader'
 import { useContactStore } from '../stores/contacts'
 import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
@@ -702,12 +703,20 @@ export function startOutgoingReconciliation({
   maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
   idleIntervalMs = IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
   backgroundIntervalMs = BACKGROUND_OUTGOING_RECONCILE_INTERVAL_MS,
+  isActiveDevice = () => useLeaderStore().isActiveMaster,
 }: {
   wallet: WalletHandle
   intervalMs?: number
   maxIntervalMs?: number
   idleIntervalMs?: number
   backgroundIntervalMs?: number
+  /**
+   * Whether this is the device the account's user acts on now (`stores/leader.ts`). Only that
+   * device starts background coin maintenance. Everything else this tick does finishes what the
+   * user already authorized on this device (the same signed bytes, from this device's journal)
+   * and runs on every device, active or not.
+   */
+  isActiveDevice?: () => boolean
 }): OutgoingReconciliation {
   const chats = useChatStore()
   let stopped = false
@@ -1030,8 +1039,11 @@ export function startOutgoingReconciliation({
     pending += walletUnsettled
     // Idle: nothing being sent or reconciled. The wallet may merge the small coins stamps and
     // payouts left (owner, 2026-10-26); a merge it starts is one of its own unfinished sets on
-    // the next tick, which keeps the short pauses until it lands.
-    if (pending === 0 && !stopped) maintainIdleCoins(wallet)
+    // the next tick, which keeps the short pauses until it lands. Only the active device plans
+    // a merge: two devices reading the chain at different heads could plan different ones. A
+    // merge this device signed while it was active is still finished here when it is not: its
+    // signed set is resubmitted by `reobserveNativeOperations` above, like every send's.
+    if (pending === 0 && !stopped && isActiveDevice()) maintainIdleCoins(wallet)
     delayMs =
       pending > 0 && !resetRequested
         ? Math.min(maxIntervalMs, delayMs * 2)

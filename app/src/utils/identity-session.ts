@@ -12,6 +12,7 @@
  * account changes.
  */
 import { watch } from 'vue'
+import { startActiveDeviceClaims } from '../stores/leader'
 import { startAppNegotiationRecovery } from './negotiation-recovery'
 import { startAppSwapExecution } from '../swap/live-swap-execution'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
@@ -67,6 +68,7 @@ interface Live {
   uninstall: () => void
   polling: Stoppable
   reconcile: Stoppable
+  activeDevice?: Stoppable
   negotiation?: { stop(): Promise<void> }
   swapExecution?: { stop(): Promise<void> }
 }
@@ -92,6 +94,9 @@ export interface MessagingDeps {
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  /** Makes this device the account's active one whenever its user acts on it, and tells the
+   * account's other devices (`stores/leader.ts`). */
+  startActiveDevice?: (options: { wallet: WalletHandle }) => Stoppable
   startNegotiation?: typeof startAppNegotiationRecovery
   startSwapExecution?: typeof startAppSwapExecution
   /**
@@ -282,6 +287,7 @@ function productionDeps(): MessagingDeps {
     },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
+    startActiveDevice: startActiveDeviceClaims,
     resumeLegacy: () => {
       const runResume = () =>
         void import('../composables/useSolanaSwap')
@@ -471,6 +477,7 @@ export async function stopMessaging(): Promise<void> {
   const swapExecutionCleanup = previous.swapExecution
     ?.stop()
     .catch(() => undefined)
+  previous.activeDevice?.stop()
   previous.polling.stop()
   previous.reconcile.stop()
   previous.uninstall()
@@ -661,6 +668,9 @@ async function startMessagingInternal(): Promise<void> {
         revision,
         accountId: accountIdOf(account),
         uninstall,
+        // First, so a device opened in the foreground is the active one before its
+        // background work starts.
+        activeDevice: d.startActiveDevice?.({ wallet: handle }),
         polling: d.startPolling({ wallet: handle }),
         reconcile: d.startReconcile({ wallet: handle }),
       }
@@ -702,6 +712,7 @@ async function startMessagingInternal(): Promise<void> {
       if (live) {
         const partial = live
         live = undefined
+        partial.activeDevice?.stop()
         partial.polling.stop()
         partial.reconcile.stop()
         try {

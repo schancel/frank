@@ -545,7 +545,6 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice } from '../utils/constants'
 import { useSettingsStore } from '../stores/settings'
 import {
-  automaticDealerSteps,
   handItemStillNext,
   HAND_FEE_RESERVE_WEI,
   storedOutgoingMessages,
@@ -555,15 +554,10 @@ import {
   newSeed,
   saveSeed,
 } from '../utils/blackjack-hand'
-import {
-  automaticP2pGameSteps,
-  buildDiceChallenge,
-  buildRpsChallenge,
-} from '../utils/p2p-games'
-import {
-  automaticMentalPokerSteps,
-  buildMentalPokerChallenge,
-} from '../utils/p2p-mental-poker'
+import { automaticGameSteps } from '../utils/automatic-game-steps'
+import { useLeaderStore } from '../stores/leader'
+import { buildDiceChallenge, buildRpsChallenge } from '../utils/p2p-games'
+import { buildMentalPokerChallenge } from '../utils/p2p-mental-poker'
 import type { RpsMove } from '@frank/wallet/message-item-plugins/rps/fair'
 import {
   toArticleApplicationItem,
@@ -2306,17 +2300,10 @@ export default defineComponent({
           return
         }
       }
-      const step = [
-        ...(hasBlackjack
-          ? automaticDealerSteps(this.peerMessages, own, peer)
-          : []),
-        ...(hasP2pGame
-          ? automaticP2pGameSteps(this.peerMessages, own, peer)
-          : []),
-        ...(hasMentalPoker
-          ? automaticMentalPokerSteps(this.peerMessages, own, peer)
-          : []),
-      ].find(candidate => !this.blackjackAttempted.has(candidate.key))
+      // Only the account's active device sends a step: every device computes the same one.
+      const step = automaticGameSteps(this.peerMessages, own, peer, {
+        activeDevice: useLeaderStore().isActiveMaster,
+      }).find(candidate => !this.blackjackAttempted.has(candidate.key))
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       // Every automatic step pays nothing (see above), so it carries no stamp either.
@@ -2724,6 +2711,10 @@ export default defineComponent({
     },
     /** What this user and the conversation's peer sent. A game is between those two; what
      * anyone else posted into the conversation is not one of its moves. */
+    /** This is the account's active device (`stores/leader.ts`). */
+    activeDevice(): boolean {
+      return useLeaderStore().isActiveMaster
+    },
     peerMessages(): ChatMessage[] {
       const peer = this.recipientAddress || this.address
       return this.messages.filter(
@@ -3037,6 +3028,10 @@ export default defineComponent({
     },
     'sendingMessage'(sending: boolean) {
       if (!sending) void this.runBlackjackDealer()
+    },
+    // This device became the account's active one: it sends the steps still owed.
+    'activeDevice'(active: boolean) {
+      if (active) void this.runBlackjackDealer()
     },
     'active'(newActive) {
       if (!newActive) {

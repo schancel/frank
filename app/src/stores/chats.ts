@@ -161,6 +161,7 @@ import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
 import { useSettingsStore } from './settings'
 import { useContactStore } from './contacts'
+import { useLeaderStore } from './leader'
 import { useBalance } from '../composables/useBalance'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import {
@@ -492,6 +493,7 @@ import {
   normalizeOutboxWrapper,
   ownConversationStates,
   ownContactStates,
+  ownDeviceClaims,
   ownJournalCheckpoints,
   ownMessageTombstones,
   ownSwapRecords,
@@ -2120,6 +2122,7 @@ function isInternalMessage(items: unknown): boolean {
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||
           item.type === 'contact-state' ||
+          item.type === 'device-claim' ||
           item.type === 'message-tombstone' ||
           item.type === 'journal-checkpoint' ||
           item.type === 'outbox-message' ||
@@ -5333,6 +5336,15 @@ export const useChatStore = defineStore('chats', {
         const contacts = useContactStore()
         for (const note of contactNotes)
           await contacts.applyContactState(note, ownAddress)
+      }
+      // Which of the account's devices its user acts on now (`stores/leader.ts`).
+      const deviceClaims = recordRows.flatMap(wrapper =>
+        ownDeviceClaims(wrapper, ownAddress),
+      )
+      if (deviceClaims.length > 0) {
+        const leader = useLeaderStore()
+        if (ownAddress) leader.selectAccount(ownAddress)
+        for (const claim of deviceClaims) leader.handleIncomingClaim(claim)
       }
       // What the account's administrator devices noted to themselves about their groups.
       let groupRecords = 0

@@ -1,5 +1,6 @@
 import { sharedStampOperationId, validateSharedStoredMessage } from '../storage/outgoing-message-store'
 import { recordWalletFailure } from '../wallet-failure'
+import { contactRecoveryBudget, detachPaidContactStamp, originalContactOperation } from './canonical-contact-recovery'
 import type {
   StoredPayment,
   StoredMessage,
@@ -386,7 +387,7 @@ const holderOf = (owner: CanonicalMessagingOwner, consumerId: string) =>
   `${owner.subject}:${consumerId}`
 const isPending = (payment: StoredPayment) => payment.state === 'pending'
 /** Delivery or payment is not known to be finished: the resend pass still has work on it. */
-const isUnresolved = (row: StoredMessage) =>
+const isUnresolved = (row: StoredMessage, owner?: CanonicalMessagingOwner) =>
   row.outcome === undefined ||
   // Delivered sealed: the note to self that stands in for the relay's outbox row is still owed.
   (row.outcome === 'delivered' && row.selfCopyOwed === true) ||
@@ -396,7 +397,8 @@ const isUnresolved = (row: StoredMessage) =>
   owedRepayments(row).length > 0 ||
   // A shared payment another transaction took, still to be paid again (or being paid again).
   sharedRepaymentCandidates(row).length > 0 ||
-  (row.repayments?.some(repayment => repayment.state === 'pending') ?? false)
+  (row.repayments?.some(repayment => repayment.state === 'pending') ?? false) ||
+  (owner !== undefined && row.originalCombinedOperationId !== undefined && replacedUnsettled(owner, row))
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
 function owedRepayments(row: StoredMessage): number[] {
@@ -953,6 +955,8 @@ async function endRefusedUnexposed(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
 ): Promise<StoredMessage> {
+  // Its contact is already paid. A new stamp's refusal cannot cancel the original delivery.
+  if (row.originalCombinedOperationId) return row
   const refused = row.payments.filter(isPending)
   // A shared set is freed by its preparer. When any of its own moves went to the node it is
   // not: those may land, so it stays reserved and its payments pending until the chain says.
@@ -1173,6 +1177,7 @@ async function endUnconstructed(
   tiedUpWei?: bigint,
 ): Promise<boolean> {
   const shared = owner.transactionSets
+  if (row.originalCombinedOperationId) return false
   if (!shared || !sharedConstructionPending(row) || !row.transactionSetOperationId) return false
   const operation = await shared.preparer.readOperation(row.transactionSetOperationId)
   if (row.transactionSetStageId === undefined) {
@@ -1248,6 +1253,12 @@ async function finishSharedConstruction(
   if (row.transactionSetStageId && (!shared?.resolvePaymentOperation ||
       await shared.resolvePaymentOperation(row.paymentOperationId!, BigInt(intent.amountWei)) !== operationId))
     throw new Error('Stored payment/stamp operation identity mismatch')
+  if (row.originalCombinedOperationId) {
+    const original = await originalContactOperation(owner, row)
+    if (original.members.some(member => member.transactionSet?.role === 'payment' &&
+        member.transactionSet.stageId === undefined && member.observation.state !== 'included-success'))
+      throw new Error('Original paid contact recovery evidence changed')
+  }
   if (!shared) throw new Error('Shared stamp transaction preparation is unavailable')
   const sealed = { payload: fromHex(intent.payload), context: fromHex(intent.context) }
   const inspected = inspectCanonicalPreparedEnvelope(sealed.payload, sealed.context)
@@ -1297,6 +1308,15 @@ async function finishSharedConstruction(
     // signed bytes from local authority; it does not select inputs, refresh fees or sign.
   } else {
     await shared.refresh()
+    if (row.originalCombinedOperationId && !(await shared.preparer.readOperation(operationId))) {
+      const budget = await contactRecoveryBudget(owner, row)
+      const remaining = budget.remaining.toString()
+      if (intent.maxFeeWei !== remaining) {
+        intent = { ...intent, maxFeeWei: remaining }
+        row = { ...row, construction: intent }
+        await owner.messages.put(row)
+      }
+    }
   }
   // Existing signed stages replay exactly. An older unfinished intent captures its
   // floor durably before the first signature, without changing the authorized amount.
@@ -1314,6 +1334,7 @@ async function finishSharedConstruction(
   const request = {
     operationId,
     amountWei: BigInt(intent.amountWei),
+    ...(intent.maxFeeWei === undefined ? {} : { maxFeeWei: BigInt(intent.maxFeeWei) }),
     ...(intent.minimumPaymentWei === undefined ? {} : { minimumPaymentWei: BigInt(intent.minimumPaymentWei) }),
     kdf: (childIndex: number) => hexlify(canonicalStampDestination({
       network: intent.network,
@@ -1534,6 +1555,11 @@ async function rebuildTakenPayment(
   if (!(await paymentTaken(owner, operationId, row.transactionSetStageId))) return row
   const observed = await shared.preparer.readOperation(operationId)
   if (!observed) return row
+  const recovered = await detachPaidContactStamp(owner, row)
+  if (recovered) {
+    await owner.messages.put(recovered)
+    return recovered
+  }
   // Earlier versions authorized recipient replay before the relay answered. An exposed,
   // untaken payment of such a graph may already be in flight independently of that relay's
   // refusal. Keep its bytes and claims until the chain decides them; never withdraw and pay
@@ -1606,6 +1632,42 @@ async function rebuildTakenPayment(
   return next
 }
 
+/** Quotes from existing eligible inventory; no signing, reservation, relay request or mutation. */
+async function recoveryFeeReview(owner: CanonicalMessagingOwner, row: StoredMessage) {
+  if (!row.originalCombinedOperationId || row.outcome !== undefined ||
+      row.reason !== 'stamp_recovery_fee_required' || !sharedConstructionPending(row)) return undefined
+  validateSharedStoredMessage(row)
+  const shared = owner.transactionSets!
+  if (await shared.preparer.readOperation(row.transactionSetOperationId!)) return undefined
+  const budget = await contactRecoveryBudget(owner, row)
+  const intent = row.construction!
+  const inspected = inspectCanonicalPreparedEnvelope(fromHex(intent.payload), fromHex(intent.context))
+  const quote = await shared.preparer.quoteTransactionSet({
+    amountWei: BigInt(intent.amountWei),
+    ...(intent.minimumPaymentWei === undefined ? {} : { minimumPaymentWei: BigInt(intent.minimumPaymentWei) }),
+    kdf: childIndex => hexlify(canonicalStampDestination({
+      network: intent.network, stampKey: inspected.stampKey,
+      sharedPoint: inspected.payload.sharedPoint, childIndex,
+    }).address),
+  })
+  return {
+    chainIdentifier: canonicalNetworkDescriptor(owner.installedNetworkTag).network,
+    payloadDigest: row.digest,
+    messageId: formatUuid(fromHex(row.consumerId.slice('frank-dm:'.length))),
+    recoveryOperationId: row.transactionSetOperationId!,
+    recipientAddress: computeAddress(`0x${row.recipientSubject}`),
+    paidContactAtomic: budget.original.members.reduce((sum, member) => sum +
+      (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined &&
+        member.observation.state === 'included-success' ? Transaction.from(member.signed!.rawTransaction).value : 0n), 0n),
+    stampAtomic: BigInt(intent.amountWei),
+    priorNetworkFeeAtomic: budget.paidFees,
+    reservedNetworkFeeAtomic: budget.committed - budget.paidFees,
+    additionalNetworkFeeAtomic: quote.feeWei,
+    maximumTotalNetworkFeeAtomic: budget.ceiling,
+    requiredTotalNetworkFeeAtomic: budget.committed + quote.feeWei,
+  }
+}
+
 /**
  * The earlier payment operations of a message whose payment was built again
  * (`replacedOperationIds`): the wallet's own moves of each still go to the node and are looked
@@ -1618,9 +1680,15 @@ async function settleReplacedOperations(
 ): Promise<void> {
   const shared = owner.transactionSets
   if (!shared) return
-  for (const id of row.replacedOperationIds ?? []) {
+  for (const id of [...(row.replacedOperationIds ?? []), ...(row.originalCombinedOperationId ? [row.originalCombinedOperationId] : [])]) {
     if (!shared.preparer.getOperation(id)) continue
     try {
+      if (row.originalCombinedOperationId && row.outcome === 'delivered') {
+        // Included contact and conclusively taken old stamps are never paid again; submission
+        // completes only that original graph's remaining owned moves and sync checkpoints.
+        await shared.sendTransaction(await shared.preparer.readTransactionSet(id))
+        continue
+      }
       await shared.lifecycle.replay(id, { payments: false }).catch(() => undefined)
       await shared.lifecycle.observe(id, shared.provider)
       await abandonTakenMembers({ authority: shared.preparer, provider: shared.provider, operationId: id })
@@ -1632,7 +1700,8 @@ async function settleReplacedOperations(
 
 /** Whether an earlier payment operation of `row` (`replacedOperationIds`) is still active. */
 function replacedUnsettled(owner: CanonicalMessagingOwner, row: StoredMessage): boolean {
-  return (row.replacedOperationIds ?? []).some(id => owner.transactionSets?.preparer.getOperation(id) !== undefined)
+  return [...(row.replacedOperationIds ?? []), ...(row.originalCombinedOperationId ? [row.originalCombinedOperationId] : [])]
+    .some(id => owner.transactionSets?.preparer.getOperation(id) !== undefined)
 }
 
 /** Payments of a delivered shared-set message that ended without landing (`failed`) and are not
@@ -2474,7 +2543,7 @@ async function resend(
   const paidResends = Promise.all(
     owner.messages
       .all()
-      .filter(isUnresolved)
+      .filter(row => isUnresolved(row, owner))
       .map(async stored => {
         const work = workOf(owner, stored.consumerId)
         if (work.creating) return
@@ -2503,9 +2572,14 @@ async function resend(
             row = rebuilt
           }
           if (sharedConstructionPending(row)) {
+            if (row.originalCombinedOperationId && row.reason === 'stamp_recovery_fee_required') return
             try {
               row = await owner.lifetime(() => finishSharedConstruction(owner, row))
             } catch (error) {
+              if (error instanceof EvmTransactionSetFeeExceededError && row.originalCombinedOperationId) {
+                await owner.messages.put({ ...owner.messages.get(row.consumerId)!, reason: 'stamp_recovery_fee_required' })
+                return
+              }
               // The free coins do not cover it and this wallet's own earlier sends, not on the
               // chain yet, would (owner ruling 2026-10-26, as for a send refused at once): it
               // ends now, saying so and how much, and is never signed or sent by this pass.
@@ -2608,7 +2682,7 @@ async function resend(
           ended()
           // Finished: nothing is remembered about it in memory any more.
           const row = owner.messages.get(stored.consumerId)
-          if (row && !isUnresolved(row))
+          if (row && !isUnresolved(row, owner))
             works.get(owner.messages)?.delete(stored.consumerId)
         }
       }),
@@ -3246,7 +3320,7 @@ async function send(
     }
     // Nothing stored and nothing in doubt, or stored and finished: forget the bookkeeping.
     const row = owner.messages.get(consumerId)
-    if (row ? !isUnresolved(row) : !work.unrecorded)
+    if (row ? !isUnresolved(row, owner) : !work.unrecorded)
       works.get(owner.messages)?.delete(consumerId)
   }
 }
@@ -4065,6 +4139,44 @@ export function canonicalDirectMessages(
   resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ) {
   return {
+    recoveryFeeRequiredOf: (params: Parameters<NonNullable<DirectMessageClient['recoveryFeeRequiredOf']>>[0]) =>
+      owner.messages.all().some(row => row.digest === params.payloadDigest && row.originalCombinedOperationId !== undefined &&
+        row.outcome === undefined && row.reason === 'stamp_recovery_fee_required'),
+    recoveryFeeReview: async (params: Parameters<NonNullable<DirectMessageClient['recoveryFeeReview']>>[0]) => {
+      if (!/^[0-9a-f]{64}$/.test(params.payloadDigest)) throw new Error('Expected canonical message payload digest')
+      const row = owner.messages.all().find(candidate => candidate.digest === params.payloadDigest)
+      if (!row) return undefined
+      return owner.lifetime(() => recoveryFeeReview(owner, row))
+    },
+    approveRecoveryFee: async (params: Parameters<NonNullable<DirectMessageClient['approveRecoveryFee']>>[0]) => {
+      if (!/^[0-9a-f]{64}$/.test(params.payloadDigest) || params.maximumTotalNetworkFeeAtomic < 0n ||
+          params.maximumTotalNetworkFeeAtomic >= 1n << 256n) throw new Error('Invalid recovery fee approval')
+      const stored = owner.messages.all().find(row => row.digest === params.payloadDigest)
+      if (!stored) throw new Error('Original message unavailable')
+      const work = workOf(owner, stored.consumerId)
+      while (work.busy) await work.busy
+      let finished!: () => void
+      work.busy = new Promise<void>(resolve => { finished = resolve })
+      try {
+        await owner.lifetime(async () => {
+          const current = owner.messages.get(stored.consumerId)!
+          if (current.transactionSetOperationId !== params.recoveryOperationId || !current.originalCombinedOperationId)
+            throw new Error('Recovery fee approval refers to another operation')
+          if (current.stampRecoveryFeeCeiling !== undefined &&
+              BigInt(current.stampRecoveryFeeCeiling) >= params.maximumTotalNetworkFeeAtomic &&
+              current.reason !== 'stamp_recovery_fee_required') return
+          const review = await recoveryFeeReview(owner, current)
+          if (!review) throw new Error('Original message is not awaiting recovery fee approval')
+          if (params.maximumTotalNetworkFeeAtomic < review.requiredTotalNetworkFeeAtomic)
+            throw new NativeFeeExceededError(review.requiredTotalNetworkFeeAtomic)
+          const { reason: _reason, ...approved } = current
+          await owner.messages.put({ ...approved, stampRecoveryFeeCeiling: params.maximumTotalNetworkFeeAtomic.toString() })
+        })
+      } finally {
+        work.busy = undefined
+        finished()
+      }
+    },
     send: (params: Parameters<DirectMessageClient['send']>[0]) =>
       send(owner, params, resolveDefaultStamp),
     deliveryOf: async (

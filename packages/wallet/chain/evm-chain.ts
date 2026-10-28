@@ -1193,6 +1193,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const consumeSelfNotes = consumeEvmSelfNotes;
   const recordReceivedCoins = recordEvmReceivedCoins;
   const directMessages: DirectMessageClient = {
+    recoveryFeeRequiredOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.recoveryFeeRequiredOf(params) ?? false;
+    },
+    recoveryFeeReview(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical message recovery unavailable");
+      return canonical.recoveryFeeReview(params);
+    },
+    approveRecoveryFee(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) throw new CanonicalMessagingPendingError("Canonical message recovery unavailable");
+      return canonical.approveRecoveryFee(params);
+    },
     async quoteStamp(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const quote = evmWalletInternals(wallet).canonicalStampQuoter;
@@ -2386,7 +2402,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (!canonicalMessagingInstalled) return true;
               if (!canonicalLinks) return false;
               const messages = canonicalLinks.all().filter(message =>
-                message.transactionSetOperationId === operationId);
+                message.transactionSetOperationId === operationId ||
+                message.originalCombinedOperationId === operationId);
               return messages.every(message => message.outcome === "delivered");
             },
           });

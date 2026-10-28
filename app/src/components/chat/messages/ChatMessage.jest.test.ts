@@ -10,6 +10,8 @@ import { shallowMount } from '@vue/test-utils'
 import ChatMessage from './ChatMessage.vue'
 import enUS from '../../../i18n/en-us'
 
+const mockRecoveryReview = jest.fn()
+const mockRouterPush = jest.fn()
 const retryOutgoing = jest.fn()
 const deleteMessage = jest.fn(async () => undefined)
 const discardGroupMessage = jest.fn()
@@ -43,7 +45,14 @@ jest.mock('../../../utils/notifications', () => ({
   infoNotify: (text: string) => infoNotify(text),
 }))
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { toDisplayAmount: () => '0', unit: 'MON' },
+  activeChain: {
+    toDisplayAmount: () => '0',
+    unit: 'MON',
+    chainIdentifier: 'monad-testnet',
+    directMessages: {
+      recoveryFeeReview: (...args: unknown[]) => mockRecoveryReview(...args),
+    },
+  },
 }))
 jest.mock('../../../utils/message-items', () => ({
   messageItems: { previewText: () => '' },
@@ -93,6 +102,7 @@ function mountFailed() {
       },
       mocks: {
         $t: t,
+        $router: { push: mockRouterPush },
         $q: {
           dialog: (options: { message: string }) => ({
             onOk: (cb: () => void) => {
@@ -108,6 +118,31 @@ function mountFailed() {
 
 describe('ChatMessage Retry and Discard', () => {
   beforeEach(() => jest.clearAllMocks())
+
+  it('fee review opens the original recovery without running a fresh outgoing payment', async () => {
+    const { wrapper } = mountFailed()
+    const digest = 'a'.repeat(64)
+    await wrapper.setProps({
+      message: {
+        ...wrapper.props('message'),
+        delivery: {
+          attemptDigest: digest,
+          failureReason: 'stamp-recovery-fee-required',
+        },
+      },
+    })
+    mockRecoveryReview.mockResolvedValue({
+      chainIdentifier: 'monad-testnet',
+      payloadDigest: digest,
+    })
+    await (wrapper.vm as unknown as { resend: () => Promise<void> }).resend()
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      path: '/send-contact',
+      query: { recovery: digest, chain: 'monad-testnet' },
+    })
+    expect(retryOutgoing).not.toHaveBeenCalled()
+    expect(deleteMessage).not.toHaveBeenCalled()
+  })
 
   it('Retry goes to the store without deleting the message first', async () => {
     retryOutgoing.mockResolvedValue({ state: 'payment-pending' })

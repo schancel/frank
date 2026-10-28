@@ -109,6 +109,7 @@
             class="outgoing-actions"
             :status="status"
             :retryable="retryable"
+            :fee-review="failureReason === 'stamp-recovery-fee-required'"
             @replyClick="$emit('replyClick')"
             @forwardClick="$emit('forwardClick')"
             @infoClick="$emit('infoClick')"

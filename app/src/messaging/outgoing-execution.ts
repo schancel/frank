@@ -140,6 +140,7 @@ export interface OutgoingExecutionPorts<M extends ExecutionMessage>
     assertCurrent?: () => void
   }): Promise<void>
   applyAttemptStatus(params: {
+    wallet?: WalletHandle
     address: string
     id: string
     digest: string
@@ -471,6 +472,7 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
             }
           }
           const applied = await ports.applyAttemptStatus({
+            wallet,
             address,
             id,
             status,

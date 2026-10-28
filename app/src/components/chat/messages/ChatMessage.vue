@@ -533,6 +533,24 @@ export default defineComponent({
         this.$refs.suffix as { focusStatus?: () => void } | undefined
       )?.focusStatus?.()
       try {
+        if (
+          this.message.delivery?.failureReason === 'stamp-recovery-fee-required'
+        ) {
+          const digest = this.message.delivery.attemptDigest
+          if (!digest)
+            throw new Error(this.$t('outgoing.recoveryFeeUnavailable'))
+          const review = await activeChain.directMessages.recoveryFeeReview?.({
+            wallet: useMonadWallet(),
+            payloadDigest: digest,
+          })
+          if (!review || review.chainIdentifier !== activeChain.chainIdentifier)
+            throw new Error(this.$t('outgoing.recoveryFeeUnavailable'))
+          await this.$router.push({
+            path: '/send-contact',
+            query: { recovery: digest, chain: review.chainIdentifier },
+          })
+          return
+        }
         const outcome = await this.retryOutgoing({
           wallet: useMonadWallet(),
           address: this.address,

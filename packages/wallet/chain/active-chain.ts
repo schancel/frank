@@ -455,7 +455,33 @@ export type DirectMessageStampQuote = {
   | { readonly status: "insufficient" }
 );
 
+export interface DirectMessageRecoveryFeeReview {
+  readonly chainIdentifier: string;
+  readonly payloadDigest: string;
+  readonly messageId: string;
+  readonly recoveryOperationId: string;
+  readonly recipientAddress: string;
+  readonly paidContactAtomic: bigint;
+  readonly stampAtomic: bigint;
+  readonly priorNetworkFeeAtomic: bigint;
+  readonly reservedNetworkFeeAtomic: bigint;
+  readonly additionalNetworkFeeAtomic: bigint;
+  readonly maximumTotalNetworkFeeAtomic: bigint;
+  readonly requiredTotalNetworkFeeAtomic: bigint;
+}
+
 export interface DirectMessageClient {
+  /** Local durable recovery state; no quote, signing, network request or mutation. */
+  recoveryFeeRequiredOf?(params: { wallet: WalletHandle; payloadDigest: string }): boolean;
+  /** Read-only fee review for delivery of an original contact payment already on chain. */
+  recoveryFeeReview?(params: { wallet: WalletHandle; payloadDigest: string }): Promise<DirectMessageRecoveryFeeReview | undefined>;
+  /** Approves only the named original message's recovery stamp; never creates a contact payment. */
+  approveRecoveryFee?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+    recoveryOperationId: string;
+    maximumTotalNetworkFeeAtomic: bigint;
+  }): Promise<void>;
   /** Absent means unsupported. Reads only: no funding, signing, reservation or persistence.
    * Exclude financial plan sources on this same chain before preparing that payment; quote
    * again after preparation to see the owner's current reservations. RPC failures reject. */

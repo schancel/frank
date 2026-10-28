@@ -970,6 +970,15 @@ export const rawEnUS = {
       'Sending it would cost more in network fees than you approved. Nothing was paid; its funds are available again.',
     reasonPaymentTaken:
       'Another device of this account spent the same funds at the same moment. Nothing was paid and nothing was sent; its funds are available again. Send it again.',
+    reasonStampRecoveryFeeRequired:
+      'The contact payment is already on chain. Review the extra network fee to finish delivering this same message.',
+    reviewRecoveryFee: 'Review delivery fee',
+    recoveryFeeUnavailable:
+      'This payment recovery is unavailable in the current wallet or network. Its original payment remains recorded.',
+    recoveryTitle: 'Finish delivering payment',
+    contactAlreadyPaid: 'Already paid to contact',
+    recoveryRemainingTotal: 'To finish delivery',
+    approveAndResume: 'Approve fee and resume',
     blockedBy: 'It waits for your message “{preview}” ({time}).',
     reasonBlocked:
       'An earlier message whose payment is stuck holds the funds this one needs. Nothing was paid for this one. Retry it once that message goes through.',

@@ -6,15 +6,20 @@
   >
     <q-btn
       v-if="status === 'error' && retryable"
-      icon="replay"
+      :icon="feeReview ? 'receipt_long' : 'replay'"
       dense
       flat
       padding="xs"
       class="q-btn"
-      :aria-label="$t('a11y.resendMessage')"
+      :aria-label="
+        $t(feeReview ? 'outgoing.reviewRecoveryFee' : 'a11y.resendMessage')
+      "
       data-testid="outgoing-retry"
       @click="$emit('resendClick')"
-    />
+      ><q-tooltip v-if="feeReview">{{
+        $t('outgoing.reviewRecoveryFee')
+      }}</q-tooltip></q-btn
+    >
     <q-btn
       icon="delete"
       dense
@@ -95,6 +100,7 @@ export default defineComponent({
   name: 'ChatMessageSuffixButtons',
   emits: [...AllButtonEvents, 'resendClick', 'discardClick'],
   props: {
+    feeReview: { type: Boolean, default: false },
     status: {
       type: String,
       required: true,

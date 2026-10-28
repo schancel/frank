@@ -75,6 +75,7 @@ const FAILURE_REASON_KEYS: Record<OutgoingFailureReason, string | undefined> = {
   'stamp-below-fee': 'outgoing.reasonStampBelowFee',
   'fee-exceeded': 'outgoing.reasonFeeExceeded',
   'payment-taken': 'outgoing.reasonPaymentTaken',
+  'stamp-recovery-fee-required': 'outgoing.reasonStampRecoveryFeeRequired',
   'blocked': 'outgoing.reasonBlocked',
   'too-large': 'outgoing.reasonTooLarge',
   'unencodable': 'outgoing.reasonUnencodable',

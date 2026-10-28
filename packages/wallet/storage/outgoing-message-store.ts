@@ -78,6 +78,10 @@ export interface StoredMessage {
   /** A stamp stage inside an already prepared same-wallet payment operation. */
   transactionSetStageId?: string
   paymentOperationId?: string
+  /** Paid contact graph retained while only its external stamp is constructed again. */
+  originalCombinedOperationId?: string
+  /** Approved lifetime fee ceiling across the original contact and its stamp recovery graphs. */
+  stampRecoveryFeeCeiling?: string
   /** Wallet-owned signed change transactions, never included in recipient message evidence. */
   otherTransactions: StoredPayment[]
   /** Immutable encrypted construction intent, persisted before the shared preparer signs. */
@@ -87,6 +91,8 @@ export interface StoredMessage {
     context: string
     amountWei: string
     minimumPaymentWei?: string
+    /** This stamp attempt's remaining portion of the approved recovery fee ceiling. */
+    maxFeeWei?: string
     boundary: string
   }
   /** `delivered`: the relay confirmed storing this exact message. `dead`: the relay refused its
@@ -287,9 +293,20 @@ export function validateSharedStoredMessage(row: StoredMessage): void {
       (row.transactionSetStageId !== undefined || !Array.isArray(replaced) || replaced.length === 0 ||
         replaced.some((id, n) => id !== sharedStampOperationId(stampId, n)))) ||
     (row.transactionSetStageId === undefined
-      ? row.transactionSetOperationId !== sharedStampOperationId(stampId, replaced?.length ?? 0) || row.paymentOperationId !== undefined
+      ? row.transactionSetOperationId !== sharedStampOperationId(stampId, replaced?.length ?? 0) ||
+        (row.paymentOperationId !== undefined && row.originalCombinedOperationId === undefined)
       : row.transactionSetStageId !== `stamp-${row.consumerId.slice('frank-dm:'.length)}` ||
         typeof row.paymentOperationId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.paymentOperationId)) ||
+    (row.originalCombinedOperationId !== undefined &&
+      (row.transactionSetStageId !== undefined || typeof row.paymentOperationId !== 'string' ||
+        row.outcome === 'dead' ||
+        !/^[a-zA-Z0-9_-]{1,128}$/.test(row.paymentOperationId) ||
+        typeof row.originalCombinedOperationId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(row.originalCombinedOperationId) ||
+        row.originalCombinedOperationId === row.transactionSetOperationId ||
+        replaced?.includes(row.originalCombinedOperationId) || row.stampRecoveryFeeCeiling === undefined)) ||
+    (row.stampRecoveryFeeCeiling !== undefined && (row.originalCombinedOperationId === undefined ||
+      typeof row.stampRecoveryFeeCeiling !== 'string' ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(row.stampRecoveryFeeCeiling) || BigInt(row.stampRecoveryFeeCeiling) >= 1n << 256n)) ||
     !/^[0-9a-f]{64}$/i.test(row.digest) ||
     !/^[0-9a-f]{66}$/i.test(row.recipientSubject) ||
     !Array.isArray(row.payments) ||
@@ -302,6 +319,9 @@ export function validateSharedStoredMessage(row: StoredMessage): void {
     !/^(?:[0-9a-f]{2})+$/i.test(intent.context) ||
     typeof intent.amountWei !== 'string' ||
     !/^[1-9][0-9]*$/.test(intent.amountWei) ||
+    (intent.maxFeeWei !== undefined && (row.originalCombinedOperationId === undefined ||
+      typeof intent.maxFeeWei !== 'string' ||
+      !/^(0|[1-9][0-9]{0,77})$/.test(intent.maxFeeWei) || BigInt(intent.maxFeeWei) > BigInt(row.stampRecoveryFeeCeiling!))) ||
     (intent.minimumPaymentWei !== undefined && (typeof intent.minimumPaymentWei !== 'string' ||
       !/^[0-9]+$/.test(intent.minimumPaymentWei) || BigInt(intent.minimumPaymentWei) > BigInt(intent.amountWei))) ||
     typeof intent.boundary !== 'string' ||

@@ -17,13 +17,14 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { createServer } from 'net'
 import { dirname, join } from 'path'
-import { JsonRpcProvider, Transaction, Wallet, hexlify } from 'ethers'
+import { FeeData, JsonRpcProvider, Transaction, Wallet, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import { evmWalletInternals } from '../evm-wallet'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import {
   fixture,
+  roots,
   mailboxes,
   offlineChain,
   roots,
@@ -479,10 +480,16 @@ suite('another device of the account spends a message coin at the same moment (a
     expect(coins.some(coin => coin.state === 'pending_receipt' && coin.holder === first.transactionSetOperationId)).toBe(false)
   })
 
-  async function heldCombinedSend() {
+  async function heldCombinedSend(feeAllowanceMultiplier = 1n, multipleSources = false) {
     jest.spyOn(Math, 'random').mockReturnValue(0.99)
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
-    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    if (multipleSources) {
+      const before = alice.pool.records().length
+      const sources = alice.pool.ensureSize(before + 2).slice(before)
+      await alice.pool.flush()
+      for (const source of sources)
+        await (await dev.sendTransaction({to: source.address, value: 7n * 10n ** 15n})).wait()
+    } else await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     await mine(5)
     await alice.refreshTransactionSetInventory!()
     const intent0 = {
@@ -493,8 +500,8 @@ suite('another device of the account spends a message coin at the same moment (a
     const stamp = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP })
     if (stamp.status !== 'available') throw new Error('stamp unavailable')
     const intent: StealthPaymentIntent = {
-      ...intent0, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
-      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic },
+      ...intent0, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic * feeAllowanceMultiplier,
+      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic * feeAllowanceMultiplier },
     }
     const prepared = await alice.stealthPayments!.prepare(intent)
     let reached!: (digest: string) => void
@@ -543,8 +550,11 @@ suite('another device of the account spends a message coin at the same moment (a
     expect(delivered.outcome).toBe('delivered')
     expect(await chain.getBalance(prepared.recipientAddress)).toBe(intent.amountAtomic)
   })
-  it('an already included contact is retained when its stamp is taken before relay storage', async () => {
-    const { intent, prepared, digest, first, operationId, original, stampPayment, planned, release, sent } = await heldCombinedSend()
+  it.each(['automatic', 'fee-approval', 'link-cut', 'signed-cut', 'delivery-cut', 'multiple-sources', 'partial-contact'] as const)('an already included contact finishes its original delivery after every stamp is taken (%s)', async variant => {
+    const feeReview = variant === 'fee-approval'
+    const { intent, prepared, digest, first, operationId, original, stampPayment, planned, release, sent } = await heldCombinedSend(feeReview ? 1n : 100n, variant === 'multiple-sources' || variant === 'partial-contact')
+    const contacts = original.members.filter(m => m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)
+    if (variant === 'multiple-sources' || variant === 'partial-contact') expect(contacts.length).toBeGreaterThan(1)
     // An earlier process may already have authorized and sent the contact before relay storage.
     await alice.transactionSetPreparer!.authorizeSubmission(operationId)
     beforeJudge = async () => {
@@ -556,28 +566,93 @@ suite('another device of the account spends a message coin at the same moment (a
         await alice.reobserveNativeOperations!()
         await mine(5)
       }
-      if (!(await chain.getTransactionReceipt(contact.signed!.transactionHash)))
-        await (await chain.broadcastTransaction(contact.signed!.rawTransaction)).wait()
+      for (const member of variant === 'partial-contact' ? contacts.slice(0, 1) : contacts) {
+        await alice.transactionSetPreparer!.markExposed(operationId, original.members.indexOf(member))
+        if (!(await chain.getTransactionReceipt(member.signed!.transactionHash)))
+          await (await chain.broadcastTransaction(member.signed!.rawTransaction)).wait()
+      }
       await alice.reobserveNativeOperations!()
       expect((await operationOf(operationId))!.members.find(m => m.signed?.rawTransaction === contact.signed!.rawTransaction)!.observation.state).toBe('included-success')
+      if (feeReview) jest.spyOn(alice.provider, 'getFeeData').mockResolvedValue(new FeeData(4000000000n, 4000000000n, 0n))
     }
     release()
     expect(await sent).toMatch(/Another transaction used the coin/)
-    for (let pass = 0; pass < 5; pass++) {
-      await f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [digest]})
-      await mine(5)
+    if (variant === 'partial-contact') {
+      for (let pass = 0; pass < 3; pass++) {
+        await f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [digest]})
+        await mine(5)
+      }
+      const held = rowOf(digest)
+      expect(held.originalCombinedOperationId).toBeUndefined()
+      expect(held.outcome).toBeUndefined()
+      expect(held.request).toEqual(first.request)
+      expect(held.construction?.payload).toBe(first.construction?.payload)
+      expect(bobMailbox).toHaveLength(0)
+      for (const member of contacts.slice(1)) {
+        await alice.transactionSetPreparer!.markExposed(operationId, original.members.indexOf(member))
+        await (await chain.broadcastTransaction(member.signed!.rawTransaction)).wait()
+      }
+      await alice.reobserveNativeOperations!()
     }
-    const pending = rowOf(digest)
-    expect(pending.outcome).toBeUndefined()
-    expect(pending.request).toEqual(first.request)
-    expect(pending.construction?.payload).toBe(first.construction?.payload)
-    expect(pending.digest).toBe(digest)
-    expect(pending.payments.map(p => p.rawTx)).toEqual(first.payments.map(p => p.rawTx))
+    const reopen = async () => {
+      const directory = evmWalletInternals(alice).canonicalDirectory!
+      await alice.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      installCanonicalDirectory(alice, directory)
+      if (feeReview) jest.spyOn(alice.provider, 'getFeeData').mockResolvedValue(new FeeData(4000000000n, 4000000000n, 0n))
+    }
+    if (variant.endsWith('-cut')) {
+      const write = jest.mocked(LevelOutgoingMessageStore.prototype.put).getMockImplementation()!
+      let interrupted = false
+      jest.mocked(LevelOutgoingMessageStore.prototype.put).mockImplementation(async function(this: LevelOutgoingMessageStore, row) {
+        await write.call(this, row)
+        const cut = row.originalCombinedOperationId !== undefined && (
+          (variant === 'link-cut' && row.payments.length === 0) ||
+          (variant === 'signed-cut' && row.request !== undefined && row.payments.length > 0) ||
+          (variant === 'delivery-cut' && row.outcome === 'delivered'))
+        if (cut && !interrupted) { interrupted = true; throw new Error('interrupted after durable recovery write') }
+      })
+      await expect(f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [digest], maxPutAttempts: 2})).rejects.toThrow('interrupted after durable recovery write')
+      jest.mocked(LevelOutgoingMessageStore.prototype.put).mockImplementation(write)
+      expect(interrupted).toBe(true)
+      await reopen()
+    }
+    if (feeReview) {
+      await reconcileUntil(digest, row => row.reason === 'stamp_recovery_fee_required', 16)
+      expect(f.chain.directMessages.recoveryFeeRequiredOf!({wallet: alice, payloadDigest: digest})).toBe(true)
+      await f.chain.directMessages.discardAttempt?.({wallet: alice, payloadDigest: digest})
+      expect(rowOf(digest).outcome).toBeUndefined()
+      expect(rowOf(digest).originalCombinedOperationId).toBe(operationId)
+      const review = (await f.chain.directMessages.recoveryFeeReview!({wallet: alice, payloadDigest: digest}))!
+      expect(review.paidContactAtomic).toBe(intent.amountAtomic)
+      expect(review.requiredTotalNetworkFeeAtomic).toBeGreaterThan(review.maximumTotalNetworkFeeAtomic)
+      const params = {wallet: alice, payloadDigest: digest, recoveryOperationId: review.recoveryOperationId,
+        maximumTotalNetworkFeeAtomic: review.requiredTotalNetworkFeeAtomic}
+      await expect(f.chain.directMessages.approveRecoveryFee!({...params, maximumTotalNetworkFeeAtomic: review.requiredTotalNetworkFeeAtomic - 1n})).rejects.toThrow('fee')
+      await expect(f.chain.directMessages.approveRecoveryFee!({...params, recoveryOperationId: 'another-original'})).rejects.toThrow('another operation')
+      await f.chain.directMessages.approveRecoveryFee!(params)
+      await f.chain.directMessages.approveRecoveryFee!(params)
+      expect(f.chain.directMessages.recoveryFeeRequiredOf!({wallet: alice, payloadDigest: digest})).toBe(false)
+      await reopen()
+    }
+    const delivered = await reconcileUntil(digest, settled, 16)
+    expect(delivered.outcome).toBe('delivered')
+    expect(delivered).toMatchObject({ originalCombinedOperationId: operationId })
+    expect(delivered.construction?.payload).toBe(first.construction?.payload)
+    expect(delivered.construction?.context).toBe(first.construction?.context)
+    expect(delivered.digest).toBe(digest)
+    expect(delivered.paymentOperationId).toBe(intent.operationId)
     expect(await f.chain.directMessages.endOf!({wallet: alice,payloadDigest:digest})).toBeUndefined()
     const contact = (await operationOf(operationId))!.members.find(m => m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)!
     expect(contact.observation.state).toBe('included-success')
     expect(await chain.getBalance(prepared.recipientAddress)).toBe(intent.amountAtomic)
-    expect(bobMailbox).toHaveLength(0)
+    expect(bobMailbox).toHaveLength(1)
+    expect(await chain.getTransactionReceipt(stampPayment.signed!.transactionHash)).toBeNull()
+    expect(await paidOnChain(delivered.payments)).toBe(STAMP)
+    for (let pass = 0; pass < 3; pass++)
+      await f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [digest]})
+    expect(bobMailbox).toHaveLength(1)
+    expect(await chain.getBalance(prepared.recipientAddress)).toBe(intent.amountAtomic)
   })
   it('a payment to a contact whose combined set another transaction took: it ends saying so, nothing paid, nothing held', async () => {
     jest.spyOn(Math, 'random').mockReturnValue(0.99)

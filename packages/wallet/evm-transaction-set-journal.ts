@@ -14,6 +14,11 @@ export function evmTransactionSetJournal(
     captureInputSelection: () => owner.runLifetime(async lifetime =>
       captureNativeInputSelection(owner.inputAdmission, lifetime)),
     list: () => reader.list(),
+    readOperation: id => reader.readOperation(id),
+    readArchivedOperation: id => reader.readArchivedOperation(id),
+    archivedRecoveryAuthority: id => reader.archivedRecoveryAuthority(id),
+    activateArchivedOwnMoves: input => owner.runLifetime(lifetime =>
+      nativeAdmissionJournal(owner.inputAdmission, lifetime).activateArchivedOwnMoves(input)),
     get: id => reader.get(id),
     canSelect: (account, nonce) => reader.canSelect(account, nonce),
     prepare: (plan, signed) =>

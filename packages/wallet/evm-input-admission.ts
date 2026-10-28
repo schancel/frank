@@ -150,6 +150,8 @@ export type NativeJournalReader = Pick<
   | 'get'
   | 'readOperation'
   | 'historyPage'
+  | 'readArchivedOperation'
+  | 'archivedRecoveryAuthority'
   | 'sourceReferences'
   | 'referencesSpendIndex'
   | 'canSelect'
@@ -323,7 +325,7 @@ class AdmissionOwner implements EvmInputAdmission {
       })
     }
     for (const row of o.native.list()) {
-      if (row.cancelled) continue
+      if (row.cancelled || o.native.archivedRecoveryAuthority(row.operationId) === 'observe-only') continue
       row.members.forEach((m, index) => {
         const recovery = nativeMemberNeedsOwnMoveRecovery(m)
         const unresolved = recovery ? true : nativeMemberAbandoned(m)
@@ -957,6 +959,8 @@ export function nativeJournalReader(
     get: id => journal.get(id),
     readOperation: id => journal.readOperation(id),
     historyPage: options => journal.historyPage(options),
+    readArchivedOperation: id => journal.readArchivedOperation(id),
+    archivedRecoveryAuthority: id => journal.archivedRecoveryAuthority(id),
     sourceReferences: () => journal.sourceReferences(),
     referencesSpendIndex: index => journal.referencesSpendIndex(index),
     canSelect: (source, nonce) =>
@@ -1003,6 +1007,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     EvmNativeOperationJournal,
     | 'prepare'
     | 'archiveCompleted'
+    | 'activateArchivedOwnMoves'
     | 'refreshPreparation'
     | 'checkpointSigned'
     | 'markExposed'
@@ -1030,6 +1035,16 @@ export function nativeAdmissionJournal(
     owner.mutate(lifetime, operation)
   return {
     ...nativeJournalReader(journal, owner.owners.topic),
+    activateArchivedOwnMoves: input => mutation(async () => {
+      const original = await journal.readArchivedOperation(input.operationId)
+      if (!original) throw new EvmInputAdmissionError('invalid-provenance')
+      if (!input.terminalEvidence) owner.check(original.members.flatMap(member =>
+        nativeMemberNeedsOwnMoveRecovery(member) ? [
+          {kind: 'pair' as const, address: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce},
+          {kind: 'address' as const, address: member.source.address},
+        ] : []), `native:${original.operationId}`)
+      return journal.activateArchivedOwnMoves(input)
+    }),
     archiveCompleted: (id, receipt) => mutation(async () => {
       owner.validatedTopicReferences = await validateNativeTopicReferences(journal, owner.owners.topic)
       return journal.archiveCompleted(id, receipt)

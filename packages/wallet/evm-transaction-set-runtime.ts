@@ -118,6 +118,26 @@ export function installEvmTransactionSetRuntime(
       if (coinListSync.isDirty(target.account))
         throw new Error('Merge target chain observation incomplete')
     },
+    observeOwnedRecoveryTarget: async (target, minimumBlock) => {
+      if (stopped) throw new Error('Archived target observation runtime is stopped')
+      // Original derivation authority comes from the signed archive. If the old allocator's
+      // target is no longer watched, register actual chain state through its existing owner.
+      const at = await spendRuleHead.getBlockNumber()
+      if (at < minimumBlock) throw new Error('Archived own receipt is beyond the configured canonical head')
+      const [nonce, balance] = await Promise.all([
+        provider.getTransactionCount(target.account, at), provider.getBalance(target.account, at),
+      ])
+      if (stopped) throw new Error('Archived target observation runtime is stopped')
+      const registered = [...changePool.records(), ...changePool.recoveredAccounts()]
+        .some(record => record.index === target.changeIndex && record.address.toLowerCase() === target.account)
+      if (!registered) {
+        changePool.applyRecoveredAccounts([{index: target.changeIndex, address: target.account, nonce, balanceWei: balance.toString()}])
+        await changePool.flush()
+      }
+      coinListSync.markDirty(target.account)
+      await coinListSync.refreshAccounts([target.account])
+      if (stopped || coinListSync.isDirty(target.account)) throw new Error('Archived own target chain observation incomplete')
+    },
     canSelectCoin: coin =>
       !coinListSync.isDirty(coin.account) &&
       !pool.isAccountClaimed(coin.account) &&

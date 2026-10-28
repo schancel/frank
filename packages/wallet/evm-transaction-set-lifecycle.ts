@@ -299,7 +299,7 @@ export class EvmTransactionSetLifecycle {
         index,
         observation,
         account,
-        nativeMemberNeedsOwnMoveRecovery(member) ? member : undefined,
+        member,
       )
     }
   }

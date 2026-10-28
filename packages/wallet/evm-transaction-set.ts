@@ -9,6 +9,7 @@ import type {
   TransactionSetSelection,
 } from './evm-coin-list'
 import type {
+  ArchivedOwnMoveRecoveryInput,
   EvmNativeMemberPlan,
   EvmNativeMember,
   EvmTransactionSetStage,
@@ -17,7 +18,7 @@ import type {
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
-import { EvmNativeJournalError, nativeMemberAbandoned, nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { evmNativeOperationDigest, EvmNativeJournalError, nativeMemberAbandoned, nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
 import { fundsSettleBlocks } from './chain/evm-spend-rule'
@@ -270,6 +271,52 @@ export class EvmTransactionSetPreparer {
         : [])
   }
 
+  /** The original archive remains signing authority; only its later current facts reactivate. */
+  async recoverArchivedOwnMoves(input: ArchivedOwnMoveRecoveryInput): Promise<
+    | {status: 'active' | 'complete'; operation: EvmNativeOperation}
+    | {status: 'blocked'; operationId: string; reason: 'custody-unavailable' | 'reservation-conflict'}
+  > {
+    const {journal, coins} = this.options
+    const original = await journal.readArchivedOperation(input.operationId)
+    if (!original) throw new Error('Archived recovery original unavailable')
+    if (evmNativeOperationDigest(original) !== input.expectedOriginalOperationHash) throw new EvmNativeJournalError('conflict')
+    const previous = await journal.readOperation(input.operationId)
+    if (previous && !journal.archivedRecoveryAuthority(input.operationId) &&
+        !previous.members.some(nativeMemberNeedsOwnMoveRecovery)) return {status: 'complete', operation: previous}
+    const logicalId = original.preparationId!.slice(prefix.length)
+    return coins.runTransactionSetExclusive(logicalId, async () => {
+      const members = original.members.filter(nativeMemberNeedsOwnMoveRecovery)
+      if (members.some(member => !this.sourceOf(original, member)))
+        return {status: 'blocked', operationId: input.operationId, reason: 'custody-unavailable'} as const
+      const sources = [...new Set(members.map(member => member.source.address))]
+      const alreadyCurrent = journal.archivedRecoveryAuthority(original.operationId) !== undefined
+      if (!input.terminalEvidence && ((!alreadyCurrent && sources.some(address => coins.isAccountReserved(address))) ||
+          members.some(member => coins.all().some(coin => coin.account === member.source.address && coin.holder &&
+            coin.holder !== logicalId && (coin.state === 'spend_pending' || coin.state === 'pending_receipt')))))
+        return {status: 'blocked', operationId: input.operationId, reason: 'reservation-conflict'} as const
+      // A local projection fence retains existing durable source keys while admission/journal
+      // activation awaits storage. It changes no competing holder and owns no network wait.
+      const reference = `archived-recovery-custody:${original.operationId}`
+      sources.forEach(address => coins.requireTransactionSetProjection(address, reference))
+      let release = true
+      try {
+        const current = await journal.activateArchivedOwnMoves(input)
+        if (!journal.archivedRecoveryAuthority(current.operationId)) return {status: 'complete', operation: current} as const
+        this.restoreRow(current)
+        await coins.checkpointTransactionSetReservations(logicalId)
+        return {status: 'active', operation: current} as const
+      } catch (error) {
+        if (error instanceof EvmNativeJournalError && error.code === 'conflict')
+          return {status: 'blocked', operationId: input.operationId, reason: 'reservation-conflict'} as const
+        // An uncertain commit must retain its fence until reopening restores durable authority.
+        try { journal.list() } catch { release = false }
+        throw error
+      } finally {
+        if (release) sources.forEach(address => coins.completeTransactionSetProjection(address, reference))
+      }
+    })
+  }
+
   /** RPC-free admission view for account-based maintenance. Inventory owns provisional
    * construction/projection; the journal retains every pending signed nonce across reopen. */
   isSourceReserved(account: string): boolean {
@@ -338,6 +385,14 @@ export class EvmTransactionSetPreparer {
       if (await this.archivedMemberComplete(operationId, memberIndex)) return false
       throw new Error('Unknown transaction-set member')
     }
+    if (this.options.journal.archivedRecoveryAuthority(row!.operationId)) {
+      const original = await this.options.journal.readArchivedOperation(row!.operationId)
+      if (!original || !nativeMemberNeedsOwnMoveRecovery(original.members[memberIndex]!)) return false
+    }
+    if (this.options.journal.archivedRecoveryAuthority(row!.operationId) === 'observe-only' &&
+        this.options.coins.all().some(coin => coin.account === member.source.address && coin.holder &&
+          coin.holder !== operationId && coin.state !== 'spent' && coin.state !== 'unspent'))
+      throw new EvmNativeJournalError('conflict')
     const frozenObservation = { ...observation }
     const frozenAccount = account === null ? null : { ...account }
     const frozenExpected = expectedMember === undefined ? undefined : structuredClone(expectedMember)
@@ -360,11 +415,18 @@ export class EvmTransactionSetPreparer {
       if (!current || current.members[memberIndex]!.transactionSet!.inventoryApplied) return true
       // Shared sync can be waiting to write this source. Never join its RPC/mutation queue
       // while holding the source account mutation; its local projection remains incomplete.
-      const target = this.mergeTargetToObserve(current)
+      const recoveryTarget = this.archivedTargetToObserve(current, memberIndex)
+      const target = recoveryTarget ?? this.mergeTargetToObserve(current)
       if (!target) return true
-      if (!this.options.observeMergeTarget)
-        throw new Error('Merge target observation capability required')
-      await this.options.observeMergeTarget(target)
+      if (recoveryTarget) {
+        if (!this.options.observeOwnedRecoveryTarget) throw new Error('Archived target observation capability required')
+        const included = current.members[memberIndex]!.observation
+        if (included.state !== 'included-success') throw new Error('Archived target receipt unavailable')
+        await this.options.observeOwnedRecoveryTarget(target, included.blockNumber)
+      } else {
+        if (!this.options.observeMergeTarget) throw new Error('Merge target observation capability required')
+        await this.options.observeMergeTarget(target)
+      }
       await this.options.coins.projectTransactionSetAccount(
         member.source.address,
         `${row!.operationId}:${memberIndex}`,
@@ -544,7 +606,7 @@ export class EvmTransactionSetPreparer {
         { account: member.source.address, nonce: tx.nonce },
         { block },
       )
-      if (observation.state === 'included-success' && meta.role === 'change') {
+      if (observation.state === 'included-success' && meta.role === 'change' && !this.archivedTargetToObserve(current, memberIndex)) {
         const target = this.options.deriveChange(meta.changeIndex!)
         if (
           target.account.toLowerCase() !== tx.to!.toLowerCase() ||
@@ -633,13 +695,25 @@ export class EvmTransactionSetPreparer {
         }
       }
       // Only a completed merge needs an out-of-lock target read before the checkpoint.
-      if (account && account.nonce > tx.nonce && !this.mergeTargetToObserve(current)) {
+      if (account && account.nonce > tx.nonce && !this.mergeTargetToObserve(current) && !this.archivedTargetToObserve(current, memberIndex)) {
         await journal.markTransactionSetInventoryApplied(row.operationId, memberIndex)
         coins.settleTransactionSetKeyReference(member.source.address, tx.nonce)
         coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
       }
     }
     return true
+  }
+
+  private archivedTargetToObserve(row: EvmNativeOperation, memberIndex: number): EvmChangeDestination | undefined {
+    if (!this.options.journal.archivedRecoveryAuthority(row.operationId)) return
+    const member = row.members[memberIndex]!
+    if (member.observation.state !== 'included-success' ||
+        (member.transactionSet?.role !== 'change' && member.transactionSet?.role !== 'funding')) return
+    const target = this.options.deriveChange(member.transactionSet.changeIndex!)
+    if (target.account.toLowerCase() !== Transaction.from(member.unsignedTransaction).to?.toLowerCase() ||
+        computeAddress(target.privateKey).toLowerCase() !== target.account.toLowerCase())
+      throw new Error('Archived own target derivation does not match signed transaction')
+    return {...target, account: target.account.toLowerCase()}
   }
 
   /** Validate the target that needs observation, without any RPC or shared sync wait. */
@@ -1985,7 +2059,7 @@ export class EvmTransactionSetPreparer {
     return this.options.coins.runTransactionSetExclusive(operationId, async () => {
       const row = this.getOperation(operationId)
       const member = row?.members[memberIndex]
-      if (!row || row.cancelled || !row.submissionAuthorized || !member?.signed || !member.exposed) return false
+      if (!row || this.options.journal.archivedRecoveryAuthority(row.operationId) || row.cancelled || !row.submissionAuthorized || !member?.signed || !member.exposed) return false
       const source = this.sourceOf(row, member)
       if (!source) return false
       let tx: Transaction
@@ -2015,6 +2089,12 @@ export class EvmTransactionSetPreparer {
         )
       const source = this.sourceOf(row, member)
       const reconciled = meta.inventoryApplied === true
+      if (this.options.journal.archivedRecoveryAuthority(row.operationId) === 'observe-only' &&
+          coins.all().some(coin => coin.account === member.source.address && coin.holder &&
+            coin.holder !== logicalId && coin.state !== 'spent' && coin.state !== 'unspent')) {
+        if (!reconciled) coins.requireTransactionSetProjection(member.source.address, `${row.operationId}:${index}`)
+        continue
+      }
       if (nativeMemberNeedsOwnMoveRecovery(member) && coins.all().some(coin =>
           coin.account === member.source.address && coin.holder && coin.holder !== logicalId &&
           coin.state !== 'spent'))

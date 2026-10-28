@@ -1,0 +1,207 @@
+{
+  "provenance": {
+    "baselineCommit": "371445d685aabcc06a77c2cf4c489fbde25a9c60",
+    "generator": "packages/wallet/evm-archived-own-move.anvil.jest.test.ts",
+    "kind": "isolated-anvil-baseline-lifecycle",
+    "note": "Original history/exposure and later receipt are actual baseline facts; sparse rows below are unpersisted approved-format samples, not executed recovery."
+  },
+  "originalOperation": {
+    "version": 1,
+    "operationId": "evm-native-v1:0000000000000001",
+    "binding": {
+      "chainIdentifier": "monad-testnet",
+      "nativeChainId": "10143",
+      "publicTuple": "archived-own-move-anvil"
+    },
+    "kind": "transaction-set",
+    "transactionSetStages": [
+      {
+        "startIndex": 0,
+        "memberCount": 2,
+        "intendedValueWei": "100000000000000000",
+        "calldata": "0x",
+        "destinations": [
+          "0x5eaa383ccd66f65736a01e5219e2e0407737062b"
+        ]
+      }
+    ],
+    "preparationId": "evm-transaction-set:archive-own-move",
+    "recipient": "0x5eaa383ccd66f65736a01e5219e2e0407737062b",
+    "intendedValueWei": "100000000000000000",
+    "maximumFeeWei": "42000000000000",
+    "members": [
+      {
+        "source": {
+          "kind": "coin",
+          "address": "0xbc737ac2cc40ed40dccfd8746cfceb719c5aca12"
+        },
+        "unsignedTransaction": "0xed80843b9aca00825208945eaa383ccd66f65736a01e5219e2e0407737062b88016345785d8a00008082279f8080",
+        "dependencies": [],
+        "transactionSet": {
+          "role": "payment",
+          "intendedValueWei": "100000000000000000",
+          "logicalIndex": 0,
+          "balanceBeforeWei": "10000000000000000000",
+          "balanceAfterWei": "9899979000000000000",
+          "inventoryApplied": true
+        },
+        "signed": {
+          "rawTransaction": "0xf86d80843b9aca00825208945eaa383ccd66f65736a01e5219e2e0407737062b88016345785d8a000080824f62a07927b914874c7a5661f8ce6f68f86ff4cf94db39da604bc405f71bcd3066716ca02094799a32e36532c7935f59bb919ba4b7de7faee1f57e87090446df112b541f",
+          "transactionHash": "0x57b7248c8f0dceed425c2102c6c6b3d75d9c5fe80b21ec8db26c89fc7ab5b62f"
+        },
+        "exposed": false,
+        "observation": {
+          "state": "missing"
+        },
+        "account": {
+          "blockHash": "0x9e9e1c027e8f228d7c419aadad5cbb9750a0828e22a7c4bb8c6c58b468543876",
+          "blockNumber": 12,
+          "nonce": 1,
+          "balanceWei": "1"
+        },
+        "syncApplied": false
+      },
+      {
+        "source": {
+          "kind": "coin",
+          "address": "0xbc737ac2cc40ed40dccfd8746cfceb719c5aca12"
+        },
+        "unsignedTransaction": "0xed01843b9aca0082520894101ca1e6e819fe852b7c1bff5ca9ee1820f9d86f888963b759494960008082279f8080",
+        "dependencies": [
+          0
+        ],
+        "transactionSet": {
+          "role": "change",
+          "logicalIndex": 0,
+          "changeIndex": 0,
+          "balanceBeforeWei": "9899979000000000000",
+          "balanceAfterWei": "0",
+          "predecessorWaitBlocks": 3,
+          "inventoryApplied": true
+        },
+        "signed": {
+          "rawTransaction": "0xf86d01843b9aca0082520894101ca1e6e819fe852b7c1bff5ca9ee1820f9d86f888963b7594949600080824f61a091812c74f2257951184148249ccd158fa5a1dde76d17a00a92286ea82902481ea06482eb04644b5c46c093bc945cef939bf99e828b4892779cad83444a5b14c58c",
+          "transactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d"
+        },
+        "exposed": true,
+        "observation": {
+          "state": "abandoned",
+          "blockNumber": 7
+        },
+        "account": {
+          "blockHash": "0x873428e899619747216e7b55d204b057322e7946da1309b6355fbe76de775e64",
+          "blockNumber": 16,
+          "nonce": 1,
+          "balanceWei": "1"
+        },
+        "syncApplied": false
+      }
+    ],
+    "cancelled": false,
+    "reservedBytes": 3684,
+    "submissionAuthorized": true
+  },
+  "originalCompletion": {
+    "expectedOperationHash": "0x892cf7fc1dd13cafb7a4beba1292263ce16b26e10931c3fe967ae3f15059653f",
+    "ownerReference": "wallet-financial-sync:evm-native-v1:0000000000000001",
+    "sync": "complete",
+    "delivery": "not-required",
+    "dependencies": "complete"
+  },
+  "retainedInventory": [
+    {
+      "account": "0xbc737ac2cc40ed40dccfd8746cfceb719c5aca12",
+      "nonce": 0,
+      "privateKey": "0x0000000000000000000000000000000000000000000000000000000000000141",
+      "origin": "stealth",
+      "valueWei": "10000000000000000000",
+      "state": "spent",
+      "spendingTx": "0xf86d80843b9aca00825208945eaa383ccd66f65736a01e5219e2e0407737062b88016345785d8a000080824f62a07927b914874c7a5661f8ce6f68f86ff4cf94db39da604bc405f71bcd3066716ca02094799a32e36532c7935f59bb919ba4b7de7faee1f57e87090446df112b541f",
+      "holder": "archive-own-move",
+      "spentInBlock": 12
+    },
+    {
+      "account": "0xbc737ac2cc40ed40dccfd8746cfceb719c5aca12",
+      "nonce": 1,
+      "privateKey": "0x0000000000000000000000000000000000000000000000000000000000000141",
+      "valueWei": "1",
+      "origin": "stealth",
+      "lastSpentInBlock": 16,
+      "state": "unspent",
+      "spendableFromBlock": 19,
+      "listedInBlock": 16
+    }
+  ],
+  "laterCanonicalEvidence": {
+    "memberIndex": 1,
+    "signedTransactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d",
+    "observation": {
+      "state": "included-success",
+      "transactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d",
+      "blockHash": "0xe114bc7332326b46a37fca5b32516ddc5cfeb00238d4a619d07c9982bcb7c5c4",
+      "blockNumber": 23,
+      "transactionIndex": 0,
+      "feeWei": "21000000000000"
+    },
+    "account": {
+      "blockHash": "0xe114bc7332326b46a37fca5b32516ddc5cfeb00238d4a619d07c9982bcb7c5c4",
+      "blockNumber": 23,
+      "nonce": 2,
+      "balanceWei": "100021000000000001"
+    }
+  },
+  "claimedFormatSample": {
+    "version": 1,
+    "recordKind": "archived-own-move-current",
+    "operationId": "evm-native-v1:0000000000000001",
+    "originalOperationHash": "0x892cf7fc1dd13cafb7a4beba1292263ce16b26e10931c3fe967ae3f15059653f",
+    "revision": 1,
+    "authority": "claimed",
+    "members": [
+      {
+        "memberIndex": 1,
+        "signedTransactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d",
+        "observation": {
+          "state": "abandoned",
+          "blockNumber": 7
+        },
+        "account": {
+          "blockHash": "0x873428e899619747216e7b55d204b057322e7946da1309b6355fbe76de775e64",
+          "blockNumber": 16,
+          "nonce": 1,
+          "balanceWei": "1"
+        },
+        "syncApplied": false
+      }
+    ]
+  },
+  "observeOnlyFormatSample": {
+    "version": 1,
+    "recordKind": "archived-own-move-current",
+    "operationId": "evm-native-v1:0000000000000001",
+    "originalOperationHash": "0x892cf7fc1dd13cafb7a4beba1292263ce16b26e10931c3fe967ae3f15059653f",
+    "revision": 1,
+    "authority": "observe-only",
+    "members": [
+      {
+        "memberIndex": 1,
+        "signedTransactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d",
+        "observation": {
+          "state": "included-success",
+          "transactionHash": "0x3bf00238ae40957aff1321bf8d4801ef5e1f867ea47286fdb878ef330239672d",
+          "blockHash": "0xe114bc7332326b46a37fca5b32516ddc5cfeb00238d4a619d07c9982bcb7c5c4",
+          "blockNumber": 23,
+          "transactionIndex": 0,
+          "feeWei": "21000000000000"
+        },
+        "account": {
+          "blockHash": "0xe114bc7332326b46a37fca5b32516ddc5cfeb00238d4a619d07c9982bcb7c5c4",
+          "blockNumber": 23,
+          "nonce": 2,
+          "balanceWei": "100021000000000001"
+        },
+        "syncApplied": false
+      }
+    ]
+  }
+}

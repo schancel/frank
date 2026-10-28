@@ -9,6 +9,35 @@ import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './ev
 import { recordSignedTransactionSender } from '../evm-signed-sender'
 import { isResigningOf, MAX_SIGNINGS } from '../chain/evm-refused-resign'
 
+/** Current facts for the same archived operation. The signing graph lives only in history. */
+export interface ArchivedOwnMoveRecoveryInput {
+  operationId: string
+  expectedOriginalOperationHash: string
+  terminalEvidence?: readonly {
+    memberIndex: number
+    signedTransactionHash: string
+    observation: EvmNativeObservation
+    account: EvmNativeAccountObservation
+  }[]
+}
+interface ArchivedOwnMoveCurrent {
+  version: 1
+  recordKind: 'archived-own-move-current'
+  operationId: string
+  originalOperationHash: string
+  revision: number
+  authority: 'claimed' | 'observe-only'
+  members: {
+    memberIndex: number
+    signedTransactionHash: string
+    observation: EvmNativeObservation
+    account: EvmNativeAccountObservation | null
+    inventoryApplied?: true
+    syncApplied: boolean
+  }[]
+  currentCompletion?: EvmNativeCompletionReceipt
+}
+
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
 export type EvmNativeSource =
   | { kind: 'main'; address: string }
@@ -640,8 +669,8 @@ class NativeSignatureValidationCache {
 // Cached signature facts make warm members cheap. Bound elapsed work instead of
 // adding a timer for every four members; foreground sends must not inherit the
 // background decoder's typing backoff.
-function validationYielder() {
-  return createCooperativeBatchYielder(MAX_MEMBERS, DEFAULT_YIELD_BUDGET_MS, { foreground: true })
+function validationYielder(background = false) {
+  return createCooperativeBatchYielder(MAX_MEMBERS, DEFAULT_YIELD_BUDGET_MS, { foreground: !background })
 }
 
 async function validateRow(
@@ -649,6 +678,7 @@ async function validateRow(
   binding: EvmNativeBinding,
   signatures: NativeSignatureValidationCache,
   yielder = validationYielder(),
+  assertRead?: () => void,
 ): Promise<EvmNativeOperation> {
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const hasSubmissionPolicy =
@@ -817,9 +847,11 @@ async function validateRow(
     if (member.syncApplied && observation.state !== 'included-success') fail()
     checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
-    // Callers retain journal coordination through validation and the following write.
-    // Yielding never publishes this still-unvalidated snapshot.
+    // Mutable callers retain coordination through validation and the following write.
+    // Background immutable readers instead validate their captured lifetime after each yield.
+    assertRead?.()
     await yielder.maybeYield()
+    assertRead?.()
   }
   if (row.kind === 'transaction-set')
     validateTransactionSet(
@@ -965,6 +997,9 @@ export class EvmNativeOperationJournal {
    * same validated row, so only rows that changed are validated again. Rows held here are never
    * mutated: readers get clones. */
   private validatedTexts = new Map<string, { text: string; row: EvmNativeOperation }>()
+  private recoveries = new Map<string, ArchivedOwnMoveCurrent>()
+  private readonly ephemeralRecovered = new Map<string, ArchivedOwnMoveCurrent>()
+  private readonly ephemeralRecoveryConsumed = new Map<string, string>()
   private nextSequence = 1
   private archivedCount = 0
   /** Every write commits a new manifest `revision` in the same batch as the rows it changes, so
@@ -983,6 +1018,7 @@ export class EvmNativeOperationJournal {
   private readonly ephemeralConsumed = new Map<string, string>()
   private lifecycle: 'closed' | 'open' | 'uncertain' = 'closed'
   private closing = false
+  private openToken = {}
   private readonly signatures = new NativeSignatureValidationCache()
   private tail: Promise<unknown> = Promise.resolve()
   private captures = new Map<string, object>()
@@ -1049,6 +1085,7 @@ export class EvmNativeOperationJournal {
     if (mode === 'read' && manifestText !== undefined && manifestText === this.loadedManifest) return
     const rows = new Map<string, EvmNativeOperation>()
     const validated = new Map<string, { text: string; row: EvmNativeOperation }>()
+    const recoveries = new Map<string, ArchivedOwnMoveCurrent>()
     const yielder = validationYielder()
     const manifest: unknown = manifestText === undefined ? undefined : JSON.parse(manifestText)
     // Only active rows participate in recovery scans. Completed history is read through
@@ -1057,9 +1094,15 @@ export class EvmNativeOperationJournal {
       const name = String(key), text = String(value)
       if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
       const known = this.validatedTexts.get(name)
-      const row = known?.text === text
+      const parsed: unknown = JSON.parse(text)
+      let row: EvmNativeOperation
+      if (typeof parsed === 'object' && parsed !== null && 'recordKind' in parsed) {
+        const recovery = this.validateRecovery(parsed)
+        row = await this.materializeRecovery(recovery)
+        recoveries.set(row.operationId, recovery)
+      } else row = known?.text === text
         ? known.row
-        : await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures, yielder)
+        : await validateRow(parsed, this.binding, this.signatures, yielder)
       if (name !== `operation:${row.operationId}` || rows.has(row.operationId)) fail()
       rows.set(row.operationId, row)
       validated.set(name, { text, row })
@@ -1086,7 +1129,7 @@ export class EvmNativeOperationJournal {
         revision = m.revision
       }
     } else if (rows.size || !initialize) fail()
-    if (rows.size + this.archivedCount !== nextSequence - 1) fail()
+    if (rows.size - recoveries.size + this.archivedCount !== nextSequence - 1) fail()
     const pairs = new Set<string>(),
       preparations = new Set<string>()
     for (const row of rows.values()) {
@@ -1096,7 +1139,7 @@ export class EvmNativeOperationJournal {
         if (preparations.has(row.preparationId)) fail('conflict')
         preparations.add(row.preparationId)
       }
-      if (!row.cancelled)
+      if (!row.cancelled && recoveries.get(row.operationId)?.authority !== 'observe-only')
         for (const member of row.members) {
           // Given up on chain evidence: its nonce is free for the account's next coin.
           if (nativeMemberAbandoned(member)) continue
@@ -1116,6 +1159,7 @@ export class EvmNativeOperationJournal {
     for (const row of rows.values())
       if (!this.rowTexts.has(row)) this.rowTexts.set(row, JSON.stringify(row))
     this.rows = rows
+    this.recoveries = recoveries
     this.validatedTexts = validated
     this.nextSequence = nextSequence
     this.revision = revision ?? 0
@@ -1129,6 +1173,7 @@ export class EvmNativeOperationJournal {
   async Open(): Promise<void> {
     if (this.lifecycle !== 'closed') fail('conflict')
     this.closing = false
+    this.openToken = {}
     try {
       if (this.options.location) {
         const database: LevelDB = level(join(this.options.location, COMPONENT))
@@ -1156,15 +1201,24 @@ export class EvmNativeOperationJournal {
       }),
     )
   }
-  private async stored(key: string): Promise<string | undefined> {
-    if (!this.database) return undefined
+  private assertHistoryRead(context: { database: LevelDB | undefined; token: object }): void {
+    this.assertOpen()
+    if (this.closing || context.token !== this.openToken || context.database !== this.database)
+      fail('closed')
+  }
+  private async stored(key: string, context?: { database: LevelDB | undefined; token: object }): Promise<string | undefined> {
+    if (context) this.assertHistoryRead(context)
+    const database = context ? context.database : this.database
+    if (!database) return undefined
     try {
-      const value = String(await this.database.get(key))
+      const value = String(await database.get(key))
       if (Buffer.byteLength(value) > MAX_ROW) fail('capacity')
       return value
     } catch (error) {
       if ((error as { notFound?: boolean }).notFound === true) return undefined
       throw error
+    } finally {
+      if (context) this.assertHistoryRead(context)
     }
   }
 
@@ -1176,102 +1230,263 @@ export class EvmNativeOperationJournal {
     return `consumed:${account}:${nonce}`
   }
 
-  private async readArchived(id: string): Promise<EvmNativeOperation | undefined> {
-    const memory = this.database ? undefined : this.ephemeralHistory.get(id)
-    const text = this.database ? await this.stored(`history:${id}`) : memory && JSON.stringify(memory.row)
+  private async readArchived(id: string, background = false, context?: { database: LevelDB | undefined; token: object }): Promise<EvmNativeOperation | undefined> {
+    if (context) this.assertHistoryRead(context)
+    const database = context ? context.database : this.database
+    const memory = database ? undefined : this.ephemeralHistory.get(id)
+    const text = database ? await this.stored(`history:${id}`, context) : memory && JSON.stringify(memory.row)
     if (text === undefined) return undefined
-    const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures)
+    const row = await validateRow(JSON.parse(text) as unknown, this.binding, this.signatures, validationYielder(background), context ? () => this.assertHistoryRead(context) : undefined)
     if (row.operationId !== id || !completedForHistory(row)) fail()
-    const receiptText = this.database ? await this.stored(`completion:${id}`) : memory && JSON.stringify(memory.receipt)
+    const receiptText = database ? await this.stored(`completion:${id}`, context) : memory && JSON.stringify(memory.receipt)
     if (receiptText === undefined) fail()
     const receipt = validateCompletionReceipt(JSON.parse(receiptText))
     if (receipt.expectedOperationHash !== evmNativeOperationDigest(row)) fail()
     if (row.preparationId !== undefined) {
-      const indexed = this.database ? await this.stored(`preparation:${row.preparationId}`) : this.ephemeralPreparations.get(row.preparationId)
+      const indexed = database ? await this.stored(`preparation:${row.preparationId}`, context) : this.ephemeralPreparations.get(row.preparationId)
       if (indexed !== id) fail()
     }
     if (!row.cancelled)
       // An abandoned member never used its nonce: another operation may hold that pair.
       for (const member of row.members.filter(member => !nativeMemberAbandoned(member))) {
         const key = this.pairKey(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce)
-        const indexed = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
+        const indexed = database ? await this.stored(key, context) : this.ephemeralConsumed.get(key)
         if (indexed !== id) fail()
       }
+    if (context) this.assertHistoryRead(context)
     return clone(row)
   }
 
   private async consumedBy(account: string, nonce: number): Promise<string | undefined> {
     const key = this.pairKey(account, nonce)
-    const id = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
+    const indexed = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
+    const id = indexed ?? (this.database ? await this.stored(`recovery-${key}`) : this.ephemeralRecoveryConsumed.get(key))
     if (id === undefined) return undefined
     this.operationId(id)
     const row = await this.readArchived(id)
     if (!row || row.cancelled || !row.members.some(member =>
       member.source.address === account && this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce === nonce)) fail()
+    const member = row.members.find(member => member.source.address === account &&
+      this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce === nonce)!
+    if (nativeMemberAbandoned(member)) {
+      const later = await this.readCurrentCompleted(id)
+      const decided = later?.members.find(member => member.source.address === account &&
+        this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce === nonce)
+      if (!decided || !(decided.observation.state === 'included-success' ||
+          decided.observation.state === 'included-revert' || nativeMemberSuperseded(decided))) fail()
+    }
     return id
+  }
+
+  private validateRecovery(value: unknown, completed = false): ArchivedOwnMoveCurrent {
+    const raw = object(value, ['version', 'recordKind', 'operationId', 'originalOperationHash', 'revision', 'authority', 'members',
+      ...(typeof value === 'object' && value !== null && 'currentCompletion' in value ? ['currentCompletion'] : [])])
+    if (raw.version !== 1 || raw.recordKind !== 'archived-own-move-current' ||
+        (raw.authority !== 'claimed' && raw.authority !== 'observe-only')) fail()
+    this.operationId(raw.operationId as string); hash(raw.originalOperationHash); integer(raw.revision)
+    if (!Array.isArray(raw.members) || raw.members.length === 0 || raw.members.length > MAX_MEMBERS) fail()
+    let previous = -1
+    for (const value of raw.members) {
+      const member = object(value, ['memberIndex', 'signedTransactionHash', 'observation', 'account', 'syncApplied',
+        ...(typeof value === 'object' && value !== null && 'inventoryApplied' in value ? ['inventoryApplied'] : [])])
+      integer(member.memberIndex); hash(member.signedTransactionHash)
+      if ((member.memberIndex as number) <= previous || typeof member.syncApplied !== 'boolean' ||
+          (member.inventoryApplied !== undefined && member.inventoryApplied !== true)) fail()
+      previous = member.memberIndex as number
+      validateObservation(member.observation); validateAccount(member.account)
+    }
+    if (completed !== (raw.currentCompletion !== undefined)) fail()
+    if (raw.currentCompletion !== undefined) validateCompletionReceipt(raw.currentCompletion)
+    return clone(raw) as unknown as ArchivedOwnMoveCurrent
+  }
+
+  private async materializeRecovery(recovery: ArchivedOwnMoveCurrent): Promise<EvmNativeOperation> {
+    const original = await this.readArchived(recovery.operationId)
+    if (!original || original.cancelled || original.kind !== 'transaction-set' ||
+        evmNativeOperationDigest(original) !== recovery.originalOperationHash) fail('conflict')
+    const eligible = original.members.flatMap((member, index) => nativeMemberNeedsOwnMoveRecovery(member) ? [index] : [])
+    if (eligible.length !== recovery.members.length) fail()
+    for (const [at, fact] of recovery.members.entries()) {
+      const member = original.members[fact.memberIndex]
+      if (eligible[at] !== fact.memberIndex || !member?.signed || member.signed.transactionHash !== fact.signedTransactionHash) fail()
+      member.observation = clone(fact.observation); member.account = clone(fact.account)
+      member.syncApplied = fact.syncApplied
+      delete member.transactionSet!.inventoryApplied
+      if (fact.inventoryApplied) member.transactionSet!.inventoryApplied = true
+      if (recovery.authority === 'observe-only' && !(member.observation.state === 'included-success' ||
+          member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) fail('conflict')
+    }
+    const current = await validateRow(original, this.binding, this.signatures)
+    if (recovery.currentCompletion && (!completedForHistory(current) ||
+        evmNativeOperationDigest(current) !== recovery.currentCompletion.expectedOperationHash)) fail('conflict')
+    return current
+  }
+
+  private async recoveryFromCurrent(prior: ArchivedOwnMoveCurrent, current: EvmNativeOperation): Promise<ArchivedOwnMoveCurrent> {
+    const next = clone(prior)
+    if (next.revision >= Number.MAX_SAFE_INTEGER) fail('capacity')
+    next.revision++
+    for (const fact of next.members) {
+      const member = current.members[fact.memberIndex]!
+      fact.observation = clone(member.observation); fact.account = clone(member.account)
+      fact.syncApplied = member.syncApplied
+      delete fact.inventoryApplied
+      if (member.transactionSet?.inventoryApplied) fact.inventoryApplied = true
+    }
+    // Whitelist enforcement: materialization must reproduce every field, including unchanged
+    // signing history and noneligible members. A mutation cannot edit the immutable graph.
+    if (JSON.stringify(await this.materializeRecovery(next)) !== JSON.stringify(current)) fail('conflict')
+    return next
+  }
+
+  private async readRecoveryCompletion(id: string): Promise<ArchivedOwnMoveCurrent> {
+    const value = this.database ? await this.stored(`recovered:${id}`) : undefined
+    const recovery = value === undefined ? this.ephemeralRecovered.get(id) : this.validateRecovery(JSON.parse(value), true)
+    if (!recovery?.currentCompletion || recovery.operationId !== id) fail('conflict')
+    return recovery
+  }
+
+  private async readCurrentCompleted(id: string): Promise<EvmNativeOperation | undefined> {
+    if (this.database ? await this.stored(`recovered:${id}`) === undefined : !this.ephemeralRecovered.has(id)) return undefined
+    return this.materializeRecovery(await this.readRecoveryCompletion(id))
+  }
+
+  archivedRecoveryAuthority(id: string): 'claimed' | 'observe-only' | undefined {
+    this.assertOpen()
+    return this.recoveries.get(id)?.authority
+  }
+
+  readArchivedOperation(id: string): Promise<EvmNativeOperation | undefined> {
+    this.operationId(id)
+    return this.exclusive(() => this.coordinated(() => this.readArchived(id)))
+  }
+
+  activateArchivedOwnMoves(input: ArchivedOwnMoveRecoveryInput): Promise<EvmNativeOperation> {
+    const frozen = clone(input)
+    return this.exclusive(() => this.coordinated(async () => {
+      await this.reloadRows('write')
+      const original = await this.readArchived(frozen.operationId)
+      if (!original || original.cancelled || original.kind !== 'transaction-set' ||
+          evmNativeOperationDigest(original) !== frozen.expectedOriginalOperationHash) fail('conflict')
+      const existing = this.rows.get(original.operationId) ?? await this.readCurrentCompleted(original.operationId)
+      if (existing) return clone(existing)
+      const eligible = original.members.flatMap((member, index) => nativeMemberNeedsOwnMoveRecovery(member) ? [index] : [])
+      if (!eligible.length || (frozen.terminalEvidence && frozen.terminalEvidence.length !== eligible.length)) fail('conflict')
+      const recovery: ArchivedOwnMoveCurrent = {version: 1, recordKind: 'archived-own-move-current',
+        operationId: original.operationId, originalOperationHash: frozen.expectedOriginalOperationHash,
+        revision: 1, authority: frozen.terminalEvidence ? 'observe-only' : 'claimed',
+        members: eligible.map(index => {
+          const member = original.members[index]!
+          const evidence = frozen.terminalEvidence?.find(value => value.memberIndex === index)
+          if (frozen.terminalEvidence && (!evidence || evidence.signedTransactionHash !== member.signed!.transactionHash)) fail('conflict')
+          return {memberIndex: index, signedTransactionHash: member.signed!.transactionHash,
+            observation: clone(evidence?.observation ?? member.observation), account: clone(evidence?.account ?? member.account), syncApplied: false}
+        })}
+      if (!frozen.terminalEvidence)
+        for (const index of eligible) {
+          const address = original.members[index]!.source.address
+          for (const other of this.rows.values())
+            if (other.operationId !== original.operationId && !other.cancelled && other.members.some(member =>
+                member.source.address === address && (nativeMemberNeedsOwnMoveRecovery(member) ||
+                  (!nativeMemberEnded(member) && member.observation.state !== 'included-success' && member.observation.state !== 'included-revert')))) fail('conflict')
+        }
+      const current = await this.materializeRecovery(recovery)
+      if (this.rows.size >= this.maxRecords || [...this.rows.values()].reduce((sum, row) => sum + row.reservedBytes, 0) + current.reservedBytes > this.maxBytes) fail('capacity')
+      const text = JSON.stringify(recovery), manifest = JSON.stringify({...this.manifest(), revision: this.revision + 1})
+      try {
+        if (this.database) await durableBatch(this.database, [
+          {type: 'put', key: `operation:${original.operationId}`, value: text},
+          {type: 'put', key: 'manifest', value: manifest},
+        ])
+      } catch (error) { this.lifecycle = 'uncertain'; throw error }
+      this.recoveries.set(original.operationId, recovery)
+      this.committed(original.operationId, text, current, manifest)
+      return clone(current)
+    }))
   }
 
   private async findPreparation(preparationId: string): Promise<EvmNativeOperation | undefined> {
     const active = [...this.rows.values()].find(row => row.preparationId === preparationId)
     const id = this.database ? await this.stored(`preparation:${preparationId}`) : this.ephemeralPreparations.get(preparationId)
     if (active) {
-      if (id !== undefined) fail('conflict')
+      if (id !== undefined && (!this.recoveries.has(active.operationId) || id !== active.operationId)) fail('conflict')
       return this.copy(active)
     }
     if (id === undefined) return undefined
     this.operationId(id)
-    const row = await this.readArchived(id)
+    const row = await this.readCurrentCompleted(id) ?? await this.readArchived(id)
     if (!row || row.preparationId !== preparationId) fail()
     return row
   }
 
-  /** Exact active or completed evidence; required missing/corrupt history fails visibly. */
+  /** Current evidence for the original identity. Immutable signing/history evidence remains
+   * available separately through readArchivedOperation/historyPage. Corruption fails visibly. */
   readOperation(id: string): Promise<EvmNativeOperation | undefined> {
     this.operationId(id)
     return this.exclusive(() => this.coordinated(async () => {
       await this.reloadRows('read')
       const active = this.rows.get(id)
       if (active) return this.copy(active)
-      const archived = await this.readArchived(id)
+      const archived = await this.readCurrentCompleted(id) ?? await this.readArchived(id)
       if (!archived && parseInt(id.split(':')[1]!, 16) < this.nextSequence) fail()
       return archived
     }))
   }
 
   /** Bounded exact-history enumeration. The cursor is an exclusive operation ID. */
-  historyPage(input: { after?: string; limit: number }): Promise<{ operations: EvmNativeOperation[]; next?: string }> {
-    const { after, limit } = input
+  historyPage(input: { after?: string; limit: number; background?: boolean; memberBudget?: number }): Promise<{ operations: EvmNativeOperation[]; next?: string }> {
+    const { after, limit, background = false, memberBudget } = input
+    if (memberBudget !== undefined && (!Number.isSafeInteger(memberBudget) || memberBudget < 1 || memberBudget > MAX_MEMBERS)) fail('capacity')
     integer(limit)
     if (limit < 1 || limit > 100) fail('capacity')
     if (after !== undefined) this.operationId(after)
-    return this.exclusive(() => this.coordinated(async () => {
+    // History and its indexes are immutable and committed atomically. Background
+    // validation may yield for input without retaining current mutation authority.
+    const context = background ? { database: this.database, token: this.openToken } : undefined
+    if (context) this.assertHistoryRead(context)
+    const readPage = async () => {
+      if (context) this.assertHistoryRead(context)
+      const database = context ? context.database : this.database
       const operations: EvmNativeOperation[] = []
-      let bytes = 0
+      let bytes = 0, members = 0
       const append = async (id: string): Promise<boolean> => {
-        const row = await this.readArchived(id)
+        const row = await this.readArchived(id, background, context)
         if (!row) fail()
         const size = encodedBytes(row)
         if (operations.length >= limit || bytes + size > MAX_BYTES) return false
         operations.push(row)
         bytes += size
+        members += row.members.length
         return true
       }
-      if (this.database) {
-        for await (const [key] of this.database.iterator({
+      const ids: string[] = []
+      if (database) {
+        // Finish the bounded iterator before any cooperative validation wait. In
+        // particular, Close must not wait on an iterator suspended by input backoff.
+        for await (const [key] of database.iterator({
           ...(after === undefined ? { gte: 'history:' } : { gt: `history:${after}` }),
           lt: 'history;', limit: limit + 1,
         })) {
-          if (!await append(String(key).slice('history:'.length)))
-            return { operations, next: operations.at(-1)!.operationId }
+          if (context) this.assertHistoryRead(context)
+          ids.push(String(key).slice('history:'.length))
         }
       } else {
         for (const id of [...this.ephemeralHistory.keys()].sort()) {
           if (after !== undefined && id <= after) continue
-          if (!await append(id)) return { operations, next: operations.at(-1)!.operationId }
+          ids.push(id)
+          if (ids.length > limit) break
         }
       }
+      if (context) this.assertHistoryRead(context)
+      for (const id of ids) {
+        if (!await append(id) || (background && (operations.length >= limit ||
+            (memberBudget !== undefined && members >= memberBudget))))
+          return { operations, next: operations.at(-1)!.operationId }
+      }
+      if (context) this.assertHistoryRead(context)
       return { operations }
-    }))
+    }
+    return background ? readPage().then(page => { this.assertHistoryRead(context!); return page }) : this.exclusive(() => this.coordinated(readPage))
   }
 
   /** Retire local recovery state only after the composing owner durably finishes every
@@ -1284,7 +1499,48 @@ export class EvmNativeOperationJournal {
     return this.exclusive(() => this.coordinated(async () => {
       await this.reloadRows('write')
       const row = this.rows.get(id)
+      const recovery = this.recoveries.get(id)
+      if (row && recovery) {
+        if (row.members.some(nativeMemberNeedsOwnMoveRecovery) ||
+            !completedForHistory(row) || evmNativeOperationDigest(row) !== receipt.expectedOperationHash) fail('conflict')
+        const completed = { ...recovery, currentCompletion: receipt }
+        const consumed: {key: string; shadow: boolean}[] = []
+        for (const fact of recovery.members) {
+          const member = row.members[fact.memberIndex]!, nonce = Transaction.from(member.unsignedTransaction).nonce
+          if (await this.consumedBy(member.source.address, nonce)) continue
+          // Preserve a newer operation's eventual immutable consumed-owner index. A separate
+          // later-evidence index is needed only while such an existing same-pair owner exists.
+          const competing = [...this.rows.values()].some(other => other.operationId !== id && !other.cancelled &&
+            other.members.some(candidate => candidate.source.address === member.source.address &&
+              Transaction.from(candidate.unsignedTransaction).nonce === nonce))
+          consumed.push({key: `${competing ? 'recovery-' : ''}${this.pairKey(member.source.address, nonce)}`, shadow: competing})
+        }
+        const manifest = JSON.stringify({ ...this.manifest(), revision: this.revision + 1 })
+        try {
+          if (this.database) await durableBatch(this.database, [
+            {type: 'put', key: `recovered:${id}`, value: JSON.stringify(completed)},
+            ...consumed.map(({key}) => ({type: 'put' as const, key, value: id})),
+            {type: 'del', key: `operation:${id}`},
+            {type: 'put', key: 'manifest', value: manifest},
+          ])
+          else {
+            this.ephemeralRecovered.set(id, completed)
+            for (const {key, shadow} of consumed)
+              (shadow ? this.ephemeralRecoveryConsumed : this.ephemeralConsumed).set(shadow ? key.slice('recovery-'.length) : key, id)
+          }
+        } catch (error) { this.lifecycle = 'uncertain'; throw error }
+        this.rows.delete(id); this.recoveries.delete(id); this.validatedTexts.delete(`operation:${id}`)
+        row.members.forEach((_, index) => this.captures.delete(`${id}:${index}`))
+        this.revision++; if (this.database) this.loadedManifest = manifest
+        return
+      }
       if (!row) {
+        const recovered = await this.readCurrentCompleted(id)
+        if (recovered) {
+          const previous = await this.readRecoveryCompletion(id)
+          if (JSON.stringify(previous.currentCompletion) !== JSON.stringify(receipt)) fail('conflict')
+          return
+        }
         const archived = await this.readArchived(id)
         if (!archived || evmNativeOperationDigest(archived) !== receipt.expectedOperationHash) fail('conflict')
         const previous = this.database
@@ -1312,8 +1568,13 @@ export class EvmNativeOperationJournal {
       if (!row.cancelled)
         for (const member of row.members.filter(member => !nativeMemberAbandoned(member))) {
           const nonce = this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce
-          if (await this.consumedBy(member.source.address, nonce)) fail('conflict')
-          operations.push({ type: 'put', key: this.pairKey(member.source.address, nonce), value: id })
+          const pair = this.pairKey(member.source.address, nonce)
+          const previous = this.database ? await this.stored(pair) : this.ephemeralConsumed.get(pair)
+          if (previous !== undefined) fail('conflict')
+          // A linked later-consumption fact is not this operation's immutable archive owner.
+          // Preserve it, but allow the already existing newer owner to finish its own history.
+          await this.consumedBy(member.source.address, nonce)
+          operations.push({ type: 'put', key: pair, value: id })
         }
       try {
         if (this.database) await durableBatch(this.database, operations)
@@ -1343,7 +1604,7 @@ export class EvmNativeOperationJournal {
    * rows held here are what that manifest names, and those exact bytes need no validation again. */
   private committed(id: string, text: string, row: EvmNativeOperation, manifest: string): void {
     this.rows.set(id, row)
-    this.rowTexts.set(row, text)
+    this.rowTexts.set(row, this.recoveries.has(id) ? JSON.stringify(row) : text)
     this.revision++
     if (!this.database) return
     this.validatedTexts.set(`operation:${id}`, { text, row })
@@ -1641,7 +1902,9 @@ export class EvmNativeOperationJournal {
         const row = this.get(id)
         if (await change(row) === false) return row
         const validated = await validateRow(row, this.binding, this.signatures)
-        const text = JSON.stringify(validated)
+        const recovery = this.recoveries.get(id)
+        const nextRecovery = recovery && await this.recoveryFromCurrent(recovery, validated)
+        const text = JSON.stringify(nextRecovery ?? validated)
         const manifest = JSON.stringify({ ...this.manifest(), revision: this.revision + 1 })
         try {
           if (this.database)
@@ -1653,6 +1916,7 @@ export class EvmNativeOperationJournal {
           this.lifecycle = 'uncertain'
           throw error
         }
+        if (nextRecovery) this.recoveries.set(id, nextRecovery)
         this.committed(id, text, validated, manifest)
         return clone(validated)
       }),
@@ -1886,6 +2150,8 @@ export class EvmNativeOperationJournal {
       // A retained active own move is restored only from the exact snapshot read before RPC.
       // A concurrent inclusion, capture or ownership change must win over stale recovery.
       const recovering = nativeMemberNeedsOwnMoveRecovery(m)
+      if (this.recoveries.has(row.operationId) &&
+          (!frozenExpected || JSON.stringify(m) !== JSON.stringify(frozenExpected))) return false
       if (recovering || (frozenExpected && nativeMemberNeedsOwnMoveRecovery(frozenExpected))) {
         if (!frozenExpected || JSON.stringify(m) !== JSON.stringify(frozenExpected) ||
             frozenObservation.state === 'unknown' || frozenAccount === null) return false
@@ -1946,6 +2212,7 @@ export class EvmNativeOperationJournal {
   }
   async Close(): Promise<void> {
     this.closing = true
+    this.openToken = {}
     this.captures.clear()
     await this.tail
     this.lifecycle = 'closed'

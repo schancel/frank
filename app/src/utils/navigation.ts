@@ -621,12 +621,14 @@ export function leaveForm(
  * entries give way to the route now committed, unseen. It takes the place of the form's first
  * entry, above the page the form was opened from, and the entries after it are gone: Back
  * returns to that page and Forward cannot reach any step of the form again. A form opened
- * first keeps its first entry for the outcome (a browser keeps the entries after it; they are
- * the form's own, and a step reached that way has nothing to show).
+ * first (nothing in the app under it) has its first entry turned into its `parent` (as
+ * `leaveForm` gives way to it), with the outcome above: Back from the outcome is that parent,
+ * and here too nothing of the form is left to go Forward to.
  */
 export async function settleForm(
   router: Router,
   start: FormStart,
+  parent: RouteLocationRaw,
 ): Promise<void> {
   const position = entryPosition()
   if (
@@ -639,19 +641,19 @@ export async function settleForm(
   await unseenMove(async () => {
     if (!(await moveUnseen(below - position)) || !routerHistory) return false
     const current = router.currentRoute.value
-    let moved: true | 'truncated' = true
+    committedStart = null
     if (start.parentInApp) {
       // On the page under the form: the Messages entry under it, if any, is the outcome's too.
-      committedStart = null
       recordStartTab(routerHistory.location.split(/[?#]/)[0] ?? '')
-      routerHistory.push(current.fullPath)
-      moved = 'truncated'
     } else {
-      routerHistory.replace(current.fullPath)
-      committedStart = null
+      // On the form's first entry: it becomes the parent.
+      const under = router.resolve(parent)
+      routerHistory.replace(under.fullPath)
+      recordStartTab(under.path)
     }
+    routerHistory.push(current.fullPath)
     recordStartTab(current.path)
-    return moved
+    return 'truncated'
   })
 }
 

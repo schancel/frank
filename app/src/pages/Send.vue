@@ -633,18 +633,20 @@ export default defineComponent({
     }
 
     /**
-     * Once a transfer is signed (it may be handed over from then on), its outcome takes the
-     * form's place in history: neither Back nor Forward reaches the form or its review again.
-     * Refused before anything was signed, the review stays a step: Back still reaches the form.
+     * Once the transfer went out (sent or pending), or may have (an error after which money may
+     * have moved), its outcome takes the form's place in history: neither Back nor Forward
+     * reaches the form or its review again. Refused with nothing sent (before signing, or by
+     * the network after signing, its coins freed), the review stays a step: Back still reaches
+     * the form.
      */
-    let outcomeSettled = false
-    const settleOutcome = () => {
-      if (outcomeSettled || disposed) return
-      outcomeSettled = true
-      void (async () => {
+    let settling: Promise<void> | undefined
+    const settleOutcome = (): Promise<void> => {
+      if (disposed) return Promise.resolve()
+      settling ??= (async () => {
         if (formStep(route)) await router.replace(formStepLocation(route, null))
-        await settleForm(router, start)
+        if (!disposed) await settleForm(router, start, '/wallet')
       })()
+      return settling
     }
 
     const reviewTransfer = async () => {
@@ -1012,7 +1014,6 @@ export default defineComponent({
             maxFee: reviewedFee,
             onSigned: async (signed: { txHash: string }) => {
               signedTxHash = signed.txHash
-              settleOutcome()
               // onSigned runs before broadcast, while the original row is still active.
               if (
                 !signedOperationId &&
@@ -1035,7 +1036,8 @@ export default defineComponent({
             ? await client.sendLegacy(params)
             : await client.send(params)
           signedTxHash = result.txHash
-          settleOutcome()
+          // Sent or pending: the payment's outcome.
+          void settleOutcome()
           if (!(await current())) return
           await inspect()
           if (disposed || !reviewed.binding.isCurrent()) return
@@ -1056,7 +1058,8 @@ export default defineComponent({
             reviewed.context.chain.chainIdentifier,
             result.txHash,
           )
-          leaveForm(router, start, '/wallet')
+          await settleOutcome()
+          if (!disposed) leaveForm(router, start, '/wallet')
         } catch (err) {
           if (disposed) return
           if (!dispatched.value) {
@@ -1099,7 +1102,6 @@ export default defineComponent({
           }
           if (err instanceof NativeTransactionSubmissionError)
             signedTxHash = err.transaction.txHash
-          if (signedTxHash !== undefined) settleOutcome()
           // Nothing was signed (the wallet reports a signature before it hands anything to the
           // network, and it reported none): the transfer was refused while it was being
           // planned, so nothing can have moved. Say so, with the reason, and go back to the
@@ -1120,6 +1122,8 @@ export default defineComponent({
             )
             return
           }
+          // Money may have moved: the outcome, never the form again.
+          void settleOutcome()
           if (!(await current())) return
           await inspect()
           if (disposed || !reviewed.binding.isCurrent()) return

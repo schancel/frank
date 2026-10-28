@@ -356,6 +356,7 @@ import {
   MAX_STEALTH_ITEM_AMOUNT,
   NativeFeeExceededError,
   type ContactPaymentQuote,
+  type PreparedContactPayment,
 } from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
 import { useMonadWallet } from 'src/utils/clients'
@@ -591,7 +592,7 @@ export default defineComponent({
       if (disposed) return Promise.resolve()
       settling ??= (async () => {
         if (formStep(route)) await router.replace(formStepLocation(route, null))
-        if (!disposed) await settleForm(router, start)
+        if (!disposed) await settleForm(router, start, '/wallet')
       })()
       return settling
     }
@@ -705,6 +706,9 @@ export default defineComponent({
         }
         sending.value = true
         feeChanged.value = false
+        // Set once the wallet has signed and held the payment for its message: from then on the
+        // payment belongs to that message, whatever the send says, and this form never pays again.
+        let prepared: PreparedContactPayment | undefined
 
         try {
           const wallet = await useActiveWallet()
@@ -727,7 +731,7 @@ export default defineComponent({
             reviewed.state === 'known'
               ? reviewed.quote.stampWei
               : chatStore.getStampWei(selectedContactAddress.value)
-          const prepared = await wallet.prepareContactPayment({
+          prepared = await wallet.prepareContactPayment({
             recipient: { raw: selectedContactAddress.value },
             value: parsedValue.value!,
             memo: memo.value.trim() || undefined,
@@ -771,6 +775,18 @@ export default defineComponent({
           await settleOutcome()
           if (!disposed) leaveForm(router, start, '/wallet')
         } catch (err) {
+          if (prepared) {
+            // The payment was signed and held, and its message's send then failed (its row may
+            // already be saved, its bytes may have reached a relay). It is never paid again from
+            // here: the user is told where that one payment is, and the form is left as after
+            // any other outcome. Its message's Retry, or the wallet's held payments, finish it.
+            errorNotify(err, {
+              safeMessage: $t('sendContactDialog.heldAfterError'),
+            })
+            await settleOutcome()
+            if (!disposed) leaveForm(router, start, '/wallet')
+            return
+          }
           // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
           // says so and shows the new quote, whose fee bounds the payment if confirmed again.
           if (err instanceof NativeFeeExceededError) {

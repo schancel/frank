@@ -298,7 +298,7 @@ describe('scroll positions per history entry', () => {
     scrollTo(scroller(), 70)
     await frames()
     // The outcome (/other) takes the form's place above the list; the entry after it is gone.
-    await settleForm(router, form)
+    await settleForm(router, form, '/list')
     await frames()
     window.dispatchEvent(new Event('pagehide'))
     const kept = JSON.parse(

@@ -16,6 +16,7 @@ import Send from './Send.vue'
 import SendContact from './SendContact.vue'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useContactStore } from 'src/stores/contacts'
+import { errorNotify } from 'src/utils/notifications'
 import { resetNavigationForTests } from '../utils/navigation'
 import enUS from '../i18n/en-us'
 import {
@@ -380,6 +381,56 @@ describe('Send to Address: Review is a step', () => {
     },
   )
 
+  it('a send signed and then refused by the network (its coins freed, nothing sent) stays on Review, and Back still reaches the form', async () => {
+    const chain = jest.requireMock('@frank/wallet/chain')
+    mockSend.mockImplementationOnce(
+      async (params: { onSigned?: (s: { txHash: string }) => unknown }) => {
+        await params.onSigned?.({ txHash: '0xsigned' })
+        throw new chain.NativeTransactionRefusedError('nonce too low')
+      },
+    )
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    const form = historyPosition()
+    await fillAndReview()
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+    expect(historyPosition()).toBe(form + 1)
+    expect(wrapper!.find('[data-test="send-review-card"]').exists()).toBe(true)
+
+    await userBack(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(form)
+    expect(input('[data-test="send-amount-input"]').value).toBe('0.01')
+  })
+
+  it('a send opened first (nothing in the app under it) leaves no step to go Forward to; Back is the wallet', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/send'))
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    await flushHistory()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect((window.history.state as { forward: unknown }).forward).toBeNull()
+
+    await userBack(router)
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect((window.history.state as { forward: unknown }).forward).toBeNull()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
   it('a reload on Review shows the form in its place', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
     await router.push('/send?step=review')
@@ -472,6 +523,38 @@ describe('Send to Contact: Review is a step', () => {
     expect(input('[data-test="send-contact-amount-input"]').value).toBe('')
     // The payment's form and review are gone: nothing further forward.
     expect((window.history.state as { forward: unknown }).forward).toBeNull()
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+  })
+
+  it('a payment signed and held whose message then fails to send is never offered again: one payment, the form is left', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    const walletPosition = historyPosition()
+    await router.push('/send-contact')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    // The wallet signed and held the payment; the message's send then fails (its row may be
+    // saved, its bytes may have reached a relay).
+    mockSendMessage.mockRejectedValueOnce(new Error('relay unreachable'))
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await done
+    await flushPromises()
+    await flushHistory()
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+    // Told where that one payment is, never "nothing was sent".
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      safeMessage: enUS.sendContactDialog.heldAfterError,
+    })
+    // The form is left as after any other outcome: no Confirm to pay with again.
+    expect(router.currentRoute.value.path).toBe('/wallet')
+    expect(historyPosition()).toBe(walletPosition)
+    expect(wrapper!.find('[data-test="review-confirm-button"]').exists()).toBe(
+      false,
+    )
+    expect((window.history.state as { forward: unknown }).forward).toBe(
+      '/send-contact',
+    )
     expect(mockPrepare).toHaveBeenCalledTimes(1)
   })
 

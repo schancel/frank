@@ -460,9 +460,12 @@ export interface DirectMessageRecoveryFeeReview {
   readonly payloadDigest: string;
   readonly messageId: string;
   readonly recoveryOperationId: string;
+  readonly purpose: "deliver-message" | "repay-stamp";
   readonly recipientAddress: string;
   readonly paidContactAtomic: bigint;
   readonly stampAtomic: bigint;
+  readonly paidStampAtomic: bigint;
+  readonly pendingStampAtomic: bigint;
   readonly priorNetworkFeeAtomic: bigint;
   readonly reservedNetworkFeeAtomic: bigint;
   readonly additionalNetworkFeeAtomic: bigint;
@@ -471,6 +474,8 @@ export interface DirectMessageRecoveryFeeReview {
 }
 
 export interface DirectMessageClient {
+  /** Current original-message fee obligations only; local read, no quote or network request. */
+  recoveryFeeRequiredDigests?(params: { wallet: WalletHandle }): readonly string[];
   /** Local durable recovery state; no quote, signing, network request or mutation. */
   recoveryFeeRequiredOf?(params: { wallet: WalletHandle; payloadDigest: string }): boolean;
   /** Read-only fee review for delivery of an original contact payment already on chain. */

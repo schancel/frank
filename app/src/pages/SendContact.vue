@@ -16,7 +16,11 @@
         />
         <q-toolbar-title class="h6" data-test="send-contact-title">{{
           $t(
-            recoveryMode ? 'outgoing.recoveryTitle' : 'sendContactDialog.title',
+            recoveryMode
+              ? recoveryRepayment
+                ? 'outgoing.repayStampTitle'
+                : 'outgoing.recoveryTitle'
+              : 'sendContactDialog.title',
           )
         }}</q-toolbar-title>
       </q-toolbar>
@@ -265,7 +269,11 @@
               <!-- The message's stamp: paid to the contact beside the payment, never part of it. -->
               <div class="row justify-between items-center q-py-xs">
                 <span class="text-caption text-grey-7">{{
-                  $t('sendContactDialog.stamp')
+                  $t(
+                    recoveryRepayment
+                      ? 'outgoing.stampPartBeingResumed'
+                      : 'sendContactDialog.stamp',
+                  )
                 }}</span>
                 <span class="text-grey-7 text-right" data-test="review-stamp">
                   {{ stampText }}
@@ -295,13 +303,30 @@
                 >
               </div>
 
+              <template v-if="recoveryRepayment">
+                <div class="row justify-between items-center q-py-xs">
+                  <span>{{ $t('outgoing.stampAlreadyPaid') }}</span>
+                  <span data-test="recovery-stamp-paid">{{
+                    recoveryPaidStamp
+                  }}</span>
+                </div>
+                <div class="row justify-between items-center q-py-xs">
+                  <span>{{ $t('outgoing.stampStillOwed') }}</span>
+                  <span data-test="recovery-stamp-pending">{{
+                    recoveryPendingStamp
+                  }}</span>
+                </div>
+              </template>
+
               <q-separator />
 
               <div class="row justify-between items-center q-py-xs">
                 <span class="text-subtitle2">{{
                   $t(
                     recoveryMode
-                      ? 'outgoing.recoveryRemainingTotal'
+                      ? recoveryRepayment
+                        ? 'outgoing.repayStampPartTotal'
+                        : 'outgoing.recoveryRemainingTotal'
                       : 'sendContactDialog.total',
                   )
                 }}</span>
@@ -321,7 +346,13 @@
             role="status"
             data-test="recovery-fee-explanation"
           >
-            {{ $t('outgoing.reasonStampRecoveryFeeRequired') }}
+            {{
+              $t(
+                recoveryRepayment
+                  ? 'outgoing.repayStampExplanation'
+                  : 'outgoing.reasonStampRecoveryFeeRequired',
+              )
+            }}
           </q-card-section>
 
           <!-- Refused over the reviewed fee: nothing was sent; the fee and total above are the
@@ -461,6 +492,9 @@ export default defineComponent({
     const recoveryChain =
       typeof route.query.chain === 'string' ? route.query.chain : ''
     const recoveryReview = ref<DirectMessageRecoveryFeeReview>()
+    const recoveryRepayment = computed(
+      () => recoveryReview.value?.purpose === 'repay-stamp',
+    )
     let recoveryWallet: Awaited<ReturnType<typeof useActiveWallet>> | undefined
     // What a payment to a contact can draw on: the wallet's own figure, not the shown total.
     const {
@@ -627,6 +661,12 @@ export default defineComponent({
         ? display(recoveryReview.value.requiredTotalNetworkFeeAtomic)
         : pendingText(),
     )
+    const recoveryPaidStamp = computed(() =>
+      display(recoveryReview.value?.paidStampAtomic ?? 0n),
+    )
+    const recoveryPendingStamp = computed(() =>
+      display(recoveryReview.value?.pendingStampAtomic ?? 0n),
+    )
 
     /** Asks the wallet for this payment's quote (shown in the review); a later request wins. */
     function requote() {
@@ -783,6 +823,9 @@ export default defineComponent({
 
     return {
       recoveryMode,
+      recoveryRepayment,
+      recoveryPaidStamp,
+      recoveryPendingStamp,
       quote,
       feeChanged,
       feeText,

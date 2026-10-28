@@ -995,6 +995,15 @@ export const rawFrFR = {
     recoveryFeeUnavailable:
       'La récupération de ce paiement est indisponible dans le portefeuille ou le réseau actuel. Le paiement initial reste enregistré.',
     recoveryTitle: 'Terminer la livraison du paiement',
+    deliveredStampFeeRequired:
+      'Livré. Vérifiez les frais du timbre restant dû.',
+    repayStampTitle: 'Terminer le paiement du timbre du message livré',
+    repayStampExplanation:
+      'Votre message est livré et le paiement au contact est déjà sur la chaîne. Approuvez les frais réseau du timbre restant dû à sa destination d’origine.',
+    stampAlreadyPaid: 'Timbre déjà reçu',
+    stampStillOwed: 'Timbre restant dû',
+    stampPartBeingResumed: 'Paiement de timbre repris',
+    repayStampPartTotal: 'Pour ce paiement de timbre',
     contactAlreadyPaid: 'Déjà payé au contact',
     recoveryRemainingTotal: 'Pour terminer la livraison',
     recoveryMaximumNetworkFees: 'Frais réseau maximum pour ce message',

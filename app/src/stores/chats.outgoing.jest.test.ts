@@ -24,6 +24,10 @@ import { accountSession } from '../accounts/session'
 
 import { outgoingMessageId, rehydateChat, useChatStore } from './chats'
 import {
+  outgoingRecoveryFeeReviews,
+  refreshOutgoingPaymentSummaries,
+} from '../utils/outgoing-payments'
+import {
   activeChain,
   CanonicalMessagingPendingError,
 } from '@frank/wallet/chain'
@@ -284,6 +288,35 @@ describe('outgoing direct messages (#269, #270)', () => {
       failureReason: 'stamp-recovery-fee-required',
     })
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('a delivered message keeps its confirmed store identity while its stamp repayment needs review', async () => {
+    const send = sendJournalsThenPending()
+    const chats = useChatStore()
+    await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+    reconcileReturns({ [HASH]: 'delivered' })
+    await chats.reconcileOutgoing({ wallet })
+    const delivered = only(chats)[0]
+    expect(delivered.status).toBe('confirmed')
+    const original = delivered.items.map(item => ({ ...item }))
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue([HASH])
+    refreshOutgoingPaymentSummaries(wallet, only(chats))
+    expect(outgoingRecoveryFeeReviews.has(HASH)).toBe(true)
+    await chats.reconcileOutgoing({ wallet })
+    expect(only(chats)[0]).toMatchObject({
+      status: 'confirmed',
+      payloadDigest: HASH,
+      items: original,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue([])
+    refreshOutgoingPaymentSummaries(wallet, only(chats))
+    expect(outgoingRecoveryFeeReviews.has(HASH)).toBe(false)
+    expect(only(chats)[0].status).toBe('confirmed')
   })
 
   // These suspension fixtures must release their gates even if an assertion or Jest

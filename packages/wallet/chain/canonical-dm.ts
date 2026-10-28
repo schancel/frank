@@ -402,6 +402,7 @@ const isUnresolved = (row: StoredMessage, owner?: CanonicalMessagingOwner) =>
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
 function owedRepayments(row: StoredMessage): number[] {
+  if (row.originalCombinedOperationId) return [] // Shared recovery keeps every repeat in its native journal/cap.
   if (row.outcome !== 'delivered') return []
   return row.payments.flatMap((payment, index) =>
     payment.state === 'reverted' &&
@@ -794,6 +795,7 @@ async function submitStored(
   /** Not handed to the relay: the chain shows a payment's coin used by another transaction. */
   paymentTaken?: true
 }> {
+  if (row.originalCombinedOperationId) await originalContactOperation(owner, row)
   if (
     row.exposurePending ||
     row.outcome !== undefined ||
@@ -1634,37 +1636,51 @@ async function rebuildTakenPayment(
 
 /** Quotes from existing eligible inventory; no signing, reservation, relay request or mutation. */
 async function recoveryFeeReview(owner: CanonicalMessagingOwner, row: StoredMessage) {
-  if (!row.originalCombinedOperationId || row.outcome !== undefined ||
-      row.reason !== 'stamp_recovery_fee_required' || !sharedConstructionPending(row)) return undefined
+  if (!row.originalCombinedOperationId || row.outcome === 'dead' ||
+      row.reason !== 'stamp_recovery_fee_required') return undefined
   validateSharedStoredMessage(row)
   const shared = owner.transactionSets!
-  if (await shared.preparer.readOperation(row.transactionSetOperationId!)) return undefined
   const budget = await contactRecoveryBudget(owner, row)
   const intent = row.construction!
-  const inspected = inspectCanonicalPreparedEnvelope(fromHex(intent.payload), fromHex(intent.context))
-  const quote = await shared.preparer.quoteTransactionSet({
+  const repayment = row.outcome === 'delivered'
+    ? row.repayments?.find(entry => entry.state === 'pending' && !budget.charges.has(entry.operationId)) ??
+      row.repayments?.find(entry => entry.state === 'pending') : undefined
+  if (row.outcome === 'delivered' ? !repayment : !sharedConstructionPending(row)) return undefined
+  const target = repayment && Transaction.from(row.payments[repayment.payment]!.rawTx)
+  const operationId = repayment?.operationId ?? row.transactionSetOperationId!
+  const existing = budget.charges.get(operationId)
+  const inspected = !target ? inspectCanonicalPreparedEnvelope(fromHex(intent.payload), fromHex(intent.context)) : undefined
+  const quote = existing ? undefined : await shared.preparer.quoteTransactionSet(target ? {
+    amountWei: target.value, kdf: () => target.to!, maxPaymentParts: 1, minimumPaymentWei: target.value,
+  } : {
     amountWei: BigInt(intent.amountWei),
     ...(intent.minimumPaymentWei === undefined ? {} : { minimumPaymentWei: BigInt(intent.minimumPaymentWei) }),
     kdf: childIndex => hexlify(canonicalStampDestination({
-      network: intent.network, stampKey: inspected.stampKey,
-      sharedPoint: inspected.payload.sharedPoint, childIndex,
+      network: intent.network, stampKey: inspected!.stampKey,
+      sharedPoint: inspected!.payload.sharedPoint, childIndex,
     }).address),
   })
+  const paidStamp = row.payments.reduce((sum, payment, index) => sum +
+    (payment.state === 'spent' || row.repayments?.some(entry => entry.payment === index && entry.state === 'spent')
+      ? Transaction.from(payment.rawTx).value : 0n), 0n)
   return {
     chainIdentifier: canonicalNetworkDescriptor(owner.installedNetworkTag).network,
     payloadDigest: row.digest,
     messageId: formatUuid(fromHex(row.consumerId.slice('frank-dm:'.length))),
-    recoveryOperationId: row.transactionSetOperationId!,
+    recoveryOperationId: operationId,
+    purpose: repayment ? 'repay-stamp' as const : 'deliver-message' as const,
     recipientAddress: computeAddress(`0x${row.recipientSubject}`),
     paidContactAtomic: budget.original.members.reduce((sum, member) => sum +
       (member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined &&
         member.observation.state === 'included-success' ? Transaction.from(member.signed!.rawTransaction).value : 0n), 0n),
-    stampAtomic: BigInt(intent.amountWei),
+    stampAtomic: target ? target.value : BigInt(intent.amountWei),
+    paidStampAtomic: paidStamp,
+    pendingStampAtomic: BigInt(intent.amountWei) > paidStamp ? BigInt(intent.amountWei) - paidStamp : 0n,
     priorNetworkFeeAtomic: budget.paidFees,
     reservedNetworkFeeAtomic: budget.committed - budget.paidFees,
-    additionalNetworkFeeAtomic: quote.feeWei,
+    additionalNetworkFeeAtomic: quote?.feeWei ?? existing!.committed - existing!.paid,
     maximumTotalNetworkFeeAtomic: budget.ceiling,
-    requiredTotalNetworkFeeAtomic: budget.committed + quote.feeWei,
+    requiredTotalNetworkFeeAtomic: budget.committed + (quote?.feeWei ?? 0n),
   }
 }
 
@@ -1710,7 +1726,8 @@ function replacedUnsettled(owner: CanonicalMessagingOwner, row: StoredMessage): 
 function sharedRepaymentCandidates(row: StoredMessage): number[] {
   if (row.version !== 2 || row.outcome !== 'delivered' || row.transactionSetStageId !== undefined) return []
   return row.payments.flatMap((payment, index) =>
-    payment.state === 'failed' && !row.repayments?.some(repayment => repayment.payment === index)
+    (payment.state === 'failed' || (row.originalCombinedOperationId !== undefined && payment.state === 'reverted')) &&
+      !row.repayments?.some(repayment => repayment.payment === index)
       ? [index]
       : [],
   )
@@ -1744,7 +1761,7 @@ async function repayTakenPayments(
     const rawTx = row.payments[index]!.rawTx
     const memberIndex = operation.members.findIndex(member => member.signed?.rawTransaction === rawTx)
     if (memberIndex < 0) continue
-    if (!taken.has(memberIndex)) {
+    if (!taken.has(memberIndex) && !(row.originalCombinedOperationId && operation.members[memberIndex]!.observation.state === 'included-revert')) {
       // The block that used its nonce holds this very payment: it landed (on a node that has
       // since dropped it).
       const member = operation.members[memberIndex]!
@@ -1767,7 +1784,7 @@ async function repayTakenPayments(
     const repayment = { payment: index, operationId: `stamp-${messageId}-p${index}`, state: 'pending' as const }
     await owner.messages.put({ ...current, repayments: [...(current.repayments ?? []), repayment] })
     console.warn(
-      `[monad-canonical-dm] payment ${Transaction.from(rawTx).hash} of delivered message ${row.digest} can never land: another transaction used its nonce. The same amount goes to the same destination from other coins, once, as ${repayment.operationId}.`,
+      `[monad-canonical-dm] payment ${Transaction.from(rawTx).hash} of delivered message ${row.digest} ${operation.members[memberIndex]!.observation.state === 'included-revert' ? 'was mined and reverted' : 'can never land: another transaction used its nonce'}. The same amount goes to the same destination from other coins, once, as ${repayment.operationId}.`,
     )
   }
   return finishRepayments(owner, owner.messages.get(row.consumerId)!)
@@ -1790,17 +1807,37 @@ async function finishRepayments(
     try {
       let operation = await shared.preparer.readOperation(repayment.operationId)
       if (!operation) {
+        if (row.originalCombinedOperationId && owner.messages.get(row.consumerId)?.reason === 'stamp_recovery_fee_required') continue
         await shared.refresh()
+        const budget = row.originalCombinedOperationId ? await contactRecoveryBudget(owner, owner.messages.get(row.consumerId)!) : undefined
         await shared.preparer.constructTransactionSet({
           operationId: repayment.operationId,
           amountWei: original.value,
           kdf: () => original.to!,
           maxPaymentParts: 1,
           minimumPaymentWei: original.value,
+          ...(budget ? { maxFeeWei: budget.remaining } : {}),
         })
         operation = await shared.preparer.readOperation(repayment.operationId)
       }
       if (!operation) continue
+      if (row.originalCombinedOperationId) {
+        const payments = operation.members.filter(member => member.transactionSet?.role === 'payment')
+        if (payments.length !== 1 || Transaction.from(payments[0]!.signed!.rawTransaction).to !== original.to ||
+            Transaction.from(payments[0]!.signed!.rawTransaction).value !== original.value)
+          throw new Error('Stored stamp repayment differs from original destination or value')
+        const observation = payments[0]!.observation.state
+        if (observation === 'included-success' || observation === 'included-revert') {
+          // Receipts remain financial truth, including old over-budget attempts. Do not
+          // hide money already received behind a fee prompt or authorize historical bytes.
+          const current = owner.messages.get(row.consumerId)!
+          await owner.messages.put({ ...current, repayments: current.repayments!.map(entry =>
+            entry.payment === repayment.payment ? { ...entry, state: observation === 'included-success' ? 'spent' : 'reverted' } : entry) })
+          continue
+        }
+        const budget = await contactRecoveryBudget(owner, owner.messages.get(row.consumerId)!)
+        if (budget.committed > budget.ceiling) throw new EvmTransactionSetFeeExceededError(budget.committed)
+      }
       await shared.preparer.authorizeSubmission(repayment.operationId)
       await shared.sendTransaction(await shared.preparer.readTransactionSet(repayment.operationId))
       const settled = (await shared.preparer.readOperation(repayment.operationId))!
@@ -1817,11 +1854,21 @@ async function finishRepayments(
           entry.payment === repayment.payment ? { ...entry, state } : entry),
       })
     } catch (error) {
+      if (row.originalCombinedOperationId && error instanceof EvmTransactionSetFeeExceededError) {
+        await owner.messages.put({ ...owner.messages.get(row.consumerId)!, reason: 'stamp_recovery_fee_required' })
+        break
+      }
       console.warn(
         `[monad-canonical-dm] the payment of delivered message ${row.digest} that another transaction took is still owed; ${repayment.operationId} is tried again later:`,
         error,
       )
     }
+  }
+  const current = owner.messages.get(row.consumerId)!
+  if (current.reason === 'stamp_recovery_fee_required' &&
+      current.repayments?.every(entry => entry.state !== 'pending')) {
+    const { reason: _reason, ...settled } = current
+    await owner.messages.put(settled)
   }
   return owner.messages.get(row.consumerId)!
 }
@@ -1838,7 +1885,10 @@ async function settlePayments(
   row: StoredMessage,
   broadcast: boolean,
 ): Promise<StoredMessage> {
-  if (row.version === 2) return settleSharedPayments(owner, row, broadcast)
+  if (row.version === 2) {
+    if (row.originalCombinedOperationId) await originalContactOperation(owner, row)
+    return settleSharedPayments(owner, row, broadcast)
+  }
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
   const resubmit: string[] = []
@@ -2543,8 +2593,11 @@ async function resend(
   const paidResends = Promise.all(
     owner.messages
       .all()
-      .filter(row => isUnresolved(row, owner))
+      .filter(row => isUnresolved(row, owner) || options.digests?.has(row.digest))
       .map(async stored => {
+        // Validate this operation before any signed-row effect, including an explicitly
+        // reconciled delivered row. Unrelated operations retain their own independent work.
+        if (stored.originalCombinedOperationId) await originalContactOperation(owner, stored)
         const work = workOf(owner, stored.consumerId)
         if (work.creating) return
         if (work.busy) {
@@ -2723,6 +2776,7 @@ export async function restoreOutgoingClaims(
   const payer = owner.payer()
   for (let row of owner.messages.all()) {
     if (row.version === 2) {
+      if (row.originalCombinedOperationId) await originalContactOperation(owner, row)
       if (sharedRefusedAndReleased(row)) {
         validateSharedStoredMessage(row)
         continue
@@ -4139,9 +4193,12 @@ export function canonicalDirectMessages(
   resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ) {
   return {
+    recoveryFeeRequiredDigests: () => owner.messages.all().filter(row =>
+      row.originalCombinedOperationId !== undefined && row.outcome !== 'dead' &&
+      row.reason === 'stamp_recovery_fee_required').map(row => row.digest),
     recoveryFeeRequiredOf: (params: Parameters<NonNullable<DirectMessageClient['recoveryFeeRequiredOf']>>[0]) =>
       owner.messages.all().some(row => row.digest === params.payloadDigest && row.originalCombinedOperationId !== undefined &&
-        row.outcome === undefined && row.reason === 'stamp_recovery_fee_required'),
+        row.outcome !== 'dead' && row.reason === 'stamp_recovery_fee_required'),
     recoveryFeeReview: async (params: Parameters<NonNullable<DirectMessageClient['recoveryFeeReview']>>[0]) => {
       if (!/^[0-9a-f]{64}$/.test(params.payloadDigest)) throw new Error('Expected canonical message payload digest')
       const row = owner.messages.all().find(candidate => candidate.digest === params.payloadDigest)
@@ -4160,13 +4217,17 @@ export function canonicalDirectMessages(
       try {
         await owner.lifetime(async () => {
           const current = owner.messages.get(stored.consumerId)!
-          if (current.transactionSetOperationId !== params.recoveryOperationId || !current.originalCombinedOperationId)
+          await originalContactOperation(owner, current)
+          if ((!current.repayments?.some(entry => entry.operationId === params.recoveryOperationId) &&
+              current.transactionSetOperationId !== params.recoveryOperationId) || !current.originalCombinedOperationId)
             throw new Error('Recovery fee approval refers to another operation')
           if (current.stampRecoveryFeeCeiling !== undefined &&
               BigInt(current.stampRecoveryFeeCeiling) >= params.maximumTotalNetworkFeeAtomic &&
               current.reason !== 'stamp_recovery_fee_required') return
           const review = await recoveryFeeReview(owner, current)
           if (!review) throw new Error('Original message is not awaiting recovery fee approval')
+          if (review.recoveryOperationId !== params.recoveryOperationId)
+            throw new Error('Recovery fee approval refers to another pending operation')
           if (params.maximumTotalNetworkFeeAtomic < review.requiredTotalNetworkFeeAtomic)
             throw new NativeFeeExceededError(review.requiredTotalNetworkFeeAtomic)
           const { reason: _reason, ...approved } = current

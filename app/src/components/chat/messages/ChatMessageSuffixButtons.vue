@@ -1,11 +1,17 @@
 <template>
   <div
     v-if="
-      status === 'error' || status === 'payment-pending' || status === 'pending'
+      (status === 'confirmed' && feeReview) ||
+      status === 'error' ||
+      status === 'payment-pending' ||
+      status === 'pending'
     "
   >
     <q-btn
-      v-if="status === 'error' && retryable"
+      v-if="
+        (status === 'error' && retryable) ||
+        (status === 'confirmed' && feeReview)
+      "
       :icon="feeReview ? 'receipt_long' : 'replay'"
       dense
       flat
@@ -21,6 +27,7 @@
       }}</q-tooltip></q-btn
     >
     <q-btn
+      v-if="status !== 'confirmed'"
       icon="delete"
       dense
       flat

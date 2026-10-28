@@ -976,6 +976,14 @@ export const rawEnUS = {
     recoveryFeeUnavailable:
       'This payment recovery is unavailable in the current wallet or network. Its original payment remains recorded.',
     recoveryTitle: 'Finish delivering payment',
+    deliveredStampFeeRequired: 'Delivered. Review the stamp fee still owed.',
+    repayStampTitle: 'Finish the delivered message’s stamp payment',
+    repayStampExplanation:
+      'Your message is delivered and the contact payment is already on chain. Approve the network fee for the stamp payment still owed to the original destination.',
+    stampAlreadyPaid: 'Stamp already received',
+    stampStillOwed: 'Stamp still owed',
+    stampPartBeingResumed: 'Stamp payment being resumed',
+    repayStampPartTotal: 'For this stamp payment',
     contactAlreadyPaid: 'Already paid to contact',
     recoveryRemainingTotal: 'To finish delivery',
     recoveryMaximumNetworkFees: 'Maximum network fees for this message',

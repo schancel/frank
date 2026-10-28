@@ -53,18 +53,29 @@ function encumberedFee(operation: EvmNativeOperation): bigint {
 /** All preceding attempts count against one approved operation budget, including owned moves. */
 export async function contactRecoveryBudget(owner: ContactRecoveryOwner, row: StoredMessage) {
   const original = await originalContactOperation(owner, row)
-  let committed = encumberedFee(original)
-  let paidFees = original.members.reduce((sum, member) => sum +
-    (member.observation.state === 'included-success' || member.observation.state === 'included-revert' ? BigInt(member.observation.feeWei) : 0n), 0n)
-  for (const id of new Set(row.replacedOperationIds ?? [])) {
-    const operation = await owner.transactionSets!.preparer.readOperation(id)
-    if (!operation) throw new Error('Previous recovery stamp operation unavailable')
-    committed += encumberedFee(operation)
-    paidFees += operation.members.reduce((sum, member) => sum +
+  const originalId = row.originalCombinedOperationId ?? row.transactionSetOperationId!
+  const required = new Set([originalId, ...(row.replacedOperationIds ?? []),
+    ...(row.payments.length > 0 && row.transactionSetOperationId ? [row.transactionSetOperationId] : []),
+    ...(row.repayments ?? []).filter(entry => entry.state !== 'pending').map(entry => entry.operationId)])
+  const ids = new Set([...required, ...(row.transactionSetOperationId ? [row.transactionSetOperationId] : []),
+    ...(row.repayments ?? []).map(entry => entry.operationId)])
+  const charges = new Map<string, { committed: bigint; paid: bigint }>()
+  let committed = 0n, paidFees = 0n
+  for (const id of ids) {
+    const operation = id === originalId ? original : await owner.transactionSets!.preparer.readOperation(id)
+    if (!operation) {
+      if (required.has(id)) throw new Error('Previous recovery stamp operation unavailable')
+      continue // A durable construction/repayment intent can precede its first signature.
+    }
+    const held = encumberedFee(operation)
+    const paid = operation.members.reduce((sum, member) => sum +
       (member.observation.state === 'included-success' || member.observation.state === 'included-revert' ? BigInt(member.observation.feeWei) : 0n), 0n)
+    charges.set(id, { committed: held, paid })
+    committed += held
+    paidFees += paid
   }
   const ceiling = row.stampRecoveryFeeCeiling === undefined ? originalFeeCeiling(original) : BigInt(row.stampRecoveryFeeCeiling)
-  return { original, ceiling, committed, paidFees, remaining: ceiling > committed ? ceiling - committed : 0n }
+  return { original, charges, ceiling, committed, paidFees, remaining: ceiling > committed ? ceiling - committed : 0n }
 }
 
 /** Recover a paid contact only when every original stamp is conclusively unable to land. */

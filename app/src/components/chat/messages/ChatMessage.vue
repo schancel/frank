@@ -268,6 +268,7 @@
             :waiting-for-chain="waitingForChain"
             :waiting-blocks="waitingBlocks"
             :payment-summary="paymentSummary"
+            :recovery-fee-required="recoveryFeeRequired"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
@@ -299,6 +300,7 @@ import {
 } from '../../../utils/outgoing-waiting'
 import {
   outgoingPaymentSummaries,
+  outgoingRecoveryFeeReviews,
   sendsWaitingBlocks,
 } from 'src/utils/outgoing-payments'
 
@@ -533,10 +535,9 @@ export default defineComponent({
         this.$refs.suffix as { focusStatus?: () => void } | undefined
       )?.focusStatus?.()
       try {
-        if (
-          this.message.delivery?.failureReason === 'stamp-recovery-fee-required'
-        ) {
-          const digest = this.message.delivery.attemptDigest
+        if (this.recoveryFeeRequired) {
+          const digest =
+            this.message.delivery?.attemptDigest ?? this.payloadDigest
           if (!digest)
             throw new Error(this.$t('outgoing.recoveryFeeUnavailable'))
           const review = await activeChain.directMessages.recoveryFeeReview?.({
@@ -792,6 +793,17 @@ export default defineComponent({
           },
         ]
       })
+    },
+    recoveryFeeRequired(): boolean {
+      return (
+        this.message.outbound &&
+        ((this.message.status !== 'confirmed' &&
+          this.message.delivery?.failureReason ===
+            'stamp-recovery-fee-required') ||
+          outgoingRecoveryFeeReviews.has(
+            this.message.delivery?.attemptDigest ?? this.payloadDigest,
+          ))
+      )
     },
     paymentSummary(): string {
       if (!this.message.outbound) return ''

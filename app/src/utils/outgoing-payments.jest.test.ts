@@ -2,6 +2,7 @@ import { activeChain, type WalletHandle } from '@frank/wallet/chain'
 import {
   PAYMENT_SUMMARY_WINDOW_MS,
   outgoingPaymentSummaries,
+  outgoingRecoveryFeeReviews,
   refreshOutgoingPaymentSummaries,
 } from './outgoing-payments'
 
@@ -21,6 +22,10 @@ describe('what the bubbles show of sent payments', () => {
   let asked: string[]
   beforeEach(() => {
     outgoingPaymentSummaries.clear()
+    outgoingRecoveryFeeReviews.clear()
+    jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue([])
     says = {}
     asked = []
     jest
@@ -31,6 +36,29 @@ describe('what the bubbles show of sent payments', () => {
       })
   })
   afterEach(() => jest.restoreAllMocks())
+
+  it('projects only current typed recovery obligations for delivered messages without polling historical chats', () => {
+    const required = jest
+      .spyOn(activeChain.directMessages, 'recoveryFeeRequiredDigests')
+      .mockReturnValue(['delivered-digest'])
+    const message = sent('delivered-digest', {
+      serverTime: NOW - 2 * PAYMENT_SUMMARY_WINDOW_MS,
+    })
+    const unrelated = sent('old-unrelated', { serverTime: message.serverTime })
+    says = { 'delivered-digest': 'pending' }
+    outgoingPaymentSummaries.set('delivered-digest', 'failed')
+    refreshOutgoingPaymentSummaries(wallet, [message, unrelated], NOW)
+    expect(outgoingRecoveryFeeReviews.has('delivered-digest')).toBe(true)
+    expect(message.status).toBe('confirmed')
+    expect(asked).toEqual(['delivered-digest'])
+    expect(required).toHaveBeenCalledTimes(1)
+    required.mockReturnValue([])
+    says = { 'delivered-digest': 'repaid' }
+    refreshOutgoingPaymentSummaries(wallet, [message, unrelated], NOW)
+    expect(outgoingRecoveryFeeReviews.size).toBe(0)
+    expect(message.status).toBe('confirmed')
+    expect(outgoingPaymentSummaries.get('delivered-digest')).toBe('repaid')
+  })
 
   it('reads the wallet for each paid message sent in the last hour, counts the ones not final, and stops asking about a final one', () => {
     says = { aa: 'mempool', bb: 'paid', cc: 'reverted' }

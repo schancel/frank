@@ -244,9 +244,12 @@ describe('SendContact.vue (dual-send model)', () => {
     payloadDigest: recoveryDigest,
     messageId: '00000000-0000-4000-8000-000000000001',
     recoveryOperationId: 'stamp-original',
+    purpose: 'deliver-message',
     recipientAddress: aliceAddress,
     paidContactAtomic: 1500000000000000000n,
     stampAtomic: 1000000000000000n,
+    paidStampAtomic: 0n,
+    pendingStampAtomic: 1000000000000000n,
     priorNetworkFeeAtomic: 30000000000000n,
     reservedNetworkFeeAtomic: 0n,
     additionalNetworkFeeAtomic: 50000000000000n,
@@ -295,6 +298,48 @@ describe('SendContact.vue (dual-send model)', () => {
     expect(mockPrepare).not.toHaveBeenCalled()
     expect(mockSendMessage).not.toHaveBeenCalled()
     expect(leaveForm).toHaveBeenCalled()
+  })
+
+  it('reviews a delivered message’s exact owed stamp part and repeats approval without a new contact payment', async () => {
+    const wrapper = await mountRecovery()
+    mockRecoveryReview.mockResolvedValue({
+      ...recoveryReview,
+      purpose: 'repay-stamp',
+      recoveryOperationId: 'stamp-original-p1',
+      paidStampAtomic: 2000000000000000n,
+      pendingStampAtomic: 1000000000000000n,
+    })
+    // Reopen the same operation review with the delivered wallet state.
+    wrapper.unmount()
+    const delivered = mountSendContact()
+    await flushPromises()
+    expect(
+      delivered.get('[data-test="recovery-fee-explanation"]').text(),
+    ).toContain('message is delivered')
+    expect(delivered.get('[data-test="recovery-stamp-paid"]').text()).toBe(
+      '0.002 MON',
+    )
+    expect(delivered.get('[data-test="recovery-stamp-pending"]').text()).toBe(
+      '0.001 MON',
+    )
+    for (let confirmation = 0; confirmation < 2; confirmation++) {
+      await delivered
+        .get('[data-test="review-confirm-button"]')
+        .trigger('click')
+      await flushPromises()
+    }
+    expect(mockApproveRecovery).toHaveBeenCalledTimes(2)
+    expect(mockApproveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloadDigest: recoveryDigest,
+        recoveryOperationId: 'stamp-original-p1',
+      }),
+    )
+    expect(mockReconcileAttempts).toHaveBeenCalledWith(
+      expect.objectContaining({ payloadDigests: [recoveryDigest] }),
+    )
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('cancelling fee review leaves the original payment alone', async () => {

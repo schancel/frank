@@ -1267,7 +1267,7 @@ export const rawFrFR = {
     finish: 'Terminer',
     state: {
       planned:
-        'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille, et sinon l’achève. Il n’est jamais payé deux fois.',
+        'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille. Sinon il reste retenu, signé, pour le message qui le porte, et la livraison de ce message le paie. Il n’est jamais payé deux fois.',
       prepared:
         'Signé. En attente de la livraison de son message ; ses fonds sont retenus.',
       delivered: 'Message livré. Le paiement est en route vers la chaîne.',
@@ -1796,6 +1796,8 @@ export const rawFrFR = {
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
     heldAfterError:
       "Le paiement est signé et réservé, et son message n'a pas pu être envoyé pour l'instant. Il n'est jamais payé deux fois. Si le message apparaît dans la conversation avec ce contact, réessayez-le là ; sinon, ouvrez « Paiements à des contacts en cours » sur la page du portefeuille, où le portefeuille termine le paiement ou, si rien n'en a été envoyé, le libère sans rien payer.",
+    released:
+      'Ce paiement a été annulé avant que quoi que ce soit ne soit envoyé. Rien n’a été payé ; refaites le paiement.',
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:

@@ -668,6 +668,64 @@ describe('Send to Contact: Review is a step', () => {
     },
   )
 
+  it('a payment the wallet released before its message went out is said as cancelled and unpaid, not as saved', async () => {
+    // Finish under the wallet's payments in progress released it before the send began: the
+    // message ends, and the wallet's own record says released.
+    mockPrepare.mockResolvedValueOnce({
+      stampValue: 0n,
+      item: { type: 'stealth', ephemeralPubKey: '0x02AB' },
+      txHash: '0xabc',
+    })
+    mockSendMessage.mockResolvedValueOnce({ state: 'failed', reason: 'error' })
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      ...wallet,
+      getContactPayments: () => [
+        { ephemeralPubKey: '02ab', state: 'released', holdsFunds: false },
+      ],
+    })
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send-contact')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await done
+    await flushPromises()
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      safeMessage: enUS.sendContactDialog.released,
+    })
+    expect(enUS.sendContactDialog.released).toMatch(/Nothing was paid/)
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed message whose payment the wallet still holds is told as saved, to retry', async () => {
+    mockSendMessage.mockResolvedValueOnce({ state: 'failed', reason: 'error' })
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      ...wallet,
+      getContactPayments: () => [
+        { ephemeralPubKey: '02ab', state: 'prepared', holdsFunds: true },
+      ],
+    })
+    mockPrepare.mockResolvedValueOnce({
+      stampValue: 0n,
+      item: { type: 'stealth', ephemeralPubKey: '02ab' },
+      txHash: '0xabc',
+    })
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send-contact')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await done
+    await flushPromises()
+    expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+      fallbackKey: 'sendContactDialog.messageEnded',
+    })
+  })
+
   it('a payment finishing after the user went elsewhere does not pull them back', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
     await router.push('/send-contact')

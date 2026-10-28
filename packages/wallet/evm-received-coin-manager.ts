@@ -1539,6 +1539,16 @@ export function createEvmReceivedCoinAndContactManager(
         // An exposed set the chain shows can never land holds nothing: failed, not resumed.
         payment = await reconcileHeldContactPayment(payment).catch(() => payment);
         if (payment.spentElsewhere) continue;
+        // A failed payment whose transfer the chain shows included is paid: recorded here, by
+        // itself. Releasing one is the user's Finish (`endFailedContactPayment`).
+        if (
+          payment.state === "failed" &&
+          (await readTransferMember(payment).catch(() => undefined))?.observation.state ===
+            "included-success"
+        ) {
+          await markPaid(payment).catch(() => undefined);
+          continue;
+        }
         if (
           payment.deliveredBy === "host" &&
           payment.state === "prepared" &&
@@ -1564,6 +1574,51 @@ export function createEvmReceivedCoinAndContactManager(
     return resumingContactPayments;
   };
 
+  /** The ways out of `failed`, none of which pays anything new. Its transfer the chain shows
+   * included: paid. Its signed set never handed to anyone (the journal proves it unexposed):
+   * released, through `releaseUnexposed`. Its set handed out and not landed: the chain is asked
+   * (`reconcileHeldContactPayment`), and it keeps holding until the chain shows it can never
+   * land. Returns the payment as it now stands. */
+  const endFailedContactPayment = async (
+    stealthAddress: string
+  ): Promise<ContactPayment | undefined> => {
+    const stored = paymentStore.get(stealthAddress);
+    if (stored === undefined || stored.state !== "failed" || stored.spentElsewhere)
+      return stored;
+    const payment = current(stored);
+    if ((await readTransferMember(payment))?.observation.state === "included-success")
+      return markPaid(payment);
+    const released = await exposureExclusive(async () => {
+      const now = paymentStore.get(stealthAddress);
+      if (
+        now === undefined ||
+        now.state !== "failed" ||
+        now.spentElsewhere ||
+        inFlight.has(now.ephemeralPubKey)
+      )
+        return false;
+      const failed = current(now);
+      // Only the journal's proof that no byte of the set left the wallet releases it.
+      if (
+        !(await getWallet().transactionSetPreparer!.releaseUnexposed(
+          failed.transactionSetOperationId
+        ))
+      )
+        return false;
+      const {
+        rawTransaction: _raw,
+        txHash: _hash,
+        failure: _failure,
+        ...withoutBytes
+      } = failed;
+      await paymentStore.put(stealthAddress, { ...withoutBytes, state: "released" });
+      invalidateBalanceRead();
+      return true;
+    });
+    if (released) return paymentStore.get(stealthAddress);
+    return reconcileHeldContactPayment(paymentStore.get(stealthAddress) ?? payment);
+  };
+
   const settleContactPayment = (
     ephemeralPubKey: string
   ): Promise<ContactPayment["state"] | "none"> =>
@@ -1587,6 +1642,7 @@ export function createEvmReceivedCoinAndContactManager(
         if (payment.payloadDigest) await directMessages.reconcileAttempts({
           wallet, payloadDigests: [payment.payloadDigest],
         });
+        await endFailedContactPayment(address);
         return paymentStore.get(address)?.state ?? "failed";
       }
       if (

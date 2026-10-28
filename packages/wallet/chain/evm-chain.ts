@@ -263,6 +263,7 @@ import {
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
+  UnsupportedContactPaymentRecordError,
   MAX_STEALTH_ITEM_AMOUNT,
   type ContactSendParams,
   type ContactSendResult,
@@ -2210,6 +2211,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ),
               ]);
           }
+          // A payment to a contact stored without a transaction set is an unsupported development
+          // format: activation stops here, naming it, and nothing of it is released or changed.
+          for (const payment of contactPayments!.all())
+            if (typeof payment.transactionSetOperationId !== "string" || !payment.transactionSetOperationId)
+              throw new UnsupportedContactPaymentRecordError(payment.stealthAddress, payment.messageId);
           const scanState = coinListState;
           const coinList = await EvmCoinList.open(evmCoinListStore);
           // What the account sent, from its notes to itself: History's record of sends made on
@@ -2565,8 +2571,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             canonicalMessagingFor,
             directMessages,
             receivedCoinFloorWei,
-            runWalletExclusive,
-            runMainAccountExclusive,
           });
 
           const readBalanceParts = async (): Promise<BalanceParts> => {

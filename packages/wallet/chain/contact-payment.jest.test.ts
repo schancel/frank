@@ -27,6 +27,7 @@ import {
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
   NativeFeeExceededError,
+  UnsupportedContactPaymentRecordError,
   type ReceivedPayment,
   type ContactSendParams,
   type ContactSendResult,
@@ -1450,6 +1451,56 @@ describe('a payment to a contact', () => {
         expect(
           node.broadcasts.some((tx) => tx.to === prepared.stealthAddress.toLowerCase()),
         ).toBe(false)
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('a stored payment in the old format (no transaction set) is refused at activation, named, and nothing of it is released', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      const aliceMain = await mainOf(alice)
+      await alice.close()
+      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(aliceMain) })
+      const open = () => LevelRecordStore.open<ContactPayment>(location, CONTACT_PAYMENT_NAMESPACE)
+      // The old development format: the record names no transaction set.
+      let store = await open()
+      const [saved] = store.all()
+      const { transactionSetOperationId, ...oldFormat } = saved
+      await store.put(saved.stealthAddress, oldFormat as ContactPayment)
+      await store.close()
+
+      const refused = await f.chain.createWallet(roots(0)).then(
+        (wallet) => wallet.close().then(() => undefined),
+        (error: unknown) => error,
+      )
+      expect(refused).toBeInstanceOf(UnsupportedContactPaymentRecordError)
+      expect(refused).toMatchObject({
+        stealthAddress: saved.stealthAddress,
+        messageId: saved.messageId,
+      })
+      expect((refused as Error).message).toMatch(/fresh isolated wallet profile/)
+
+      // Nothing was changed: the record is as it was stored, and once it names its set again
+      // the journal still holds the signed transfer, uncancelled, its account still held.
+      store = await open()
+      expect(store.get(saved.stealthAddress)).toEqual(oldFormat)
+      await store.put(saved.stealthAddress, { ...oldFormat, transactionSetOperationId } as ContactPayment)
+      await store.close()
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: saved.state, holdsFunds: true }),
+        ])
+        expect(
+          reopened.getNativeOperations!()
+            .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
+            .map((row) => row.cancelled),
+        ).toEqual([false])
+        expect(node.broadcasts).toEqual([])
       } finally {
         await reopened.close()
       }

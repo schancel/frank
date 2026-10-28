@@ -797,6 +797,22 @@ export interface ReceivedCoinSweep {
 /** The payment was released before a byte of it left this device: its signed transfer is
  * cancelled and can never land, and the funds it held are free. Nothing was sent. Make the
  * payment again; the item of a released payment is never accepted in a message. */
+/** A stored payment to a contact in a development format this wallet no longer reads: a record
+ * with no `transactionSetOperationId` (its transfer journalled as a separate native operation).
+ * Wallet activation refuses it; nothing of it is released, finished or deleted. Reset path, for
+ * development only: open a fresh, isolated test wallet profile and keep the old one intact. Do
+ * not delete keys, the native operation journal, received coins or unrelated app data. If the
+ * old profile holds a payment that may have left the device, finish it with the build that made
+ * it before reviewing any reset of its `contact-payments` records. */
+export class UnsupportedContactPaymentRecordError extends Error {
+  constructor(readonly stealthAddress: string, readonly messageId: string) {
+    super(
+      `Contact payment ${messageId} to one-time address ${stealthAddress} is stored in an unsupported development format (no transaction set). The wallet does not open it and releases nothing. For development, use a fresh isolated wallet profile and keep this one intact; finish any payment that may have left the device with the build that made it before reviewing a reset of its contact-payments records. Never delete keys or the native operation journal.`
+    );
+    this.name = "UnsupportedContactPaymentRecordError";
+  }
+}
+
 export class ContactPaymentReleasedError extends Error {
   constructor() {
     super(

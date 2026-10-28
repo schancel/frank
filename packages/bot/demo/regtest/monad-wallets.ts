@@ -15,6 +15,7 @@ import { join, resolve } from 'path'
 
 import { Wallet } from 'ethers'
 
+import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { findWallets, TRANSFER_GAS } from '../funds'
 import { openRealWallet, RealWallet } from '../real-stack'
 import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_NETWORK_TAG, MonadRegtest } from './monad-regtest'
@@ -107,11 +108,19 @@ export async function deployMonadContracts(stack: RegtestStack): Promise<Deploym
 /**
  * Sends everything the stack's wallets hold back to the faucet, so a check leaves nothing in
  * accounts whose keys go with the stack's directory: each wallet's main, identity and change
- * accounts, found and derived the way `funds:sweep` finds them. It first lets the wallets' last
+ * accounts, found and derived the way `findWallets` (`funds.ts`) finds them. It first lets the wallets' last
  * transactions settle (Monad refuses to empty an account within a few blocks of its last one),
  * then moves one account at a time. Returns what came back, what stayed (dust or a failure), and
  * how many accounts still hold more than dust (`unswept`). A check calls `stack.fundsReturned()`
  * only when that is 0, so the stack keeps the keys otherwise.
+ *
+ * The keys found in the state directory are checked against the chain, not trusted: every
+ * transaction the found accounts sent since the solonet handle was opened (`startBlock`) is read
+ * block by block, and so are the transactions of every account those reached. A reached account
+ * that is none of the found ones (a coin the wallet holds whose key `findWallets` does not see)
+ * and holds more than dust afterwards counts in `unswept` and is named: the stack then keeps the
+ * wallets' state, from which the wallet itself can still spend it. The faucet and the burn
+ * address are not the wallets' and are not counted.
  */
 export async function returnToFaucet(
   stack: RegtestStack,
@@ -157,5 +166,53 @@ export async function returnToFaucet(
         unswept += 1
       }
     }
+  const missed = await accountsOutsideTheKeys(monad, seen, fee * 2n)
+  for (const { address, held } of missed) {
+    leftWei += held
+    unswept += 1
+    console.warn(`[regtest] ${address} received money from the wallets and holds ${held} wei, but its key is not among those found: the stack's state is kept`)
+  }
   return { returnedWei, leftWei, unswept }
+}
+
+/**
+ * Every account the `found` accounts' transactions reached since `monad.startBlock`, followed
+ * through the accounts reached in turn, that is not itself found and holds more than `dust` now.
+ */
+async function accountsOutsideTheKeys(
+  monad: MonadRegtest,
+  found: Set<string>,
+  dust: bigint,
+): Promise<{ address: string; held: bigint }[]> {
+  const excluded = new Set([monad.faucetAddress.toLowerCase(), DEMO_DEFAULT_BURN_ADDRESS.toLowerCase()])
+  const senders = new Set(found)
+  const reached = new Set<string>()
+  const head = await monad.provider.getBlockNumber()
+  const numbers = Array.from({ length: head - monad.startBlock + 1 }, (_, i) => monad.startBlock + i)
+  type RawTx = { from: string; to: string | null; value: string }
+  const blocks: { transactions: RawTx[] }[] = []
+  for (let at = 0; at < numbers.length; at += 16) {
+    blocks.push(
+      ...(await Promise.all(
+        numbers.slice(at, at + 16).map(n => monad.provider.send('eth_getBlockByNumber', [`0x${n.toString(16)}`, true])),
+      )),
+    )
+  }
+  for (const block of blocks)
+    for (const tx of block?.transactions ?? []) {
+      const from = tx.from.toLowerCase()
+      const to = tx.to?.toLowerCase()
+      if (!to || !senders.has(from) || BigInt(tx.value) === 0n || excluded.has(to)) continue
+      senders.add(to)
+      if (!found.has(to)) reached.add(to)
+    }
+  const missed: { address: string; held: bigint }[] = []
+  for (const address of reached) {
+    const held = await monad.provider.getBalance(address)
+    if (held > dust) missed.push({ address, held })
+  }
+  console.log(
+    `[regtest] the wallets' transactions since block ${monad.startBlock} reached ${reached.size} accounts outside the ${found.size} found keys; ${missed.length} of those hold more than dust`,
+  )
+  return missed
 }

@@ -838,7 +838,7 @@ async function main() {
       await lab.down().catch(err => console.error(`could not remove the lab: ${err}`))
       // The wallets' keys go only once every account was swept; otherwise they stay, named.
       if (fundsReturned) rmSync(stateDir, { recursive: true, force: true })
-      else console.error(`funds may remain: the wallets' keys stay in ${stateDir} (yarn --cwd packages/bot funds:sweep ${stateDir})`)
+      else console.error(`funds may remain: the wallets' keys stay in ${stateDir} (yarn --cwd packages/bot regtest:monad-sweep-state ${stateDir})`)
     }
     await monad.stop()
   }

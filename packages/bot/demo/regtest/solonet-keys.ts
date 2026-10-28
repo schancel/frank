@@ -13,7 +13,9 @@
  * Each run writes into `run-<time>-<random>/` under it, one `0x<address>.key` file per key
  * (mode 0600, flushed to disk, then renamed into place), and holds `.lock` there for its
  * lifetime by touching it every few seconds. `sweepLeftoverKeyRuns` takes over only directories
- * whose lock is stale (untouched for a minute), so two runs never share keys.
+ * whose lock is stale (untouched for a minute), and takes each by renaming it first, so two runs
+ * never share keys and two starters never sweep the same directory. `startMonadRegtest` runs it
+ * once per process, so every solonet check sweeps leftovers before it funds anything.
  *
  * A key's file is removed only once it holds no more than a transfer's fee: its sweep landed, or
  * it held nothing after sending. A key that holds nothing and never sent anything (its funding
@@ -39,6 +41,7 @@ import { isAbsolute, join } from 'path'
 
 import { formatEther, JsonRpcProvider, Wallet } from 'ethers'
 
+import { findWallets } from '../funds'
 import { MONAD_REGTEST_CHAIN_ID, sweepToFaucet } from './monad-regtest'
 
 const LOCK_STALE_MS = 60_000
@@ -222,6 +225,42 @@ function lockAgeMs(dir: string): number {
 }
 
 /**
+ * Take over the stale run directory `stale`, so no other starter sweeps it too: its lock is
+ * touched (fresh, so a starter that lists it now leaves it), then the directory is renamed, which
+ * only one starter can do. The taker keeps the lock fresh for the rest of its life; a directory
+ * it leaves keys in goes stale again when it ends. Undefined when another starter took it first.
+ */
+function take(stale: string): string | undefined {
+  const lock = join(stale, '.lock')
+  const taken = `${stale.replace(/-taken-[0-9a-f]{8}$/, '')}-taken-${Math.random().toString(16).slice(2, 10).padEnd(8, '0')}`
+  try {
+    const now = new Date()
+    utimesSync(lock, now, now)
+  } catch {
+    try {
+      writeDurably(lock, String(process.pid))
+    } catch {
+      return undefined
+    }
+  }
+  try {
+    renameSync(stale, taken)
+  } catch {
+    return undefined
+  }
+  const takenLock = join(taken, '.lock')
+  setInterval(() => {
+    try {
+      const now = new Date()
+      utimesSync(takenLock, now, now)
+    } catch {
+      /* removed once swept */
+    }
+  }, LOCK_HEARTBEAT_MS).unref()
+  return taken
+}
+
+/**
  * Sweep the keys of every earlier run whose lock is stale (it was killed, or its sweep did not
  * land), and remove the run directories left with nothing to keep. A live run is left alone.
  */
@@ -235,12 +274,14 @@ export async function sweepLeftoverKeyRuns(rpcUrl: string, own?: SolonetKeyRun):
     return total
   }
   for (const name of runs) {
-    const dir = join(root, name)
-    if (dir === own?.dir) continue
-    if (lockAgeMs(dir) <= LOCK_STALE_MS) {
-      console.log(`[solonet] ${dir} belongs to a run that is still alive; left to a later run`)
+    const stale = join(root, name)
+    if (stale === own?.dir) continue
+    if (lockAgeMs(stale) <= LOCK_STALE_MS) {
+      console.log(`[solonet] ${stale} belongs to a run that is still alive; left to a later run`)
       continue
     }
+    const dir = take(stale)
+    if (!dir) continue
     const keys = savedKeys(dir)
     if (keys.length > 0) {
       console.log(`[solonet] ${keys.length} keys of an earlier run left in ${dir}; sweeping them first`)
@@ -295,4 +336,41 @@ export class SolonetKeyRun {
     if (!removeIfDone(this.dir))
       console.warn(`[solonet] keys not yet done (funds left, or a funding that may still land) stay in ${this.dir}; a later run's leftover sweep returns them`)
   }
+}
+
+/**
+ * Sweep every account whose key `findWallets` finds under `dir` (a stack state directory that
+ * was kept because funds may remain) back to the faucet, exactly. The directory itself stays.
+ *
+ *   yarn --cwd packages/bot regtest:monad-sweep-state <dir>
+ */
+export async function sweepStateDir(rpcUrl: string, dir: string): Promise<SweepReport> {
+  const keys = (await findWallets(dir))
+    .flatMap(wallet => wallet.accounts)
+    .flatMap(account => (account.privateKey ? [account.privateKey] : []))
+  const { report } = await sweepKeysExactly(rpcUrl, keys)
+  return report
+}
+
+if (require.main === module) {
+  const [command, dir] = process.argv.slice(2)
+  const rpcUrl = process.env.FRANK_SOLONET_RPC_URL ?? 'http://127.0.0.1:48080'
+  if (command !== 'sweep-state' || !dir) {
+    console.error('usage: solonet-keys.ts sweep-state <stack state directory>')
+    process.exit(2)
+  }
+  sweepStateDir(rpcUrl, dir).then(
+    report => {
+      console.log(
+        `returned ${formatEther(report.returnedWei)} MON to the faucet${
+          report.unswept.length ? `; still holding funds: ${report.unswept.join(', ')}` : '; every found account is empty'
+        }`,
+      )
+      process.exit(report.unswept.length ? 1 : 0)
+    },
+    error => {
+      console.error(error)
+      process.exit(1)
+    },
+  )
 }

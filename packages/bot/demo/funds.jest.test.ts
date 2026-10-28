@@ -3,6 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import { Wallet } from 'ethers'
+import level from 'level'
 
 import { placementNotice } from './demo'
 import { Holding, TRANSFER_GAS, USAGE, findWallets, isDemoState, main, parseArgs, planSweep, usersOf } from './funds'
@@ -230,6 +231,34 @@ describe('findWallets', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+  })
+
+  it('finds the received stamp and stealth coins a wallet holds before its coin list has them', async () => {
+    const walletDir = join(dir, 'wallets', 'bob')
+    mkdirSync(walletDir, { recursive: true })
+    writeFileSync(join(walletDir, 'account-root.hex'), '44'.repeat(32))
+    const [before] = await findWallets(dir)
+    const main = before.accounts.find(a => a.role === 'main')!.address
+    // A recipient that never ticked: its received coins, each with its one-time key, are only in
+    // `received-coins` (rows keyed by `address`), and it has no coin list.
+    const storage = join(walletDir, `chain-storage-monad-regtest-evm-${main.toLowerCase()}`)
+    mkdirSync(storage, { recursive: true })
+    const stamp = Wallet.createRandom()
+    const stealth = Wallet.createRandom()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const received = level(join(storage, 'received-coins')) as any
+    for (const [coin, origin] of [[stamp, 'stamp'], [stealth, 'stealth']] as const)
+      await received.put(coin.address.toLowerCase(), JSON.stringify({ address: coin.address.toLowerCase(), privateKey: coin.privateKey, origin, state: 'unspent', amountWei: '21420000000000000' }))
+    await received.close()
+    const [wallet] = await findWallets(dir)
+    const found = wallet.accounts.filter(a => a.role.startsWith('received'))
+    expect(found.map(a => [a.role, a.address.toLowerCase()]).sort()).toEqual(
+      [
+        ['received (stamp)', stamp.address.toLowerCase()],
+        ['received (stealth)', stealth.address.toLowerCase()],
+      ].sort(),
+    )
+    for (const account of found) expect(new Wallet(account.privateKey as string).address.toLowerCase()).toBe(account.address.toLowerCase())
   })
 
   it('lists wallet records whose key file is gone by address, without a key', async () => {

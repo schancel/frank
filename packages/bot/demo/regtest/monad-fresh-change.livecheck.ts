@@ -22,10 +22,10 @@
  *   3. the node took every byte of the second send the first time it was offered: no refusal,
  *      nothing signed again, every member landed and succeeded.
  *
- * Every key it funds is written to `FRANK_LIVECHECK_KEYS_FILE` (default: the OS temp folder)
- * before it is funded, and swept back to the faucet at the end, also after a failure.
+ * Every key it funds is saved durably (`solonet-keys.ts`, ~/.frank-regtest/solonet-keys) before
+ * it is funded, and swept back to the faucet at the end, also after a failure; a killed run's
+ * keys are swept by a later run's start.
  */
-import { appendFileSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -40,6 +40,7 @@ import { createEvmTransactionSetSubmission } from '@frank/wallet/evm-transaction
 import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '@frank/wallet/evm-transaction-set-types'
 import { fundsSettleBlocks } from '@frank/wallet/chain/evm-spend-rule'
 import { fundFromFaucet, MONAD_REGTEST_CHAIN_ID, sweepToFaucet } from './monad-regtest'
+import { SolonetKeyRun, sweepLeftoverKeyRuns } from './solonet-keys'
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const RPC = process.env.FRANK_SOLONET_RPC_URL ?? 'http://127.0.0.1:48080'
@@ -70,13 +71,15 @@ async function main(): Promise<boolean> {
   const provider = new JsonRpcProvider(RPC, MONAD_REGTEST_CHAIN_ID, { staticNetwork: true, cacheTimeout: -1 })
   provider.pollingInterval = 250
   const location = await mkdtemp(join(tmpdir(), 'monad-fresh-change-'))
-  const keysFile = process.env.FRANK_LIVECHECK_KEYS_FILE ?? join(tmpdir(), 'monad-fresh-change-livecheck-keys.txt')
+  // Every key this check funds is saved durably first (solonet-keys.ts), so a crash cannot strand it.
+  const keys = SolonetKeyRun.open('fresh-change')
+  await sweepLeftoverKeyRuns(RPC, keys)
   const remember = (key: Wallet) => {
-    appendFileSync(keysFile, `${key.privateKey}\n`)
+    keys.save(key.privateKey)
     return key
   }
   const source = remember(new Wallet(Wallet.createRandom().privateKey))
-  console.log(`keys this check funds are kept in ${keysFile}`)
+  console.log(`keys this check funds are kept in ${keys.dir}`)
   const change = new Map<number, Wallet>()
   const changeKey = (index: number) => {
     if (!change.has(index)) change.set(index, remember(new Wallet(Wallet.createRandom().privateKey)))
@@ -224,6 +227,9 @@ async function main(): Promise<boolean> {
     }
     const left = (await Promise.all([source, ...change.values()].map(key => provider.getBalance(key.address)))).reduce((a, b) => a + b, 0n)
     console.log(`returned about ${formatEther(returned)} MON to the faucet; ${formatEther(left)} MON left as dust`)
+    // The key files go once each account is empty; anything left stays for a later run.
+    await keys.sweep(RPC).catch(error => console.log(`  the key-file sweep failed: ${error instanceof Error ? error.message : String(error)}`))
+    keys.close()
     provider.destroy()
   }
   console.log(problems.length === 0 ? 'Monad fresh-change check: OK' : `Monad fresh-change check: FAILED (${problems.length})`)

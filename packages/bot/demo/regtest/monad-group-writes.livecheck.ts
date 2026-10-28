@@ -60,7 +60,7 @@ import { monadOf, openMonadWallet } from './monad-wallets'
 import { deliverPaidGroupWrite } from '../../../group-messaging/groups/write-payment'
 import type { StoredGroupWritePayment } from '../../../cashweb/groups/group-write-payment'
 import { type RegtestStack, startRegtestStack } from './regtest-stack'
-import { SolonetKeyRun, sweepKeysExactly, sweepLeftoverKeyRuns } from './solonet-keys'
+import { SolonetKeyRun, sweepKeysExactly } from './solonet-keys'
 
 /** The relay's `PAYMENT_NONCE_WINDOW` (`cashweb-registry/src/http/groups/payment.rs`). */
 const PAYMENT_NONCE_WINDOW = 63
@@ -107,7 +107,6 @@ async function main() {
       chains: [MONAD_REGTEST_CHAIN],
       relays: 2,
     })
-    await sweepLeftoverKeyRuns(monadOf(stack).rpcUrl, keys)
     await check(stack, keys, startedAt)
   } finally {
     if (stack) await returnFunds(stack, keys)

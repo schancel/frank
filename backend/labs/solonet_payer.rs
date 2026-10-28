@@ -283,8 +283,8 @@ impl KeyFiles {
             .store(bound, Ordering::SeqCst);
     }
 
-    /// The run directories of earlier runs whose lock is stale. A run that is still alive (its
-    /// lock fresh) is left alone and named.
+    /// The run directories of earlier runs whose lock is stale, each taken over (renamed) by
+    /// this process first. A run that is still alive (its lock fresh) is left alone and named.
     fn stale_runs(&self) -> Vec<PathBuf> {
         let mut runs = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
@@ -305,7 +305,11 @@ impl KeyFiles {
                 .ok()
                 .and_then(|time| time.elapsed().ok());
             match touched {
-                Some(age) if age > RUN_LOCK_STALE => runs.push(path),
+                Some(age) if age > RUN_LOCK_STALE => {
+                    if let Some(taken) = Self::take(&path) {
+                        runs.push(taken)
+                    }
+                }
                 _ => println!(
                     "solonet: {} belongs to a run that is still alive (its lock is fresh); left \
                      to a later run",
@@ -314,6 +318,37 @@ impl KeyFiles {
             }
         }
         runs
+    }
+
+    /// Take over the stale run directory `stale`, so no other starter sweeps it too: its lock is
+    /// touched (fresh, so a starter that lists it now leaves it), then the directory is renamed,
+    /// which only one starter can do. This process keeps the lock fresh for the rest of its life;
+    /// a directory it leaves keys in goes stale again when it ends. `None` when another starter
+    /// took it first.
+    fn take(stale: &std::path::Path) -> Option<PathBuf> {
+        let lock = stale.join(".lock");
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&lock)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+        if touched.is_err() && write_durably(stale, &lock, b"taking").is_err() {
+            return None;
+        }
+        let name = stale.file_name()?.to_string_lossy().into_owned();
+        let base = match name.rfind("-taken-") {
+            Some(at) => name[..at].to_owned(),
+            None => name,
+        };
+        let taken = stale.with_file_name(format!("{base}-taken-{:08x}", rand::random::<u32>()));
+        std::fs::rename(stale, &taken).ok()?;
+        let taken_lock = taken.join(".lock");
+        std::thread::spawn(move || loop {
+            if let Ok(file) = std::fs::File::options().write(true).open(&taken_lock) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+            std::thread::sleep(RUN_LOCK_HEARTBEAT);
+        });
+        Some(taken)
     }
 
     /// The keys a stale run left in `dir`: its `.key` files, and the `.partial` files of saves

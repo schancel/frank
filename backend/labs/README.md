@@ -384,17 +384,21 @@ Each test process writes into a run directory of its own, `run-<time>-<random>/`
 `.lock` in it for its lifetime by touching it every 5 s. (`flock` does not work here: Docker
 Desktop's bind mounts do not carry it between containers, checked with two containers locking
 one file.) A run directory whose lock has not been touched for a minute belongs to a run that is
-gone. So two runs never share keys, and a run never takes over a live run's keys.
+gone. A run that takes such a directory over first touches its lock and then renames it
+(`run-…-taken-<random>`); only one starter's rename can succeed, so two runs starting at once
+never both sweep it, and the taker keeps its lock fresh while it lives. So two runs never share
+keys, and a run never takes over a live run's keys.
 
 Every key goes back to the faucet `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`:
 
 - at the end of each test, passed or failed: the test's payers, funding account and probe are
   owned by one value whose drop sweeps them, also while a panic unwinds, including a panic in
   the middle of funding;
-- at the start of the next run: the first `Solonet::from_env` of a process sweeps the keys of
-  every run directory whose lock is stale, then removes each such directory once nothing is left
+- at the start of the next run: the first `Solonet::from_env` of a process takes over every run
+  directory whose lock is stale (as above), sweeps its keys, then removes it once nothing is left
   in it to keep. A directory whose lock is still fresh is named and left to a later run (a run
-  started within a minute of a killed one sweeps the killed run's keys only next time).
+  started within a minute of a killed one sweeps the killed run's keys only next time). A taken
+  directory that still holds keys goes stale again once its taker ends, for the run after.
 
 A sweep is exact: its fee cap is the latest base fee + the node's tip + 5 wei, Monad charges
 base fee + tip per gas (`docs/protocol/chains/monad-reserve-balance.md`), and the sweep holds
@@ -421,7 +425,7 @@ writes the files as root, so run it with `sudo` (or `sudo chown -R "$USER"` the 
 first); unreadable files are skipped and named:
 
 ```sh
-for key in ~/.frank-lab-cluster/<project>/solonet-keys/run-*/*.key; do
+for key in ~/.frank-lab-cluster/<project>/solonet-keys/run-*/*.key; do  # also run-*-taken-*
   if [ -r "$key" ]; then printf '0x%s\n' "$(cat "$key")"; else echo "unreadable, skipped: $key" >&2; fi
 done | yarn --cwd packages/bot regtest:monad-sweep
 ```
@@ -430,9 +434,15 @@ Then remove the files whose keys report a sweep hash or "nothing to sweep".
 
 The TypeScript solonet checks follow the same rules (`packages/bot/demo/regtest/solonet-keys.ts`):
 keys they fund outside a stack's wallets go to `~/.frank-regtest/solonet-keys/run-*/`
-(`FRANK_SOLONET_KEY_DIR`), and a stack on solonet deletes its state directory (the wallets'
-keys) only once the check has swept every account; otherwise its keys are copied to
-`~/.frank-regtest/kept-stacks/` first, and the command that sweeps them is printed.
+(`FRANK_SOLONET_KEY_DIR`, absolute only), and every check's first `startMonadRegtest` (the
+fresh-change and resign-refused checks, which talk to solonet directly, call it themselves)
+sweeps stale run directories the same way before anything is funded. A stack on solonet deletes
+its state directory (the wallets' keys) only once the check has swept every account; otherwise
+its keys are copied to `~/.frank-regtest/kept-stacks/` (`FRANK_REGTEST_KEPT_DIR`, absolute only)
+first, and the command that sweeps them (`yarn --cwd packages/bot regtest:monad-sweep-state <dir>`) is printed. "Every account" is checked against the
+chain: `returnToFaucet` follows every transaction the wallets' found accounts sent since the
+check began, and any account they reached whose key was not found and that still holds more than
+dust keeps the stack's state.
 
 A relay that cannot check a payment yet answers 503 `group_payment_not_ready` or
 `group_payment_check_unavailable` with `Retry-After`. A Forum relay counts a post or vote as

@@ -104,7 +104,9 @@ async function main(): Promise<boolean> {
       (settling ??= tickUntilSettled(sender).finally(() => {
         settling = undefined
       }))
-    const sendOne = async (round: string, i: number) => {
+    // `retryRefused`: only the "at once" round sends while earlier change is out; in turn, every
+    // send follows a settle, so a refusal there fails the check.
+    const sendOne = async (round: string, i: number, retryRefused = false) => {
       const text = `reserve check ${round} ${i}`
       const at = Date.now()
       try {
@@ -115,7 +117,7 @@ async function main(): Promise<boolean> {
           } catch (err) {
             // Refused only because an earlier message's change is not on the chain yet: nothing
             // was signed or recorded. Sent again once the wallet has settled.
-            if (!fundsInPendingSend(err) || attempt > count + 1) throw err
+            if (!retryRefused || !fundsInPendingSend(err) || attempt > count + 1) throw err
             console.log(`${round} message ${i}: refused while an earlier send settles (try ${attempt}); again once settled`)
             await settle()
           }
@@ -139,7 +141,7 @@ async function main(): Promise<boolean> {
       await settle()
     }
     // All at once: what a person does who sends several messages without waiting.
-    await Promise.all(numbers.map(i => sendOne('at once', i)))
+    await Promise.all(numbers.map(i => sendOne('at once', i, true)))
 
     await monad.mine(4)
     const lastBlock = await monad.provider.getBlockNumber()

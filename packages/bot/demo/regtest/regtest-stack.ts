@@ -23,8 +23,8 @@
  * on it removes its directory, wallet keys and all, only once the check has called
  * `fundsReturned()` (every account it funded is swept). Otherwise, also on a signal or a crash,
  * the directory (without the relay databases) is first copied to
- * `~/.frank-regtest/kept-stacks/<name>` (FRANK_REGTEST_KEPT_DIR), and where it went is printed with
- * the command that sweeps it: `yarn --cwd packages/bot funds:sweep <that directory>`.
+ * `~/.frank-regtest/kept-stacks/<name>` (FRANK_REGTEST_KEPT_DIR, absolute only), and where it went is printed with
+ * the command that sweeps it: `yarn --cwd packages/bot regtest:monad-sweep-state <that directory>`.
  *
  * The relay binary is CASHWEBD_BIN, otherwise this worktree's Cargo build (built first if needed).
  *
@@ -36,7 +36,7 @@
 import { execFile } from 'child_process'
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { homedir, tmpdir } from 'os'
-import { basename, join, resolve } from 'path'
+import { basename, isAbsolute, join, resolve } from 'path'
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { Supervisor } from '../supervisor'
@@ -250,8 +250,10 @@ export async function startRegtestStack(
     if (env.FRANK_REGTEST_KEEP === '1') return
     if (onSolonet && !fundsReturned) {
       // Funds may remain in this stack's wallets: their keys go somewhere durable first.
-      const kept = join(resolve(env.FRANK_REGTEST_KEPT_DIR ?? join(homedir(), '.frank-regtest', 'kept-stacks')), basename(stateDir))
+      const keptRoot = env.FRANK_REGTEST_KEPT_DIR?.trim() || join(homedir(), '.frank-regtest', 'kept-stacks')
+      const kept = join(keptRoot, basename(stateDir))
       try {
+        if (!isAbsolute(keptRoot)) throw new Error(`FRANK_REGTEST_KEPT_DIR must be an absolute path, not ${keptRoot}`)
         cpSync(stateDir, kept, { recursive: true, filter: source => !/[/\\]relay-db[^/\\]*$/.test(source) })
       } catch (err) {
         console.error(
@@ -260,7 +262,7 @@ export async function startRegtestStack(
         return
       }
       console.error(
-        `[regtest] funds may remain in this stack's solonet wallets; their keys are kept in ${kept}. Sweep them with: yarn --cwd packages/bot funds:sweep ${kept}`,
+        `[regtest] funds may remain in this stack's solonet wallets; their keys are kept in ${kept}. Sweep them with: yarn --cwd packages/bot regtest:monad-sweep-state ${kept}`,
       )
     }
     rmSync(stateDir, { recursive: true, force: true })

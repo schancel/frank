@@ -205,7 +205,10 @@ async function readLevelCopy(dbDir: string): Promise<PoolRecords | 'unreadable' 
 
 /** The accounts and keys of a wallet's coin list (`evm-coin-list`): every coin carries its own
  * key, including the account a background merge went to, whose index lies in the change
- * branch's reserved half and so is never reached by walking the change records. */
+ * branch's reserved half and so is never reached by walking the change records. Also reads the
+ * received coins (`received-coins`: stamps and stealth payments a message delivered, each with
+ * its one-time key, rows keyed by `address`), which reach the coin list only once the wallet has
+ * ticked: a recipient that never ticks holds them there alone. */
 async function readCoinListKeys(dbDir: string): Promise<{ address: string; privateKey: string; origin: string }[] | 'unreadable' | undefined> {
   if (!existsSync(dbDir)) return undefined
   const copy = mkdtempSync(join(tmpdir(), 'frank-funds-read-'))
@@ -217,15 +220,16 @@ async function readCoinListKeys(dbDir: string): Promise<{ address: string; priva
     const db = level(join(copy, 'db')) as any
     try {
       for await (const [, value] of db.iterator({})) {
-        let row: { account?: unknown; privateKey?: unknown; origin?: unknown }
+        let row: { account?: unknown; address?: unknown; privateKey?: unknown; origin?: unknown }
         try {
           row = JSON.parse(value)
         } catch {
           continue
         }
-        if (typeof row?.account !== 'string' || typeof row.privateKey !== 'string') continue
-        found.set(row.account.toLowerCase(), {
-          address: row.account,
+        const account = typeof row?.account === 'string' ? row.account : row?.address
+        if (typeof account !== 'string' || typeof row.privateKey !== 'string') continue
+        found.set(account.toLowerCase(), {
+          address: account,
           privateKey: row.privateKey,
           origin: typeof row.origin === 'string' ? row.origin : 'coin',
         })
@@ -300,15 +304,19 @@ async function poolAccounts(
     accounts.push({ role: `change ${i}`, address, privateKey })
   }
   const listed = new Set(accounts.map(account => account.address.toLowerCase()))
-  for (const dir of storageDirs) {
-    const coins = await readCoinListKeys(join(dir, 'evm-coin-list'))
-    if (coins === 'unreadable') notes.push(`the coin list in ${dir} could not be read`)
-    for (const coin of coins === 'unreadable' ? [] : coins ?? [])
-      if (!listed.has(coin.address.toLowerCase())) {
-        listed.add(coin.address.toLowerCase())
-        accounts.push({ role: `coin (${coin.origin})`, address: coin.address, privateKey: coin.privateKey })
-      }
-  }
+  for (const dir of storageDirs)
+    for (const [store, what] of [
+      ['evm-coin-list', 'the coin list'],
+      ['received-coins', 'the received coins'],
+    ] as const) {
+      const coins = await readCoinListKeys(join(dir, store))
+      if (coins === 'unreadable') notes.push(`${what} in ${dir} could not be read`)
+      for (const coin of coins === 'unreadable' ? [] : coins ?? [])
+        if (!listed.has(coin.address.toLowerCase())) {
+          listed.add(coin.address.toLowerCase())
+          accounts.push({ role: `${store === 'received-coins' ? 'received' : 'coin'} (${coin.origin})`, address: coin.address, privateKey: coin.privateKey })
+        }
+    }
   return {
     accounts,
     // Said, not hidden: without records only the first few indexes are looked at.

@@ -29,7 +29,6 @@
  *
  * Every account it funds is swept back to the faucet at the end, also after a failure.
  */
-import { appendFileSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -46,6 +45,7 @@ import { EvmTransactionSetLifecycle } from '@frank/wallet/evm-transaction-set-li
 import { createEvmTransactionSetSubmission } from '@frank/wallet/evm-transaction-set-submission'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER } from '@frank/wallet/evm-transaction-set-types'
 import { fundFromFaucet, MONAD_REGTEST_CHAIN_ID, sweepToFaucet } from './monad-regtest'
+import { SolonetKeyRun, sweepLeftoverKeyRuns } from './solonet-keys'
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const RPC = process.env.FRANK_SOLONET_RPC_URL ?? 'http://127.0.0.1:48080'
@@ -78,14 +78,15 @@ async function main(): Promise<boolean> {
   const location = await mkdtemp(join(tmpdir(), 'monad-resign-'))
   const source = new Wallet(Wallet.createRandom().privateKey)
   const change = new Map<number, Wallet>()
-  // Every key this check funds is written down first, so a crash cannot strand its funds.
-  const keysFile = join(tmpdir(), 'monad-resign-livecheck-keys.txt')
+  // Every key this check funds is saved durably first (solonet-keys.ts), so a crash cannot strand it.
+  const keys = SolonetKeyRun.open('resign-refused')
+  await sweepLeftoverKeyRuns(RPC, keys)
   const remember = (key: Wallet) => {
-    appendFileSync(keysFile, `${key.privateKey}\n`)
+    keys.save(key.privateKey)
     return key
   }
   remember(source)
-  console.log(`keys this check funds are kept in ${keysFile}`)
+  console.log(`keys this check funds are kept in ${keys.dir}`)
   const changeKey = (index: number) => {
     if (!change.has(index)) change.set(index, remember(new Wallet(Wallet.createRandom().privateKey)))
     return change.get(index)!
@@ -226,6 +227,9 @@ async function main(): Promise<boolean> {
     }
     const left = (await Promise.all([source, ...change.values()].map(key => provider.getBalance(key.address)))).reduce((a, b) => a + b, 0n)
     console.log(`returned about ${formatEther(returned)} MON to the faucet; ${formatEther(left)} MON left as dust`)
+    // The key files go once each account is empty; anything left stays for a later run.
+    await keys.sweep(RPC).catch(error => console.log(`  the key-file sweep failed: ${error instanceof Error ? error.message : String(error)}`))
+    keys.close()
     provider.destroy()
   }
   console.log(problems.length === 0 ? 'Monad re-sign check: OK' : `Monad re-sign check: FAILED (${problems.length})`)

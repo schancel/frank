@@ -230,7 +230,12 @@ export interface MonadRegtest extends RegtestChain {
   readonly faucetAddress: string
   /** The faucet's signer, for harness steps that need a funded account (deploying contracts). */
   readonly faucet: Wallet
+  /** The head when this handle was opened: where a check's own transactions start. */
+  readonly startBlock: number
 }
+
+/** The leftover key sweep of this process (`solonet-keys.ts`), run once before anything funds. */
+let leftoversSwept: Promise<void> | undefined
 
 /**
  * The running solonet as a regtest network (starting it if needed). `stop()` only lets go of this
@@ -248,9 +253,18 @@ export async function startMonadRegtest(
     provider.destroy()
     throw new Error(`${rpcUrl} reports chain id ${reported}, not a Monad solonet (${MONAD_REGTEST_CHAIN_ID})`)
   }
+  const startBlock = await provider.getBlockNumber()
+  // Keys an earlier check saved and never swept go back first (once per process).
+  leftoversSwept ??= import('./solonet-keys')
+    .then(({ sweepLeftoverKeyRuns }) => sweepLeftoverKeyRuns(rpcUrl))
+    .then(
+      () => undefined,
+      error => console.warn(`[solonet] the leftover key sweep failed: ${error instanceof Error ? error.message : String(error)}`),
+    )
+  await leftoversSwept
   const checkpointHeight = Math.max(
     1,
-    (await provider.getBlockNumber()) - CHECKPOINT_DEPTH,
+    startBlock - CHECKPOINT_DEPTH,
   )
   const checkpoint = await provider.getBlock(checkpointHeight)
   if (!checkpoint?.hash) {
@@ -293,6 +307,7 @@ export async function startMonadRegtest(
     provider,
     faucet,
     faucetAddress: faucet.address,
+    startBlock,
     fund: (address, amount) =>
       exclusive(() => payAtFreshNonce(faucet, { to: address, value: amount, gasLimit: 21_000n })),
     // Blocks come on their own; "mine" waits until that many more exist.

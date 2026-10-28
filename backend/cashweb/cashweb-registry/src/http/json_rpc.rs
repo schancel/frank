@@ -45,6 +45,7 @@ enum UpstreamErrorReason {
     InsufficientFunds,
     ReplacementUnderpriced,
     ExecutionReverted,
+    HistoricalStateUnavailable,
 }
 
 impl UpstreamErrorReason {
@@ -74,6 +75,14 @@ impl UpstreamErrorReason {
             Some(Self::ReplacementUnderpriced)
         } else if lower.contains("execution reverted") {
             Some(Self::ExecutionReverted)
+        } else if (lower.contains("historical state")
+            && (lower.contains("not available") || lower.contains("unavailable")))
+            || lower.contains("missing trie node")
+            || lower.contains("blockoutofrange")
+        {
+            // Historical reads need to distinguish pruned state from a transient failure.
+            // Keep only the category: provider text can contain credentials and state details.
+            Some(Self::HistoricalStateUnavailable)
         } else {
             None
         }
@@ -89,6 +98,7 @@ impl UpstreamErrorReason {
             Self::InsufficientFunds => "insufficient funds",
             Self::ReplacementUnderpriced => "replacement transaction underpriced",
             Self::ExecutionReverted => "execution reverted",
+            Self::HistoricalStateUnavailable => "historical state unavailable",
         }
     }
 }
@@ -1504,6 +1514,48 @@ mod tests {
                 serde_json::from_slice(&inspected.error_rewrites[0].replacement).unwrap();
             assert_eq!(replacement, expected, "{error}");
             assert_eq!(sanitized(error.clone()), expected, "{error}");
+        }
+    }
+
+    #[test]
+    fn historical_state_reason_survives_both_redaction_paths_without_provider_details() {
+        let secret = "https://rpc.example/SECRET-KEY";
+        for message in [
+            "Block requested not found. Request might be querying historical state that is not available",
+            "missing trie node 0x1234 (path 00) state 0x5678 is not available",
+            "BlockOutOfRangeError: requested state was pruned",
+        ] {
+            let upstream = json!({
+                "code": -32602,
+                "message": format!("{secret}: {message}; credential={secret}"),
+                "data": {"url": secret, "block": 123},
+            });
+            let expected = json!({"code": -32602, "message": "historical state unavailable"});
+            assert_eq!(sanitized(upstream.clone()), expected, "{message}");
+            let response = json!({"jsonrpc": "2.0", "id": 1, "error": upstream}).to_string();
+            let inspected = inspect(response.as_bytes(), &[json!(1)]).unwrap();
+            assert_eq!(inspected.error_rewrites.len(), 1);
+            let replacement: Value =
+                serde_json::from_slice(&inspected.error_rewrites[0].replacement).unwrap();
+            assert_eq!(replacement, expected, "{message}");
+        }
+        // The code alone says nothing about historical state; timeouts and bad parameters
+        // must not make the wallet skip blocks it could still read.
+        for message in [
+            "invalid parameters",
+            "header not found",
+            "rate limited",
+            "timeout",
+            "historical state request timed out",
+        ] {
+            let upstream = json!({"code": -32602, "message": format!("{message} {secret}")});
+            let expected = json!({"code": -32602, "message": "upstream RPC error"});
+            assert_eq!(sanitized(upstream.clone()), expected);
+            let response = json!({"jsonrpc": "2.0", "id": 1, "error": upstream}).to_string();
+            let inspected = inspect(response.as_bytes(), &[json!(1)]).unwrap();
+            let replacement: Value =
+                serde_json::from_slice(&inspected.error_rewrites[0].replacement).unwrap();
+            assert_eq!(replacement, expected);
         }
     }
 

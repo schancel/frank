@@ -110,6 +110,9 @@ import {
   type EvmErc20Reader,
   type RecordStore,
 } from "./storage/evm-coin-store";
+import { EvmNativeStampRecoveryReader } from './evm-native-stamp-recovery';
+import type { EvmNativeReceiptRpc } from './evm-native-receipt';
+import { applyStoredNativeStampRecovery, validateNativeStampRecovery } from './storage/evm-coin-store';
 import type { EvmNativeSource } from "./storage/evm-native-operation-journal";
 
 /** A contact payment this version acts on: it names its transaction set. */
@@ -419,6 +422,8 @@ export interface EvmReceivedCoinAndContactManagerParams {
   readonly material: MonadWalletMaterial;
   readonly pool: MonadSubAccountPool;
   readonly provider: Provider;
+  readonly nativeReceiptRpc: EvmNativeReceiptRpc;
+  readonly readReceiptMaximumBlock: () => Promise<number>;
   readonly coinStore: RecordStore<EvmCoin>;
   readonly paymentStore: RecordStore<ContactPayment>;
   readonly scanState: RecordStore<{ complete: boolean; sinceMs: number }>;
@@ -485,6 +490,7 @@ export function createEvmReceivedCoinAndContactManager(
     receivedCoinFloorWei,
   } = params;
   const nativeChainId = BigInt(chainId);
+  for (const coin of coinStore.all()) validateNativeStampRecovery(coin, chainIdentifier);
 
   const financialAbi = new Interface([
     "function transfer(address to,uint256 amount) returns (bool)",
@@ -496,6 +502,44 @@ export function createEvmReceivedCoinAndContactManager(
     if (evmWalletInternals(getWallet()).closed) {
       throw new Error("Wallet financial session is closed");
     }
+  };
+
+  const stampRecovery = new EvmNativeStampRecoveryReader({
+    chainIdentifier, nativeChainId, provider, rpc: params.nativeReceiptRpc,
+    maximumBlock: params.readReceiptMaximumBlock, assertActive: assertFinancialActive,
+  });
+  const recoverableStamp = (coin: EvmCoin): boolean => coin.origin === 'stamp' &&
+    coin.stampSharedPoint !== undefined && coin.childIndex !== undefined &&
+    coin.transactions.length === 1 && coin.transactions[0]!.replace(/^0x/, '').length > 64 &&
+    (coin.state === 'pending' || coin.state === 'failed' || coin.nativeStampRecovery !== undefined);
+  const refreshNativeStamp = async (coin: EvmCoin) => {
+    const derived = material.canonicalRoles?.stampChildPrivateKey({ network: forumNetwork,
+      sharedPoint: getBytes(`0x${coin.stampSharedPoint}`), childIndex: coin.childIndex!, address: coin.address });
+    if (derived !== coin.privateKey) throw new Error('Native stamp recovery derivation mismatch');
+    const observation = await stampRecovery.read(coin);
+    assertFinancialActive();
+    if (observation.kind === 'recovery') {
+      await applyStoredNativeStampRecovery(coinStore, coin.address, { ...observation, recovery: observation.recovery });
+    } else if (observation.kind === 'original') {
+      await applyStoredNativeCoinObservation(coinStore, coin.address, { ...observation,
+        transfer: 'included', transferValueWei: BigInt(observation.original.amount) });
+    }
+    else if (observation.kind === 'failed') {
+      await applyStoredNativeCoinObservation(coinStore, coin.address, { ...observation, transfer: 'failed', transferValueWei: 0n });
+    }
+    else {
+      // The original is not yet canonically included or conclusively superseded. Recipient
+      // re-broadcast remains authorized, but proposed inclusion never activates this account.
+      let seen = false;
+      try { await provider.broadcastTransaction(`0x${coin.transactions[0]!.replace(/^0x/, '')}`); seen = true; }
+      catch { /* A missing receipt or rejected retry is not inclusion evidence. */ }
+      assertFinancialActive();
+      await applyStoredNativeCoinObservation(coinStore, coin.address, { ...observation,
+        transfer: seen ? 'seen' : observation.unexecuted ? 'unseen' : 'unknown' });
+    }
+    assertFinancialActive();
+    invalidateBalanceRead(coin.address);
+    if (observation.unavailable) throw recordWalletFailure(observation.unavailable, { observationUnavailable: true });
   };
 
   const erc20Reader: EvmErc20Reader = {
@@ -800,8 +844,8 @@ export function createEvmReceivedCoinAndContactManager(
       coin.origin === "stealth" && coin.transactions.length > 1;
     const pending = all.filter(
       (coin) =>
-        (nativeSet(coin) &&
-          (options.only !== undefined || pendingCoinDue(coin, now))) ||
+        ((nativeSet(coin) || recoverableStamp(coin)) &&
+          (options.only !== undefined || (options.strict && recoverableStamp(coin)) || pendingCoinDue(coin, now))) ||
         (coin.state === "pending" &&
           (options.only !== undefined || pendingCoinDue(coin, now))) ||
         (coin.state === "failed" &&
@@ -821,7 +865,7 @@ export function createEvmReceivedCoinAndContactManager(
     }
     const counted = options.pendingOnly
       ? []
-      : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
+      : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin) && !recoverableStamp(coin));
     const targets = [...probed, ...counted];
     const BATCH_SIZE = 16;
     for (let offset = 0; offset < targets.length; offset += BATCH_SIZE) {
@@ -831,6 +875,10 @@ export function createEvmReceivedCoinAndContactManager(
         batch.map(async (coin) => {
           if (evmWalletInternals(wallet).closed) return;
           try {
+            if (recoverableStamp(coin)) {
+              await refreshNativeStamp(coin);
+              return;
+            }
             if (nativeSet(coin)) {
               await refreshNativeSetCoin(coin, true);
               return;
@@ -2822,7 +2870,7 @@ export function createEvmReceivedCoinAndContactManager(
     },
     refreshReceivedPayments: async () => {
       requireOpenWallet(getWallet());
-      await readCoins();
+      await readCoinsPass({ strict: true });
       const floorWei = receivedCoinFloorWei();
       return coinStore
         .all()
@@ -2838,12 +2886,13 @@ export function createEvmReceivedCoinAndContactManager(
         .filter(
           (coin) =>
             coin.payloadDigest === digest &&
-            (coin.state === "pending" ||
+            (coin.state === "pending" || coin.nativeStampRecovery !== undefined ||
               (coin.origin === "stealth" && coin.transactions.length > 1))
         );
       if (pending.length > 0) {
         await readCoinsPass({
           only: new Set(pending.map((coin) => coin.address)),
+          strict: true,
         });
       }
       return messagePaymentOf(coinStore.all(), digest);

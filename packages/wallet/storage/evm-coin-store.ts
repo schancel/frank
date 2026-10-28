@@ -28,6 +28,17 @@ import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import { durableDelete, durablePut, openDurableLevel } from './level-durability'
 
+import type { EvmNativeTransfer } from '../evm-native-receipt'
+
+export interface EvmNativeStampRecovery {
+  readonly chainIdentifier: string
+  readonly originalTransactionHash: string
+  /** Historical canonical supersession witness. Original inclusion, if later observed after a
+   * reorganization, is recorded by its actual receipt, never fabricated from this witness. */
+  readonly supersededAt: { readonly blockNumber: number; readonly blockHash: string }
+  readonly receipts: readonly EvmNativeTransfer[]
+}
+
 export type EvmCoinOrigin = 'stealth' | 'stamp'
 export type EvmCoinState = 'pending' | 'unspent' | 'spent' | 'failed'
 
@@ -83,6 +94,8 @@ export interface EvmCoin {
   /** Distinct ERC20 facts at this same owned account. Native fields above remain native-only.
    * Absence means no discovered ERC20 positions; zero native balance never deletes these. */
   readonly erc20Positions?: readonly EvmErc20Position[]
+  /** Derived native stamp receipt facts, separate from immutable carried transaction membership. */
+  readonly nativeStampRecovery?: EvmNativeStampRecovery
 }
 
 export interface EvmErc20Claim {
@@ -1078,6 +1091,74 @@ export function applyStoredNativeCoinObservation(
   )
 }
 
+/** Synchronous persisted-fact boundary. Canonical freshness is checked by explicit received
+ * refresh, never by read-only wallet opening or display hydration. */
+export function validateNativeStampRecovery(coin: EvmCoin, chainIdentifier?: string): void {
+  const recovery = coin.nativeStampRecovery
+  if (!recovery) return
+  const chain = PROTOCOL_CHAINS[recovery.chainIdentifier]
+  const tx = coin.transactions.length === 1 ? Transaction.from(`0x${coin.transactions[0]!.replace(/^0x/, '')}`) : undefined
+  if (coin.origin !== 'stamp' || !/^(02|03)[0-9a-f]{64}$/.test(coin.stampSharedPoint ?? '') ||
+    !Number.isSafeInteger(coin.childIndex) || coin.childIndex! < 0 || coin.childIndex! > 0x7fffffff ||
+    computeAddress(coin.privateKey).toLowerCase() !== coin.address ||
+    (chainIdentifier !== undefined && recovery.chainIdentifier !== chainIdentifier) || !chain || chain.family !== 'evm' ||
+    !tx?.isSigned() || tx.chainId !== BigInt(chain.nativeChainId!) || tx.hash !== recovery.originalTransactionHash ||
+    tx.to?.toLowerCase() !== coin.address || tx.data !== '0x' || tx.value <= 0n ||
+    !Number.isSafeInteger(recovery.supersededAt.blockNumber) || recovery.supersededAt.blockNumber < 0 ||
+    !/^0x[0-9a-f]{64}$/.test(recovery.supersededAt.blockHash) || !Array.isArray(recovery.receipts))
+    throw new Error('Native stamp recovery does not match received owner')
+  const seen = new Set<string>()
+  for (const receipt of recovery.receipts) {
+    if (receipt.chainIdentifier !== recovery.chainIdentifier || receipt.to !== coin.address ||
+      !/^0x[0-9a-f]{64}$/.test(receipt.txHash) || !/^0x[0-9a-f]{64}$/.test(receipt.blockHash) ||
+      getAddress(receipt.from).toLowerCase() !== receipt.from || !/^[1-9][0-9]*$/.test(receipt.amount) ||
+      !Number.isSafeInteger(receipt.blockNumber) || receipt.blockNumber < 0 ||
+      !Number.isSafeInteger(receipt.blockTimeMs) || receipt.blockTimeMs < 0 || seen.has(receipt.txHash))
+      throw new Error('Invalid native stamp recovery receipt')
+    uint256(BigInt(receipt.amount))
+    seen.add(receipt.txHash)
+  }
+}
+
+/** The received owner merges canonical receipt identities, never a sum used as spend authority. */
+export function applyStoredNativeStampRecovery(
+  store: RecordStore<EvmCoin>, address: string,
+  observation: {
+    recovery: EvmNativeStampRecovery
+    canonicalBlocks: readonly { blockNumber: number; blockHash: string }[]
+    balanceWei: bigint
+    accountNonce: number
+    atMs: number
+  },
+): Promise<EvmCoin> {
+  uint256(observation.balanceWei)
+  if (!Number.isSafeInteger(observation.accountNonce) || observation.accountNonce < 0 || !Number.isFinite(observation.atMs))
+    throw new Error('Invalid native stamp account observation')
+  const captured = JSON.parse(JSON.stringify(observation.recovery)) as EvmNativeStampRecovery
+  return changeStoredCoin(store, address, current => {
+    if (current.checkedAtMs !== undefined && current.checkedAtMs > observation.atMs) return current
+    validateNativeStampRecovery({ ...current, nativeStampRecovery: captured })
+    validateNativeStampRecovery(current, captured.chainIdentifier)
+    const receipts = new Map<string, EvmNativeTransfer>()
+    for (const receipt of [...(current.nativeStampRecovery?.receipts ?? []), ...captured.receipts]) {
+      const canonical = observation.canonicalBlocks.find(block => block.blockNumber === receipt.blockNumber)
+      if (canonical && canonical.blockHash !== receipt.blockHash) continue
+      const prior = receipts.get(receipt.txHash)
+      if (prior && ['chainIdentifier', 'txHash', 'from', 'to', 'amount', 'blockNumber', 'blockHash', 'blockTimeMs'].some(key => prior[key as keyof EvmNativeTransfer] !== receipt[key as keyof EvmNativeTransfer]))
+        throw new Error('Conflicting native stamp recovery receipt')
+      receipts.set(receipt.txHash, receipt)
+    }
+    const ordered = [...receipts.values()].sort((a, b) => a.blockNumber - b.blockNumber || a.txHash.localeCompare(b.txHash))
+    const received = ordered.reduce((sum, receipt) => sum + BigInt(receipt.amount), 0n)
+    const observed = observeEvmCoin(current, { ...observation, transfer: 'unknown' })
+    return { ...observed,
+      state: received > 0n ? observation.balanceWei > 0n ? 'unspent' : 'spent' : 'pending',
+      receivedAmountWei: received.toString(),
+      nativeStampRecovery: { ...captured, receipts: ordered },
+    }
+  })
+}
+
 export function markStoredEvmCoinNoted(
   store: RecordStore<EvmCoin>,
   address: string,
@@ -1304,6 +1385,7 @@ function overdueStatus(coin: EvmCoin): 'not-received' | 'unverifiable' {
 
 /** What a host may say about a received payment. `spendable` only while the chain shows funds. */
 export interface ReceivedPayment {
+  readonly nativeStampRecovery?: EvmNativeStampRecovery
   readonly address: string
   readonly origin: EvmCoinOrigin
   readonly status: ReceivedPaymentStatus
@@ -1349,8 +1431,11 @@ export function receivedPaymentOf(
   nowMs: number = Date.now(),
   floorWei: bigint = 0n,
 ): ReceivedPayment {
-  const receivedVal =
-    coin.receivedAmountWei !== undefined ? BigInt(coin.receivedAmountWei) : 0n
+  validateNativeStampRecovery(coin)
+  const receivedVal = coin.nativeStampRecovery
+    ? coin.nativeStampRecovery.receipts.reduce((sum, receipt) => sum + BigInt(receipt.amount), 0n)
+    : coin.receivedAmountWei !== undefined ? BigInt(coin.receivedAmountWei) : 0n
+  const hasReceivedAmount = coin.nativeStampRecovery !== undefined || coin.receivedAmountWei !== undefined
   const claimedVal = BigInt(coin.claimedAmountWei)
   const hasMemberTracking =
     coin.transactions.length > 1 &&
@@ -1380,7 +1465,7 @@ export function receivedPaymentOf(
         ? 'failed'
         : // Received means an amount the chain showed arriving, and nothing less.
         coin.state !== 'pending' &&
-          coin.receivedAmountWei !== undefined &&
+          hasReceivedAmount &&
           receivedVal > 0n
         ? 'received'
         : coin.checkedAtMs === undefined ||
@@ -1397,10 +1482,9 @@ export function receivedPaymentOf(
     address: coin.address,
     origin: coin.origin,
     status,
+    ...(coin.nativeStampRecovery ? { nativeStampRecovery: JSON.parse(JSON.stringify(coin.nativeStampRecovery)) as EvmNativeStampRecovery } : {}),
     amountWei: BigInt(coin.amountWei),
-    ...(coin.receivedAmountWei === undefined
-      ? {}
-      : { receivedAmountWei: receivedVal }),
+    ...(!hasReceivedAmount ? {} : { receivedAmountWei: receivedVal }),
     claimedAmountWei: claimedVal,
     ...(isPartial ? { partial: true } : {}),
     ...(coin.transactions.length > 0

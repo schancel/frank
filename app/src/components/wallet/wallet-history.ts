@@ -682,11 +682,12 @@ export function buildWalletHistoryGroups(input: {
     // Deposits from outside Frank: a transaction a send or a received coin already shows is not
     // shown again (the deposit scan leaves out the wallet's own transfers and its coins' ones).
     const coinTransactions = new Set(
-      load.received.flatMap(payment =>
-        (payment.settledTransactions ?? []).map(
+      load.received.flatMap(payment => [
+        ...(payment.nativeStampRecovery?.receipts.map(receipt => receipt.txHash) ?? []),
+        ...(payment.settledTransactions ?? []).map(
           hash => `0x${hash.replace(/^0x/, '').toLowerCase()}`,
         ),
-      ),
+      ]),
     )
     for (const send of noted) shown.add(send.txHash.toLowerCase())
     const listed = new Set<string>()

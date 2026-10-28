@@ -543,3 +543,23 @@ it('names one network fee for a send: the card and its details show the same fig
     wrapper.get('[data-testid="wallet-native-operation-fee"]').text(),
   ).toBe(`Observed network fees: amt(${total}) MONR`)
 })
+
+it('shows actual recovery receipt source and transaction separately from the intended stamp', () => {
+  const txHash = '0x' + 'ac'.repeat(32)
+  const from = '0x' + '01'.repeat(20)
+  const receipt = { chainIdentifier: 'monad-testnet', txHash, from, to: recipient, amount: '30', blockNumber: 2, blockHash: '0x' + '03'.repeat(32), blockTimeMs: 2000 }
+  const payment = { address: recipient, origin: 'stamp' as const, status: 'received' as const,
+    amountWei: 30n, receivedAmountWei: 30n, claimedAmountWei: 100n, partial: true, spendable: true, discoveredAtMs: 1,
+    nativeStampRecovery: { chainIdentifier: 'monad-testnet', originalTransactionHash: '0x' + 'ab'.repeat(32),
+      supersededAt: { blockNumber: 1, blockHash: receipt.blockHash }, receipts: [receipt] } }
+  const wrapper = shallowMount(History, { props: { chainIdentifier: 'monad-testnet',
+    groups: [{ id: 'activity', label: 'walletPanel.tabHistory', rows: [{ id: 'received:x', kind: 'received', timeMs: 1, payment, payments: [payment] }] }],
+    inspectionStatus: 'available', nativeUnit: 'MONR', nativeAmount: value => value,
+    networkName: () => '', transactionExplorerLink: hash => `https://example.test/tx/${hash}`, formatSwapTime: () => 'then',
+  }, global: { mocks: { $t: translate } } })
+  const details = wrapper.get('[data-testid="wallet-recovered-stamp"]')
+  expect(details.html()).toContain(from)
+  expect(details.html()).toContain(txHash)
+  expect(details.html()).not.toContain(payment.nativeStampRecovery.originalTransactionHash)
+  expect(wrapper.get('[data-testid="wallet-received-partial"]').text()).toContain('30 MONR of the 100 MONR stated')
+})

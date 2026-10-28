@@ -140,6 +140,25 @@
               >
                 {{ $t('walletHistory.receivedClaimed') }}
               </p>
+              <details
+                v-if="(entry.payments ?? [entry.payment]).some(payment => payment.nativeStampRecovery?.receipts.length)"
+                class="wallet-history-details q-mt-sm"
+                data-testid="wallet-recovered-stamp"
+              >
+                <summary class="wallet-history-action">{{ $t('walletHistory.details') }}</summary>
+                <div
+                  v-for="receipt in (entry.payments ?? [entry.payment]).flatMap(payment => payment.nativeStampRecovery?.receipts ?? [])"
+                  :key="receipt.txHash"
+                  class="wallet-history-detail-body"
+                >
+                  <q-item-label caption>{{ nativeAmount(receipt.amount) }} {{ nativeUnit }} · {{ $t('walletHistory.deposit') }}</q-item-label>
+                  <div class="wallet-history-address"><address-text :address="receipt.from" copyable /></div>
+                  <div class="wallet-history-address"><address-text :address="receipt.txHash" copyable /></div>
+                  <a v-if="transactionExplorerLink(receipt.txHash, chainIdentifier)"
+                    :href="transactionExplorerLink(receipt.txHash, chainIdentifier)" target="_blank" rel="noopener noreferrer"
+                    class="wallet-history-action">{{ $t('walletHistory.details') }}</a>
+                </div>
+              </details>
             </template>
             <template v-else-if="entry.kind === 'deposit'">
               <q-item-label caption class="q-mt-xs">

@@ -145,9 +145,11 @@ export interface EvmTransactionSetPreparerOptions {
   readonly onPaymentIncluded?: (destination: string) => void
   /** The fresh account a background merge's set moves its coins to (`evm-merge-targets.ts`,
    * derived from the coins the set spends), with its key; undefined for every other set.
-   * Settlement lists the merged money there as a coin once the whole set has landed, as it lists
-   * a payment's change. No I/O. */
+   * Derivation only; target state is observed through observeMergeTarget after settlement. */
   readonly mergeTarget?: (row: EvmNativeOperation) => EvmChangeDestination | undefined
+  /** Registers owned target discovery and observes current chain state through the inventory
+   * owner. Rejects incomplete observation so settlement can retry after interruption. */
+  readonly observeMergeTarget?: (target: EvmChangeDestination) => Promise<void>
   /** Synchronous cached observation check, only after insufficient selection. Never performs
    * RPC or changes reservations; throws the retained observation error when funding is unknown. */
   readonly assertFundingObserved?: () => void

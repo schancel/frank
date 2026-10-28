@@ -162,9 +162,10 @@ export class BotScheduler {
       }
 
       if (isDue && !this.stopped) {
-        executedCount++;
         // Persist timestamp before handler execution to prevent duplicate triggers on crash
         await context.state.put(key, String(nowMs));
+        if (this.stopped) break;
+        executedCount++;
 
         try {
           console.log(

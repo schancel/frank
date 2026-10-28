@@ -127,6 +127,20 @@ async function open(
       const target = targets.targetFor(mergeAnchorOf(row))
       return { ...derive(target.changeIndex), account: target.account }
     },
+    // Fake chain observation for this preparer-only fixture. The runtime regression exercises
+    // actual coinListSync discovery, current nonce/balance, failures and stale receipts.
+    observeMergeTarget: async target => {
+      const row = journal.list().find(row => row.recipient.toLowerCase() === target.account)!
+      const landed = row.members.filter(member => member.observation.state === 'included-success')
+      const block = Math.max(...landed.map(member => 'blockNumber' in member.observation ? member.observation.blockNumber : 0))
+      if (coins.latestOf(target.account)) return
+      await coins.put({ ...target, nonce: 0, origin: 'change',
+        valueWei: landed.reduce((sum, member) => sum + Transaction.from(member.unsignedTransaction).value, 0n),
+        listedInBlock: block,
+        ...(options.spendRule ? { spendableFromBlock: block + options.spendRule.waitBlocks + 1,
+          fundsVisibleFromBlock: block + options.spendRule.waitBlocks + 1 } : {}),
+      })
+    },
     ...(options.spendRule === undefined ? {} : { recoverySpendRule: options.spendRule }),
   })
   const submitted: PreparedEvmTransactionSet[] = []

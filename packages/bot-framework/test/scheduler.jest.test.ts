@@ -251,3 +251,28 @@ describe("BotScheduler", () => {
     });
   });
 });
+
+it("does not launch a handler when stop arrives during timestamp persistence", async () => {
+  const scheduler = new BotScheduler();
+  const store = new MemoryStateStore();
+  let enterPut!: () => void;
+  let releasePut!: () => void;
+  const putting = new Promise<void>((resolve) => { enterPut = resolve; });
+  const gate = new Promise<void>((resolve) => { releasePut = resolve; });
+  store.put = async () => { enterPut(); await gate; };
+  const handler = jest.fn(async () => undefined);
+  scheduler.register("test-bot", {
+    id: "put-race", intervalMs: 1000, runOnStartup: true, handler,
+  }, createMockContext(store));
+  const run = scheduler.checkAndRunDue(10000);
+  await putting;
+  let closed = false;
+  const stop = scheduler.stop().then(() => { closed = true; });
+  expect(handler).not.toHaveBeenCalled();
+  expect(closed).toBe(false);
+  releasePut();
+  expect(await run).toBe(0);
+  await stop;
+  expect(handler).not.toHaveBeenCalled();
+  expect(closed).toBe(true);
+});

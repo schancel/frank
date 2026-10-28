@@ -1266,6 +1266,8 @@ export const rawFrFR = {
     title: 'Paiements à des contacts en cours',
     finish: 'Terminer',
     state: {
+      planned:
+        'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille, et sinon l’achève. Il n’est jamais payé deux fois.',
       prepared:
         'Signé. En attente de la livraison de son message ; ses fonds sont retenus.',
       delivered: 'Message livré. Le paiement est en route vers la chaîne.',

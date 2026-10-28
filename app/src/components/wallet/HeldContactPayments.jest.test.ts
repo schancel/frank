@@ -113,6 +113,37 @@ describe('HeldContactPayments', () => {
     wrapper.unmount()
   })
 
+  it('lists a payment left unfinished while being prepared, so the held notice points somewhere real', async () => {
+    payments = [payment({ state: 'planned', ephemeralPubKey: '02ee' })]
+    settleContactPayment.mockImplementation(async () => {
+      payments = [
+        payment({
+          state: 'released',
+          holdsFunds: false,
+          ephemeralPubKey: '02ee',
+        }),
+      ]
+      return 'released'
+    })
+    const wrapper = mountList()
+    await settle()
+    const rows = wrapper.findAll('[data-testid="held-contact-payment"]')
+    expect(rows).toHaveLength(1)
+    expect(
+      rows[0].find('[data-testid="held-contact-payment-state"]').text(),
+    ).toBe(enUS.heldContactPayments.state.planned)
+    await rows[0]
+      .find('[data-testid="held-contact-payment-finish"]')
+      .trigger('click')
+    await settle()
+    // The wallet decides: released unpaid here, as it found nothing of it had left.
+    expect(settleContactPayment).toHaveBeenCalledWith('02ee')
+    expect(wrapper.find('[data-testid="held-contact-payments"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+  })
+
   it('Finish asks the wallet to settle that payment and then shows what the wallet says', async () => {
     payments = [payment({ state: 'prepared', ephemeralPubKey: '02dd' })]
     settleContactPayment.mockImplementation(async () => {

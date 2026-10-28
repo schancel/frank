@@ -69,7 +69,11 @@ export default defineComponent({
         const wallet = await useActiveWallet()
         if (stopped) return
         payments.value = (wallet.getContactPayments?.() ?? []).filter(
+          // `planned`: saved before (or while) its transfer was signed, then left unfinished.
+          // Finish has the wallet release it if its journal proves nothing of it left the
+          // wallet, and otherwise finish it with the same signed bytes; it never pays anew.
           payment =>
+            payment.state === 'planned' ||
             payment.state === 'prepared' ||
             payment.state === 'delivered' ||
             payment.state === 'failed',

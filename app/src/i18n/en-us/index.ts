@@ -1242,6 +1242,8 @@ export const rawEnUS = {
     title: 'Payments to contacts in progress',
     finish: 'Finish',
     state: {
+      planned:
+        'Not finished being prepared; its funds may be held. Finish releases it unpaid if nothing of it left the wallet, and otherwise completes it. It is never paid twice.',
       prepared:
         'Signed. Waiting for its message to be delivered; its funds are held.',
       delivered: 'Message delivered. The payment is on its way to the chain.',

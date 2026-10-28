@@ -33,6 +33,9 @@
  *   as one payment can have just created) pool coins are kept, and so is any coin listed fewer
  *   than `confirmationBlocks` blocks ago (`EVM_FAILURE_CONFIRMATIONS`, the wallet's own depth
  *   for trusting a transaction's outcome).
+ * - It never merges the wallet's largest pool coin, so a send made while the merge is on its
+ *   way still has an input that can pay it (AGENTS.md §3). When the coins it may take are too
+ *   few to reach `mergeDownToCoins`, it merges what it may and the pool stays one above.
  * - It never touches a coin an operation holds, a coin selection may not use (unverified
  *   receipts are not coins at all), or one the chain's spend rule keeps (Monad: an account that
  *   sent within the last blocks may not empty itself); every one of its moves goes through the
@@ -190,7 +193,8 @@ function newestFirst(a: EvmListCoin, b: EvmListCoin): number {
  * `coins` are the list's live unspent coins (`EvmCoinList.liveUnspent`); `movable` says whether
  * the wallet may move a coin whole right now (no operation holds it, selection may use it, the
  * chain's spend rule lets it empty). Kept out, whatever they are worth: the newest
- * `keepNewestCoins` pool coins and every coin listed within `confirmationBlocks` of `head`.
+ * `keepNewestCoins` pool coins, the largest pool coin, and every coin listed within
+ * `confirmationBlocks` of `head`.
  */
 export function planEvmCoinMerge(params: {
   readonly coins: readonly EvmListCoin[]
@@ -204,6 +208,16 @@ export function planEvmCoinMerge(params: {
   const kept = new Set(
     [...pool].sort(newestFirst).slice(0, distribution.keepNewestCoins).map(coin => coin.account),
   )
+  // The wallet's largest pool coin is never merged either: a merge is for the small coins
+  // stamps and payouts leave, and while it is on its way its coins are its own. Without this the
+  // band's arithmetic took every coin but the newest few, whatever they held (solonet,
+  // 2026-10-28: a 4.66 MON coin, the dealer's whole bankroll, went into a merge with four small
+  // ones, and the newest coins left free could not pay a 0.08568 MON payout). Other sends keep
+  // an input that pays them while a merge is pending (AGENTS.md §3).
+  const largest = [...pool].sort((a, b) =>
+    a.valueWei > b.valueWei ? -1 : a.valueWei < b.valueWei ? 1 : a.account.localeCompare(b.account),
+  )[0]
+  if (largest) kept.add(largest.account)
   const candidates = pool
     .filter(
       coin => !kept.has(coin.account) && settledEnough(coin, head, distribution) && params.movable(coin),

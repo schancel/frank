@@ -2349,11 +2349,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             targetFor: (anchor) => mergeTargets.targetFor(anchor),
             submit: (prepared) => transactionSetSubmission.sendTransaction(prepared),
             refresh: () => transactionSetRuntime.refresh(),
-            // Once a move has reached it, the account is watched as the wallet's own and read.
-            listTarget: async (target) => {
-              mergeTargets.watch(target);
-              await transactionSetRuntime.coinListSync.refreshAccounts([target.account]);
-            },
           });
           const publicTransactionSets = evmTransactionSetCapability(
             transactionSetPreparer,

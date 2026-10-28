@@ -341,13 +341,19 @@ Still replica-local; each relay's startup log names them:
       on its source at the next nonce. Sends alone never start a merge.
     - Above 8, an idle tick (app and bot host, nothing being sent or reconciled) merges the
       smallest coins into one fresh change account until 5 are left (4 + the merged one), at most
-      64 per merge. It never takes the newest 4 coins, a coin listed fewer than 3 blocks ago, a
-      coin an operation holds, or a coin Monad's spend rule keeps; a coin worth less than its
-      move is skipped.
+      64 per merge. It never takes the newest 4 coins, the wallet's largest coin (so a send made
+      meanwhile still has an input that pays it; on 2026-10-28 a merge took a blackjack dealer's
+      4.66 MON bankroll and the next payout had nothing left to pay from), a coin listed fewer
+      than 3 blocks ago, a coin an operation holds, or a coin Monad's spend rule keeps; a coin
+      worth less than its move is skipped. When the coins it may take are too few, the pool stays
+      one above 5.
     - A merge is an ordinary transaction set: journalled before broadcast, resumed with the same
       bytes after a restart, noted to the account's other devices like any send, and shown in
       History as one row, "Merged N coins", with its fee. Other sends pick other coins meanwhile;
-      nothing waits for it.
+      nothing waits for it. When its last move lands, the settlement that records it lists the
+      merged account as a coin, spendable after the chain's funds-settle depth like any fresh
+      money, on every device that settles the merge and after a restart; it does not wait for an
+      idle tick.
     - The merge's account is derived, not allocated (AGENTS.md §5): a keyed hash of the merge's
       lowest [account, nonce] input and the chain, under a salt from the account's own keys,
       picks an index in the upper half of the change branch, which the change allocator (counting
@@ -355,8 +361,8 @@ Still replica-local; each relay's startup log names them:
       the same account. A device that knows an emptied account (from its coin list or its seed
       walk) reads the target of that account's last nonce, so a restored device finds the merged
       money; `funds:sweep` reads it from the coin list.
-    - Checked on solonet by `yarn --cwd packages/bot regtest:monad-consolidation` (30 coins are
-      merged down to 5, a paid message sent during the merge is delivered, funds go back to the
+    - Checked on solonet by `yarn --cwd packages/bot regtest:monad-consolidation` (of 30 coins, 25
+      are merged, keeping the newest 4 and the largest, a paid message sent during the merge is delivered, funds go back to the
       faucet). Not in CI.
 14. **DM size versus the 8 MiB acceptance line.** Resolved: the owner chose to raise the limit
     (2026-10-26). A DM holds up to 8 MiB of ciphertext and a relay reads requests up to 12 MiB.

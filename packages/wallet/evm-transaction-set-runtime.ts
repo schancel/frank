@@ -5,6 +5,7 @@ import { installEvmWalletCoinList } from './evm-wallet-coin-list'
 import { EvmTransactionSetPolicyCache } from './evm-transaction-set-policy'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
+import { isConsolidation, mergeAnchorOf } from './evm-coin-consolidator'
 import { FinalizedHeadUnavailableError, spendRuleHeadReader } from './chain/evm-spend-rule'
 import type { EvmListCoin } from './evm-coin-list'
 import type {
@@ -91,6 +92,26 @@ export function installEvmTransactionSetRuntime(
     reserveChange: (_operationId, minimumIndex) =>
       changePool.reserveFreshChange(minimumIndex),
     onPaymentIncluded: account => coinListSync.noteOwnTransferIncluded(account),
+    // Ownership is derived from the merge's sources; receipts alone cannot establish what
+    // remains at its target when another frontend may already have spent it.
+    mergeTarget: row => {
+      if (!params.mergeTargets || !isConsolidation(row)) return undefined
+      const target = params.mergeTargets.targetFor(mergeAnchorOf(row))
+      return {
+        account: target.account,
+        privateKey: changeKeyring.deriveChangeAccount(target.changeIndex).privateKey,
+        changeIndex: target.changeIndex,
+      }
+    },
+    observeMergeTarget: async target => {
+      params.mergeTargets!.watch(target)
+      coinListSync.markDirty(target.account)
+      await coinListSync.refreshAccounts([target.account])
+      // Sync also retains dirtiness for failed, overtaken, stopped or pending observations.
+      // Keep this member's projection unfinished so restart/reconciliation retries discovery.
+      if (coinListSync.isDirty(target.account))
+        throw new Error('Merge target chain observation incomplete')
+    },
     canSelectCoin: coin =>
       !coinListSync.isDirty(coin.account) &&
       !pool.isAccountClaimed(coin.account) &&

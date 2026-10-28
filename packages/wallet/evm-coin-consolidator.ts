@@ -14,8 +14,9 @@
  *   wires the notes; this module has no transport);
  * - the fresh account is derived from the coins it merges (`evm-merge-targets.ts`): every device
  *   of the account that plans the same merge signs the same transactions to the same account,
- *   and nothing is allocated. Once a move to it has landed it is watched as the wallet's own
- *   (`listTarget`); another device finds it from the accounts the merge emptied.
+ *   and nothing is allocated. When the set has landed, its settlement lists the merged money
+ *   there as a coin (`EvmTransactionSetPreparer`, `mergeTarget`), as it lists a payment's
+ *   change; another device finds it from the accounts the merge emptied.
  *
  * One merge at a time: while one is still on its way, the next call only resumes it.
  * Composition calls `maintain` from a host's idle tick (no message being sent or reconciled); a
@@ -67,9 +68,6 @@ export interface EvmCoinConsolidatorDeps {
   readonly targetFor: (anchor: EvmMergeAnchor) => { account: string; changeIndex: number }
   /** Hands a journalled set to the network (the wallet's transaction-set submission). */
   readonly submit: (prepared: PreparedEvmTransactionSet) => Promise<TransactionSetSubmission>
-  /** A merge's fresh account that a move has reached: list it as the wallet's own and read it
-   * into the coin list from the chain (nothing when the chain shows it unused yet). */
-  readonly listTarget?: (target: { account: string; changeIndex: number }) => Promise<void>
   /** Reads the wallet's coins and what its fee quote needs (gas price, head) from the node. */
   readonly refresh?: () => Promise<void>
 }
@@ -90,6 +88,16 @@ export function consolidationId(
 
 export function isConsolidation(row: Pick<EvmNativeOperation, 'preparationId'>): boolean {
   return row.preparationId?.startsWith(PREPARATION_PREFIX + EVM_CONSOLIDATION_PREFIX) === true
+}
+
+/** The anchor a journalled merge's target is derived from: the lowest [account, nonce] it spends. */
+export function mergeAnchorOf(row: Pick<EvmNativeOperation, 'members'>): EvmMergeAnchor {
+  return evmMergeAnchor(
+    row.members.map(member => ({
+      account: member.source.address,
+      nonce: Transaction.from(member.unsignedTransaction).nonce,
+    })),
+  )
 }
 
 const settled = (member: EvmNativeOperation['members'][number]) =>
@@ -114,42 +122,17 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
       coin.nonce === 0 ||
       (coin.lastSpentInBlock !== undefined && head >= coin.lastSpentInBlock + waitBlocks))
 
-  /** A journalled merge's target, from the coins it spends. */
-  const targetOf = (row: EvmNativeOperation) =>
-    deps.targetFor(
-      evmMergeAnchor(
-        row.members.map(member => ({
-          account: member.source.address,
-          nonce: Transaction.from(member.unsignedTransaction).nonce,
-        })),
-      ),
-    )
-
-  /** Merges a move of which has landed whose fresh account is not a coin of the list yet. */
-  const unlisted = () =>
-    deps
-      .operations()
-      .filter(
-        row =>
-          !row.cancelled &&
-          isConsolidation(row) &&
-          deps.coins.latestOf(row.recipient) === undefined &&
-          row.members.some(member => member.observation.state === 'included-success'),
-      )
-
   const once = async (startNew: boolean): Promise<EvmCoinMaintenance> => {
-    for (const row of unlisted()) await deps.listTarget?.(targetOf(row)).catch(() => undefined)
     const open = unfinished()
     if (open.length > 0) {
       const row = open[0]!
       const logicalId = row.preparationId!.slice(PREPARATION_PREFIX.length)
       // The same signed set again, never a new one.
       await deps.submit(await deps.preparer.readTransactionSet(logicalId)).catch(pendingHandoff)
-      await deps.listTarget?.(targetOf(row)).catch(() => undefined)
       return { outcome: 'waiting', operationId: logicalId }
     }
-    // Listing a merge's money and offering a signed merge again finish what was already signed;
-    // planning a new merge is left to the caller that may start one.
+    // Offering a signed merge again finishes what was already signed; planning a new merge is
+    // left to the caller that may start one.
     if (!startNew) return { outcome: 'idle' }
     // Without more pool coins than the band's top, whatever their value, there is nothing to
     // merge: an idle wallet's step ends here, with no node request.

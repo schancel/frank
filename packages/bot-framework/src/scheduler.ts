@@ -74,7 +74,9 @@ export function isCronDue(cronExpr: string, date: Date): boolean {
 export class BotScheduler {
   private readonly schedules: RegisteredSchedule[] = [];
   private timer?: NodeJS.Timeout;
-  private isChecking = false;
+  /** The check in progress, if any: `stop` waits for it. */
+  private checking?: Promise<number>;
+  private stopped = false;
 
   register(
     botId: string,
@@ -90,77 +92,93 @@ export class BotScheduler {
 
   start(checkIntervalMs = 5000): void {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => {
-      void this.checkAndRunDue();
+      // A check that fails (its state store unreadable) is reported, never left unhandled: the
+      // next tick checks again.
+      this.checkAndRunDue().catch((err) =>
+        console.error("[bot-scheduler] Scheduled events could not be checked:", err)
+      );
     }, checkIntervalMs);
     this.timer.unref();
   }
 
-  stop(): void {
+  /**
+   * Stops the schedule: no check starts after this, a check in progress runs no further event,
+   * and the returned promise resolves once that check (and the event it is running) is done. So
+   * the caller may close the bots' state stores once it resolves: nothing reads them after.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    await this.checking?.catch(() => undefined);
   }
 
-  async checkAndRunDue(nowMs = Date.now()): Promise<number> {
-    if (this.isChecking) return 0;
-    this.isChecking = true;
+  checkAndRunDue(nowMs = Date.now()): Promise<number> {
+    if (this.stopped || this.checking) return Promise.resolve(0);
+    const check = this.runDue(nowMs).finally(() => {
+      this.checking = undefined;
+    });
+    this.checking = check;
+    return check;
+  }
+
+  private async runDue(nowMs: number): Promise<number> {
     let executedCount = 0;
+    const date = new Date(nowMs);
 
-    try {
-      const date = new Date(nowMs);
+    for (const item of this.schedules) {
+      if (this.stopped) break;
+      const { botId, definition, context } = item;
+      const key = `schedule:last_run:${definition.id}`;
+      const lastRunRaw = await context.state.get(key);
+      const lastRunMs = lastRunRaw ? parseInt(lastRunRaw, 10) : 0;
 
-      for (const item of this.schedules) {
-        const { botId, definition, context } = item;
-        const key = `schedule:last_run:${definition.id}`;
-        const lastRunRaw = await context.state.get(key);
-        const lastRunMs = lastRunRaw ? parseInt(lastRunRaw, 10) : 0;
+      let isDue = false;
 
-        let isDue = false;
-
-        if (definition.intervalMs !== undefined && definition.intervalMs > 0) {
-          if (lastRunMs === 0) {
-            // First time seeing this schedule
-            if (definition.runOnStartup) {
-              isDue = true;
-            } else {
-              // Start countdown from now
-              await context.state.put(key, String(nowMs));
-            }
-          } else if (nowMs - lastRunMs >= definition.intervalMs) {
+      if (definition.intervalMs !== undefined && definition.intervalMs > 0) {
+        if (lastRunMs === 0) {
+          // First time seeing this schedule
+          if (definition.runOnStartup) {
             isDue = true;
+          } else {
+            // Start countdown from now
+            await context.state.put(key, String(nowMs));
           }
-        } else if (definition.cron) {
-          // Cron: must match expression and have not run in the same UTC minute
-          const hasRunThisMinute =
-            lastRunMs > 0 && Math.floor(nowMs / 60000) === Math.floor(lastRunMs / 60000);
-
-          if (!hasRunThisMinute && isCronDue(definition.cron, date)) {
-            isDue = true;
-          }
+        } else if (nowMs - lastRunMs >= definition.intervalMs) {
+          isDue = true;
         }
+      } else if (definition.cron) {
+        // Cron: must match expression and have not run in the same UTC minute
+        const hasRunThisMinute =
+          lastRunMs > 0 && Math.floor(nowMs / 60000) === Math.floor(lastRunMs / 60000);
 
-        if (isDue) {
-          executedCount++;
-          // Persist timestamp before handler execution to prevent duplicate triggers on crash
-          await context.state.put(key, String(nowMs));
-
-          try {
-            console.log(
-              `[bot-scheduler] Running scheduled event "${definition.id}" for bot "${botId}"`
-            );
-            await definition.handler(context);
-          } catch (err) {
-            console.error(
-              `[bot-scheduler] Error in scheduled event "${definition.id}" for bot "${botId}":`,
-              err
-            );
-          }
+        if (!hasRunThisMinute && isCronDue(definition.cron, date)) {
+          isDue = true;
         }
       }
-    } finally {
-      this.isChecking = false;
+
+      if (isDue && !this.stopped) {
+        // Persist timestamp before handler execution to prevent duplicate triggers on crash
+        await context.state.put(key, String(nowMs));
+        if (this.stopped) break;
+        executedCount++;
+
+        try {
+          console.log(
+            `[bot-scheduler] Running scheduled event "${definition.id}" for bot "${botId}"`
+          );
+          await definition.handler(context);
+        } catch (err) {
+          console.error(
+            `[bot-scheduler] Error in scheduled event "${definition.id}" for bot "${botId}":`,
+            err
+          );
+        }
+      }
     }
 
     return executedCount;

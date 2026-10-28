@@ -994,17 +994,14 @@ describe('a message of the hand that the other side does not have', () => {
     ['too-large', undefined, 'It is larger than one message can carry'],
     ['blocked', undefined, 'An earlier message whose payment is stuck'],
     ['fee-exceeded', undefined, 'more in network fees than you approved'],
-  ])(
-    'a bet refused as %s says why',
-    async (failureReason, detail, words) => {
-      const messages = hand(false, WIN, 400n, []).slice(0, 2) as any[]
-      messages[1].status = 'error'
-      messages[1].delivery = { failureReason, detail }
-      const wrapper = await mountLast(messages)
-      expect(status(wrapper)).toContain(words)
-      expect(status(wrapper)).not.toContain('The message could not be sent.')
-    },
-  )
+  ])('a bet refused as %s says why', async (failureReason, detail, words) => {
+    const messages = hand(false, WIN, 400n, []).slice(0, 2) as any[]
+    messages[1].status = 'error'
+    messages[1].delivery = { failureReason, detail }
+    const wrapper = await mountLast(messages)
+    expect(status(wrapper)).toContain(words)
+    expect(status(wrapper)).not.toContain('The message could not be sent.')
+  })
 
   it('a delivered message reads as before', async () => {
     saveSeed(ME, PEER, GAME, WIN)

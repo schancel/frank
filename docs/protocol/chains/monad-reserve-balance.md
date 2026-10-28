@@ -141,7 +141,11 @@ the node's 2 blocks and 2 more. When a read at an earlier block fails (a timeout
 replica whose finalized block is below it), the answer counts as unknown, not as settled: new
 money then waits until the finalized head is 4 past the newest block read after it, and an
 account's last transfer is dated by that newest block. Send to Address keeps a signed transfer
-and does not hand it over while its money is not shown settled. The reserve rule's quiet window (`waitForSpendSpacing`, and
+and does not hand it over while its money is not shown settled. A coin records the funds-settle
+block on its own (`fundsVisibleFromBlock`, next to `spendableFromBlock`): a transfer that leaves
+the account above the reserve may skip the quiet window, never that block. This covers deposits
+the sync dates, change, and money that reached an account in the block of its own payment (the
+stamp payer's and the transaction set's next coin). The reserve rule's quiet window (`waitForSpendSpacing`, and
 `lastSpentInBlock` in the transaction set) is counted on the same head. It signs a transfer only against the balance
 the account already had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
 `packages/wallet/chain/evm-spend-rule.ts`) and waits those blocks otherwise. The window is the

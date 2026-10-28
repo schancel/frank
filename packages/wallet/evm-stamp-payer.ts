@@ -360,7 +360,13 @@ export class EvmStampPayer {
   ): boolean {
     if (coin.spendableFromBlock === undefined) return true
     if (head !== undefined && head >= coin.spendableFromBlock) return true
-    // The chain's rule only bites a transfer that takes the account below its reserve.
+    // Money the node does not see yet cannot pay a transfer's gas, whatever the reserve.
+    if (
+      coin.fundsVisibleFromBlock !== undefined &&
+      (head === undefined || head < coin.fundsVisibleFromBlock)
+    )
+      return false
+    // The quiet window only bites a transfer that takes the account below its reserve.
     const floor = this.config.reserveBalanceWei
     return (
       floor !== undefined &&
@@ -1162,17 +1168,19 @@ export class EvmStampPayer {
           this.config.sync.markDirty(account)
         } else {
           const spacing = this.config.spendSpacingBlocks ?? 0
-          // What the account held at `included` may include money that arrived in that very
-          // block: the same wait as any money that just arrived (`fundsSettleBlocks`: the
-          // node's two blocks and two more), which also covers the quiet window after the
-          // account's own transfer (`spacing - 1`).
+          // The quiet window after the account's own transfer, with the margin the rest of the
+          // rule keeps (`fundsSettleBlocks`). What the account held at `included` beyond what the
+          // coin left it (its value less the payment; the fee came in at most at its ceiling) is
+          // money that arrived by that block: the node does not see it before the same block,
+          // whatever the reserve.
+          const settles = included + fundsSettleBlocks(spacing)
+          const fresh = spacing > 0 && balance > coin.valueWei - tx.value
           await coins.recordMined(coin, {
             block: included,
             successor: {
               valueWei: balance,
-              ...(spacing > 0
-                ? { spendableFromBlock: included + fundsSettleBlocks(spacing) }
-                : {}),
+              ...(spacing > 0 ? { spendableFromBlock: settles } : {}),
+              ...(fresh ? { fundsVisibleFromBlock: settles } : {}),
             },
           })
         }

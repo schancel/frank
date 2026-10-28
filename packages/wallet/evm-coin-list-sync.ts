@@ -511,7 +511,10 @@ export class EvmCoinListSync {
     // the answer unknown, and unknown is not settled.
     const settledUnknown = spacing > 0 && settledBalance === undefined
     const beforeUnknown = spacing > 0 && head >= spacing && before === undefined
+    // `fundsVisibleFromBlock`: the part of the wait that is the funds-settle rule (new money),
+    // which nothing relaxes; the rest of `spendableFromBlock` is the quiet window.
     let spendableFromBlock: number | undefined
+    let fundsVisibleFromBlock: number | undefined
     if (settledBalance !== undefined && settledBalance < balance) {
       // Arrived after `head - lag`. If `head` shows it, it arrived by `head`; else by the newest
       // block. The node sees it two blocks after its block is finalized; `lag` keeps two more.
@@ -521,12 +524,14 @@ export class EvmCoinListSync {
           : undefined
       spendableFromBlock =
         (atHead !== undefined && atHead >= balance ? head : await newestBlock()) + lag
+      fundsVisibleFromBlock = spendableFromBlock
     } else if (settledUnknown) {
       // What the list already knows of this coin stands: the same nonce and no more money than it
       // listed is no new money. Anything else may have arrived as late as the newest block.
-      if (live?.state === 'unspent' && live.nonce === latest && balance <= live.valueWei)
+      if (live?.state === 'unspent' && live.nonce === latest && balance <= live.valueWei) {
         spendableFromBlock = live.spendableFromBlock
-      else spendableFromBlock = (await newestBlock()) + lag
+        fundsVisibleFromBlock = live.fundsVisibleFromBlock
+      } else fundsVisibleFromBlock = spendableFromBlock = (await newestBlock()) + lag
     }
     // The account sent after `head - spacing`: by the newest block at the latest, and the coin
     // waits out the quiet window from there. When that nonce could not be read, the last spend
@@ -554,10 +559,17 @@ export class EvmCoinListSync {
     )
       spendableFromBlock = live.spendableFromBlock
     if (
+      live?.nonce === latest &&
+      live.fundsVisibleFromBlock !== undefined &&
+      live.fundsVisibleFromBlock > (fundsVisibleFromBlock ?? 0)
+    )
+      fundsVisibleFromBlock = live.fundsVisibleFromBlock
+    if (
       live?.state === 'unspent' &&
       live.nonce === latest &&
       live.valueWei === balance &&
       live.spendableFromBlock === spendableFromBlock &&
+      live.fundsVisibleFromBlock === fundsVisibleFromBlock &&
       (latest === 0 || live.lastSpentInBlock !== undefined)
     ) {
       this.empty.delete(account)
@@ -587,6 +599,7 @@ export class EvmCoinListSync {
               lastSpentInBlock: lastSpentInBlock!,
             }),
         ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
+        ...(fundsVisibleFromBlock === undefined ? {} : { fundsVisibleFromBlock }),
         listedInBlock: head,
       }),
     )

@@ -5341,10 +5341,11 @@ export const useChatStore = defineStore('chats', {
       const deviceClaims = recordRows.flatMap(wrapper =>
         ownDeviceClaims(wrapper, ownAddress),
       )
-      if (deviceClaims.length > 0) {
+      // A claim about another account than the one whose session is open is dropped there.
+      if (deviceClaims.length > 0 && ownAddress) {
         const leader = useLeaderStore()
-        if (ownAddress) leader.selectAccount(ownAddress)
-        for (const claim of deviceClaims) leader.handleIncomingClaim(claim)
+        for (const claim of deviceClaims)
+          leader.handleIncomingClaim(claim, ownAddress)
       }
       // What the account's administrator devices noted to themselves about their groups.
       let groupRecords = 0
@@ -5724,6 +5725,74 @@ export const useChatStore = defineStore('chats', {
       deliverableWrappers = deliverableWrappers.filter(
         wrapper => !coveredEchoes.has(wrapper.index),
       )
+
+      // The same free message delivered twice: a second row with the message ID, sender,
+      // conversation and content of one already filed (two devices of the sender sent the same
+      // automatic game step around a hand-over, each sealing its own copy). It is one message:
+      // the first row filed keeps it, and the copy is never saved, shown or read again. A copy
+      // that carries money is kept: its payment is its own.
+      const filedContent = new Set<string>()
+      let scannedFiled = false
+      const contentKey = (
+        conversationId: string,
+        sender: string | undefined,
+        logicalId: string | undefined,
+        contentDigest: string | undefined,
+      ) =>
+        sender && logicalId && contentDigest
+          ? `${conversationId}|${sender.toLowerCase()}|${logicalId}|${contentDigest}`
+          : undefined
+      const duplicates: ReceivedMessageWrapper[] = []
+      for (const wrapper of deliverableWrappers) {
+        const conv = receivedConversations.get(wrapper.index)
+        if (!conv || outboundMatches.has(wrapper.index)) continue
+        if (wrapper.index in this.messages) continue
+        if (!scannedFiled) {
+          scannedFiled = true
+          for (const held of Object.values(this.conversations))
+            for (const message of held?.messages ?? []) {
+              const key = contentKey(
+                held!.id,
+                message.senderAddress,
+                message.logicalMessageId,
+                message.contentDigest,
+              )
+              if (key) filedContent.add(key)
+            }
+        }
+        const key = contentKey(
+          conv.id,
+          wrapper.senderAddress,
+          receivedLogicalIds.get(wrapper.index),
+          wrapper.message.contentDigest,
+        )
+        if (!key) continue
+        const free =
+          !wrapper.stampValue &&
+          !wrapper.message.stampPayments?.length &&
+          !wrapper.message.stampValueWei
+        if (filedContent.has(key) && free) duplicates.push(wrapper)
+        else filedContent.add(key)
+      }
+      if (duplicates.length > 0) {
+        for (const wrapper of duplicates) {
+          suppressedDigests.add(wrapper.index)
+          toNotify.delete(wrapper.index)
+        }
+        const copies = new Set(duplicates.map(wrapper => wrapper.index))
+        deliverableWrappers = deliverableWrappers.filter(
+          wrapper => !copies.has(wrapper.index),
+        )
+        if (ownAddress && typeof messageStore?.suppressAndDelete === 'function')
+          await messageStore.suppressAndDelete(
+            ownAddress,
+            duplicates.map(wrapper => wrapper.index),
+            duplicates.map(wrapper => ({
+              payloadDigest: wrapper.index,
+              receivedTime: wrapper.message.receivedTime,
+            })),
+          )
+      }
 
       const persistYielder = createCooperativeBatchYielder()
       let persistStarted = false

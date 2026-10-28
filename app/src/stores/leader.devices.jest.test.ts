@@ -71,10 +71,15 @@ interface Device {
   leader: {
     isActiveMaster: boolean
     noteUserActivity(send: unknown): Promise<void>
+    claimIdle(): Promise<void>
   }
   /** The user acts on this device (a tap, a key, a send). */
   userActs: () => Promise<void>
-  receive: (rows: ReceivedMessageWrapper[]) => Promise<void>
+  receive: (rows: ReceivedMessageWrapper[], own?: string) => Promise<void>
+  /** The messages of each conversation the device shows. */
+  shown: () => string[][]
+  /** The message ID an automatic step is sent under, as this device derives it. */
+  automaticStepMessageId: (conversationId: string, stepKey: string) => string
   startReconciliation: () => { stop: () => void }
   gameSteps: (messages: unknown[]) => { key: string }[]
   saveDiceSecret: (rollId: string, secret: string) => void
@@ -110,7 +115,24 @@ function noteRow(digest: string, items: MessageItem[]): ReceivedMessageWrapper {
   } as unknown as ReceivedMessageWrapper
 }
 
-function device(name: string, { foreground }: { foreground: boolean }): Device {
+/** Whether the tick asked this device's wallet to plan new merges. */
+const startedMerges = (target: Device) =>
+  target.wallet.maintainCoins.mock.calls.some(
+    call => call[0]?.startNew === true,
+  )
+/** Whether the tick asked this device's wallet only to finish merges already signed. */
+const finishedMerges = (target: Device) =>
+  target.wallet.maintainCoins.mock.calls.some(
+    call => call[0]?.startNew === false,
+  )
+
+function device(
+  name: string,
+  {
+    foreground,
+    firstRead,
+  }: { foreground: boolean; firstRead?: Promise<unknown> },
+): Device {
   let made: Device | undefined
   delete globals.document
   jest.isolateModules(() => {
@@ -173,7 +195,7 @@ function device(name: string, { foreground }: { foreground: boolean }): Device {
       hasFocus: () => foreground,
       visibilityState: foreground ? 'visible' : 'hidden',
     }
-    const claims = leaderModule.startActiveDeviceClaims({ wallet })
+    const claims = leaderModule.startActiveDeviceClaims({ wallet, firstRead })
     made = {
       name,
       wallet,
@@ -181,10 +203,23 @@ function device(name: string, { foreground }: { foreground: boolean }): Device {
       leader,
       userActs: () =>
         leader.noteUserActivity(leaderModule.deviceClaimSender(wallet)),
-      receive: async rows => {
+      receive: async (rows, own = ME) => {
         setActivePinia(pinia)
-        await chatsModule.useChatStore(pinia).receiveMessages(rows, ME)
+        await chatsModule.useChatStore(pinia).receiveMessages(rows, own)
       },
+      shown: () =>
+        Object.values(
+          chatsModule.useChatStore(pinia).conversations as Record<
+            string,
+            { messages: { payloadDigest: string }[] } | undefined
+          >,
+        )
+          .filter(c => c !== undefined)
+          .map(c => c!.messages.map(m => m.payloadDigest)),
+      automaticStepMessageId: (conversationId, stepKey) =>
+        chatsModule.outgoingMessageId(
+          games.automaticStepOperationId(conversationId, stepKey),
+        ),
       startReconciliation: () => {
         setActivePinia(pinia)
         return adapter.startOutgoingReconciliation({
@@ -214,7 +249,10 @@ function device(name: string, { foreground }: { foreground: boolean }): Device {
   return made
 }
 
-const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0))
+const settle = async () => {
+  for (let i = 0; i < 5; i++)
+    await new Promise<void>(resolve => setTimeout(resolve, 0))
+}
 const ticks = () => new Promise<void>(resolve => setTimeout(resolve, 40))
 
 /** The relay hands every device the claims sent so far that it has not read yet. */
@@ -277,9 +315,10 @@ describe('the active device of an account', () => {
     await sync(phone, laptop)
     running.push(phone.startReconciliation(), laptop.startReconciliation())
     await ticks()
-    expect(phone.wallet.maintainCoins).toHaveBeenCalled()
-    expect(laptop.wallet.maintainCoins).not.toHaveBeenCalled()
-    // Both still finish what their own journals hold.
+    expect(startedMerges(phone)).toBe(true)
+    expect(startedMerges(laptop)).toBe(false)
+    // Both still finish what their own journals hold, merges already signed included.
+    expect(finishedMerges(laptop)).toBe(true)
     expect(phone.wallet.reobserveNativeOperations).toHaveBeenCalled()
     expect(laptop.wallet.reobserveNativeOperations).toHaveBeenCalled()
 
@@ -292,8 +331,8 @@ describe('the active device of an account', () => {
     phone.wallet.maintainCoins.mockClear()
     laptop.wallet.maintainCoins.mockClear()
     await ticks()
-    expect(laptop.wallet.maintainCoins).toHaveBeenCalled()
-    expect(phone.wallet.maintainCoins).not.toHaveBeenCalled()
+    expect(startedMerges(laptop)).toBe(true)
+    expect(startedMerges(phone)).toBe(false)
 
     // And back to the phone.
     await phone.userActs()
@@ -316,6 +355,32 @@ describe('the active device of an account', () => {
       .mockReturnValue(phoneClaimedAt.masterClaimedAt - 3_600_000)
     await laptop.userActs()
     now.mockRestore()
+    await sync(phone, laptop)
+    expect(laptop.leader.isActiveMaster).toBe(true)
+    expect(phone.leader.isActiveMaster).toBe(false)
+  })
+
+  it('opened in the foreground, claims only after its first mailbox read, so it takes over from a claim stored there', async () => {
+    const phone = device('phone', { foreground: true })
+    await sync(phone)
+    const stored = (phone.leader as unknown as { masterClaimedAt: number })
+      .masterClaimedAt
+    // The laptop's clock is an hour behind the phone's. It opens in the foreground; its first
+    // mailbox read brings the phone's claim.
+    const now = jest.spyOn(Date, 'now').mockReturnValue(stored - 3_600_000)
+    let firstReadDone!: () => void
+    const firstRead = new Promise<void>(resolve => {
+      firstReadDone = resolve
+    })
+    const laptop = device('laptop', { foreground: true, firstRead })
+    await settle()
+    expect(mailbox.filter(entry => entry.by === 'laptop')).toEqual([])
+    await sync(laptop)
+    firstReadDone()
+    await settle()
+    await laptop.leader.claimIdle()
+    now.mockRestore()
+    expect(mailbox.filter(entry => entry.by === 'laptop')).toHaveLength(1)
     await sync(phone, laptop)
     expect(laptop.leader.isActiveMaster).toBe(true)
     expect(phone.leader.isActiveMaster).toBe(false)
@@ -388,7 +453,7 @@ describe('the active device of an account', () => {
     running.push(phone.startReconciliation(), laptop.startReconciliation())
     await ticks()
     // While its own send is unfinished the phone merges nothing, active or not.
-    expect(phone.wallet.maintainCoins).not.toHaveBeenCalled()
+    expect(startedMerges(phone)).toBe(false)
 
     // Mid-send, the user picks up the laptop.
     await laptop.userActs()
@@ -405,14 +470,69 @@ describe('the active device of an account', () => {
     phone.wallet.maintainCoins.mockClear()
     laptop.wallet.maintainCoins.mockClear()
     await ticks()
-    expect(phone.wallet.maintainCoins).not.toHaveBeenCalled()
-    expect(laptop.wallet.maintainCoins).toHaveBeenCalled()
+    expect(startedMerges(phone)).toBe(false)
+    expect(startedMerges(laptop)).toBe(true)
     // Nothing about the phone's send was ever sent from the laptop: only its claim.
     expect(
       mailbox
         .filter(entry => entry.by === 'laptop')
         .map(entry => entry.row.message.items),
     ).toEqual([[expect.objectContaining({ type: 'device-claim' })]])
+  })
+
+  it('sends an automatic step under a message ID derived from the step, so the copies two devices send are one message', async () => {
+    const phone = device('phone', { foreground: true })
+    const laptop = device('laptop', { foreground: false })
+    const peer = device('peer', { foreground: false })
+    const conversationId = '11111111-1111-4111-8111-111111111111'
+    const id = phone.automaticStepMessageId(conversationId, 'dice:roll-1')
+    expect(laptop.automaticStepMessageId(conversationId, 'dice:roll-1')).toBe(
+      id,
+    )
+    expect(
+      phone.automaticStepMessageId(conversationId, 'dice:roll-2'),
+    ).not.toBe(id)
+    // During a hand-over both devices sent the reveal: two rows (two encryptions, two
+    // digests) with the same message ID, from the same sender, in the same conversation.
+    const item = { type: 'text', text: 'the reveal' } as MessageItem
+    const copy = (digest: string, time: number) =>
+      ({
+        conversationId,
+        outbound: false,
+        senderAddress: ME,
+        copartyAddress: ME,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        index: digest,
+        stampValue: 0,
+        message: {
+          conversationId,
+          outbound: false,
+          status: 'confirmed',
+          senderAddress: ME,
+          destinationAddress: PEER,
+          items: [item],
+          serverTime: time,
+          receivedTime: time,
+          outpoints: [],
+          logicalMessageId: id,
+          contentDigest: 'cd'.repeat(32),
+        },
+      } as unknown as ReceivedMessageWrapper)
+    await peer.receive([copy('a'.repeat(64), 20_000)], PEER)
+    await peer.receive([copy('b'.repeat(64), 20_001)], PEER)
+    expect(peer.shown().flat()).toEqual(['a'.repeat(64)])
+    // Read again, alone or with the first, it is still one message.
+    await peer.receive(
+      [copy('a'.repeat(64), 20_000), copy('b'.repeat(64), 20_001)],
+      PEER,
+    )
+    expect(peer.shown().flat()).toEqual(['a'.repeat(64)])
+    // A copy that carries money is its own message.
+    const paid = copy('c'.repeat(64), 20_002)
+    Object.assign(paid, { stampValue: 1 })
+    Object.assign(paid.message, { stampValueWei: 10n ** 15n })
+    await peer.receive([paid], PEER)
+    expect(peer.shown().flat()).toHaveLength(2)
   })
 
   it('a claim in a row from anyone else is not read', async () => {

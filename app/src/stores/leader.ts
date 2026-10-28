@@ -5,12 +5,15 @@
  * foreground, clicked, tapped, typed: sending and paying are reached that way) is the active
  * one. It says so to the account's other devices with a free note to self carrying a
  * `device-claim` item, and to this device's other tabs over BroadcastChannel('frank:leader-sync').
- * The latest claim wins. A claim is always later than every claim the claiming device has seen,
+ * The latest claim wins; two claims of the same millisecond are ordered by instance ID, the same
+ * way on every device. A claim is always later than every claim the claiming device has seen,
  * whatever its clock says, so a device whose clock is behind still takes over when its user acts.
+ * A claim not yet in the mailbox is sent again on a timer, with backoff, until it is.
  *
  * Only the active device STARTS automatic work that signs something new on the user's behalf
- * and that no one asked this device for: background coin maintenance (`startOutgoingReconciliation`)
- * and the free automatic game steps a chat sends without asking (`utils/automatic-game-steps.ts`).
+ * and that no one asked this device for: background coin maintenance (`startOutgoingReconciliation`,
+ * (new merges only) and the free automatic game steps a chat sends without asking
+ * (`utils/automatic-game-steps.ts`).
  * Every device still reads, syncs and shows everything.
  *
  * Finishing work the user already authorized is never gated. A send, a payment or a merge
@@ -85,15 +88,46 @@ export function detectDeviceName(): string {
  * a background tab) still knows which device is active. */
 const CLAIM_KEY_PREFIX = 'frank:active-device:'
 
-/** After a claim note could not be sent, the next user action tries again no sooner than this. */
-export const CLAIM_RETRY_MS = 15_000
+/** A claim that could not be sent is sent again after this, then after twice as long each time,
+ * up to {@link CLAIM_RETRY_MAX_MS}. */
+export const CLAIM_RETRY_MS = 5_000
+export const CLAIM_RETRY_MAX_MS = 300_000
 
 /** Sends one claim to the account's own mailbox. */
 export type SendDeviceClaim = (item: DeviceClaimItem) => Promise<unknown>
 
+/** One claim, as the ordering needs it. */
+interface Claim {
+  instanceId: string
+  claimedAt: number
+}
+
+/** Whether claim `a` is later than claim `b`: by time, then by instance ID. */
+export function laterClaim(a: Claim, b: Claim | null): boolean {
+  if (!b) return true
+  if (a.claimedAt !== b.claimedAt) return a.claimedAt > b.claimedAt
+  return a.instanceId > b.instanceId
+}
+
 let syncChannel: BroadcastChannel | null = null
+/** Sending this device's claim: one send at a time, for one account's session. */
 let claimInFlight: Promise<void> | undefined
-let lastClaimAttemptAt = -Infinity
+let claimAgain = false
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retryDelayMs = CLAIM_RETRY_MS
+/** The claim the pending retry is for. */
+let retryClaimedAt = 0
+/** Bumped whenever the session changes: a send of an earlier session records nothing. */
+let claimGeneration = 0
+
+function resetClaimSending(): void {
+  claimGeneration += 1
+  if (retryTimer !== undefined) clearTimeout(retryTimer)
+  retryTimer = undefined
+  claimInFlight = undefined
+  claimAgain = false
+  retryDelayMs = CLAIM_RETRY_MS
+}
 
 export const useLeaderStore = defineStore('leader', {
   state: (): LeaderState => {
@@ -145,12 +179,18 @@ export const useLeaderStore = defineStore('leader', {
           syncChannel = new BroadcastChannel('frank:leader-sync')
           syncChannel.onmessage = (event: MessageEvent) => {
             const data = event.data
-            if (data?.type === 'leader-claim') {
-              this.handleIncomingClaim({
-                instanceId: data.instanceId,
-                deviceName: data.deviceName,
-                claimedAt: data.claimedAt,
-              })
+            if (
+              data?.type === 'leader-claim' &&
+              data.accountKey === this.accountKey
+            ) {
+              this.handleIncomingClaim(
+                {
+                  instanceId: data.instanceId,
+                  deviceName: data.deviceName,
+                  claimedAt: data.claimedAt,
+                },
+                data.accountKey,
+              )
             }
           }
         } catch {
@@ -161,11 +201,13 @@ export const useLeaderStore = defineStore('leader', {
 
     /**
      * The claim this store holds is about this account from now on: the last claim this device
-     * saw for it is loaded, and nothing of another account's devices is kept.
+     * saw for it is loaded, nothing of another account's devices is kept, and a claim still being
+     * sent for another account is forgotten.
      */
     selectAccount(accountKey: string) {
       const key = accountKey.toLowerCase()
       if (this.accountKey === key) return
+      resetClaimSending()
       this.accountKey = key
       this.masterInstanceId = null
       this.masterDeviceName = null
@@ -194,6 +236,11 @@ export const useLeaderStore = defineStore('leader', {
       }
     },
 
+    /** The session that sends this device's claims has ended: nothing more is sent for it. */
+    endClaimSession() {
+      resetClaimSending()
+    },
+
     persistClaim() {
       if (!this.accountKey || this.masterInstanceId === null) return
       setStoredValue(
@@ -206,22 +253,9 @@ export const useLeaderStore = defineStore('leader', {
       )
     },
 
-    claimMasterRole(params?: {
-      sendSelfMessage?: boolean
-      ownAddress?: string
-      wallet?: WalletHandle
-      sendDirectMessage?: (options: {
-        wallet: WalletHandle
-        address: string
-        items: Array<{
-          type: 'device-claim'
-          instanceId: string
-          deviceName?: string
-          claimedAt: number
-        }>
-        stampValue?: bigint
-      }) => Promise<unknown>
-    }) {
+    /** This device becomes the active one, here and in this device's other tabs. The account's
+     * other devices are told by {@link noteUserActivity}. */
+    claimMasterRole() {
       // Later than any claim this device has seen, whatever its clock says.
       const now = Math.max(Date.now(), this.masterClaimedAt + 1)
       this.masterInstanceId = this.myInstanceId
@@ -230,12 +264,12 @@ export const useLeaderStore = defineStore('leader', {
       this.claimNoted = false
       this.persistClaim()
 
-      // 1. Broadcast locally across tabs
       if (typeof BroadcastChannel !== 'undefined') {
         this.initSyncChannel()
         try {
           syncChannel?.postMessage({
             type: 'leader-claim',
+            accountKey: this.accountKey,
             instanceId: this.myInstanceId,
             deviceName: this.myDeviceName,
             claimedAt: now,
@@ -244,88 +278,112 @@ export const useLeaderStore = defineStore('leader', {
           // ignore
         }
       }
-
-      // 2. Cross-device synchronization via self-message if requested
-      if (
-        params?.sendSelfMessage &&
-        params.ownAddress &&
-        params.wallet &&
-        params.sendDirectMessage
-      ) {
-        void params
-          .sendDirectMessage({
-            wallet: params.wallet,
-            address: params.ownAddress,
-            items: [
-              {
-                type: 'device-claim',
-                instanceId: this.myInstanceId,
-                deviceName: this.myDeviceName,
-                claimedAt: now,
-              },
-            ],
-          })
-          .catch((err: unknown) => {
-            console.warn(
-              '[leader] Failed to send cross-device claim message:',
-              err,
-            )
-          })
-      }
     },
 
     /**
      * The user acted on this device: it becomes the active one, and the account's other devices
-     * are told once (a free note to self). Acting again on the active device sends nothing more;
-     * a note that could not be sent is tried again on a later action, at most every
-     * {@link CLAIM_RETRY_MS}.
+     * are told (a free note to self). Acting again on the active device sends nothing more.
+     * Resolves once nothing is being sent.
      */
     noteUserActivity(send?: SendDeviceClaim): Promise<void> {
-      const mine = this.masterInstanceId === this.myInstanceId
-      if (mine && (this.claimNoted || !send)) return Promise.resolve()
-      if (!mine) this.claimMasterRole()
-      if (!send) return Promise.resolve()
-      if (claimInFlight) return claimInFlight
-      if (mine && Date.now() - lastClaimAttemptAt < CLAIM_RETRY_MS)
-        return Promise.resolve()
-      lastClaimAttemptAt = Date.now()
+      if (this.masterInstanceId !== this.myInstanceId) this.claimMasterRole()
+      if (send) this.sendClaim(send)
+      return this.claimIdle()
+    },
+
+    /**
+     * Sends this device's current claim, unless it is in the mailbox already or another device
+     * is active. One send at a time: a claim made while an earlier one is on its way is sent
+     * when that one settles. A claim that could not be sent is sent again on a timer, with
+     * backoff, until it is in the mailbox or another device claims.
+     */
+    sendClaim(send: SendDeviceClaim): void {
+      if (this.masterInstanceId !== this.myInstanceId || this.claimNoted) return
+      if (claimInFlight) {
+        claimAgain = true
+        return
+      }
+      // The same claim waiting out its backoff is not hurried by a user action.
+      if (retryTimer !== undefined && retryClaimedAt === this.masterClaimedAt)
+        return
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      retryTimer = undefined
+      const generation = claimGeneration
       const item: DeviceClaimItem = {
         type: 'device-claim',
         instanceId: this.myInstanceId,
         deviceName: this.myDeviceName,
         claimedAt: this.masterClaimedAt,
       }
-      const run = send(item).then(
-        () => {
-          if (
-            this.masterInstanceId === item.instanceId &&
-            this.masterClaimedAt === item.claimedAt
-          )
-            this.claimNoted = true
-        },
-        (err: unknown) => {
-          console.warn('[leader] device claim not sent; will retry:', err)
-        },
-      )
-      const tracked = run.finally(() => {
-        if (claimInFlight === tracked) claimInFlight = undefined
-      })
-      claimInFlight = tracked
-      return tracked
+      const current = () =>
+        generation === claimGeneration &&
+        this.masterInstanceId === this.myInstanceId
+      claimInFlight = send(item)
+        .then(
+          () => {
+            if (current() && this.masterClaimedAt === item.claimedAt) {
+              this.claimNoted = true
+              retryDelayMs = CLAIM_RETRY_MS
+            }
+          },
+          (err: unknown) => {
+            console.warn('[leader] device claim not sent; will retry:', err)
+          },
+        )
+        .finally(() => {
+          if (generation !== claimGeneration) return
+          claimInFlight = undefined
+          const newer = claimAgain && this.masterClaimedAt !== item.claimedAt
+          claimAgain = false
+          if (!current() || this.claimNoted) return
+          // A newer claim goes at once; the same claim again after the backoff.
+          if (newer) return this.sendClaim(send)
+          const delay = retryDelayMs
+          retryDelayMs = Math.min(retryDelayMs * 2, CLAIM_RETRY_MAX_MS)
+          retryClaimedAt = item.claimedAt
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined
+            if (generation === claimGeneration) this.sendClaim(send)
+          }, delay)
+        })
     },
 
-    handleIncomingClaim(claim: {
-      instanceId: string
-      deviceName?: string
-      claimedAt: number
-    }) {
-      if (claim.claimedAt > this.masterClaimedAt) {
-        this.masterInstanceId = claim.instanceId
-        this.masterDeviceName = claim.deviceName || null
-        this.masterClaimedAt = claim.claimedAt
-        if (claim.instanceId !== this.myInstanceId) this.claimNoted = false
-        this.persistClaim()
+    /** Resolves once no claim of this device is being sent (a retry may still be due). */
+    async claimIdle(): Promise<void> {
+      while (claimInFlight) await claimInFlight
+    },
+
+    /**
+     * A claim read from the account's mailbox or from another tab. One about another account
+     * than the selected one is not this account's and is dropped.
+     */
+    handleIncomingClaim(
+      claim: {
+        instanceId: string
+        deviceName?: string
+        claimedAt: number
+      },
+      accountKey: string,
+    ) {
+      if (!this.accountKey || accountKey.toLowerCase() !== this.accountKey)
+        return
+      const known =
+        this.masterInstanceId === null
+          ? null
+          : {
+              instanceId: this.masterInstanceId,
+              claimedAt: this.masterClaimedAt,
+            }
+      if (!laterClaim(claim, known)) return
+      this.masterInstanceId = claim.instanceId
+      this.masterDeviceName = claim.deviceName || null
+      this.masterClaimedAt = claim.claimedAt
+      if (claim.instanceId !== this.myInstanceId) {
+        this.claimNoted = false
+        if (retryTimer !== undefined) clearTimeout(retryTimer)
+        retryTimer = undefined
       }
+      this.persistClaim()
     },
 
     setDeviceName(name: string) {
@@ -339,8 +397,7 @@ export const useLeaderStore = defineStore('leader', {
       this.masterClaimedAt = 0
       this.accountKey = null
       this.claimNoted = false
-      claimInFlight = undefined
-      lastClaimAttemptAt = -Infinity
+      resetClaimSending()
       if (syncChannel) {
         syncChannel.close()
         syncChannel = null
@@ -365,16 +422,24 @@ export function deviceClaimSender(wallet: WalletHandle): SendDeviceClaim {
     })
 }
 
-/** What counts as the user acting on this device. */
+/** What counts as the user acting on this device. A screen waking up (the page becoming visible
+ * again) does not: the user may be looking at another device. */
 const ACTIVITY_EVENTS = ['pointerdown', 'keydown'] as const
 
 /**
  * Makes this device the active one whenever its user acts on it, for one account's session:
- * when the app is open in the foreground at start, when it comes back to the foreground, and on
- * any click, tap or key press (sending and paying are reached through those). A device loaded in
- * a background tab claims nothing until its user looks at it.
+ * when the app is open in the foreground at start, and on focus, a click, a tap or a key press
+ * (sending and paying are reached through those). The claim at start waits for `firstRead`, the
+ * session's first read of the mailbox, so it is later than the latest claim stored there. A
+ * device loaded in a background tab claims nothing until its user acts on it.
  */
-export function startActiveDeviceClaims({ wallet }: { wallet: WalletHandle }): {
+export function startActiveDeviceClaims({
+  wallet,
+  firstRead,
+}: {
+  wallet: WalletHandle
+  firstRead?: Promise<unknown>
+}): {
   stop: () => void
 } {
   const leader = useLeaderStore()
@@ -391,18 +456,18 @@ export function startActiveDeviceClaims({ wallet }: { wallet: WalletHandle }): {
     !!doc &&
     doc.visibilityState !== 'hidden' &&
     (typeof doc.hasFocus !== 'function' || doc.hasFocus())
-  const onVisibility = () => {
-    if (foreground()) act()
-  }
-  if (foreground()) act()
-  doc?.addEventListener?.('visibilitychange', onVisibility)
+  void Promise.resolve(firstRead)
+    .catch(() => undefined)
+    .then(() => {
+      if (foreground()) act()
+    })
   win?.addEventListener?.('focus', act)
   for (const name of ACTIVITY_EVENTS)
     doc?.addEventListener?.(name, act, { capture: true, passive: true })
   return {
     stop: () => {
       stopped = true
-      doc?.removeEventListener?.('visibilitychange', onVisibility)
+      leader.endClaimSession()
       win?.removeEventListener?.('focus', act)
       for (const name of ACTIVITY_EVENTS)
         doc?.removeEventListener?.(name, act, { capture: true })

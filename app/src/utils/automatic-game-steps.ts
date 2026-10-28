@@ -8,6 +8,11 @@
  * it. The other devices still show the game; when the user acts on one of them it becomes the
  * active one and sends what is still owed.
  *
+ * Each step is sent under a message ID derived from the conversation and the step
+ * ({@link automaticStepOperationId}). If two devices both send one around a hand-over, the
+ * copies carry the same ID from the same sender in the same conversation, and a receiver files
+ * them as one message.
+ *
  * What the user already decided (a hand message that was cut off or failed) is not a step
  * here: the chat finishes that on whichever device holds it (`resumeHandMessages`).
  */
@@ -16,6 +21,25 @@ import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/menta
 import { automaticDealerSteps, type HandChatMessage } from './blackjack-hand'
 import { automaticP2pGameSteps } from './p2p-games'
 import { automaticMentalPokerSteps } from './p2p-mental-poker'
+
+/** Whether an item belongs to a game that may have automatic steps. */
+export function isAutomaticGameItem(item: MessageItem): boolean {
+  return (
+    item.type === 'blackjack-hand' ||
+    item.type === 'dice' ||
+    item.type === 'rps' ||
+    (item.type === 'application' && item.itemType === MENTAL_POKER_PLUGIN_ID)
+  )
+}
+
+/** The local key an automatic step is sent under, and so its message ID: the same on every
+ * device of the account for the same step of the same game in the same conversation. */
+export function automaticStepOperationId(
+  conversationId: string,
+  stepKey: string,
+): string {
+  return `pending:automatic-step:${conversationId}:${stepKey}`
+}
 
 export function automaticGameSteps(
   messages: readonly HandChatMessage[],

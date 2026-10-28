@@ -2956,14 +2956,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // One step of background coin maintenance, from a host's idle tick: a merge of the
             // pool's small coins when it is above the coin distribution's band, or the resume of
             // the merge still on its way. Never at open; never holds a send.
-            async maintainCoins() {
+            async maintainCoins(options?: { startNew?: boolean }) {
               const internals = evmWalletInternals(wallet);
               if (internals.closed) return { outcome: "idle" as const };
               try {
                 // From the coin list as the wallet's own reads keep it: an idle wallet's
                 // maintenance step makes no node request unless it may have a merge to make
                 // or finish.
-                return await transactionOwner.runLifetime(() => coinConsolidator.maintain());
+                return await transactionOwner.runLifetime(() => coinConsolidator.maintain(options));
               } catch (error) {
                 if (isChainUnreachableError(error)) {
                   throw error instanceof ChainUnreachableError

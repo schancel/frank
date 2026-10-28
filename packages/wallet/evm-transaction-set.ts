@@ -431,6 +431,10 @@ export class EvmTransactionSetPreparer {
       // is money the list learns from a chain read of that account, like any deposit.
       if (observation.state === 'included-success' && meta.role === 'payment')
         this.options.onPaymentIncluded?.(tx.to!.toLowerCase())
+      // A merge's money is a coin of the list once the set has landed, like a payment's change:
+      // settled here, whichever path settles the set (a tick, a resume after a restart, a device
+      // that signed the same merge), never left for a later maintenance step.
+      await this.listMergeTarget(current)
       const lastOfSource = current.members
         .filter(candidate => candidate.source.address === member.source.address)
         .at(-1)!
@@ -494,6 +498,55 @@ export class EvmTransactionSetPreparer {
       }
     }
     return true
+  }
+
+  /**
+   * Lists a background merge's fresh account as a coin once every member of its set is settled
+   * (included, reverted or superseded): what the included moves paid it, from the block the last
+   * of them landed in, waiting the funds-settle depth from there like any fresh money. Nothing
+   * for a set that is not a merge, for a target the list already holds, or before the last
+   * member settles. Idempotent: a settlement repeated after a restart finds the coin listed.
+   */
+  private async listMergeTarget(row: EvmNativeOperation): Promise<void> {
+    const target = this.options.mergeTarget?.(row)
+    if (!target) return
+    const { coins } = this.options
+    if (coins.latestOf(target.account)) return
+    const settled = (member: EvmNativeOperation['members'][number]) =>
+      member.observation.state === 'included-success' ||
+      member.observation.state === 'included-revert' ||
+      nativeMemberSuperseded(member)
+    if (!row.members.every(settled)) return
+    const landed = row.members.filter(
+      member => member.observation.state === 'included-success' && member.transactionSet?.role === 'payment',
+    )
+    if (landed.length === 0) return
+    const account = target.account.toLowerCase()
+    if (
+      computeAddress(target.privateKey).toLowerCase() !== account ||
+      landed.some(member => Transaction.from(member.unsignedTransaction).to?.toLowerCase() !== account)
+    )
+      throw new Error('Merge target derivation does not match signed transaction')
+    const block = Math.max(
+      ...landed.map(member => ('blockNumber' in member.observation ? member.observation.blockNumber : 0)),
+    )
+    const rule = this.recoverySpendRule
+    await coins.put({
+      account,
+      nonce: 0,
+      privateKey: target.privateKey,
+      valueWei: landed.reduce((sum, member) => sum + Transaction.from(member.unsignedTransaction).value, 0n),
+      origin: 'change',
+      changeIndex: target.changeIndex,
+      listedInBlock: block,
+      // Fresh money, whatever its amount (as a payment's change above).
+      ...(rule && fundsSettleBlocks(rule.waitBlocks) > 0
+        ? {
+            spendableFromBlock: block + fundsSettleBlocks(rule.waitBlocks),
+            fundsVisibleFromBlock: block + fundsSettleBlocks(rule.waitBlocks),
+          }
+        : {}),
+    })
   }
 
   constructTransactionSet(request: ConstructEvmTransactionSetRequest): Promise<PreparedEvmTransactionSet> {

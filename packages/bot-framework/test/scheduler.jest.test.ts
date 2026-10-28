@@ -188,4 +188,66 @@ describe("BotScheduler", () => {
       expect(runCount).toBe(2);
     });
   });
+
+  // Solonet, 2026-10-28: the bot host closed the bots' state stores while a scheduled event was
+  // still running; the check went on to the next schedule, read the closed store ("Database is
+  // not open"), and the unhandled rejection ended the process before the livecheck's sweep.
+  describe("Stopping", () => {
+    class ClosableStore extends MemoryStateStore {
+      private closed = false;
+      async get(key: string): Promise<string | null> {
+        if (this.closed) throw new Error("Database is not open");
+        return super.get(key);
+      }
+      async put(key: string, value: string): Promise<void> {
+        if (this.closed) throw new Error("Database is not open");
+        return super.put(key, value);
+      }
+      async close(): Promise<void> {
+        this.closed = true;
+      }
+    }
+
+    it("waits for the event in progress, runs no other, and reads nothing after it resolves", async () => {
+      const scheduler = new BotScheduler();
+      const store = new ClosableStore();
+      const ctx = createMockContext(store);
+      const ran: string[] = [];
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => (release = resolve));
+      for (const id of ["first", "second"])
+        scheduler.register(
+          "test-bot",
+          {
+            id,
+            intervalMs: 60_000,
+            runOnStartup: true,
+            handler: async () => {
+              ran.push(id);
+              if (id === "first") await blocked;
+            },
+          },
+          ctx
+        );
+
+      const check = scheduler.checkAndRunDue(1000);
+      while (!ran.includes("first")) await new Promise((resolve) => setImmediate(resolve));
+      let stopped = false;
+      const stopping = Promise.resolve(scheduler.stop()).then(() => {
+        stopped = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      // The event in progress is still running: stop has not resolved.
+      expect(stopped).toBe(false);
+
+      release();
+      await stopping;
+      // The host closes the store once stop resolves; the check reads nothing more.
+      await store.close();
+      await expect(check).resolves.toBe(1);
+      expect(ran).toEqual(["first"]);
+      // And no check starts after stop.
+      expect(await scheduler.checkAndRunDue(200_000)).toBe(0);
+    });
+  });
 });

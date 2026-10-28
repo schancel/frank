@@ -2487,7 +2487,9 @@ export class FrankBotHost {
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
-    this.scheduler.stop();
+    // A scheduled event in progress finishes, and none starts, before any bot's state store
+    // is closed below.
+    await this.scheduler.stop();
     // A reply waiting for a poll that will not come is released, and its handler told so.
     for (const instance of this.instances.values()) this.wakeReplies(instance);
 

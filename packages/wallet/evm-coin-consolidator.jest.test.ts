@@ -18,6 +18,8 @@ import {
   consolidationId,
   createEvmCoinConsolidator,
   EVM_CONSOLIDATION_PREFIX,
+  isConsolidation,
+  mergeAnchorOf,
 } from './evm-coin-consolidator'
 import {
   countPoolCoins,
@@ -58,6 +60,9 @@ async function open(
     head?: { value: number }
     nextIndex?: { value: number }
     keyBase?: number
+    /** The chain's spend rule (Monad: 10 MON, 3 blocks): fresh money waits its funds-settle
+     * depth. */
+    spendRule?: { belowWei: bigint; waitBlocks: number }
   } = {},
 ) {
   const coinStore = options.coinStore ?? new MemoryRecordStore<StoredEvmListCoin>()
@@ -88,6 +93,7 @@ async function open(
     maxChangeOutputs: D.maxChangeOutputs,
     coinDistribution: D,
     head: head.value,
+    ...(options.spendRule === undefined ? {} : { spendRule: options.spendRule }),
   })
   const derive = (index: number) => ({
     account: signer(keyBase + index).address.toLowerCase(),
@@ -103,6 +109,10 @@ async function open(
   }
   const included: string[] = []
   let entropy = 11
+  const keyring = {
+    deriveChangeAccount: (index: number) => ({ address: derive(index).account, privateKey: derive(index).privateKey }),
+  } as unknown as Pick<MonadChangeKeyring, 'deriveChangeAccount'>
+  const targets = new EvmMergeTargets(chain, keyring)
   const preparer = new EvmTransactionSetPreparer({
     coins,
     journal,
@@ -111,13 +121,15 @@ async function open(
     deriveChange: derive,
     reserveChange: async (_operation, minimum) => allocate(minimum),
     onPaymentIncluded: account => included.push(account),
+    // As composition derives it (`evm-transaction-set-runtime.ts`).
+    mergeTarget: row => {
+      if (!isConsolidation(row)) return undefined
+      const target = targets.targetFor(mergeAnchorOf(row))
+      return { ...derive(target.changeIndex), account: target.account }
+    },
+    ...(options.spendRule === undefined ? {} : { recoverySpendRule: options.spendRule }),
   })
-  const keyring = {
-    deriveChangeAccount: (index: number) => ({ address: derive(index).account, privateKey: derive(index).privateKey }),
-  } as unknown as Pick<MonadChangeKeyring, 'deriveChangeAccount'>
-  const targets = new EvmMergeTargets(chain, keyring)
   const submitted: PreparedEvmTransactionSet[] = []
-  const listed: string[] = []
   let submitFailure: Error | undefined
   const consolidator = createEvmCoinConsolidator({
     chainIdentifier: chain,
@@ -125,9 +137,6 @@ async function open(
     preparer,
     operations: () => journal.list(),
     targetFor: anchor => targets.targetFor(anchor),
-    listTarget: async target => {
-      listed.push(target.account)
-    },
     submit: async prepared => {
       submitted.push(prepared)
       if (submitFailure) throw submitFailure
@@ -149,7 +158,6 @@ async function open(
     head,
     nextIndex,
     included,
-    listed,
     targets,
     submitted,
     failSubmit: (error: Error | undefined) => {
@@ -218,19 +226,19 @@ async function settle(f: Fixture, logicalId: string, block: number): Promise<voi
   }
 }
 
-/** A merge landed: what the chain read of its fresh account lists (`EvmCoinListSync`). */
-async function listMergeTarget(f: Fixture, set: PreparedEvmTransactionSet, block: number) {
+/** The merge's fresh account, as settlement lists it once the whole set has landed: the coins
+ * moved, less their fees, at nonce 0 of the account derived from the coins it spent. */
+function expectMergeListed(f: Fixture, set: PreparedEvmTransactionSet, block: number) {
   const target = set.bundle[0]!.destination.toLowerCase()
   const derived = f.targets.targetFor(evmMergeAnchor(all(set).map(tx => ({ account: tx.sourceAccount, nonce: tx.nonce }))))
   expect(derived.account).toBe(target)
-  const index = { ...f.derive(derived.changeIndex), changeIndex: derived.changeIndex }
-  await f.coins.put({
+  expect(f.coins.latestOf(target)).toMatchObject({
     account: target,
-    privateKey: index.privateKey,
     nonce: 0,
-    valueWei: all(set).reduce((sum, tx) => sum + tx.valueWei, 0n),
+    state: 'unspent',
     origin: 'change',
-    changeIndex: index.changeIndex,
+    changeIndex: derived.changeIndex,
+    valueWei: all(set).reduce((sum, tx) => sum + tx.valueWei, 0n),
     listedInBlock: block,
   })
   return target
@@ -318,7 +326,7 @@ describe('background merge', () => {
     await f.journal.Close()
   })
 
-  it('merges the smallest settled coins into one fresh account, back to five, keeping the newest four and every unconfirmed coin', async () => {
+  it('merges the smallest settled coins into one fresh account, keeping the newest four, every unconfirmed coin and the largest coin', async () => {
     const f = await open()
     f.head.value = 200
     const old: string[] = []
@@ -333,31 +341,25 @@ describe('background merge', () => {
     expect(result.outcome).toBe('merged')
     const [set] = f.submitted
     const moved = sources(set!)
-    // Eleven coins need seven merged to be back at five; only the six old ones may be, so all
-    // six go (the newest four and the unconfirmed one stay).
-    expect(moved).toEqual(new Set(old))
-    for (const account of [...fresh, unconfirmed]) expect(moved.has(account)).toBe(false)
+    // Eleven coins need seven merged to be back at five; only the six old ones may be, and the
+    // largest of them (the wallet's largest coin) stays free for other sends: five go.
+    expect(moved).toEqual(new Set(old.slice(0, 5)))
+    for (const account of [...fresh, unconfirmed, old[5]!]) expect(moved.has(account)).toBe(false)
     // One fresh account, every coin moved whole, each paying its own transfer fee.
     expect(new Set(all(set!).map(tx => tx.destination.toLowerCase())).size).toBe(1)
     const target = set!.bundle[0]!.destination.toLowerCase()
     expect(f.coins.latestOf(target)).toBeUndefined()
     expect(all(set!).every(tx => tx.valueWei === f.coins.get(tx.sourceAccount.toLowerCase(), 0)!.valueWei - FEE)).toBe(true)
-    expect(result).toMatchObject({ coins: 6, feeWei: 6n * FEE, target })
+    expect(result).toMatchObject({ coins: 5, feeWei: 5n * FEE, target })
     expect(classifyEvmOperation(`evm-transaction-set:${(result as { operationId: string }).operationId}`).purpose)
       .toBe('consolidation')
     await settle(f, (result as { operationId: string }).operationId, 201)
     // Settlement asks for a chain read of the fresh account, once per landed move.
     expect(new Set(f.included)).toEqual(new Set([target]))
-    // The next maintenance step lists the fresh account as the wallet's own (composition records
-    // it as a funded change account and reads it); until then nothing new is planned.
-    expect(f.listed).toEqual([])
+    // And lists the merged money there itself, with no maintenance step.
+    expectMergeListed(f, set!, 201)
+    expect(pool(f)).toBe(7)
     expect((await f.consolidator.maintain()).outcome).toBe('idle')
-    expect(f.listed).toEqual([target])
-    await listMergeTarget(f, set!, 201)
-    expect(pool(f)).toBe(6)
-    // Listed: not asked again.
-    await f.consolidator.maintain()
-    expect(f.listed).toEqual([target])
     await f.journal.Close()
   })
 
@@ -420,12 +422,13 @@ describe('background merge', () => {
       const resumed = await f.consolidator.maintain()
       expect(resumed).toEqual({ outcome: 'waiting', operationId: (merge as { operationId: string }).operationId })
       expect(all(f.submitted[0]!).map(tx => tx.txHash)).toEqual(all(first).map(tx => tx.txHash))
-      // Settled once, or twice (repeated observation and sync): the same coins.
+      // Settled once, or twice (repeated observation and sync): the same coins, the merged money
+      // listed once at its fresh account by the settlement of the resumed set.
       await settle(f, (merge as { operationId: string }).operationId, 501)
+      expectMergeListed(f, first, 501)
       const after = f.coins.all().map(coin => [coin.account, coin.nonce, coin.state, coin.valueWei]).sort()
       await settle(f, (merge as { operationId: string }).operationId, 501)
       expect(f.coins.all().map(coin => [coin.account, coin.nonce, coin.state, coin.valueWei]).sort()).toEqual(after)
-      await listMergeTarget(f, first, 501)
       // Done: no second merge of the same coins, and inside the band nothing more to do.
       f.head.value = 520
       expect(await f.consolidator.maintain()).toEqual({ outcome: 'idle' })
@@ -450,12 +453,72 @@ describe('background merge', () => {
     // ... is offered again, the same signed set, after it stopped being active.
     expect(await f.consolidator.maintain({ startNew: false })).toEqual({ outcome: 'waiting', operationId: merge.operationId })
     expect(all(f.submitted[1]!).map(tx => tx.txHash)).toEqual(all(set!).map(tx => tx.txHash))
-    // Once it lands, its target is listed as the wallet's own, and still nothing new is planned.
+    // Once it lands, its settlement lists the target as the wallet's own, and still nothing new
+    // is planned.
     await settle(f, merge.operationId, 601)
+    expect(expectMergeListed(f, set!, 601)).toBe(target)
     const before = f.submitted.length
     expect(await f.consolidator.maintain({ startNew: false })).toEqual({ outcome: 'idle' })
-    expect(f.listed).toContain(target)
     expect(f.submitted.length).toBe(before)
+    await f.journal.Close()
+  })
+
+  // Solonet, 2026-10-28: the blackjack dealer held one 4.66 MON coin and eight small ones. The
+  // merge took every coin but the newest four (small stamp and payout coins), the bankroll among
+  // them, and the payout due next could not be paid from what was left free.
+  it('never merges the wallet\'s largest coin: a send made meanwhile can still be paid from it', async () => {
+    const f = await open()
+    f.head.value = 800
+    const bankroll = await putCoin(f, { valueWei: 200n * FLOOR, listedInBlock: 10 })
+    for (let i = 0; i < 4; i++) await putCoin(f, { valueWei: BigInt(2 + i) * FLOOR, listedInBlock: 20 + i })
+    // The newest four: the small coins the latest stamps and payouts left.
+    for (let i = 0; i < 4; i++) await putCoin(f, { valueWei: FLOOR, listedInBlock: 700 + i })
+    expect(pool(f)).toBe(9)
+    const merge = await f.consolidator.maintain()
+    expect(merge.outcome).toBe('merged')
+    expect(sources(f.submitted[0]!).has(bankroll)).toBe(false)
+    // A payout of four floors is paid while the merge is on its way: from the bankroll.
+    const payout = await f.preparer.constructTransactionSet({ operationId: 'payout', amountWei: 4n * FLOOR, kdf: recipient })
+    expect(sources(payout).has(bankroll)).toBe(true)
+    await f.journal.Close()
+  })
+
+  it('lists the merged money once the last move lands, waiting the funds-settle depth like any fresh money', async () => {
+    // Monad's rule: fresh money is spendable from 4 blocks after the block that brought it.
+    const f = await open({ spendRule: { belowWei: 10n ** 19n, waitBlocks: 3 } })
+    f.head.value = 900
+    for (let i = 0; i < 12; i++) await putCoin(f, { valueWei: BigInt(3 + i) * FLOOR, listedInBlock: 10 })
+    const merge = (await f.consolidator.maintain()) as { outcome: string; operationId: string; target: string }
+    expect(merge.outcome).toBe('merged')
+    const [set] = f.submitted
+    const row = (await f.preparer.readOperation(merge.operationId))!
+    // All but the last move have landed: the merged money is not a coin yet.
+    const blockHash = '0x' + (901).toString(16).padStart(64, '0')
+    const last = new Map<string, number>()
+    for (const member of row.members) last.set(member.source.address, Transaction.from(member.unsignedTransaction).nonce)
+    for (const [index, member] of row.members.entries()) {
+      if (index === row.members.length - 1) break
+      await f.preparer.markExposed(merge.operationId, index)
+      await f.preparer.recordObservation(
+        merge.operationId,
+        index,
+        { state: 'included-success', transactionHash: member.signed!.transactionHash, blockHash, blockNumber: 901, transactionIndex: index, feeWei: FEE.toString() },
+        { blockHash, blockNumber: 901, nonce: last.get(member.source.address)! + 1, balanceWei: member.transactionSet!.balanceAfterWei },
+      )
+    }
+    expect(f.coins.latestOf(merge.target)).toBeUndefined()
+    // The last lands in block 903: listed by that settlement, spendable from 907.
+    const lastIndex = row.members.length - 1, member = row.members[lastIndex]!
+    const lastHash = '0x' + (903).toString(16).padStart(64, '0')
+    await f.preparer.markExposed(merge.operationId, lastIndex)
+    await f.preparer.recordObservation(
+      merge.operationId,
+      lastIndex,
+      { state: 'included-success', transactionHash: member.signed!.transactionHash, blockHash: lastHash, blockNumber: 903, transactionIndex: 0, feeWei: FEE.toString() },
+      { blockHash: lastHash, blockNumber: 903, nonce: last.get(member.source.address)! + 1, balanceWei: member.transactionSet!.balanceAfterWei },
+    )
+    expectMergeListed(f, set!, 903)
+    expect(f.coins.latestOf(merge.target)).toMatchObject({ spendableFromBlock: 907, fundsVisibleFromBlock: 907 })
     await f.journal.Close()
   })
 
@@ -520,7 +583,7 @@ describe('every device of the account makes the same merge', () => {
     // Device A's broadcast lands. Device B sees its own (identical) transactions included.
     for (const f of [a, b]) {
       await settle(f, merged.operationId, 405)
-      await listMergeTarget(f, f.submitted[0]!, 405)
+      expectMergeListed(f, f.submitted[0]!, 405)
     }
     expect(b.coins.nextChangeIndex()).toBe(0)
     f_head(a, b, 500)
@@ -664,6 +727,8 @@ describe('the splitter and the merge never fight', () => {
             .map(coin => coin.account),
         )
         const free = new Set(live.map(coin => coin.account))
+        const largest = [...poolCoins].sort((a, b) =>
+          a.valueWei > b.valueWei ? -1 : a.valueWei < b.valueWei ? 1 : a.account.localeCompare(b.account))[0]
         const before = poolCoins.length
         const submitted = f.submitted.length
         const result = await f.consolidator.maintain()
@@ -681,12 +746,14 @@ describe('the splitter and the merge never fight', () => {
           // confirmation depth; never one below the floor.
           expect(free.has(account)).toBe(true)
           expect(newest.has(account)).toBe(false)
+          // Never the wallet's largest coin: other sends keep it while the merge is on its way.
+          expect(account).not.toBe(largest?.account)
           expect(f.head.value - (coin.listedInBlock ?? -Infinity)).toBeGreaterThanOrEqual(D.confirmationBlocks)
           expect(coin.valueWei).toBeGreaterThanOrEqual(FLOOR)
         }
         f.head.value += 1
         await settle(f, result.operationId, f.head.value)
-        await listMergeTarget(f, set, f.head.value)
+        expectMergeListed(f, set, f.head.value)
         // Back toward the band: n coins became one.
         expect(pool(f)).toBe(before - result.coins + 1)
       }
@@ -700,7 +767,7 @@ describe('the splitter and the merge never fight', () => {
       merges++
       f.head.value += 1
       await settle(f, result.operationId, f.head.value)
-      await listMergeTarget(f, f.submitted.at(-1)!, f.head.value)
+      expectMergeListed(f, f.submitted.at(-1)!, f.head.value)
     }
     expect(pool(f)).toBeLessThanOrEqual(D.maxCoins)
     expect(sends).toBeGreaterThan(10)

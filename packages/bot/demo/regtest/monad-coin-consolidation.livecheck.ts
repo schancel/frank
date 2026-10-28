@@ -12,7 +12,7 @@
  * (default 30) small coins from the faucet on its own change branch, as another device of the
  * account would have left them. The wallet finds them by walking its seed. Checked:
  *   1. An idle maintenance step merges the smallest settled coins into one fresh change account
- *      (one transaction set, the coins moved whole), keeping the newest 4.
+ *      (one transaction set, the coins moved whole), keeping the newest 4 and the largest.
  *   2. A paid message sent straight after, while the merge is on its way, is delivered and its
  *      stamp paid: it takes other coins and nothing waits for the merge.
  *   3. Ticking as the app does, the merge's transactions all succeed, the fresh account holds every
@@ -93,10 +93,13 @@ async function main(): Promise<boolean> {
     saveRoot(label)
     console.log(`keys saved to ${keysFile} before funding`)
     // The shared node may answer "overloaded": try a funding again a few times.
+    // The oldest coin (change index 0) holds twice the others: the wallet's largest coin, which
+    // a merge never takes, so a send made meanwhile still has an input that pays it.
+    const largest = coins[0]!
     for (const account of coins)
       for (let attempt = 1; ; attempt++)
         try {
-          await monad.fund(account, coinWei)
+          await monad.fund(account, account === largest ? 2n * coinWei : coinWei)
           break
         } catch (error) {
           if (attempt >= 5) throw error
@@ -119,13 +122,15 @@ async function main(): Promise<boolean> {
     }
     check(first.outcome === 'merged', `an idle maintenance step merges (${JSON.stringify(first, (_, v) => (typeof v === 'bigint' ? v.toString() : v))})`)
     if (first.outcome !== 'merged') throw new Error('no merge')
-    const expectedMerged = Math.min(coinCount - distribution.mergeDownToCoins + 1, coinCount - distribution.keepNewestCoins)
+    // Every coin but the newest 4 and the largest, as far as the band needs.
+    const expectedMerged = Math.min(coinCount - distribution.mergeDownToCoins + 1, coinCount - distribution.keepNewestCoins - 1)
     check(first.coins === expectedMerged, `it merges ${expectedMerged} coins (merged ${first.coins})`)
     check(!coins.includes(first.target), 'into a fresh change account, not one of the coins')
     // The target is derived from the coins merged: anyone holding the account's keys computes it
     // from the merge's anchor alone (another device, a restored one). Its key is kept for the sweep.
     {
       const row = wallet.handle.getNativeOperations!().find(item => item.preparationId === `evm-transaction-set:${first.operationId}`)!
+      check(row.members.every(member => member.source.address.toLowerCase() !== largest), 'it does not merge the largest coin')
       const anchor = evmMergeAnchor(row.members.map(member => ({ account: member.source.address, nonce: Transaction.from(member.unsignedTransaction).nonce })))
       const derived = new EvmMergeTargets(MONAD_REGTEST_CHAIN, change).targetFor(anchor)
       coinKeys.push(change.deriveChangeAccount(derived.changeIndex).privateKey)

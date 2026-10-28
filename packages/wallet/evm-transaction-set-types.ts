@@ -143,6 +143,11 @@ export interface EvmTransactionSetPreparerOptions {
   /** A payment of a set was seen included. Synchronous, no I/O: composition marks the
    * destination for a chain read when it is one of the wallet's own fresh accounts. */
   readonly onPaymentIncluded?: (destination: string) => void
+  /** The fresh account a background merge's set moves its coins to (`evm-merge-targets.ts`,
+   * derived from the coins the set spends), with its key; undefined for every other set.
+   * Settlement lists the merged money there as a coin once the whole set has landed, as it lists
+   * a payment's change. No I/O. */
+  readonly mergeTarget?: (row: EvmNativeOperation) => EvmChangeDestination | undefined
   /** Synchronous cached observation check, only after insufficient selection. Never performs
    * RPC or changes reservations; throws the retained observation error when funding is unknown. */
   readonly assertFundingObserved?: () => void

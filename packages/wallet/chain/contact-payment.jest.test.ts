@@ -814,13 +814,14 @@ describe('a payment to a contact', () => {
     // The gas price rises: ten moves now cost more than the coin holds.
     policyGasPriceWei = 1_000n
     bob.invalidateBalanceCache!()
+    await bob.refreshReceivedPayments!()
     const parts = await bob.getBalanceParts!()
     expect(coin()).toMatchObject({ status: 'received', spendable: true, tooSmall: true })
-    // The balance holds it back too: listed as too small, not counted.
+    // Display owns the gross value; below-floor received money is a subset, unavailable for payment.
     const tooSmall = bob.getReceivedPayments!().filter(p => p.tooSmall)
     expect(parts.tooSmall).toBe(tooSmall.reduce((sum, p) => sum + p.amountWei, 0n))
     expect(parts.tooSmallCount).toBe(tooSmall.length)
-    expect(parts.received).toBe(before.received - parts.tooSmall)
+    expect(parts.received).toBe(before.received)
     // And the balance's observation carries these very parts.
     expect(bob.getBalanceObservation!()).toMatchObject({
       balance: await bob.getBalance(),
@@ -1966,7 +1967,7 @@ describe('a payment to a contact', () => {
     // not balance: the transfer the message named is not on the chain.
     mockBalances.set(coinsOf(bob)[0].address, 9_000_000n)
     await settle(bob)
-    expect(await bob.getBalance()).toBe(own + STAMP)
+    expect(await bob.getBalance()).toBe(own + STAMP + 9_000_000n)
     // The stub relay stamps messages in 1970: long past the bound, so the claim is called what
     // it is. (`evm-coin-store.jest.test.ts` covers the bound itself.)
     expect(coinsOf(bob)).toEqual([
@@ -2084,7 +2085,7 @@ describe('a payment to a contact', () => {
     mockBalances.set(await mainOf(bob), 100_000n)
     await settle(bob)
     expect(claimed.spendable).toBe(false)
-    expect(await bob.getBalance()).toBe(100_000n)
+    expect(await bob.getBalance()).toBe(7_100_000n)
 
     // A send the main account cannot cover is refused; the claimed coin is not reached for.
     await expect(

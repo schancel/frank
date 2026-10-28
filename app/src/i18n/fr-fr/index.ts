@@ -1261,14 +1261,21 @@ export const rawFrFR = {
       'Paiements et timbres que l’on vous a envoyés, chacun à sa propre adresse à usage unique, confirmés sur le réseau.',
     other: 'Comptes d’envoi',
     otherNote:
-      'Mis de côté par le portefeuille dans ses propres comptes pour payer vos prochains messages. Compris dans le solde ci-dessus.',
+      'Fonds détenus dans les autres comptes du portefeuille, y compris ceux réservés ou en cours de règlement. Inclus dans le total.',
     tooSmall: 'Trop petits pour être déplacés ({count})',
     tooSmallNote:
-      'Paiements reçus valant moins de dix fois les frais de réseau pour les déplacer. Non compris dans le solde ci-dessus.',
-    total: 'Solde',
+      'Fonds reçus sous le minimum de paiement actuel. Déjà inclus dans les paiements reçus et le total détenu ; indisponibles pour un paiement.',
+    total: 'Total connu détenu',
     yours:
       'Votre compte principal, votre adresse de profil et vos comptes d’envoi se retrouvent tous avec votre phrase de récupération.',
     unavailable: 'Les comptes n’ont pas pu être lus pour le moment.',
+    available: 'Disponible pour un paiement',
+    availableLoading: 'Vérification…',
+    availableUnavailable: 'Indisponible',
+    availableNote:
+      'Après estimation des frais de paiement et des limites actuelles. Chaque transfert possède son propre devis final.',
+    pending:
+      'Paiements ou transferts du portefeuille en cours : {count}. Certains fonds peuvent être réservés ou en cours de règlement.',
   },
   heldContactPayments: {
     title: 'Paiements à des contacts en cours',

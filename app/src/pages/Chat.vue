@@ -2086,7 +2086,11 @@ export default defineComponent({
           errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
           return
         }
-        const spendableWei = await chain.nativeTransfers.getBalance({ wallet })
+        if (!wallet.getSpendableBalance) {
+          errorNotify(new Error(this.$t('blackjackP2p.balanceUnknown')))
+          return
+        }
+        const spendableWei = await wallet.getSpendableBalance()
         if (!current() || wallet !== useMonadWallet()) return
         const gameId = newGameId()
         const seed =

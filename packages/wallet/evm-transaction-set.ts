@@ -1554,6 +1554,50 @@ export class EvmTransactionSetPreparer {
       throw new Error('Invalid reviewed EVM transaction-set policy')
   }
 
+  /** Public-address projection of current signed graphs, never a spend inventory. Destination
+   * ownership must be derived locally; arbitrary recipient addresses are never included. */
+  ownedBalanceProjection(): { accounts: readonly string[]; pendingOperations: number; generation: string } {
+    const accounts = new Set<string>(), generations: unknown[] = []
+    const sources = new Map(this.options.coins.all().map(coin => [coin.account, coin]))
+    let pendingOperations = 0
+    for (const row of this.options.journal.list()) {
+      if (row.cancelled) continue
+      const signed = row.members.filter(member => member.signed)
+      if (!signed.length) continue
+      if (signed.some(member => member.transactionSet
+          ? member.transactionSet.inventoryApplied !== true || nativeMemberNeedsOwnMoveRecovery(member)
+          : !['included-success', 'included-revert'].includes(member.observation.state) && !nativeMemberSuperseded(member)))
+        pendingOperations++
+      generations.push([row.operationId, signed.map(member => [member.signed!.transactionHash,
+        member.observation.state, member.exposed, member.transactionSet?.inventoryApplied])])
+      // Active exposed own moves can retain old applied checkpoints while recovery is owed.
+      // They still discover actual owned addresses; planned transfer values never enter totals.
+      if (row.kind !== 'transaction-set' || signed.every(member =>
+          member.transactionSet?.inventoryApplied === true && !nativeMemberNeedsOwnMoveRecovery(member))) continue
+      const merge = this.options.mergeTarget?.(row)
+      if (merge && computeAddress(merge.privateKey).toLowerCase() !== merge.account.toLowerCase())
+        throw new Error('Merge balance ownership mismatch')
+      for (const member of signed) {
+        const source = sources.get(member.source.address) ?? this.sourceOf(row, member)
+        if (!source || computeAddress(source.privateKey).toLowerCase() !== source.account)
+          throw new Error('Transaction-set balance source ownership unavailable')
+        accounts.add(source.account)
+        const tx = Transaction.from(member.unsignedTransaction), meta = member.transactionSet!
+        if (meta.role === 'change' || meta.role === 'funding') {
+          const target = this.options.deriveChange(meta.changeIndex!)
+          if (target.account.toLowerCase() !== tx.to?.toLowerCase() ||
+              computeAddress(target.privateKey).toLowerCase() !== target.account.toLowerCase())
+            throw new Error('Change balance ownership mismatch')
+          accounts.add(target.account.toLowerCase())
+        } else if (merge) {
+          if (tx.to?.toLowerCase() !== merge.account.toLowerCase()) throw new Error('Merge balance destination mismatch')
+          accounts.add(merge.account.toLowerCase())
+        }
+      }
+    }
+    return { accounts: [...accounts].sort(), pendingOperations, generation: JSON.stringify(generations) }
+  }
+
   /**
    * The largest plain independent payment the current free coins can produce: construction's
    * source eligibility, protocol output floor, chain reserve and transaction-member budget.

@@ -904,7 +904,7 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(await bob.getBalance()).toBe(VALUE)
   })
 
-  it('a claim larger than what the chain shows is shown at the chain amount; a transfer that never landed is never counted', async () => {
+  it('a claim uses the verified chain amount; independent owned funding does not verify an unrelated claim', async () => {
     const sent = await alice.sendToContact!({
       recipient: bob.identity.address,
       value: VALUE,
@@ -998,7 +998,15 @@ describe('payments between two wallets on a real EVM node', () => {
       await fund(never.address, VALUE)
       await fresh.refreshReceivedPayments!()
       fresh.invalidateBalanceCache!()
-      expect(await fresh.getBalance()).toBe(VALUE + 2n * STAMP)
+      expect(await node.getBalance(never.address)).toBe(VALUE)
+      expect(stealthOf(fresh).find(coin => coin.address === never.address)).toMatchObject({
+        amountWei: 0n,
+        spendable: false,
+      })
+      expect(fresh.getMessagePayment!(empty.payloadDigest).status).not.toBe('received')
+      // This independently funded derived address belongs to this wallet, even though its
+      // funds do not verify the forged claim. Gross owned balance includes both transfers.
+      expect(await fresh.getBalance()).toBe(2n * VALUE + 2n * STAMP)
     } finally {
       await forger?.close()
       await fresh.close()

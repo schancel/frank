@@ -77,6 +77,12 @@ import {
 const session = accountStatus as { status: string; revision: number }
 
 const balance = {
+  parts: ref(null),
+  availableSupported: ref(false),
+  availableLoaded: ref(false),
+  availableError: ref(false),
+  formattedSpendable: ref(''),
+  exactSpendable: ref(''),
   formattedBalance: ref('1 MON'),
   balance: ref(1_000_000_000_000_000_000n),
   loaded: ref(true),
@@ -295,6 +301,11 @@ function mountWallet(
 
 describe('Wallet detail page (#570)', () => {
   beforeEach(() => {
+    balance.parts.value = null
+    balance.availableSupported.value = false
+    balance.availableLoaded.value = false
+    balance.availableError.value = false
+
     mockSwapRows.value = []
     mockAdditionalBalanceRows = false
     mockTokens.value = []
@@ -549,6 +560,31 @@ describe('Wallet detail page (#570)', () => {
     expect(
       wrapper.find('[data-testid="wallet-balance-cordoned"]').exists(),
     ).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows owned total, separate available capacity and pending status without inventing a pending amount', async () => {
+    balance.availableSupported.value = true
+    balance.availableLoaded.value = true
+    balance.formattedSpendable.value = '0.6 MON'
+    balance.exactSpendable.value = '0.600000000000000000 MON'
+    balance.parts.value = { pendingOwnOperations: 2 } as never
+    const wrapper = mountWallet()
+    await nextTick()
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('1 MON')
+    expect(wrapper.get('[data-testid="wallet-available"]').text()).toContain(
+      '0.6 MON',
+    )
+    expect(
+      wrapper.get('[data-testid="wallet-pending-operations"]').text(),
+    ).toContain('balanceBreakdown.pending')
+    balance.availableLoaded.value = false
+    balance.availableError.value = true
+    await nextTick()
+    expect(wrapper.get('[data-testid="wallet-available"]').text()).toContain(
+      'balanceBreakdown.availableUnavailable',
+    )
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('1 MON')
     wrapper.unmount()
   })
 

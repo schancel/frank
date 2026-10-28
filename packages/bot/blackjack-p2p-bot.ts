@@ -774,12 +774,16 @@ export function walletBotAccount(
   },
   wallet: {
     identity: { address: { raw: string } }
-    getBalance(): Promise<bigint>
+    getSpendableBalance?(): Promise<bigint>
   },
 ): BotAccount {
   return {
     address: wallet.identity.address.raw,
-    spendableWei: () => wallet.getBalance(),
+    spendableWei: async () => {
+      if (!wallet.getSpendableBalance)
+        throw new Error('Strict wallet capacity is unavailable')
+      return wallet.getSpendableBalance()
+    },
     send: ({ to, item, stampWei, messageId, onAttemptCreated }) => {
       const recipient = chain.parseAddress(to)
       if (!recipient) throw new Error(`not an address: ${to}`)

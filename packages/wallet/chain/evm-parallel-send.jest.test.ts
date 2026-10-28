@@ -471,7 +471,7 @@ describe('parallel paid messages', () => {
   })
 
   // Seen in Chrome on testnet: the balance shown was not what sends drew on.
-  it('the balance is the sum of every coin a send can draw on (main, profile address, funded sending accounts), its parts add up to it, and a send is paid out of it', async () => {
+  it('gross owned location parts add up including sending accounts, and a settled payment reduces them by its actual outflow', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     const identity = alice.identity.address.raw.toLowerCase()
     mockBalances.set(main, 500_000n)
@@ -487,6 +487,8 @@ describe('parallel paid messages', () => {
       tooSmall: 0n,
       tooSmallCount: 0,
       sending: funded,
+      pendingOwnOperations: 0,
+      observedBlock: 1,
     })
     expect(await alice.getBalance()).toBe(800_000n + funded)
     // A message is paid from a funded sending account: the balance falls by what left it.

@@ -24,6 +24,7 @@ import type {
   ConstructEvmTransactionSetRequest,
   ConstructLegacySubAccountRequest,
   EvmTransactionSetPreparerOptions,
+  EvmChangeDestination,
   EvmTransactionSetPolicy,
   PreparedEvmTransaction,
   PreparedEvmTransactionSet,
@@ -314,7 +315,7 @@ export class EvmTransactionSetPreparer {
     const frozenObservation = { ...observation }
     const frozenAccount = account === null ? null : { ...account }
     try {
-      return await this.options.coins.projectTransactionSetAccount(
+      const recorded = await this.options.coins.projectTransactionSetAccount(
         member.source.address,
         `${row!.operationId}:${memberIndex}`,
         writer =>
@@ -326,6 +327,39 @@ export class EvmTransactionSetPreparer {
             writer,
           ),
       )
+      if (!recorded) return false
+      const current = this.getOperation(operationId)
+      if (!current || current.members[memberIndex]!.transactionSet!.inventoryApplied) return true
+      // Shared sync can be waiting to write this source. Never join its RPC/mutation queue
+      // while holding the source account mutation; its local projection remains incomplete.
+      const target = this.mergeTargetToObserve(current)
+      if (!target) return true
+      if (!this.options.observeMergeTarget)
+        throw new Error('Merge target observation capability required')
+      await this.options.observeMergeTarget(target)
+      await this.options.coins.projectTransactionSetAccount(
+        member.source.address,
+        `${row!.operationId}:${memberIndex}`,
+        async () => {
+          const latest = this.getOperation(operationId)
+          const projected = latest?.members[memberIndex]
+          if (!projected || projected.transactionSet!.inventoryApplied) return true
+          // A newer observation may have projected this source while target RPC was pending.
+          // Only the exact evidence applied by this call may complete its durable checkpoint.
+          if (JSON.stringify(projected.observation) !== JSON.stringify(frozenObservation) ||
+              JSON.stringify(projected.account) !== JSON.stringify(frozenAccount)) return false
+          const tx = Transaction.from(projected.unsignedTransaction)
+          if (frozenAccount && frozenAccount.nonce > tx.nonce &&
+              (frozenObservation.state === 'included-success' ||
+               frozenObservation.state === 'included-revert' || nativeMemberSuperseded(projected))) {
+            await this.options.journal.markTransactionSetInventoryApplied(latest!.operationId, memberIndex)
+            this.options.coins.settleTransactionSetKeyReference(member.source.address, tx.nonce)
+            this.options.coins.completeTransactionSetProjection(member.source.address, `${row!.operationId}:${memberIndex}`)
+          }
+          return true
+        },
+      )
+      return true
     } catch (error) {
       if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex)) return false
       throw error
@@ -431,9 +465,6 @@ export class EvmTransactionSetPreparer {
       // is money the list learns from a chain read of that account, like any deposit.
       if (observation.state === 'included-success' && meta.role === 'payment')
         this.options.onPaymentIncluded?.(tx.to!.toLowerCase())
-      // A merge target may already have been spent by another frontend. Discover its ownership
-      // and observe its current state before this member's inventory projection completes.
-      await this.observeMergeTarget(current)
       const lastOfSource = current.members
         .filter(candidate => candidate.source.address === member.source.address)
         .at(-1)!
@@ -484,23 +515,18 @@ export class EvmTransactionSetPreparer {
           })
         }
       }
-      if (account && account.nonce > tx.nonce) {
-        await journal.markTransactionSetInventoryApplied(
-          row.operationId,
-          memberIndex,
-        )
+      // Only a completed merge needs an out-of-lock target read before the checkpoint.
+      if (account && account.nonce > tx.nonce && !this.mergeTargetToObserve(current)) {
+        await journal.markTransactionSetInventoryApplied(row.operationId, memberIndex)
         coins.settleTransactionSetKeyReference(member.source.address, tx.nonce)
-        coins.completeTransactionSetProjection(
-          member.source.address,
-          `${row.operationId}:${memberIndex}`,
-        )
+        coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
       }
     }
     return true
   }
 
-  /** Discover and observe a settled merge's target; receipts do not establish its current funds. */
-  private async observeMergeTarget(row: EvmNativeOperation): Promise<void> {
+  /** Validate the target that needs observation, without any RPC or shared sync wait. */
+  private mergeTargetToObserve(row: EvmNativeOperation): EvmChangeDestination | undefined {
     const target = this.options.mergeTarget?.(row)
     if (!target) return
     const settled = (member: EvmNativeOperation['members'][number]) =>
@@ -518,9 +544,7 @@ export class EvmTransactionSetPreparer {
       landed.some(member => Transaction.from(member.unsignedTransaction).to?.toLowerCase() !== account)
     )
       throw new Error('Merge target derivation does not match signed transaction')
-    if (!this.options.observeMergeTarget)
-      throw new Error('Merge target observation capability required')
-    await this.options.observeMergeTarget(target)
+    return target
   }
 
   constructTransactionSet(request: ConstructEvmTransactionSetRequest): Promise<PreparedEvmTransactionSet> {

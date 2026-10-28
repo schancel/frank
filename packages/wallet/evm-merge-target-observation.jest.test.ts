@@ -17,9 +17,23 @@ import {
   EvmTransactionSetInsufficientFundsError,
 } from './evm-transaction-set-types'
 
-it.each([0n, 300000n])(
-  'observes current merge target nonce/balance after another frontend spent it (%s wei)',
-  async (remaining) => {
+const deferred = () => {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+it.each([
+  { remaining: 0n, concurrentSync: false, newerFailure: false },
+  { remaining: 300000n, concurrentSync: false, newerFailure: false },
+  { remaining: 0n, concurrentSync: true, newerFailure: false },
+  { remaining: 1000n, concurrentSync: true, newerFailure: false },
+  { remaining: 1000n, concurrentSync: true, newerFailure: true },
+])(
+  'observes merge state with $remaining wei remaining and concurrent source sync $concurrentSync; newer failed evidence $newerFailure',
+  async ({ remaining, concurrentSync, newerFailure }) => {
     const mnemonic =
       'test test test test test test test test test test test junk'
     const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
@@ -49,6 +63,10 @@ it.each([0n, 300000n])(
     let failTarget: string | undefined
     let freshTargetDeposit: string | undefined
     let chainHead = 100
+    let heldBalanceRead:
+      | { account: string; entered: () => void; promise: Promise<void> }
+      | undefined
+    let deadlocked = false
     const provider = {
       getBlockNumber: async () => chainHead,
       getBlock: async (block: number) => ({
@@ -59,6 +77,13 @@ it.each([0n, 300000n])(
         async (address: string) => nonces.get(address.toLowerCase()) ?? 0
       ),
       getBalance: jest.fn(async (address: string, block?: number) => {
+        if (
+          heldBalanceRead?.account === address.toLowerCase() &&
+          block === undefined
+        ) {
+          heldBalanceRead.entered()
+          await heldBalanceRead.promise
+        }
         if (address.toLowerCase() === failTarget)
           throw new Error('target observation unavailable')
         if (
@@ -162,6 +187,7 @@ it.each([0n, 300000n])(
         inventoryStore,
         journalOptions,
         makeRuntime,
+        targets,
       })
     }
     try {
@@ -180,6 +206,135 @@ it.each([0n, 300000n])(
         })
       }
       balances.set(a.target.account, 1958000n)
+      if (concurrentSync) {
+        const members = (await a.runtime.transactionSetPreparer.readOperation(
+          a.id
+        ))!.members
+        const first = members[0]!,
+          last = members.at(-1)!
+        const included = (transactionHash: string) => ({
+          state: 'included-success' as const,
+          transactionHash,
+          blockHash: hash,
+          blockNumber: 10,
+          transactionIndex: 0,
+          feeWei: '21000',
+        })
+        const account = (balanceWei: bigint) => ({
+          blockHash: hash,
+          blockNumber: 100,
+          nonce: 1,
+          balanceWei: balanceWei.toString(),
+        })
+        await a.runtime.transactionSetPreparer.recordObservation(
+          a.id,
+          0,
+          included(first.signed!.transactionHash),
+          account(0n)
+        )
+        // A previously discovered target causes onPaymentIncluded to launch broad sync. That
+        // pass must write a dirty source's residual while settlement observes the target.
+        a.targets.watch(a.target)
+        balances.set(last.source.address, remaining)
+        a.runtime.coinListSync.markDirty(last.source.address)
+        const sourceRead = deferred(),
+          releaseRead = deferred()
+        heldBalanceRead = {
+          account: last.source.address,
+          entered: sourceRead.resolve,
+          promise: releaseRead.promise,
+        }
+        const put = jest.spyOn(a.coins, 'put')
+        let completed = false
+        const observing = a.runtime.transactionSetPreparer
+          .recordObservation(
+            a.id,
+            members.length - 1,
+            included(last.signed!.transactionHash),
+            account(0n)
+          )
+          .then(() => {
+            completed = true
+          })
+        await sourceRead.promise
+        expect(completed).toBe(false)
+        expect(
+          (await a.runtime.transactionSetPreparer.readOperation(
+            a.id
+          ))!.members.at(-1)!.transactionSet!.inventoryApplied
+        ).not.toBe(true)
+        const newerAccount = { ...account(777n), nonce: 2, blockNumber: 101 }
+        if (newerFailure) {
+          const originalPut = a.inventoryStore.put.bind(a.inventoryStore)
+          const failNewer = jest
+            .spyOn(a.inventoryStore, 'put')
+            .mockImplementation(async (key, coin) => {
+              if (coin.account === last.source.address && coin.nonce === 2)
+                throw new Error('newer source projection failed')
+              await originalPut(key, coin)
+            })
+          // This call can project while the older call's target RPC is out. Its durable journal
+          // evidence changes, but a failed local write must remain incomplete after the old RPC.
+          await expect(
+            a.runtime.transactionSetPreparer.recordObservation(
+              a.id,
+              members.length - 1,
+              included(last.signed!.transactionHash),
+              newerAccount
+            )
+          ).rejects.toThrow('newer source projection failed')
+          failNewer.mockRestore()
+        }
+        releaseRead.resolve()
+        let deadline!: ReturnType<typeof setTimeout>
+        const finished = await Promise.race([
+          observing.then(() => true),
+          new Promise<boolean>((resolve) => {
+            deadline = setTimeout(() => resolve(false), 1000)
+          }),
+        ]).finally(() => clearTimeout(deadline))
+        deadlocked = !finished
+        // The positive residual queued a real authoritative sync put; zero is the control.
+        expect(
+          put.mock.calls.some(
+            ([coin]) =>
+              coin.account === last.source.address &&
+              coin.nonce === 1 &&
+              coin.valueWei === remaining
+          )
+        ).toBe(remaining > 0n)
+        expect(finished).toBe(true)
+        if (newerFailure) {
+          expect(
+            (await a.runtime.transactionSetPreparer.readOperation(
+              a.id
+            ))!.members.at(-1)!.transactionSet!.inventoryApplied
+          ).not.toBe(true)
+          nonces.set(last.source.address, 2)
+          balances.set(last.source.address, 777n)
+          await a.runtime.transactionSetPreparer.recordObservation(
+            a.id,
+            members.length - 1,
+            included(last.signed!.transactionHash),
+            newerAccount
+          )
+          expect(a.coins.latestOf(last.source.address)).toMatchObject({
+            nonce: 2,
+            valueWei: 777n,
+          })
+        }
+        expect(
+          (await a.runtime.transactionSetPreparer.readOperation(
+            a.id
+          ))!.members.every((member) => member.transactionSet!.inventoryApplied)
+        ).toBe(true)
+        expect(a.coins.latestOf(a.target.account)).toMatchObject({
+          nonce: 0,
+          valueWei: 1958000n,
+        })
+        put.mockRestore()
+        return
+      }
       await a.runtime.transactionSetLifecycle.observe(
         a.id,
         provider as unknown as Provider
@@ -308,7 +463,9 @@ it.each([0n, 300000n])(
       }
     } finally {
       for (const d of devices) {
-        await d.runtime.stop()
+        // Failed liveness assertion must not hang cleanup on the deliberately reproduced cycle.
+        if (deadlocked) d.runtime.blockWatcher.stop()
+        else await d.runtime.stop()
         await d.journal.Close()
       }
       await rm(directory, { recursive: true, force: true })

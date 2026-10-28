@@ -196,6 +196,7 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     mockUseMonadWallet.mockReset()
     mockUseMonadWallet.mockReturnValue({
       identity: { address: { raw: SELF }, displayAddress: SELF },
+      getSpendableBalance: jest.fn(),
     })
   })
 
@@ -292,14 +293,15 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     expect(form.exists()).toBe(true)
 
     const vm = wrapper.vm as any
-    jest
-      .spyOn(activeChain.nativeTransfers, 'getBalance')
+    const capacity = jest
+      .spyOn(mockUseMonadWallet(), 'getSpendableBalance')
       .mockResolvedValue(10n ** 18n)
     vm.sendDirectMessage = jest
       .fn()
       .mockResolvedValue({ state: 'sent', payloadDigest: 'd' })
     form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
     await flushPromises()
+    expect(capacity).toHaveBeenCalledTimes(1)
     expect(vm.sendDirectMessage).toHaveBeenCalledTimes(1)
     const sent = vm.sendDirectMessage.mock.calls[0][0]
     expect(sent.address).toBe(DEALER)
@@ -326,8 +328,8 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
       const form = wrapper.findComponent(FormStub)
       const vm = wrapper.vm as any
       let finish!: (balance: bigint) => void
-      jest
-        .spyOn(activeChain.nativeTransfers, 'getBalance')
+      const capacity = jest
+        .spyOn(mockUseMonadWallet(), 'getSpendableBalance')
         .mockImplementationOnce(
           () =>
             new Promise(resolve => {
@@ -339,9 +341,11 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
       await flushPromises()
       expect(vm.blackjackPreparing).toBe(true)
       expect(wrapper.findComponent(FormStub).props('busy')).toBe(true)
+      expect(capacity).toHaveBeenCalledTimes(1)
       // Repeated submit while preparation waits never starts a second operation.
       form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
       await flushPromises()
+      expect(capacity).toHaveBeenCalledTimes(1)
       if (change === 'cancel') form.vm.$emit('cancel')
       else if (change === 'conversation') vm.address = SELF
       else

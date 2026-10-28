@@ -13,8 +13,9 @@
 //! No funded key is ever only in memory. `FRANK_LAB_SOLONET_KEY_DIR` names a directory that
 //! outlives the process (the lab composes bind-mount one from the host). Each process writes
 //! into a run directory of its own there, locked for its lifetime: every key this module
-//! generates is written to its own file before anything funds it, and its file is removed only
-//! once the key's sweep back to the faucet has landed. Payers are swept when their [`Funded`] is
+//! generates is written to its own file before anything funds it. Its file is removed only
+//! after a verified sweep leaves exactly zero and recorded funding is complete. Payers are
+//! swept when their [`Funded`] is
 //! dropped, also while a failed test unwinds; a run that was killed leaves its files behind, and
 //! a later run's first [`Solonet::from_env`] sweeps every run directory whose lock is stale
 //! before it funds anything (backend/labs/README.md, "The keys the labs fund").
@@ -71,12 +72,6 @@ const SWEEP_TIP_MARGIN_WEI: u128 = SWEEP_ATTEMPTS;
 const TRANSFER_GAS: u128 = 21_000;
 /// How long a sent sweep is waited on to land.
 const SWEEP_LAND_PATIENCE: Duration = Duration::from_secs(60);
-/// How long the file of a key that holds nothing and never sent anything is kept. Its funding
-/// may still come: Monad has taken bytes it refused about 2,500 blocks (fifteen minutes) later
-/// (docs/protocol/chains/monad-reserve-balance.md), so a run that panicked while funding may
-/// yet see a refused funding land.
-const UNUSED_EMPTY_KEY_KEPT: Duration = Duration::from_secs(3600);
-
 /// This process's run directory: one per process, shared by its tests.
 static PROCESS_KEYS: std::sync::OnceLock<Arc<KeyFiles>> = std::sync::OnceLock::new();
 /// Leftover keys of earlier runs are swept once per process, before it funds anything.
@@ -154,6 +149,8 @@ struct KeyFile {
     partial: bool,
     /// The value `funding` holds; 0 when the faucet never signed a payment to this account.
     faucet_signed_below: AtomicU64,
+    /// False when the original claim is unreadable or malformed; never means no funding.
+    funding_readable: bool,
 }
 
 /// How long a run's `.lock` may go untouched before the run counts as gone.
@@ -245,6 +242,7 @@ impl KeyFiles {
             funding: self.dir.join(format!("{name}.funding")),
             partial: false,
             faucet_signed_below: AtomicU64::new(0),
+            funding_readable: true,
         };
         write_durably(&self.dir, &file.path, hex::encode(&key[..]).as_bytes()).unwrap_or_else(
             |error| {
@@ -264,6 +262,10 @@ impl KeyFiles {
     /// Record, before it is sent, that the faucet signs a payment to `payer` at `nonce`: its
     /// file is then kept until the faucet's nonce has passed it, whichever transaction took it.
     fn note_faucet_signing(&self, payer: &Payer, nonce: u64) {
+        assert!(
+            payer.file.funding_readable,
+            "cannot overwrite an unreadable funding claim"
+        );
         let bound = nonce + 1;
         if payer.file.faucet_signed_below.load(Ordering::SeqCst) >= bound {
             return;
@@ -402,10 +404,11 @@ impl KeyFiles {
                 );
             }
             let funding = dir.join(format!("0x{}.funding", hex::encode(address)));
-            let signed_below = std::fs::read_to_string(&funding)
-                .ok()
-                .and_then(|text| text.trim().parse::<u64>().ok())
-                .unwrap_or(0);
+            let claim = match std::fs::read_to_string(&funding) {
+                Ok(text) => text.trim().parse::<u64>().ok(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(0),
+                Err(_) => None,
+            };
             saved.push(Payer {
                 key,
                 address,
@@ -413,54 +416,41 @@ impl KeyFiles {
                     path,
                     funding,
                     partial,
-                    faucet_signed_below: AtomicU64::new(signed_below),
+                    faucet_signed_below: AtomicU64::new(claim.unwrap_or(0)),
+                    funding_readable: claim.is_some(),
                 }),
             });
         }
         saved
     }
 
-    /// Remove a stale run's directory once nothing but its lock (and funding records of keys
-    /// already gone) is left in it.
+    /// An orphan claim or interrupted claim write remains evidence, even without a key.
     fn remove_if_done(dir: &std::path::Path) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
-        let names: Vec<String> = entries
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        let done = names.iter().all(|name| {
-            name == ".lock"
-                || (name.ends_with(".funding")
-                    && !names.contains(&name.replace(".funding", ".key")))
-                // An unfinished save of a lock or funding record, never of a key.
-                || (name.ends_with(".partial") && !name.contains(".key."))
-        });
+        let done = entries
+            .into_iter()
+            .all(|entry| entry.ok().is_some_and(|entry| entry.file_name() == ".lock"));
         if done {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
 
-    /// Whether `payer`'s file was written more than `age` ago.
-    fn older_than(payer: &Payer, age: Duration) -> bool {
-        std::fs::metadata(&payer.file.path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|written| written.elapsed().ok())
-            .is_some_and(|elapsed| elapsed > age)
-    }
-
-    /// Remove `payer`'s files: called only once its sweep has landed (or it holds nothing).
+    /// Called only for verified zero with completed funding, or an unpublished partial save.
+    /// Keep the claim if removing its key failed; never make an uncertain key look unfunded.
     fn forget(payer: &Payer) {
         for path in [&payer.file.path, &payer.file.funding] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => println!(
-                    "solonet: could not remove {} after its sweep: {error}",
-                    path.display()
-                ),
+                Err(error) => {
+                    println!(
+                        "solonet: could not remove {} after verified zero: {error}",
+                        path.display()
+                    );
+                    return;
+                }
             }
         }
     }
@@ -1025,8 +1015,8 @@ impl Solonet {
     }
 
     /// Send what each of `accounts` holds back to the faucet, so test funds come back, and
-    /// remove each account's key file once its sweep has landed (or it holds nothing worth a
-    /// transfer). Exact: the fee cap is base fee + tip + [`SWEEP_TIP_MARGIN_WEI`], Monad charges
+    /// retain its original key whenever any value or uncertain funding remains. The fee cap
+    /// is base fee + tip + [`SWEEP_TIP_MARGIN_WEI`], Monad charges
     /// base fee + tip per gas, and the sweep holds back `21,000 x cap`, so at most
     /// `21,000 x SWEEP_TIP_MARGIN_WEI` wei stays behind.
     ///
@@ -1040,11 +1030,16 @@ impl Solonet {
         let faucet = address(&self.faucet);
         let deadline = Instant::now() + Duration::from_secs(120);
         futures::stream::iter(accounts.iter().map(|account| async move {
-            while self.pending_nonce(account.address).await
-                > self.latest_nonce(account.address).await
-                && Instant::now() < deadline
-            {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+            while Instant::now() < deadline {
+                match (
+                    self.sweep_nonce(account.address, "pending").await,
+                    self.sweep_nonce(account.address, "latest").await,
+                ) {
+                    (Ok(pending), Ok(latest)) if pending > latest => {
+                        tokio::time::sleep(Duration::from_millis(250)).await
+                    }
+                    _ => break, // sweep_one reports unknown/ambiguous state without disposal.
+                }
             }
         }))
         .buffer_unordered(SWEEP_IN_FLIGHT)
@@ -1053,6 +1048,7 @@ impl Solonet {
         self.wait_blocks(6).await;
         let mut left = accounts;
         let (mut swept, mut total) = (0usize, 0u128);
+        let (mut retained, mut residual) = (0usize, 0u128);
         for attempt in 0..SWEEP_ATTEMPTS {
             let tip = self
                 .quantity("eth_maxPriorityFeePerGas", serde_json::json!([]))
@@ -1073,20 +1069,30 @@ impl Solonet {
             let mut last_error = None;
             for (account, result) in results {
                 match result {
-                    Ok(Swept::Landed(value)) => {
-                        KeyFiles::forget(&account);
+                    Ok(Swept::Returned {
+                        value,
+                        remaining,
+                        disposable,
+                    }) => {
                         swept += 1;
                         total += value;
-                    }
-                    Ok(Swept::Empty) => KeyFiles::forget(&account),
-                    Ok(Swept::NotYetFunded) => {
-                        // An unfinished save was never paid to; a saved key may still be.
-                        if account.file.partial
-                            || KeyFiles::older_than(&account, UNUSED_EMPTY_KEY_KEPT)
-                        {
+                        if disposable {
                             KeyFiles::forget(&account);
+                        } else if remaining > held_back {
+                            left.push(account);
+                        } else {
+                            retained += 1;
+                            residual += remaining;
                         }
                     }
+                    Ok(Swept::Residual(value)) => {
+                        retained += 1;
+                        residual += value;
+                    }
+                    Ok(Swept::UnverifiedZero) => {
+                        retained += 1;
+                    }
+                    Ok(Swept::UnpublishedPartial) => KeyFiles::forget(&account),
                     Err(error) => {
                         last_error = Some(error);
                         left.push(account);
@@ -1104,7 +1110,7 @@ impl Solonet {
             self.wait_blocks(4).await;
         }
         println!(
-            "solonet: swept {total} wei from {swept} accounts back to the faucet{}",
+            "solonet: verified {total} wei returned in {swept} sweeps; {retained} original keys retained ({residual} wei observed residual, including unverified-zero custody){}",
             if left.is_empty() {
                 String::new()
             } else {
@@ -1126,33 +1132,44 @@ impl Solonet {
         cap: u128,
         held_back: u128,
     ) -> Result<Swept, String> {
-        // A faucet payment signed to the account may still land until the faucet's nonce has
-        // passed it; until then the account is not done, whatever it holds now.
+        if !account.file.funding_readable {
+            return Err("original funding claim unreadable; custody retained".into());
+        }
         let signed_below = account.file.faucet_signed_below.load(Ordering::SeqCst);
-        if signed_below > 0 {
-            let faucet_nonce = self.latest_nonce(address(&self.faucet)).await;
-            if faucet_nonce < signed_below {
-                return Err(format!(
-                    "0x{}: the faucet signed it a payment at nonce {} and its nonce is {faucet_nonce}",
-                    hex::encode(account.address),
-                    signed_below - 1
-                ));
-            }
+        if signed_below > 0 && self.sweep_nonce(faucet, "latest").await? < signed_below {
+            return Err("original faucet funding may still land; custody retained".into());
         }
         let balance = self
             .balance(account.address)
             .await
             .map_err(|e| e.to_string())?;
-        let nonce = self.latest_nonce(account.address).await;
-        if balance <= held_back {
-            return Ok(if nonce == 0 {
-                Swept::NotYetFunded
+        let nonce = self.sweep_nonce(account.address, "latest").await?;
+        if self.sweep_nonce(account.address, "pending").await? != nonce {
+            return Err("account has ambiguous pending nonce; custody retained".into());
+        }
+        if balance == 0 {
+            // A complete key can have exposed child funding not covered by .funding, or a
+            // previous unverified sweep. Age/nonce consumption cannot prove either finished.
+            return Ok(if account.file.partial && signed_below == 0 && nonce == 0 {
+                // Partial key writes were never handed to a funder. Recheck before disposal.
+                if self
+                    .balance(account.address)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    != 0
+                {
+                    return Err("partial key balance changed; custody retained".into());
+                }
+                Swept::UnpublishedPartial
             } else {
-                Swept::Empty
+                Swept::UnverifiedZero
             });
         }
+        if balance <= held_back {
+            return Ok(Swept::Residual(balance));
+        }
         let value = balance - held_back;
-        let (raw, _) = sign_eip1559_tip(
+        let (raw, hash) = sign_eip1559_tip(
             &account.key,
             SOLONET_CHAIN_ID,
             nonce,
@@ -1163,6 +1180,7 @@ impl Solonet {
             value,
             &[],
         );
+        let hash = format!("0x{}", hex::encode(hash));
         match self
             .try_call(
                 "eth_sendRawTransaction",
@@ -1170,35 +1188,126 @@ impl Solonet {
             )
             .await
         {
-            Ok(_) => {}
-            // An earlier round's sweep (or another transaction of the account) holds the nonce:
-            // whether it emptied the account is read below.
+            Ok(answer) if answer.as_str() == Some(hash.as_str()) => {}
+            Ok(_) => return Err("node returned a different sweep hash; custody retained".into()),
             Err(error) if error.nonce_held() || error.busy() => {}
             Err(error) => return Err(error.to_string()),
         }
-        // Landed means the nonce is used and the account holds no more than a sweep's fee.
         let started = Instant::now();
-        while self.latest_nonce(account.address).await <= nonce {
+        while self.sweep_nonce(account.address, "latest").await? <= nonce {
             if started.elapsed() >= SWEEP_LAND_PATIENCE {
-                return Err(format!(
-                    "0x{}'s sweep at nonce {nonce} not mined within {SWEEP_LAND_PATIENCE:?}",
-                    hex::encode(account.address)
-                ));
+                return Err("sweep not mined within existing patience; custody retained".into());
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        // A used nonce alone may be a replacement or reverted transaction. Prove OUR return.
+        let receipt = self.sweep_receipt(&hash, account.address, faucet).await?;
         let after = self
             .balance(account.address)
             .await
             .map_err(|e| e.to_string())?;
-        if after <= held_back {
-            Ok(Swept::Landed(balance - after))
-        } else {
-            Err(format!(
-                "0x{} still holds {after} wei after nonce {nonce} (reverted or superseded)",
-                hex::encode(account.address)
-            ))
+        let latest = self.sweep_nonce(account.address, "latest").await?;
+        if latest != nonce.checked_add(1).ok_or("sweep nonce overflow")?
+            || self.sweep_nonce(account.address, "pending").await? != latest
+        {
+            return Err("post-sweep nonce changed or ambiguous; custody retained".into());
         }
+        let disposable = after == 0 && signed_below > 0;
+        if disposable {
+            // Missing markers cannot establish child funding completion. A recorded faucet
+            // claim must still be consumed, and zero must be observed again, before disposal.
+            if self.sweep_nonce(faucet, "latest").await? < signed_below
+                || self
+                    .balance(account.address)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    != 0
+            {
+                return Err("funding or balance changed before disposal; custody retained".into());
+            }
+        }
+        if self.sweep_receipt(&hash, account.address, faucet).await? != receipt {
+            return Err("sweep receipt changed during verification; custody retained".into());
+        }
+        Ok(Swept::Returned {
+            value,
+            remaining: after,
+            disposable,
+        })
+    }
+
+    /// Fallible, checked reads for custody decisions; malformed/unavailable is never zero.
+    async fn sweep_nonce(&self, account: [u8; 20], tag: &str) -> Result<u64, String> {
+        let value = self
+            .try_call(
+                "eth_getTransactionCount",
+                serde_json::json!([format!("0x{}", hex::encode(account)), tag]),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let text = value
+            .as_str()
+            .and_then(|s| s.strip_prefix("0x"))
+            .ok_or("malformed account nonce; custody retained")?;
+        u64::from_str_radix(text, 16).map_err(|_| "invalid account nonce; custody retained".into())
+    }
+
+    /// Exact signed hash, successful native receipt and actual canonical block membership.
+    /// Called again after state reads so a reorg/unavailable block cannot authorize deletion.
+    async fn sweep_receipt(
+        &self,
+        hash: &str,
+        from: [u8; 20],
+        to: [u8; 20],
+    ) -> Result<serde_json::Value, String> {
+        let receipt = self
+            .try_call("eth_getTransactionReceipt", serde_json::json!([hash]))
+            .await
+            .map_err(|e| e.to_string())?;
+        let expected_from = format!("0x{}", hex::encode(from));
+        let expected_to = format!("0x{}", hex::encode(to));
+        let same = |field: &str, expected: &str| {
+            receipt[field]
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+        };
+        if !same("transactionHash", hash)
+            || !same("from", &expected_from)
+            || !same("to", &expected_to)
+            || receipt["status"] != "0x1"
+        {
+            return Err("own successful sweep receipt unavailable; custody retained".into());
+        }
+        let number = receipt["blockNumber"]
+            .as_str()
+            .filter(|s| s.starts_with("0x"))
+            .ok_or("missing receipt block number")?;
+        u64::from_str_radix(&number[2..], 16).map_err(|_| "invalid receipt block number")?;
+        let block_hash = receipt["blockHash"]
+            .as_str()
+            .filter(|s| s.len() == 66 && s.starts_with("0x") && hex::decode(&s[2..]).is_ok())
+            .ok_or("missing receipt block hash")?;
+        let index = receipt["transactionIndex"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("0x"))
+            .and_then(|s| usize::from_str_radix(s, 16).ok())
+            .ok_or("invalid receipt index")?;
+        let block = self
+            .try_call("eth_getBlockByNumber", serde_json::json!([number, false]))
+            .await
+            .map_err(|e| e.to_string())?;
+        if block["number"] != number
+            || !block["hash"]
+                .as_str()
+                .is_some_and(|s| s.eq_ignore_ascii_case(block_hash))
+            || !block["transactions"]
+                .get(index)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case(hash))
+        {
+            return Err("sweep block membership is not canonical; custody retained".into());
+        }
+        Ok(receipt)
     }
 
     async fn latest_nonce(&self, account: [u8; 20]) -> u64 {
@@ -1216,11 +1325,22 @@ impl Solonet {
                 serde_json::json!([format!("0x{}", hex::encode(account)), "latest"]),
             )
             .await?;
-        u128::from_str_radix(
-            value.as_str().unwrap_or_default().trim_start_matches("0x"),
-            16,
-        )
-        .map_err(|error| RpcError::Node(format!("eth_getBalance: {error}")))
+        // Custody disposal requires an actual canonical JSON-RPC quantity. In particular,
+        // unprefixed/repeated-prefix zero is unknown, not evidence that custody is empty.
+        let digits = value
+            .as_str()
+            .and_then(|text| text.strip_prefix("0x"))
+            .filter(|digits| {
+                !digits.is_empty()
+                    && (digits.len() == 1 || !digits.starts_with('0'))
+                    && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| {
+                RpcError::Node("eth_getBalance: noncanonical quantity; custody retained".into())
+            })?;
+        u128::from_str_radix(digits, 16).map_err(|_| {
+            RpcError::Node("eth_getBalance: quantity out of range; custody retained".into())
+        })
     }
 
     /// The `payment` member of a write's body and its transaction hash: `payer`'s payment for
@@ -1300,13 +1420,17 @@ impl Solonet {
 }
 
 /// What one sweep round found for one account.
+#[derive(Debug)]
 enum Swept {
-    /// A sweep of this many wei landed.
-    Landed(u128),
-    /// Holds nothing worth a transfer, and has sent transactions: spent or swept before.
-    Empty,
-    /// Holds nothing and has never sent anything: perhaps never funded, or its funding is late.
-    NotYetFunded,
+    /// Actual signed value returned, excluding gas; residual custody is a separate fact.
+    Returned {
+        value: u128,
+        remaining: u128,
+        disposable: bool,
+    },
+    Residual(u128),
+    UnverifiedZero,
+    UnpublishedPartial,
 }
 
 /// The calldata of a payment for `envelope` on the relay at `host_origin`.
@@ -1443,4 +1567,641 @@ fn trim(bytes: &[u8]) -> &[u8] {
         .position(|byte| *byte != 0)
         .unwrap_or(bytes.len());
     &bytes[start..]
+}
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+    use axum::{extract::Extension, routing::post, Json, Router};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+
+    #[derive(Clone, Copy)]
+    enum Receipt {
+        Success,
+        Missing,
+        Reverted,
+        Replaced,
+        WrongBlock,
+        Reorg,
+        Pruned,
+        WrongIndex,
+    }
+    struct Node {
+        account: String,
+        faucet: String,
+        before: u128,
+        after: u128,
+        sent: usize,
+        hash: String,
+        faucet_nonce: u64,
+        pending: bool,
+        initial_nonce: u64,
+        nonce_error: bool,
+        balance_reads: usize,
+        late_after_zero: bool,
+        before_error: bool,
+        after_error: bool,
+        after_balance_result: Option<Value>,
+        receipt: Receipt,
+        reads: usize,
+        head: u64,
+    }
+    async fn rpc(
+        Extension(state): Extension<Arc<Mutex<Node>>>,
+        Json(request): Json<Value>,
+    ) -> Json<Value> {
+        let mut n = state.lock().unwrap();
+        let p = &request["params"];
+        let value = match request["method"].as_str().unwrap() {
+            "eth_getTransactionCount" if n.nonce_error => json!("unavailable"),
+            "eth_getTransactionCount" => json!(format!(
+                "0x{:x}",
+                if p[0] == n.faucet {
+                    n.faucet_nonce
+                } else {
+                    n.initial_nonce
+                        + u64::from(n.sent > 0)
+                        + u64::from(n.pending && p[1] == "pending")
+                }
+            )),
+            "eth_getBalance" => {
+                n.balance_reads += 1;
+                if (n.sent == 0 && n.before_error) || (n.sent > 0 && n.after_error) {
+                    return Json(
+                        json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"balance unavailable"}}),
+                    );
+                }
+                if n.sent > 0 {
+                    if let Some(value) = &n.after_balance_result {
+                        return Json(json!({"jsonrpc":"2.0","id":request["id"],"result":value}));
+                    }
+                }
+                json!(format!(
+                    "0x{:x}",
+                    if n.late_after_zero && n.balance_reads > 2 {
+                        105_000
+                    } else if n.sent == 0 {
+                        n.before
+                    } else {
+                        n.after
+                    }
+                ))
+            }
+            "eth_blockNumber" => {
+                n.head += 10;
+                json!(format!("0x{:x}", n.head))
+            }
+            "eth_maxPriorityFeePerGas" => json!("0x1"),
+            "eth_getBlockByNumber" => {
+                if p[0] == "latest" {
+                    json!({"baseFeePerGas":"0x1"})
+                } else if matches!(n.receipt, Receipt::Pruned) {
+                    Value::Null
+                } else {
+                    n.reads += 1;
+                    let changed = matches!(n.receipt, Receipt::Reorg) && n.reads > 1;
+                    json!({"number":"0x7","hash":format!("0x{}", if changed {"22"} else {"11"}.repeat(32)),"transactions":[n.hash]})
+                }
+            }
+            "eth_sendRawTransaction" => {
+                let raw = hex::decode(p[0].as_str().unwrap().trim_start_matches("0x")).unwrap();
+                n.hash = format!("0x{}", hex::encode(keccak(&raw)));
+                n.sent += 1;
+                json!(n.hash)
+            }
+            "eth_getTransactionReceipt" => {
+                if matches!(n.receipt, Receipt::Missing) {
+                    Value::Null
+                } else {
+                    json!({"transactionHash": if matches!(n.receipt, Receipt::Replaced) {format!("0x{}", "99".repeat(32))} else {n.hash.clone()},
+                        "from":n.account,"to":n.faucet,"status":if matches!(n.receipt, Receipt::Reverted) {"0x0"} else {"0x1"},
+                        "blockNumber":"0x7","transactionIndex":if matches!(n.receipt,Receipt::WrongIndex) {"0x1"} else {"0x0"},"blockHash":format!("0x{}", if matches!(n.receipt, Receipt::WrongBlock) {"22"} else {"11"}.repeat(32))})
+                }
+            }
+            _ => {
+                return Json(
+                    json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"unsupported synthetic method"}}),
+                )
+            }
+        };
+        Json(json!({"jsonrpc":"2.0","id":request["id"],"result":value}))
+    }
+    struct Rig {
+        _temp: tempfile::TempDir,
+        server: tokio::task::JoinHandle<()>,
+        node: Arc<Mutex<Node>>,
+        chain: Solonet,
+        payer: Payer,
+    }
+    impl Rig {
+        async fn new(before: u128, after: u128, funding: bool) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let dir = temp.path().join("synthetic-run");
+            std::fs::create_dir(&dir).unwrap();
+            let keys = Arc::new(KeyFiles {
+                root: temp.path().to_owned(),
+                dir,
+            });
+            let payer = keys.fresh();
+            if funding {
+                keys.note_faucet_signing(&payer, 9);
+            }
+            // Synthetic signer, never the lab genesis faucet or any original custody.
+            let faucet = SecretKey::from_slice(&[9; 32]).unwrap();
+            let node = Arc::new(Mutex::new(Node {
+                account: format!("0x{}", hex::encode(payer.address)),
+                faucet: format!("0x{}", hex::encode(address(&faucet))),
+                before,
+                after,
+                sent: 0,
+                hash: String::new(),
+                faucet_nonce: 10,
+                pending: false,
+                initial_nonce: 1,
+                nonce_error: false,
+                balance_reads: 0,
+                late_after_zero: false,
+                before_error: false,
+                after_error: false,
+                after_balance_result: None,
+                receipt: Receipt::Success,
+                reads: 0,
+                head: 10,
+            }));
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+            let app = Router::new()
+                .route("/", post(rpc))
+                .layer(Extension(node.clone()));
+            let server = tokio::spawn(async move {
+                axum::Server::from_tcp(listener)
+                    .unwrap()
+                    .serve(app.into_make_service())
+                    .await
+                    .unwrap();
+            });
+            let chain = Solonet {
+                rpc: rpc_url,
+                http: reqwest::Client::builder()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+                faucet,
+                max_fee: 7,
+                keys,
+            };
+            Self {
+                _temp: temp,
+                server,
+                node,
+                chain,
+                payer,
+            }
+        }
+        fn retained(&self) {
+            assert!(
+                self.payer.file.path.exists(),
+                "original synthetic key must remain"
+            );
+            assert!(
+                self.payer.file.funding.exists(),
+                "original funding claim must remain"
+            );
+            let saved = KeyFiles::saved(&self.chain.keys.dir);
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].address, self.payer.address);
+        }
+        async fn sweep(&self) {
+            self.chain.sweep(vec![self.payer.clone()]).await;
+        }
+    }
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn residual_before_send_retains_original_files_without_dust_loop() {
+        for balance in [1, 105_000, 147_000] {
+            let rig = Rig::new(balance, balance, true).await;
+            rig.sweep().await;
+            rig.retained();
+            assert_eq!(rig.node.lock().unwrap().sent, 0);
+        }
+    }
+    #[tokio::test]
+    async fn landed_return_retains_105000_wei_and_restart_discovers_key() {
+        let rig = Rig::new(1_000_000, 105_000, true).await;
+        rig.sweep().await;
+        rig.retained();
+        assert_eq!(rig.node.lock().unwrap().sent, 1);
+        rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+        rig.retained();
+        assert_eq!(rig.node.lock().unwrap().sent, 1);
+    }
+    #[tokio::test]
+    async fn verified_zero_after_own_return_and_completed_funding_allows_disposal() {
+        let rig = Rig::new(1_000_000, 0, true).await;
+        rig.sweep().await;
+        assert!(!rig.payer.file.path.exists());
+        assert!(!rig.payer.file.funding.exists());
+    }
+    #[tokio::test]
+    async fn zero_without_own_verified_return_is_retained_across_restart() {
+        let rig = Rig::new(0, 0, true).await;
+        rig.sweep().await;
+        rig.retained();
+        rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+        rig.retained();
+    }
+    #[tokio::test]
+    async fn unreadable_balance_before_or_after_send_retains_custody() {
+        for after in [false, true] {
+            let rig = Rig::new(1_000_000, 0, true).await;
+            {
+                let mut n = rig.node.lock().unwrap();
+                n.before_error = !after;
+                n.after_error = after;
+            }
+            rig.sweep().await;
+            rig.retained();
+        }
+    }
+    #[tokio::test]
+    async fn missing_failed_replaced_or_noncanonical_receipt_retains_custody_on_restart() {
+        for receipt in [
+            Receipt::Missing,
+            Receipt::Reverted,
+            Receipt::Replaced,
+            Receipt::WrongBlock,
+            Receipt::Reorg,
+            Receipt::Pruned,
+            Receipt::WrongIndex,
+        ] {
+            let rig = Rig::new(1_000_000, 0, true).await;
+            rig.node.lock().unwrap().receipt = receipt;
+            rig.sweep().await;
+            rig.retained();
+            rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+            rig.retained();
+        }
+    }
+    #[tokio::test]
+    async fn late_faucet_funding_keeps_original_zero_balance_key() {
+        let rig = Rig::new(0, 0, true).await;
+        rig.node.lock().unwrap().faucet_nonce = 9;
+        rig.sweep().await;
+        rig.retained();
+        assert_eq!(rig.node.lock().unwrap().sent, 0);
+    }
+    #[tokio::test]
+    async fn corrupt_funding_claim_is_unknown_instead_of_no_funding() {
+        let rig = Rig::new(0, 0, true).await;
+        std::fs::write(&rig.payer.file.funding, "interrupted-claim").unwrap();
+        rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+        rig.retained();
+    }
+    #[tokio::test]
+    async fn malformed_post_return_balance_never_verifies_zero_or_discards_residual_custody() {
+        for value in [
+            json!("0"),
+            json!("0x0x0"),
+            json!(""),
+            json!("0x"),
+            json!("0x00"),
+            json!("0x01"),
+            json!("0x+0"),
+            json!("0xg"),
+            json!("0x100000000000000000000000000000000"),
+            json!(0),
+            Value::Null,
+            json!([]),
+        ] {
+            let rig = Rig::new(1_000_000, 105_000, true).await;
+            rig.node.lock().unwrap().after_balance_result = Some(value);
+            // Real sweep path: canonical own return + consumed funding claim, but RPC
+            // misrepresents the still-positive residue. Malformed is an observable failure.
+            rig.sweep().await;
+            rig.retained();
+            assert_eq!(rig.node.lock().unwrap().sent, 1);
+            assert!(rig.chain.balance(rig.payer.address).await.is_err());
+            rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+            rig.retained();
+        }
+    }
+
+    #[tokio::test]
+    async fn returned_value_excludes_gas_and_retained_residual_is_separate() {
+        let rig = Rig::new(1_000_000, 105_000, true).await;
+        let result = rig
+            .chain
+            .sweep_one(&rig.payer, address(&rig.chain.faucet), 1, 7, 147_000)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            Swept::Returned {
+                value: 853_000,
+                remaining: 105_000,
+                disposable: false
+            }
+        ));
+        rig.retained();
+    }
+    #[tokio::test]
+    async fn pending_nonce_or_missing_child_funding_proof_never_disposes_zero() {
+        let rig = Rig::new(0, 0, false).await;
+        assert!(matches!(
+            rig.chain
+                .sweep_one(&rig.payer, address(&rig.chain.faucet), 1, 7, 147_000)
+                .await
+                .unwrap(),
+            Swept::UnverifiedZero
+        ));
+        assert!(rig.payer.file.path.exists());
+        rig.node.lock().unwrap().pending = true;
+        assert!(rig
+            .chain
+            .sweep_one(&rig.payer, address(&rig.chain.faucet), 1, 7, 147_000)
+            .await
+            .is_err());
+        assert!(rig.payer.file.path.exists());
+    }
+    #[tokio::test]
+    async fn unpublished_partial_requires_verified_zero_and_no_claim() {
+        let mut rig = Rig::new(1, 1, false).await;
+        Arc::get_mut(&mut rig.payer.file).unwrap().partial = true;
+        rig.sweep().await;
+        assert!(rig.payer.file.path.exists());
+        {
+            let mut n = rig.node.lock().unwrap();
+            n.before = 0;
+            n.pending = true;
+        }
+        assert!(rig
+            .chain
+            .sweep_one(&rig.payer, address(&rig.chain.faucet), 1, 7, 147_000)
+            .await
+            .is_err());
+        rig.node.lock().unwrap().pending = false;
+        // The fixture's nonce is 1, so even this partial cannot prove it was unpublished.
+        assert!(matches!(
+            rig.chain
+                .sweep_one(&rig.payer, address(&rig.chain.faucet), 1, 7, 147_000)
+                .await
+                .unwrap(),
+            Swept::UnverifiedZero
+        ));
+        rig.node.lock().unwrap().initial_nonce = 0;
+        rig.sweep().await;
+        assert!(!rig.payer.file.path.exists());
+    }
+    #[tokio::test]
+    async fn unknown_nonce_and_late_balance_recheck_never_dispose() {
+        let rig = Rig::new(1_000_000, 0, true).await;
+        rig.node.lock().unwrap().nonce_error = true;
+        rig.sweep().await;
+        rig.retained();
+        assert_eq!(rig.node.lock().unwrap().sent, 0);
+        {
+            let mut n = rig.node.lock().unwrap();
+            n.nonce_error = false;
+            n.late_after_zero = true;
+            n.balance_reads = 0;
+        }
+        rig.sweep().await;
+        rig.retained();
+    }
+    #[tokio::test]
+    async fn orphan_claim_and_failed_key_removal_preserve_funding_record() {
+        let rig = Rig::new(0, 0, true).await;
+        std::fs::remove_file(&rig.payer.file.path).unwrap();
+        KeyFiles::remove_if_done(&rig.chain.keys.dir);
+        assert!(rig.payer.file.funding.exists());
+        // A directory cannot be removed as a key file: its claim must survive that failure.
+        std::fs::create_dir(&rig.payer.file.path).unwrap();
+        KeyFiles::forget(&rig.payer);
+        assert!(rig.payer.file.funding.exists());
+    }
+
+    /// This is an operator-only claim, not a replacement for the lab lease. All old owners
+    /// must be externally confirmed dead and the namespace quiescent before acquisition.
+    struct PinnedRun {
+        claim: PathBuf,
+    }
+    impl Drop for PinnedRun {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.claim);
+        }
+    }
+    fn pin_run(
+        root: &std::path::Path,
+        run: &std::path::Path,
+        owner: u32,
+        modified_ns: u128,
+    ) -> Result<PinnedRun, &'static str> {
+        let canonical =
+            |p: &std::path::Path| p.is_absolute() && p.canonicalize().ok().as_deref() == Some(p);
+        if !canonical(root)
+            || !canonical(run)
+            || run.parent() != Some(root)
+            || !run
+                .file_name()
+                .is_some_and(|s| s.to_string_lossy().starts_with("run-"))
+        {
+            return Err("operator requires an exact canonical absolute direct-child run path");
+        }
+        let lock = run.join(".lock");
+        let check = || -> Result<(), &'static str> {
+            let metadata =
+                std::fs::symlink_metadata(&lock).map_err(|_| "original owner lock unavailable")?;
+            if !metadata.file_type().is_file() {
+                return Err("original owner lock is not a regular file");
+            }
+            let modified = metadata
+                .modified()
+                .map_err(|_| "original owner lock timestamp unavailable")?;
+            if modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "invalid original lock timestamp")?
+                .as_nanos()
+                != modified_ns
+                || modified
+                    .elapsed()
+                    .map_err(|_| "future original lock timestamp")?
+                    <= RUN_LOCK_STALE
+            {
+                return Err("original owner lock is active or changed");
+            }
+            if std::fs::read_to_string(&lock)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                != Some(owner)
+            {
+                return Err("original owner lock identity is ambiguous or changed");
+            }
+            Ok(())
+        };
+        for entry in std::fs::read_dir(run).map_err(|_| "original run directory unavailable")? {
+            if entry
+                .map_err(|_| "original run entry unavailable")?
+                .file_type()
+                .map_err(|_| "original run entry type unavailable")?
+                .is_symlink()
+            {
+                return Err("original run contains a symlink; explicit custody review required");
+            }
+        }
+        check()?;
+        let claim = run.join(".sweep-operator");
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options
+            .open(&claim)
+            .map_err(|_| "operator claim exists or cannot be acquired; no automatic takeover")?;
+        let pinned = PinnedRun { claim };
+        use std::io::Write;
+        (&file)
+            .write_all(std::process::id().to_string().as_bytes())
+            .map_err(|_| "cannot write operator claim")?;
+        file.sync_all().map_err(|_| "cannot sync operator claim")?;
+        check()?;
+        Ok(pinned)
+    }
+    fn old_lock(dir: &std::path::Path) -> u128 {
+        let lock = dir.join(".lock");
+        std::fs::write(&lock, "12345").unwrap();
+        let time = std::time::SystemTime::now() - Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(lock)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+        time.duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    }
+    #[test]
+    fn operator_rejects_active_changed_ambiguous_and_sibling_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let run = root.join("run-original");
+        std::fs::create_dir(&run).unwrap();
+        let ns = old_lock(&run);
+        assert!(pin_run(&root, &run, 99, ns).is_err());
+        assert!(pin_run(&root, &run, 12345, ns + 1).is_err());
+        assert!(pin_run(&run, &run, 12345, ns).is_err());
+        std::fs::write(run.join(".lock"), "12345").unwrap();
+        assert!(pin_run(&root, &run, 12345, ns).is_err());
+        std::fs::remove_file(run.join(".lock")).unwrap();
+        assert!(pin_run(&root, &run, 12345, ns).is_err());
+        assert!(!run.join(".sweep-operator").exists());
+        let ns = old_lock(&run);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("outside.key"), run.join("unexpected.key"))
+                .unwrap();
+            assert!(pin_run(&root, &run, 12345, ns).is_err());
+        }
+    }
+    #[tokio::test]
+    async fn operator_claim_keeps_exact_original_paths_and_siblings_untouched() {
+        let rig = Rig::new(105_000, 105_000, true).await;
+        let root = rig.chain.keys.root.canonicalize().unwrap();
+        let original = root.join("run-original");
+        // Only synthetic setup moves a fixture BEFORE acquisition; the operator never moves it.
+        std::fs::rename(&rig.chain.keys.dir, &original).unwrap();
+        let ns = old_lock(&original);
+        let sibling = root.join("run-sibling");
+        std::fs::create_dir(&sibling).unwrap();
+        std::fs::write(sibling.join("sentinel"), "untouched").unwrap();
+        let pinned = pin_run(&root, &original, 12345, ns).unwrap();
+        assert!(pin_run(&root, &original, 12345, ns).is_err());
+        let original_key = original.join(rig.payer.file.path.file_name().unwrap());
+        rig.chain.sweep(KeyFiles::saved(&original)).await;
+        assert!(original_key.exists());
+        assert_eq!(KeyFiles::saved(&original).len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(sibling.join("sentinel")).unwrap(),
+            "untouched"
+        );
+        assert_eq!(
+            std::fs::metadata(original.join(".lock"))
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            ns
+        );
+        assert_eq!(rig.node.lock().unwrap().sent, 0);
+        drop(pinned);
+        assert!(!original.join(".sweep-operator").exists());
+        std::fs::write(original.join(".sweep-operator"), "interrupted").unwrap();
+        assert!(pin_run(&root, &original, 12345, ns).is_err());
+    }
+
+    /// Never run during CI/ordinary tests. Root must separately approve the exact command,
+    /// verify old PID/container death (paused is insufficient) and quiesce ALL old helpers.
+    /// No from_env, stale takeover, renaming, key generation, provisioning or funding occurs.
+    #[tokio::test]
+    #[ignore = "explicit root-approved original-run sweep only; requires externally verified owner death"]
+    async fn operator_sweep_pinned_original_run() {
+        let env = |name| std::env::var(name).expect("missing explicit operator argument");
+        assert_eq!(
+            env("FRANK_LAB_SWEEP_OWNER_STATE"),
+            "owner-dead-and-namespace-quiescent",
+            "external owner death and namespace quiescence are mandatory"
+        );
+        let root = PathBuf::from(env("FRANK_LAB_SWEEP_ROOT"));
+        let run = PathBuf::from(env("FRANK_LAB_SWEEP_RUN"));
+        let owner = env("FRANK_LAB_SWEEP_OWNER_PID")
+            .parse()
+            .expect("invalid pinned owner PID");
+        let ns = env("FRANK_LAB_SWEEP_LOCK_MTIME_NS")
+            .parse()
+            .expect("invalid pinned lock timestamp");
+        let _pin =
+            pin_run(&root, &run, owner, ns).expect("original run ownership validation failed");
+        let rpc = env("FRANK_LAB_SOLONET_RPC_URL");
+        let url = reqwest::Url::parse(&rpc).expect("invalid operator RPC URL");
+        assert!(
+            url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none(),
+            "operator RPC URL must not carry credentials or query data"
+        );
+        let chain = Solonet {
+            rpc,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+            faucet: SecretKey::from_slice(&hex::decode(FAUCET_KEY).unwrap()).unwrap(),
+            max_fee: 0,
+            keys: Arc::new(KeyFiles {
+                root,
+                dir: run.clone(),
+            }),
+        };
+        let id = chain
+            .try_call("eth_chainId", serde_json::json!([]))
+            .await
+            .map_err(|_| "operator chain identity RPC failed")
+            .unwrap();
+        assert_eq!(
+            id,
+            serde_json::json!(format!("0x{:x}", SOLONET_CHAIN_ID)),
+            "operator RPC is not configured solonet"
+        );
+        chain.sweep(KeyFiles::saved(&run)).await;
+    }
 }

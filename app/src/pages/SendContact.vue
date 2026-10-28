@@ -463,7 +463,13 @@ export default defineComponent({
     const recoveryReview = ref<DirectMessageRecoveryFeeReview>()
     let recoveryWallet: Awaited<ReturnType<typeof useActiveWallet>> | undefined
     // What a payment to a contact can draw on: the wallet's own figure, not the shown total.
-    const { formattedSpendable, exactSpendable, loaded } = useBalance()
+    const {
+      formattedSpendable,
+      exactSpendable,
+      availableLoaded,
+      availableError,
+      availableSupported,
+    } = useBalance()
 
     const search = ref('')
     const selectedContactAddress = ref<string>(
@@ -501,7 +507,9 @@ export default defineComponent({
     const feeChanged = ref(false)
 
     const balanceText = computed(() =>
-      loaded.value ? formattedSpendable.value : '',
+      availableSupported.value && availableLoaded.value && !availableError.value
+        ? formattedSpendable.value
+        : '',
     )
     const unit = computed(() => activeChain.unit)
 

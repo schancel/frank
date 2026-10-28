@@ -18,6 +18,12 @@ import enUS from '../i18n/en-us'
 let mockStampWei: bigint | undefined = 0n
 // The wallet's payment floor (`directMessages.minimumStamp`); not known unless a test sets it.
 let mockFloorWei = 0n
+let mockCapacity = {
+  loaded: true,
+  error: false,
+  supported: true,
+  formatted: '10.5 MON',
+}
 const mockPrepare = jest.fn()
 const mockSendMessage = jest.fn()
 const mockRecoveryReview = jest.fn()
@@ -92,8 +98,11 @@ jest.mock('src/composables/useBalance', () => ({
   useBalance: () => ({
     // The shown balance (with the profile address) and what a contact payment can draw on.
     formattedBalance: { value: '10.6 MON' },
-    formattedSpendable: { value: '10.5 MON' },
-    exactSpendable: { value: '10.5 MON' },
+    formattedSpendable: { value: mockCapacity.formatted },
+    exactSpendable: { value: mockCapacity.formatted },
+    availableLoaded: { value: mockCapacity.loaded },
+    availableError: { value: mockCapacity.error },
+    availableSupported: { value: mockCapacity.supported },
     loaded: { value: true },
   }),
 }))
@@ -204,6 +213,12 @@ describe('SendContact.vue (dual-send model)', () => {
     jest.clearAllMocks()
     ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
     mockRoute.query = {}
+    mockCapacity = {
+      loaded: true,
+      error: false,
+      supported: true,
+      formatted: '10.5 MON',
+    }
 
     const contactStore = useContactStore()
     contactStore.contacts = {
@@ -485,6 +500,67 @@ describe('SendContact.vue (dual-send model)', () => {
     const available = wrapper.get('[data-test="send-contact-available"]').text()
     expect(available).toBe('Available for this payment: 10.5 MON')
     expect(wrapper.text()).not.toContain('10.6 MON')
+  })
+
+  it.each(['loading', 'error', 'unsupported'] as const)(
+    'hides unavailable capacity (%s) while a supported action quote still permits the send',
+    async state => {
+      mockCapacity.loaded = state !== 'loading'
+      mockCapacity.error = state === 'error'
+      mockCapacity.supported = state !== 'unsupported'
+      const quoteContactPayment = jest.fn().mockResolvedValue({
+        valueWei: PREPARED.value,
+        stampWei: 0n,
+        networkFeeWei: 100_000_000_000_000n,
+        totalWei: PREPARED.value + 100_000_000_000_000n,
+        floorWei: 1n,
+      })
+      ;(useActiveWallet as jest.Mock).mockResolvedValue({
+        ...mockWallet,
+        quoteContactPayment,
+      })
+      mockPrepare.mockResolvedValueOnce(PREPARED)
+      mockSendMessage.mockResolvedValueOnce({
+        state: 'sent',
+        payloadDigest: 'dd',
+      })
+      const wrapper = mountSendContact()
+      await flushPromises()
+      const capacity = wrapper.get('[data-test="send-contact-available"]')
+      expect(capacity.text()).toBe('')
+      expect(capacity.attributes('title')).toBeUndefined()
+      await wrapper.find('[data-test="contact-item"]').trigger('click')
+      await wrapper
+        .find('[data-test="send-contact-amount-input"]')
+        .setValue('1.5')
+      await wrapper
+        .find('[data-test="send-contact-review-button"]')
+        .trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="review-fee"]').text()).toContain('MON')
+      await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(mockPrepare).toHaveBeenCalledTimes(1)
+      expect(mockPrepare.mock.calls[0][0].maxFeeWei).toBe(100_000_000_000_000n)
+      expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('shows a successfully observed zero capacity without blocking the original operation quote', async () => {
+    mockCapacity.formatted = '0 MON'
+    const wrapper = mountSendContact()
+    await flushPromises()
+    expect(wrapper.get('[data-test="send-contact-available"]').text()).toBe(
+      'Available for this payment: 0 MON',
+    )
+    wrapper.unmount()
+    const recovery = await mountRecovery()
+    await recovery.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockApproveRecovery).toHaveBeenCalledTimes(1)
+    expect(mockReconcileAttempts).toHaveBeenCalledTimes(1)
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
   it('Confirm never does nothing: details that are no longer a payment are said, and the form returns', async () => {

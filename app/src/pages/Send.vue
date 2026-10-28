@@ -632,6 +632,21 @@ export default defineComponent({
         goBack(router, formStepLocation(route, null))
     }
 
+    /**
+     * Once a transfer is signed (it may be handed over from then on), its outcome takes the
+     * form's place in history: neither Back nor Forward reaches the form or its review again.
+     * Refused before anything was signed, the review stays a step: Back still reaches the form.
+     */
+    let outcomeSettled = false
+    const settleOutcome = () => {
+      if (outcomeSettled || disposed) return
+      outcomeSettled = true
+      void (async () => {
+        if (formStep(route)) await router.replace(formStepLocation(route, null))
+        await settleForm(router, start)
+      })()
+    }
+
     const reviewTransfer = async () => {
       if (sending.value || dispatched.value || disposed) return
       const transfer = parsedTransfer.value
@@ -644,6 +659,9 @@ export default defineComponent({
         return
       }
       sending.value = true
+      // Where the user was when quoting began: a quote landing after they moved (Back off a
+      // review reached by Forward) must not navigate them again.
+      const quotedOn = route.fullPath
       estimatedFeeText.value = ''
       estimatedFeeWei.value = undefined
       feeUnavailableReason.value = ''
@@ -699,9 +717,18 @@ export default defineComponent({
         } finally {
           if (!disposed) feeEstimating.value = false
         }
+        if (disposed) return
+        if (route.fullPath !== quotedOn) {
+          // The user moved while the quote was on its way: off the review, it is dropped.
+          if (formStep(route) !== REVIEW_STEP) {
+            review.value = undefined
+            isReviewing.value = false
+          }
+          return
+        }
         // The review is a step of its own once the amount is accepted (a refused amount stays
         // on the form, with no step to go Forward to): Back returns to the form, filled in.
-        if (!disposed && isReviewing.value && formStep(route) !== REVIEW_STEP)
+        if (isReviewing.value && formStep(route) !== REVIEW_STEP)
           void router.push(formStepLocation(route, REVIEW_STEP))
       } catch (err) {
         if (disposed) return
@@ -985,6 +1012,7 @@ export default defineComponent({
             maxFee: reviewedFee,
             onSigned: async (signed: { txHash: string }) => {
               signedTxHash = signed.txHash
+              settleOutcome()
               // onSigned runs before broadcast, while the original row is still active.
               if (
                 !signedOperationId &&
@@ -1003,17 +1031,11 @@ export default defineComponent({
           refusal.value = undefined
           feeChanged.value = false
           dispatched.value = true
-          // From here the transfer may be under way: its outcome takes the form's place in
-          // history, so neither Back nor Forward reaches the form or its review again.
-          void (async () => {
-            if (formStep(route))
-              await router.replace(formStepLocation(route, null))
-            await settleForm(router, start)
-          })()
           const result = client.sendLegacy
             ? await client.sendLegacy(params)
             : await client.send(params)
           signedTxHash = result.txHash
+          settleOutcome()
           if (!(await current())) return
           await inspect()
           if (disposed || !reviewed.binding.isCurrent()) return
@@ -1077,6 +1099,7 @@ export default defineComponent({
           }
           if (err instanceof NativeTransactionSubmissionError)
             signedTxHash = err.transaction.txHash
+          if (signedTxHash !== undefined) settleOutcome()
           // Nothing was signed (the wallet reports a signature before it hands anything to the
           // network, and it reported none): the transfer was refused while it was being
           // planned, so nothing can have moved. Say so, with the reason, and go back to the

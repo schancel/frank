@@ -4,7 +4,6 @@ import { ref } from 'vue'
 import type { MessageWithReplies } from 'src/stores/forum'
 import ForumMessage from './ForumMessage.vue'
 import ForumPost from './ForumPost.vue'
-import TopicMessage from '../topic/TopicMessage.vue'
 import AccountBadge from '../contacts/AccountBadge.vue'
 
 const ADDRESS = '0x2222222222222222222222222222222222222222'
@@ -26,7 +25,7 @@ jest.mock('src/accounts/session', () => ({
 }))
 jest.mock('src/stores/forum', () => ({ useForumStore: () => mockForum }))
 jest.mock('src/stores/topics', () => ({
-  useTopicStore: () => ({ topics: { help: { offering: '0' } } }),
+  useTopicStore: () => ({ topics: { help: { topic: 'help' } } }),
 }))
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => ({ profile: mockOwnProfile }),
@@ -72,7 +71,7 @@ afterEach(() => {
   for (const wrapper of mountedCards.splice(0)) wrapper.unmount()
 })
 
-const components = [ForumMessage, ForumPost, TopicMessage]
+const components = [ForumMessage, ForumPost]
 describe.each(components)('author display in $name', component => {
   beforeEach(() => {
     mockOwnAddress.value = null

@@ -8,7 +8,7 @@
 import { createApp, defineComponent, h, ref, type App } from 'vue'
 import { RouterView, type Router } from 'vue-router'
 
-import { resetNavigationForTests } from './navigation'
+import { formStart, resetNavigationForTests, settleForm } from './navigation'
 import {
   installScrollMemory,
   resetScrollMemoryForTests,
@@ -58,6 +58,8 @@ afterAll(() => {
 
 /** How far each page's list can scroll (its content so far); unlimited when unset. */
 const contentHeight = ref<Record<string, number>>({})
+/** A banner shown above the named list (it moves the list among its siblings). */
+const banner = ref(false)
 
 const page = (name: string) =>
   defineComponent({
@@ -80,8 +82,22 @@ const Layout = defineComponent({
   render: () => h('div', { class: 'layout' }, [h(RouterView)]),
 })
 
+/** A page whose list is named (`data-scroll-key`) and may have a banner above it. */
+const NamedPage = defineComponent({
+  render: () =>
+    h('div', { class: 'page named' }, [
+      banner.value ? h('div', { class: 'banner' }) : null,
+      h('div', {
+        'class': 'scroller',
+        'data-page': 'named',
+        'data-scroll-key': 'named-list',
+      }),
+    ]),
+})
+
 const ROUTES = [
   { path: '/list', component: page('list') },
+  { path: '/named', component: NamedPage },
   { path: '/detail', component: page('detail') },
   { path: '/other', component: page('other') },
 ]
@@ -128,6 +144,7 @@ async function start(path = '/list') {
 beforeEach(() => {
   sessionStorage.clear()
   contentHeight.value = {}
+  banner.value = false
 })
 afterEach(() => {
   app?.unmount()
@@ -251,5 +268,53 @@ describe('scroll positions per history entry', () => {
     expect(historyPosition()).toBe(position)
     expect(scroller().dataset.page).toBe('detail')
     expect(scroller().scrollTop).toBe(75)
+  })
+
+  it('a named list is found again though the page around it changed', async () => {
+    await start('/named')
+    scrollTo(scroller(), 240)
+    await frames()
+    await router.push('/detail')
+    await frames()
+    // Back: a banner now shows above the list.
+    banner.value = true
+    await userBack(router)
+    await frames()
+    expect(scroller().dataset.page).toBe('named')
+    expect(scroller().scrollTop).toBe(240)
+  })
+
+  it("a finished form's entries folded into one: what was kept for the entries gone is dropped", async () => {
+    await start()
+    scrollTo(scroller(), 300)
+    await frames()
+    await router.push('/detail')
+    await frames()
+    const form = formStart()
+    scrollTo(scroller(), 50)
+    await frames()
+    await router.push('/other')
+    await frames()
+    scrollTo(scroller(), 70)
+    await frames()
+    // The outcome (/other) takes the form's place above the list; the entry after it is gone.
+    await settleForm(router, form)
+    await frames()
+    window.dispatchEvent(new Event('pagehide'))
+    const kept = JSON.parse(
+      sessionStorage.getItem(SCROLL_STORAGE_KEY) ?? '[]',
+    ) as [number, { path: string }][]
+    const here = historyPosition()
+    expect(kept.filter(([position]) => position > here)).toEqual([])
+    expect(
+      kept.filter(
+        ([position, entry]) => position === here && entry.path !== '/other',
+      ),
+    ).toEqual([])
+
+    await userBack(router)
+    await frames()
+    expect(scroller().dataset.page).toBe('list')
+    expect(scroller().scrollTop).toBe(300)
   })
 })

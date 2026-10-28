@@ -257,6 +257,35 @@ describe('finding 17: bottom tabs do not stack', () => {
   })
 })
 
+describe('the Messages tab from a conversation returns to the list as the user left it', () => {
+  async function searchedThenOpened() {
+    const w = await phone('/chat')
+    await router.replace('/chat?q=al')
+    const list = historyPosition()
+    await router.push('/chat/abc')
+    await flushHistory()
+    return { w, list }
+  }
+
+  it('the bottom tab: Back to the searched list, no new entry', async () => {
+    const { w, list } = await searchedThenOpened()
+    // The bottom bar hides inside a conversation; its Messages tab's own handler.
+    ;(w.vm as any).openMobileChatsTab()
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/chat?q=al')
+    expect(historyPosition()).toBe(list)
+  })
+
+  it('the rail: Back to the searched list, no new entry', async () => {
+    const { w, list } = await searchedThenOpened()
+    ;(w.vm as any).toggleMyDrawerOpen()
+    await flushPromises()
+    await tap(w, '#rail-tab-chats')
+    expect(router.currentRoute.value.fullPath).toBe('/chat?q=al')
+    expect(historyPosition()).toBe(list)
+  })
+})
+
 describe('finding 16: the drawer', () => {
   it("the drawer's Messages icon opens the conversation list, not the last conversation", async () => {
     const w = await phone('/forum')

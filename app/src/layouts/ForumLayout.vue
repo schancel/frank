@@ -120,6 +120,7 @@
         <q-scroll-area
           ref="chatScroll"
           class="q-px-sm absolute full-width full-height"
+          data-scroll-key="forum"
           @wheel.capture="pullWithWheel"
           :content-style="{ display: 'flex', flexDirection: 'column' }"
           :content-active-style="{ display: 'flex', flexDirection: 'column' }"
@@ -276,12 +277,12 @@ export default defineComponent({
       getRefreshRequestToken: forumStore.getRefreshRequestToken,
       setSelectedTopic: forumStore.setSelectedTopic,
       // Ticket #72: `refreshDiscoveredTopics` merges relay-discovered topics into `useTopicStore`
-      // (the store `AddTopic.vue`/`TopicList.vue`/`TopicDrawer.vue` read from, distinct from this
+      // (the store `AddTopic.vue` and the drawers' topic lists read from, distinct from this
       // layout's own `forumStore`) alongside its hardcoded `defaultTopics` fallback. Wired here
       // (this layout's `mounted()` below) rather than at global app startup: unlike ticket #49's
       // curated contacts (which matter immediately, before the user picks a screen), a topic list
       // is only relevant once someone has actually opened the Forum -- this layout wraps every
-      // Forum-area route (`Forum.vue`/`Topic.vue` via `router-view`), so its `mounted()` hook is
+      // Forum-area route (`Forum.vue` and the post pages via `router-view`), so its `mounted()` hook is
       // this codebase's real "the user opened the Forum" moment.
       refreshDiscoveredTopics: topicStore.refreshDiscoveredTopics,
       topics,

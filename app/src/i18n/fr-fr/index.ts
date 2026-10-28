@@ -552,8 +552,6 @@ export const rawFrFR = {
     contactActions: 'Options du contact {name}',
     openNavigation: 'Ouvrir le menu de navigation',
     addContact: 'Ajouter un contact',
-    addTopic: 'Ajouter un sujet',
-    deleteTopic: 'Supprimer le sujet {topic}',
     deleteContact: 'Supprimer le contact {name}',
     sendMessage: 'Envoyer le message',
     voteUp: 'Voter pour',
@@ -1362,10 +1360,6 @@ export const rawFrFR = {
     claimedAmount: 'annoncé',
     notReceivedNotice:
       'Un paiement annoncé par un expéditeur ({amount}) n’est pas arrivé.',
-  },
-  topicDrawer: {
-    offering: 'Offre:',
-    filter: 'Filtrer:',
   },
   setup: {
     loginOrSignUp: 'Connexion/Inscription',

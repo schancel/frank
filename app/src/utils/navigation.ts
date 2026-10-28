@@ -281,7 +281,7 @@ function takeAppPop(position: number | null): boolean {
 }
 
 /** Resolves once no navigation is pending (or after a second, whatever happens). */
-function navigationIdle(): Promise<void> {
+export function navigationIdle(): Promise<void> {
   const started = Date.now()
   return new Promise(resolve => {
     const check = () => {
@@ -400,6 +400,43 @@ function goAndSettle(router: Router, delta: number): Promise<void> {
   })
 }
 
+/** Unseen moves under way (`moveUnseen` and the entry rewrite after it). */
+let unseenMoves = 0
+/** Told after an unseen move has settled, with whether it dropped the entries after it. */
+const unseenMoveListeners = new Set<(truncated: boolean) => void>()
+
+/** True while the session history moves under the page on screen (it is not that entry's). */
+export function movingUnseen(): boolean {
+  return unseenMoves > 0
+}
+
+/**
+ * Calls `listener` after each unseen move has settled (the entry under the page has changed
+ * with no navigation for the router to report). `truncated`: the entries after it are gone.
+ */
+export function onUnseenMove(
+  listener: (truncated: boolean) => void,
+): () => void {
+  unseenMoveListeners.add(listener)
+  return () => unseenMoveListeners.delete(listener)
+}
+
+/** Runs `move` as one unseen move; listeners hear of it when it moved anything. */
+async function unseenMove(
+  move: () => Promise<boolean | 'truncated'>,
+): Promise<void> {
+  unseenMoves++
+  let moved: boolean | 'truncated' = false
+  try {
+    moved = await move()
+  } finally {
+    unseenMoves--
+  }
+  if (moved)
+    for (const listener of [...unseenMoveListeners])
+      listener(moved === 'truncated')
+}
+
 /**
  * Moves the session history by `delta` without the router following: neither the pages in
  * between nor the one landed on are shown. Resolves true once moved, false when the browser
@@ -438,12 +475,15 @@ function moveUnseen(delta: number): Promise<boolean> {
  * none of the entries passed is shown.
  */
 async function settleOnEarlierEntry(router: Router, delta: number) {
-  if (!(await moveUnseen(delta)) || !routerHistory) return
-  const current = router.currentRoute.value
-  // Keeps the landing entry's own `back` and record of the Messages entry under it.
-  routerHistory.replace(current.fullPath)
-  committedStart = null
-  recordStartTab(current.path)
+  await unseenMove(async () => {
+    if (!(await moveUnseen(delta)) || !routerHistory) return false
+    const current = router.currentRoute.value
+    // Keeps the landing entry's own `back` and record of the Messages entry under it.
+    routerHistory.replace(current.fullPath)
+    committedStart = null
+    recordStartTab(current.path)
+    return true
+  })
 }
 
 /** A router call's outcome: true when it committed. */
@@ -596,18 +636,23 @@ export async function settleForm(
   )
     return
   const below = start.parentInApp ? start.position - 1 : start.position
-  if (!(await moveUnseen(below - position)) || !routerHistory) return
-  const current = router.currentRoute.value
-  if (start.parentInApp) {
-    // On the page under the form: the Messages entry under it, if any, is the outcome's too.
-    committedStart = null
-    recordStartTab(routerHistory.location.split(/[?#]/)[0] ?? '')
-    routerHistory.push(current.fullPath)
-  } else {
-    routerHistory.replace(current.fullPath)
-    committedStart = null
-  }
-  recordStartTab(current.path)
+  await unseenMove(async () => {
+    if (!(await moveUnseen(below - position)) || !routerHistory) return false
+    const current = router.currentRoute.value
+    let moved: true | 'truncated' = true
+    if (start.parentInApp) {
+      // On the page under the form: the Messages entry under it, if any, is the outcome's too.
+      committedStart = null
+      recordStartTab(routerHistory.location.split(/[?#]/)[0] ?? '')
+      routerHistory.push(current.fullPath)
+      moved = 'truncated'
+    } else {
+      routerHistory.replace(current.fullPath)
+      committedStart = null
+    }
+    recordStartTab(current.path)
+    return moved
+  })
 }
 
 /**
@@ -644,7 +689,13 @@ async function switchTabNow(router: Router, tab: string, step: () => void) {
       // On Messages. Messages itself, from a conversation: its list (Back to it when it is
       // right under the conversation). Any other tab opens above it.
       step()
-      if (tab === START_TAB && previousInAppLocation() === START_TAB)
+      // The list as the user left it (its search and filter are in its address).
+      const previous = previousInAppLocation()
+      if (
+        tab === START_TAB &&
+        previous !== null &&
+        router.resolve(previous).path === START_TAB
+      )
         await goAndSettle(router, -1)
       else await settled(router.push(tab))
       return
@@ -702,6 +753,7 @@ export function resetNavigationForTests() {
   pendingTarget = null
   refusedPopDelta = null
   switching = false
+  unseenMoves = 0
   openOverlays.splice(0)
   backClosesOverlays = () => false
 }

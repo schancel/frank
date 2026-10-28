@@ -40,12 +40,6 @@ jest.mock('src/utils/notifications', () => ({ errorNotify: jest.fn() }))
 jest.mock('../components/panels/ForumDrawer.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../components/topic/TopicDrawer.vue', () => ({
-  template: '<div />',
-}))
-jest.mock('../components/topic/TopicInput.vue', () => ({
-  template: '<div />',
-}))
 
 // Records the breakpoint the layout hands to QDrawer (Quasar's own resize logic is not under test).
 const DrawerStub = defineComponent({

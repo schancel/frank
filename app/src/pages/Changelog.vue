@@ -24,6 +24,7 @@
           ref="chatScroll"
           @scroll="scrollHandler"
           class="q-px-sm absolute-full"
+          data-scroll-key="changelog"
         >
           <div class="text-h6">v0.3.0 — 2026-10-12</div>
           <div class="text-body1">

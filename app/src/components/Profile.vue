@@ -381,6 +381,7 @@ import { getOwnCanonicalAddress } from '../utils/own-address'
 import { addressCopiedNotify, errorNotify } from '../utils/notifications'
 import { isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
+import { navigationIdle, navigationPending } from '../utils/navigation'
 
 export type ProfileLinkItem = {
   type: string
@@ -640,10 +641,15 @@ export default defineComponent({
       this.tab = profileTabFromQuery(value)
     },
     // And written back in place (a replace: switching tabs adds no history entry), so Back,
-    // Forward and a reload return to the tab that was open.
-    'tab'(value: 'profile' | 'identity') {
+    // Forward and a reload return to the tab that was open. Only once any navigation under way
+    // (the user's Back) has settled: a write then would cancel it.
+    async 'tab'() {
+      if (!this.$router) return
+      await navigationIdle()
+      if (navigationPending()) return
+      const value = this.tab
       const route = this.$route
-      if (!route || !this.$router || route.path !== '/profile') return
+      if (!route || route.path !== '/profile') return
       if (profileTabFromQuery(route.query.tab) === value) return
       const query = { ...route.query }
       if (value === 'identity') query.tab = value

@@ -31,6 +31,7 @@
       >
         <iframe
           ref="frame"
+          :key="frameKey"
           :src="frameSrc"
           class="docs-iframe"
           :title="$t('docs.iframeTitle')"
@@ -81,16 +82,34 @@ export default defineComponent({
     )
     return {
       frameSrc: DOCS_ROOT + page,
+      /** A new frame (a new key) starts on its page without adding to the history. */
+      frameKey: 0,
       stopWatchingFrame: undefined as (() => void) | undefined,
     }
   },
   watch: {
-    // The address changed to another page (Back or Forward between two entries): the frame
-    // follows, unless it is already there.
+    // The address changed to another page (Back or Forward between two entries, a link): the
+    // frame follows, unless it is already there. In place (`location.replace`): changing a
+    // shown frame's src would add an entry to the session history. A frame that cannot be
+    // reached is replaced by a new one on that page.
     '$route.query.page'(raw: unknown) {
       if (this.$route?.path !== '/docs') return
       const page = docsPage(raw)
-      if (page !== this.framePage()) this.frameSrc = DOCS_ROOT + page
+      if (page === this.framePage()) return
+      const target = DOCS_ROOT + page
+      const frame = this.$refs.frame as HTMLIFrameElement | undefined
+      try {
+        const location = frame?.contentWindow?.location
+        if (location) {
+          location.replace(target)
+          return
+        }
+      } catch {
+        // Unreachable: a new frame.
+      }
+      // The src of the frame shown is never changed (that too adds an entry): a new frame.
+      this.frameSrc = target
+      this.frameKey++
     },
   },
   beforeUnmount() {

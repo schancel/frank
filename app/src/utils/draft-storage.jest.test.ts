@@ -4,10 +4,8 @@ import {
   clearForumPostDraft,
   loadChatDraft,
   loadForumPostDraft,
-  loadTopicDraft,
   saveChatDraft,
   saveForumPostDraft,
-  saveTopicDraft,
 } from './draft-storage'
 
 describe('draft-storage', () => {
@@ -87,13 +85,5 @@ describe('draft-storage', () => {
     expect(loadForumPostDraft('reply:digest-999')?.message).toBe(
       'Reply body text',
     )
-  })
-
-  it('persists and clears topic stream drafts', () => {
-    expect(loadTopicDraft('announcements')).toBe('')
-    saveTopicDraft('Announcements', 'Draft announcement')
-    expect(loadTopicDraft('announcements')).toBe('Draft announcement')
-    saveTopicDraft('announcements', '')
-    expect(loadTopicDraft('announcements')).toBe('')
   })
 })

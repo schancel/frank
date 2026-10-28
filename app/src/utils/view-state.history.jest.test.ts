@@ -179,6 +179,23 @@ describe('a search in the address', () => {
     expect(rebuilt.value).toBe('bob')
   })
 
+  it("a change landing while the user's Back is under way does not undo the Back", async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    const wallet = historyPosition()
+    await router.push('/chat')
+    const list = mountSearch()
+    // The change lands after the browser has moved, before the router has followed.
+    window.addEventListener('popstate', () => (list.value = 'late'), {
+      once: true,
+    })
+    await userBack(router)
+    await flushHistory()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/wallet')
+    expect(historyPosition()).toBe(wallet)
+  })
+
   it('off its own pages the state stays in the component and the address is left alone', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
     const list = mountSearch()

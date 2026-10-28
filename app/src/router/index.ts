@@ -126,8 +126,7 @@ export default () => {
       to.path === '/docs' ||
       to.path.startsWith('/docs/') ||
       to.path === '/' ||
-      to.path.startsWith('/forum') ||
-      to.path.startsWith('/topic')
+      to.path.startsWith('/forum')
     ) {
       if (
         to.path === '/' ||

@@ -181,6 +181,7 @@ function mountApp() {
 
 const ROUTES = [
   '/wallet',
+  '/settings',
   { path: '/send', component: Send },
   { path: '/send-contact', component: SendContact },
 ]
@@ -275,6 +276,31 @@ describe('Send to Address: Review is a step', () => {
     expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
   })
 
+  it('Back while a Forward re-quote is on its way stays on the form when the quote lands', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send')
+    mountApp()
+    await flushPromises()
+    const form = historyPosition()
+    await fillAndReview()
+    await userBack(router)
+    await flushPromises()
+
+    let land!: (value: unknown) => void
+    mockEstimate.mockReturnValueOnce(new Promise(resolve => (land = resolve)))
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+    await userBack(router)
+    await flushPromises()
+    land({ totalFee: 10n ** 15n })
+    await flushPromises()
+    await flushHistory()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(historyPosition()).toBe(form)
+    expect(wrapper!.find('[data-test="send-edit-card"]').exists()).toBe(true)
+  })
+
   it('the review Edit button is Back to the form', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
     await router.push('/send')
@@ -317,6 +343,42 @@ describe('Send to Address: Review is a step', () => {
     expect((window.history.state as { forward: unknown }).forward).toBeNull()
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
+
+  it.each([
+    ['the fee rose above the reviewed one', 'fee'],
+    ['the network refused it', 'refused'],
+  ])(
+    'a send refused before anything was signed (%s) stays on Review, and Back still reaches the form',
+    async (_why, kind) => {
+      const chain = jest.requireMock('@frank/wallet/chain')
+      mockSend.mockRejectedValueOnce(
+        kind === 'fee'
+          ? new chain.NativeFeeExceededError(10n ** 15n)
+          : new chain.NativeTransactionRefusedError('nonce too low'),
+      )
+      ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+      await router.push('/send')
+      mountApp()
+      await flushPromises()
+      const form = historyPosition()
+      await fillAndReview()
+      await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      await flushHistory()
+      expect(router.currentRoute.value.fullPath).toBe('/send?step=review')
+      expect(historyPosition()).toBe(form + 1)
+      expect(wrapper!.find('[data-test="send-review-card"]').exists()).toBe(
+        true,
+      )
+
+      await userBack(router)
+      await flushPromises()
+      expect(router.currentRoute.value.fullPath).toBe('/send')
+      expect(historyPosition()).toBe(form)
+      expect(input('[data-test="send-amount-input"]').value).toBe('0.01')
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    },
+  )
 
   it('a reload on Review shows the form in its place', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
@@ -408,13 +470,29 @@ describe('Send to Contact: Review is a step', () => {
       true,
     )
     expect(input('[data-test="send-contact-amount-input"]').value).toBe('')
-    await userForward(router)
+    // The payment's form and review are gone: nothing further forward.
+    expect((window.history.state as { forward: unknown }).forward).toBeNull()
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+  })
+
+  it('a payment finishing after the user went elsewhere does not pull them back', async () => {
+    ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
+    await router.push('/send-contact')
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    let deliver!: (value: unknown) => void
+    mockSendMessage.mockReturnValueOnce(
+      new Promise(resolve => (deliver = resolve)),
+    )
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
     await flushHistory()
-    expect(router.currentRoute.value.fullPath).toBe('/send-contact')
-    expect(wrapper!.find('[data-test="send-contact-edit-card"]').exists()).toBe(
-      true,
-    )
-    expect(mockPrepare).toHaveBeenCalledTimes(1)
+    await router.push('/settings')
+    await flushPromises()
+    deliver({ state: 'sent', payloadDigest: 'dd' })
+    await flushPromises()
+    await flushHistory()
+    expect(router.currentRoute.value.path).toBe('/settings')
   })
 })

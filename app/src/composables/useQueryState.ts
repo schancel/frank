@@ -5,6 +5,7 @@ import {
   type LocationQuery,
   type RouteLocationNormalizedLoaded,
 } from 'vue-router'
+import { navigationIdle, navigationPending } from '../utils/navigation'
 
 /** No router (a component on its own): nothing in the address. */
 const NO_ROUTE = {
@@ -77,27 +78,50 @@ export function useQueryState<T extends string>(
     },
     { flush: 'sync' },
   )
-  watch(state, value => {
-    const at = current()
-    if (!router?.replace || !owns(at) || read(at) === value) return
-    const query: LocationQuery = { ...at.query }
-    if (value === options.fallback) delete query[key]
-    else query[key] = value
-    pending.push(value)
-    void Promise.resolve(
-      router.replace({ path: at.path, query, hash: at.hash }),
-    ).then(
-      failure => {
-        if (failure) {
+  // One write at a time, after any navigation under way (the user's Back, a tab switch) has
+  // settled, so that a write never cancels it; then the latest value, if the address still
+  // belongs to this state and does not already say it.
+  let writing = false
+  const write = async () => {
+    if (writing) return
+    writing = true
+    try {
+      for (;;) {
+        await navigationIdle()
+        // Still under way after the wait: left as it is; the next change writes again.
+        if (navigationPending()) return
+        const at = current()
+        const value = state.value
+        if (!router?.replace || !owns(at) || read(at) === value) return
+        const query: LocationQuery = { ...at.query }
+        if (value === options.fallback) delete query[key]
+        else query[key] = value
+        pending.push(value)
+        const forget = () => {
           const index = pending.indexOf(value)
           if (index !== -1) pending.splice(index, 1)
         }
-      },
-      () => {
-        const index = pending.indexOf(value)
-        if (index !== -1) pending.splice(index, 1)
-      },
-    )
-  })
+        try {
+          const failure = await router.replace({
+            path: at.path,
+            query,
+            hash: at.hash,
+          })
+          if (failure) {
+            forget()
+            return
+          }
+        } catch {
+          forget()
+          return
+        }
+        // Again only for a value set while this one was being written.
+        if (state.value === value) return
+      }
+    } finally {
+      writing = false
+    }
+  }
+  watch(state, () => void write())
   return state
 }

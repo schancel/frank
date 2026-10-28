@@ -617,7 +617,6 @@ export default defineComponent({
         if (
           path.startsWith('/forum') ||
           path.startsWith('/new-post') ||
-          path.startsWith('/topic') ||
           path === '/welcome'
         ) {
           tab.value = 'forum'
@@ -841,7 +840,7 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
-// Matches ChatList.vue/ChatListLink.vue/TopicListLink.vue/TopicList.vue's own identical rule --
+// Matches ChatList.vue/ChatListLink.vue's own identical rule --
 // Vue's scoped CSS doesn't cross component boundaries, so each file rendering a
 // `q-item active-class="active-chat-list-item"` needs its own copy for the class to actually
 // take effect within it. Without this, the previous version fell back to a plain `text-primary`

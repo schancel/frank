@@ -539,8 +539,6 @@ export const rawEnUS = {
     contactActions: 'Contact options for {name}',
     openNavigation: 'Open navigation menu',
     addContact: 'Add contact',
-    addTopic: 'Add topic',
-    deleteTopic: 'Delete topic {topic}',
     deleteContact: 'Delete contact {name}',
     sendMessage: 'Send message',
     voteUp: 'Vote up',
@@ -1548,10 +1546,6 @@ export const rawEnUS = {
     topicNameRules: 'A-Z, a-z, 0-9, and periods are the only valid characters',
     add: 'Add',
     cancel: 'Cancel',
-  },
-  topicDrawer: {
-    offering: 'Offering:',
-    filter: 'Filter:',
   },
   SettingPanel: {
     newContact: 'New Contact',

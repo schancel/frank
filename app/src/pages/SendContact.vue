@@ -342,7 +342,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   activeChain,
@@ -362,6 +369,7 @@ import {
   formStepLocation,
   goBack,
   leaveForm,
+  settleForm,
 } from 'src/utils/navigation'
 import {
   sentTransactionNotify,
@@ -568,6 +576,25 @@ export default defineComponent({
     // reload, a link) has nothing to review: the form shows in its place.
     if (formStep(route)) void router.replace(formStepLocation(route, null))
     const start = formStart()
+    // A payment finishing after the user went elsewhere does not pull them back.
+    let disposed = false
+    onBeforeUnmount(() => {
+      disposed = true
+    })
+    /**
+     * Once the payment is signed (it may be handed over from then on), its form and review
+     * give way to one entry above where the form was opened, so neither Back nor Forward
+     * reaches this payment's form again. Refused before signing, the review stays a step.
+     */
+    let settling: Promise<void> | undefined
+    const settleOutcome = () => {
+      if (disposed) return Promise.resolve()
+      settling ??= (async () => {
+        if (formStep(route)) await router.replace(formStepLocation(route, null))
+        if (!disposed) await settleForm(router, start)
+      })()
+      return settling
+    }
 
     function reviewTransfer() {
       if (tooLarge.value) {
@@ -710,6 +737,7 @@ export default defineComponent({
               ? { maxFeeWei: reviewed.quote.networkFeeWei }
               : {}),
           })
+          void settleOutcome()
           const outcome = await chatStore.sendMessage({
             wallet: messaging,
             address: selectedContactAddress.value,
@@ -738,9 +766,10 @@ export default defineComponent({
           } else {
             infoNotify($t('sendContactDialog.pending'))
           }
-          // Done: back to where the form was opened from, past its review, so neither Back
-          // nor Forward reaches this payment's form again.
-          leaveForm(router, start, '/wallet')
+          // Done: back to where the form was opened from (the payment's one entry stays
+          // above it, a fresh form if Forward reaches it), unless the user already left.
+          await settleOutcome()
+          if (!disposed) leaveForm(router, start, '/wallet')
         } catch (err) {
           // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
           // says so and shows the new quote, whose fee bounds the payment if confirmed again.

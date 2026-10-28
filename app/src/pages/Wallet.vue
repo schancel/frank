@@ -77,6 +77,7 @@
         widening the whole page past a phone's screen. -->
         <q-scroll-area
           class="absolute-full"
+          data-scroll-key="wallet"
           :content-style="{ width: '100%', minWidth: '100%', maxWidth: '100%' }"
           :content-active-style="{
             width: '100%',

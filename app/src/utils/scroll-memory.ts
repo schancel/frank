@@ -1,6 +1,6 @@
 import { nextTick } from 'vue'
 import type { Router, RouterHistory } from 'vue-router'
-import { navigationPending } from './navigation'
+import { movingUnseen, navigationPending, onUnseenMove } from './navigation'
 
 /**
  * Where the user had scrolled, kept for each history entry, so that Back and Forward (and a
@@ -22,6 +22,10 @@ import { navigationPending } from './navigation'
  *   or on its own history anchor (Chat.vue).
  *
  * Positions are kept for the tab (sessionStorage), so a reload finds them.
+ *
+ * An element is found again by its name: its own `data-scroll-key`, or that of the Quasar scroll
+ * area it scrolls for, or `page` for the one page container on screen. Only an element with
+ * none of these falls back to its path of tags from the app's root.
  */
 
 export const SCROLL_STORAGE_KEY = 'frank:scroll-positions'
@@ -30,6 +34,10 @@ const RESTORE_LIMIT_MS = 2000
 /** At most this many entries are kept. */
 const MAX_ENTRIES = 100
 const EXCLUDED = '.q-drawer, [data-scroll-restore="off"]'
+const KEY_ATTRIBUTE = 'data-scroll-key'
+/** Names (`data-scroll-key`, or the page container) are kept as `name:<name>`. */
+const NAME_PREFIX = 'name:'
+const PAGE_NAME = 'page'
 const DOCUMENT_KEY = 'document'
 const ROOT_ID = 'q-app'
 
@@ -122,9 +130,57 @@ function root(): Element | null {
  * among the siblings with that tag. The same route shows the same structure, so the name finds
  * the element again after the page is rebuilt.
  */
+function pageContainers(): Element[] {
+  return Array.from(document.querySelectorAll('.q-page-container')).filter(
+    element => !excluded(element),
+  )
+}
+
+/** The element's name, when it has one (see above). */
+function nameOf(element: Element): string | null {
+  const own = element.getAttribute(KEY_ATTRIBUTE)
+  if (own) return own
+  if (element.classList.contains('q-scrollarea__container')) {
+    const area = element.parentElement?.closest('.q-scrollarea')
+    const name = area?.getAttribute(KEY_ATTRIBUTE)
+    if (area && name && scrollerOf(area) === element) return name
+  }
+  if (element.classList.contains('q-page-container')) {
+    const containers = pageContainers()
+    if (containers.length === 1 && containers[0] === element) return PAGE_NAME
+  }
+  return null
+}
+
+/** The element that scrolls for a named one: a scroll area's container, or itself. */
+function scrollerOf(named: Element): Element {
+  if (!named.classList.contains('q-scrollarea')) return named
+  return (
+    Array.from(named.querySelectorAll('.q-scrollarea__container')).find(
+      container => container.parentElement?.closest('.q-scrollarea') === named,
+    ) ?? named
+  )
+}
+
+function findByName(name: string): Element | null {
+  if (name === PAGE_NAME) {
+    const containers = pageContainers()
+    if (containers.length === 1) return containers[0] ?? null
+  }
+  const named = Array.from(
+    document.querySelectorAll(`[${KEY_ATTRIBUTE}]`),
+  ).find(
+    element =>
+      element.getAttribute(KEY_ATTRIBUTE) === name && !excluded(element),
+  )
+  return named ? scrollerOf(named) : null
+}
+
 function keyOf(element: Element): string | null {
   if (typeof document !== 'undefined' && element === document.scrollingElement)
     return DOCUMENT_KEY
+  const name = nameOf(element)
+  if (name) return NAME_PREFIX + name
   const top = root()
   if (!top || !top.contains(element) || element === top) return null
   const steps: string[] = []
@@ -146,6 +202,8 @@ function keyOf(element: Element): string | null {
 
 function findByKey(key: string): Element | null {
   if (key === DOCUMENT_KEY) return document.scrollingElement
+  if (key.startsWith(NAME_PREFIX))
+    return findByName(key.slice(NAME_PREFIX.length))
   let node: Element | null = root()
   for (const step of key.split('/')) {
     if (!node) return null
@@ -178,7 +236,13 @@ function record(leaving = false) {
   const elements = [...dirty]
   dirty.clear()
   // While a navigation or a restore is under way, the page on screen is not (yet) the entry's.
-  if (!router || restoring || popped || (!leaving && navigationPending()))
+  if (
+    !router ||
+    restoring ||
+    popped ||
+    movingUnseen() ||
+    (!leaving && navigationPending())
+  )
     return
   const position = currentPosition()
   if (position === null) return
@@ -326,6 +390,22 @@ export function installScrollMemory(
     restoring?.stop()
     void nextTick(() => toTop())
   })
+  // The session moved under the page with no navigation (a finished form's entries folded
+  // into one, a tab settling above Messages): this entry is where the page now is, and what
+  // was kept for an entry that showed something else here (or that is gone) no longer applies.
+  const stopMoves = onUnseenMove(truncated => {
+    const position = currentPosition()
+    lastPosition = position
+    if (position === null || !router) return
+    dirty.clear()
+    const here = entries.get(position)
+    if (here && here.path !== router.currentRoute.value.fullPath)
+      entries.delete(position)
+    if (truncated)
+      for (const kept of [...entries.keys()])
+        if (kept > position) entries.delete(kept)
+    schedulePersist()
+  })
   document.addEventListener('scroll', onScroll, {
     capture: true,
     passive: true,
@@ -340,6 +420,7 @@ export function installScrollMemory(
   window.addEventListener('pagehide', onHide)
   cleanups = [
     stopListening,
+    stopMoves,
     () => document.removeEventListener('scroll', onScroll, { capture: true }),
     () => window.removeEventListener('pagehide', onHide),
   ]

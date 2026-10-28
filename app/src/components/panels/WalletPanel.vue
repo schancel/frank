@@ -3,6 +3,7 @@
     <q-scroll-area
       class="wallet-list-scroll col full-width"
       data-test="wallet-list-scroll"
+      data-scroll-key="wallet-list"
       :content-style="{ width: '100%', minWidth: '100%' }"
       :content-active-style="{ width: '100%', minWidth: '100%' }"
     >

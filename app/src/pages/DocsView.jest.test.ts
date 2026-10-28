@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 
-import { mount } from '@vue/test-utils'
+import { reactive } from 'vue'
+import { flushPromises, mount } from '@vue/test-utils'
 import DocsView from './DocsView.vue'
 import enUS from 'src/i18n/en-us'
 
@@ -17,10 +18,10 @@ function translator(messages: Messages) {
 }
 
 describe('DocsView', () => {
-  function mountDocsView() {
+  function mountDocsView(route?: object) {
     return mount(DocsView, {
       global: {
-        mocks: { $t: translator(enUS) },
+        mocks: { $t: translator(enUS), ...(route ? { $route: route } : {}) },
         stubs: {
           QHeader: { template: '<header><slot /></header>' },
           QToolbar: { template: '<div><slot /></div>' },
@@ -60,5 +61,27 @@ describe('DocsView', () => {
     const menuBtn = buttons[0]
     await menuBtn.trigger('click')
     expect(wrapper.emitted('toggleMyDrawerOpen')).toBeTruthy()
+  })
+
+  it('follows the address to another page in place: the shown frame keeps its src (no history entry)', async () => {
+    const route = reactive({
+      path: '/docs',
+      query: {} as Record<string, string>,
+    })
+    const wrapper = mountDocsView(route)
+    const iframe = wrapper.find('iframe.docs-iframe')
+    const replace = jest.fn()
+    Object.defineProperty(iframe.element, 'contentWindow', {
+      configurable: true,
+      value: {
+        location: { pathname: '/docs/', search: '', hash: '', replace },
+      },
+    })
+    route.query = { page: 'guide/introduction' }
+    await flushPromises()
+    expect(replace).toHaveBeenCalledWith('/docs/guide/introduction')
+    const shown = wrapper.find('iframe.docs-iframe')
+    expect(shown.element).toBe(iframe.element)
+    expect(shown.attributes('src')).toBe('/docs/')
   })
 })

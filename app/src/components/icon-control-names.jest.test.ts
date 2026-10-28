@@ -21,9 +21,6 @@ import ChatMessageSuffixButtons from './chat/messages/ChatMessageSuffixButtons.v
 import ContactItem from './contacts/ContactItem.vue'
 import ForumMessage from './forum/ForumMessage.vue'
 import ForumPost from './forum/ForumPost.vue'
-import TopicInput from './topic/TopicInput.vue'
-import TopicListLink from './topic/TopicListLink.vue'
-import TopicMessage from './topic/TopicMessage.vue'
 import ChatLayout from '../layouts/ChatLayout.vue'
 import ForumLayout from '../layouts/ForumLayout.vue'
 
@@ -64,8 +61,6 @@ jest.mock('src/stores/contacts', () => ({
 jest.mock('src/stores/topics', () => ({
   useTopicStore: () => ({
     topics: {},
-    deleteTopic: jest.fn(),
-    putMessage: jest.fn(),
     refreshDiscoveredTopics: jest.fn(),
   }),
 }))
@@ -104,7 +99,6 @@ jest.mock('bitcore-lib-xpi', () => ({
 jest.mock('./forum/ForumMessageReplies.vue', () => ({ template: '<div />' }))
 jest.mock('./panels/ForumDrawer.vue', () => ({ template: '<div />' }))
 jest.mock('./panels/ChatInfoView.vue', () => ({ template: '<div />' }))
-jest.mock('./topic/TopicDrawer.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/ClearHistoryDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/DeleteChatDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./chat/ChatListItem.vue', () => ({ template: '<div />' }))
@@ -213,11 +207,6 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
       ])
     })
 
-    it('names the topic send control', () => {
-      const input = render(locale, TopicInput, { props: { message: '' } })
-      expectNamedAndDistinct(buttonNames(input), [t('a11y.sendMessage')])
-    })
-
     it('names navigation and the chat overflow menu in the chat toolbar', () => {
       const wrapper = render(locale, ChatLayout)
       expectNamedAndDistinct(buttonNames(wrapper), [
@@ -268,7 +257,6 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
     it.each([
       ['ForumMessage', ForumMessage],
       ['ForumPost', ForumPost],
-      ['TopicMessage', TopicMessage],
     ])('names the %s vote up and vote down arrows distinctly', (_n, comp) => {
       const wrapper = render(locale, comp as Mountable, {
         props: {
@@ -297,11 +285,7 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
       expect(t('a11y.voteUp')).not.toBe(t('a11y.voteDown'))
     })
 
-    it('names topic deletion and contact overflow actions with their target', () => {
-      const topic = render(locale, TopicListLink, { props: { topic: 'alpha' } })
-      expectNamedAndDistinct(buttonNames(topic), [
-        t('a11y.deleteTopic', { topic: 'alpha' }),
-      ])
+    it('names contact overflow actions with their target', () => {
       const contact = render(locale, ContactItem, {
         props: {
           address: 'addr1',

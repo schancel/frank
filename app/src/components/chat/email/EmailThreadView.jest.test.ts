@@ -1624,7 +1624,9 @@ describe('EmailThreadView', () => {
           (c: any) => c.payloadDigest === 'digest-older-payment',
         )
         const badge = vm.cardDeliveryBadge(card)
-        expect(badge?.label).toBe('Not sent: carries an older version’s payment')
+        expect(badge?.label).toBe(
+          'Not sent: carries an older version’s payment',
+        )
         expect(badge?.detail).toMatch(
           /^It carries a payment made by an older version of the wallet\./,
         )

@@ -5829,7 +5829,14 @@ export const useChatStore = defineStore('chats', {
           digest: wrapper.message.contentDigest,
           items: itemsOf(wrapper.message.items),
         }
-        if (!key || !content.digest) continue
+        // A copy with no content digest is compared only when it is this account's own
+        // outbound copy (the wallet's note to self of a send from another of its devices, which
+        // carries none): by its items, under the same wire ID, sender and conversation.
+        const ownCopy =
+          wrapper.outbound === true &&
+          !!ownAddress &&
+          sameCanonicalAddress(wrapper.senderAddress, ownAddress)
+        if (!key || (!content.digest && !ownCopy)) continue
         if (
           sameContent(latestContent.get(key), content) &&
           !carriesValue(wrapper)

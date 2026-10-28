@@ -16,7 +16,6 @@ const globals = global as any
 const standIn = { hasFocus: () => true, visibilityState: 'visible' }
 globals.document = standIn
 
-import { createHash } from 'crypto'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageItem, MessageWrapper } from '@frank/cashweb/types/messages'
@@ -248,10 +247,8 @@ function device(
                 stampPayments: [],
                 conversationId: params.conversationId,
                 logicalMessageId: params.messageId,
-                // The same content, whichever device sealed it.
-                contentDigest: createHash('sha256')
-                  .update(JSON.stringify(items))
-                  .digest('hex'),
+                // No content digest: the wallet's note to self that stands in for the relay's
+                // outbox row carries none (`canonical-dm.ts`), whichever device sealed it.
               },
             } as unknown as ReceivedMessageWrapper,
           })
@@ -753,8 +750,10 @@ describe('the active device of an account', () => {
       expect(held[0].status).toBe('confirmed')
       expect(held[0].items).toEqual(items)
     }
-    // Each sender reads both copies: the phone its own first, the laptop the other's first
-    // (its own copy has no content digest yet: its echo has not been read).
+    // Each sender reads both copies: the phone its own first, the laptop the other's first.
+    // Neither copy carries a content digest, as the wallet sends them.
+    expect(fromPhone.message.contentDigest).toBeUndefined()
+    expect(fromLaptop.message.contentDigest).toBeUndefined()
     await phone.receive([fromPhone])
     await phone.receive([fromLaptop])
     await laptop.receive([fromPhone])
@@ -764,6 +763,25 @@ describe('the active device of an account', () => {
     await phone.receive([fromLaptop, fromPhone])
     await laptop.receive([fromLaptop])
     for (const each of [phone, laptop]) sentOnce(each)
+    // A copy that carries value is its own message, even of this account's own send.
+    const paidCopy = {
+      ...fromLaptop,
+      index: 'dm-paid-copy',
+      message: { ...fromLaptop.message, stampValueWei: 10n ** 15n },
+    } as ReceivedMessageWrapper
+    await phone.receive([paidCopy])
+    expect(phone.messagesOf(conversationId)).toHaveLength(2)
+    // A copy under the same wire ID with other items is not the same message either.
+    const otherItems = {
+      ...fromLaptop,
+      index: 'dm-other-items',
+      message: {
+        ...fromLaptop.message,
+        items: [{ type: 'text', text: 'something else' }],
+      },
+    } as ReceivedMessageWrapper
+    await laptop.receive([otherItems])
+    expect(laptop.messagesOf(conversationId)).toHaveLength(2)
     // A third device of the account, which sent nothing, reads one message too.
     await tablet.receive([fromLaptop, fromPhone])
     sentOnce(tablet)
@@ -781,7 +799,13 @@ describe('the active device of an account', () => {
     await laptop.receive([nextFromPhone, nextFromLaptop])
     await tablet.receive([nextFromPhone, nextFromLaptop])
     for (const each of [phone, laptop, tablet]) {
-      const held = each.messagesOf(conversationId)
+      const held = each
+        .messagesOf(conversationId)
+        .filter(
+          message =>
+            message.payloadDigest !== 'dm-paid-copy' &&
+            message.payloadDigest !== 'dm-other-items',
+        )
       expect(held.map(message => message.items)).toEqual([items, next])
       expect(held.every(message => message.outbound)).toBe(true)
       expect(held.every(message => message.status === 'confirmed')).toBe(true)

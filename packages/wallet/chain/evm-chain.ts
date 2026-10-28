@@ -2434,8 +2434,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // A received coin's transfers are Frank payments, shown from the coin list.
             knownTransactions: () =>
               new Set(
-                coinStore.all().flatMap((coin) =>
-                  coin.transactions.flatMap((item) => {
+                coinStore.all().flatMap((coin) => [
+                  ...(coin.nativeStampRecovery?.receipts.map(receipt => receipt.txHash) ?? []),
+                  ...coin.transactions.flatMap((item) => {
                     const bare = item.replace(/^0x/, "").toLowerCase();
                     if (bare.length === 64) return [`0x${bare}`];
                     try {
@@ -2444,7 +2445,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       return [];
                     }
                   })
-                )
+                ])
               ),
           });
           const legacyTransactions = createLegacyTransactionSetPayments({
@@ -2556,6 +2557,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
           const coinAndContactManager = createEvmReceivedCoinAndContactManager({
+            nativeReceiptRpc: provider,
+            readReceiptMaximumBlock: spendRuleHeadReader(provider, config.spendRuleHead),
             chainIdentifier,
             chainId: config.chainId,
             networkTag: config.networkTag,
@@ -2851,7 +2854,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               await deposits.refresh();
             },
             getExternalDeposits() {
-              return deposits.deposits();
+              const recoveryHashes = new Set(coinStore.all().flatMap(coin =>
+                coin.nativeStampRecovery?.receipts.map(receipt => receipt.txHash) ?? []));
+              return deposits.deposits().filter(deposit => !recoveryHashes.has(deposit.txHash));
             },
             nativeOperationSyncFailed(operationId) {
               return nativeOperationOwner(wallet).syncTransportFailed(

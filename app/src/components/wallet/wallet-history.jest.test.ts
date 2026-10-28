@@ -892,3 +892,60 @@ describe('deposits from outside Frank', () => {
     ).not.toContainEqual(expect.objectContaining({ kind: 'deposit' }))
   })
 })
+
+it('deduplicates a stamp recovery by its actual receipt without claiming the original was settled', () => {
+  const txHash = '0x' + 'ac'.repeat(32)
+  const receipt = {
+    chainIdentifier: 'monad-testnet',
+    txHash,
+    from: '0x' + '01'.repeat(20),
+    to: '0x' + '02'.repeat(20),
+    amount: '30',
+    blockNumber: 2,
+    blockHash: '0x' + '03'.repeat(32),
+    blockTimeMs: 2000,
+  }
+  const groups = buildWalletHistoryGroups({
+    chainIdentifier: 'monad-testnet',
+    swaps: [],
+    load: {
+      status: 'available',
+      operations: [],
+      stampStages: [],
+      noted: [],
+      contactPayments: [],
+      blockTimes: new Map(),
+      received: [
+        {
+          address: receipt.to,
+          origin: 'stamp',
+          status: 'received',
+          amountWei: 30n,
+          receivedAmountWei: 30n,
+          claimedAmountWei: 100n,
+          partial: true,
+          spendable: true,
+          discoveredAtMs: 1,
+          transactions: ['ab'.repeat(32)],
+          nativeStampRecovery: {
+            chainIdentifier: 'monad-testnet',
+            originalTransactionHash: '0x' + 'ab'.repeat(32),
+            supersededAt: { blockNumber: 1, blockHash: receipt.blockHash },
+            receipts: [receipt],
+          },
+        },
+      ],
+      deposits: [
+        { ...receipt, id: `${txHash}:native`, asset: { kind: 'native' } },
+      ],
+    },
+  })
+  const rows = groups.flatMap(group => group.rows)
+  expect(rows.filter(row => row.kind === 'deposit')).toEqual([])
+  expect(rows.filter(row => row.kind === 'received')).toHaveLength(1)
+  const row = rows.find(row => row.kind === 'received')!
+  expect(
+    row.kind === 'received' && row.payment.settledTransactions,
+  ).toBeUndefined()
+  expect(row.kind === 'received' && row.payment.receivedAmountWei).toBe(30n)
+})

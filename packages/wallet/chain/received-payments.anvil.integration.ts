@@ -134,7 +134,9 @@ beforeAll(async () => {
   const port = await freePort()
   anvil = spawn(
     bin,
-    ['--port', String(port), '--chain-id', String(CHAIN_ID), '--silent'],
+    // A quarter-stamp spend below is above the real payment floor at this fixed gas price.
+    // Default Anvil base fees made that same fixture fail admission even on unchanged main.
+    ['--port', String(port), '--chain-id', String(CHAIN_ID), '--base-fee', '0', '--gas-price', '1000000000', '--silent'],
     { stdio: 'ignore' },
   )
   const url = `http://127.0.0.1:${port}`

@@ -97,7 +97,8 @@ function mine() {
 function attach(wallet: EvmChainWalletHandle) {
   jest
     .spyOn(wallet.provider, 'getBlock')
-    .mockResolvedValue({ hash: BLOCK_HASH, number: 1 } as Block)
+    .mockImplementation(async () => ({ hash: BLOCK_HASH, number: 1, timestamp: 100,
+      transactions: [...node.receipts.keys()] }) as Block)
   jest
     .spyOn(wallet.provider, 'getTransactionCount')
     .mockImplementation(
@@ -111,12 +112,16 @@ function attach(wallet: EvmChainWalletHandle) {
   jest.spyOn(wallet.provider, 'estimateGas').mockResolvedValue(21_000n)
   jest
     .spyOn(wallet.provider, 'getTransaction')
-    .mockImplementation(async hash => node.transactions.get(hash) ?? null)
+    .mockImplementation(async hash => {
+      const transaction = node.transactions.get(hash)
+      return transaction ? Object.assign(transaction, { index: [...node.receipts.keys()].indexOf(hash) }) : null
+    })
   jest
     .spyOn(wallet.provider, 'getTransactionReceipt')
     .mockImplementation(async hash => {
       if (node.unreadable.has(wallet)) throw new Error('node unreachable')
-      return node.receipts.get(hash) ?? null
+      const receipt = node.receipts.get(hash)
+      return receipt ? { ...receipt, index: [...node.receipts.keys()].indexOf(hash) } as TransactionReceipt : null
     })
   jest
     .spyOn(wallet.provider, 'broadcastTransaction')

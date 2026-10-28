@@ -1793,7 +1793,7 @@ export const rawFrFR = {
       'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
     heldAfterError:
-      "Le paiement est signé et réservé pour son message, qui n'a pas pu être envoyé pour l'instant. Il ne sera pas payé deux fois : ouvrez la conversation avec ce contact et réessayez le message, ou terminez le paiement dans « Paiements à des contacts en cours » sur la page du portefeuille.",
+      "Le paiement est signé et réservé, et son message n'a pas pu être envoyé pour l'instant. Il n'est jamais payé deux fois. Si le message apparaît dans la conversation avec ce contact, réessayez-le là ; sinon, ouvrez « Paiements à des contacts en cours » sur la page du portefeuille, où le portefeuille termine le paiement ou, si rien n'en a été envoyé, le libère sans rien payer.",
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:

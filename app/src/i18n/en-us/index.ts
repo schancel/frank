@@ -1757,7 +1757,7 @@ export const rawEnUS = {
       'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
     notSent: 'The payment could not be made. Nothing was sent.',
     heldAfterError:
-      'The payment is signed and held for its message, which could not be sent just now. It is not paid twice: open the chat with this contact and retry the message, or finish the payment under “Payments to contacts in progress” on the wallet page.',
+      'The payment is signed and held, and its message could not be sent just now. It is never paid twice. If the message shows in the chat with this contact, retry it there; otherwise open “Payments to contacts in progress” on the wallet page, where the wallet either finishes the payment or, if nothing of it was sent, releases it unpaid.',
     messageEnded:
       'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
     tooLarge:

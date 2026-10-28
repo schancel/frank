@@ -353,6 +353,7 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 import {
   activeChain,
+  ContactPaymentPendingError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeFeeExceededError,
   type ContactPaymentQuote,
@@ -775,11 +776,13 @@ export default defineComponent({
           await settleOutcome()
           if (!disposed) leaveForm(router, start, '/wallet')
         } catch (err) {
-          if (prepared) {
-            // The payment was signed and held, and its message's send then failed (its row may
-            // already be saved, its bytes may have reached a relay). It is never paid again from
-            // here: the user is told where that one payment is, and the form is left as after
-            // any other outcome. Its message's Retry, or the wallet's held payments, finish it.
+          if (prepared || err instanceof ContactPaymentPendingError) {
+            // The payment was signed and held, and then its message's send failed (its row may
+            // already be saved, its bytes may have reached a relay), or the wallet itself could
+            // not finish preparing it (`ContactPaymentPendingError`: saved, no chat row yet).
+            // It is never paid again from here: the user is told where that one payment is,
+            // and the form is left as after any other outcome. Its message's Retry, or the
+            // wallet's held payments, finish it or release it unpaid.
             errorNotify(err, {
               safeMessage: $t('sendContactDialog.heldAfterError'),
             })

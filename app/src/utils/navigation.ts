@@ -57,6 +57,7 @@ function isMessagesPath(path: string) {
 
 interface EntryState {
   back?: unknown
+  forward?: unknown
   position?: unknown
   [START_KEY]?: unknown
 }
@@ -623,7 +624,12 @@ export function leaveForm(
  * returns to that page and Forward cannot reach any step of the form again. A form opened
  * first (nothing in the app under it) has its first entry turned into its `parent` (as
  * `leaveForm` gives way to it), with the outcome above: Back from the outcome is that parent,
- * and here too nothing of the form is left to go Forward to.
+ * and here too nothing of the form is left to go Forward to. This holds also when the user
+ * went Back to the form's first entry while the form was busy: its later steps still go.
+ *
+ * Once folded, `start` describes the outcome's entry, with the page under it in the app, so a
+ * `leaveForm` after it goes Back to that page instead of replacing the outcome with another
+ * copy of it.
  */
 export async function settleForm(
   router: Router,
@@ -631,15 +637,16 @@ export async function settleForm(
   parent: RouteLocationRaw,
 ): Promise<void> {
   const position = entryPosition()
-  if (
-    start.position === null ||
-    position === null ||
-    position <= start.position
-  )
+  if (start.position === null || position === null || position < start.position)
     return
-  const below = start.parentInApp ? start.position - 1 : start.position
+  // On the form's first entry with nothing after it: none of its steps is left to drop.
+  if (position === start.position && entryState()?.forward == null) return
+  const startPosition = start.position
+  const below = start.parentInApp ? startPosition - 1 : startPosition
   await unseenMove(async () => {
-    if (!(await moveUnseen(below - position)) || !routerHistory) return false
+    if (below !== position && !(await moveUnseen(below - position)))
+      return false
+    if (!routerHistory) return false
     const current = router.currentRoute.value
     committedStart = null
     if (start.parentInApp) {
@@ -653,6 +660,8 @@ export async function settleForm(
     }
     routerHistory.push(current.fullPath)
     recordStartTab(current.path)
+    start.position = below + 1
+    start.parentInApp = true
     return 'truncated'
   })
 }

@@ -49,6 +49,7 @@ jest.mock('@frank/wallet/chain', () => ({
       this.name = 'NativeFeeExceededError'
     }
   },
+  ContactPaymentPendingError: class ContactPaymentPendingError extends Error {},
   activeChain: {
     name: 'monad',
     unit: 'MON',

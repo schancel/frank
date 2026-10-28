@@ -57,6 +57,7 @@ jest.mock('@frank/wallet/chain', () => {
     NativeTransactionRefusedError: chainWallet.NativeTransactionRefusedError,
     NativeFeeExceededError: chainWallet.NativeFeeExceededError,
     ContactPaymentBelowFloorError: chainWallet.ContactPaymentBelowFloorError,
+    ContactPaymentPendingError: chainWallet.ContactPaymentPendingError,
     MAX_STEALTH_ITEM_AMOUNT: 2n ** 64n - 1n,
     activeChain: {
       chainIdentifier: 'monad-testnet',
@@ -197,6 +198,14 @@ afterEach(() => {
   destroy()
   resetNavigationForTests()
 })
+
+function entry() {
+  return window.history.state as {
+    back: string | null
+    forward: string | null
+    position: number
+  }
+}
 
 function input(selector: string) {
   return wrapper!.get(selector).element as HTMLInputElement
@@ -431,6 +440,68 @@ describe('Send to Address: Review is a step', () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
+  it('a non-EVM send opened first ends on one wallet entry: Back leaves the app, nothing to go Forward to but a fresh form', async () => {
+    mockCaptureWallet.mockResolvedValue({
+      ...binding,
+      wallet: { ...binding.wallet, family: 'bitcoin' },
+    })
+    ;({ router, destroy } = await openApp(ROUTES, '/send'))
+    const first = historyPosition()
+    mountApp()
+    await flushPromises()
+    await fillAndReview()
+    const done = afterNavigation(router)
+    await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+    await done
+    await flushPromises()
+    await flushHistory()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    // The wallet, once, on the app's first entry: Back from it leaves the app.
+    expect(router.currentRoute.value.fullPath).toBe('/wallet')
+    expect(historyPosition()).toBe(first)
+    expect(entry().back).toBeNull()
+    expect(entry().forward).toBe('/send')
+    await userForward(router)
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/send')
+    expect(input('[data-test="send-address-input"]').value).toBe('')
+    expect(entry().back).toBe('/wallet')
+    expect(entry().forward).toBeNull()
+    expect(mockSend).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['opened from the wallet', '/wallet'],
+    ['opened first', '/send'],
+  ])(
+    'a send whose user went Back to the form while it was out (%s) leaves no Review to go Forward to',
+    async (_how, opened) => {
+      let finish!: (value: unknown) => void
+      mockSend.mockReturnValueOnce(new Promise(resolve => (finish = resolve)))
+      ;({ router, destroy } = await openApp(ROUTES, opened))
+      if (opened !== '/send') await router.push('/send')
+      mountApp()
+      await flushPromises()
+      const form = historyPosition()
+      await fillAndReview()
+      await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      await userBack(router)
+      await flushPromises()
+      expect(router.currentRoute.value.fullPath).toBe('/send')
+      expect(entry().forward).toBe('/send?step=review')
+      finish({ txHash: '0xsent' })
+      await flushPromises()
+      await flushHistory()
+      await flushPromises()
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(router.currentRoute.value.fullPath).toBe('/send')
+      expect(entry().forward).toBeNull()
+      expect(entry().back).toBe('/wallet')
+      expect(historyPosition()).toBe(opened === '/send' ? form + 1 : form)
+    },
+  )
+
   it('a reload on Review shows the form in its place', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))
     await router.push('/send?step=review')
@@ -557,6 +628,45 @@ describe('Send to Contact: Review is a step', () => {
     )
     expect(mockPrepare).toHaveBeenCalledTimes(1)
   })
+
+  it.each([
+    ['sent', 'sent'],
+    ['held: its message failed after the payment was signed', 'held'],
+    ['held: the wallet saved it and could not finish preparing it', 'pending'],
+  ])(
+    'a payment opened first ends on one wallet entry (%s): Back leaves the app, no Confirm to pay again',
+    async (_how, kind) => {
+      const chain = jest.requireMock('@frank/wallet/chain')
+      if (kind === 'held')
+        mockSendMessage.mockRejectedValueOnce(new Error('relay unreachable'))
+      if (kind === 'pending')
+        mockPrepare.mockRejectedValueOnce(
+          new chain.ContactPaymentPendingError('m1', '0xabc', new Error('x')),
+        )
+      ;({ router, destroy } = await openApp(ROUTES, '/send-contact'))
+      const first = historyPosition()
+      mountApp()
+      await flushPromises()
+      await fillAndReview()
+      const done = afterNavigation(router)
+      await wrapper!.get('[data-test="review-confirm-button"]').trigger('click')
+      await done
+      await flushPromises()
+      await flushHistory()
+      expect(mockPrepare).toHaveBeenCalledTimes(1)
+      if (kind !== 'sent')
+        expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
+          safeMessage: enUS.sendContactDialog.heldAfterError,
+        })
+      expect(router.currentRoute.value.fullPath).toBe('/wallet')
+      expect(historyPosition()).toBe(first)
+      expect(entry().back).toBeNull()
+      expect(entry().forward).toBe('/send-contact')
+      expect(
+        wrapper!.find('[data-test="review-confirm-button"]').exists(),
+      ).toBe(false)
+    },
+  )
 
   it('a payment finishing after the user went elsewhere does not pull them back', async () => {
     ;({ router, destroy } = await openApp(ROUTES, '/wallet'))

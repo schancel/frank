@@ -106,9 +106,9 @@ export interface EvmStealthPaymentDriver {
   paymentFloorWei(): Promise<bigint>
   /** Balance, and the fee of paying `amountWei` to `recipientAddress` (0 when no amount is
    * given: the balance alone is asked for), each part at least `minimumPaymentWei`. With
-   * `stampWei`, a combined stamp kept back as `prepare` keeps it (one fresh account paid by one
-   * transfer): `estimatedNativeFeeAtomic` counts keeping it, `messageStampFeeAtomic` is that
-   * transfer's fee. */
+   * `stampWei`, a combined stamp kept back across the original operation's private carriers:
+   * `estimatedNativeFeeAtomic` counts keeping it, `messageStampFeeAtomic` is the aggregate
+   * fee of its recipient transfers. */
   quoteNative(amountWei: bigint, recipientAddress?: string, minimumPaymentWei?: bigint, stampWei?: bigint): Promise<{
     nativeBalanceAtomic: bigint
     assetBalanceAtomic: bigint
@@ -778,9 +778,9 @@ export function createEvmStealthPayments(
                     minimumPaymentWei: BigInt(row.minimumPaymentWei) }),
                   kdf: () => row.recipientAddress,
                   maxFeeWei: intent.maxNativeFeeAtomic + (intent.messageStamp?.maxNativeFeeAtomic ?? 0n),
-                  // The stamp is kept back as one fresh account its one transfer spends, and
-                  // that transfer's fee is part of the bound: a stamp that would not fit is
-                  // refused here, before anything is signed.
+                  // The exact stamp and its approved fee allocation belong to this graph.
+                  // Independent carriers and all eventual stamp fees must fit the same
+                  // captured whole-operation bound before any external exposure.
                   ...(intent.messageStamp ? {
                     reserveForContinuationWei:
                       intent.messageStamp.amountAtomic + intent.messageStamp.maxNativeFeeAtomic,

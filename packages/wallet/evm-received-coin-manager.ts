@@ -1344,8 +1344,8 @@ export function createEvmReceivedCoinAndContactManager(
     return quote.amount;
   };
 
-  /** What `payContact` keeps back for the message's stamp: one fresh account holding the stamp
-   * and the fee of the one transfer that pays it. None for a message without a stamp. */
+  /** Captured stamp amount plus an initial fee allocation. The normal preparer quotes and
+   * reserves the actual aggregate fees when independent inputs require several carriers. */
   const stampContinuation = (
     wallet: EvmChainWalletHandle,
     stampWei: bigint
@@ -1357,15 +1357,16 @@ export function createEvmReceivedCoinAndContactManager(
   };
 
   /** The network fee of a contact payment and its stamp, from the same selection `payContact`
-   * builds with (`quoteLegacyTransactionSet` given the stamp's continuation): the payment's own
-   * transfers, the transfer that keeps the stamp's account, and the stamp's one transfer.
+   * builds with (independent `quoteTransactionSet` given the captured stamp): recipient
+   * transfers, private continuation carriers and all stamp recipient transfers.
    * `payContact` constructs under this fee as its bound: the built set pays exactly this, or is
    * refused before anything is signed. */
   const contactNetworkFeeWei = async (
     wallet: EvmChainWalletHandle,
     recipient: ContactSendParams["recipient"],
     value: bigint,
-    stampWei: bigint
+    stampWei: bigint,
+    minimumPaymentWei: bigint
   ): Promise<bigint> => {
     const preparer = wallet.transactionSetPreparer;
     if (!preparer || !wallet.refreshTransactionSetInventory) {
@@ -1373,10 +1374,12 @@ export function createEvmReceivedCoinAndContactManager(
     }
     await wallet.refreshTransactionSetInventory();
     const continuation = stampContinuation(wallet, stampWei);
-    const quote = await preparer.quoteLegacyTransactionSet({
-      destination: recipient.raw,
+    const quote = await preparer.quoteTransactionSet({
+      kdf: () => recipient.raw,
       amountWei: value,
-      ...(continuation ? { continuation } : {}),
+      minimumPaymentWei,
+      ...(continuation ? { reserveForContinuationWei: continuation.reserveWei,
+        continuationFeeWei: continuation.feeWei } : {}),
     });
     return quote.feeWei;
   };
@@ -1398,7 +1401,8 @@ export function createEvmReceivedCoinAndContactManager(
       wallet,
       quoteParams.recipient,
       quoteParams.value,
-      stampWei
+      stampWei,
+      floorWei
     );
     return {
       valueWei: quoteParams.value,
@@ -1431,7 +1435,7 @@ export function createEvmReceivedCoinAndContactManager(
         ).slice(0, 4)} ${unit}); send it in parts`
       );
     }
-    await requireContactPaymentAtFloor(wallet, contactParams.value);
+    const minimumPaymentWei = await requireContactPaymentAtFloor(wallet, contactParams.value);
     const recipientAddress = getAddress(
       contactParams.recipient.raw
     ).toLowerCase();
@@ -1509,12 +1513,14 @@ export function createEvmReceivedCoinAndContactManager(
             wallet,
             contactParams.recipient,
             contactParams.value,
-            stampWei
+            stampWei,
+            minimumPaymentWei
           ));
         const continuation = stampContinuation(wallet, stampWei);
-        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructTransactionSet({
           operationId: transactionSetOperationId,
           amountWei: contactParams.value,
+          minimumPaymentWei,
           maxFeeWei,
           kdf: () => stealthAddress,
           ...(continuation ? {
@@ -2130,8 +2136,8 @@ export function createEvmReceivedCoinAndContactManager(
           return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: 0n };
         // The fee of the inputs this amount needs, from the selection the payment itself makes
         // (the same arguments `constructNativePayment` receives from the stealth owner).
-        // A combined stamp, kept back as `prepare` keeps it: one fresh account of the stamp and
-        // the fee of the one transfer that pays it.
+        // The same captured stamp shape as preparation: its actual aggregate transfer fees
+        // are quoted together with the private carriers, never as a separate pool estimate.
         const stampFeeWei = stampWei === undefined ? undefined : policy.paymentGasLimit("0x") * policy.gasPriceWei;
         const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
           ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei }),
@@ -2139,8 +2145,8 @@ export function createEvmReceivedCoinAndContactManager(
             reserveForContinuationWei: stampWei! + stampFeeWei, continuationFeeWei: stampFeeWei }) });
         assertFinancialActive();
         return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance,
-          estimatedNativeFeeAtomic: quote.feeWei - (stampFeeWei ?? 0n),
-          ...(stampFeeWei === undefined ? {} : { messageStampFeeAtomic: stampFeeWei }) };
+          estimatedNativeFeeAtomic: quote.feeWei - (quote.continuationFeeWei ?? stampFeeWei ?? 0n),
+          ...(stampFeeWei === undefined ? {} : { messageStampFeeAtomic: quote.continuationFeeWei ?? stampFeeWei }) };
       },
       constructNativePayment: async (request) => {
         const preparer = wallet.transactionSetPreparer;

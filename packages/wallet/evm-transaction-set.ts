@@ -2,6 +2,7 @@ import { computeAddress, getAddress, SigningKey, Transaction } from 'ethers'
 import { createCooperativeBatchYielder, type CooperativeBatchYielder } from './chain/event-loop-yield'
 import { computeGeometricRadixChangeSplits } from './evm-change-distribution'
 import { EvmChangeBand, countPoolCoins } from './evm-coin-distribution'
+import { selectStampAccounts } from './evm-stamp-account-selection'
 import type {
   CoinPart,
   EvmListCoin,
@@ -53,6 +54,12 @@ interface PaymentContext {
   gas: bigint
   feeIsExact: boolean
 }
+interface MultipartContinuation {
+  parts: CoinPart[]
+  reserves: Map<string, bigint>
+  feeWei: bigint
+  reserveWei: bigint
+}
 interface LocalMember {
   plan: EvmNativeMemberPlan
   raw: string
@@ -69,8 +76,10 @@ export interface EvmTransactionSetQuote {
   readonly deliveryFeeWei: bigint
   /** Splitting what is left over into fresh change accounts. */
   readonly changeFeeWei: bigint
-  /** Everything the transfer pays: the sum of the three. */
+  /** Whole quoted graph, including reserved continuation recipient fees when present. */
   readonly feeWei: bigint
+  /** Aggregate fee of the reserved continuation recipient transfers, when quoted together. */
+  readonly continuationFeeWei?: bigint
 }
 
 /** The set would pay more than the fee it was authorized with. Nothing was signed or kept;
@@ -991,7 +1000,7 @@ export class EvmTransactionSetPreparer {
     // `reserve` (its own transfer, `changeFee`), and the bound holds the continuation's fee.
     // Neither is ever spent on change.
     const carve = this.continuationCarve(request)
-    const heldForContinuation = carve ? carve.feeWei + changeFee : 0n
+    let heldForContinuation = carve ? carve.feeWei + changeFee : 0n
     const memberFee = (unsigned: string) => {
       const tx = Transaction.from(unsigned)
       return tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!)
@@ -1017,9 +1026,32 @@ export class EvmTransactionSetPreparer {
       throw later !== undefined ? new EvmTransactionSetInsufficientFundsError(later)
         : this.refusal(request.operationId, policy, eligible, request.amountWei, capacity)
     }
+    let multipart: MultipartContinuation | undefined
+    try {
+      if (carve && !legacy) {
+        const rules = this.selectionRules(request, policy, legacy, existing, admittedInput)
+        multipart = this.multipartContinuation(parts, request, policy, rules, carve)
+        const extras = multipart.parts.filter(part => !parts!.some(picked => picked.coin.account === part.coin.account))
+        if (extras.length) {
+          const accounts = new Set(extras.map(part => part.coin.account))
+          const selection = rules.selection(false, { deficit: extras.reduce((sum, part) =>
+            sum + part.coin.valueWei - changeFee, 0n), maxCoins: extras.length })
+          const reserved = coins.reserveTransactionSetSources({ ...selection,
+            canSelect: coin => accounts.has(coin.account) && (selection.canSelect?.(coin) ?? true) })
+          if (!reserved || reserved.length !== extras.length) throw new EvmTransactionSetInsufficientFundsError()
+          parts.push(...reserved.map(part => ({ ...part, paymentValueWei: 0n })))
+        }
+        heldForContinuation = multipart.feeWei + BigInt(multipart.reserves.size) * changeFee
+      }
+    } catch (error) {
+      coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
+      throw error
+    }
     let members: LocalMember[]
     const yielder = createCooperativeBatchYielder()
     const carved: { member?: LocalMember } = {}
+    const continuationMembers = new Set<LocalMember>()
+    const isCarrier = (member: LocalMember) => member === carved.member || continuationMembers.has(member)
     let changeBudget: bigint | undefined
     // The coin distribution's band: change only as far as the pool stays within it (the same
     // count the quote makes, `changeBand`).
@@ -1033,10 +1065,10 @@ export class EvmTransactionSetPreparer {
       : Math.min(policy.maxChangeOutputs, Number(changeBudget / changeFee)), residual, atLeastOne)
     const spendChange = (planned: LocalMember[], residual: bigint) => {
       band.planned(planned.filter(member =>
-        member.plan.transactionSet!.role === 'change' && member !== carved.member).length, residual)
+        member.plan.transactionSet!.role === 'change' && !isCarrier(member)).length, residual)
       if (changeBudget === undefined) return
       for (const member of planned)
-        if (member.plan.transactionSet!.role === 'change' && member !== carved.member)
+        if (member.plan.transactionSet!.role === 'change' && !isCarrier(member))
           changeBudget -= memberFee(member.plan.unsignedTransaction)
     }
     try {
@@ -1067,18 +1099,27 @@ export class EvmTransactionSetPreparer {
         }
         members = []
         const paymentMembers = planned.filter(item => item.hasPayment).length
-        const memberBudget = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0)
+        const memberBudget = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0) - (multipart?.reserves.size ?? 0)
         let changeMembers = 0
         for (const [position, { part, payment, hasPayment, index }] of planned.entries()) {
           const residual = residuals[position]!
+          const carrier: { member?: LocalMember } = {}
+          const carrierWei = multipart?.reserves.get(part.coin.account)
           const source = await this.prepareSource(
             hasPayment ? request : { ...request, calldata: undefined },
             policy, context(hasPayment ? index : 0),
             { ...part, paymentValueWei: payment }, index, yielder,
-            optionalChangeAllowance(changeAllowance(residual), memberBudget, paymentMembers, changeMembers,
-              carve && !carved.member ? 1 : 0),
-            carve && !carved.member ? { wei: carve.reserveWei, carved } : undefined,
+            multipart && !hasPayment ? 0 : optionalChangeAllowance(changeAllowance(residual), memberBudget,
+              paymentMembers, changeMembers, multipart ? multipart.reserves.size - continuationMembers.size
+                : carve && !carved.member ? 1 : 0),
+            carrierWei !== undefined ? { wei: carrierWei, carved: carrier }
+              : !multipart && carve && !carved.member ? { wei: carve.reserveWei, carved } : undefined,
+            multipart !== undefined,
           )
+          if (carrierWei !== undefined) {
+            if (!carrier.member) throw new EvmTransactionSetInsufficientFundsError()
+            continuationMembers.add(carrier.member)
+          }
           changeMembers += source.filter(member => member.plan.transactionSet!.role === 'change').length
           spendChange(source, residual)
           members.push(...source)
@@ -1093,7 +1134,7 @@ export class EvmTransactionSetPreparer {
         member.plan.transactionSet!.role === 'change' &&
         !behindPayment(members.map(item => item.plan), member.plan)
           ? sum + Transaction.from(member.raw).value : sum, 0n)
-      if (carve && !carved.member) {
+      if (!multipart && carve && !carved.member) {
         // No payment source had the reserve left over: one other coin that holds it moves it
         // to its fresh account (selection: the first that covers it alone). What that coin
         // holds beyond it is change under the bound, or stays with it on its next nonce.
@@ -1118,7 +1159,7 @@ export class EvmTransactionSetPreparer {
         spendChange(source, extraResidual)
         members.push(...source)
       }
-      while (privateValue() < reserve) {
+      while (privateValue() < (multipart?.reserveWei ?? reserve)) {
         const remainingMembers = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0) - members.length
         const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? MAX_TRANSACTION_SET_MEMBERS) - parts.length)
         if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
@@ -1163,10 +1204,10 @@ export class EvmTransactionSetPreparer {
       })
       const totalFee = all.reduce((sum, member) => { const tx = Transaction.from(member.plan.unsignedTransaction); return sum + tx.gasLimit * (tx.gasPrice ?? tx.maxFeePerGas!) }, 0n)
       // The continuation's own transfer is counted too: it is paid under this same bound.
-      const authorizedFee = totalFee + (carve?.feeWei ?? 0n)
+      const authorizedFee = totalFee + (multipart?.feeWei ?? carve?.feeWei ?? 0n)
       if ((request.maxFeeWei !== undefined && authorizedFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && authorizedFee > BigInt(stage.maxFeeWei))) throw new EvmTransactionSetFeeExceededError(authorizedFee)
-      if (all.length > MAX_TRANSACTION_SET_MEMBERS) throw new Error('Transaction-set exceeds member capacity')
-      if (privateValue() < reserve) throw new Error('Insufficient private change for continuation')
+      if (all.length + (multipart?.reserves.size ?? 0) > MAX_TRANSACTION_SET_MEMBERS) throw new Error('Transaction-set exceeds member capacity')
+      if (privateValue() < (multipart?.reserveWei ?? reserve)) throw new Error('Insufficient private change for continuation')
     } catch (error) {
       coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
       throw error
@@ -1201,8 +1242,8 @@ export class EvmTransactionSetPreparer {
     return this.result(row, stageId)
   }
 
-  /** A one-transfer continuation's reserve (`continuationFeeWei` set): the value of the fresh
-   * account kept for it, and its transfer's fee. */
+  /** Captured continuation amount/fee allocation. Normal construction plans independent
+   * carriers; explicit legacy construction retains its one-transfer carve. */
   private continuationCarve(request: Pick<ConstructEvmTransactionSetRequest, 'reserveForContinuationWei' | 'continuationFeeWei'>):
     { reserveWei: bigint; feeWei: bigint } | undefined {
     const reserve = request.reserveForContinuationWei ?? 0n
@@ -1210,6 +1251,54 @@ export class EvmTransactionSetPreparer {
     if (reserve <= 0n || request.continuationFeeWei < 0n || request.continuationFeeWei >= reserve)
       throw new Error('Invalid transaction-set continuation')
     return { reserveWei: reserve, feeWei: request.continuationFeeWei }
+  }
+
+  /** Plan fee-bearing private carriers from the same eligible pool as the payment. No keys,
+   * destinations, reservations or signatures are created here. The signed graph owns replay. */
+  private multipartContinuation(parts: readonly CoinPart[], request: ConstructEvmTransactionSetRequest,
+    policy: EvmTransactionSetPolicy, rules: ReturnType<EvmTransactionSetPreparer['selectionRules']>,
+    continuation: { reserveWei: bigint; feeWei: bigint }): MultipartContinuation {
+    const amount = continuation.reserveWei - continuation.feeWei
+    const moveFee = policy.changeGasLimit * policy.gasPriceWei
+    const paymentFee = policy.paymentGasLimit('0x') * policy.gasPriceWei
+    const minimum = request.minimumPaymentWei !== undefined && request.minimumPaymentWei > policy.dustWei
+      ? request.minimumPaymentWei : policy.dustWei
+    const residuals = this.sourceResiduals(parts, request.amountWei, request.calldata ?? '0x',
+      index => rules.context(index).gas * policy.gasPriceWei)
+    const used = new Set(parts.map(part => part.coin.account))
+    const selection = rules.selection(false, { deficit: amount, maxCoins: rules.remainingMemberBudget })
+    const candidates = [
+      ...parts.map((part, index) => ({ coin: part.coin, residual: residuals[index]! })),
+      ...this.options.coins.transactionSetCandidates(selection).filter(coin => !used.has(coin.account))
+        .map(coin => ({ coin, residual: coin.valueWei })),
+    ].filter(item => rules.capacityWei(false, true)(item.coin, moveFee) > 0n)
+    const paymentMembers = parts.filter(part => part.paymentValueWei > 0n).length || 1
+    const maxParts = Math.min(Math.floor((rules.remainingMemberBudget - paymentMembers) / 2),
+      minimum > 0n ? Number(amount / minimum) : rules.remainingMemberBudget)
+    if (maxParts < 1) throw new EvmTransactionSetInsufficientFundsError()
+    let selected: ReturnType<typeof selectStampAccounts>
+    try {
+      selected = selectStampAccounts({ amountWei: amount, desiredMinimumTransactions: 1, maxTransactions: maxParts,
+        accounts: candidates.map((item, index) => ({ index, address: item.coin.account,
+          capacityWei: item.residual - moveFee - paymentFee })).filter(item => item.capacityWei >= minimum) })
+    } catch { throw new EvmTransactionSetInsufficientFundsError() }
+    const last = selected.at(-1)!
+    if (last.paymentValueWei < minimum) {
+      let deficit = minimum - last.paymentValueWei
+      for (let index = selected.length - 2; index >= 0 && deficit > 0n; index--) {
+        const prior = selected[index]!, surplus = prior.paymentValueWei - minimum
+        const moved = surplus < deficit ? surplus : deficit
+        prior.paymentValueWei -= moved
+        deficit -= moved
+      }
+      if (deficit > 0n) throw new EvmTransactionSetInsufficientFundsError()
+      last.paymentValueWei = minimum
+    }
+    const reserves = new Map(selected.map(part => [part.address, part.paymentValueWei + paymentFee]))
+    const extra = selected.filter(part => !used.has(part.address)).map(part =>
+      ({ coin: candidates[part.index]!.coin, paymentValueWei: 0n }))
+    return { parts: [...parts, ...extra], reserves, feeWei: BigInt(selected.length) * paymentFee,
+      reserveWei: amount + BigInt(selected.length) * paymentFee }
   }
 
   private validateRequest(request: ConstructEvmTransactionSetRequest): void {
@@ -1474,8 +1563,8 @@ export class EvmTransactionSetPreparer {
    * payment) would pay now: the coins the same selection would take, the same per-source
    * payments and change split, and so the exact fee of every transaction it would sign. Only
    * the inputs this amount needs are counted. Nothing is reserved, derived or signed. With a
-   * one-transfer continuation (`reserveForContinuationWei` and `continuationFeeWei`), its
-   * reserve is kept as construction keeps it and its transfer is counted: construction under
+   * continuation (`reserveForContinuationWei` and `continuationFeeWei`), its recipient value
+   * and aggregate actual fees are kept as independent construction keeps them: construction under
    * `maxFeeWei: feeWei` then makes the same decision.
    */
   async quoteTransactionSet(request: Pick<ConstructEvmTransactionSetRequest, 'amountWei' | 'kdf' | 'calldata' | 'maxPaymentParts' | 'minimumPaymentWei' | 'reserveForContinuationWei' | 'continuationFeeWei'>): Promise<EvmTransactionSetQuote> {
@@ -1494,7 +1583,41 @@ export class EvmTransactionSetPreparer {
       throw this.refusal(undefined, policy, rules.eligible, request.amountWei,
         coin => rules.capacityWei(false)(coin, rules.context(0).gas * policy.gasPriceWei))
     }
-    return { amountWei: request.amountWei, ...this.continuedFee(parts, request.amountWei, request.calldata, policy, rules, carve) }
+    return { amountWei: request.amountWei, ...(carve
+      ? this.multipartContinuedFee(parts, quoteRequest, policy, rules, carve)
+      : this.continuedFee(parts, request.amountWei, request.calldata, policy, rules, carve)) }
+  }
+
+  private multipartContinuedFee(parts: readonly CoinPart[], request: ConstructEvmTransactionSetRequest,
+    policy: EvmTransactionSetPolicy, rules: ReturnType<EvmTransactionSetPreparer['selectionRules']>,
+    continuation: { reserveWei: bigint; feeWei: bigint }): Omit<EvmTransactionSetQuote, 'amountWei'> {
+    const plan = this.multipartContinuation(parts, request, policy, rules, continuation)
+    const residuals = this.sourceResiduals(plan.parts, request.amountWei, request.calldata ?? '0x',
+      index => rules.context(index).gas * policy.gasPriceWei)
+    const band = this.changeBand(policy, plan.parts, residuals)
+    const changeFee = policy.changeGasLimit * policy.gasPriceWei
+    let remaining = request.amountWei, index = 0, deliveryFeeWei = 0n, changeMembers = 0, carriers = 0
+    const paymentMembers = parts.filter(part => part.paymentValueWei > 0n).length || 1
+    for (const [position, part] of plan.parts.entries()) {
+      const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
+      remaining -= payment
+      const hasPayment = payment > 0n || (request.amountWei === 0n && index === 0 && request.calldata !== '0x')
+      if (hasPayment) deliveryFeeWei += rules.context(index++).gas * policy.gasPriceWei
+      const carrier = plan.reserves.get(part.coin.account)
+      const residual = residuals[position]!
+      const allowance = hasPayment ? optionalChangeAllowance(band.allowance(policy.maxChangeOutputs, residual),
+        rules.remainingMemberBudget - plan.reserves.size, paymentMembers, changeMembers, plan.reserves.size - carriers) : 0
+      const outputs = this.changeOutputs(policy, residual - (carrier === undefined ? 0n : carrier + changeFee),
+        hasPayment ? payment : request.amountWei, carrier === undefined ? allowance : Math.min(allowance, policy.maxChangeOutputs - 1)).length
+      changeMembers += outputs + (carrier === undefined ? 0 : 1)
+      if (carrier !== undefined) carriers++
+      band.planned(outputs, residual)
+    }
+    if (paymentMembers + changeMembers + plan.reserves.size > rules.remainingMemberBudget)
+      throw new Error('Transaction-set exceeds member capacity')
+    const changeFeeWei = BigInt(changeMembers) * changeFee
+    return { inputCount: plan.parts.length, consolidationFeeWei: 0n, deliveryFeeWei, changeFeeWei,
+      continuationFeeWei: plan.feeWei, feeWei: deliveryFeeWei + changeFeeWei + plan.feeWei }
   }
 
   /** The fee of paying `amountWei` from `parts` (`independentFee`) and, for a one-transfer
@@ -1862,6 +1985,7 @@ export class EvmTransactionSetPreparer {
     /** Keep `wei` of the residual as one fresh account of its own (a one-transfer continuation's
      * reserve), when the residual holds it and its transfer; the member is put in `carved`. */
     carve?: { wei: bigint; carved: { member?: LocalMember } },
+    privateCarriersOnly = false,
   ): Promise<LocalMember[]> {
     const { coins, deriveChange } = this.options
     const paymentGas = context.gas
@@ -1971,6 +2095,12 @@ export class EvmTransactionSetPreparer {
         ? moves.findIndex(move => move.carve === true)
         : moves.slice(0, paymentAt).some(carries) ? -1 : moves.findIndex(carries)
       if (carrier > paymentAt) moves.splice(paymentAt, 0, moves.splice(carrier, 1)[0]!)
+      if (privateCarriersOnly) {
+        const funding = moves.filter(move => move.carve)
+        const payment = moves.filter(move => move.role === 'payment')
+        const other = moves.filter(move => !move.carve && move.role !== 'payment')
+        moves = [...funding, ...payment, ...other]
+      }
     }
     let changeLogicalIndex = 0
     for (const move of moves)

@@ -1310,24 +1310,114 @@ it.each([0.01, 0.3, 0.5, 0.7, 0.99])('one coin under a reserve rule funds its co
   expect(members[stamp]!.transactionSet!.fundingWaitBlocks).toBe(spendRule.waitBlocks + 1)
 })
 
-it.each([0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99])('a stage the authorized fee leaves no room for is refused for the fee, however the draw lays out the set it joins (draw %s)', async draw => {
-  // A stamp reviewed with no fee: its carved account holds exactly the stamp and cannot pay its
-  // own transfer. Whether some other output of the set could fund it depends on the draw (a
-  // change ahead of the payment can; one behind it cannot), but no coin makes the stage fit the
-  // bound, so the refusal is the fee every time, never missing funds.
+it.each([350000n, 400000n])('continuation recipient parts respect the captured floor without changing their total (%s)', async stamp => {
+  const f = await setup([300000n, 300000n, 300000n])
+  const request = { operationId: 'continuation-floor', amountWei: 200000n, minimumPaymentWei: 200000n,
+    reserveForContinuationWei: stamp + 21000n, continuationFeeWei: 21000n, kdf }
+  if (stamp === 350000n) {
+    // Aggregate value is sufficient, but two valid parts would exceed the intended total.
+    await expect(f.preparer.quoteTransactionSet(request)).rejects.toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+    await expect(f.preparer.constructTransactionSet(request)).rejects.toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+    expect(f.coins.heldBy(request.operationId)).toEqual([])
+    expect(f.journal.list()).toHaveLength(0)
+  } else {
+    const quote = await f.preparer.quoteTransactionSet(request)
+    await f.preparer.constructTransactionSet({ ...request, maxFeeWei: quote.feeWei })
+    const stage = await f.preparer.appendTransactionSet({ operationId: request.operationId, stageId: 'stamp',
+      amountWei: stamp, minimumPaymentWei: request.minimumPaymentWei, kdf })
+    expect(stage.bundle.map(tx => tx.valueWei)).toEqual([200000n, 200000n])
+  }
+})
+
+it('refuses a continuation exceeding the combined graph budget before leaking input claims', async () => {
+  const f = await setup(Array.from({length: 33}, () => 1000000n))
+  const request = { operationId: 'continuation-budget', amountWei: 10000n,
+    reserveForContinuationWei: 30021000n, continuationFeeWei: 21000n, kdf }
+  await expect(f.preparer.quoteTransactionSet(request)).rejects.toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+  await expect(f.preparer.constructTransactionSet(request)).rejects.toBeInstanceOf(EvmTransactionSetInsufficientFundsError)
+  expect(f.coins.heldBy(request.operationId)).toEqual([])
+  expect(f.journal.list()).toHaveLength(0)
+})
+
+it('uses independent pooled carriers for a multipart continuation without claiming unrelated inputs or changing original replay', async () => {
+  const f = await setup([1000000n, 1000000n, 1000000n, 1000000n])
+  const derive = jest.fn(f.options.deriveChange)
+  f.preparer = new EvmTransactionSetPreparer({ ...f.options, deriveChange: derive })
+  const request = { operationId: 'fragmented-continuation', amountWei: 500000n,
+    reserveForContinuationWei: 1521000n, continuationFeeWei: 21000n, kdf }
+  const coins = f.coins.all()
+  const quote = await f.preparer.quoteTransactionSet(request)
+  expect(f.coins.all()).toEqual(coins)
+  expect(f.journal.list()).toHaveLength(0)
+  expect(derive).not.toHaveBeenCalled()
+  expect(quote.continuationFeeWei).toBeGreaterThan(21000n)
+  const first = await f.preparer.constructTransactionSet({ ...request, maxFeeWei: quote.feeWei })
+  expect(first.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBe(request.amountWei)
+  expect(f.preparer.getOperation(request.operationId)!.members.some(member => member.transactionSet?.role === 'funding')).toBe(false)
+  const firstBytes = [...first.bundle, ...first.otherTransactions].map(tx => tx.rawTransaction).sort()
+  const beforeAppend = f.preparer.getOperation(request.operationId)!.members.map(member => member.signed!.rawTransaction)
+  // Another payment can take only unrelated free coins. Operation-private carriers are not
+  // made globally selectable by the fact that their signed funding has been planned.
+  const unrelated = await f.preparer.constructTransactionSet({ operationId: 'unrelated', amountWei: 300000n, kdf })
+  const originalSources = new Set(first.bundle.concat(first.otherTransactions).map(tx => tx.sourceAccount))
+  expect(unrelated.bundle.every(tx => !originalSources.has(tx.sourceAccount))).toBe(true)
+  const stage = await f.preparer.appendTransactionSet({ operationId: request.operationId,
+    stageId: 'stamp', amountWei: 1500000n, minimumPaymentWei: policy.dustWei, kdf })
+  expect(stage.bundle.length).toBeGreaterThan(1)
+  expect(stage.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBe(1500000n)
+  expect(stage.bundle.every(tx => tx.valueWei >= policy.dustWei)).toBe(true)
+  const row = f.preparer.getOperation(request.operationId)!
+  expect(row.members.slice(0, beforeAppend.length).map(member => member.signed!.rawTransaction)).toEqual(beforeAppend)
+  expect(row.members.reduce((sum, member) => { const tx = Transaction.from(member.unsignedTransaction); return sum + tx.gasLimit * tx.gasPrice! }, 0n)).toBe(quote.feeWei)
+  f.preparer = new EvmTransactionSetPreparer(f.options)
+  const replay = await f.preparer.constructTransactionSet({ ...request, maxFeeWei: quote.feeWei })
+  expect([...replay.bundle, ...replay.otherTransactions].map(tx => tx.rawTransaction).sort()).toEqual(firstBytes)
+  const again = await f.preparer.appendTransactionSet({ operationId: request.operationId,
+    stageId: 'stamp', amountWei: 1500000n, minimumPaymentWei: policy.dustWei, kdf })
+  expect(again.bundle.map(tx => tx.rawTransaction)).toEqual(stage.bundle.map(tx => tx.rawTransaction))
+})
+
+it.each([0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99])('a normal continuation keeps actual future fees inside the captured whole-operation ceiling (draw %s)', async draw => {
   const f = await setup([1000000n])
   f.preparer = new EvmTransactionSetPreparer({ ...f.options, random: () => draw })
-  const request = { operationId: 'no-stamp-fee', amountWei: 300000n,
+  const request = { operationId: 'complete-stamp-fee', amountWei: 300000n,
     reserveForContinuationWei: 30000n, continuationFeeWei: 0n, kdf }
+  // This was the old incomplete quote for exactly this one-source request: a zero-fee
+  // continuation was carved without its real transfer cost. Keep that exact approved cap,
+  // rather than raising the approval when the new planner sees the real fee.
+  const incomplete = await f.preparer.quoteLegacyTransactionSet({ destination: kdf(0), amountWei: request.amountWei,
+    continuation: { reserveWei: request.reserveForContinuationWei, feeWei: request.continuationFeeWei } })
   const quote = await f.preparer.quoteTransactionSet(request)
-  await f.preparer.constructTransactionSet({ ...request, maxFeeWei: quote.feeWei })
-  const before = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
-  const held = f.coins.all().filter(coin => coin.holder !== undefined).map(coin => `${coin.account}:${coin.nonce}`)
-  await expect(f.preparer.appendTransactionSet({ operationId: 'no-stamp-fee', stageId: 'stamp', amountWei: 30000n, kdf }))
+  expect(quote.continuationFeeWei).toBe(21000n)
+  expect(quote.feeWei).toBeGreaterThan(incomplete.feeWei)
+  // Contact, private carrier and final stamp each require one transfer. Even eliminating
+  // all optional change cannot fit below that real minimum.
+  const mandatory = 3n * 21000n
+  await expect(f.preparer.constructTransactionSet({ ...request, maxFeeWei: mandatory - 1n }))
     .rejects.toBeInstanceOf(EvmTransactionSetFeeExceededError)
-  // Nothing more was signed or reserved.
+  expect(f.journal.list()).toHaveLength(0)
+  expect(f.coins.heldBy(request.operationId)).toEqual([])
+  // The old cap can still be sufficient by making less optional change. It is never
+  // raised: the initial graph budgets the real stamp fee before spending on change.
+  await f.preparer.constructTransactionSet({ ...request, maxFeeWei: incomplete.feeWei })
+  const original = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  await f.preparer.appendTransactionSet({ operationId: request.operationId, stageId: 'stamp', amountWei: 30000n, kdf })
+  const complete = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  expect(complete.slice(0, original.length)).toEqual(original)
+  expect(complete.reduce((sum, raw) => { const tx = Transaction.from(raw); return sum + tx.gasLimit * tx.gasPrice! }, 0n)).toBeLessThanOrEqual(incomplete.feeWei)
+})
+
+it('the explicit legacy one-carrier continuation still refuses an unapproved append fee', async () => {
+  const f = await setup([1000000n])
+  const request = { operationId: 'legacy-no-stamp-fee', amountWei: 300000n,
+    reserveForContinuationWei: 30000n, continuationFeeWei: 0n, kdf }
+  const quote = await f.preparer.quoteLegacyTransactionSet({ destination: kdf(0), amountWei: request.amountWei,
+    continuation: { reserveWei: request.reserveForContinuationWei, feeWei: request.continuationFeeWei } })
+  await f.preparer.constructLegacyTransactionSet({ ...request, maxFeeWei: quote.feeWei })
+  const before = f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)
+  await expect(f.preparer.appendTransactionSet({ operationId: request.operationId, stageId: 'stamp', amountWei: 30000n, kdf }))
+    .rejects.toBeInstanceOf(EvmTransactionSetFeeExceededError)
   expect(f.journal.list()[0]!.members.map(member => member.signed!.rawTransaction)).toEqual(before)
-  expect(f.coins.all().filter(coin => coin.holder !== undefined).map(coin => `${coin.account}:${coin.nonce}`)).toEqual(held)
 })
 
 it('a relay refusal before any broadcast releases a set whose only exposed members are its payments, and never one whose own moves were exposed', async () => {

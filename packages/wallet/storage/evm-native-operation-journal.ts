@@ -54,6 +54,31 @@ export function nativeMemberSuperseded(member: {
   )
 }
 
+/**
+ * True when the wallet gave this member up on what the chain showed (`state: 'abandoned'`): a
+ * transaction of its set before it on its account, or the move that funds its account, was
+ * replaced by a different transaction at least `EVM_FAILURE_CONFIRMATIONS` deep, and either no
+ * one but this wallet holds its bytes (it never left the wallet, or it went only to a relay that
+ * refused it before storing anything) or its account no longer holds what it moves
+ * (`evm-transaction-set-taken.ts`). It is never handed out again and no longer holds its
+ * account. Unlike a superseded member its nonce may still be free: the account is listed again
+ * at what the chain shows. A later look that finds a receipt replaces it, as any look does.
+ */
+export function nativeMemberAbandoned(member: {
+  observation: EvmNativeObservation
+}): boolean {
+  return member.observation.state === 'abandoned'
+}
+
+/** The member will never land as far as the wallet acts: superseded or abandoned. */
+export function nativeMemberEnded(member: {
+  unsignedTransaction: string
+  observation: EvmNativeObservation
+  account: EvmNativeAccountObservation | null
+}): boolean {
+  return nativeMemberSuperseded(member) || nativeMemberAbandoned(member)
+}
+
 /** Every signing of a member, newest first: `signed`, then its earlier signings. */
 export function memberSignings(member: {
   signed: EvmNativeSigning | null
@@ -81,6 +106,8 @@ export function landedSigning(member: {
 
 /** A canonical account observation must confirm consumption before its residual can be applied. */
 function terminalInventoryEvidence(member: EvmNativeMember): boolean {
+  if (member.signed !== null && member.account !== null && nativeMemberAbandoned(member))
+    return true
   return (
     member.signed !== null &&
     member.account !== null &&
@@ -93,6 +120,9 @@ function terminalInventoryEvidence(member: EvmNativeMember): boolean {
 
 export type EvmNativeObservation =
   | { state: 'unknown' | 'missing' | 'pending' }
+  /** Given up on chain evidence (`nativeMemberAbandoned`); `blockNumber` is the block of the
+   * transaction that took the nonce it stood on. */
+  | { state: 'abandoned'; blockNumber: number }
   | {
       state: 'included-success' | 'included-revert'
       transactionHash: string
@@ -448,6 +478,7 @@ function validateObservation(value: unknown): EvmNativeObservation {
   const state = (value as { state?: unknown }).state
   if (state === 'unknown' || state === 'missing' || state === 'pending')
     object(value, ['state'])
+  else if (state === 'abandoned') integer(object(value, ['state', 'blockNumber']).blockNumber)
   else if (state === 'included-success' || state === 'included-revert') {
     const row = object(value, [
       'state',
@@ -1056,6 +1087,8 @@ export class EvmNativeOperationJournal {
       }
       if (!row.cancelled)
         for (const member of row.members) {
+          // Given up on chain evidence: its nonce is free for the account's next coin.
+          if (nativeMemberAbandoned(member)) continue
           const pair = `${member.source.address}:${
             this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce
           }`
@@ -1147,7 +1180,8 @@ export class EvmNativeOperationJournal {
       if (indexed !== id) fail()
     }
     if (!row.cancelled)
-      for (const member of row.members) {
+      // An abandoned member never used its nonce: another operation may hold that pair.
+      for (const member of row.members.filter(member => !nativeMemberAbandoned(member))) {
         const key = this.pairKey(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce)
         const indexed = this.database ? await this.stored(key) : this.ephemeralConsumed.get(key)
         if (indexed !== id) fail()
@@ -1262,8 +1296,9 @@ export class EvmNativeOperationJournal {
         if (previous !== undefined) fail('conflict')
         operations.push({ type: 'put', key: `preparation:${row.preparationId}`, value: id })
       }
+      // An abandoned member never used its nonce: the pair stays free for the next coin.
       if (!row.cancelled)
-        for (const member of row.members) {
+        for (const member of row.members.filter(member => !nativeMemberAbandoned(member))) {
           const nonce = this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce
           if (await this.consumedBy(member.source.address, nonce)) fail('conflict')
           operations.push({ type: 'put', key: this.pairKey(member.source.address, nonce), value: id })
@@ -1274,7 +1309,7 @@ export class EvmNativeOperationJournal {
           this.ephemeralHistory.set(id, { row: clone(row), receipt: clone(receipt) })
           if (row.preparationId !== undefined) this.ephemeralPreparations.set(row.preparationId, id)
           if (!row.cancelled)
-            for (const member of row.members)
+            for (const member of row.members.filter(member => !nativeMemberAbandoned(member)))
               this.ephemeralConsumed.set(this.pairKey(member.source.address, this.signatures.unsigned(member.unsignedTransaction, this.binding).nonce), id)
         }
       } catch (error) {
@@ -1353,7 +1388,8 @@ export class EvmNativeOperationJournal {
     for (const row of this.rows.values()) {
       if (row.cancelled) continue
       for (const m of row.members)
-        if (m.source.address === address) {
+        // Given up on chain evidence: it holds neither its nonce nor its account.
+        if (m.source.address === address && !nativeMemberAbandoned(m)) {
           if (this.signatures.unsigned(m.unsignedTransaction, this.binding).nonce === nonce)
             return false
           // The dependency leader retains its provisional value across foreign nonce advances.
@@ -1569,7 +1605,7 @@ export class EvmNativeOperationJournal {
         for (const other of this.rows.values())
           if (other.operationId !== id && !other.cancelled && other.members.some(candidate =>
               candidate.source.address === member.source.address &&
-              !nativeMemberSuperseded(candidate) &&
+              !nativeMemberEnded(candidate) &&
               candidate.observation.state !== 'included-success' && candidate.observation.state !== 'included-revert')) fail('conflict')
       row.transactionSetStages.push(input.stage)
       row.members.push(...input.members.map((member, index) => ({
@@ -1687,6 +1723,7 @@ export class EvmNativeOperationJournal {
       const m = row.members[index]
       if (
         !m?.signed ||
+        nativeMemberAbandoned(m) ||
         (row.kind === 'transaction-set' &&
           row.members.some(member => !member.signed)) ||
         row.cancelled ||
@@ -1807,11 +1844,13 @@ export class EvmNativeOperationJournal {
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
     contradiction?: EvmNativeInclusionContradiction,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const frozenObservation = checked('observation', () =>
       validateObservation(observation),
     )
     const frozenAccount = checked('account', () => validateAccount(account))
+    const frozenExpected = expectedMember === undefined ? undefined : clone(expectedMember)
     const frozenContradiction =
       contradiction &&
       checked('observation', () => {
@@ -1832,6 +1871,21 @@ export class EvmNativeOperationJournal {
       if (this.captures.get(key) !== capture.token) return false
       const m = row.members[capture.memberIndex]
       if (row.cancelled || !m?.signed) return false
+      // Giving up signed bytes requires the exact member inspected before asynchronous chain
+      // reads. Exposure or inclusion may have advanced while those reads were pending. Compare
+      // under this same durable mutation; a separate read followed by a write would race again.
+      if (frozenObservation.state === 'abandoned' &&
+          (frozenExpected === undefined || JSON.stringify(m) !== JSON.stringify(frozenExpected) ||
+            m.observation.state === 'included-success' || m.observation.state === 'included-revert'))
+        return false
+      // Given up on chain evidence: only a receipt (it landed after all) replaces that.
+      if (
+        nativeMemberAbandoned(m) &&
+        frozenObservation.state !== 'included-success' &&
+        frozenObservation.state !== 'included-revert' &&
+        frozenObservation.state !== 'abandoned'
+      )
+        return false
       // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
       // It never replaces what the chain has already been seen to say: a member recorded
       // included stays included unless fresh canonical evidence contradicts THAT inclusion.

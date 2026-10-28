@@ -15,6 +15,7 @@ import { EvmNativeOperationJournal, type EvmNativeMember } from './storage/evm-n
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
+import { abandonTakenMembers } from './evm-transaction-set-taken'
 import { evmTransactionSetCapability } from './evm-transaction-set-public'
 import { MAX_SIGNINGS, REFUSALS_BEFORE_RESIGN, RESIGN_AFTER_MS } from './chain/evm-refused-resign'
 import {
@@ -124,6 +125,8 @@ async function fixture(
   chain: ReturnType<typeof node>,
   delayed = false,
   gasPriceWei = 1n,
+  canBroadcastPayments?: (operationId: string) => boolean,
+  maxChangeOutputs = 8,
 ) {
   const store = await LevelRecordStore.open<StoredEvmListCoin>(
     location,
@@ -163,7 +166,7 @@ async function fixture(
       dustWei: 1000n,
       radix: 2,
       jitterBps: 0,
-      maxChangeOutputs: 8,
+      maxChangeOutputs,
       head: chain.head(),
       ...(rule ? { spendRule: rule } : {}),
     }),
@@ -184,6 +187,7 @@ async function fixture(
     provider: chain.provider as unknown as Provider,
     refresh: async () => undefined,
     operations: () => journal.list(),
+    canBroadcastPayments,
   })
   return {
     coins,
@@ -941,4 +945,165 @@ describe('a member the node keeps refusing (Send to Address)', () => {
       await f.close()
     }
   })
+})
+
+
+test('restart respects durable message delivery even for an already authorized recipient graph', async () => {
+  const chain = node()
+  let delivered = false
+  const mayBroadcast = jest.fn(() => delivered)
+  let f = await fixture(location, chain, false, 1n, mayBroadcast)
+  try {
+    const prepared = await f.construct('message-bound')
+    await f.preparer.authorizeSubmission('message-bound')
+    await f.close()
+    f = await fixture(location, chain, false, 1n, mayBroadcast)
+    await f.submission.reconcileAuthorized()
+    const paymentBytes = prepared.bundle.map(member => member.rawTransaction)
+    expect(chain.raws.some(raw => paymentBytes.includes(raw))).toBe(false)
+    expect(mayBroadcast).toHaveBeenCalledWith('message-bound')
+    delivered = true
+    await f.submission.reconcileAuthorized()
+    expect(chain.raws.filter(raw => paymentBytes.includes(raw))).toEqual(paymentBytes)
+  } finally {
+    await f.close()
+  }
+})
+
+
+test.each(['exposed', 'included', 'unchanged'] as const)('abandonment compares the inspected member atomically after pending RPC (%s)', async transition => {
+  const chain = node()
+  const f = await fixture(location, chain, false, 1n, undefined, 1)
+  try {
+    await f.construct('taken-race')
+    const original = (await f.preparer.readOperation('taken-race'))!
+    const paymentIndex = original.members.findIndex(member => member.transactionSet?.role === 'payment')
+    const payment = original.members[paymentIndex]!
+    const tx = Transaction.from(payment.signed!.rawTransaction)
+    expect(tx.nonce).toBe(1)
+    const firstIndex = original.members.findIndex(member => Transaction.from(member.signed!.rawTransaction).nonce === 0)
+    await f.preparer.recordObservation('taken-race', firstIndex, {state: 'missing'},
+      {blockHash, blockNumber: 5, nonce: 1, balanceWei: '1000000'})
+    let reached!: () => void
+    const paused = new Promise<void>(resolve => { reached = resolve })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let first = true
+    const provider = {
+      getBlockNumber: async () => 10,
+      getBlock: async (number: number) => ({number, hash: blockHash, transactions: ['0x' + 'ff'.repeat(32)]}),
+      getTransactionCount: async (_address: string, number: number) => number >= 5 ? 1 : 0,
+      getBalance: async () => {
+        if (first) { first = false; reached(); await gate }
+        return 1000000n
+      },
+    }
+    const abandoning = abandonTakenMembers({authority: f.preparer, provider: provider as unknown as Provider, operationId: 'taken-race'})
+    await paused
+    if (transition !== 'unchanged') await f.preparer.markExposed('taken-race', paymentIndex)
+    if (transition === 'included')
+      await f.preparer.recordObservation('taken-race', paymentIndex, {
+        state: 'included-success', transactionHash: payment.signed!.transactionHash,
+        blockHash, blockNumber: 7, transactionIndex: 0, feeWei: '21000',
+      }, {blockHash, blockNumber: 7, nonce: 2, balanceWei: '800000'})
+    const memberBeforeCommit = (await f.preparer.readOperation('taken-race'))!.members[paymentIndex]!
+    const coinsBeforeCommit = structuredClone(f.coins.all())
+    release()
+    const result = await abandoning
+    const current = (await f.preparer.readOperation('taken-race'))!.members[paymentIndex]!
+    if (transition === 'unchanged') {
+      expect(result.abandoned).toContain(paymentIndex)
+      expect(current.observation.state).toBe('abandoned')
+      // A replay that read the old graph before abandonment may still try to expose it.
+      await expect(f.preparer.markExposed('taken-race', paymentIndex)).rejects.toThrow()
+      const { transactionSetFinancialCompletionReceipt } = await import('./evm-operation-completion')
+      const ended = (await f.preparer.readOperation('taken-race'))!
+      const receipt = transactionSetFinancialCompletionReceipt(ended)!
+      expect(receipt).toBeDefined()
+      await f.journal.archiveCompleted(ended.operationId, receipt)
+      // Completed-history idempotence must not turn this rejected exposure into success for
+      // a stale replay that would broadcast after markExposed returns.
+      await expect(f.preparer.markExposed('taken-race', paymentIndex)).rejects.toThrow()
+      expect(chain.raws).toEqual([])
+    } else {
+      expect(result.abandoned).not.toContain(paymentIndex)
+      expect(current).toEqual(memberBeforeCommit)
+      expect(f.coins.all()).toEqual(coinsBeforeCommit)
+      expect(current.exposed).toBe(true)
+      expect(current.observation.state).not.toBe('abandoned')
+      expect(f.preparer.isSourceReserved(payment.source.address)).toBe(transition !== 'included')
+    }
+  } finally {
+    await f.close()
+  }
+})
+
+
+test.each([
+  ['journal', false], ['inventory', false], ['journal', true], ['inventory', true],
+] as const)('reopen resumes abandoned inventory after %s commit (newer local nonce=%s)', async (cut, newerNonce) => {
+  const { transactionSetFinancialCompletionReceipt } = await import('./evm-operation-completion')
+  const chain = node()
+  let f = await fixture(location, chain, false, 1n, undefined, 1)
+  const evidenceProvider = {
+    getBlockNumber: async () => 10,
+    getBlock: async (number: number) => ({number, hash: blockHash, transactions: ['0x' + 'ff'.repeat(32)]}),
+    getTransactionCount: async (_address: string, number: number) => number >= 5 ? 1 : 0,
+    getBalance: async () => 1000000n,
+  }
+  try {
+    await f.construct('abandoned-restart')
+    await f.preparer.authorizeSubmission('abandoned-restart')
+    const original = (await f.preparer.readOperation('abandoned-restart'))!
+    const paymentIndex = original.members.findIndex(member => member.transactionSet?.role === 'payment')
+    const firstIndex = original.members.findIndex(member => Transaction.from(member.signed!.rawTransaction).nonce === 0)
+    const account = original.members[paymentIndex]!.source.address
+    await f.preparer.recordObservation('abandoned-restart', firstIndex, {state: 'missing'},
+      {blockHash, blockNumber: 5, nonce: 1, balanceWei: '1000000'})
+    const write = f.journal.recordObservation.bind(f.journal)
+    const interruption = cut === 'journal'
+      ? jest.spyOn(f.journal, 'recordObservation').mockImplementation(async (...args) => {
+          const committed = await write(...args)
+          if (args[1].state === 'abandoned' && committed) throw new Error('closed after durable abandonment')
+          return committed
+        })
+      : jest.spyOn(f.journal, 'markTransactionSetInventoryApplied').mockRejectedValueOnce(new Error('closed after inventory write'))
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await abandonTakenMembers({authority: f.preparer, provider: evidenceProvider as unknown as Provider, operationId: 'abandoned-restart'})
+    interruption.mockRestore()
+    warning.mockRestore()
+    const interrupted = (await f.preparer.readOperation('abandoned-restart'))!
+    expect(interrupted.members[paymentIndex]!.observation.state).toBe('abandoned')
+    expect(interrupted.members[paymentIndex]!.transactionSet!.inventoryApplied).not.toBe(true)
+    await f.close()
+    f = await fixture(location, chain, false, 1n, undefined, 1)
+    chain.provider.getTransactionCount.mockImplementation(async () => 1)
+    chain.provider.getBalance.mockImplementation(async () => 1000000n)
+    const atOpen = (await f.preparer.readOperation('abandoned-restart'))!
+    // Opening restores claims only: projection is an explicit recovery mutation.
+    expect(atOpen.members[paymentIndex]!.transactionSet!.inventoryApplied).not.toBe(true)
+    const selectedAtOpen = f.preparer.undecidedSupersededOperations()
+    if (newerNonce) {
+      const known = f.coins.all().find(coin => coin.account === account)!
+      await f.coins.put({account, nonce: 2, privateKey: known.privateKey, origin: known.origin, valueWei: 765432n, listedInBlock: 12})
+    }
+    const broadcasts = [...chain.raws]
+    await f.submission.reconcileAuthorized()
+    await f.submission.reconcileAuthorized()
+    const recovered = (await f.preparer.readOperation('abandoned-restart'))!
+    expect(recovered.members[paymentIndex]!.transactionSet!.inventoryApplied).toBe(true)
+    expect(selectedAtOpen).toContain('abandoned-restart')
+    expect(recovered.members[paymentIndex]!.signed).toEqual(original.members[paymentIndex]!.signed)
+    expect(f.preparer.isSourceReserved(account)).toBe(false)
+    expect(f.coins.liveUnspent().some(coin => coin.account === account && coin.nonce === (newerNonce ? 2 : 1) && coin.valueWei === (newerNonce ? 765432n : 1000000n))).toBe(true)
+    if (newerNonce) expect(f.coins.liveUnspent().some(coin => coin.account === account && coin.nonce === 1)).toBe(false)
+    expect(transactionSetFinancialCompletionReceipt(recovered)).toBeDefined()
+    expect(f.preparer.undecidedSupersededOperations()).not.toContain('abandoned-restart')
+    expect(chain.raws).toEqual(broadcasts)
+    const inventory = structuredClone(f.coins.all())
+    await f.submission.reconcileAuthorized()
+    expect(f.coins.all()).toEqual(inventory)
+  } finally {
+    await f.close()
+  }
 })

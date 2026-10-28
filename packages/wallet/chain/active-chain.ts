@@ -348,6 +348,11 @@ export type DirectMessageEnd =
       /** What the earlier sends held when it was refused, when the wallet recorded it. */
       readonly tiedUpWei?: bigint;
     }
+  /** Another transaction (another device of this account, at the same moment) spent a coin its
+   * payment stood on before the relay stored it, and the payment is part of the message (a
+   * payment to a contact with its stamp), so it is not paid again by itself. Nothing was paid
+   * for it and nothing of it stays held; the user sends it again. */
+  | { readonly reason: "payment-taken" }
   | { readonly reason: "relay"; readonly relayReason?: string };
 
 /** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only

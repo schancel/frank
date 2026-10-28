@@ -59,7 +59,11 @@ export function validateTransactionSetGraph(
     if (Object.keys(meta).some(key => !['role','intendedValueWei','stageId','fundingWaitBlocks','logicalIndex','changeIndex','balanceBeforeWei','balanceAfterWei','inventoryApplied','predecessorWaitBlocks','remainderSpendableFromBlock','refundPending'].includes(key))) fail()
     integer(meta.logicalIndex)
     if (meta.stageId !== undefined && !stageNames.has(meta.stageId)) fail()
-    if (meta.inventoryApplied !== undefined && (meta.inventoryApplied !== true || !member.signed || !member.account || member.account.nonce <= tx.nonce || !['included-success','included-revert','missing'].includes(member.observation.state))) fail()
+    // Applied once the chain decided it: it used its nonce (landed, or another transaction did),
+    // or it was given up because a nonce it stood on was taken (its own nonce may be unused).
+    if (meta.inventoryApplied !== undefined && (meta.inventoryApplied !== true || !member.signed || !member.account ||
+        (member.observation.state !== 'abandoned' &&
+          (member.account.nonce <= tx.nonce || !['included-success','included-revert','missing'].includes(member.observation.state))))) fail()
     if (meta.refundPending !== undefined && meta.refundPending !== true) fail()
     if (meta.remainderSpendableFromBlock !== undefined) integer(meta.remainderSpendableFromBlock)
     const before = uint(meta.balanceBeforeWei), after = uint(meta.balanceAfterWei)

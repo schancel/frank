@@ -7,7 +7,7 @@ import type {
   PreparedEvmTransactionSet,
 } from './evm-transaction-set-types'
 import {
-  nativeMemberSuperseded,
+  nativeMemberEnded,
   type EvmNativeOperation,
   type EvmNativeMember,
 } from './storage/evm-native-operation-journal'
@@ -89,7 +89,7 @@ function needsRecovery(member: EvmNativeMember): boolean {
   return member.transactionSet?.inventoryApplied !== true || (
     member.observation.state !== 'included-success' &&
     member.observation.state !== 'included-revert' &&
-    !nativeMemberSuperseded(member)
+    !nativeMemberEnded(member)
   )
 }
 
@@ -99,6 +99,9 @@ export function createEvmTransactionSetSubmission(options: {
   provider: Provider
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
+  /** Composition's durable delivery authority may withhold recipient broadcasts while owned
+   * funding/change continues. Checked again on every recovery pass, including after restart. */
+  canBroadcastPayments?(operationId: string): boolean
 }) {
   const row = async (id: string): Promise<EvmNativeOperation> => {
     const operation = await options.preparer.readOperation(id)
@@ -114,7 +117,7 @@ export function createEvmTransactionSetSubmission(options: {
     const failed = operation.members.filter(
       member =>
         member.observation.state === 'included-revert' ||
-        nativeMemberSuperseded(member),
+        nativeMemberEnded(member),
     )
     const pending = operation.members.filter(needsRecovery)
     const status = pending.length
@@ -150,7 +153,9 @@ export function createEvmTransactionSetSubmission(options: {
     }
     let submissionUncertain = false
     try {
-      await options.lifecycle.replay(id, { payments: true })
+      await options.lifecycle.replay(id, {
+        payments: options.canBroadcastPayments?.(id) ?? true,
+      })
     } catch {
       submissionUncertain = true
     }

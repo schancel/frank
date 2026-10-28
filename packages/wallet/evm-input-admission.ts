@@ -10,7 +10,8 @@ import { PROTOCOL_CHAINS } from './chain/chains-registry'
 import { signedTransactionSender } from './evm-signed-sender'
 import {
   EvmNativeJournalError,
-  nativeMemberSuperseded,
+  nativeMemberAbandoned,
+  nativeMemberEnded,
   type EvmNativeOperationJournal,
   type EvmNativeBinding,
   type EvmNativePlan,
@@ -298,9 +299,10 @@ class AdmissionOwner implements EvmInputAdmission {
       sender?: string,
       extra: EvmHeldResource[] = [],
       observedConsumed = false,
+      holdsPair = true,
     ) => {
       const transaction = bytes === null ? null : this.tx(bytes, sender)
-      const resources: EvmHeldResource[] = transaction
+      const resources: EvmHeldResource[] = transaction && holdsPair
         ? [
             {
               kind: 'pair',
@@ -322,13 +324,15 @@ class AdmissionOwner implements EvmInputAdmission {
     for (const row of o.native.list()) {
       if (row.cancelled) continue
       row.members.forEach((m, index) => {
-        const unresolved = m.dependencies.length
+        const unresolved = nativeMemberAbandoned(m)
+          ? false
+          : m.dependencies.length
           ? m.observation.state !== 'included-success'
           : m.observation.state !== 'included-success' &&
             m.observation.state !== 'included-revert' &&
             // Its nonce went to another transaction: it holds its address no longer (the
             // journal's own `canSelect` says the same).
-            !nativeMemberSuperseded(m)
+            !nativeMemberEnded(m)
         add(
           {
             kind: 'native',
@@ -342,7 +346,10 @@ class AdmissionOwner implements EvmInputAdmission {
           unresolved ? [{ kind: 'address', address: m.source.address }] : [],
           m.observation.state === 'included-success' ||
             m.observation.state === 'included-revert' ||
-            nativeMemberSuperseded(m),
+            nativeMemberEnded(m),
+          // Given up on chain evidence (a nonce it stood on was taken): it holds neither its
+          // address nor its own nonce, which the account's next coin is listed at.
+          !nativeMemberAbandoned(m),
         )
       })
     }

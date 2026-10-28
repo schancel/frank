@@ -317,11 +317,60 @@ Still replica-local; each relay's startup log names them:
     node still serves state for (at most 1,000,000 blocks back). Not found: value moved by a
     contract (internal transfers), and blocks the node pruned before the wallet reached them (the
     cursor records them). The `fund` script's deposit shows in History as "Received from 0x…".
-11. **Cross-device rebuild (#1907) gaps.** Withdrawn (2026-10-27): "Not specific enough to
-    answer." These are bugs, not decisions, and are worked on in
-    [A coin another device spends at the same moment no longer leaves a message stuck or money tied up (#1945)](https://github.com/schancel/frank/pull/1945):
-    a nonce taken by a transaction with a different value, a partial collision, combined
-    operations, and a message the relay already stored.
+11. **Cross-device rebuild (#1907) gaps.** Safety fixes with remaining acceptance gaps
+    (branch `fix/rebuild-gaps`). In each case
+    another device of the account spends a coin of a message's set at the same moment; the
+    wallet acts once the chain shows that coin's nonce used by a different transaction at least
+    3 blocks deep (`packages/wallet/evm-transaction-set-taken.ts`), never on a timeout:
+    - *A different value.* The set's later transfers from that account were signed against money
+      that is gone. Each one that never left the wallet, or that the account (read at the head
+      and 2 blocks back) no longer covers, is given up (`abandoned`), and so is everything that
+      stands on it. A payment the relay may hold is never given up on balance alone. The account
+      is listed again at what the chain shows, so its money is spendable and is no longer counted
+      as tied up in a send (`FundsInPendingSendError` / `funds_tied_up` no longer comes from such
+      a set). The message is paid again from other coins once, as before.
+    - *A partial collision* (one payment of several taken, the relay refused the message): every
+      payment of the set that has not landed is given up, including the untaken one (nobody else
+      holds its bytes), and the message is paid again once from other coins. The untaken coin is
+      free again.
+    - *Combined operations* (a payment to a contact with its stamp): the contact payment is inside
+      the encrypted message, so paying from other coins would make a different message. The
+      message ends: "Another device of this account spent the same funds at the same moment.
+      Nothing was paid and nothing was sent; its funds are available again. Send it again."
+      (`payment-taken`) only when no carried contact payment already landed or remains exposed
+      with an undecided outcome. Otherwise the original encrypted message, payment facts and
+      unresolved claims stay pending; the wallet must not describe paid money as unpaid or
+      invite a duplicate payment. Finishing delivery after an included contact's stamp is taken
+      remains open. The relay checks only the stamp, so it
+      would store such a message when only the contact payment (or a move it stands on) was
+      taken; the wallet reads the chain before handing a combined message to the relay and does
+      not hand it over then. Still open: a take that lands after the relay stored a combined
+      message leaves it delivered with a contact payment that never lands (not paid again).
+    - *A message the relay already stored*: the relay may hold the payment, so it is never paid
+      again on balance alone. When the chain shows that payment's own nonce used by a different
+      transaction, the same amount goes to the same destination from other coins, once
+      (`repayments` on the message row, payment summary `repaid`), as v1 did for a reverted
+      payment. A repayment still waiting for its block is finished on a later pass.
+      **Owner question:** the recipient's wallet does not count that money. Its message names
+      the taken transaction, which never lands, and a received coin is counted only once the
+      transfer its message carries is included (#1912). The money is at the recipient's
+      one-time account and its key is in the recipient's received-coin store, but the payment
+      shows "Can't check now" (`unverifiable`) and is not spendable. Either the recipient counts
+      a funded account whose carried transfer's nonce went to another transaction, or the
+      sender tells the recipient about the new transaction; neither is done.
+    Verified by `packages/wallet/chain/cross-device-collision.anvil.jest.test.ts` (anvil; fails on
+    main) and by `yarn --cwd packages/bot regtest:monad-cross-device` (solonet, real relay; its
+    device A signs from the account and nonce B's payment was signed from, so the two always
+    collide). Still open: an exposed payment that stands on a transfer that was given up
+    (a payment behind its own stamp-funding change) stays held until its own nonce is decided.
+    What the app's *Retry* does with a `payment-taken` message was not exercised. The regtest
+    funds sweep (`packages/bot/demo/funds.ts`, #1952) reads the received-coin store, so money
+    at such an uncounted account goes back to the faucet.
+    Recipient broadcasts now require the canonical outbox's durable delivered outcome; merely
+    authorizing a transaction set does not let background recovery broadcast its contact
+    payment before relay storage, including after reopening an earlier authorized graph. An
+    earlier authorized partial set with exposed, untaken recipient bytes remains pending until
+    the chain decides those bytes; a relay refusal alone cannot withdraw them for replacement.
 12. **Operator blackjack minimum on the wire.** Resolved (2026-10-27): the dealer's offer
     carries its minimum and maximum bet. "No point in betting when you won't be paid out."
     Implemented in

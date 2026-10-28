@@ -37,13 +37,30 @@ async function main() {
       if (request.op === 'receive') {
         await device.receive(message => message.payloadDigest === request.digest)
       } else if (request.op === 'send') {
-        const sent = await device.chain.directMessages.send({
+        const send = () => device.chain.directMessages.send({
           wallet: device.handle,
           recipient: { raw: request.to },
           items: [{ type: 'text', text: request.text }],
           sealedSender: true,
           stampValue: request.stampWei,
         })
+        let sent: Awaited<ReturnType<typeof send>>
+        for (let tries = 0; ; tries++) {
+          try {
+            sent = await send()
+            break
+          } catch (error) {
+            // This device's earlier send's own later transfers go to the node from the wallet's
+            // background pass (the app runs it on a timer); until they land, its money is tied up.
+            if (tries >= 100 || (error as Error).name !== 'InsufficientStampFundsError') throw error
+            await device.chain.directMessages.reconcileAttempts({ wallet: device.handle, payloadDigests: [] }).catch(() => undefined)
+            await device.handle.reobserveNativeOperations?.().catch(() => undefined)
+            // A coin this device received is counted once a read of the chain shows it (the
+            // app's balance read does this on its own timer).
+            await device.handle.refreshReceivedPayments?.().catch(() => undefined)
+            await new Promise(resolve => setTimeout(resolve, 3000))
+          }
+        }
         result = { digest: sent.payloadDigest, txHashes: sent.stampPayments.map(payment => payment.txHash) }
       } else if (request.op === 'keys') {
         result = (evmWalletInternals(device.handle).coinList?.all() ?? [])

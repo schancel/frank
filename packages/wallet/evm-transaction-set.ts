@@ -10,13 +10,14 @@ import type {
 } from './evm-coin-list'
 import type {
   EvmNativeMemberPlan,
+  EvmNativeMember,
   EvmTransactionSetStage,
   EvmNativeOperation,
   EvmNativeObservation,
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
-import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { EvmNativeJournalError, nativeMemberAbandoned, nativeMemberEnded, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
 import { fundsSettleBlocks } from './chain/evm-spend-rule'
@@ -253,6 +254,22 @@ export class EvmTransactionSetPreparer {
     return originals
   }
 
+  /** Active sets with superseded dependencies still to decide, or durable abandonment whose
+   * inventory projection was interrupted. Logical IDs for the recovery pass; read only. */
+  undecidedSupersededOperations(): string[] {
+    return this.options.journal.list().flatMap(row =>
+      row.kind === 'transaction-set' && !row.cancelled && row.preparationId?.startsWith(prefix) &&
+      ((row.members.some(nativeMemberSuperseded) &&
+        row.members.some(member =>
+          member.observation.state !== 'included-success' &&
+          member.observation.state !== 'included-revert' &&
+          !nativeMemberEnded(member))) ||
+        row.members.some(member => nativeMemberAbandoned(member) &&
+          member.transactionSet?.inventoryApplied !== true))
+        ? [row.preparationId.slice(prefix.length)]
+        : [])
+  }
+
   /** RPC-free admission view for account-based maintenance. Inventory owns provisional
    * construction/projection; the journal retains every pending signed nonce across reopen. */
   isSourceReserved(account: string): boolean {
@@ -262,24 +279,25 @@ export class EvmTransactionSetPreparer {
         member.source.address === key &&
         member.observation.state !== 'included-success' &&
         member.observation.state !== 'included-revert' &&
-        !nativeMemberSuperseded(member),
+        !nativeMemberEnded(member),
       ),
     )
   }
 
-  private async archivedMemberComplete(operationId: string, memberIndex: number): Promise<boolean> {
+  private async archivedMemberComplete(operationId: string, memberIndex: number, allowAbandoned = true): Promise<boolean> {
     const row = await this.readOperation(operationId)
     if (!row || this.getOperation(operationId) || row.cancelled) return false
     const member = row.members[memberIndex]
+    if (member && !allowAbandoned && nativeMemberAbandoned(member)) return false
     return !!member && member.transactionSet?.inventoryApplied === true &&
       (member.observation.state === 'included-success' ||
-       member.observation.state === 'included-revert' || nativeMemberSuperseded(member))
+       member.observation.state === 'included-revert' || nativeMemberEnded(member))
   }
 
   async markExposed(operationId: string, memberIndex: number): Promise<void> {
     const row = this.getOperation(operationId)
     if (!row) {
-      if (await this.archivedMemberComplete(operationId, memberIndex)) return
+      if (await this.archivedMemberComplete(operationId, memberIndex, false)) return
       throw new Error('Unknown transaction-set operation')
     }
     const member = row.members[memberIndex]
@@ -302,7 +320,7 @@ export class EvmTransactionSetPreparer {
     try {
       await this.options.journal.markExposed(row.operationId, memberIndex)
     } catch (error) {
-      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex)) return
+      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex, false)) return
       throw error
     }
   }
@@ -312,6 +330,7 @@ export class EvmTransactionSetPreparer {
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const row = this.getOperation(operationId)
     const member = row?.members[memberIndex]
@@ -321,6 +340,7 @@ export class EvmTransactionSetPreparer {
     }
     const frozenObservation = { ...observation }
     const frozenAccount = account === null ? null : { ...account }
+    const frozenExpected = expectedMember === undefined ? undefined : structuredClone(expectedMember)
     try {
       const recorded = await this.options.coins.projectTransactionSetAccount(
         member.source.address,
@@ -332,6 +352,7 @@ export class EvmTransactionSetPreparer {
             frozenObservation,
             frozenAccount,
             writer,
+            frozenExpected,
           ),
       )
       if (!recorded) return false
@@ -373,12 +394,63 @@ export class EvmTransactionSetPreparer {
     }
   }
 
+  /**
+   * Once every member of `address` in `row` is decided (landed, superseded or abandoned) and at
+   * least one was abandoned: the coins this operation holds of that account from the first
+   * abandoned nonce on leave the list, and what `account` (a chain read) shows the account
+   * holding is listed at the chain's nonce, as for any account the chain moved. Nothing is listed
+   * when a later coin of the account belongs to something else, or the account holds nothing.
+   */
+  private async relistPastAbandoned(
+    row: EvmNativeOperation,
+    holder: string,
+    address: string,
+    account: EvmNativeAccountObservation,
+    source: EvmListCoin,
+    writer: EvmCoinAccountProjection,
+  ): Promise<void> {
+    const { coins } = this.options
+    const members = row.members.filter(member => member.source.address === address)
+    const abandoned = members.filter(nativeMemberAbandoned)
+    if (
+      abandoned.length === 0 ||
+      !members.every(member =>
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert' ||
+        nativeMemberEnded(member))
+    )
+      return
+    const from = Math.min(...abandoned.map(member => Transaction.from(member.unsignedTransaction).nonce))
+    for (const coin of coins.all())
+      if (coin.account === address && coin.nonce >= from && coin.holder === holder && coin.state !== 'spent')
+        await writer.recordGone(coin)
+    if (account.nonce < from || coins.all().some(coin => coin.account === address && coin.nonce > account.nonce))
+      return
+    const existing = coins.get(address, account.nonce)
+    if ((existing && existing.state !== 'unspent') || BigInt(account.balanceWei) === 0n) return
+    const rule = this.recoverySpendRule
+    await writer.put({
+      account: address,
+      nonce: account.nonce,
+      lastSpentInBlock: existing?.lastSpentInBlock ?? account.blockNumber,
+      privateKey: source.privateKey,
+      valueWei: BigInt(account.balanceWei),
+      origin: source.origin,
+      listedInBlock: account.blockNumber,
+      ...(source.changeIndex === undefined ? {} : { changeIndex: source.changeIndex }),
+      ...(rule && BigInt(account.balanceWei) < rule.belowWei
+        ? { spendableFromBlock: account.blockNumber + rule.waitBlocks }
+        : {}),
+    })
+  }
+
   private async applyObservation(
     operationId: string,
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
     writer: EvmCoinAccountProjection,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const { journal, coins } = this.options
     const row = this.getOperation(operationId)
@@ -391,6 +463,8 @@ export class EvmTransactionSetPreparer {
       capture,
       observation,
       account,
+      undefined,
+      expectedMember,
     )
     if (!recorded) return false
     const current = journal.get(row.operationId),
@@ -424,6 +498,17 @@ export class EvmTransactionSetPreparer {
       observation.state === 'missing' &&
       account !== null &&
       account.nonce > tx.nonce
+    // Given up on chain evidence (`evm-transaction-set-taken.ts`): its coin leaves the list once
+    // every member of its account is decided, and the account is listed at what the chain shows.
+    if (observation.state === 'abandoned') {
+      if (account === null) throw new Error('An abandoned member needs its account observation')
+      coins.requireTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
+      await this.relistPastAbandoned(current, operationId, member.source.address, account, source, writer)
+      await journal.markTransactionSetInventoryApplied(row.operationId, memberIndex)
+      coins.settleTransactionSetKeyReference(member.source.address, tx.nonce)
+      coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
+      return true
+    }
     if (
       observation.state === 'included-success' ||
       observation.state === 'included-revert' ||
@@ -472,13 +557,16 @@ export class EvmTransactionSetPreparer {
       // is money the list learns from a chain read of that account, like any deposit.
       if (observation.state === 'included-success' && meta.role === 'payment')
         this.options.onPaymentIncluded?.(tx.to!.toLowerCase())
-      const lastOfSource = current.members
-        .filter(candidate => candidate.source.address === member.source.address)
-        .at(-1)!
+      const ofSource = current.members.filter(
+        candidate => candidate.source.address === member.source.address,
+      )
+      const lastOfSource = ofSource.at(-1)!
       const finalNonce = Transaction.from(
         lastOfSource.unsignedTransaction,
       ).nonce
-      if (
+      if (account && ofSource.some(nativeMemberAbandoned))
+        await this.relistPastAbandoned(current, operationId, member.source.address, account, source, writer)
+      else if (
         account &&
         account.nonce > finalNonce &&
         (coins.latestOf(source.account)?.nonce ?? 0) <= account.nonce
@@ -1531,13 +1619,15 @@ export class EvmTransactionSetPreparer {
         member.transactionSet!.inventoryApplied === true ||
         member.observation.state === 'included-success' ||
         member.observation.state === 'included-revert' ||
-        nativeMemberSuperseded(member)
+        // Superseded or abandoned: it hands nothing back, now or later.
+        nativeMemberEnded(member)
       row.members.forEach((member, index) => {
         if (!member.signed || landed(member)) return
         const meta = member.transactionSet!, tx = Transaction.from(member.unsignedTransaction)
         // Change to an account the same set spends from is spent again by that set.
         if (meta.role !== 'payment' && !sources.has(tx.to!.toLowerCase())) values.push(tx.value)
-        const last = !row.members.slice(index + 1).some(other => other.source.address === member.source.address)
+        const last = !row.members.slice(index + 1).some(other =>
+          other.source.address === member.source.address && !nativeMemberAbandoned(other))
         if (last && BigInt(meta.balanceAfterWei) > 0n) values.push(BigInt(meta.balanceAfterWei))
       })
     }
@@ -1859,9 +1949,13 @@ export class EvmTransactionSetPreparer {
         )
       const source = this.sourceOf(row, member)
       const reconciled = meta.inventoryApplied === true
+      // Given up and already taken out of the list: its account was listed again at what the
+      // chain showed, and nothing of it is held.
+      if (reconciled && nativeMemberAbandoned(member)) continue
       if (
         !reconciled &&
-        (member.observation.state === 'included-success' ||
+        (member.observation.state === 'abandoned' ||
+          member.observation.state === 'included-success' ||
           member.observation.state === 'included-revert' ||
           (member.observation.state === 'missing' &&
             member.account !== null &&

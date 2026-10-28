@@ -7,7 +7,7 @@ import type {
   EvmNativeObservation,
   EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
-import { memberSignings, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { memberSignings, nativeMemberAbandoned, nativeMemberEnded, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { RefusalLedger } from './chain/evm-refused-resign'
 
@@ -20,6 +20,7 @@ export interface EvmTransactionSetAuthority {
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
+    expectedMember?: EvmNativeMember,
   ): Promise<unknown>
   /**
    * Signs member `memberIndex` again at its nonce because the node keeps refusing its bytes
@@ -81,6 +82,8 @@ export class EvmTransactionSetLifecycle {
     const member = row.members[index]!, meta = member.transactionSet!
     return member.dependencies.every(dependency => {
       const prior = row.members[dependency]!, observation = prior.observation
+      // Given up: nothing that stands on it is handed out.
+      if (nativeMemberAbandoned(prior)) return false
       const funding = prior.source.address !== member.source.address
       if (funding) return observation.state === 'included-success' && this.options.head() >= observation.blockNumber + (meta.fundingWaitBlocks ?? 0)
       if (meta.predecessorWaitBlocks !== undefined) {
@@ -95,14 +98,14 @@ export class EvmTransactionSetLifecycle {
   canSubmitPayments(id: string, stageId?: string): boolean {
     const row = this.validateOperation(this.options.authority.getOperation(id))
     const indexes = row.members.flatMap((member, index) => member.transactionSet!.role === 'payment' && member.transactionSet!.stageId === stageId ? [index] : [])
-    return indexes.length > 0 && indexes.every(index => !nativeMemberSuperseded(row.members[index]!) && row.members[index]!.observation.state !== 'included-revert' && this.ready(row, index))
+    return indexes.length > 0 && indexes.every(index => !nativeMemberEnded(row.members[index]!) && row.members[index]!.observation.state !== 'included-revert' && this.ready(row, index))
   }
 
   /** Historical readiness is available without reactivating archived inventory. */
   async readCanSubmitPayments(id: string, stageId?: string): Promise<boolean> {
     const row = this.validateOperation(await this.options.authority.readOperation(id))
     const indexes = row.members.flatMap((member, index) => member.transactionSet!.role === 'payment' && member.transactionSet!.stageId === stageId ? [index] : [])
-    return indexes.length > 0 && indexes.every(index => !nativeMemberSuperseded(row.members[index]!) && row.members[index]!.observation.state !== 'included-revert' && this.ready(row, index))
+    return indexes.length > 0 && indexes.every(index => !nativeMemberEnded(row.members[index]!) && row.members[index]!.observation.state !== 'included-revert' && this.ready(row, index))
   }
 
   /** Called only after the complete encrypted message and signed graph are durable. */
@@ -131,7 +134,7 @@ export class EvmTransactionSetLifecycle {
     const failures: unknown[] = []
     for (const index of [...selected].sort((a,b) => a-b)) {
       const row = this.validateOperation(await this.options.authority.readOperation(id)), member = row.members[index]!
-      if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member) || !this.ready(row, index)) continue
+      if (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberEnded(member) || !this.ready(row, index)) continue
       try {
         // Only a member that has left the wallet can already be on a node; one never exposed is
         // marked exposed (durably, before its bytes leave) and broadcast without asking first.
@@ -201,8 +204,16 @@ export class EvmTransactionSetLifecycle {
       const member = row.members[index]!,
         signed = member.signed!
       // Terminal history must never be fed through inventory observation again.
-      if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberSuperseded(member))) continue
+      if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberEnded(member))) continue
       const found = await this.receiptOf(member, provider)
+      // The durable abandonment may have committed just before interruption of its inventory
+      // projection. Resume that same evidence under the exact-member CAS; never invent a new
+      // chain observation or broadcast. A newly discovered actual receipt takes precedence.
+      if (nativeMemberAbandoned(member) && !found) {
+        if (!member.transactionSet?.inventoryApplied)
+          await this.options.authority.recordObservation(id, index, member.observation, member.account, member)
+        continue
+      }
       const receipt = found?.receipt ?? null
       const block = await provider.getBlock(receipt?.blockNumber ?? 'latest')
       if (!block?.hash)

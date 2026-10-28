@@ -261,8 +261,9 @@ test('ambiguous relay submission reopens with the original signed recipient and 
     expect(paymentMembers.every(member => member.exposed)).toBe(true)
     expect(paymentMembers.some(member => member.observation.state === 'included-success')).toBe(false)
     expect(offlineChain.paymentsBroadcastEarly(original)).toEqual([])
-    // Every broadcast reuses bytes from this original operation.
-    expect(original.submissionAuthorized).toBe(true)
+    // Recipient broadcast authorization waits for durable relay storage; an unanswered request
+    // must not let background recovery pay before the message is retrievable.
+    expect(original.submissionAuthorized).toBeUndefined()
     for (const raw of offlineChain.walletBroadcasts) {
       expect(originalBytes).toContain(raw)
     }
@@ -271,6 +272,9 @@ test('ambiguous relay submission reopens with the original signed recipient and 
     installCanonicalDirectory(active, f.directory)
     const reopened = active.transactionSetPreparer!.getOperation(operationId)!
     expect(reopened.members.map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+    await active.reobserveNativeOperations!()
+    expect(offlineChain.paymentsBroadcastEarly(reopened)).toEqual([])
+    expect(active.transactionSetPreparer!.getOperation(operationId)!.submissionAuthorized).toBeUndefined()
     expect(active.transactionSetPreparer!.getOperation(operationId)!.members).toEqual(
       expect.arrayContaining(reopened.members.filter(member => member.signed)),
     )
@@ -291,6 +295,7 @@ test('ambiguous relay submission reopens with the original signed recipient and 
       expect.arrayContaining(stored.otherTransactions.map(payment => payment.rawTx)),
     )
     // Delivered: the original set, payments and change alike, reaches the chain.
+    expect((await active.transactionSetPreparer!.readOperation(operationId))!.submissionAuthorized).toBe(true)
     for (let pass = 0; pass < 8 && evmWalletInternals(active).coinList!.heldBy(operationId).length > 0; pass++)
       await f.chain.directMessages.reconcileAttempts({ wallet: active, payloadDigests: [stored.digest] })
     const settled = (await active.transactionSetPreparer!.readOperation(operationId))!

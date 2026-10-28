@@ -124,6 +124,7 @@ async function fixture(
   chain: ReturnType<typeof node>,
   delayed = false,
   gasPriceWei = 1n,
+  canBroadcastPayments?: (operationId: string) => boolean,
 ) {
   const store = await LevelRecordStore.open<StoredEvmListCoin>(
     location,
@@ -184,6 +185,7 @@ async function fixture(
     provider: chain.provider as unknown as Provider,
     refresh: async () => undefined,
     operations: () => journal.list(),
+    canBroadcastPayments,
   })
   return {
     coins,
@@ -941,4 +943,27 @@ describe('a member the node keeps refusing (Send to Address)', () => {
       await f.close()
     }
   })
+})
+
+
+test('restart respects durable message delivery even for an already authorized recipient graph', async () => {
+  const chain = node()
+  let delivered = false
+  const mayBroadcast = jest.fn(() => delivered)
+  let f = await fixture(location, chain, false, 1n, mayBroadcast)
+  try {
+    const prepared = await f.construct('message-bound')
+    await f.preparer.authorizeSubmission('message-bound')
+    await f.close()
+    f = await fixture(location, chain, false, 1n, mayBroadcast)
+    await f.submission.reconcileAuthorized()
+    const paymentBytes = prepared.bundle.map(member => member.rawTransaction)
+    expect(chain.raws.some(raw => paymentBytes.includes(raw))).toBe(false)
+    expect(mayBroadcast).toHaveBeenCalledWith('message-bound')
+    delivered = true
+    await f.submission.reconcileAuthorized()
+    expect(chain.raws.filter(raw => paymentBytes.includes(raw))).toEqual(paymentBytes)
+  } finally {
+    await f.close()
+  }
 })

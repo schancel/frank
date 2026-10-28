@@ -317,7 +317,8 @@ Still replica-local; each relay's startup log names them:
     node still serves state for (at most 1,000,000 blocks back). Not found: value moved by a
     contract (internal transfers), and blocks the node pruned before the wallet reached them (the
     cursor records them). The `fund` script's deposit shows in History as "Received from 0x…".
-11. **Cross-device rebuild (#1907) gaps.** Handled (branch `fix/rebuild-gaps`). In each case
+11. **Cross-device rebuild (#1907) gaps.** Safety fixes with remaining acceptance gaps
+    (branch `fix/rebuild-gaps`). In each case
     another device of the account spends a coin of a message's set at the same moment; the
     wallet acts once the chain shows that coin's nonce used by a different transaction at least
     3 blocks deep (`packages/wallet/evm-transaction-set-taken.ts`), never on a timeout:
@@ -336,7 +337,11 @@ Still replica-local; each relay's startup log names them:
       the encrypted message, so paying from other coins would make a different message. The
       message ends: "Another device of this account spent the same funds at the same moment.
       Nothing was paid and nothing was sent; its funds are available again. Send it again."
-      (`payment-taken`). Nothing of the set stays held. The relay checks only the stamp, so it
+      (`payment-taken`) only when no carried contact payment already landed or remains exposed
+      with an undecided outcome. Otherwise the original encrypted message, payment facts and
+      unresolved claims stay pending; the wallet must not describe paid money as unpaid or
+      invite a duplicate payment. Finishing delivery after an included contact's stamp is taken
+      remains open. The relay checks only the stamp, so it
       would store such a message when only the contact payment (or a move it stands on) was
       taken; the wallet reads the chain before handing a combined message to the relay and does
       not hand it over then. Still open: a take that lands after the relay stored a combined
@@ -361,6 +366,11 @@ Still replica-local; each relay's startup log names them:
     What the app's *Retry* does with a `payment-taken` message was not exercised. The regtest
     funds sweep (`packages/bot/demo/funds.ts`, #1952) reads the received-coin store, so money
     at such an uncounted account goes back to the faucet.
+    Recipient broadcasts now require the canonical outbox's durable delivered outcome; merely
+    authorizing a transaction set does not let background recovery broadcast its contact
+    payment before relay storage, including after reopening an earlier authorized graph. An
+    earlier authorized partial set with exposed, untaken recipient bytes remains pending until
+    the chain decides those bytes; a relay refusal alone cannot withdraw them for replacement.
 12. **Operator blackjack minimum on the wire.** Resolved (2026-10-27): the dealer's offer
     carries its minimum and maximum bet. "No point in betting when you won't be paid out."
     Implemented in

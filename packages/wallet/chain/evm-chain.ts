@@ -2300,6 +2300,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             preparer: transactionSetPreparer, lifecycle: transactionSetLifecycle, provider,
             refresh: transactionSetRuntime.refresh,
             operations: () => transactionOwner.nativeJournal!.list(),
+            canBroadcastPayments: operationId => {
+              // The canonical outbox owns delivery, including for graphs authorized by an
+              // earlier process before its relay request was answered. Authorization alone
+              // never permits sending the contact payment carried inside that request.
+              if (!canonicalLinks) return false;
+              const messages = canonicalLinks.all().filter(message =>
+                message.transactionSetOperationId === operationId);
+              return messages.every(message => message.outcome === "delivered");
+            },
           });
           // Shared-set reconciliation must not flush legacy native operations: their
           // send/re-observation owners decide when those notes may be transported.

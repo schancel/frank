@@ -92,6 +92,7 @@ suite('another device of the account spends a message coin at the same moment (a
   /** Every row the wallet wrote, by digest. */
   const written = new Map<string, StoredMessage[]>()
   /** What the relay stand-in does with the next request: store it (default) or refuse it. */
+  let beforeJudge: (() => Promise<void>) | undefined
   let relay: { stored: number; payments: Transaction[][]; precheck: boolean }
   const mine = (blocks = 1) => chain.send('anvil_mine', [`0x${blocks.toString(16)}`])
 
@@ -118,6 +119,7 @@ suite('another device of the account spends a message coin at the same moment (a
     offlineChain.relayBroadcasts = false
     mailboxes.clear()
     written.clear()
+    beforeJudge = undefined
     relay = { stored: 0, payments: [], precheck: true }
     const put = LevelOutgoingMessageStore.prototype.put
     jest.spyOn(LevelOutgoingMessageStore.prototype, 'put').mockImplementation(async function (this: LevelOutgoingMessageStore, row) {
@@ -141,6 +143,11 @@ suite('another device of the account spends a message coin at the same moment (a
         const payments = restored.parts.transactions.map(raw => Transaction.from(hexlify(raw)))
         // The relay's own check before it stores anything (`judge_payments`): a payment whose
         // nonce another transaction used, or a sender that cannot cover its payments.
+        if (beforeJudge) {
+          const run = beforeJudge
+          beforeJudge = undefined
+          await run()
+        }
         if (relay.precheck) {
           const dead = await judge(payments)
           if (dead) return refusal(url, restored.identity, dead)
@@ -374,7 +381,7 @@ suite('another device of the account spends a message coin at the same moment (a
     await laterSendGoesThrough(2, 5n * 10n ** 16n)
   })
 
-  it('a partial collision (one of two payments taken): the message is paid once from other coins and the untaken coin is free again', async () => {
+  it.each([false, true])('a partial collision rebuilds only when the untaken payment cannot already be in flight (earlier authorization=%s)', async earlierAuthorization => {
     // Two coins, neither covering the stamp alone: the payment is two transfers.
     const reserve = 4n * 21_000n * 2n * 10n ** 9n
     const before = alice.pool.records().length
@@ -396,8 +403,22 @@ suite('another device of the account spends a message coin at the same moment (a
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
     await mine(5)
+    if (earlierAuthorization) await alice.transactionSetPreparer!.authorizeSubmission(first.transactionSetOperationId!)
     held.release()
     expect(await held.sent).toMatch(/Another transaction used the coin/)
+    if (earlierAuthorization) {
+      for (let pass = 0; pass < 3; pass++) {
+        await f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [held.digest]})
+        await mine(5)
+      }
+      const pending = rowOf(held.digest)
+      expect(pending.outcome).toBeUndefined()
+      expect(pending.request).toEqual(first.request)
+      expect(pending.replacedOperationIds).toBeUndefined()
+      expect(alice.transactionSetPreparer!.isSourceReserved(untaken!.from!)).toBe(true)
+      expect(await chain.getTransactionReceipt(untaken!.hash!)).toBeNull()
+      return
+    }
     const done = await reconcileUntil(held.digest, settled)
     expect(done.replacedOperationIds).toEqual([first.transactionSetOperationId])
     expect(bobMailbox).toHaveLength(1)
@@ -416,6 +437,106 @@ suite('another device of the account spends a message coin at the same moment (a
     expect(coins.some(coin => coin.state === 'pending_receipt' && coin.holder === first.transactionSetOperationId)).toBe(false)
   })
 
+  async function heldCombinedSend() {
+    jest.spyOn(Math, 'random').mockReturnValue(0.99)
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    await mine(5)
+    await alice.refreshTransactionSetInventory!()
+    const intent0 = {
+      operationId: 'contact-collision', chainIdentifier: 'monad-testnet', asset: { kind: 'native' as const },
+      recipientSpendPublicKey: f.bob.identity.compressedPubKey, amountAtomic: 10n ** 16n,
+    }
+    const quote = await alice.stealthPayments!.quote!(intent0)
+    const stamp = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP })
+    if (stamp.status !== 'available') throw new Error('stamp unavailable')
+    const intent: StealthPaymentIntent = {
+      ...intent0, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic },
+    }
+    const prepared = await alice.stealthPayments!.prepare(intent)
+    let reached!: (digest: string) => void
+    const atHold = new Promise<string>(resolve => (reached = resolve))
+    let release!: () => void
+    const released = new Promise<void>(resolve => (release = resolve))
+    const sent = f.chain.directMessages
+      .send({
+        wallet: alice, recipient: f.bob.identity.address, messageId: ID(1),
+        paymentOperationId: intent.operationId, stampValue: STAMP,
+        items: [recipientAssetPaymentFromPrepared(prepared)],
+        onEnvelopeDurable: d => alice.stealthPayments!.expose({ operationId: intent.operationId, payloadDigest: d }),
+        onAttemptCreated: async digest => {
+          reached(digest)
+          await released
+        },
+      })
+      .then(() => 'returned', (error: Error) => `${error.name}: ${error.message}`)
+    const digest = await atHold
+    const first = rowOf(digest)
+    expect(first.transactionSetStageId).toBeDefined()
+    const operationId = evmStealthTransactionSetOperationId(intent.operationId)
+    const original = (await operationOf(operationId))!
+    const stampPayment = original.members.find(m =>
+      m.transactionSet?.role === 'payment' && m.transactionSet.stageId === first.transactionSetStageId)!
+    const planned = Transaction.from(stampPayment.signed!.rawTransaction)
+    return { intent, prepared, digest, first, operationId, original, stampPayment, planned, release, sent }
+  }
+
+  it.each([false, true])('background recovery withholds contact payments before durable relay storage (already authorized=%s)', async alreadyAuthorized => {
+    const { intent, prepared, operationId, original, release, sent, digest } = await heldCombinedSend()
+    if (alreadyAuthorized) await alice.transactionSetPreparer!.authorizeSubmission(operationId)
+    beforeJudge = async () => {
+      expect((await operationOf(operationId))!.submissionAuthorized === true).toBe(alreadyAuthorized)
+      const contact = original.members.find(m => m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)!
+      for (let pass = 0; pass < 3; pass++) {
+        await alice.reobserveNativeOperations!()
+        await mine(5)
+      }
+      expect(await chain.getTransactionReceipt(contact.signed!.transactionHash)).toBeNull()
+      expect(await chain.getBalance(prepared.recipientAddress)).toBe(0n)
+    }
+    release()
+    expect(await sent).toBe('returned')
+    const delivered = await reconcileUntil(digest, settled)
+    expect(delivered.outcome).toBe('delivered')
+    expect(await chain.getBalance(prepared.recipientAddress)).toBe(intent.amountAtomic)
+  })
+  it('an already included contact is retained when its stamp is taken before relay storage', async () => {
+    const { intent, prepared, digest, first, operationId, original, stampPayment, planned, release, sent } = await heldCombinedSend()
+    // An earlier process may already have authorized and sent the contact before relay storage.
+    await alice.transactionSetPreparer!.authorizeSubmission(operationId)
+    beforeJudge = async () => {
+      const contact = original.members.find(m => m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)!
+      if ((await chain.getBalance(stampPayment.source.address)) < 10n ** 14n)
+        await (await dev.sendTransaction({ to: stampPayment.source.address, value: 10n ** 14n })).wait()
+      await takeNonce(stampPayment.source.address, planned.nonce, 1n)
+      for (let pass = 0; pass < 3; pass++) {
+        await alice.reobserveNativeOperations!()
+        await mine(5)
+      }
+      if (!(await chain.getTransactionReceipt(contact.signed!.transactionHash)))
+        await (await chain.broadcastTransaction(contact.signed!.rawTransaction)).wait()
+      await alice.reobserveNativeOperations!()
+      expect((await operationOf(operationId))!.members.find(m => m.signed?.rawTransaction === contact.signed!.rawTransaction)!.observation.state).toBe('included-success')
+    }
+    release()
+    expect(await sent).toMatch(/Another transaction used the coin/)
+    for (let pass = 0; pass < 5; pass++) {
+      await f.chain.directMessages.reconcileAttempts({wallet: alice, payloadDigests: [digest]})
+      await mine(5)
+    }
+    const pending = rowOf(digest)
+    expect(pending.outcome).toBeUndefined()
+    expect(pending.request).toEqual(first.request)
+    expect(pending.construction?.payload).toBe(first.construction?.payload)
+    expect(pending.digest).toBe(digest)
+    expect(pending.payments.map(p => p.rawTx)).toEqual(first.payments.map(p => p.rawTx))
+    expect(await f.chain.directMessages.endOf!({wallet: alice,payloadDigest:digest})).toBeUndefined()
+    const contact = (await operationOf(operationId))!.members.find(m => m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)!
+    expect(contact.observation.state).toBe('included-success')
+    expect(await chain.getBalance(prepared.recipientAddress)).toBe(intent.amountAtomic)
+    expect(bobMailbox).toHaveLength(0)
+  })
   it('a payment to a contact whose combined set another transaction took: it ends saying so, nothing paid, nothing held', async () => {
     jest.spyOn(Math, 'random').mockReturnValue(0.99)
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()

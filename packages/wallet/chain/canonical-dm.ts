@@ -800,9 +800,9 @@ async function submitStored(
   if (row.transactionSetOperationId) {
     const shared = owner.transactionSets
     if (!shared) throw new Error('Shared stamp operation unavailable')
-    // The complete message and its signed set are durable: the set is authorized for
-    // submission (as the wallet's submission boundary requires) before any of it leaves.
-    await shared.preparer.authorizeSubmission(row.transactionSetOperationId)
+    // Funding may leave once the exact message is durable. Whole-set submission (including
+    // its contact payment) is authorized only after the relay's delivery is durable, through
+    // settleSharedPayments/sendTransaction. Background recovery must not pay it earlier.
     // This message's own payments still wait on their funding transactions: nothing failed
     // and no other attempt competes. It is handed to the relay on a later pass.
     if (!await fundStagePayments(shared, row.transactionSetOperationId, row.transactionSetStageId)) {
@@ -1522,6 +1522,29 @@ async function rebuildTakenPayment(
   const operation = await shared.preparer.readOperation(operationId)
   if (!operation || operation.cancelled) return row
   if (!(await paymentTaken(owner, operationId, row.transactionSetStageId))) return row
+  const observed = await shared.preparer.readOperation(operationId)
+  if (!observed) return row
+  // Earlier versions authorized recipient replay before the relay answered. An exposed,
+  // untaken payment of such a graph may already be in flight independently of that relay's
+  // refusal. Keep its bytes and claims until the chain decides them; never withdraw and pay
+  // it again merely because a different payment of this set was taken.
+  if (observed.submissionAuthorized && observed.members.some(member =>
+    member.transactionSet?.role === 'payment' && member.exposed &&
+    !nativeMemberEnded(member) && member.observation.state !== 'included-revert'))
+    return row
+  if (row.transactionSetStageId !== undefined) {
+    // The original contact payment lives inside the ciphertext. An included payment, or
+    // exposed bytes whose outcome the chain has not decided, cannot be erased and called
+    // "nothing paid" because its separate stamp was taken. Keep the original message and
+    // journal obligation pending; a fresh contact payment would pay the recipient twice.
+    if (observed.members.some(member =>
+      member.transactionSet?.role === 'payment' &&
+      member.transactionSet.stageId === undefined &&
+      (member.observation.state === 'included-success' ||
+        (member.exposed && !nativeMemberEnded(member) &&
+          member.observation.state !== 'included-revert'))))
+      return row
+  }
   // Nobody holds these payments: every one that has not landed is given up.
   await abandonTakenMembers({
     authority: shared.preparer,

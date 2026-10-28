@@ -99,6 +99,9 @@ export function createEvmTransactionSetSubmission(options: {
   provider: Provider
   refresh(): Promise<void>
   operations(): readonly EvmNativeOperation[]
+  /** Composition's durable delivery authority may withhold recipient broadcasts while owned
+   * funding/change continues. Checked again on every recovery pass, including after restart. */
+  canBroadcastPayments?(operationId: string): boolean
 }) {
   const row = async (id: string): Promise<EvmNativeOperation> => {
     const operation = await options.preparer.readOperation(id)
@@ -150,7 +153,9 @@ export function createEvmTransactionSetSubmission(options: {
     }
     let submissionUncertain = false
     try {
-      await options.lifecycle.replay(id, { payments: true })
+      await options.lifecycle.replay(id, {
+        payments: options.canBroadcastPayments?.(id) ?? true,
+      })
     } catch {
       submissionUncertain = true
     }

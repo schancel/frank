@@ -555,6 +555,24 @@ export class EvmTransactionSetPreparer {
       coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
     }
 
+    // Replaying retained terminal facts finishes consumption/projection debt; it is not a
+    // new balance observation. Apply this once at the source capability boundary so residual
+    // and safe-abandonment relisting both preserve an already canonical successor. Missing
+    // or provisional (`after`) state still reconstructs through the original writer.
+    const retainedTerminal = expectedMember &&
+      (nativeMemberEnded(expectedMember) || expectedMember.observation.state === 'included-success' ||
+        expectedMember.observation.state === 'included-revert') &&
+      JSON.stringify(expectedMember.observation) === JSON.stringify(observation) &&
+      JSON.stringify(expectedMember.account) === JSON.stringify(account)
+    const sourceProjection: EvmCoinAccountProjection = retainedTerminal ? {
+      ...writer,
+      put: input => {
+        const existing = coins.get(input.account, input.nonce)
+        return existing?.state === 'unspent' && !existing.after
+          ? Promise.resolve(existing) : writer.put(input)
+      },
+    } : writer
+
     if (meta.inventoryApplied === true) {
       coins.completeTransactionSetProjection(
         member.source.address,
@@ -587,7 +605,7 @@ export class EvmTransactionSetPreparer {
     if (observation.state === 'abandoned') {
       if (account === null) throw new Error('An abandoned member needs its account observation')
       coins.requireTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
-      await this.relistPastAbandoned(current, operationId, member.source.address, account, source, writer)
+      await this.relistPastAbandoned(current, operationId, member.source.address, account, source, sourceProjection)
       await journal.markTransactionSetInventoryApplied(row.operationId, memberIndex)
       coins.settleTransactionSetKeyReference(member.source.address, tx.nonce)
       coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
@@ -602,7 +620,7 @@ export class EvmTransactionSetPreparer {
         'blockNumber' in observation
           ? observation.blockNumber
           : account!.blockNumber
-      await writer.recordMined(
+      await sourceProjection.recordMined(
         { account: member.source.address, nonce: tx.nonce },
         { block },
       )
@@ -649,21 +667,14 @@ export class EvmTransactionSetPreparer {
         lastOfSource.unsignedTransaction,
       ).nonce
       if (account && ofSource.some(nativeMemberAbandoned))
-        await this.relistPastAbandoned(current, operationId, member.source.address, account, source, writer)
+        await this.relistPastAbandoned(current, operationId, member.source.address, account, source, sourceProjection)
       else if (
         account &&
         account.nonce > finalNonce &&
         (coins.latestOf(source.account)?.nonce ?? 0) <= account.nonce
       ) {
         const existing = coins.get(member.source.address, account.nonce)
-        // A retained terminal replay owns consumption/projection debt, not a new balance
-        // observation. A canonical successor already held by the inventory (unlike an
-        // `after` construction coin) may have been refreshed since that retained bound.
-        const retainedTerminal = expectedMember && nativeMemberSuperseded(expectedMember) &&
-          JSON.stringify(expectedMember.observation) === JSON.stringify(observation) &&
-          JSON.stringify(expectedMember.account) === JSON.stringify(account)
-        const authoritativeSuccessor = existing?.state === 'unspent' && !existing.after
-        if ((!existing || existing.state === 'unspent') && !(retainedTerminal && authoritativeSuccessor)) {
+        if (!existing || existing.state === 'unspent') {
           const rule = this.recoverySpendRule
           // More than this set left the account holding is money that arrived since: fresh, by
           // the block this read was at, whatever the reserve. `balanceAfterWei` counts each fee
@@ -681,7 +692,7 @@ export class EvmTransactionSetPreparer {
             rule && BigInt(account.balanceWei) < rule.belowWei
               ? account.blockNumber + rule.waitBlocks
               : undefined
-          await writer.put({
+          await sourceProjection.put({
             account: source.account,
             nonce: account.nonce,
             lastSpentInBlock: existing?.lastSpentInBlock ?? account.blockNumber,

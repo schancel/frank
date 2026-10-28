@@ -10,6 +10,10 @@ import { createEvmTransactionSetSubmission } from './evm-transaction-set-submiss
 import { EvmCoinListSync } from './evm-coin-list-sync'
 import { EvmBlockWatcher } from './evm-block-watcher'
 import {
+  abandonTakenMembers,
+  type TakenSetProvider,
+} from './evm-transaction-set-taken'
+import {
   EvmNativeOperationJournal,
   evmNativeOperationDigest,
   type EvmNativeOperation,
@@ -19,6 +23,7 @@ import { LevelRecordStore } from './storage/evm-coin-store'
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
+  EvmTransactionSetInsufficientFundsError,
   type EvmTransactionSetPreparerOptions,
 } from './evm-transaction-set-types'
 import { transactionSetFinancialCompletionReceipt } from './evm-operation-completion'
@@ -37,7 +42,8 @@ const input = {
   expectedOriginalOperationHash: saved.originalCompletion.expectedOperationHash,
 }
 async function open(
-  observeOwnedRecoveryTarget?: EvmTransactionSetPreparerOptions['observeOwnedRecoveryTarget']
+  observeOwnedRecoveryTarget?: EvmTransactionSetPreparerOptions['observeOwnedRecoveryTarget'],
+  overrides: Partial<EvmTransactionSetPreparerOptions> = {}
 ) {
   journal = new EvmNativeOperationJournal({
     location,
@@ -72,6 +78,7 @@ async function open(
         changeIndex: index,
       }
     },
+    ...overrides,
   })
   return { coins, preparer }
 }
@@ -1208,3 +1215,182 @@ test.each([12345n, -12345n])(
     }
   }
 )
+
+test('retained terminal projection with a safely abandoned sibling preserves real-sync funds visibility and rejects premature construction', async () => {
+  let head = 15
+  const overrides: Partial<EvmTransactionSetPreparerOptions> = {
+    recoverySpendRule: { belowWei: 10n ** 19n, waitBlocks: 3 },
+    random: () => 0.99,
+    policy: () => ({
+      sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
+      gasPriceWei: 1000000000n,
+      paymentGasLimit: () => 21000n,
+      changeGasLimit: 21000n,
+      paymentFeeIsExact: true,
+      dustWei: 1000n,
+      radix: 2,
+      jitterBps: 0,
+      maxChangeOutputs: 1,
+      head,
+      spendRule: { belowWei: 10n ** 19n, waitBlocks: 3 },
+    }),
+  }
+  let w = await open(undefined, overrides)
+  const key = new Wallet('0x' + (999).toString(16).padStart(64, '0')),
+    address = key.address.toLowerCase(),
+    logical = 'safe-sibling-projection'
+  await w.coins.put({
+    account: address,
+    privateKey: key.privateKey,
+    nonce: 0,
+    valueWei: 10n ** 19n,
+    origin: 'stealth',
+  })
+  await w.preparer.constructTransactionSet({
+    operationId: logical,
+    amountWei: 10n ** 15n,
+    maxFeeWei: 42000n * 1000000000n,
+    kdf: () => key.address,
+    sourceAccounts: [address],
+  })
+  const row = w.preparer.getOperation(logical)!
+  expect(row.members.map((member) => member.transactionSet!.role)).toEqual([
+    'payment',
+    'change',
+  ])
+  await w.preparer.markExposed(logical, 0)
+  const old = 1001n * 10n ** 14n,
+    newer = 2002n * 10n ** 14n,
+    account = {
+      blockHash: '0x' + 'bb'.repeat(32),
+      blockNumber: 5,
+      nonce: 1,
+      balanceWei: old.toString(),
+    }
+  // Genuine interruption between journal observation and its inventory projection.
+  const commit = journal.recordObservation.bind(journal)
+  const cut = jest
+    .spyOn(journal, 'recordObservation')
+    .mockImplementation(async (...args) => {
+      const accepted = await commit(...args)
+      if (accepted && args[1].state === 'missing')
+        throw new Error('cut after terminal commit')
+      return accepted
+    })
+  try {
+    await expect(
+      w.preparer.recordObservation(logical, 0, { state: 'missing' }, account)
+    ).rejects.toThrow('cut after terminal commit')
+  } finally {
+    cut.mockRestore()
+  }
+  const takenRpc = {
+    getBlockNumber: async () => 10,
+    getBlock: async (n: number) => ({
+      number: n,
+      hash: account.blockHash,
+      transactions: ['0x' + 'ff'.repeat(32)],
+    }),
+    getTransactionCount: async (_address: string, at: number) =>
+      at >= 5 ? 1 : 0,
+    getBalance: async () => old,
+  }
+  const warning = jest
+    .spyOn(console, 'warn')
+    .mockImplementation(() => undefined)
+  try {
+    expect(
+      (
+        await abandonTakenMembers({
+          authority: w.preparer,
+          provider: takenRpc as unknown as TakenSetProvider,
+          operationId: logical,
+        })
+      ).abandoned
+    ).toContain(1)
+  } finally {
+    warning.mockRestore()
+  }
+  expect(journal.get(row.operationId).members[1]!.exposed).toBe(false)
+  expect(
+    journal.get(row.operationId).members[1]!.transactionSet!.inventoryApplied
+  ).toBe(true)
+  expect(
+    journal.get(row.operationId).members[0]!.transactionSet!.inventoryApplied
+  ).not.toBe(true)
+  const rpc = {
+    getTransactionReceipt: async () => null,
+    getTransaction: async () => null,
+    getBlock: async () => ({ hash: '0x' + 'cc'.repeat(32), number: head }),
+    getBlockNumber: async () => head,
+    getTransactionCount: async () => 1,
+    getBalance: async (_address: string, at?: number | string) =>
+      typeof at === 'number' && at < head ? old : newer,
+    broadcastTransaction: jest.fn(),
+  }
+  const provider = rpc as unknown as Provider
+  const sync = new EvmCoinListSync({
+    list: w.coins,
+    provider,
+    watcher: new EvmBlockWatcher({ provider }),
+    spendSpacingBlocks: 3,
+    sources: () => [
+      { account: address, origin: 'stealth', privateKey: () => key.privateKey },
+    ],
+  })
+  try {
+    await sync.refreshAccounts([address])
+  } finally {
+    await sync.stop()
+  }
+  const fresh = w.coins.get(address, 1)!
+  expect(fresh).toMatchObject({
+    valueWei: newer,
+    spendableFromBlock: 19,
+    fundsVisibleFromBlock: 19,
+  })
+  await journal.Close()
+  await store.close()
+  w = await open(undefined, overrides)
+  const lifecycle = new EvmTransactionSetLifecycle({
+    authority: w.preparer,
+    provider,
+    head: () => head,
+  })
+  await lifecycle.observe(logical, provider)
+  await lifecycle.observe(logical, provider)
+  const request = {
+    operationId: 'after-delayed-projection',
+    amountWei: 10n ** 15n,
+    sourceAccounts: [address],
+    kdf: () => new Wallet('0x' + (1000).toString(16).padStart(64, '0')).address,
+  }
+  await expect(w.preparer.constructTransactionSet(request)).rejects.toThrow(
+    EvmTransactionSetInsufficientFundsError
+  )
+  expect(w.coins.get(address, 1)).toEqual(fresh)
+  expect(journal.get(row.operationId).members[0]!.account).toEqual(account)
+  expect(
+    journal.get(row.operationId).members[0]!.transactionSet!.inventoryApplied
+  ).toBe(true)
+
+  expect(w.preparer.getOperation(request.operationId)).toBeUndefined()
+  const completion = transactionSetFinancialCompletionReceipt(
+    journal.get(row.operationId)
+  )
+  expect(completion).toBeDefined()
+  await journal.archiveCompleted(row.operationId, completion!)
+  await journal.Close()
+  await store.close()
+  w = await open(undefined, overrides)
+  expect(w.coins.get(address, 1)).toEqual(fresh)
+  await expect(w.preparer.constructTransactionSet(request)).rejects.toThrow()
+  head = 19
+  expect(
+    (await w.preparer.constructTransactionSet(request)).bundle.length
+  ).toBeGreaterThan(0)
+  expect(rpc.broadcastTransaction).not.toHaveBeenCalled()
+  expect(await journal.readArchivedOperation(original.operationId)).toEqual(
+    original
+  )
+})

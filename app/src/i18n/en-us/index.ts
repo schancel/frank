@@ -1236,14 +1236,21 @@ export const rawEnUS = {
       'Payments and stamps people sent you, each at its own one-time address, confirmed on the network.',
     other: 'Sending accounts',
     otherNote:
-      'Set aside by the wallet in its own accounts to pay for your next messages. Part of the balance above.',
+      'Owned in your wallet’s other accounts, including funds reserved or settling. Included in the total.',
     tooSmall: 'Too small to move ({count})',
     tooSmallNote:
-      'Received payments worth less than ten times the network fee to move them. Not part of the balance above.',
-    total: 'Balance',
+      'Received funds below the current payment minimum. Already included in received payments and the owned total; unavailable for payment.',
+    total: 'Known owned total',
     yours:
       'Your main account, profile address and sending accounts all come back from your recovery phrase.',
     unavailable: 'The accounts could not be read just now.',
+    available: 'Available to send',
+    availableLoading: 'Checking…',
+    availableUnavailable: 'Unavailable',
+    availableNote:
+      'After estimated payment fees and current limits. Each transfer has its own final quote.',
+    pending:
+      'Payments or wallet transfers in progress: {count}. Some funds may be reserved or settling.',
   },
   heldContactPayments: {
     title: 'Payments to contacts in progress',

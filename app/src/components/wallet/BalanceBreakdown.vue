@@ -58,7 +58,7 @@
           {{ display(total) }}
         </div>
       </div>
-      <!-- Held by the wallet besides the balance: listed under the total, not added into it. -->
+      <!-- Subset information: already counted in received holdings and the total. -->
       <div
         v-for="row in otherRows"
         :key="row.id"
@@ -142,10 +142,10 @@ export default defineComponent({
           }
           return
         }
-        source.value = {
-          kind: 'read',
-          breakdown: await readBalanceBreakdown(wallet),
-        }
+        const read = await readBalanceBreakdown(wallet)
+        source.value = read
+          ? { kind: 'read', breakdown: read }
+          : { kind: 'unavailable' }
       } catch {
         source.value = { kind: 'unavailable' }
       }
@@ -168,12 +168,8 @@ export default defineComponent({
     return {
       state,
       rows,
-      countedRows: computed(() =>
-        rows.value.filter(r => r.id !== 'other' && r.id !== 'tooSmall'),
-      ),
-      otherRows: computed(() =>
-        rows.value.filter(r => r.id === 'other' || r.id === 'tooSmall'),
-      ),
+      countedRows: computed(() => rows.value.filter(r => r.id !== 'tooSmall')),
+      otherRows: computed(() => rows.value.filter(r => r.id === 'tooSmall')),
       total: computed(() => breakdown.value?.total ?? 0n),
       shortAddress,
       display: (amount: bigint) => formatDisplayAmount(activeChain, amount),

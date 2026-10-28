@@ -592,4 +592,63 @@ describe('useBalance', () => {
     await api.refresh()
     expect(api.chainUnreachable.value).toBe(false)
   })
+
+  it('keeps gross holdings distinct from strict availability, including a real available zero', async () => {
+    const capacity = jest.fn().mockResolvedValue(400n)
+    mockWallets.a = Promise.resolve({ getSpendableBalance: capacity })
+    mockGetBalance.mockResolvedValue(1000n)
+    const api = useBalance()
+    await api.refresh()
+    expect(api.balance.value).toBe(1000n)
+    expect(api.available.value).toBe(400n)
+    expect(api.availableLoaded.value).toBe(true)
+    expect(api.formattedSpendable.value).toBe('400 MON')
+    capacity.mockRejectedValueOnce(
+      new Error('required observation unavailable'),
+    )
+    await api.refresh()
+    expect(api.balance.value).toBe(1000n)
+    expect(api.available.value).toBeNull()
+    expect(api.availableError.value).toBe(true)
+    expect(api.formattedSpendable.value).toBe('')
+    capacity.mockResolvedValue(0n)
+    await api.refresh()
+    expect(api.available.value).toBe(0n)
+    expect(api.availableLoaded.value).toBe(true)
+    expect(api.availableError.value).toBe(false)
+  })
+
+  it('keeps the last complete owned observation stale on failure and drops in-flight values after wallet context changes', async () => {
+    let release!: (value: bigint) => void
+    const capacity = jest.fn().mockResolvedValue(200n)
+    mockWallets.a = Promise.resolve({ getSpendableBalance: capacity })
+    mockGetBalance.mockResolvedValue(1000n)
+    const api = useBalance()
+    await api.refresh()
+    mockGetBalance.mockRejectedValueOnce(
+      new Error('network balance unavailable'),
+    )
+    await api.refresh()
+    expect(api.balance.value).toBe(1000n)
+    expect(api.stale.value).toBe(true)
+    expect(api.hasError.value).toBe(true)
+    expect(api.available.value).toBeNull()
+    capacity.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        }),
+    )
+    const old = api.refresh()
+    for (let i = 0; i < 8; i++) await Promise.resolve()
+    mockSeed = 'b'
+    mockAccount.revision++
+    mockWallets.b = Promise.resolve({ getSpendableBalance: async () => 7n })
+    mockGetBalance.mockResolvedValue(9n)
+    await api.refresh()
+    release(300n)
+    await old
+    expect(api.balance.value).toBe(9n)
+    expect(api.available.value).toBe(7n)
+  })
 })

@@ -181,6 +181,45 @@
                             )
                       }}
                     </div>
+                    <div
+                      v-if="canBreakDownBalance"
+                      class="text-caption text-center"
+                    >
+                      {{ $t('balanceBreakdown.total') }}
+                    </div>
+                    <div
+                      v-if="canBreakDownBalance && availableSupported"
+                      class="text-center q-mt-sm"
+                      data-testid="wallet-available"
+                    >
+                      <div class="text-body2">
+                        {{ $t('balanceBreakdown.available') }}:
+                        <span :title="exactSpendable">{{
+                          availableLoaded
+                            ? displayAmountText(formattedSpendable)
+                            : $t(
+                                availableError
+                                  ? 'balanceBreakdown.availableUnavailable'
+                                  : 'balanceBreakdown.availableLoading',
+                              )
+                        }}</span>
+                      </div>
+                      <div class="text-caption">
+                        {{ $t('balanceBreakdown.availableNote') }}
+                      </div>
+                    </div>
+                    <div
+                      v-if="canBreakDownBalance && pendingOwnOperations > 0"
+                      class="text-caption text-center q-mt-xs"
+                      role="status"
+                      data-testid="wallet-pending-operations"
+                    >
+                      {{
+                        $t('balanceBreakdown.pending', {
+                          count: pendingOwnOperations,
+                        })
+                      }}
+                    </div>
                     <!-- This chain cannot be reached: said here as well as on the messages
                          that are queued because of it. -->
                     <q-banner
@@ -874,7 +913,18 @@ export default defineComponent({
     // The profile address is otherwise read at a slow cadence; opening this page shows it fresh.
     onMounted(() => void refreshCordoned?.())
     // Whether the active wallet's chain answers, as the shared balance loop last found.
-    const { chainUnreachable } = useBalance()
+    const {
+      chainUnreachable,
+      availableSupported,
+      availableLoaded,
+      availableError,
+      formattedSpendable,
+      exactSpendable,
+      parts: ownedBalanceParts,
+    } = useBalance()
+    const pendingOwnOperations = computed(
+      () => ownedBalanceParts.value?.pendingOwnOperations ?? 0,
+    )
     // The breakdown reads the primary wallet's sub-accounts; it is opened from the balance.
     const showBreakdown = ref(false)
     const canBreakDownBalance = computed(
@@ -1194,6 +1244,12 @@ export default defineComponent({
       balancePresentation,
       balanceObservation,
       chainUnreachable,
+      availableSupported,
+      availableLoaded,
+      availableError,
+      formattedSpendable,
+      exactSpendable,
+      pendingOwnOperations,
       balanceTitle,
       showBreakdown,
       canBreakDownBalance,

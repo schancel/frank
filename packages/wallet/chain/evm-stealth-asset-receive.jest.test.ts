@@ -252,7 +252,10 @@ async function stealthSend(values: readonly bigint[]) {
 
 // Every received payment here is above the payment floor (ten moves of 21,000 gas at the node's
 // price of 1, 210,000): a smaller one would be held as too small to move, not counted.
-const receivedPart = async () => (await wallet.getBalanceParts!()).received;
+const receivedPart = async () => {
+  await wallet.refreshReceivedPayments!();
+  return (await wallet.getBalanceParts!()).received;
+};
 
 test("a received multi-transfer stealth payment is counted, survives a reload, and a repeated read does not double it", async () => {
   const payment = await stealthSend([500_000n, 500_000n, 500_000n, 500_000n]);
@@ -296,10 +299,10 @@ test("the coin is recorded before the chain shows it, counted only once it lands
   expect(
     wallet.getReceivedPayments!().find((p) => p.address === payment.address)
   ).toMatchObject({ status: "pending" });
-  // The wallet's own read puts the carried transfers on the chain; nothing is counted until a
-  // read shows them landed.
+  // The receipt owner rebroadcasts the original carried transfers. The display then counts
+  // actual owned chain value even before the next receipt-owner refresh marks it received.
   wallet.invalidateBalanceCache?.();
-  expect(await receivedPart()).toBe(0n);
+  expect(await receivedPart()).toBe(1_000_000n);
   expect(state.broadcast.mock.calls.map((call) => call[0]).sort()).toEqual(
     [...payment.raws].sort()
   );
@@ -409,9 +412,10 @@ test("a device that has not read the gas price yet still holds back a payment be
     received([payment.item()], "f1".repeat(32)),
   ]);
   const parts = await wallet.getBalanceParts!();
+  await wallet.refreshReceivedPayments!();
   expect(parts).toMatchObject({
-    received: 0n,
-    receivedCount: 0,
+    received: 1000n,
+    receivedCount: 1,
     tooSmall: 1000n,
     tooSmallCount: 1,
   });

@@ -24,85 +24,49 @@ function wallet(over: Record<string, unknown> = {}) {
   }
 }
 
-describe('readBalanceBreakdown', () => {
-  it('says where the money is: main account, profile address, received payments, the rest', async () => {
-    expect(await readBalanceBreakdown(wallet())).toEqual({
-      rows: [
-        { id: 'main', amount: 40n, address: MAIN },
-        { id: 'profile', amount: 7n, address: PROFILE },
-        { id: 'received', amount: 30n, count: 2 },
-        { id: 'other', amount: 180n },
-      ],
-      // The balance: every row but the sending accounts, which the wallet's figure leaves out.
-      total: 77n,
-    })
-  })
-
-  it('has no row for other accounts when the wallet does not report them', async () => {
-    const breakdown = await readBalanceBreakdown(
+describe('unsupported typed balance parts', () => {
+  it.each([
+    ['legacy quote and known addresses', wallet()],
+    [
+      'known addresses without a quote',
       wallet({ getContractCallFunds: undefined }),
-    )
-    expect(breakdown.rows.map(row => row.id)).toEqual([
-      'main',
-      'profile',
-      'received',
-    ])
-    expect(breakdown.total).toBe(77n)
-  })
-
-  it('has no row for other accounts when nothing is held beyond the rows already shown', async () => {
-    const breakdown = await readBalanceBreakdown(
+    ],
+    [
+      'a quote with no other funds',
       wallet({
         getContractCallFunds: async () => ({
           mainBalance: 40n,
           otherBalance: 37n,
         }),
       }),
-    )
-    expect(breakdown.rows.map(row => row.id)).toEqual([
-      'main',
-      'profile',
-      'received',
-    ])
-  })
-
-  it('still shows the other rows while the wallet cannot account for its accounts', async () => {
-    const breakdown = await readBalanceBreakdown(
+    ],
+    [
+      'a failing quote',
       wallet({
         getContractCallFunds: async () => {
-          throw new Error(
-            'Native send is unavailable while pool funding remains pending',
-          )
+          throw new Error('pending')
         },
       }),
-    )
-    expect(breakdown.rows[0]).toEqual({
-      id: 'main',
-      amount: 40n,
-      address: MAIN,
-    })
-    expect(breakdown.rows.some(row => row.id === 'other')).toBe(false)
-  })
-
-  it('shows one account when the profile address is the main account, and no empty rows', async () => {
-    const breakdown = await readBalanceBreakdown(
-      wallet({
-        identity: { address: { raw: MAIN.toLowerCase() } },
-        getReceivedPayments: () => [],
-        getContractCallFunds: async () => ({
-          mainBalance: 40n,
-          otherBalance: 0n,
-        }),
-      }),
-    )
-    expect(breakdown).toEqual({
-      rows: [{ id: 'main', amount: 40n, address: MAIN }],
-      total: 40n,
-    })
-  })
-
-  it('has no rows for a wallet that answers none of this', async () => {
-    expect(await readBalanceBreakdown({})).toEqual({ rows: [], total: 0n })
+    ],
+    [
+      'one address shared by main and profile',
+      wallet({ identity: { address: { raw: MAIN.toLowerCase() } } }),
+    ],
+    ['no balance interfaces', {}],
+  ])(
+    'reports unavailable, never a zero or partial owned total: %s',
+    async (_label, handle) => {
+      expect(await readBalanceBreakdown(handle)).toBeUndefined()
+    },
+  )
+  it('does not call an unrelated payment quote to synthesize ownership', async () => {
+    const quote = jest
+      .fn()
+      .mockRejectedValue(new Error('not an ownership observation'))
+    expect(
+      await readBalanceBreakdown(wallet({ getContractCallFunds: quote })),
+    ).toBeUndefined()
+    expect(quote).not.toHaveBeenCalled()
   })
 })
 
@@ -148,17 +112,17 @@ describe('a wallet that gives its balance in parts', () => {
     expect(bare.total).toBe(7n)
   })
 
-  it('lists received coins below the payment floor apart, never in the balance', async () => {
+  it('lists below-floor received value as a subset already counted in the total', async () => {
     // Two received stamps of 0.0021 MON: below ten moves of them, so not spendable money.
     const dust = 2_100_000_000_000_000n
     const wallet = {
       getReceiveAddress: async () => ({ raw: '0x' + 'aa'.repeat(20) }),
-      getBalance: async () => 12n + 50n,
+      getBalance: async () => 12n + 50n + 2n * dust,
       getBalanceParts: async () => ({
         main: 12n,
         profile: 0n,
-        received: 50n,
-        receivedCount: 1,
+        received: 50n + 2n * dust,
+        receivedCount: 3,
         sending: 0n,
         tooSmall: 2n * dust,
         tooSmallCount: 2,
@@ -167,10 +131,10 @@ describe('a wallet that gives its balance in parts', () => {
     const breakdown = await readBalanceBreakdown(wallet)
     expect(breakdown.rows).toEqual([
       { id: 'main', amount: 12n, address: '0x' + 'aa'.repeat(20) },
-      { id: 'received', amount: 50n, count: 1 },
+      { id: 'received', amount: 50n + 2n * dust, count: 3 },
       { id: 'tooSmall', amount: 2n * dust, count: 2 },
     ])
-    expect(breakdown.total).toBe(62n)
+    expect(breakdown!.total).toBe(62n + 2n * dust)
     expect(breakdown.total).toBe(await wallet.getBalance())
   })
 })

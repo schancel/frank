@@ -267,7 +267,7 @@ export interface NativeWalletHandle {
    */
   localReceiveAddress?(): ChainAddress;
   getBalance(): Promise<bigint>;
-  /** Display-only last complete observation, with current reservations excluded. Undefined
+  /** Display-only last complete observation of gross known-owned holdings. Undefined
    * until observed; age and refresh failures must remain visible. Never authorizes spending. */
   /** The last balance read: `balance` (what `getBalance` answered) and, when it was read in
    * this session, the `parts` it is the sum of. A screen that shows the balance and its
@@ -279,21 +279,10 @@ export interface NativeWalletHandle {
   readonly stealthPayments?: import("../stealth-payment").StealthPaymentCapability;
   /** Recipient derivation/chain verification, distinct from outgoing wallet synchronization. */
   readonly stealthReceipts?: import("../stealth-payment").StealthPaymentReceiptCapability;
-  /**
-   * Where the balance is, in the wallet's own words: every coin a send can draw on, and nothing
-   * else. `getBalance()` is the sum of the four amounts.
-   * - `main`: the main account (the deposit address);
-   * - `profile`: the address on the user's profile, when it is another address (else 0);
-   * - `received`: payments and stamps received at one-time addresses that the chain shows
-   *   funded (`receivedCount` of them);
-   * - `sending`: single-use sending accounts the wallet has funded and not yet used.
-   * What is left behind in a sending account after its one payment is not in any of them: no
-   * send can draw on it.
-   *
-   * `tooSmall` (`tooSmallCount` coins) is NOT in the balance: received coins below the payment
-   * floor right now (`chain/payment-floor.ts`: ten times what moving one costs). They are held,
-   * not spendable money. Zero when the gas price is not known yet.
-   */
+  /** Gross known-owned native holdings at one coherent chain observation. Location amounts
+   * partition the total, including held/internally moving funds and below-floor received
+   * value. `tooSmall` is a subset of `received`, never an additional amount. Availability is
+   * separately reported by `getSpendableBalance`; only construction authorizes a payment. */
   getBalanceParts?(): Promise<WalletBalanceParts>;
   /**
    * What one plain independent payment could draw on right now, within its member limit:
@@ -699,9 +688,12 @@ export interface WalletBalanceParts {
   sending: bigint;
   tooSmall: bigint;
   tooSmallCount: number;
+  /** Status only: no predicted value is added to owned holdings. */
+  pendingOwnOperations?: number;
+  observedBlock?: number;
 }
 
-/** The balance the parts make: everything a send can draw on, never `tooSmall`. */
+/** Gross owned total. `tooSmall` is already included in `received`. */
 export function balanceOfParts(parts: WalletBalanceParts): bigint {
   return parts.main + parts.profile + parts.received + parts.sending;
 }

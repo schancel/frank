@@ -24,9 +24,6 @@ import {
   EVM_COIN_NAMESPACE,
   LevelRecordStore,
   MemoryRecordStore,
-  belowPaymentFloor,
-  spendableCoinTotal,
-  spendableCoins,
   type ContactPayment,
   type EvmCoin,
   type RecordStore,
@@ -289,7 +286,7 @@ import {
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { readEvmBlockTimes } from "./evm-block-times";
-import { fundsSettleBlocks } from "./evm-spend-rule";
+import { fundsSettleBlocks, spendRuleHeadReader } from "./evm-spend-rule";
 import {
   ChainUnreachableError,
   isChainUnreachableError,
@@ -2499,17 +2496,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ];
 
           let primaryBalanceCache:
-            | {
-                mainBalance: bigint;
-                identityBalance: bigint;
-                changeBalance: bigint;
-                cachedAtMs: number;
-              }
+            | { parts: BalanceParts; key: string; cachedAtMs: number }
             | undefined;
+          const balanceHead = spendRuleHeadReader(provider, config.spendRuleHead);
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
           const balanceObsStorageKey =
             storageLocation !== undefined
-              ? `frank:evm-balance-obs:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
+              ? `frank:evm-owned-balance-obs:v1:${chainIdentifier}:${mainAccount.address.toLowerCase()}`
               : undefined;
           let lastBalanceObservation:
             | { balance: bigint; observedAt: number; parts?: BalanceParts }
@@ -2594,156 +2587,104 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             receivedCoinFloorWei,
           });
 
+          // This is a derived observation, not an inventory: the existing owners provide the
+          // current address set; the chain provides each amount at one canonical block.
+          const ownedBalanceAccounts = () => {
+            const accounts = new Map<string, 'main' | 'profile' | 'received' | 'sending'>();
+            const add = (address: string, kind: 'main' | 'profile' | 'received' | 'sending') => {
+              const normalized = address.toLowerCase();
+              if (!accounts.has(normalized)) accounts.set(normalized, kind);
+            };
+            add(mainAccount.address, 'main');
+            add(identity.address.raw, 'profile');
+            for (const coin of coinStore.all()) {
+              if (coin.state === 'spent') continue;
+              if (computeAddress(coin.privateKey).toLowerCase() !== coin.address.toLowerCase())
+                throw new Error('Received balance address ownership mismatch');
+              add(coin.address, 'received');
+            }
+            for (const coin of coinList.all()) {
+              if (coin.state === 'spent') continue;
+              if (computeAddress(coin.privateKey).toLowerCase() !== coin.account)
+                throw new Error('Coin balance address ownership mismatch');
+              if (coin.origin === 'change' && coin.changeIndex !== undefined &&
+                  changeKeyring.deriveChangeAccount(coin.changeIndex).address.toLowerCase() !== coin.account)
+                throw new Error('Change balance address derivation mismatch');
+              add(coin.account, coin.origin === 'stealth' || coin.origin === 'stamp' ? 'received' : 'sending');
+            }
+            // getAll/records excludes compacted checkpoints. Never walk archived keys or the
+            // sparse derivation high-water mark to make a display observation.
+            for (const record of pool.records()) {
+              nativeSources.resolveSource({ kind: 'spend', index: record.index, address: record.address });
+              add(record.address, 'sending');
+            }
+            for (const record of [...changePool.records(), ...changePool.recoveredAccounts()]) {
+              if (changeKeyring.deriveChangeAccount(record.index).address.toLowerCase() !== record.address.toLowerCase())
+                throw new Error('Recorded change balance ownership mismatch');
+              add(record.address, 'sending');
+            }
+            const graph = transactionSetPreparer.ownedBalanceProjection();
+            for (const address of graph.accounts) add(address, 'sending');
+            const entries = [...accounts].sort(([a], [b]) => a.localeCompare(b));
+            return { entries, graph, key: JSON.stringify([entries, graph.generation]) };
+          };
           const readBalanceParts = async (): Promise<BalanceParts> => {
             requireOpenWallet(wallet);
             const generation = balanceReadGeneration;
             try {
-              const now = Date.now();
-              let mainBalance: bigint;
-              let identityBalance: bigint;
-              let changeBalance: bigint;
-
-              // A restored device's balance is not read before the seed has been walked for
-              // the accounts it controls.
-              const seedWalk =
-                transactionSetRuntime.coinListSync.seedDiscovered();
+              const seedWalk = transactionSetRuntime.coinListSync.seedDiscovered();
               if (seedWalk) await seedWalk;
-              else
-                transactionSetRuntime.coinListSync.rediscoverIfOlderThan(
-                  SEED_REWALK_MS
-                );
-              if (
-                primaryBalanceCache !== undefined &&
-                now - primaryBalanceCache.cachedAtMs <
-                  PRIMARY_BALANCE_CACHE_TTL_MS
-              ) {
-                mainBalance = primaryBalanceCache.mainBalance;
-                identityBalance = primaryBalanceCache.identityBalance;
-                changeBalance = primaryBalanceCache.changeBalance;
-              } else {
-                const readAddress = (address: string): Promise<bigint> =>
-                  transactionBuilder.getBalance({ address, provider });
-                // Both change and dApp subaccounts remain wallet-owned value, even though
-                // ordinary payment selection may only spend the former.
-                const changeAddressSet = new Set<string>();
-                for (const coin of coinList.all()) {
-                  if (coin.origin === "change" || coin.origin === "legacy-subaccount")
-                    changeAddressSet.add(coin.account.toLowerCase());
-                }
-                for (const rec of changePool.records()) {
-                  changeAddressSet.add(rec.address.toLowerCase());
-                }
-                for (const rec of changePool.recoveredAccounts()) {
-                  changeAddressSet.add(rec.address.toLowerCase());
-                }
-                // Accounts of the seed's deterministic branch that no pool record covers (found
-                // on chain by seed discovery) are counted here; recorded ones are the pool's.
-                const pooled = new Set(
-                  pool.records().map((record) => record.address.toLowerCase())
-                );
-                for (const coin of coinList.all())
-                  if (coin.origin === "deterministic" && !pooled.has(coin.account))
-                    changeAddressSet.add(coin.account);
-                changeAddressSet.delete(mainAccount.address.toLowerCase());
-                changeAddressSet.delete(identity.address.raw.toLowerCase());
-                const changeAddresses = [...changeAddressSet];
-                const [nextMain, nextIdentity, ...changeBalances] =
-                  await Promise.all([
-                    readAddress(mainAccount.address),
-                    identity.address.raw.toLowerCase() ===
-                    mainAccount.address.toLowerCase()
-                      ? Promise.resolve(0n)
-                      : readAddress(identity.address.raw),
-                    ...changeAddresses.map((addr) =>
-                      readAddress(addr).catch(() => 0n)
-                    ),
-                  ]);
-                mainBalance = nextMain;
-                identityBalance = nextIdentity;
-                changeBalance = changeBalances.reduce(
-                  (sum, b) => sum + b,
-                  0n
-                );
-                if (generation === balanceReadGeneration) {
-                  primaryBalanceCache = {
-                    mainBalance,
-                    identityBalance,
-                    changeBalance,
-                    cachedAtMs: now,
-                  };
-                }
+              else transactionSetRuntime.coinListSync.rediscoverIfOlderThan(SEED_REWALK_MS);
+              if (receivedCoinFloorWei() === 0n)
+                await transactionSetRuntime.transactionSetPolicy.refresh().catch(() => undefined);
+              const owned = ownedBalanceAccounts();
+              const head = await balanceHead();
+              const block = await provider.getBlock(head);
+              if (!block?.hash || block.number !== head) throw new Error('Owned balance canonical block unavailable');
+              requireOpenWallet(wallet);
+              if (generation !== balanceReadGeneration || ownedBalanceAccounts().key !== owned.key)
+                throw new Error('Owned balance observation changed; refresh again');
+              const key = JSON.stringify([owned.key, head, block.hash]);
+              if (primaryBalanceCache?.key === key && Date.now() - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS)
+                return primaryBalanceCache.parts;
+              const amounts = new Map<string, bigint>();
+              // Bounded concurrency, complete coverage: budget exhaustion rejects the whole
+              // read. A failed address never becomes a successful zero or a partial cache.
+              const concurrency = 6;
+              for (let offset = 0; offset < owned.entries.length; offset += concurrency) {
+                await Promise.all(owned.entries.slice(offset, offset + concurrency).map(async ([address]) => {
+                  amounts.set(address, await provider.getBalance(address, head));
+                }));
               }
-
-              // Plus every received coin the chain shows funded. A pending coin (nothing seen on
-              // the chain yet) is never counted, whatever its message said.
-              // The received inventory and funded sending accounts are independent reads.
-              const [, poolSending] = await Promise.all([
-                coinAndContactManager.readCoins(PRIMARY_BALANCE_CACHE_TTL_MS),
-                pool.availableBalanceTotal(
-                  provider,
-                  PRIMARY_BALANCE_CACHE_TTL_MS
-                ),
-              ]);
-              // A received coin below the payment floor (ten moves of it, at the gas price the
-              // wallet last read) is held, not spendable: it is shown apart and not counted.
-              // The gas price is read first when none is known yet: otherwise a device that
-              // just opened counted every received coin, and disagreed with one that had read it.
-              let floorWei = receivedCoinFloorWei();
-              if (floorWei === 0n) {
-                await transactionSetRuntime.transactionSetPolicy
-                  .refresh()
-                  .catch(() => undefined);
-                // Still unknown (no fee quote from the node): every received coin is counted.
-                floorWei = receivedCoinFloorWei();
-              }
-              const funded = spendableCoins(coinStore.all());
-              const received = funded.filter(
-                (coin) => !belowPaymentFloor(coin, floorWei)
-              );
-              const receivedTotal = received.reduce(
-                (sum, coin) => sum + BigInt(coin.amountWei),
-                0n
-              );
-              const tooSmallTotal =
-                spendableCoinTotal(coinStore.all()) - receivedTotal;
-              const sending = poolSending + changeBalance;
-              const observedAt = Date.now();
+              const canonical = await provider.getBlock(head);
+              requireOpenWallet(wallet);
+              if (canonical?.hash !== block.hash || generation !== balanceReadGeneration || ownedBalanceAccounts().key !== owned.key)
+                throw new Error('Owned balance observation changed; refresh again');
               const parts: BalanceParts = {
-                main: mainBalance,
-                profile: identityBalance,
-                received: receivedTotal,
-                receivedCount: received.length,
-                sending,
-                tooSmall: tooSmallTotal,
-                tooSmallCount: funded.length - received.length,
+                main: 0n, profile: 0n, received: 0n, receivedCount: 0, sending: 0n,
+                tooSmall: 0n, tooSmallCount: 0,
+                pendingOwnOperations: owned.graph.pendingOperations,
+                observedBlock: head,
               };
-              const totalBalance = balanceOfParts(parts);
-              // The balance and the parts it is the sum of, from this one read.
-              lastBalanceObservation = {
-                balance: totalBalance,
-                observedAt,
-                parts,
-              };
-              if (balanceObsStorageKey) {
-                try {
-                  globalThis.localStorage?.setItem(
-                    balanceObsStorageKey,
-                    JSON.stringify({
-                      balance: totalBalance.toString(),
-                      observedAt,
-                    })
-                  );
-                } catch {
-                  // Ignore localStorage quota/access errors
+              const floor = receivedCoinFloorWei();
+              for (const [address, kind] of owned.entries) {
+                const amount = amounts.get(address)!;
+                parts[kind] += amount;
+                if (kind === 'received' && amount > 0n) {
+                  parts.receivedCount++;
+                  if (floor > 0n && amount < floor) { parts.tooSmall += amount; parts.tooSmallCount++; }
                 }
+              }
+              const totalBalance = balanceOfParts(parts), observedAt = Date.now();
+              primaryBalanceCache = { key, parts, cachedAtMs: observedAt };
+              lastBalanceObservation = { balance: totalBalance, observedAt, parts };
+              if (balanceObsStorageKey) {
+                try { globalThis.localStorage?.setItem(balanceObsStorageKey, JSON.stringify({ balance: totalBalance.toString(), observedAt })); }
+                catch { /* Display cache persistence is optional. */ }
               }
               return parts;
             } catch (error) {
-              if (isChainUnreachableError(error)) {
-                throw error instanceof ChainUnreachableError
-                  ? error
-                  : new ChainUnreachableError(error);
-              }
+              if (isChainUnreachableError(error)) throw error instanceof ChainUnreachableError ? error : new ChainUnreachableError(error);
               throw error;
             }
           };
@@ -2798,7 +2739,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             getBalanceObservation() {
               return lastBalanceObservation;
             },
-            // The one account of where the wallet's money is: every coin a send can draw on.
+            // Gross known-owned holdings; reservations affect availability, never ownership.
             // `getBalance` is its sum, and the app's breakdown shows its rows.
             async getBalanceParts() {
               requireOpenWallet(wallet);

@@ -51,8 +51,7 @@ export const BALANCE_POLL_MS = 15000
 export const CORDONED_POLL_MS = 30000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
-// What the wallet itself reports as its balance (`getBalance`): the figure its own checks compare
-// a native send or a payment to a contact against. null until the first successful fetch for the
+// What the wallet itself reports as its balance (`getBalance`): the gross known-owned figure; payment quotes and strict availability are separate. null until the first successful fetch for the
 // active wallet (so consumers can tell "not loaded" from a real zero); cleared when the wallet
 // changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
@@ -60,6 +59,11 @@ const balance = ref<bigint | null>(null)
 // these, so the balance and its breakdown are one view and never disagree. null while unknown or
 // for a wallet that does not report its parts.
 const parts = shallowRef<WalletBalanceParts | null>(null)
+// Gross ownership and current payment capacity are separate observations. Never infer
+// availability by subtracting UI rows or pending journal promises from the owned total.
+const available = ref<bigint | null>(null)
+const availableError = ref(false)
+const availableSupported = ref(false)
 const stale = ref(false)
 const observedAt = ref<number | undefined>(undefined)
 const hasError = ref(false)
@@ -73,8 +77,7 @@ const loaded = computed(() => balance.value !== null)
 // sending accounts), so adding the profile address here would count it twice. Always zero.
 const cordoned = ref<bigint>(0n)
 // THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive, and
-// "Available for this payment" on Send to Contact): what the wallet reports, which is what its
-// sends, bets and payments can draw on. null while not loaded.
+// "Available for this payment" on Send to Contact): what the wallet reports, which is its gross known-owned holdings. null while not loaded.
 const total = computed(() =>
   balance.value === null ? null : balance.value + cordoned.value,
 )
@@ -92,10 +95,12 @@ const exactBalance = computed(() =>
 // (a payment to a contact): shown there under its own label, so the screen never offers a total
 // the wallet will then refuse.
 const formattedSpendable = computed(() =>
-  formatDisplayAmount(activeChain, balance.value ?? 0n),
+  available.value === null
+    ? ''
+    : formatDisplayAmount(activeChain, available.value),
 )
 const exactSpendable = computed(() =>
-  formatRawAmount(activeChain, balance.value ?? 0n),
+  available.value === null ? '' : formatRawAmount(activeChain, available.value),
 )
 
 /** The profile address's current balance for an account whose receive address differs from it
@@ -171,6 +176,9 @@ async function fetchBalance(force: boolean) {
     walletKey = key
     balance.value = null
     parts.value = null
+    available.value = null
+    availableError.value = false
+    availableSupported.value = false
     stale.value = false
     observedAt.value = undefined
     cordoned.value = 0n
@@ -182,6 +190,8 @@ async function fetchBalance(force: boolean) {
     pending = false
   }
   if (pending && !force) return
+  available.value = null
+  availableError.value = false
   const id = ++requestId
   pending = true
   schedule()
@@ -216,6 +226,23 @@ async function fetchBalance(force: boolean) {
       latestObs?.parts !== undefined && latestObs.balance === next
         ? latestObs.parts
         : null
+    const capacityWallet = wallet as {
+      getSpendableBalance?: () => Promise<bigint>
+    }
+    availableSupported.value =
+      typeof capacityWallet.getSpendableBalance === 'function'
+    if (capacityWallet.getSpendableBalance) {
+      try {
+        const capacity = await capacityWallet.getSpendableBalance()
+        if (!isCurrent()) return
+        available.value = capacity
+        availableError.value = false
+      } catch {
+        if (!isCurrent()) return
+        available.value = null
+        availableError.value = true
+      }
+    }
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
     // Throttled (`CORDONED_POLL_MS`); a failed read also waits out the interval.
     const now = Date.now()
@@ -284,6 +311,8 @@ async function fetchBalance(force: boolean) {
     if (isCurrent()) {
       failures++
       hasError.value = true
+      stale.value = balance.value !== null
+      if (availableSupported.value) availableError.value = true
     }
   } finally {
     if (id === requestId) {
@@ -329,6 +358,9 @@ function acquire() {
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
           parts.value = null
+          available.value = null
+          availableError.value = false
+          availableSupported.value = false
           stale.value = false
           observedAt.value = undefined
           cordoned.value = 0n
@@ -360,6 +392,9 @@ function release() {
   backgrounded = false
   balance.value = null
   parts.value = null
+  available.value = null
+  availableError.value = false
+  availableSupported.value = false
   stale.value = false
   observedAt.value = undefined
   cordoned.value = 0n
@@ -379,6 +414,10 @@ export function useBalance() {
   }
   return {
     balance: readonly(balance),
+    available: readonly(available),
+    availableLoaded: computed(() => available.value !== null),
+    availableError: readonly(availableError),
+    availableSupported: readonly(availableSupported),
     /** Where `balance` is, from the same read (`getBalanceParts`); null when not reported. */
     parts: computed(() => parts.value),
     stale: readonly(stale),

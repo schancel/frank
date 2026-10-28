@@ -336,7 +336,11 @@ Still replica-local; each relay's startup log names them:
       the encrypted message, so paying from other coins would make a different message. The
       message ends: "Another device of this account spent the same funds at the same moment.
       Nothing was paid and nothing was sent; its funds are available again. Send it again."
-      (`payment-taken`). Nothing of the set stays held.
+      (`payment-taken`). Nothing of the set stays held. The relay checks only the stamp, so it
+      would store such a message when only the contact payment (or a move it stands on) was
+      taken; the wallet reads the chain before handing a combined message to the relay and does
+      not hand it over then. Still open: a take that lands after the relay stored a combined
+      message leaves it delivered with a contact payment that never lands (not paid again).
     - *A message the relay already stored*: the relay may hold the payment, so it is never paid
       again on balance alone. When the chain shows that payment's own nonce used by a different
       transaction, the same amount goes to the same destination from other coins, once
@@ -350,8 +354,9 @@ Still replica-local; each relay's startup log names them:
       a funded account whose carried transfer's nonce went to another transaction, or the
       sender tells the recipient about the new transaction; neither is done.
     Verified by `packages/wallet/chain/cross-device-collision.anvil.jest.test.ts` (anvil; fails on
-    main) and by rounds 3 to 5 of `yarn --cwd packages/bot regtest:monad-cross-device` (solonet,
-    real relay). Still open: an exposed payment that stands on a transfer that was given up
+    main) and by `yarn --cwd packages/bot regtest:monad-cross-device` (solonet, real relay; its
+    device A signs from the account and nonce B's payment was signed from, so the two always
+    collide). Still open: an exposed payment that stands on a transfer that was given up
     (a payment behind its own stamp-funding change) stays held until its own nonce is decided.
     What the app's *Retry* does with a `payment-taken` message was not exercised. The regtest
     funds sweep (`packages/bot/demo/funds.ts`, #1952) reads the received-coin store, so money

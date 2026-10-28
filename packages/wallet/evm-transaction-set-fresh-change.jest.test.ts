@@ -130,6 +130,19 @@ describe('money that reached the paying account with the payment is fresh money'
   })
 })
 
+describe('money less than a fee is fresh money too', () => {
+  it('1,000 wei reaching the paying account with the payment makes its next coin wait for it', async () => {
+    // `balanceAfterWei` already counts each fee at its ceiling: anything above it arrived.
+    const f = await withLargeChange(1_000n)
+    try {
+      const next = f.coins.latestOf(signer(1).address.toLowerCase())!
+      expect(next.fundsVisibleFromBlock).toBe(MINED + 4)
+    } finally {
+      await f.journal.Close()
+    }
+  })
+})
+
 describe('change of 10 MON or more is fresh money', () => {
   it('is listed as spendable only from the block the node judges it from', async () => {
     const f = await withLargeChange()

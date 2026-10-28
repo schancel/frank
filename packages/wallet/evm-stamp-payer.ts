@@ -24,7 +24,7 @@ import { selectStampAccounts } from './evm-stamp-account-selection'
 import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { resignedTransaction } from './chain/evm-refused-resign'
-import { nextCoinWaits, readSpendRuleHead } from './chain/evm-spend-rule'
+import { nextCoinWaits, readSpendRuleHead, receiptFee } from './chain/evm-spend-rule'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -1166,8 +1166,12 @@ export class EvmStampPayer {
           await coins.recordMined(coin, { block: included })
           this.config.sync.markDirty(account)
         } else {
-          // More than the coin left it (its value less the payment; the fee came in at most at
-          // its ceiling) is money that arrived by `included` (`nextCoinWaits`).
+          // More than the coin left it (its value less the payment and the fee the receipt
+          // shows) is money that arrived by `included` (`nextCoinWaits`). A fee the receipt does
+          // not show: counted as fresh money, a wait and never an early spend.
+          const fee = await this.config.provider
+            .getTransactionReceipt(tx.hash!)
+            .then(receipt => receiptFee(receipt), () => undefined)
           await coins.recordMined(coin, {
             block: included,
             successor: {
@@ -1175,7 +1179,7 @@ export class EvmStampPayer {
               ...nextCoinWaits(
                 included,
                 this.config.spendSpacingBlocks ?? 0,
-                balance > coin.valueWei - tx.value,
+                fee === undefined || balance > coin.valueWei - tx.value - fee,
               ),
             },
           })

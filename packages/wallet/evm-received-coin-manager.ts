@@ -1377,6 +1377,7 @@ export function createEvmReceivedCoinAndContactManager(
     const quote = await preparer.quoteTransactionSet({
       kdf: () => recipient.raw,
       amountWei: value,
+      maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
       minimumPaymentWei,
       ...(continuation ? { reserveForContinuationWei: continuation.reserveWei,
         continuationFeeWei: continuation.feeWei } : {}),
@@ -1520,6 +1521,7 @@ export function createEvmReceivedCoinAndContactManager(
         await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructTransactionSet({
           operationId: transactionSetOperationId,
           amountWei: contactParams.value,
+          maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
           minimumPaymentWei,
           maxFeeWei,
           kdf: () => stealthAddress,

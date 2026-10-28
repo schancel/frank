@@ -983,8 +983,8 @@ export class EvmTransactionSetPreparer {
     await this.recoverCancelledOperations(request.operationId)
     const admittedInput = await journal.captureInputSelection?.()
     const policy = this.options.policy()
-    const { context, eligible, capacityWei, selection } =
-      this.selectionRules(request, policy, legacy, existing, admittedInput)
+    const rules = this.selectionRules(request, policy, legacy, existing, admittedInput)
+    const { context, eligible, capacityWei, selection } = rules
     const select = (fanIn: boolean, continuation?: { deficit: bigint; maxCoins: number }, oneSource = false) =>
       coins.reserveTransactionSetSources(selection(fanIn, continuation, oneSource))
     // The fee the user authorized bounds the whole operation, every stage included. Payments
@@ -1029,17 +1029,18 @@ export class EvmTransactionSetPreparer {
     let multipart: MultipartContinuation | undefined
     try {
       if (carve && !legacy) {
-        const rules = this.selectionRules(request, policy, legacy, existing, admittedInput)
         multipart = this.multipartContinuation(parts, request, policy, rules, carve)
-        const extras = multipart.parts.filter(part => !parts!.some(picked => picked.coin.account === part.coin.account))
+        const paymentAccounts = new Set(parts.map(part => part.coin.account))
+        const extras = multipart.parts.filter(part => !paymentAccounts.has(part.coin.account))
         if (extras.length) {
           const accounts = new Set(extras.map(part => part.coin.account))
           const selection = rules.selection(false, { deficit: extras.reduce((sum, part) =>
             sum + part.coin.valueWei - changeFee, 0n), maxCoins: extras.length })
           const reserved = coins.reserveTransactionSetSources({ ...selection,
             canSelect: coin => accounts.has(coin.account) && (selection.canSelect?.(coin) ?? true) })
-          if (!reserved || reserved.length !== extras.length) throw new EvmTransactionSetInsufficientFundsError()
+          if (!reserved) throw new EvmTransactionSetInsufficientFundsError()
           parts.push(...reserved.map(part => ({ ...part, paymentValueWei: 0n })))
+          if (reserved.length !== extras.length) throw new EvmTransactionSetInsufficientFundsError()
         }
         heldForContinuation = multipart.feeWei + BigInt(multipart.reserves.size) * changeFee
       }
@@ -1261,8 +1262,11 @@ export class EvmTransactionSetPreparer {
     const amount = continuation.reserveWei - continuation.feeWei
     const moveFee = policy.changeGasLimit * policy.gasPriceWei
     const paymentFee = policy.paymentGasLimit('0x') * policy.gasPriceWei
-    const minimum = request.minimumPaymentWei !== undefined && request.minimumPaymentWei > policy.dustWei
+    const floor = request.minimumPaymentWei !== undefined && request.minimumPaymentWei > policy.dustWei
       ? request.minimumPaymentWei : policy.dustWei
+    // The continuation has its own captured recipient floor at append. A smaller total can
+    // still be kept as one carrier (as before); it must never be fragmented below this band.
+    const minimum = amount < floor ? amount : floor
     const residuals = this.sourceResiduals(parts, request.amountWei, request.calldata ?? '0x',
       index => rules.context(index).gas * policy.gasPriceWei)
     const used = new Set(parts.map(part => part.coin.account))

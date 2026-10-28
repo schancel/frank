@@ -64,8 +64,9 @@ const SHARED_COIN_WEI = parseEther('0.3')
 const STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI * 3n
 /** Round 3: what A's message pays, most of the shared coin. */
 const A_LARGE_STAMP_WEI = parseEther('0.25')
-/** Round 5: what B pays bob's contact address together with its stamp. */
-const CONTACT_WEI = parseEther('0.01')
+/** Round 5: what B pays bob's contact address together with its stamp (well above the payment
+ * floor, which follows the gas price). */
+const CONTACT_WEI = parseEther('0.1')
 
 /** Every row the wallets in this process write, by payload digest, in order. */
 const written = new Map<string, StoredMessage[]>()
@@ -336,7 +337,10 @@ async function main() {
       const aTxs = await Promise.all(
         aHashes.map(async txHash => {
           const receipt = await monad.provider.waitForTransaction(txHash, 1, 120_000)
-          assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
+          // A's raw transfer (round 4) only has to use the nonce: included either way. Solonet
+          // has included one reverted (status 0) right after the coin's funding.
+          if (variant === 'relay-stored') assert.ok(receipt, `A's transaction ${txHash} was included`)
+          else assert.equal(receipt?.status, 1, `A's payment ${txHash} landed`)
           const tx = (await monad.provider.getTransaction(txHash))!
           return { from: tx.from, nonce: tx.nonce }
         }),
@@ -344,7 +348,15 @@ async function main() {
       const collided = bTaken.filter(tx =>
         aTxs.some(other => other.from === tx.from && other.nonce === tx.nonce),
       )
-      assert.ok(collided.length > 0, `${label}: A and B paid from the same coin (A ${aTxs.map(tx => `${tx.from}:${tx.nonce}`)})`)
+      if (collided.length === 0) {
+        // B chose other coins than A (change left from an earlier round): nothing collided, so
+        // the round shows nothing. B's message is let go and delivered, and the round is
+        // played again.
+        if (variant !== 'relay-stored') release()
+        console.log(`${label}: A and B did not pay from the same coin (A ${aTxs.map(tx => `${tx.from}:${tx.nonce}`)}; B's send ended: ${await bOutcome}); played again`)
+        await reconcileUntilDelivered(b, bDigest)
+        return false
+      }
       await monad.mine(4)
 
       if (variant === 'relay-stored') {
@@ -370,7 +382,12 @@ async function main() {
         devices.push(b)
       } else {
         release()
-        console.log(`${label}: B's send ended: ${await bOutcome}`)
+        const outcome = await bOutcome
+        // The relay's look at the account can miss A's transaction even here (it reads what the
+        // node has executed so far): it stores B's message, and B's payment then cannot land.
+        // That is round 4's case, checked as round 4 checks it.
+        relayStored = outcome === 'returned'
+        console.log(`${label}: B's send ended: ${outcome}${relayStored ? ' (the relay stored B\'s message before it saw A\'s transaction)' : ''}`)
       }
       await reconcileUntilDelivered(b, bDigest)
 
@@ -449,13 +466,14 @@ async function main() {
         recipientSpendPublicKey: bob.handle.identity.compressedPubKey,
         amountAtomic: CONTACT_WEI,
       }
-      const quote = await payments.quote!(intent0)
-      const stamp = await b.chain.directMessages.quoteStamp!({ wallet: b.handle, stampValue: STAMP_WEI })
-      if (stamp.status !== 'available') throw new Error(`${label}: no stamp quote (${stamp.status})`)
+      // Quoted with its stamp, as the app's review does: the reviewed fee is what the payment
+      // and its stamp pay together.
+      const quote = await payments.quote!({ ...intent0, messageStamp: { amountAtomic: STAMP_WEI } })
+      if (quote.messageStampFeeAtomic === undefined) throw new Error(`${label}: the quote has no stamp fee`)
       const intent: StealthPaymentIntent = {
         ...intent0,
         maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
-        messageStamp: { amountAtomic: STAMP_WEI, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic },
+        messageStamp: { amountAtomic: STAMP_WEI, maxNativeFeeAtomic: quote.messageStampFeeAtomic },
       }
       const prepared = await payments.prepare(intent)
       let reachedHold!: (digest: string) => void
@@ -524,14 +542,19 @@ async function main() {
       await nextSendGoesThrough(b, bob.address, label, [])
     }
 
-    await round('round 1', false, bob)
+    /** Plays a round until A and B paid from the same coin (at most three times). */
+    const collide = async (...args: Parameters<typeof round>) => {
+      for (let attempt = 0; attempt < 3; attempt++) if ((await round(...args)) !== false) return
+      throw new Error(`${args[0]}: A and B never paid from the same coin`)
+    }
+    await collide('round 1', false, bob)
     // A fresh giver: bob's own change from round 1 may not be spendable as one coin yet.
     const carol = await openMonadWallet(stack, 'carol')
     devices.push(carol)
-    await fundFromFaucet(stack, carol.mainAccount, parseEther('2'))
-    await round('round 2 (B closed and reopened twice)', true, carol)
-    await round('round 3 (A moves most of the coin)', false, carol, 'different-value')
-    await round('round 4 (the relay already holds B\'s message)', false, carol, 'relay-stored')
+    await fundFromFaucet(stack, carol.mainAccount, parseEther('3'))
+    await collide('round 2 (B closed and reopened twice)', true, carol)
+    await collide('round 3 (A moves most of the coin)', false, carol, 'different-value')
+    await collide('round 4 (the relay already holds B\'s message)', false, carol, 'relay-stored')
     await combinedRound('round 5 (a payment to a contact with its stamp)', carol)
     console.log('PASS: every collision ended paid once, or ended saying so; nothing stayed held')
   } catch (err) {

@@ -267,8 +267,14 @@ export class EvmTransactionSetLifecycle {
         !receipt &&
         nativeMemberSuperseded(member) &&
         nonce > Transaction.from(signed.rawTransaction).nonce
-      )
+      ) {
+        // Chain-terminal evidence can precede its durable inventory checkpoint (including
+        // archived observe-only restoration). Resume the retained consumption bound through
+        // the same guarded owner; a newer member or closed lifetime must still win.
+        if (!member.transactionSet?.inventoryApplied)
+          await this.options.authority.recordObservation(id, index, member.observation, member.account, member)
         continue
+      }
       const observation: EvmNativeObservation = receipt
         ? {
             state:
@@ -299,7 +305,7 @@ export class EvmTransactionSetLifecycle {
         index,
         observation,
         account,
-        nativeMemberNeedsOwnMoveRecovery(member) ? member : undefined,
+        member,
       )
     }
   }

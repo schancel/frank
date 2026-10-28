@@ -114,6 +114,10 @@ export type EvmTransactionSetJournal = Pick<
   | 'get'
   | 'canSelect'
   | 'refreshPreparation'
+  | 'readArchivedOperation'
+  | 'readOperation'
+  | 'archivedRecoveryAuthority'
+  | 'activateArchivedOwnMoves'
   | 'prepare'
   | 'appendTransactionSet'
   | 'authorizeTransactionSet'
@@ -150,6 +154,8 @@ export interface EvmTransactionSetPreparerOptions {
   /** Registers owned target discovery and observes current chain state through the inventory
    * owner. Rejects incomplete observation so settlement can retry after interruption. */
   readonly observeMergeTarget?: (target: EvmChangeDestination) => Promise<void>
+  /** Archived own outputs require actual current destination state, not a receipt-value coin. */
+  readonly observeOwnedRecoveryTarget?: (target: EvmChangeDestination, minimumBlock: number) => Promise<void>
   /** Synchronous cached observation check, only after insufficient selection. Never performs
    * RPC or changes reservations; throws the retained observation error when funding is unknown. */
   readonly assertFundingObserved?: () => void

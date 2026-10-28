@@ -1,3 +1,5 @@
+import { findNonceConsumer } from '../evm-nonce-consumer';
+import { EVM_FAILURE_CONFIRMATIONS } from './evm-settlement';
 import { transactionSetFinancialCompletionReceipt, transactionSetCancellationReceipt } from '../evm-operation-completion';
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { type DefaultStampQuote } from "../oracle/stamp-policy";
@@ -5,12 +7,13 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import { memberSignings, type EvmNativeSource } from "../storage/evm-native-operation-journal";
+import { evmNativeOperationDigest, nativeMemberNeedsOwnMoveRecovery, memberSignings, type ArchivedOwnMoveRecoveryInput, type EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
 import {
   nativeAdmissionJournal,
+  EvmInputAdmissionError,
   poolSpendAdmission,
 } from "../evm-input-admission";
 import type {
@@ -2293,6 +2296,75 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
           const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
+          let archivedRecoveryAfter: string | undefined;
+          let archivedRecoveryPass: Promise<void> | undefined;
+          const recoverArchivedOwnMoves = (): Promise<void> => {
+            if (archivedRecoveryPass) return archivedRecoveryPass;
+            archivedRecoveryPass = (async () => {
+              const journal = transactionOwner.nativeJournal!;
+              const page = await journal.historyPage({ after: archivedRecoveryAfter, limit: 16, background: true, memberBudget: 32 });
+              const blocked: string[] = [];
+              for (const original of page.operations) {
+                if (original.cancelled || !original.members.some(nativeMemberNeedsOwnMoveRecovery)) continue;
+                const current = await journal.readOperation(original.operationId);
+                if (current && !current.members.some(nativeMemberNeedsOwnMoveRecovery) &&
+                    journal.archivedRecoveryAuthority(original.operationId) === undefined) continue;
+                try {
+                  // Resolve canonical evidence outside journal/admission/account mutation locks.
+                  const canonical = await provider.getBlock(config.spendRuleHead ?? 'latest');
+                  if (!canonical?.hash) throw new Error('Archived recovery canonical head unavailable');
+                  const evidence: NonNullable<ArchivedOwnMoveRecoveryInput['terminalEvidence']>[number][] = [];
+                  for (const [memberIndex, member] of original.members.entries()) {
+                    if (!nativeMemberNeedsOwnMoveRecovery(member)) continue;
+                    let found: { receipt: NonNullable<Awaited<ReturnType<typeof provider.getTransactionReceipt>>>; hash: string } | undefined;
+                    for (const signing of memberSignings(member)) {
+                      const receipt = await provider.getTransactionReceipt(signing.transactionHash);
+                      if (receipt) { found = { receipt, hash: signing.transactionHash }; break; }
+                    }
+                    const block = found ? await provider.getBlock(found.receipt.blockNumber) : canonical;
+                    if (!block?.hash || block.number > canonical.number ||
+                        (found && (found.receipt.blockHash !== block.hash || found.receipt.hash.toLowerCase() !== found.hash.toLowerCase())))
+                      throw new Error('Archived recovery receipt is not canonical');
+                    const [nonce, balance] = await Promise.all([
+                      provider.getTransactionCount(member.source.address, block.number),
+                      provider.getBalance(member.source.address, block.number),
+                    ]);
+                    const account = { blockHash: block.hash, blockNumber: block.number, nonce, balanceWei: balance.toString() };
+                    if (found) {
+                      if (found.receipt.status !== 0 && found.receipt.status !== 1) throw new Error('Archived recovery receipt status unavailable');
+                      if (found.receipt.status === 0 && canonical.number - block.number + 1 < EVM_FAILURE_CONFIRMATIONS) continue;
+                      evidence.push({ memberIndex, signedTransactionHash: member.signed!.transactionHash, account,
+                        observation: { state: found.receipt.status === 1 ? 'included-success' : 'included-revert',
+                          transactionHash: found.hash, blockHash: block.hash, blockNumber: block.number,
+                          transactionIndex: found.receipt.index, feeWei: found.receipt.fee.toString() } });
+                    } else if (nonce > Transaction.from(member.unsignedTransaction).nonce) {
+                      const consumer = await findNonceConsumer(provider, { account: member.source.address,
+                        nonce: Transaction.from(member.unsignedTransaction).nonce, transactionHash: member.signed!.transactionHash }, block.number);
+                      if (!consumer || consumer.by !== 'another' || canonical.number - consumer.blockNumber + 1 < EVM_FAILURE_CONFIRMATIONS)
+                        throw new Error('Archived recovery nonce consumption unresolved');
+                      evidence.push({memberIndex, signedTransactionHash: member.signed!.transactionHash, account, observation: {state: 'missing'}});
+                    }
+                  }
+                  const eligible = original.members.filter(nativeMemberNeedsOwnMoveRecovery).length;
+                  const recovered = await transactionSetPreparer.recoverArchivedOwnMoves({ operationId: original.operationId,
+                    expectedOriginalOperationHash: evmNativeOperationDigest(original),
+                    ...(evidence.length === eligible ? {terminalEvidence: evidence} : {}) });
+                  if (recovered.status === 'blocked') { blocked.push(`${original.operationId}:${recovered.reason}`); continue; }
+                  if (recovered.status === 'complete') continue;
+                  const logicalId = original.preparationId!.slice('evm-transaction-set:'.length);
+                  await transactionSetLifecycle.observe(logicalId, provider);
+                  if (journal.archivedRecoveryAuthority(original.operationId) === 'claimed')
+                    await transactionSetLifecycle.replay(logicalId, {payments: false});
+                  await transactionSetLifecycle.observe(logicalId, provider);
+                } catch (error) {
+                  blocked.push(`${original.operationId}:${error instanceof EvmInputAdmissionError && error.reason === 'conflicting-authorization' ? 'reservation-conflict' : 'observation-unavailable'}`);
+                }
+              }
+              archivedRecoveryAfter = page.next;
+              if (blocked.length) throw new Error(`Archived own-move recovery remains unresolved: ${blocked.join(', ')}`);
+            })().finally(() => { archivedRecoveryPass = undefined; });
+            return archivedRecoveryPass;
+          };
           const canonicalNetworkTag =
             config.networkTag === "MONT" ||
             config.networkTag === "MON1" ||
@@ -2827,7 +2899,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             getNativeOperationHistory(options) {
               requireOpenWallet(wallet);
-              return transactionOwner.runLifetime(() => transactionOwner.nativeJournal!.historyPage(options));
+              return transactionOwner.runLifetime(async () => {
+                const page = await transactionOwner.nativeJournal!.historyPage(options);
+                return { ...page, operations: await Promise.all(page.operations.map(async row =>
+                  row.members.some(nativeMemberNeedsOwnMoveRecovery)
+                    ? (await transactionOwner.nativeJournal!.readOperation(row.operationId)) ?? row : row)) };
+              });
             },
             getNativeOperations() {
               return nativeOperationOwner(wallet).listOperations();
@@ -2970,10 +3047,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return owner
                 .reobservePending()
                 .then(() => owner.resendMissingContractCalls())
-                .then(() => transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()))
-                .then(() => internals.recoverStampFunding?.())
-                // What those looks showed frees the main account for whoever waits for it.
-                .then(() => releaseSettledMainAccounts(wallet, false))
+                .then(async () => {
+                  // A blocked archived obligation remains observable without suppressing unrelated
+                  // authorized recovery or funding. No network task owns a wallet-wide queue.
+                  const results = await Promise.allSettled([
+                    transactionOwner.runLifetime(() => recoverArchivedOwnMoves()),
+                    transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()),
+                    internals.recoverStampFunding?.(),
+                  ]);
+                  await releaseSettledMainAccounts(wallet, false);
+                  const failed = results.find(result => result.status === 'rejected');
+                  if (failed?.status === 'rejected') throw failed.reason;
+                })
                 .catch((error) => {
                   if (isChainUnreachableError(error)) {
                     throw error instanceof ChainUnreachableError

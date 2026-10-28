@@ -1133,7 +1133,13 @@ export class EvmStampPayer {
     const coin = coins.get(account, tx.nonce)
     if (coin !== undefined && coin.state !== 'spent') {
       if (included === undefined) {
-        await coins.recordMined(coin, { block: this.watcher.latest() ?? 0 })
+        // Mined by the newest block at the latest. Not the watcher's head: on Monad that is the
+        // finalized block, which may be below the block it was mined in, and the quiet window
+        // counted from it would end too early.
+        const newest = await this.read(() => this.config.provider.getBlockNumber())
+        await coins.recordMined(coin, {
+          block: Math.max(newest, this.watcher.latest() ?? 0),
+        })
         this.config.sync.markDirty(account)
       } else {
         let balance: bigint | undefined

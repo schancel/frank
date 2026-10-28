@@ -137,7 +137,11 @@ and by number only at or below the finalized block (a node answers a number abov
 for blocks it voted on or the newest one, so a lagging replica would refuse it). Money that the
 finalized head minus 4 does not show waits until the finalized head is 4 past the block it
 arrived by: the finalized head when that shows it, else the newest block read after it. That is
-the node's 2 blocks and 2 more. The reserve rule's quiet window (`waitForSpendSpacing`, and
+the node's 2 blocks and 2 more. When a read at an earlier block fails (a timeout, a 5xx, a
+replica whose finalized block is below it), the answer counts as unknown, not as settled: new
+money then waits until the finalized head is 4 past the newest block read after it, and an
+account's last transfer is dated by that newest block. Send to Address keeps a signed transfer
+and does not hand it over while its money is not shown settled. The reserve rule's quiet window (`waitForSpendSpacing`, and
 `lastSpentInBlock` in the transaction set) is counted on the same head. It signs a transfer only against the balance
 the account already had `spendSpacingBlocks + 1` blocks ago (`fundsSettleBlocks`, 4 on Monad,
 `packages/wallet/chain/evm-spend-rule.ts`) and waits those blocks otherwise. The window is the

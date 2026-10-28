@@ -504,6 +504,11 @@ export class EvmCoinListSync {
     let newest: number | undefined
     const newestBlock = async () =>
       (newest ??= Math.max(head, await observeRead(provider.getBlockNumber())))
+    // A chain younger than `lag` (or `spacing`) blocks has no earlier block to read; otherwise a
+    // read that was made and failed (a timeout, a 5xx, a replica whose finalized block is below
+    // it) leaves the answer unknown, and unknown is not settled.
+    const settledUnknown = spacing > 0 && head >= lag && settledBalance === undefined
+    const beforeUnknown = spacing > 0 && head >= spacing && before === undefined
     let spendableFromBlock: number | undefined
     if (settledBalance !== undefined && settledBalance < balance) {
       // Arrived after `head - lag`. If `head` shows it, it arrived by `head`; else by the newest
@@ -514,15 +519,24 @@ export class EvmCoinListSync {
           : undefined
       spendableFromBlock =
         (atHead !== undefined && atHead >= balance ? head : await newestBlock()) + lag
+    } else if (settledUnknown) {
+      // What the list already knows of this coin stands: the same nonce and no more money than it
+      // listed is no new money. Anything else may have arrived as late as the newest block.
+      if (live?.state === 'unspent' && live.nonce === latest && balance <= live.valueWei)
+        spendableFromBlock = live.spendableFromBlock
+      else spendableFromBlock = (await newestBlock()) + lag
     }
-    // The account sent after `head - spacing`: by the newest block at the latest. That block is
-    // also its last spend's, at the latest; otherwise `head` is (as when the nonce at
-    // `head - spacing` could not be read).
+    // The account sent after `head - spacing`: by the newest block at the latest, and the coin
+    // waits out the quiet window from there. When that nonce could not be read, the last spend
+    // is dated by the newest block too (it may have been mined after `head`), and the
+    // transaction set keeps the quiet window from `lastSpentInBlock`. Otherwise it was by
+    // `head`. A spend the list already dated at this nonce keeps its date.
+    const spendDated = live?.nonce === latest && live.lastSpentInBlock !== undefined
     let spentBy = head
     if (before !== undefined && before !== latest) {
       spentBy = await newestBlock()
       spendableFromBlock = Math.max(spendableFromBlock ?? 0, spentBy + spacing)
-    }
+    } else if (beforeUnknown && !spendDated) spentBy = await newestBlock()
     // Marked dirty while those later reads were out: what they saw may predate the mark.
     if (
       (newest !== undefined || spendableFromBlock !== undefined) &&

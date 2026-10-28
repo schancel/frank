@@ -369,6 +369,20 @@ describe('settlement: the chain decides', () => {
     expect(f.list.get(at(main), 1)?.valueWei).toBe(f.node.balances.get(at(main)))
   })
 
+  it('a payment seen mined with no block is dated by the newest block, not by a head behind it', async () => {
+    // On Monad the watcher's head is the finalized block, which may be below the block the
+    // payment was mined in: dated by it, the account's quiet window would end too early.
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    f.node.nonces.set(at(main), 1)
+    f.node.head = 1005
+    jest.spyOn(f.watcher, 'latest').mockReturnValue(997)
+    await f.payer.recordSpent('one', signed!)
+    expect(f.list.get(at(main), 0)).toMatchObject({ state: 'spent', spentInBlock: 1005 })
+  })
+
   it('a payment is called replaced only when, read again after the nonce, it still has no receipt', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON)

@@ -26,19 +26,52 @@ export interface SentStealthPayment {
   /** Sent from another device and nothing here can tell its network fee: the account's notes
    * to itself do not name the operation that paid it (or cannot be read on this wallet). */
   readonly feeUnknowable?: true
-  /** `status.nativeFeeAtomic` covers only the transactions whose fee is known so far, as
-   * History's partial fee for the same send does; it is read again until it is complete. */
+  /** Some currently known transactions still lack fees. Additional self notes can extend a
+   * noted fee even when every currently known transaction already has its receipt. */
   readonly feePartial?: true
+  /** Ephemeral view provenance: late self notes can revise this fee even after transfers
+   * landed. This marker lives only in this module's reactive map, never in a stored message. */
+  readonly feeFromNotes?: true
 }
 
-/** A send's network fee as History shows it: everything known so far, and whether that is all. */
+/** A send's fees as History knows them, and whether known members still lack receipts. */
 interface NamedFee {
   readonly feeWei: bigint
   readonly partial: boolean
 }
+interface NotedFeeGroup {
+  readonly hashes: ReadonlySet<string>
+  readonly named: ReadonlySet<string>
+  readonly fee: NamedFee | undefined
+}
+type NotedFeeIndex = ReadonlyMap<string, NotedFeeGroup>
 
-/** Nothing more will be learnt of it (`stealthPaymentFinal`), or all that can be has been: it
- * landed and its fee cannot be known here. */
+/** One grouping per owner's snapshot, shared by every card read in this pass. */
+function indexNotedFees(noted: readonly NotedSendStatus[]): NotedFeeIndex {
+  const index = new Map<string, NotedFeeGroup>()
+  for (const sends of groupNotedSends(noted).values()) {
+    const hashes = new Set(sends.map(send => prefixed(send.txHash)))
+    const group: NotedFeeGroup = {
+      hashes,
+      named: new Set(
+        sends
+          .filter(send => send.operation !== undefined)
+          .map(send => prefixed(send.txHash)),
+      ),
+      fee: sends.some(send => send.inclusion !== undefined)
+        ? {
+            feeWei: BigInt(notedSendFeeWei(sends)),
+            partial: sends.some(send => send.inclusion === undefined),
+          }
+        : undefined,
+    }
+    for (const hash of hashes) index.set(hash, group)
+  }
+  return index
+}
+
+/** No known receipt needs fast polling. Noted-fee membership may still grow, so those views
+ * remain eligible for ordinary outgoing ticks even after this returns true. */
 function settled(payment: SentStealthPayment): boolean {
   return (
     (payment.feePartial !== true && stealthPaymentFinal(payment.status)) ||
@@ -223,31 +256,17 @@ async function chainStatusOf(
  * undefined until it showed any; `unnamed` when no note names the operation that paid them.
  */
 function notedFeeOf(
-  noted: readonly NotedSendStatus[],
-  transfers: readonly SentTransfer[],
+  index: NotedFeeIndex,
+  transfers: readonly { readonly txId: string }[],
 ): NamedFee | 'unnamed' | undefined {
   const hashes = new Set(transfers.map(transfer => prefixed(transfer.txId)))
-  if (
-    !noted.some(
-      send => hashes.has(prefixed(send.txHash)) && send.operation !== undefined,
-    )
-  )
+  if (![...hashes].some(hash => index.get(hash)?.named.has(hash)))
     return 'unnamed'
-  const group = [...groupNotedSends(noted).values()].find(sends =>
-    sends.some(send => hashes.has(prefixed(send.txHash))),
-  )
-  if (
-    !group ||
-    [...hashes].some(
-      hash => !group.some(send => prefixed(send.txHash) === hash),
-    ) ||
-    group.every(send => send.inclusion === undefined)
-  )
+  const first = transfers[0]
+  const group = first ? index.get(prefixed(first.txId)) : undefined
+  if (!group || [...hashes].some(hash => !group.hashes.has(hash)))
     return undefined
-  return {
-    feeWei: BigInt(notedSendFeeWei(group)),
-    partial: group.some(send => send.inclusion === undefined),
-  }
+  return group.fee
 }
 
 /**
@@ -322,6 +341,7 @@ export async function refreshOutgoingStealthPayments(
   messages: Iterable<SentMessage>,
 ): Promise<number> {
   const wanted = new Set<string>()
+  const feeOnly = new Map<string, SentStealthPayment[]>()
   const transfersOf = new Map<string, readonly SentTransfer[]>()
   // The one-time key of a message's `stealth` item (Send to Contact).
   const contactKeyOf = new Map<string, string>()
@@ -331,6 +351,20 @@ export async function refreshOutgoingStealthPayments(
     const digest = sentMessageDigest(message).toLowerCase()
     if (digest.startsWith('pending:')) continue
     const known = outgoingStealthPayments.get(digest)
+    if (
+      known?.length &&
+      known.some(payment => payment.feeFromNotes) &&
+      known.every(
+        payment =>
+          payment.status.members.length > 0 &&
+          payment.status.members.every(
+            member => member.state === 'landed' || member.state === 'failed',
+          ),
+      )
+    ) {
+      feeOnly.set(digest, known)
+      continue
+    }
     if (known?.length && known.every(settled)) continue
     wanted.add(digest)
     const items = message.items.filter(paymentItem)
@@ -344,10 +378,10 @@ export async function refreshOutgoingStealthPayments(
     if (items.length === 1 && items[0]!.type === 'stealth')
       contactKeyOf.set(digest, items[0]!.ephemeralPubKey ?? '')
   }
-  if (wanted.size === 0) return 0
+  if (wanted.size === 0 && feeOnly.size === 0) return 0
   const found = new Map<string, SentStealthPayment[]>()
   const seen = new Set<object>()
-  for (const owner of owners) {
+  for (const owner of wanted.size > 0 ? owners : []) {
     const payments = owner.stealthPayments
     if (!payments?.status || seen.has(owner)) continue
     seen.add(owner)
@@ -375,8 +409,19 @@ export async function refreshOutgoingStealthPayments(
   // The account's notes, read once per refresh for each wallet asked.
   const notedOf = new Map<
     StealthPaymentOwner,
-    Promise<readonly NotedSendStatus[]>
+    Promise<NotedFeeIndex | undefined>
   >()
+  const notesOf = (owner: StealthPaymentOwner) => {
+    let snapshot = notedOf.get(owner)
+    if (snapshot === undefined) {
+      snapshot = Promise.resolve()
+        .then(() => owner.getNotedSends!())
+        .then(indexNotedFees)
+        .catch(() => undefined)
+      notedOf.set(owner, snapshot)
+    }
+    return snapshot
+  }
   for (const digest of wanted) {
     if (found.has(digest)) continue
     const transfers = transfersOf.get(digest)
@@ -406,6 +451,7 @@ export async function refreshOutgoingStealthPayments(
       let status = await chainStatusOf(owner.evmReader!, transfers)
       let feeUnknowable = true
       let feePartial = false
+      let feeFromNotes = false
       // A contact payment this device sent: its journal operation names the fee.
       const journalFee = status
         ? await journalFeeOf(owner, contactKeyOf.get(digest))
@@ -417,16 +463,25 @@ export async function refreshOutgoingStealthPayments(
           feePartial = journalFee.partial
         }
       } else if (status && owner.getNotedSends) {
-        let noted = notedOf.get(owner)
-        if (noted === undefined) {
-          noted = owner.getNotedSends().catch(() => [])
-          notedOf.set(owner, noted)
-        }
-        const fee = notedFeeOf(await noted, transfers)
+        feeFromNotes = true
+        const noted = await notesOf(owner)
+        const fee =
+          noted === undefined ? undefined : notedFeeOf(noted, transfers)
         feeUnknowable = fee === 'unnamed'
         if (fee !== undefined && fee !== 'unnamed') {
           status = { ...status, nativeFeeAtomic: fee.feeWei }
           feePartial = fee.partial
+        } else if (noted === undefined) {
+          const previous = outgoingStealthPayments
+            .get(digest)
+            ?.find(payment => payment.chainIdentifier === first.chainIdentifier)
+          if (previous?.status.nativeFeeAtomic !== undefined)
+            status = {
+              ...status,
+              nativeFeeAtomic: previous.status.nativeFeeAtomic,
+            }
+          feePartial = previous?.feePartial === true
+          feeUnknowable = previous?.feeUnknowable === true
         }
       }
       if (status)
@@ -437,6 +492,7 @@ export async function refreshOutgoingStealthPayments(
             status,
             ...(feeUnknowable ? { feeUnknowable: true as const } : {}),
             ...(feePartial ? { feePartial: true as const } : {}),
+            ...(feeFromNotes ? { feeFromNotes: true as const } : {}),
           },
         ])
     } catch (error) {
@@ -444,6 +500,45 @@ export async function refreshOutgoingStealthPayments(
     }
   }
   let open = 0
+  // Definitive transfer facts stay cached. Only the fee's noted view is revisited: the
+  // absence of another note is never proof that the original operation has no more fees.
+  for (const [digest, previous] of feeOnly) {
+    const next = await Promise.all(
+      previous.map(async payment => {
+        if (!payment.feeFromNotes) return payment
+        const owner = owners.find(
+          candidate =>
+            candidate.chainIdentifier === payment.chainIdentifier &&
+            candidate.getNotedSends,
+        )
+        if (!owner) return payment
+        const snapshot = await notesOf(owner)
+        if (snapshot === undefined) return payment
+        const fee = notedFeeOf(
+          snapshot,
+          payment.status.members.map(member => ({ txId: member.txHash })),
+        )
+        if (
+          fee === undefined ||
+          fee === 'unnamed' ||
+          (fee.feeWei === payment.status.nativeFeeAtomic &&
+            fee.partial === (payment.feePartial === true) &&
+            !payment.feeUnknowable)
+        )
+          return payment
+        return {
+          chainIdentifier: payment.chainIdentifier,
+          operationId: payment.operationId,
+          feeFromNotes: true as const,
+          status: { ...payment.status, nativeFeeAtomic: fee.feeWei },
+          ...(fee.partial ? { feePartial: true as const } : {}),
+        }
+      }),
+    )
+    if (next.some((payment, index) => payment !== previous[index]))
+      outgoingStealthPayments.set(digest, next)
+    if (!next.every(settled)) open++
+  }
   for (const digest of wanted) {
     const payments = found.get(digest)
     if (payments === undefined) continue

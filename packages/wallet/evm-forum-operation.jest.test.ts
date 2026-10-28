@@ -17,7 +17,7 @@ import {
   TYPE_TOPIC_POST_SUBMISSION,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/evm-wallet-bundle'
-import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
+import { EvmNativeOperationJournal, type EvmNativeMember } from './storage/evm-native-operation-journal'
 import { MemoryRecordStore, LevelRecordStore } from './storage/evm-coin-store'
 import {
   EvmCoinList,
@@ -40,7 +40,7 @@ const http = axios as unknown as jest.MockedFunction<typeof axios.request>
 const burn = '0x000000000000000000000000000000000000dEaD'
 const key = (n: number) => new Wallet('0x' + n.toString(16).padStart(64, '0'))
 const blockHash = '0x' + 'ab'.repeat(32)
-async function fixture(location?: string) {
+async function fixture(location?: string, entropy = 0.01) {
   const bundle = createInMemoryMonadWalletBundle({
     mnemonic: 'test test test test test test test test test test test junk',
   })
@@ -81,7 +81,7 @@ async function fixture(location?: string) {
   const preparer = new EvmTransactionSetPreparer({
     coins,
     journal,
-    random: () => 0.01,
+    random: () => entropy,
     policy: () => ({
       sourceOrder: [
         'stealth',
@@ -235,11 +235,11 @@ async function fixture(location?: string) {
       fields as never,
     )
   }
-  function mine() {
+  function mine(include: (member: EvmNativeMember) => boolean = () => true) {
     for (const [index, member] of preparer
       .getOperation('forum-test')!
       .members.entries())
-      included.set(member.signed!.transactionHash, {
+      if (include(member)) included.set(member.signed!.transactionHash, {
         tx: Transaction.from(member.signed!.rawTransaction),
         index,
       })
@@ -804,6 +804,90 @@ test('an intent write that commits then rejects is pending to the generic client
     expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
     expect(f.retained().construction).toBeDefined()
     expect(f.provider.broadcastTransaction).not.toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+})
+
+
+test('acknowledged Forum publication remains acknowledged while old exposed own moves retain financial recovery', async () => {
+  const f = await fixture(undefined, 0.99)
+  try {
+    http.mockImplementation(async () => {
+      f.mine((member) => member.transactionSet?.role === 'payment')
+      return response(f.status()) as never
+    })
+    const published = await submitForumOperation(f.wallet, f.params)
+    expect(published.status.state).toBe(2)
+    const row = (await f.preparer.readOperation('forum-test'))!
+    expect(row.members[0]!.transactionSet?.role).toBe('payment')
+    const index = row.members.findIndex(
+      (member) => member.transactionSet?.role === 'change'
+    )
+    expect(index).toBeGreaterThan(0)
+    f.mine(
+      (member) =>
+        member !== row.members[index] &&
+        member.signed!.transactionHash !==
+          row.members[index]!.signed!.transactionHash
+    )
+    for (const [at, member] of row.members.entries())
+      if (at !== index)
+        await f.preparer.recordObservation(
+          'forum-test',
+          at,
+          {
+            state: 'included-success',
+            transactionHash: member.signed!.transactionHash,
+            blockHash,
+            blockNumber: 12,
+            transactionIndex: at,
+            feeWei: Transaction.from(
+              member.unsignedTransaction
+            ).gasLimit.toString(),
+          },
+          {
+            blockHash,
+            blockNumber: 12,
+            nonce: Transaction.from(member.unsignedTransaction).nonce + 1,
+            balanceWei: '0',
+          }
+        )
+    const member = (await f.preparer.readOperation('forum-test'))!.members[
+      index
+    ]!
+    expect(member.exposed).toBe(true)
+    await f.preparer.recordObservation(
+      'forum-test',
+      index,
+      { state: 'abandoned', blockNumber: 10 },
+      { blockHash, blockNumber: 12, nonce: 1, balanceWei: '0' },
+      member
+    )
+    // Receipt RPC cannot currently settle own redistribution. The normal submission facade
+    // returns its pending report; this must not fail an already accepted public publication.
+    const pending = jest
+      .spyOn(f.wallet.transactionSetSubmission!, 'sendTransaction')
+      .mockResolvedValue({
+        operationId: 'forum-test',
+        chainIdentifier: 'monad-testnet',
+        status: 'pending',
+        pendingTransactionIds: [member.signed!.transactionHash],
+        failedTransactionIds: [],
+        pendingReason: 'observation-unavailable',
+      })
+    const again = await submitForumOperation(f.wallet, f.params)
+    expect(again.status.state).toBe(2)
+    expect(again.operation.requestBytes).toEqual(
+      published.operation.requestBytes
+    )
+    expect(f.bundle.topicOperationJournal.getAll()).toHaveLength(1)
+    expect(
+      (await f.preparer.readOperation('forum-test'))!.members.map(
+        (member) => member.signed
+      )
+    ).toEqual(row.members.map((member) => member.signed))
+    expect(pending).toHaveBeenCalled()
   } finally {
     await f.close()
   }

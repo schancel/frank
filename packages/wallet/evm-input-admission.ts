@@ -12,6 +12,7 @@ import {
   EvmNativeJournalError,
   nativeMemberAbandoned,
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeOperationJournal,
   type EvmNativeBinding,
   type EvmNativePlan,
@@ -324,7 +325,8 @@ class AdmissionOwner implements EvmInputAdmission {
     for (const row of o.native.list()) {
       if (row.cancelled) continue
       row.members.forEach((m, index) => {
-        const unresolved = nativeMemberAbandoned(m)
+        const recovery = nativeMemberNeedsOwnMoveRecovery(m)
+        const unresolved = recovery ? true : nativeMemberAbandoned(m)
           ? false
           : m.dependencies.length
           ? m.observation.state !== 'included-success'
@@ -346,10 +348,10 @@ class AdmissionOwner implements EvmInputAdmission {
           unresolved ? [{ kind: 'address', address: m.source.address }] : [],
           m.observation.state === 'included-success' ||
             m.observation.state === 'included-revert' ||
-            nativeMemberEnded(m),
+            (nativeMemberEnded(m) && !recovery),
           // Given up on chain evidence (a nonce it stood on was taken): it holds neither its
           // address nor its own nonce, which the account's next coin is listed at.
-          !nativeMemberAbandoned(m),
+          !nativeMemberAbandoned(m) || recovery,
         )
       })
     }
@@ -1083,7 +1085,14 @@ export function nativeAdmissionJournal(
       return journal.beginCapture(id, index)
     },
     recordObservation: (...args) =>
-      mutation(() => journal.recordObservation(...args)),
+      mutation(() => {
+        const member = journal.get(args[0].operationId).members[args[0].memberIndex]
+        if (member && nativeMemberNeedsOwnMoveRecovery(member) && args[2] &&
+            args[1].state !== 'included-success' && args[1].state !== 'included-revert' &&
+            args[2].nonce <= Transaction.from(member.unsignedTransaction).nonce)
+          owner.checkNative(args[0].operationId)
+        return journal.recordObservation(...args)
+      }),
   }
 }
 export type PoolSpendApplication =

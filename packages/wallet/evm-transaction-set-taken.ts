@@ -13,20 +13,17 @@
  * listed again at what the chain shows. Only when:
  *
  * - it never left this wallet (so nobody can send its bytes), or
- * - it is the wallet's own move (change or funding: those are never given to a relay, only this
- *   wallet broadcasts them) and its account, read at the head and three blocks back, does not
- *   hold what it and the set's earlier members of that account still to land would cost, or
  * - (`withdrawPayments`) it is a payment of a message the relay refused before storing anything
  *   (the message's `unstored`): the relay held no copy and this wallet never broadcasts a
  *   payment before the relay stores its message, so nobody else has its bytes. The message is
  *   paid again from other coins.
  *
- * What stands on a member given up is given up too (its nonce comes after one the wallet lists
- * again, or its account is funded by a move that never happens).
+ * Never-exposed dependents may be given up too. Exposed dependencies remain obligations even
+ * when a move they stood on was taken; fresh funds can still let the original bytes land.
  *
- * A payment the relay may hold (the message was stored) is never abandoned on its balance alone,
- * nor because a member it stands on was given up: a later deposit to its account would let it
- * land, and the recipient would be paid twice. Only its own nonce being taken ends it.
+ * Exposed own moves and payments a relay may hold are never abandoned on their balance or
+ * because a dependency was given up: a later deposit can let the same signed bytes land.
+ * Keep their original obligations until their own nonce/receipt decides them.
  *
  * A read that fails, or a node that no longer keeps the blocks it would need, changes nothing:
  * the set stays as it is and is looked at again later. Never a timeout.
@@ -107,12 +104,6 @@ function landed(member: EvmNativeMember): boolean {
   )
 }
 
-/** The most a member can take from its account: its value and its whole gas allowance. */
-function cost(member: EvmNativeMember): bigint {
-  const tx = Transaction.from(member.unsignedTransaction)
-  return tx.value + tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice ?? 0n)
-}
-
 /**
  * Gives up, on chain evidence, every member of `operationId` that can never land because another
  * transaction took a nonce it stands on (see the file comment). Returns the members taken and
@@ -139,36 +130,32 @@ export async function abandonTakenMembers(params: {
     const takenAt = Math.min(...taken.values())
     const block = await provider.getBlock(head)
     if (!block?.hash || block.number !== head) return none
-    // What each account holds, at the head and a few blocks back (a deposit shows at the head,
-    // so the larger counts): read once per account.
-    // `balance` decides whether the account covers a member; the account observation recorded
-    // is the head's alone (`nonce`, `atHead`), consistent with one block.
-    const accounts = new Map<string, { nonce: number; balance: bigint; atHead: bigint }>()
+    // Canonical head observations for safe never-exposed abandonment; read once per account.
+    const accounts = new Map<string, { nonce: number; atHead: bigint }>()
     const read = async (address: string) => {
       let known = accounts.get(address)
       if (!known) {
-        const back = Math.max(0, head - (EVM_FAILURE_CONFIRMATIONS - 1))
-        const [nonce, now, before] = await Promise.all([
+        const [nonce, now] = await Promise.all([
           provider.getTransactionCount(address, head),
           provider.getBalance(address, head),
-          provider.getBalance(address, back),
         ])
-        known = { nonce, balance: now > before ? now : before, atHead: now }
+        known = { nonce, atHead: now }
         accounts.set(address, known)
       }
       return known
     }
-    // What each account's members still to land would take, in nonce order (the set's order).
-    const owed = new Map<string, bigint>()
     const given = new Set<number>()
     const abandon: number[] = []
     for (const [index, member] of operation.members.entries()) {
       if (landed(member) || nativeMemberSuperseded(member)) continue
+      // Once handed out, own moves can land after a deposit just like recipient payments.
+      if (member.exposed && member.transactionSet?.role !== 'payment') {
+        continue
+      }
       if (nativeMemberAbandoned(member)) {
         given.add(index)
         continue
       }
-      const address = member.source.address
       const withdrawn =
         params.withdrawPayments === true && member.transactionSet?.role === 'payment'
       const standsOnTaken = member.dependencies.some(dependency => taken.has(dependency))
@@ -177,18 +164,11 @@ export async function abandonTakenMembers(params: {
       const standsOnGiven = member.dependencies.some(dependency => given.has(dependency))
       // A payment the relay may hold is the exception (see the file comment): it stays.
       const payment = member.transactionSet?.role === 'payment'
-      let give =
+      const give =
         withdrawn ||
         (standsOnGiven && (!payment || !member.exposed)) ||
         (standsOnTaken && !member.exposed)
-      if (!give && standsOnTaken && !payment) {
-        const { balance } = await read(address)
-        give = (owed.get(address) ?? 0n) + cost(member) > balance
-      }
-      if (!give) {
-        owed.set(address, (owed.get(address) ?? 0n) + cost(member))
-        continue
-      }
+      if (!give) continue
       given.add(index)
       abandon.push(index)
     }

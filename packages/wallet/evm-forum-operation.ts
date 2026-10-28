@@ -23,7 +23,7 @@ import type {
   RetainedTopicOperation,
 } from './storage/topic-operation-journal'
 import type { EvmCoinList } from './evm-coin-list'
-import { nativeMemberEnded } from './storage/evm-native-operation-journal'
+import { nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery } from './storage/evm-native-operation-journal'
 import { constructWhenSpendable } from './evm-transaction-set'
 import { nextCoinWaits, receiptFee } from './chain/evm-spend-rule'
 
@@ -660,7 +660,7 @@ async function settle(
       member =>
         member.observation.state === 'included-success' ||
         member.observation.state === 'included-revert' ||
-        nativeMemberEnded(member),
+        (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)),
     )
   )
     await wallet.topicOperationJournal!.delete(operation)

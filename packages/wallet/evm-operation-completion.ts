@@ -2,6 +2,7 @@
 import {
   evmNativeOperationDigest,
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeCompletionReceipt,
   type EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
@@ -9,7 +10,7 @@ import {
 /** Financial and inventory obligations are independent of delivery and self-sync. */
 export function transactionSetFinanciallyComplete(operation: EvmNativeOperation): boolean {
   return operation.kind === 'transaction-set' && !operation.cancelled &&
-    operation.members.length > 0 && operation.members.every(member =>
+    operation.members.length > 0 && !operation.members.some(nativeMemberNeedsOwnMoveRecovery) && operation.members.every(member =>
       member.transactionSet?.inventoryApplied === true && (
         member.observation.state === 'included-success' ||
         member.observation.state === 'included-revert' ||

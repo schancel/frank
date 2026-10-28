@@ -10,6 +10,7 @@ import type { TransactionSetSubmission } from '../transaction-set'
 import {
   landedSigning,
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeOperation,
 } from '../storage/evm-native-operation-journal'
 import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
@@ -125,7 +126,7 @@ export function createLegacyTransactionSetPayments(options: {
     row.members.some(
       member =>
         member.observation.state === 'included-revert' ||
-        nativeMemberEnded(member),
+        (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)),
     )
   const resumeLegacySend = async (
     operationId: string,

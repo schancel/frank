@@ -26,6 +26,7 @@ import {
   fixture,
   mailboxes,
   offlineChain,
+  roots,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
@@ -347,6 +348,39 @@ suite('another device of the account spends a message coin at the same moment (a
     held.release()
     expect(await held.sent).toBe('returned')
     expect(bobMailbox).toHaveLength(1)
+    await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [held.digest] })
+    const waiting = (await operationOf(first.transactionSetOperationId!))!
+    const own = waiting.members.filter(member => member.transactionSet?.role !== 'payment')
+    expect(own.length).toBeGreaterThan(0)
+    expect(own.every(member => member.exposed && member.observation.state !== 'abandoned' &&
+      member.observation.state !== 'included-success')).toBe(true)
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+    expect(rowOf(held.digest).otherTransactions.some(payment => payment.state === 'pending')).toBe(true)
+    // The unresolved original must not block an independent funded source's real send.
+    const before = alice.pool.records().length
+    const spare = alice.pool.ensureSize(before + 1)[before]!
+    await alice.pool.flush()
+    await (await dev.sendTransaction({ to: spare.address, value: 5n * 10n ** 15n })).wait()
+    await mine(5)
+    await alice.refreshTransactionSetInventory!()
+    const unrelated = await alice.transactionSetPreparer!.constructTransactionSet({
+      operationId: 'unrelated-while-exposed-own-moves-short', amountWei: 10n ** 15n,
+      sourceAccounts: [spare.address], kdf: () => dev.address,
+    })
+    await alice.transactionSetSubmission!.sendTransaction(unrelated)
+    expect((await chain.getTransactionReceipt(unrelated.bundle[0]!.txHash))?.status).toBe(1)
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+    // Restart while the original remains financially unresolved, with the same signed graph.
+    await alice.close()
+    alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    installCanonicalDirectory(alice, await f.directoryFor('alice-reopened', alice, f.bob))
+    expect((await operationOf(first.transactionSetOperationId!))!.members.map(member => member.signed))
+      .toEqual(original.members.map(member => member.signed))
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(true)
+    // Explicit independent test-only deposit: temporary insufficiency never invalidated the
+    // old exposed own bytes. Their original fees/amounts/signatures must now recover unchanged.
+    await (await dev.sendTransaction({ to: main, value: 9n * 10n ** 17n })).wait()
+    await mine(5)
     // A node that includes transactions only in its next block (as Monad's does): the repayment
     // is still waiting when the pass that sent it ends, and a later pass finishes it.
     await chain.send('evm_setAutomine', [false])
@@ -365,9 +399,17 @@ suite('another device of the account spends a message coin at the same moment (a
     const repayment = repaid.members.filter(m => m.transactionSet?.role === 'payment')
     expect(repayment).toHaveLength(1)
     expect(Transaction.from(repayment[0]!.signed!.rawTransaction).to!.toLowerCase()).toBe(planned.to!.toLowerCase())
-    // The set's own transfers that the account can no longer cover are given up.
+    // Every exposed original own move lands as signed once independently funded again.
     const old = (await operationOf(first.transactionSetOperationId!))!
-    expect(describe(old).filter(state => /change/.test(state)).every(state => state.endsWith('abandoned'))).toBe(true)
+    expect(old.members.map(member => member.signed)).toEqual(original.members.map(member => member.signed))
+    expect(old.members.every(member => (member.earlierSignings?.length ?? 0) === 0)).toBe(true)
+    let originalFees = 0n
+    for (const member of old.members.filter(member => member.transactionSet?.role !== 'payment')) {
+      const receipt = await chain.getTransactionReceipt(member.signed!.transactionHash)
+      expect(receipt?.status).toBe(1)
+      originalFees += receipt!.fee
+    }
+    expect(originalFees <= BigInt(original.maximumFeeWei)).toBe(true)
     // None of the account's coins is held by the earlier set (the repayment may hold the account).
     expect(evmWalletInternals(alice).coinList!.all().filter(coin =>
       coin.holder === first.transactionSetOperationId && coin.state !== 'spent')).toEqual([])

@@ -185,7 +185,8 @@ async function main(): Promise<boolean> {
     await recipient.close()
   } finally {
     try {
-      const { returnedWei, leftWei } = await returnToFaucet(stack)
+      const { returnedWei, leftWei, unswept } = await returnToFaucet(stack)
+      if (unswept === 0) stack.fundsReturned()
       console.log(`returned ${formatEther(returnedWei)} MON to the faucet; ${formatEther(leftWei)} MON left as dust or unsweepable`)
     } finally {
       await stack.stop()

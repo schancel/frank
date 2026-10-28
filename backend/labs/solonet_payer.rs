@@ -11,18 +11,19 @@
 //! `cashwebd-exe/tests/foundationdb_daemon.rs` through `#[path]`.
 //!
 //! No funded key is ever only in memory. `FRANK_LAB_SOLONET_KEY_DIR` names a directory that
-//! outlives the process (the lab composes bind-mount one from the host): every key this module
-//! generates is written there, one file per key, before anything funds it, and its file is
-//! removed only once the key's sweep back to the faucet has landed. Payers are swept when their
-//! [`Funded`] is dropped, also while a failed test unwinds; a run that was killed leaves its
-//! files behind, and the next run's first [`Solonet::from_env`] sweeps them before it funds
-//! anything.
+//! outlives the process (the lab composes bind-mount one from the host). Each process writes
+//! into a run directory of its own there, locked for its lifetime: every key this module
+//! generates is written to its own file before anything funds it, and its file is removed only
+//! once the key's sweep back to the faucet has landed. Payers are swept when their [`Funded`] is
+//! dropped, also while a failed test unwinds; a run that was killed leaves its files behind, and
+//! a later run's first [`Solonet::from_env`] sweeps every run directory whose lock is stale
+//! before it funds anything (backend/labs/README.md, "The keys the labs fund").
 #![allow(dead_code)]
 
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -76,6 +77,8 @@ const SWEEP_LAND_PATIENCE: Duration = Duration::from_secs(60);
 /// yet see a refused funding land.
 const UNUSED_EMPTY_KEY_KEPT: Duration = Duration::from_secs(3600);
 
+/// This process's run directory: one per process, shared by its tests.
+static PROCESS_KEYS: std::sync::OnceLock<Arc<KeyFiles>> = std::sync::OnceLock::new();
 /// Leftover keys of earlier runs are swept once per process, before it funds anything.
 static LEFTOVERS_SWEPT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
@@ -136,25 +139,62 @@ fn address(key: &SecretKey) -> [u8; 20] {
 pub struct Payer {
     key: SecretKey,
     pub address: [u8; 20],
+    /// Where its key is saved.
+    file: Arc<KeyFile>,
 }
 
-impl Payer {
-    fn from_key(key: SecretKey) -> Self {
-        let address = address(&key);
-        Payer { key, address }
-    }
+/// Where one key is saved, and what the faucet has signed to it.
+struct KeyFile {
+    /// `0x<address>.key`, or the `.0x<address>.partial` an interrupted save left behind.
+    path: PathBuf,
+    /// `0x<address>.funding`: one more than the highest faucet nonce a payment to this account
+    /// was signed at, written before that payment is sent.
+    funding: PathBuf,
+    /// Whether `path` is a save that never finished: then nothing was ever paid to the key.
+    partial: bool,
+    /// The value `funding` holds; 0 when the faucet never signed a payment to this account.
+    faucet_signed_below: AtomicU64,
 }
 
-/// The directory every generated key is written to before it is funded (see the module docs).
+/// How long a run's `.lock` may go untouched before the run counts as gone.
+const RUN_LOCK_STALE: Duration = Duration::from_secs(60);
+/// How often a live run touches its `.lock`.
+const RUN_LOCK_HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// Write `contents` to `path` durably: a fresh file beside it, flushed to disk, then renamed.
+fn write_durably(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let partial = dir.join(format!(".{name}.{:08x}.partial", rand::random::<u32>()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&partial)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    std::fs::rename(&partial, path)?;
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// The keys of this process, in a run directory of their own under `FRANK_LAB_SOLONET_KEY_DIR`
+/// (see the module docs). The run holds `.lock` in it for its lifetime by touching it every few
+/// seconds: Docker Desktop's bind mounts do not carry `flock` between containers, so a lock is
+/// held while it is fresh. Another run's directory is taken over only once its lock is stale.
 struct KeyFiles {
+    root: PathBuf,
     dir: PathBuf,
 }
 
 impl KeyFiles {
-    /// The directory `FRANK_LAB_SOLONET_KEY_DIR` names, created if missing; fails with what to
-    /// do when it is not set.
+    /// A new run directory under `FRANK_LAB_SOLONET_KEY_DIR`, locked; fails with what to do when
+    /// the variable is not set, or when the lab was given a relative host directory.
     fn from_env() -> Self {
-        let dir = std::env::var("FRANK_LAB_SOLONET_KEY_DIR")
+        let root = std::env::var("FRANK_LAB_SOLONET_KEY_DIR")
             .ok()
             .map(|dir| dir.trim().to_owned())
             .filter(|dir| !dir.is_empty())
@@ -163,79 +203,230 @@ impl KeyFiles {
                  directory that outlives the test process before they are funded (the lab \
                  composes mount one from the host; see backend/labs/README.md)",
             );
-        let dir = PathBuf::from(dir);
+        // Compose resolves a relative bind source against the compose file, inside the checkout.
+        if let Ok(host) = std::env::var("FRANK_LAB_SOLONET_KEY_HOST_DIR") {
+            let host = host.trim();
+            assert!(
+                host.is_empty() || host.starts_with('/'),
+                "FRANK_LAB_SOLONET_KEY_HOST_DIR must be an absolute path, not {host:?}: a relative \
+                 one is a directory in the git checkout"
+            );
+        }
+        let root = PathBuf::from(root);
+        let dir = root.join(format!(
+            "run-{}-{:08x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            rand::random::<u32>()
+        ));
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("solonet key directory {}: {error}", dir.display()));
-        KeyFiles { dir }
-    }
-
-    fn path(&self, address: &[u8; 20]) -> PathBuf {
-        self.dir.join(format!("0x{}.key", hex::encode(address)))
+        let lock = dir.join(".lock");
+        write_durably(&dir, &lock, std::process::id().to_string().as_bytes())
+            .unwrap_or_else(|error| panic!("solonet: could not lock {}: {error}", lock.display()));
+        std::thread::spawn(move || loop {
+            std::thread::sleep(RUN_LOCK_HEARTBEAT);
+            if let Ok(file) = std::fs::File::options().write(true).open(&lock) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+        });
+        KeyFiles { root, dir }
     }
 
     /// A fresh key, already written to its own file (flushed to disk) and so safe to fund.
     fn fresh(&self) -> Payer {
         let key = SecretKey::from_slice(&rand::random::<[u8; 32]>()).unwrap();
-        let payer = Payer::from_key(key);
-        let path = self.path(&payer.address);
-        let partial = self
-            .dir
-            .join(format!(".0x{}.partial", hex::encode(payer.address)));
-        let written = (|| {
-            use std::io::Write;
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            let mut file = options.open(&partial)?;
-            file.write_all(hex::encode(&payer.key[..]).as_bytes())?;
-            file.sync_all()?;
-            std::fs::rename(&partial, &path)
-        })();
-        written.unwrap_or_else(|error| {
-            panic!("solonet: could not save key {}: {error}", path.display())
-        });
-        payer
+        let address = address(&key);
+        let name = format!("0x{}", hex::encode(address));
+        let file = KeyFile {
+            path: self.dir.join(format!("{name}.key")),
+            funding: self.dir.join(format!("{name}.funding")),
+            partial: false,
+            faucet_signed_below: AtomicU64::new(0),
+        };
+        write_durably(&self.dir, &file.path, hex::encode(&key[..]).as_bytes()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "solonet: could not save key {}: {error}",
+                    file.path.display()
+                )
+            },
+        );
+        Payer {
+            key,
+            address,
+            file: Arc::new(file),
+        }
     }
 
-    /// Every key a run saved and has not swept yet.
-    fn saved(&self) -> Vec<Payer> {
-        let mut saved = Vec::new();
-        for entry in std::fs::read_dir(&self.dir)
-            .unwrap_or_else(|error| panic!("solonet key directory {}: {error}", self.dir.display()))
-        {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("key") {
+    /// Record, before it is sent, that the faucet signs a payment to `payer` at `nonce`: its
+    /// file is then kept until the faucet's nonce has passed it, whichever transaction took it.
+    fn note_faucet_signing(&self, payer: &Payer, nonce: u64) {
+        let bound = nonce + 1;
+        if payer.file.faucet_signed_below.load(Ordering::SeqCst) >= bound {
+            return;
+        }
+        let dir = payer.file.funding.parent().unwrap();
+        write_durably(dir, &payer.file.funding, bound.to_string().as_bytes()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "solonet: could not save {}: {error}",
+                    payer.file.funding.display()
+                )
+            },
+        );
+        payer
+            .file
+            .faucet_signed_below
+            .store(bound, Ordering::SeqCst);
+    }
+
+    /// The run directories of earlier runs whose lock is stale. A run that is still alive (its
+    /// lock fresh) is left alone and named.
+    fn stale_runs(&self) -> Vec<PathBuf> {
+        let mut runs = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return runs;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_run = path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("run-"));
+            if !is_run || path == self.dir {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).unwrap();
-            let key = hex::decode(text.trim())
+            let touched = std::fs::metadata(path.join(".lock"))
+                .or_else(|_| std::fs::metadata(&path))
+                .and_then(|metadata| metadata.modified())
                 .ok()
-                .and_then(|bytes| SecretKey::from_slice(&bytes).ok())
-                .unwrap_or_else(|| panic!("solonet: {} is not a private key", path.display()));
-            saved.push(Payer::from_key(key));
+                .and_then(|time| time.elapsed().ok());
+            match touched {
+                Some(age) if age > RUN_LOCK_STALE => runs.push(path),
+                _ => println!(
+                    "solonet: {} belongs to a run that is still alive (its lock is fresh); left \
+                     to a later run",
+                    path.display()
+                ),
+            }
+        }
+        runs
+    }
+
+    /// The keys a stale run left in `dir`: its `.key` files, and the `.partial` files of saves
+    /// it never finished. A file that cannot be read as a key is named and left in place.
+    fn saved(dir: &std::path::Path) -> Vec<Payer> {
+        let mut saved = Vec::new();
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                println!(
+                    "solonet: cannot read {}: {error}; left in place",
+                    dir.display()
+                );
+                return saved;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let (stem, partial) = if let Some(stem) = name.strip_suffix(".key") {
+                (stem.to_owned(), false)
+            } else if name.starts_with(".0x")
+                && name.ends_with(".partial")
+                && name.contains(".key.")
+            {
+                (name[1..name.find(".key.").unwrap()].to_owned(), true)
+            } else {
+                continue;
+            };
+            let key = std::fs::read_to_string(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|text| hex::decode(text.trim()).map_err(|error| error.to_string()))
+                .and_then(|bytes| SecretKey::from_slice(&bytes).map_err(|error| error.to_string()));
+            let key = match key {
+                Ok(key) => key,
+                Err(error) => {
+                    println!(
+                        "solonet: {} is not a readable private key ({error}); skipped and left in \
+                         place",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+            let address = address(&key);
+            if format!("0x{}", hex::encode(address)) != stem {
+                println!(
+                    "solonet: {} holds the key of 0x{}, not of its name; swept as that account",
+                    path.display(),
+                    hex::encode(address)
+                );
+            }
+            let funding = dir.join(format!("0x{}.funding", hex::encode(address)));
+            let signed_below = std::fs::read_to_string(&funding)
+                .ok()
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            saved.push(Payer {
+                key,
+                address,
+                file: Arc::new(KeyFile {
+                    path,
+                    funding,
+                    partial,
+                    faucet_signed_below: AtomicU64::new(signed_below),
+                }),
+            });
         }
         saved
     }
 
-    /// Whether `address`'s file was written more than `age` ago.
-    fn older_than(&self, address: &[u8; 20], age: Duration) -> bool {
-        std::fs::metadata(self.path(address))
+    /// Remove a stale run's directory once nothing but its lock (and funding records of keys
+    /// already gone) is left in it.
+    fn remove_if_done(dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let names: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let done = names.iter().all(|name| {
+            name == ".lock"
+                || (name.ends_with(".funding")
+                    && !names.contains(&name.replace(".funding", ".key")))
+                // An unfinished save of a lock or funding record, never of a key.
+                || (name.ends_with(".partial") && !name.contains(".key."))
+        });
+        if done {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Whether `payer`'s file was written more than `age` ago.
+    fn older_than(payer: &Payer, age: Duration) -> bool {
+        std::fs::metadata(&payer.file.path)
             .and_then(|metadata| metadata.modified())
             .ok()
             .and_then(|written| written.elapsed().ok())
             .is_some_and(|elapsed| elapsed > age)
     }
 
-    /// Remove `address`'s file: called only once its sweep has landed (or it holds nothing).
-    fn forget(&self, address: &[u8; 20]) {
-        match std::fs::remove_file(self.path(address)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => println!(
-                "solonet: could not remove the swept key file of 0x{}: {error}",
-                hex::encode(address)
-            ),
+    /// Remove `payer`'s files: called only once its sweep has landed (or it holds nothing).
+    fn forget(payer: &Payer) {
+        for path in [&payer.file.path, &payer.file.funding] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => println!(
+                    "solonet: could not remove {} after its sweep: {error}",
+                    path.display()
+                ),
+            }
         }
     }
 }
@@ -314,7 +505,9 @@ impl Solonet {
             http,
             faucet: SecretKey::from_slice(&hex::decode(FAUCET_KEY).unwrap()).unwrap(),
             max_fee: 0,
-            keys: Arc::new(KeyFiles::from_env()),
+            keys: PROCESS_KEYS
+                .get_or_init(|| Arc::new(KeyFiles::from_env()))
+                .clone(),
         };
         let chain_id = solonet.quantity("eth_chainId", serde_json::json!([])).await;
         assert_eq!(
@@ -332,19 +525,22 @@ impl Solonet {
         solonet
     }
 
-    /// Sweep the keys an earlier run saved and never swept (it was killed, or its sweep
-    /// failed). Runs before this process generates any key, so every file is a leftover.
+    /// Sweep the keys earlier runs saved and never swept (a run that was killed, or whose sweep
+    /// did not land), from every run directory whose lock is stale, and remove each directory
+    /// that is left with nothing to keep.
     async fn sweep_leftovers(&self) {
-        let leftovers = self.keys.saved();
-        if leftovers.is_empty() {
-            return;
+        for run in self.keys.stale_runs() {
+            let leftovers = KeyFiles::saved(&run);
+            if !leftovers.is_empty() {
+                println!(
+                    "solonet: {} keys of an earlier run left in {}; sweeping them first",
+                    leftovers.len(),
+                    run.display()
+                );
+                self.sweep(leftovers).await;
+            }
+            KeyFiles::remove_if_done(&run);
         }
-        println!(
-            "solonet: {} keys of an earlier run left in {}; sweeping them first",
-            leftovers.len(),
-            self.keys.dir.display()
-        );
-        self.sweep(leftovers).await;
     }
 
     async fn try_call(
@@ -577,6 +773,10 @@ impl Solonet {
         let mut sent = Vec::new();
         for attempt in 0u128.. {
             let nonce = self.pending_nonce(faucet).await;
+            // Recorded before the payment exists: the treasury's file then stays until the
+            // faucet's nonce has passed every payment signed to it, so one that lands late is
+            // still swept.
+            self.keys.note_faucet_signing(treasury, nonce);
             let (raw, hash) = sign_eip1559(
                 &self.faucet,
                 SOLONET_CHAIN_ID,
@@ -839,17 +1039,17 @@ impl Solonet {
             for (account, result) in results {
                 match result {
                     Ok(Swept::Landed(value)) => {
-                        self.keys.forget(&account.address);
+                        KeyFiles::forget(&account);
                         swept += 1;
                         total += value;
                     }
-                    Ok(Swept::Empty) => self.keys.forget(&account.address),
+                    Ok(Swept::Empty) => KeyFiles::forget(&account),
                     Ok(Swept::NotYetFunded) => {
-                        if self
-                            .keys
-                            .older_than(&account.address, UNUSED_EMPTY_KEY_KEPT)
+                        // An unfinished save was never paid to; a saved key may still be.
+                        if account.file.partial
+                            || KeyFiles::older_than(&account, UNUSED_EMPTY_KEY_KEPT)
                         {
-                            self.keys.forget(&account.address);
+                            KeyFiles::forget(&account);
                         }
                     }
                     Err(error) => {
@@ -891,6 +1091,19 @@ impl Solonet {
         cap: u128,
         held_back: u128,
     ) -> Result<Swept, String> {
+        // A faucet payment signed to the account may still land until the faucet's nonce has
+        // passed it; until then the account is not done, whatever it holds now.
+        let signed_below = account.file.faucet_signed_below.load(Ordering::SeqCst);
+        if signed_below > 0 {
+            let faucet_nonce = self.latest_nonce(address(&self.faucet)).await;
+            if faucet_nonce < signed_below {
+                return Err(format!(
+                    "0x{}: the faucet signed it a payment at nonce {} and its nonce is {faucet_nonce}",
+                    hex::encode(account.address),
+                    signed_below - 1
+                ));
+            }
+        }
         let balance = self
             .balance(account.address)
             .await

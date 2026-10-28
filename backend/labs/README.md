@@ -365,48 +365,74 @@ the node or the port forward is too busy, for up to a minute.
 
 No funded key exists only in memory or only inside a container. Every key `solonet_payer.rs`
 generates (each payer, each test's funding account and its probe) is written to its own file,
-`0x<address>.key` holding the private key in hex (mode 0600), before anything funds it. The
-directory is a bind mount from the host, so it outlives a killed or removed container and
-`down --volumes`:
+`0x<address>.key` holding the private key in hex (mode 0600, flushed to disk, then renamed into
+place), before anything funds it. Before the faucet signs a payment to the funding account,
+`0x<address>.funding` records the faucet nonce it is signed at. The files live on the host, so
+they outlive a killed or removed container and `down --volumes`:
 
-| Lab | Host directory (override with `FRANK_LAB_SOLONET_KEY_HOST_DIR`) |
+| Lab | Host directory (override with `FRANK_LAB_SOLONET_KEY_HOST_DIR`, absolute only) |
 | --- | --- |
 | cluster contract | `~/.frank-lab-cluster/<COMPOSE_PROJECT_NAME>/solonet-keys` |
 | FoundationDB daemon test | `~/.frank-lab-foundationdb-nats/<COMPOSE_PROJECT_NAME>/solonet-keys` |
 
 `COMPOSE_PROJECT_NAME` falls back to the file's own project name. Inside the container the
-directory is `FRANK_LAB_SOLONET_KEY_DIR=/solonet-keys`; the tests refuse to run without it.
-It is outside the repository, so nothing reaches git.
+directory is `FRANK_LAB_SOLONET_KEY_DIR=/solonet-keys`; the tests refuse to run without it, and
+refuse a relative `FRANK_LAB_SOLONET_KEY_HOST_DIR` (Compose would resolve it inside the
+checkout; `backend/labs/.gitignore` ignores `*.key`, `*.funding` and `*.partial` regardless).
+
+Each test process writes into a run directory of its own, `run-<time>-<random>/`, and holds
+`.lock` in it for its lifetime by touching it every 5 s. (`flock` does not work here: Docker
+Desktop's bind mounts do not carry it between containers, checked with two containers locking
+one file.) A run directory whose lock has not been touched for a minute belongs to a run that is
+gone. So two runs never share keys, and a run never takes over a live run's keys.
 
 Every key goes back to the faucet `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`:
 
 - at the end of each test, passed or failed: the test's payers, funding account and probe are
   owned by one value whose drop sweeps them, also while a panic unwinds, including a panic in
   the middle of funding;
-- at the start of the next run: the first `Solonet::from_env` of a process sweeps every key
-  file already in the directory (a killed run's, or one whose sweep did not land) before the
-  process generates a key of its own. Two runs must therefore not share a directory: give
-  concurrent labs different `COMPOSE_PROJECT_NAME`s.
+- at the start of the next run: the first `Solonet::from_env` of a process sweeps the keys of
+  every run directory whose lock is stale, then removes each such directory once nothing is left
+  in it to keep. A directory whose lock is still fresh is named and left to a later run (a run
+  started within a minute of a killed one sweeps the killed run's keys only next time).
 
 A sweep is exact: its fee cap is the latest base fee + the node's tip + 5 wei, Monad charges
 base fee + tip per gas (`docs/protocol/chains/monad-reserve-balance.md`), and the sweep holds
 back exactly `21,000 x cap`, so at most 105,000 wei stays behind. It first waits for the
 account's own pending transactions and six blocks (Monad admits a send against a balance a few
 blocks old, and reverts a below-reserve transfer within three blocks of the sender's last
-transaction). A key's file is removed only once its sweep has landed: the account's nonce is used
-and it holds no more than the sweep's fee. A sweep that is refused, reverted or not mined is
-signed again (one wei more tip) a few blocks later, up to five rounds; a key still holding funds
-after that keeps its file for the next run. A key that holds nothing and never sent anything (a
-payer whose funding never arrived) keeps its file for an hour, in case a funding the node once
-refused lands after all, and is removed by the first sweep after that.
+transaction). A key's files are removed only once its sweep has landed: the account's nonce is
+used and it holds no more than the sweep's fee. Also:
 
-To sweep a directory by hand (for example when no further run will happen), then remove the
-files whose keys report a sweep hash or "nothing to sweep":
+- A funding account the faucet signed payments to keeps its files until the faucet's nonce has
+  passed every one of them (each mined, or its nonce used by another transaction), so a
+  payment the node took late is still swept.
+- A sweep that is refused, reverted or not mined is signed again (one wei more tip) a few
+  blocks later, up to five rounds; a key still holding funds after that keeps its file for the
+  next run.
+- A key that holds nothing and never sent anything (a payer whose funding never arrived) keeps
+  its file for an hour, in case a funding the node once refused lands after all.
+- A `.partial` file (a save that never finished, so nothing was ever paid to it) is removed once
+  its key is seen to hold nothing and to have sent nothing.
+- A file that is not a readable key is named in the output, skipped, and never deleted.
+
+To sweep by hand (for example when no further run will happen). On Linux the container
+writes the files as root, so run it with `sudo` (or `sudo chown -R "$USER"` the directory
+first); unreadable files are skipped and named:
 
 ```sh
-for key in ~/.frank-lab-cluster/<project>/solonet-keys/*.key; do printf '0x%s\n' "$(cat "$key")"; done \
-  | yarn --cwd packages/bot regtest:monad-sweep
+for key in ~/.frank-lab-cluster/<project>/solonet-keys/run-*/*.key; do
+  if [ -r "$key" ]; then printf '0x%s\n' "$(cat "$key")"; else echo "unreadable, skipped: $key" >&2; fi
+done | yarn --cwd packages/bot regtest:monad-sweep
 ```
+
+Then remove the files whose keys report a sweep hash or "nothing to sweep".
+
+The TypeScript solonet checks follow the same rules (`packages/bot/demo/regtest/solonet-keys.ts`):
+keys they fund outside a stack's wallets go to `~/.frank-regtest/solonet-keys/run-*/`
+(`FRANK_SOLONET_KEY_DIR`), and a stack on solonet deletes its state directory (the wallets'
+keys) only once the check has swept every account; otherwise its keys are copied to
+`~/.frank-regtest/kept-stacks/` first, and the command that sweeps them is printed.
 
 A relay that cannot check a payment yet answers 503 `group_payment_not_ready` or
 `group_payment_check_unavailable` with `Retry-After`. A Forum relay counts a post or vote as

@@ -109,17 +109,20 @@ export async function deployMonadContracts(stack: RegtestStack): Promise<Deploym
  * accounts whose keys go with the stack's directory: each wallet's main, identity and change
  * accounts, found and derived the way `funds:sweep` finds them. It first lets the wallets' last
  * transactions settle (Monad refuses to empty an account within a few blocks of its last one),
- * then moves one account at a time. Returns what came back and what stayed (dust or a failure).
+ * then moves one account at a time. Returns what came back, what stayed (dust or a failure), and
+ * how many accounts still hold more than dust (`unswept`). A check calls `stack.fundsReturned()`
+ * only when that is 0, so the stack keeps the keys otherwise.
  */
 export async function returnToFaucet(
   stack: RegtestStack,
-): Promise<{ returnedWei: bigint; leftWei: bigint }> {
+): Promise<{ returnedWei: bigint; leftWei: bigint; unswept: number }> {
   const monad = monadOf(stack)
   await monad.mine(4)
   const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
   const fee = TRANSFER_GAS * gasPrice
   let returnedWei = 0n
   let leftWei = 0n
+  let unswept = 0
   const seen = new Set<string>()
   for (const wallet of await findWallets(stack.stateDir))
     for (const account of wallet.accounts) {
@@ -145,10 +148,14 @@ export async function returnToFaucet(
         })
         const receipt = await tx.wait(1, 120_000)
         if (receipt?.status === 1) returnedWei += held - fee
-        else leftWei += held
+        else {
+          leftWei += held
+          unswept += 1
+        }
       } catch {
         leftWei += held
+        unswept += 1
       }
     }
-  return { returnedWei, leftWei }
+  return { returnedWei, leftWei, unswept }
 }

@@ -253,6 +253,8 @@ services:
       # Every key the contract funds on solonet is written here before it is funded and removed
       # once swept; a killed run's keys are swept by the next run (README.md, "Paid group writes").
       FRANK_LAB_SOLONET_KEY_DIR: /solonet-keys
+      # Passed in only so the test can refuse a relative one (which lands in the checkout).
+      FRANK_LAB_SOLONET_KEY_HOST_DIR: ${FRANK_LAB_SOLONET_KEY_HOST_DIR:-}
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

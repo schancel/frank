@@ -31,18 +31,15 @@
  * the cluster storage work.
  *
  * Test funds come back: at the end the writer wallet's accounts and the late payer are swept
- * back to the faucet. The late payer's key is written to
- * `<tmpdir>/monad-group-writes-livecheck-keys/<pid>.txt` before it is funded, and the file is
- * removed once the key is swept; a run that was killed leaves its file, and the next run sweeps
- * it first.
+ * exactly back to the faucet, also after a failure. The late payer's key is saved durably before
+ * it is funded (`solonet-keys.ts`: a locked run directory under ~/.frank-regtest/solonet-keys),
+ * and its file is removed once it is swept; a run that was killed leaves it, and a later run
+ * sweeps it first. The stack keeps the wallets' keys unless every account was swept.
  *
  * The first run starts the VM and the chain (5 to 8 minutes, see monad-regtest.ts); later runs
  * reuse them. Not part of CI.
  */
 import assert from 'assert'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
 
 import { Transaction, Wallet, getAddress, hexlify } from 'ethers'
 
@@ -57,17 +54,13 @@ import {
   groupTestSigningKey,
 } from '../../../cashweb/groups/group-test.testutil'
 import { bytesToHex, groupWritePaymentPlan } from '../../../cashweb/groups'
-import {
-  MONAD_REGTEST_CHAIN,
-  MONAD_REGTEST_CHAIN_ID,
-  type MonadRegtest,
-  sweepToFaucet as sweepKeyToFaucet,
-} from './monad-regtest'
+import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID } from './monad-regtest'
 import { findWallets } from '../funds'
 import { monadOf, openMonadWallet } from './monad-wallets'
 import { deliverPaidGroupWrite } from '../../../group-messaging/groups/write-payment'
 import type { StoredGroupWritePayment } from '../../../cashweb/groups/group-write-payment'
-import { startRegtestStack } from './regtest-stack'
+import { type RegtestStack, startRegtestStack } from './regtest-stack'
+import { SolonetKeyRun, sweepKeysExactly, sweepLeftoverKeyRuns } from './solonet-keys'
 
 /** The relay's `PAYMENT_NONCE_WINDOW` (`cashweb-registry/src/http/groups/payment.rs`). */
 const PAYMENT_NONCE_WINDOW = 63
@@ -104,138 +97,60 @@ async function put(
   }
 }
 
-const TRANSFER_GAS = 21_000n
-
-/**
- * Test funds come back: what each of these accounts holds above the transfer fee goes back to
- * the faucet. The chain keeps running after the check and the stack's state directory, with the
- * keys, is deleted, so anything left here would be lost to the next run. Monad lets an account
- * spend below its reserve balance only some blocks after its last transaction and keeps turning
- * down bytes it turned down once, so the sweep waits for the accounts to settle and a retry
- * sends a different amount.
- */
-async function sweepToFaucet(
-  monad: MonadRegtest,
-  privateKeys: string[],
-): Promise<void> {
-  const faucet = monad.faucetAddress.toLowerCase()
-  const signers = [...new Set(privateKeys)]
-    .map(key => new Wallet(key, monad.provider))
-    .filter(signer => signer.address.toLowerCase() !== faucet)
-  for (const signer of signers) {
-    for (const deadline = Date.now() + 120_000; Date.now() < deadline; ) {
-      const [pending, latest] = await Promise.all([
-        monad.provider.getTransactionCount(signer.address, 'pending'),
-        monad.provider.getTransactionCount(signer.address, 'latest'),
-      ])
-      if (pending === latest) break
-      await new Promise(resolve => setTimeout(resolve, 500))
-    }
-  }
-  await monad.mine(6)
-  let sweptWei = 0n
-  let swept = 0
-  let left = signers
-  for (let attempt = 0n; attempt < 3n && left.length > 0; attempt++) {
-    const fees = await monad.provider.getFeeData()
-    const maxFeePerGas = fees.maxFeePerGas! * 2n
-    // Monad charges the whole gas limit at the offered price.
-    const cost = TRANSFER_GAS * maxFeePerGas
-    const refused: Wallet[] = []
-    for (const signer of left) {
-      const balance = await monad.provider.getBalance(signer.address, 'latest')
-      if (balance < cost * 2n) continue
-      const value = balance - cost - attempt
-      try {
-        const tx = await signer.sendTransaction({
-          type: 2,
-          to: monad.faucetAddress,
-          value,
-          nonce: await monad.provider.getTransactionCount(
-            signer.address,
-            'latest',
-          ),
-          gasLimit: TRANSFER_GAS,
-          maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas ?? 1n,
-        })
-        const receipt = await tx.wait(1, 60_000)
-        if (receipt?.status !== 1) throw new Error('not mined')
-        sweptWei += value
-        swept += 1
-      } catch {
-        refused.push(signer)
-      }
-    }
-    left = refused
-    if (left.length > 0) await monad.mine(4)
+async function main() {
+  const startedAt = Date.now()
+  // Accounts this run funds outside the stack's wallets, saved before they are funded.
+  const keys = SolonetKeyRun.open('group-writes')
+  let stack: RegtestStack | undefined
+  try {
+    stack = await startRegtestStack({
+      chains: [MONAD_REGTEST_CHAIN],
+      relays: 2,
+    })
+    await sweepLeftoverKeyRuns(monadOf(stack).rpcUrl, keys)
+    await check(stack, keys, startedAt)
+  } finally {
+    if (stack) await returnFunds(stack, keys)
+    keys.close()
   }
   console.log(
-    `swept ${sweptWei} wei from ${swept} accounts back to the faucet${
-      left.length > 0 ? `; ${left.length} could not be swept` : ''
-    }`,
+    `Paid group writes on monad-regtest: OK (${Math.round(
+      (Date.now() - startedAt) / 1000,
+    )} s; the chain keeps running, stop it with regtest:monad-stop)`,
   )
 }
 
-/** Keys this check funds outside the stack's wallets, one file per run (by process id). */
-const KEYS_DIR = join(tmpdir(), 'monad-group-writes-livecheck-keys')
-const KEYS_FILE = join(KEYS_DIR, `${process.pid}.txt`)
-
-function processAlive(pid: number): boolean {
+/**
+ * Sweep the writer wallet's accounts and this run's keys back to the faucet, exactly, then stop
+ * the stack. The stack deletes its directory (the wallet keys) only when every account was
+ * swept; this run's key files go one by one as their sweeps land. Cleanup always runs: a failed
+ * sweep is reported, never thrown past `stop()`.
+ */
+async function returnFunds(stack: RegtestStack, keys: SolonetKeyRun): Promise<void> {
   try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+    const rpcUrl = monadOf(stack).rpcUrl
+    // The writer wallet's accounts, found from the keys in the stack's state directory.
+    const walletKeys = (await findWallets(stack.stateDir).catch(() => []))
+      .flatMap(wallet => wallet.accounts)
+      .flatMap(account => (account.privateKey ? [account.privateKey] : []))
+    const wallets = await sweepKeysExactly(rpcUrl, walletKeys)
+    const own = await keys.sweep(rpcUrl)
+    const unswept = [...wallets.report.unswept, ...own.unswept]
+    console.log(
+      `swept ${wallets.report.returnedWei + own.returnedWei} wei back to the faucet${
+        unswept.length > 0 ? `; ${unswept.length} accounts still hold funds: ${unswept.join(', ')}` : ''
+      }`,
+    )
+    if (unswept.length === 0) stack.fundsReturned()
+  } catch (err) {
+    console.error('the sweep back to the faucet failed:', err)
+  } finally {
+    await stack.stop().catch(err => console.error('the stack did not stop cleanly:', err))
   }
 }
 
-/** Sweep the keys of earlier runs that ended before their sweep (a run still alive is left). */
-async function sweepLeftoverKeys(monad: MonadRegtest): Promise<void> {
-  const rpcUrl = monad.rpcUrl
-  const fee = TRANSFER_GAS * BigInt(await monad.provider.send('eth_gasPrice', []))
-  let files: string[] = []
-  try {
-    files = readdirSync(KEYS_DIR).filter(name => /^\d+\.txt$/.test(name))
-  } catch {
-    return
-  }
-  for (const name of files) {
-    if (processAlive(Number(name.slice(0, -4)))) continue
-    const file = join(KEYS_DIR, name)
-    const keys = readFileSync(file, 'utf8').split('\n').map(line => line.trim()).filter(Boolean)
-    let unswept = 0
-    for (const key of keys) {
-      const signer = new Wallet(key)
-      try {
-        const hash = await sweepKeyToFaucet(key, rpcUrl)
-        console.log(
-          hash
-            ? `swept ${signer.address}, left by an earlier run, to the faucet in ${hash}`
-            : `${signer.address}, left by an earlier run: nothing to sweep`,
-        )
-      } catch (error) {
-        unswept += 1
-        console.log(`could not sweep ${signer.address}, left by an earlier run: ${(error as Error).message}`)
-        continue
-      }
-      // A sweep that reverted leaves the funds: the file stays for the next run.
-      if ((await monad.provider.getBalance(signer.address, 'latest')) > fee) unswept += 1
-    }
-    if (unswept === 0) rmSync(file, { force: true })
-  }
-}
-
-async function main() {
-  const startedAt = Date.now()
-  const stack = await startRegtestStack({
-    chains: [MONAD_REGTEST_CHAIN],
-    relays: 2,
-  })
-  // Accounts this run funds outside the stack's wallets, swept back with them at the end.
-  const fundedKeys: string[] = []
-  await sweepLeftoverKeys(monadOf(stack))
-  try {
+async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number): Promise<void> {
+  {
     const [hostUrl, otherUrl] = stack.relayUrls as [string, string]
     const monad = monadOf(stack)
     console.log(
@@ -474,10 +389,8 @@ async function main() {
 
     // A payer without funds yet is deferred; once a deposit lands, the same bytes are accepted.
     const late = Wallet.createRandom() as unknown as Wallet
-    fundedKeys.push(late.privateKey)
     // Written down before it is funded, so a crash cannot strand its funds.
-    mkdirSync(KEYS_DIR, { recursive: true, mode: 0o700 })
-    appendFileSync(KEYS_FILE, `${late.privateKey}\n`, { mode: 0o600 })
+    keys.save(late.privateKey)
     const lateEnvelope = seal('paid once funded')
     const latePayment = await sign(
       groupWritePaymentPlan(policy, id, lateEnvelope),
@@ -636,38 +549,7 @@ async function main() {
     } finally {
       await writer.close()
     }
-  } finally {
-    // The writer wallet's accounts, found from the keys in the stack's state directory.
-    const walletKeys = (await findWallets(stack.stateDir).catch(() => []))
-      .flatMap(wallet => wallet.accounts)
-      .flatMap(account => (account.privateKey ? [account.privateKey] : []))
-    // The wallets' sweep also lets every account settle (it waits for their pending
-    // transactions, then six blocks), so the exact sweep of the late payer below is not
-    // reverted by Monad's reserve rule.
-    await sweepToFaucet(monadOf(stack), walletKeys).catch(err =>
-      console.error('the sweep back to the faucet failed:', err),
-    )
-    // The key file is removed only once every key in it holds no more than a transfer's fee;
-    // otherwise the next run sweeps it.
-    const monad = monadOf(stack)
-    const fee = TRANSFER_GAS * BigInt(await monad.provider.send('eth_gasPrice', []))
-    let unswept = 0
-    for (const key of fundedKeys) {
-      const address = new Wallet(key).address
-      await sweepKeyToFaucet(key, monad.rpcUrl).catch(err =>
-        console.error(`could not sweep ${address}:`, err),
-      )
-      if ((await monad.provider.getBalance(address, 'latest')) > fee) unswept += 1
-    }
-    if (unswept === 0) rmSync(KEYS_FILE, { force: true })
-    else console.error(`${unswept} keys stay in ${KEYS_FILE}; the next run sweeps them`)
-    await stack.stop()
   }
-  console.log(
-    `Paid group writes on monad-regtest: OK (${Math.round(
-      (Date.now() - startedAt) / 1000,
-    )} s; the chain keeps running, stop it with regtest:monad-stop)`,
-  )
 }
 
 if (require.main === module) {

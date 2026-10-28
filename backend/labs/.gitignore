@@ -1,0 +1,4 @@
+# Solonet test keys (see README.md, "The keys the labs fund"): never committed, wherever they land.
+*.key
+*.funding
+*.partial

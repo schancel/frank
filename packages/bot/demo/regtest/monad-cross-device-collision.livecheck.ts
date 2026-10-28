@@ -36,6 +36,7 @@ import type { RealWallet } from '../real-stack'
 import { TRANSFER_GAS } from '../funds'
 import { MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
 import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
+import { SolonetKeyRun } from './solonet-keys'
 import { startRegtestStack, type RegtestStack } from './regtest-stack'
 import { sleep } from './regtest-chain'
 
@@ -302,7 +303,8 @@ async function main() {
       }
       await device.close().catch(() => undefined)
     }
-    const swept = await returnToFaucet(stack).catch(() => ({ returnedWei: 0n, leftWei: 0n }))
+    let leftCoins: SolonetKeyRun | undefined
+    const swept = await returnToFaucet(stack).catch(() => ({ returnedWei: 0n, leftWei: 0n, unswept: 1 }))
     // Received stamp coins and their successors are not among the accounts `returnToFaucet` finds.
     const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
     const fee = TRANSFER_GAS * gasPrice
@@ -319,6 +321,15 @@ async function main() {
         console.warn(`could not sweep ${account}: ${(error as Error).message}`)
       }
     }
+    // A coin key that still holds funds is saved durably, so a later run's leftover sweep returns it.
+    let coinsLeft = 0
+    for (const [account, key] of keys) {
+      if ((await monad.provider.getBalance(account)) <= fee * 2n) continue
+      coinsLeft += 1
+      ;(leftCoins ??= SolonetKeyRun.open('cross-device-coins')).save(key)
+    }
+    leftCoins?.close()
+    if (swept.unswept === 0 && coinsLeft === 0) stack.fundsReturned()
     console.log(
       `swept ${formatEther(swept.returnedWei + extra)} back to the faucet; left ${formatEther(swept.leftWei)} (dust or in flight)`,
     )

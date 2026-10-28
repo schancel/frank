@@ -377,8 +377,12 @@ async function main() {
     chains: { [monad.chainIdentifier]: monad },
     stateDir,
     relayLogPath: '',
+    fundsReturned: () => {
+      fundsReturned = true
+    },
     stop: async () => {},
   }
+  let fundsReturned = false
   let failed = false
   // A wallet library can throw outside any promise; the lab is still removed.
   process.once('uncaughtException', err => {
@@ -818,6 +822,7 @@ async function main() {
       console.error(`could not return the wallets' funds to the faucet: ${err}`)
       return undefined
     })
+    if (swept?.unswept === 0) stack.fundsReturned()
     if (swept)
       console.log(
         `   returned ${formatEther(swept.returnedWei)} MON to the faucet; ${formatEther(swept.leftWei)} MON left (dust)`,
@@ -831,7 +836,9 @@ async function main() {
     await proxy.close()
     if (process.env.FRANK_DM_LAB_KEEP !== '1') {
       await lab.down().catch(err => console.error(`could not remove the lab: ${err}`))
-      rmSync(stateDir, { recursive: true, force: true })
+      // The wallets' keys go only once every account was swept; otherwise they stay, named.
+      if (fundsReturned) rmSync(stateDir, { recursive: true, force: true })
+      else console.error(`funds may remain: the wallets' keys stay in ${stateDir} (yarn --cwd packages/bot funds:sweep ${stateDir})`)
     }
     await monad.stop()
   }

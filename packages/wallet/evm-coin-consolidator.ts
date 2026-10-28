@@ -212,6 +212,17 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
     pending(): string[] {
       return unfinished().map(row => row.preparationId!.slice(PREPARATION_PREFIX.length))
     },
+    /**
+     * The fresh accounts of merges whose money is not a coin of the list yet: still on its way,
+     * or landed and not listed. The money of such a merge is at its sources or at its target,
+     * so a balance that reads both counts it once, also while the merge is between them.
+     */
+    unlistedTargets(): string[] {
+      const rows = new Set([...unfinished(), ...unlisted()])
+      return [...rows]
+        .map(row => targetOf(row).account.toLowerCase())
+        .filter(account => deps.coins.latestOf(account) === undefined)
+    },
   }
 }
 

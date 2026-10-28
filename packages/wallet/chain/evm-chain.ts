@@ -2624,6 +2624,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 for (const coin of coinList.all())
                   if (coin.origin === "deterministic" && !pooled.has(coin.account))
                     changeAddressSet.add(coin.account);
+                // A merge's fresh account before it is listed: the merged money has left its
+                // sources and is not a coin yet. Read here, it is counted while it moves.
+                for (const account of coinConsolidator.unlistedTargets())
+                  changeAddressSet.add(account);
                 changeAddressSet.delete(mainAccount.address.toLowerCase());
                 changeAddressSet.delete(identity.address.raw.toLowerCase());
                 const changeAddresses = [...changeAddressSet];

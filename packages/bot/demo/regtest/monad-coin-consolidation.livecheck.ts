@@ -115,6 +115,7 @@ async function main(): Promise<boolean> {
     // read) and, idle, takes a maintenance step. A coin found by a chain read is listed at the
     // head it was read at and waits the confirmation depth from there.
     await wallet.handle.refreshTransactionSetInventory!()
+    const balanceBefore = await wallet.handle.getBalance()
     let first = await wallet.handle.maintainCoins!()
     for (let pass = 0; pass < 10 && first.outcome === 'idle'; pass++) {
       await monad.mine(1)
@@ -137,6 +138,25 @@ async function main(): Promise<boolean> {
       saveKeys()
       check(derived.account === first.target && derived.changeIndex >= EVM_MERGE_TARGET_BASE,
         `the target is the account derived from the merge's coins, in the change branch's reserved half (index ${derived.changeIndex})`)
+    }
+
+    // 1b. The merged money is the wallet's while it moves: once the moves have landed and before
+    // the fresh account is listed (that is the next maintenance step), the balance has lost only
+    // the merge's fees. A bot that sizes what it can pay from the balance reads it so.
+    {
+      const row = wallet.handle.getNativeOperations!().find(item => item.preparationId === `evm-transaction-set:${first.operationId}`)!
+      for (const deadline = Date.now() + 120_000; ; ) {
+        const receipts = await Promise.all(row.members.map(member => monad.provider.getTransactionReceipt(member.signed!.transactionHash)))
+        if (receipts.every(receipt => receipt !== null)) break
+        if (Date.now() > deadline) throw new Error('the merge did not land within 120 s')
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+      wallet.handle.invalidateBalanceCache?.()
+      const balanceAfter = await wallet.handle.getBalance()
+      check(
+        balanceAfter >= balanceBefore - first.feeWei,
+        `while the merge's money moves, the balance has lost only its fees (${formatEther(balanceBefore)} -> ${formatEther(balanceAfter)} MON, fees ${formatEther(first.feeWei)})`,
+      )
     }
 
     // 2. Straight after, while the merge is on its way: a paid message.

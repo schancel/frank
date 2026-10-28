@@ -1325,11 +1325,22 @@ impl Solonet {
                 serde_json::json!([format!("0x{}", hex::encode(account)), "latest"]),
             )
             .await?;
-        u128::from_str_radix(
-            value.as_str().unwrap_or_default().trim_start_matches("0x"),
-            16,
-        )
-        .map_err(|error| RpcError::Node(format!("eth_getBalance: {error}")))
+        // Custody disposal requires an actual canonical JSON-RPC quantity. In particular,
+        // unprefixed/repeated-prefix zero is unknown, not evidence that custody is empty.
+        let digits = value
+            .as_str()
+            .and_then(|text| text.strip_prefix("0x"))
+            .filter(|digits| {
+                !digits.is_empty()
+                    && (digits.len() == 1 || !digits.starts_with('0'))
+                    && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| {
+                RpcError::Node("eth_getBalance: noncanonical quantity; custody retained".into())
+            })?;
+        u128::from_str_radix(digits, 16).map_err(|_| {
+            RpcError::Node("eth_getBalance: quantity out of range; custody retained".into())
+        })
     }
 
     /// The `payment` member of a write's body and its transaction hash: `payer`'s payment for
@@ -1591,6 +1602,7 @@ mod custody_tests {
         late_after_zero: bool,
         before_error: bool,
         after_error: bool,
+        after_balance_result: Option<Value>,
         receipt: Receipt,
         reads: usize,
         head: u64,
@@ -1619,6 +1631,11 @@ mod custody_tests {
                     return Json(
                         json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"balance unavailable"}}),
                     );
+                }
+                if n.sent > 0 {
+                    if let Some(value) = &n.after_balance_result {
+                        return Json(json!({"jsonrpc":"2.0","id":request["id"],"result":value}));
+                    }
                 }
                 json!(format!(
                     "0x{:x}",
@@ -1707,6 +1724,7 @@ mod custody_tests {
                 late_after_zero: false,
                 before_error: false,
                 after_error: false,
+                after_balance_result: None,
                 receipt: Receipt::Success,
                 reads: 0,
                 head: 10,
@@ -1846,6 +1864,35 @@ mod custody_tests {
         rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
         rig.retained();
     }
+    #[tokio::test]
+    async fn malformed_post_return_balance_never_verifies_zero_or_discards_residual_custody() {
+        for value in [
+            json!("0"),
+            json!("0x0x0"),
+            json!(""),
+            json!("0x"),
+            json!("0x00"),
+            json!("0x01"),
+            json!("0x+0"),
+            json!("0xg"),
+            json!("0x100000000000000000000000000000000"),
+            json!(0),
+            Value::Null,
+            json!([]),
+        ] {
+            let rig = Rig::new(1_000_000, 105_000, true).await;
+            rig.node.lock().unwrap().after_balance_result = Some(value);
+            // Real sweep path: canonical own return + consumed funding claim, but RPC
+            // misrepresents the still-positive residue. Malformed is an observable failure.
+            rig.sweep().await;
+            rig.retained();
+            assert_eq!(rig.node.lock().unwrap().sent, 1);
+            assert!(rig.chain.balance(rig.payer.address).await.is_err());
+            rig.chain.sweep(KeyFiles::saved(&rig.chain.keys.dir)).await;
+            rig.retained();
+        }
+    }
+
     #[tokio::test]
     async fn returned_value_excludes_gas_and_retained_residual_is_separate() {
         let rig = Rig::new(1_000_000, 105_000, true).await;

@@ -16,7 +16,7 @@ import type {
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
-import { EvmNativeJournalError, nativeMaximumFee, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
 import { fundsSettleBlocks } from './chain/evm-spend-rule'
@@ -433,18 +433,16 @@ export class EvmTransactionSetPreparer {
         const existing = coins.get(member.source.address, account.nonce)
         if (!existing || existing.state === 'unspent') {
           const rule = this.recoverySpendRule
-          // More than this set left the account holding, beyond what its fees could have come
-          // in under their ceilings, is money that arrived since: fresh, by the block this read
-          // was at, whatever the reserve.
+          // More than this set left the account holding is money that arrived since: fresh, by
+          // the block this read was at, whatever the reserve. `balanceAfterWei` counts each fee
+          // at its ceiling, so a fee that came in under it also reads as fresh: a wait, never an
+          // early spend.
           const expectedAfter = lastOfSource.transactionSet?.balanceAfterWei
-          const feeCeilings = current.members
-            .filter(candidate => candidate.source.address === member.source.address)
-            .reduce((total, candidate) => total + nativeMaximumFee(Transaction.from(candidate.unsignedTransaction)), 0n)
           const fresh =
             rule !== undefined &&
             fundsSettleBlocks(rule.waitBlocks) > 0 &&
             (expectedAfter === undefined ||
-              BigInt(account.balanceWei) > BigInt(expectedAfter) + feeCeilings)
+              BigInt(account.balanceWei) > BigInt(expectedAfter))
               ? account.blockNumber + fundsSettleBlocks(rule.waitBlocks)
               : undefined
           const quiet =

@@ -445,7 +445,8 @@ it('counted from the proposed head, the same coin is signed at once into bytes t
 it('after a Forum burn, money that arrived with it waits four blocks, whatever the reserve', () => {
   // The burn of 0.01 MON left the account 0.99; at the head it holds 1.49: 0.5 arrived by then.
   const MON = 10n ** 18n
-  const burn = { head: 500, spendSpacingBlocks: SPACING, burnValue: MON / 100n }
+  const FEE = 21_000n * 102_000_000_000n
+  const burn = { head: 500, spendSpacingBlocks: SPACING, burnValue: MON / 100n, fee: FEE }
   expect(
     retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON + MON / 2n - MON / 100n }),
   ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 504 })
@@ -457,6 +458,15 @@ it('after a Forum burn, money that arrived with it waits four blocks, whatever t
   // Nothing arrived: the quiet window, with the same margin, which a transfer above the
   // reserve may skip.
   expect(
-    retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON - MON / 100n - 21_000n }),
+    retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON - MON / 100n - FEE }),
   ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 500 })
+  // 1,000 wei arrived, far less than the fee: still money the node does not see yet.
+  expect(
+    retainedForumNextCoinWaits({ ...burn, heldBefore: MON, balance: MON - MON / 100n - FEE + 1_000n }),
+  ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 504 })
+  // The receipt does not show the fee: counted as fresh.
+  const { fee: _fee, ...noFee } = burn
+  expect(
+    retainedForumNextCoinWaits({ ...noFee, heldBefore: MON, balance: MON - MON / 100n - FEE }),
+  ).toEqual({ spendableFromBlock: 504, fundsVisibleFromBlock: 504 })
 })

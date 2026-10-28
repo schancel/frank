@@ -25,7 +25,7 @@ import type {
 import type { EvmCoinList } from './evm-coin-list'
 import { nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { constructWhenSpendable } from './evm-transaction-set'
-import { nextCoinWaits } from './chain/evm-spend-rule'
+import { nextCoinWaits, receiptFee } from './chain/evm-spend-rule'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -240,20 +240,23 @@ export function bindRetainedForumAuthority(
 }
 
 /** The waits of the account's next coin after a retained Forum burn, read at `head`. The
- * account holds more than the burn left it (or what it held before is unknown): money arrived
- * by `head`, and it waits like any money that just arrived (`nextCoinWaits`). */
+ * account holds more than the burn left it (what it held before, less the burn and the fee its
+ * receipt shows), or that is not known: money arrived by `head`, and it waits like any money
+ * that just arrived (`nextCoinWaits`). */
 export function retainedForumNextCoinWaits(params: {
   head: number
   spendSpacingBlocks: number
   balance: bigint
   heldBefore?: bigint
   burnValue: bigint
+  fee?: bigint
 }): { spendableFromBlock?: number; fundsVisibleFromBlock?: number } {
   return nextCoinWaits(
     params.head,
     params.spendSpacingBlocks,
     params.heldBefore === undefined ||
-      params.balance > params.heldBefore - params.burnValue,
+      params.fee === undefined ||
+      params.balance > params.heldBefore - params.burnValue - params.fee,
   )
 }
 
@@ -355,6 +358,7 @@ export async function observeRetainedForumSpend(
           ? {}
           : { heldBefore: original.valueWei }),
         burnValue: tx.value,
+        ...(receiptFee(receipt) === undefined ? {} : { fee: receiptFee(receipt)! }),
       }),
     })
     return true

@@ -147,10 +147,10 @@ it.each(['source residual', 'owned change'] as const)(
       expect(applied?.valueWei).toBe(
         scenario === 'source residual' ? 5555n : tx.value,
       )
-      // The residual waits the reserve rule after its own transfer (3); change is fresh money (4).
-      expect(applied?.spendableFromBlock).toBe(
-        scenario === 'source residual' ? 104 : 105,
-      )
+      // Change is fresh money (4). So is the residual: the set left the source 0, and the 5,555
+      // wei it holds arrived since (a fee under its ceiling would not explain any of it).
+      expect(applied?.spendableFromBlock).toBe(105)
+      expect(applied?.fundsVisibleFromBlock).toBe(105)
       expect(
         reopened.getOperation('original')!.members[memberIndex]!.transactionSet
           ?.inventoryApplied,

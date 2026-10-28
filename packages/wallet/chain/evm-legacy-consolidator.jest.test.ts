@@ -11,6 +11,7 @@ import {
 import {
   EvmLegacyConsolidator,
   EvmNativeOperationPendingError,
+  FUNDS_SETTLE_WAIT_MS,
 } from './evm-legacy-consolidator'
 import {
   NativeEvmTransactionBuilder,
@@ -2318,7 +2319,7 @@ describe('wallet-lifetime EVM native operations', () => {
       fundsSettleBlocks: 4,
       spendRuleHead: 'finalized',
     })
-    return { state, executor, looks, head: () => head }
+    return { state, executor, looks, head: () => head, clock: () => clock }
   }
 
   // A node whose finalized block stopped moving (seen on solonet), money that is still not shown
@@ -2356,6 +2357,23 @@ describe('wallet-lifetime EVM native operations', () => {
         row.members[0]!.signed!.transactionHash,
       )
     })
+
+  it('on a chain that stopped making blocks, the transfer is kept after FUNDS_SETTLE_WAIT_MS, not before', async () => {
+    // No block comes: the head never reaches the point where the money would show, so only the
+    // clock ends the wait. Each look is 400 ms.
+    const node = {
+      fundedAt: (head: number) => head - 3,
+      finalized: (head: number) => head,
+      ahead: 0,
+    }
+    const { state, executor, looks, clock } = settleNode(node)
+    looks.moves = false
+    const refused = await pay(executor, { value: 100000n }).catch(error => error)
+    expect(refused).toBeInstanceOf(EvmNativeOperationPendingError)
+    expect(state.provider.broadcastTransaction).not.toHaveBeenCalled()
+    expect(clock()).toBe(FUNDS_SETTLE_WAIT_MS)
+    expect(looks.count).toBe(FUNDS_SETTLE_WAIT_MS / 400)
+  })
 
   it('a transfer out of money just funded waits through a finalized head 8 blocks behind and a slow chain, however many looks that takes', async () => {
     // The newest block is 8 past the finalized head, and the finalized head moves one block every

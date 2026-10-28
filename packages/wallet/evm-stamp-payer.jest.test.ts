@@ -38,7 +38,7 @@ interface Node {
   /** Nonce an account had at an older block; default: what it has. */
   nonceAt?: (account: string, block: number) => number
   pending?: Map<string, number>
-  receipts: Map<string, { status: number; blockNumber: number; blockHash: string }>
+  receipts: Map<string, { status: number; blockNumber: number; blockHash: string; gasUsed?: bigint; gasPrice?: bigint }>
   calls: string[]
   /** While set, balance reads wait for it. */
   gate?: Promise<void>
@@ -184,6 +184,8 @@ function mine(node: Node, rawTx: string, block: number) {
     status: 1,
     blockNumber: block,
     blockHash: `0xblock${block}`,
+    gasUsed: 21_000n,
+    gasPrice: 102n * GWEI,
   })
 }
 
@@ -501,6 +503,23 @@ describe('settlement: the chain decides', () => {
     expect(claimed).toBe(false)
     f.node.head = 1005
     expect((await second).accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('money that arrived with the payment, less than its fee, still makes the next coin wait above the reserve', async () => {
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, first)
+    mine(f.node, signed!.rawTx, 1001)
+    f.node.head = 1001
+    // 1,000 wei arrived in block 1001 too: far less than the payment's fee.
+    f.node.balances.set(at(main), f.node.balances.get(at(main))! + 1_000n)
+    await f.payer.recordSpent('one', signed!, 1001)
+    f.payer.releasePayment('one', signed!)
+    expect(f.list.get(at(main), 1)).toMatchObject({
+      spendableFromBlock: 1005,
+      fundsVisibleFromBlock: 1005,
+    })
   })
 
   it('a coin stored without its funds-visible block is not spent before its whole wait, above the reserve too', async () => {

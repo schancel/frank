@@ -121,3 +121,15 @@ export function nextCoinWaits(
   const settles = block + fundsSettleBlocks(spacing)
   return { spendableFromBlock: settles, fundsVisibleFromBlock: freshMoney ? settles : block }
 }
+
+/** What a mined transaction paid in fees, as its receipt shows it (gas used times the price
+ * paid); undefined when the receipt does not say. */
+export function receiptFee(
+  receipt: { gasUsed?: unknown; gasPrice?: unknown; effectiveGasPrice?: unknown } | null | undefined,
+): bigint | undefined {
+  if (!receipt) return undefined
+  const price = receipt.gasPrice ?? receipt.effectiveGasPrice
+  return typeof receipt.gasUsed === 'bigint' && typeof price === 'bigint'
+    ? receipt.gasUsed * price
+    : undefined
+}

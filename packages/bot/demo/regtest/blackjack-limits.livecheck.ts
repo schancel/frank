@@ -57,7 +57,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const say = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a)
 const randomHex32 = () => Wallet.createRandom().privateKey.slice(2)
 
-async function main(): Promise<boolean> {
+export async function main(): Promise<boolean> {
   const minHands = Number(process.env.BLACKJACK_LIMITS_MIN_HANDS ?? '0')
   const maxHands = Number(process.env.BLACKJACK_LIMITS_MAX_HANDS ?? '40')
   if (!Number.isSafeInteger(minHands) || minHands < 0 ||
@@ -74,19 +74,8 @@ async function main(): Promise<boolean> {
     say(`${ok ? 'ok  ' : 'FAIL'}  ${what}`)
     if (!ok) problems.push(what)
   }
-  // The faucet is shared with whatever else runs on the chain: a payment that loses its nonce to
-  // another one is tried again.
-  const fund = async (address: string, amount: bigint) => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await monad.fund(address, amount)
-      } catch (error) {
-        if (attempt >= 40) throw error
-        say(`faucet payment failed (${(error as Error).message.slice(0, 80)}); trying again`)
-        await sleep(1000 + Math.floor(Math.random() * 3000))
-      }
-    }
-  }
+  // monad.fund owns same-payment signing and nonce recovery. An error can leave its original
+  // bytes executable; a fresh whole funding call here could pay the same account twice.
   let host: FrankBotHost | undefined
   const wallets: { close(): Promise<void> }[] = []
   try {
@@ -116,13 +105,13 @@ async function main(): Promise<boolean> {
     say(`dealer ${dealer}, main account ${dealerMain}`)
     // The dealer covers a bet of (identity balance - 0.02) / 4: about 0.5 MON at 2 MON. Its
     // payouts and refunds are paid from its wallet (main account).
-    await fund(dealer, 2n * MON)
-    if (dealerMain.toLowerCase() !== dealer.toLowerCase()) await fund(dealerMain, 2n * MON)
+    await monad.fund(dealer, 2n * MON)
+    if (dealerMain.toLowerCase() !== dealer.toLowerCase()) await monad.fund(dealerMain, 2n * MON)
     await host.start()
 
     const player = await openMonadWallet(stack, 'blackjack-limits-player')
     wallets.push(player)
-    await fund(player.mainAccount, 4n * MON)
+    await monad.fund(player.mainAccount, 4n * MON)
 
     /** Sends once the wallet's earlier payments have settled: a paid send while the change of an
      * earlier one is still on its way is refused (owner ruling 2026-10-26), never queued, and the

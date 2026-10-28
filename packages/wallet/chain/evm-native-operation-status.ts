@@ -3,6 +3,7 @@ import {
   landedSigning,
   memberSignings,
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeOperation,
 } from "../storage/evm-native-operation-journal";
 
@@ -164,7 +165,8 @@ export function summarizeEvmNativeOperation(
   if (value.toString() !== row.intendedValueWei)
     throw new Error("Native operation recipient evidence does not match");
   const stateOf = (member: EvmNativeOperation["members"][number]) =>
-    // Abandoned (given up on chain evidence) reads as superseded: it will not land.
+    nativeMemberNeedsOwnMoveRecovery(member) ? ("pending" as const) :
+    // Never-exposed abandonment and consumed nonces remain terminal evidence.
     member.observation.state === "abandoned" || nativeMemberEnded(member)
       ? ("superseded" as const)
       : member.observation.state;

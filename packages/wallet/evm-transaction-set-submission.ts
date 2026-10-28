@@ -8,6 +8,7 @@ import type {
 } from './evm-transaction-set-types'
 import {
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeOperation,
   type EvmNativeMember,
 } from './storage/evm-native-operation-journal'
@@ -86,7 +87,7 @@ function assertComplete(
 
 /** Chain settlement and the durable inventory projection are separate completion facts. */
 function needsRecovery(member: EvmNativeMember): boolean {
-  return member.transactionSet?.inventoryApplied !== true || (
+  return nativeMemberNeedsOwnMoveRecovery(member) || member.transactionSet?.inventoryApplied !== true || (
     member.observation.state !== 'included-success' &&
     member.observation.state !== 'included-revert' &&
     !nativeMemberEnded(member)
@@ -117,7 +118,7 @@ export function createEvmTransactionSetSubmission(options: {
     const failed = operation.members.filter(
       member =>
         member.observation.state === 'included-revert' ||
-        nativeMemberEnded(member),
+        (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)),
     )
     const pending = operation.members.filter(needsRecovery)
     const status = pending.length

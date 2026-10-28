@@ -17,7 +17,7 @@ import type {
   EvmNativeAccountObservation,
 } from './storage/evm-native-operation-journal'
 import { EVM_TRANSACTION_SET_SOURCE_ORDER, EvmTransactionSetInsufficientFundsError, FundsInPendingSendError } from './evm-transaction-set-types'
-import { EvmNativeJournalError, nativeMemberAbandoned, nativeMemberEnded, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { EvmNativeJournalError, nativeMemberAbandoned, nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
 import { fundsSettleBlocks } from './chain/evm-spend-rule'
@@ -263,7 +263,7 @@ export class EvmTransactionSetPreparer {
         row.members.some(member =>
           member.observation.state !== 'included-success' &&
           member.observation.state !== 'included-revert' &&
-          !nativeMemberEnded(member))) ||
+          (!nativeMemberEnded(member) || nativeMemberNeedsOwnMoveRecovery(member)))) ||
         row.members.some(member => nativeMemberAbandoned(member) &&
           member.transactionSet?.inventoryApplied !== true))
         ? [row.preparationId.slice(prefix.length)]
@@ -279,7 +279,7 @@ export class EvmTransactionSetPreparer {
         member.source.address === key &&
         member.observation.state !== 'included-success' &&
         member.observation.state !== 'included-revert' &&
-        !nativeMemberEnded(member),
+        (!nativeMemberEnded(member) || nativeMemberNeedsOwnMoveRecovery(member)),
       ),
     )
   }
@@ -411,13 +411,13 @@ export class EvmTransactionSetPreparer {
   ): Promise<void> {
     const { coins } = this.options
     const members = row.members.filter(member => member.source.address === address)
-    const abandoned = members.filter(nativeMemberAbandoned)
+    const abandoned = members.filter(member => nativeMemberAbandoned(member) && !nativeMemberNeedsOwnMoveRecovery(member))
     if (
       abandoned.length === 0 ||
       !members.every(member =>
         member.observation.state === 'included-success' ||
         member.observation.state === 'included-revert' ||
-        nativeMemberEnded(member))
+        (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)))
     )
       return
     const from = Math.min(...abandoned.map(member => Transaction.from(member.unsignedTransaction).nonce))
@@ -458,6 +458,14 @@ export class EvmTransactionSetPreparer {
       if (await this.archivedMemberComplete(operationId, memberIndex)) return false
       throw new Error('Unknown transaction-set operation')
     }
+    const recoveringOwnMove = nativeMemberNeedsOwnMoveRecovery(row.members[memberIndex]!)
+    const restoringHold = recoveringOwnMove && observation.state !== 'included-success' &&
+      observation.state !== 'included-revert' && account !== null &&
+      account.nonce <= Transaction.from(row.members[memberIndex]!.unsignedTransaction).nonce
+    if (restoringHold && coins.all().some(coin =>
+        coin.account === row.members[memberIndex]!.source.address && coin.holder &&
+        coin.holder !== operationId && coin.state !== 'spent'))
+      throw new Error('Exposed own move conflicts with another operation reservation')
     const capture = await journal.beginCapture(row.operationId, memberIndex)
     const recorded = await journal.recordObservation(
       capture,
@@ -471,6 +479,20 @@ export class EvmTransactionSetPreparer {
       member = current.members[memberIndex]!
     const tx = Transaction.from(member.unsignedTransaction),
       meta = member.transactionSet!
+    if (restoringHold && observation.state !== 'abandoned') {
+      const source = this.sourceOf(current, member)
+      if (!source) throw new Error('Transaction-set source key restoration required')
+      coins.requireTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
+      coins.restoreTransactionSetCoin(operationId, {
+        account: member.source.address, nonce: tx.nonce, privateKey: source.privateKey,
+        origin: source.origin, valueWei: BigInt(meta.balanceBeforeWei), state: 'pending_receipt',
+        spendingTx: member.signed!.rawTransaction,
+        ...(source.changeIndex === undefined ? {} : { changeIndex: source.changeIndex }),
+      })
+      await coins.checkpointTransactionSetReservations(operationId)
+      coins.completeTransactionSetProjection(member.source.address, `${row.operationId}:${memberIndex}`)
+    }
+
     if (meta.inventoryApplied === true) {
       coins.completeTransactionSetProjection(
         member.source.address,
@@ -1949,9 +1971,13 @@ export class EvmTransactionSetPreparer {
         )
       const source = this.sourceOf(row, member)
       const reconciled = meta.inventoryApplied === true
+      if (nativeMemberNeedsOwnMoveRecovery(member) && coins.all().some(coin =>
+          coin.account === member.source.address && coin.holder && coin.holder !== logicalId &&
+          coin.state !== 'spent'))
+        throw new Error('Exposed own move conflicts with another operation reservation')
       // Given up and already taken out of the list: its account was listed again at what the
       // chain showed, and nothing of it is held.
-      if (reconciled && nativeMemberAbandoned(member)) continue
+      if (reconciled && nativeMemberAbandoned(member) && !nativeMemberNeedsOwnMoveRecovery(member)) continue
       if (
         !reconciled &&
         (member.observation.state === 'abandoned' ||
@@ -1992,7 +2018,7 @@ export class EvmTransactionSetPreparer {
             ? { spentInBlock: member.observation.blockNumber }
             : {}),
         },
-        !reconciled,
+        !reconciled || nativeMemberNeedsOwnMoveRecovery(member),
       )
       const next = row.members[index + 1]
       if (

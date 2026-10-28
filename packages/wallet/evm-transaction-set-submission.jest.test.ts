@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import level from 'level'
 import {
   getBytes,
   hexlify,
@@ -127,6 +128,7 @@ async function fixture(
   gasPriceWei = 1n,
   canBroadcastPayments?: (operationId: string) => boolean,
   maxChangeOutputs = 8,
+  entropy = 0.01,
 ) {
   const store = await LevelRecordStore.open<StoredEvmListCoin>(
     location,
@@ -156,7 +158,7 @@ async function fixture(
     coins,
     journal,
     recoverySpendRule: rule,
-    random: () => 0.01,
+    random: () => entropy,
     policy: () => ({
       sourceOrder: EVM_TRANSACTION_SET_SOURCE_ORDER,
       gasPriceWei,
@@ -1103,6 +1105,559 @@ test.each([
     const inventory = structuredClone(f.coins.all())
     await f.submission.reconcileAuthorized()
     expect(f.coins.all()).toEqual(inventory)
+  } finally {
+    await f.close()
+  }
+})
+
+
+/** Baseline ACTIVE data, with genuine replay exposure before the old erroneous classification.
+ * The node fixture is narrow; the separate Anvil regression proves the reachable financial path. */
+async function exposedAbandonedOwnMove(
+  f: Awaited<ReturnType<typeof fixture>>,
+  chain: ReturnType<typeof node>,
+  id = 'recover-own'
+) {
+  chain.automine(false)
+  await f.construct(id)
+  await f.preparer.authorizeSubmission(id)
+  await f.lifecycle.replay(id, { payments: true })
+  const original = (await f.preparer.readOperation(id))!
+  const index = original.members.findIndex(
+    (member) => member.transactionSet?.role === 'change'
+  )
+  expect(index).toBeGreaterThanOrEqual(0)
+  const member = original.members[index]!
+  expect(member.exposed).toBe(true)
+  await f.preparer.recordObservation(
+    id,
+    index,
+    { state: 'abandoned', blockNumber: 5 },
+    { blockHash, blockNumber: 10, nonce: 0, balanceWei: '1000000' },
+    member
+  )
+  return {
+    index,
+    original,
+    member: (await f.preparer.readOperation(id))!.members[index]!,
+  }
+}
+
+test.each(['pending', 'inclusion'] as const)(
+  'active exposed own-move restoration rejects a stale snapshot after %s',
+  async (transition) => {
+    const chain = node(),
+      f = await fixture(location, chain)
+    try {
+      const { index, member } = await exposedAbandonedOwnMove(f, chain)
+      const raw = member.signed!.rawTransaction
+      const capture = f.journal.beginCapture(
+        f.preparer.getOperation('recover-own')!.operationId,
+        index
+      )
+      const fresh =
+        transition === 'pending'
+          ? { state: 'pending' as const }
+          : {
+              state: 'included-success' as const,
+              transactionHash: member.signed!.transactionHash,
+              blockHash,
+              blockNumber: 10,
+              transactionIndex: 0,
+              feeWei: '21000',
+            }
+      expect(
+        await f.journal.recordObservation(
+          capture,
+          fresh,
+          {
+            blockHash,
+            blockNumber: 10,
+            nonce: transition === 'pending' ? 0 : 1,
+            balanceWei: '1000000',
+          },
+          undefined,
+          member
+        )
+      ).toBe(true)
+      // Even a capture obtained AFTER inclusion must not turn stale abandoned RPC into pending.
+      const later = f.journal.beginCapture(
+        f.preparer.getOperation('recover-own')!.operationId,
+        index
+      )
+      expect(
+        await f.journal.recordObservation(
+          later,
+          { state: 'pending' },
+          { blockHash, blockNumber: 10, nonce: 0, balanceWei: '1000000' },
+          undefined,
+          member
+        )
+      ).toBe(false)
+      expect(
+        (await f.preparer.readOperation('recover-own'))!.members[index]!
+          .observation
+      ).toEqual(fresh)
+      expect(
+        (await f.preparer.readOperation('recover-own'))!.members[index]!.signed!
+          .rawTransaction
+      ).toBe(raw)
+    } finally {
+      await f.close()
+    }
+  }
+)
+
+test('unavailable or unbound observations do not restore or release exposed abandoned own bytes', async () => {
+  const chain = node(),
+    f = await fixture(location, chain)
+  try {
+    const { index, member } = await exposedAbandonedOwnMove(f, chain)
+    const row = (await f.preparer.readOperation('recover-own'))!
+    for (const [observation, account, expected] of [
+      [{ state: 'unknown' }, null, member],
+      [
+        { state: 'pending' },
+        { blockHash, blockNumber: 10, nonce: 0, balanceWei: '1000000' },
+        undefined,
+      ],
+    ] as const) {
+      expect(
+        await f.journal.recordObservation(
+          f.journal.beginCapture(row.operationId, index),
+          observation,
+          account,
+          undefined,
+          expected
+        )
+      ).toBe(false)
+    }
+    expect(
+      (await f.preparer.readOperation('recover-own'))!.members[index]
+    ).toEqual(member)
+    expect(
+      f.journal.canSelect(
+        member.source.address,
+        Transaction.from(member.unsignedTransaction).nonce
+      )
+    ).toBe(false)
+    expect(f.preparer.isSourceReserved(member.source.address)).toBe(true)
+  } finally {
+    await f.close()
+  }
+})
+
+test('reopen recovers the original reservation after restoring the journal but interrupting its inventory checkpoint', async () => {
+  const chain = node()
+  let f = await fixture(location, chain)
+  try {
+    const { index, member } = await exposedAbandonedOwnMove(f, chain)
+    const bytes = (await f.preparer.readOperation('recover-own'))!.members.map(
+      (member) => member.signed!.rawTransaction
+    )
+    const checkpoint = jest
+      .spyOn(f.coins, 'checkpointTransactionSetReservations')
+      .mockRejectedValueOnce(new Error('interrupted restored inventory'))
+    await expect(
+      f.lifecycle.observe('recover-own', chain.provider as unknown as Provider)
+    ).rejects.toThrow('interrupted restored inventory')
+    checkpoint.mockRestore()
+    expect(
+      (await f.preparer.readOperation('recover-own'))!.members[index]!
+        .observation.state
+    ).toBe('pending')
+    await f.close()
+    f = await fixture(location, chain)
+    expect(f.preparer.isSourceReserved(member.source.address)).toBe(true)
+    expect(
+      f.journal.canSelect(
+        member.source.address,
+        Transaction.from(member.unsignedTransaction).nonce
+      )
+    ).toBe(false)
+    expect(
+      (await f.preparer.readOperation('recover-own'))!.members.map(
+        (member) => member.signed!.rawTransaction
+      )
+    ).toEqual(bytes)
+    await f.lifecycle.observe(
+      'recover-own',
+      chain.provider as unknown as Provider
+    )
+    const other = await f.preparer.constructTransactionSet({
+      operationId: 'disjoint-restart',
+      amountWei: 100000n,
+      kdf: () => key(51).address,
+      sourceAccounts: [key(2).address],
+    })
+    expect(
+      other.bundle.every(
+        (tx) => tx.sourceAccount === key(2).address.toLowerCase()
+      )
+    ).toBe(true)
+  } finally {
+    await f.close()
+  }
+})
+
+test('prospective completion and archive reject exposed abandoned own moves without invalidating cancellation', async () => {
+  const {
+    transactionSetFinancialCompletionReceipt,
+    transactionSetFinanciallyComplete,
+    transactionSetCancellationReceipt,
+  } = await import('./evm-operation-completion')
+  const { evmNativeOperationDigest } = await import(
+    './storage/evm-native-operation-journal'
+  )
+  const chain = node(),
+    f = await fixture(location, chain)
+  try {
+    await exposedAbandonedOwnMove(f, chain)
+    const row = (await f.preparer.readOperation('recover-own'))!
+    expect(transactionSetFinanciallyComplete(row)).toBe(false)
+    expect(transactionSetFinancialCompletionReceipt(row)).toBeUndefined()
+    await expect(
+      f.journal.archiveCompleted(row.operationId, {
+        expectedOperationHash: evmNativeOperationDigest(row),
+        ownerReference: 'caller-must-not-retire-exposed-bytes',
+        sync: 'not-required',
+        delivery: 'not-required',
+        dependencies: 'complete',
+      })
+    ).rejects.toThrow()
+    await expect(f.preparer.releaseUnexposed('recover-own')).resolves.toBe(
+      false
+    )
+    await expect(f.journal.cancelUnsigned(row.operationId)).rejects.toThrow()
+    const prepared = await f.preparer.constructTransactionSet({
+      operationId: 'safe-cancel',
+      amountWei: 100000n,
+      kdf: () => key(51).address,
+      sourceAccounts: [key(2).address],
+    })
+    expect(await f.preparer.releaseUnexposed(prepared.operationId)).toBe(true)
+    const cancelled = (await f.preparer.readOperation(prepared.operationId))!
+    expect(cancelled.cancelled).toBe(true)
+    expect(
+      cancelled.members.every((member) => !member.signed && !member.exposed)
+    ).toBe(true)
+    expect(transactionSetCancellationReceipt(cancelled)).toBeDefined()
+    await expect(
+      f.lifecycle.observe(
+        prepared.operationId,
+        chain.provider as unknown as Provider
+      )
+    ).rejects.toThrow('Unknown active transaction set')
+  } finally {
+    await f.close()
+  }
+})
+
+test('retains a newer active native reservation when restoring a baseline exposed own move', async () => {
+  const chain = node(),
+    f = await fixture(location, chain, false, 1n, undefined, 8, 0.99)
+  try {
+    chain.automine(false)
+    await f.construct('baseline-conflict')
+    await f.preparer.authorizeSubmission('baseline-conflict')
+    await f.lifecycle.replay('baseline-conflict', { payments: true })
+    const original = (await f.preparer.readOperation('baseline-conflict'))!
+    expect(original.members[0]!.transactionSet!.role).toBe('payment')
+    chain.mine(original.members[0]!.signed!.rawTransaction)
+    await f.lifecycle.observe(
+      'baseline-conflict',
+      chain.provider as unknown as Provider
+    )
+    for (let index = 1; index < original.members.length; index++) {
+      const member = (await f.preparer.readOperation('baseline-conflict'))!
+        .members[index]!
+      await f.preparer.recordObservation(
+        'baseline-conflict',
+        index,
+        { state: 'abandoned', blockNumber: 5 },
+        { blockHash, blockNumber: 10, nonce: 1, balanceWei: '0' },
+        member
+      )
+    }
+    const old = (await f.preparer.readOperation('baseline-conflict'))!,
+      own = old.members[1]!
+    // Before this fix, the public journal permitted this exact later reservation because all
+    // old own moves were treated terminal. Simulate only that old selection decision; the
+    // resulting two signed records pass the unchanged durable row/pair validators.
+    const oldSelection = jest
+      .spyOn(f.journal, 'canSelect')
+      .mockReturnValueOnce(true)
+    const unsigned = Transaction.from({
+      type: 0,
+      chainId: 10143n,
+      nonce: 1,
+      to: key(61).address,
+      value: 1000n,
+      gasLimit: 21000n,
+      gasPrice: 1n,
+    })
+    const newer = await f.journal.prepare(
+      {
+        kind: 'native',
+        recipient: key(61).address.toLowerCase(),
+        intendedValueWei: '1000',
+        members: [
+          {
+            source: { kind: 'main', address: own.source.address },
+            dependencies: [],
+            unsignedTransaction: unsigned.unsignedSerialized,
+          },
+        ],
+      },
+      [await key(1).signTransaction(unsigned)]
+    )
+    oldSelection.mockRestore()
+    await expect(
+      f.preparer.recordObservation(
+        'baseline-conflict',
+        1,
+        { state: 'pending' },
+        { blockHash, blockNumber: 11, nonce: 1, balanceWei: '1000000' },
+        own
+      )
+    ).rejects.toThrow()
+    expect(await f.journal.readOperation(newer.operationId)).toEqual(newer)
+    expect(
+      (await f.preparer.readOperation('baseline-conflict'))!.members[1]
+    ).toEqual(own)
+  } finally {
+    await f.close()
+  }
+})
+
+test('immutable baseline archives containing exposed abandoned own moves remain readable', async () => {
+  const { transactionSetFinancialCompletionReceipt } = await import(
+    './evm-operation-completion'
+  )
+  const { evmNativeOperationDigest } = await import(
+    './storage/evm-native-operation-journal'
+  )
+  const chain = node()
+  let f = await fixture(location, chain)
+  try {
+    await f.construct('old-archive')
+    await f.preparer.authorizeSubmission('old-archive')
+    let row = (await f.preparer.readOperation('old-archive'))!
+    for (let index = 0; index < row.members.length; index++) {
+      const member = (await f.preparer.readOperation('old-archive'))!.members[
+        index
+      ]!
+      await f.preparer.recordObservation(
+        'old-archive',
+        index,
+        { state: 'abandoned', blockNumber: 5 },
+        { blockHash, blockNumber: 10, nonce: 0, balanceWei: '0' },
+        member
+      )
+    }
+    row = (await f.preparer.readOperation('old-archive'))!
+    const receipt = transactionSetFinancialCompletionReceipt(row)!
+    await f.journal.archiveCompleted(row.operationId, receipt)
+    await f.close()
+    // Valid historical fixture matching the baseline's old archive eligibility, which allowed
+    // exposed own moves. This is test data only, never a production writer or migration.
+    const history = structuredClone(row)
+    for (const member of history.members)
+      if (member.transactionSet?.role !== 'payment') member.exposed = true
+    const completion = {
+      ...receipt,
+      expectedOperationHash: evmNativeOperationDigest(history),
+    }
+    const db = level(join(location, 'evm-native-operations-v1'))
+    await db.put(`history:${row.operationId}`, JSON.stringify(history))
+    await db.put(`completion:${row.operationId}`, JSON.stringify(completion))
+    await db.close()
+    f = await fixture(location, chain)
+    expect(await f.preparer.readOperation('old-archive')).toEqual(history)
+    expect(f.preparer.getOperation('old-archive')).toBeUndefined()
+    // Reading leaves archived evidence exact; automatic archived recovery is separately owned.
+    expect(
+      (await f.journal.historyPage({ limit: 10 })).operations
+    ).toContainEqual(history)
+  } finally {
+    await f.close()
+  }
+})
+
+test('held recovery RPC neither blocks disjoint construction nor overwrites a concurrent canonical inclusion', async () => {
+  const chain = node(),
+    f = await fixture(location, chain)
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let reached!: () => void
+  const paused = new Promise<void>((resolve) => {
+    reached = resolve
+  })
+  try {
+    const { index, member } = await exposedAbandonedOwnMove(f, chain)
+    let first = true
+    const balance = chain.provider.getBalance.getMockImplementation()!
+    const held = jest
+      .spyOn(chain.provider, 'getBalance')
+      .mockImplementation(async (...args) => {
+        if (first) {
+          first = false
+          reached()
+          await gate
+        }
+        return balance(...args)
+      })
+    const observing = f.lifecycle.observe(
+      'recover-own',
+      chain.provider as unknown as Provider
+    )
+    await paused
+    await expect(
+      f.preparer.constructTransactionSet({
+        operationId: 'same-held-rpc',
+        amountWei: 100000n,
+        kdf: () => key(52).address,
+        sourceAccounts: [member.source.address],
+      })
+    ).rejects.toThrow('Insufficient')
+    const other = await f.preparer.constructTransactionSet({
+      operationId: 'other-held-rpc',
+      amountWei: 100000n,
+      kdf: () => key(52).address,
+      sourceAccounts: [key(2).address],
+    })
+    expect(
+      other.bundle.every(
+        (tx) => tx.sourceAccount === key(2).address.toLowerCase()
+      )
+    ).toBe(true)
+    chain.mine(member.signed!.rawTransaction)
+    await f.lifecycle.observe(
+      'recover-own',
+      chain.provider as unknown as Provider
+    )
+    const included = (await f.preparer.readOperation('recover-own'))!.members[
+      index
+    ]!
+    expect(included.observation.state).toBe('included-success')
+    release()
+    await observing
+    held.mockRestore()
+    expect(
+      (await f.preparer.readOperation('recover-own'))!.members[index]
+    ).toEqual(included)
+  } finally {
+    release()
+    await f.close()
+  }
+})
+
+async function settleOtherMembers(
+  f: Awaited<ReturnType<typeof fixture>>,
+  id: string,
+  except: number
+) {
+  const row = (await f.preparer.readOperation(id))!
+  for (const [index, member] of row.members.entries())
+    if (index !== except)
+      await f.preparer.recordObservation(
+        id,
+        index,
+        {
+          state: 'included-success',
+          transactionHash: member.signed!.transactionHash,
+          blockHash,
+          blockNumber: 10,
+          transactionIndex: index,
+          feeWei: '21000',
+        },
+        {
+          blockHash,
+          blockNumber: 10,
+          nonce: Transaction.from(member.unsignedTransaction).nonce + 1,
+          balanceWei: '1000000',
+        }
+      )
+}
+
+test('old active own moves remain pending in legacy send and member status while receipt RPC is unavailable', async () => {
+  const {
+    createLegacyTransactionSetPayments,
+    LegacyTransactionSetPendingError,
+  } = await import('./chain/evm-legacy-transaction-set')
+  const { summarizeEvmNativeOperation } = await import(
+    './chain/evm-native-operation-status'
+  )
+  const chain = node(),
+    f = await fixture(location, chain)
+  try {
+    const { index } = await exposedAbandonedOwnMove(
+      f,
+      chain,
+      'legacy-recover-own'
+    )
+    await settleOtherMembers(f, 'legacy-recover-own', index)
+    const row = (await f.preparer.readOperation('legacy-recover-own'))!
+    const summary = summarizeEvmNativeOperation(row)
+    expect(summary.members[index]!.state).toBe('pending')
+    expect(summary.payment).toBe('included')
+    chain.provider.getTransactionReceipt.mockRejectedValue(
+      new Error('receipt RPC unavailable')
+    )
+    const legacy = createLegacyTransactionSetPayments({
+      preparer: f.preparer,
+      sendTransaction: f.submission.sendTransaction,
+      refresh: async () => undefined,
+      operations: () => f.journal.list(),
+      readOperation: (id) => f.journal.readOperation(id),
+    })
+    await expect(
+      legacy.resumeLegacySend(row.operationId)
+    ).rejects.toBeInstanceOf(LegacyTransactionSetPendingError)
+    expect(
+      (await f.preparer.readOperation('legacy-recover-own'))!.members[index]!
+        .signed
+    ).toEqual(row.members[index]!.signed)
+  } finally {
+    await f.close()
+  }
+})
+
+test('maintenance resumes the original merge with old active exposed own moves instead of starting another', async () => {
+  const { createEvmCoinConsolidator } = await import('./evm-coin-consolidator')
+  const chain = node(),
+    f = await fixture(location, chain)
+  const id = 'consolidate-' + 'ab'.repeat(16)
+  try {
+    const { index } = await exposedAbandonedOwnMove(f, chain, id)
+    await settleOtherMembers(f, id, index)
+    const original = await f.preparer.readTransactionSet(id)
+    const submit = jest.fn(async () => ({
+      operationId: id,
+      chainIdentifier: 'monad-testnet',
+      status: 'pending' as const,
+      pendingTransactionIds: [original.otherTransactions[0]!.txHash],
+      failedTransactionIds: [],
+      pendingReason: 'observation-unavailable' as const,
+    }))
+    const consolidator = createEvmCoinConsolidator({
+      chainIdentifier: 'monad-testnet',
+      coins: f.coins,
+      preparer: f.preparer,
+      operations: () => f.journal.list(),
+      targetFor: () => {
+        throw new Error('a new merge is not authorized')
+      },
+      submit,
+    })
+    expect(await consolidator.maintain({ startNew: false })).toEqual({
+      outcome: 'waiting',
+      operationId: id,
+    })
+    expect(submit).toHaveBeenCalledWith(original)
+    expect(f.journal.list()).toHaveLength(1)
   } finally {
     await f.close()
   }

@@ -61,7 +61,9 @@ export function nativeMemberSuperseded(member: {
  * one but this wallet holds its bytes (it never left the wallet, or it went only to a relay that
  * refused it before storing anything) or its account no longer holds what it moves
  * (`evm-transaction-set-taken.ts`). It is never handed out again and no longer holds its
- * account. Unlike a superseded member its nonce may still be free: the account is listed again
+ * account. Earlier active rows can retain exposed own moves abandoned for insufficient funds;
+ * nativeMemberNeedsOwnMoveRecovery keeps those bytes unresolved. Unlike a superseded member
+ * its nonce may still be free: the account is listed again
  * at what the chain shows. A later look that finds a receipt replaces it, as any look does.
  */
 export function nativeMemberAbandoned(member: {
@@ -70,13 +72,22 @@ export function nativeMemberAbandoned(member: {
   return member.observation.state === 'abandoned'
 }
 
-/** The member will never land as far as the wallet acts: superseded or abandoned. */
+/** Literal terminal evidence retained for immutable history validation. Active financial
+ * consumers also retain nativeMemberNeedsOwnMoveRecovery obligations from older active rows. */
 export function nativeMemberEnded(member: {
   unsignedTransaction: string
   observation: EvmNativeObservation
   account: EvmNativeAccountObservation | null
 }): boolean {
   return nativeMemberSuperseded(member) || nativeMemberAbandoned(member)
+}
+
+/** Active recovery obligation from an earlier insufficient-balance abandonment. Exposed own
+ * bytes can execute after a deposit; this does not change immutable history validation. */
+export function nativeMemberNeedsOwnMoveRecovery(member: Pick<EvmNativeMember,
+  'signed' | 'exposed' | 'observation' | 'transactionSet'>): boolean {
+  return member.signed !== null && member.exposed && nativeMemberAbandoned(member) &&
+    (member.transactionSet?.role === 'change' || member.transactionSet?.role === 'funding')
 }
 
 /** Every signing of a member, newest first: `signed`, then its earlier signings. */
@@ -1282,7 +1293,8 @@ export class EvmNativeOperationJournal {
         if (JSON.stringify(previous) !== JSON.stringify(receipt)) fail('conflict')
         return
       }
-      if (evmNativeOperationDigest(row) !== receipt.expectedOperationHash || !completedForHistory(row)) fail('conflict')
+      if (row.members.some(nativeMemberNeedsOwnMoveRecovery) ||
+          evmNativeOperationDigest(row) !== receipt.expectedOperationHash || !completedForHistory(row)) fail('conflict')
       if (await this.readArchived(id)) fail('conflict')
       const operations: Parameters<typeof durableBatch>[1][number][] = [
         { type: 'put', key: `history:${id}`, value: JSON.stringify(row) },
@@ -1389,7 +1401,7 @@ export class EvmNativeOperationJournal {
       if (row.cancelled) continue
       for (const m of row.members)
         // Given up on chain evidence: it holds neither its nonce nor its account.
-        if (m.source.address === address && !nativeMemberAbandoned(m)) {
+        if (m.source.address === address && (!nativeMemberAbandoned(m) || nativeMemberNeedsOwnMoveRecovery(m))) {
           if (this.signatures.unsigned(m.unsignedTransaction, this.binding).nonce === nonce)
             return false
           // The dependency leader retains its provisional value across foreign nonce advances.
@@ -1871,6 +1883,22 @@ export class EvmNativeOperationJournal {
       if (this.captures.get(key) !== capture.token) return false
       const m = row.members[capture.memberIndex]
       if (row.cancelled || !m?.signed) return false
+      // A retained active own move is restored only from the exact snapshot read before RPC.
+      // A concurrent inclusion, capture or ownership change must win over stale recovery.
+      const recovering = nativeMemberNeedsOwnMoveRecovery(m)
+      if (recovering || (frozenExpected && nativeMemberNeedsOwnMoveRecovery(frozenExpected))) {
+        if (!frozenExpected || JSON.stringify(m) !== JSON.stringify(frozenExpected) ||
+            frozenObservation.state === 'unknown' || frozenAccount === null) return false
+        if (recovering && frozenObservation.state !== 'abandoned' &&
+            frozenObservation.state !== 'included-success' && frozenObservation.state !== 'included-revert' &&
+            frozenAccount.nonce <= Transaction.from(m.unsignedTransaction).nonce)
+          for (const other of this.rows.values())
+            if (other.operationId !== row.operationId && !other.cancelled && other.members.some(candidate =>
+              candidate.source.address === m.source.address &&
+              (nativeMemberNeedsOwnMoveRecovery(candidate) ||
+                (!nativeMemberEnded(candidate) && candidate.observation.state !== 'included-success' &&
+                  candidate.observation.state !== 'included-revert')))) fail('conflict')
+      }
       // Giving up signed bytes requires the exact member inspected before asynchronous chain
       // reads. Exposure or inclusion may have advanced while those reads were pending. Compare
       // under this same durable mutation; a separate read followed by a write would race again.
@@ -1880,7 +1908,7 @@ export class EvmNativeOperationJournal {
         return false
       // Given up on chain evidence: only a receipt (it landed after all) replaces that.
       if (
-        nativeMemberAbandoned(m) &&
+        nativeMemberAbandoned(m) && !recovering &&
         frozenObservation.state !== 'included-success' &&
         frozenObservation.state !== 'included-revert' &&
         frozenObservation.state !== 'abandoned'

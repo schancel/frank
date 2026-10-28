@@ -7,7 +7,7 @@ import type {
   EvmNativeObservation,
   EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
-import { memberSignings, nativeMemberAbandoned, nativeMemberEnded, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
+import { memberSignings, nativeMemberAbandoned, nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded } from './storage/evm-native-operation-journal'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { RefusalLedger } from './chain/evm-refused-resign'
 
@@ -209,7 +209,7 @@ export class EvmTransactionSetLifecycle {
       // The durable abandonment may have committed just before interruption of its inventory
       // projection. Resume that same evidence under the exact-member CAS; never invent a new
       // chain observation or broadcast. A newly discovered actual receipt takes precedence.
-      if (nativeMemberAbandoned(member) && !found) {
+      if (nativeMemberAbandoned(member) && !nativeMemberNeedsOwnMoveRecovery(member) && !found) {
         if (!member.transactionSet?.inventoryApplied)
           await this.options.authority.recordObservation(id, index, member.observation, member.account, member)
         continue
@@ -299,6 +299,7 @@ export class EvmTransactionSetLifecycle {
         index,
         observation,
         account,
+        nativeMemberNeedsOwnMoveRecovery(member) ? member : undefined,
       )
     }
   }

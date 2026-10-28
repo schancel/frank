@@ -35,6 +35,7 @@ import {
 } from './evm-transaction-set-types'
 import {
   nativeMemberEnded,
+  nativeMemberNeedsOwnMoveRecovery,
   type EvmNativeOperation,
 } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
@@ -103,7 +104,7 @@ export function mergeAnchorOf(row: Pick<EvmNativeOperation, 'members'>): EvmMerg
 const settled = (member: EvmNativeOperation['members'][number]) =>
   member.observation.state === 'included-success' ||
   member.observation.state === 'included-revert' ||
-  nativeMemberEnded(member)
+  (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member))
 
 export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
   let running: Promise<EvmCoinMaintenance> | undefined

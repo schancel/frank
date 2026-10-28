@@ -1,6 +1,7 @@
 import { openMonadWalletBundle } from './storage/evm-wallet-bundle'
 import { MonadHdKeyring, MonadChangeKeyring } from './secp256k1-hd-keyring'
 import { evmTransactionSetJournal } from './evm-transaction-set-journal'
+import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2003,4 +2004,121 @@ describe('money tied up in an earlier send that has not reached the chain (owner
       expect(refused).not.toBeInstanceOf(FundsInPendingSendError)
     } finally { await f.journal.Close() }
   })
+})
+
+
+it('active exposed own-move recovery through production admission preserves a competing live lease', async () => {
+  const location = await mkdtemp(join(tmpdir(), 'own-move-admission-'))
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const keys = MonadHdKeyring.fromMnemonic(mnemonic),
+    changes = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const owner = await openMonadWalletBundle({
+    location,
+    seed: { mnemonic },
+    mode: 'create',
+    nativeBinding: {
+      chainIdentifier: 'monad-testnet',
+      nativeChainId: '10143',
+      publicTuple: JSON.stringify({
+        mainAddress: keys.deriveSubAccount(0).address.toLowerCase(),
+      }),
+    },
+  })
+  try {
+    owner.pool.ensureSize(2)
+    owner.pool.setStatus(0, 'available')
+    const coins = await EvmCoinList.open(new MemoryRecordStore())
+    const source = keys.deriveSubAccount(0)
+    await coins.put({
+      account: source.address,
+      privateKey: source.privateKey,
+      nonce: 0,
+      valueWei: 1000000n,
+      origin: 'deterministic',
+    })
+    const journal = evmTransactionSetJournal(owner)
+    const preparer = new EvmTransactionSetPreparer({
+      coins,
+      journal,
+      policy: () => policy,
+      random: () => 0.01,
+      deriveChange: (index) => {
+        const key = changes.deriveChangeAccount(index)
+        return {
+          account: key.address.toLowerCase(),
+          privateKey: key.privateKey,
+          changeIndex: index,
+        }
+      },
+      reserveChange: (_operation, minimum) =>
+        owner.changePool.reserveFreshChange(minimum),
+    })
+    await preparer.constructTransactionSet({
+      operationId: 'old-active-own-move',
+      amountWei: 100000n,
+      kdf,
+    })
+    await preparer.authorizeSubmission('old-active-own-move')
+    const handed: string[] = []
+    const lifecycle = new EvmTransactionSetLifecycle({
+      authority: preparer,
+      head: () => 100,
+      provider: {
+        getTransaction: async () => null,
+        broadcastTransaction: async (raw) => {
+          handed.push(raw)
+          return { hash: Transaction.from(raw).hash! } as never
+        },
+      },
+    })
+    await lifecycle.replay('old-active-own-move', { payments: true })
+    const row = (await preparer.readOperation('old-active-own-move'))!
+    const index = row.members.findIndex(
+      (member) => member.transactionSet?.role === 'change'
+    )
+    expect(handed).toContain(row.members[index]!.signed!.rawTransaction)
+    const blockHash = '0x' + 'ab'.repeat(32)
+    await preparer.recordObservation(
+      'old-active-own-move',
+      index,
+      { state: 'abandoned', blockNumber: 90 },
+      { blockHash, blockNumber: 100, nonce: 0, balanceWei: '1000000' },
+      row.members[index]!
+    )
+    const member = (await preparer.readOperation('old-active-own-move'))!
+      .members[index]!
+    // A retained lease from a separate authorization must never be overwritten by restoring
+    // a baseline native record, even though both owners know the same source key.
+    const lease = owner.leaseManager.acquireForIndex(0)
+    await expect(
+      preparer.recordObservation(
+        'old-active-own-move',
+        index,
+        { state: 'pending' },
+        { blockHash, blockNumber: 100, nonce: 0, balanceWei: '1000000' },
+        member
+      )
+    ).rejects.toThrow()
+    expect(owner.leaseManager.isCurrentLease(lease)).toBe(true)
+    expect(
+      (await preparer.readOperation('old-active-own-move'))!.members[index]
+    ).toEqual(member)
+    owner.leaseManager.releaseLease(lease, 'unused')
+    expect(
+      await preparer.recordObservation(
+        'old-active-own-move',
+        index,
+        { state: 'pending' },
+        { blockHash, blockNumber: 100, nonce: 0, balanceWei: '1000000' },
+        member
+      )
+    ).toBe(true)
+    expect(
+      (await preparer.readOperation('old-active-own-move'))!.members[index]!
+        .signed
+    ).toEqual(member.signed)
+  } finally {
+    await owner.close()
+    await rm(location, { recursive: true, force: true })
+  }
 })

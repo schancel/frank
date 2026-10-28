@@ -111,6 +111,7 @@ suite(
     it.each([
       'direct predecessor',
       'earlier predecessor with abandoned intermediate moves',
+      'persisted baseline exposed abandoned intermediate moves',
     ] as const)(
       'recovers exact exposed successor after top-up and reopen: %s',
       async (collision) => {
@@ -268,6 +269,32 @@ suite(
           provider: chain,
           operationId: id,
         })
+        if (
+          collision ===
+          'persisted baseline exposed abandoned intermediate moves'
+        ) {
+          // Reproduce the durable baseline state AFTER genuine lifecycle exposure and the
+          // canonical foreign nonce consumption. The old abandonment algorithm wrote these
+          // exact facts; the fixed algorithm no longer generates them. No exposure is invented.
+          const block = (await chain.getBlock('latest'))!
+          for (let index = collisionIndex + 1; index < at; index++) {
+            const member = (await w.preparer.readOperation(id))!.members[index]!
+            await w.preparer.recordObservation(
+              id,
+              index,
+              { state: 'abandoned', blockNumber: block.number },
+              {
+                blockHash: block.hash!,
+                blockNumber: block.number,
+                nonce: first.nonce + 1,
+                balanceWei: (
+                  await chain.getBalance(source.address, block.number)
+                ).toString(),
+              },
+              member
+            )
+          }
+        }
         const short = (await w.preparer.readOperation(id))!
         expect(nativeMemberSuperseded(short.members[collisionIndex]!)).toBe(
           true

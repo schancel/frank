@@ -267,7 +267,10 @@ import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
-import { unreadValueAvu } from '../../stores/chats-domain'
+import {
+  sortConversationsByReceivedValue,
+  unreadValueAvu,
+} from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
@@ -290,7 +293,6 @@ import {
   formatScreenerStampValue,
   getPendingScreenerStampValueWei,
   isScreenerConversation,
-  rankScreenerConversations,
   summarizeScreenerQueue,
 } from '../../utils/screener-triage'
 import { isListedConversation } from '../../utils/listed-conversations'
@@ -327,7 +329,28 @@ export default defineComponent({
   emits: ['closeDrawer'],
   setup(props, { emit }) {
     const chatStore = useChatStore()
-    const { getSortedChatOrder } = storeToRefs(chatStore)
+    const { getSortedChatOrder: storeChatOrder } = storeToRefs(chatStore)
+    // Refresh ranking and badges together through the existing shared receipt clock.
+    // Wallet receipts are read from memory; this does not open wallets or make RPC calls.
+    const verifiedReceipts = computed(() => {
+      void receiptsRead.value
+      return verifiedReceiptsReader()
+    })
+    const getSortedChatOrder = computed(() => {
+      const conversations = Array.isArray(storeChatOrder?.value)
+        ? storeChatOrder.value
+        : []
+      if (conversations.length < 2) return conversations
+      return sortConversationsByReceivedValue(
+        conversations,
+        chatStore.activeConversationId ?? null,
+        {
+          stampChainIdentifier: activeChain.chainIdentifier,
+          verifiedReceipts: verifiedReceipts.value,
+          toAvu: nativeAmountAvu,
+        },
+      )
+    })
 
     const contactStore = useContactStore()
     const mailboxStatus = useMailboxStatusStore()
@@ -404,33 +427,16 @@ export default defineComponent({
     })
 
     const displayedConversations = computed<Conversation[]>(() => {
-      const list: Conversation[] = listedConversations.value
-      if (normalizedQuery.value) {
-        const byId = new Map<string, Conversation>()
-        for (const c of list) {
-          const key = c.id || c.address
-          if (key) byId.set(key, c)
-        }
-        const matched: Conversation[] = []
-        for (const hit of searchResults.value) {
-          const conv = byId.get(hit.conversationId)
-          if (conv) matched.push(conv)
-        }
-        if (activeFilter.value === 'screener') {
-          return rankScreenerConversations(matched, {
-            isContact: isContactFn,
-          })
-        }
-        return matched
-      }
-
-      if (activeFilter.value === 'screener') {
-        return rankScreenerConversations(list, {
-          isContact: isContactFn,
-        })
-      }
-
-      return list
+      const matches = normalizedQuery.value
+        ? new Set(searchResults.value.map(hit => hit.conversationId))
+        : undefined
+      // Search and Screener select membership; they must not override inbox priority.
+      return listedConversations.value.filter(
+        conversation =>
+          (!matches || matches.has(conversation.id || conversation.address)) &&
+          (activeFilter.value !== 'screener' ||
+            isScreenerConversation(conversation, { isContact: isContactFn })),
+      )
     })
 
     // The wallets' view of what arrived is not reactive: read it again now and then, on one
@@ -465,12 +471,6 @@ export default defineComponent({
       },
       { immediate: true },
     )
-    // One read of each wallet's coins per tick, shared by every row and message.
-    const verifiedReceipts = computed(() => {
-      void receiptsRead.value
-      return verifiedReceiptsReader()
-    })
-
     const router = useRouter()
     const $q = useQuasar()
     // The ⌘K hint only where there is a keyboard shortcut to use: not on a phone.

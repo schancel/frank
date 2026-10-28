@@ -60,6 +60,8 @@ import {
   sendsWaitingForPreviousPayment,
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
+import { nativeAmountAvu } from '../utils/stamp-display'
+import { verifiedReceiptsReader } from '../utils/message-receipts'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
@@ -479,6 +481,7 @@ import {
   reopenConversation,
   speaksForConversation,
   stripReleasedPayments,
+  sortConversationsByReceivedValue,
   tombstoneMailbox,
   tombstoneReceiptTime,
   tombstonedTargetsFor,
@@ -2968,14 +2971,22 @@ export const useChatStore = defineStore('chats', {
         .filter(c => !c.deletedAt)
         .reduce((total, c) => total + c.totalUnreadMessages, 0)
     },
-    /** Newest message first. The order changes only when a message is sent or received:
-     * reading a conversation does not move it. */
+    /** Unread first, then verified received AVU. Read conversations keep their total
+     * received value; unknown prices and equal values have deterministic tie-breakers. */
     getSortedChatOrder(state) {
-      const latest = (conversation: Conversation) =>
-        conversation.lastReceived || conversation.createdAt || 0
-      return Object.values(state.conversations)
-        .filter(c => !c.deletedAt)
-        .sort((a, b) => latest(b) - latest(a))
+      const conversations = Object.values(state.conversations).filter(
+        c => !c.deletedAt,
+      )
+      if (conversations.length < 2) return conversations
+      return sortConversationsByReceivedValue(
+        conversations,
+        state.activeConversationId,
+        {
+          stampChainIdentifier: activeChain.chainIdentifier,
+          verifiedReceipts: verifiedReceiptsReader(),
+          toAvu: nativeAmountAvu,
+        },
+      )
     },
     lastRead: state => (addressOrId: string) => {
       if (state.conversations && addressOrId in state.conversations) {

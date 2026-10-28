@@ -87,6 +87,13 @@ import { useSettingsStore } from './settings'
 import { dismissScreenerConversation } from '../utils/screener-triage'
 const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
 
+jest.mock('../utils/stamp-display', () => ({
+  nativeAmountAvu: (_chain: string, units: bigint) => Number(units) / 1e18,
+}))
+jest.mock('../utils/message-receipts', () => ({
+  verifiedReceiptsReader: () => () => [],
+}))
+
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
     saveMessage: jest.fn(async () => undefined),
@@ -5893,7 +5900,7 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  describe("a conversation's stamp is the user's choice, and the conversation list is ordered by its newest message", () => {
+  describe("a conversation's stamp is the user's choice, and the inbox prioritizes received value", () => {
     const peerAddress = '0x1111111111111111111111111111111111111111'
     const otherAddress = '0x5555555555555555555555555555555555555555'
     const ONE_MON = 1_000_000_000_000_000_000n
@@ -5950,19 +5957,18 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(store.getStampWei(conv.id)).toBeUndefined()
     })
 
-    it('lists the conversation with the newest message first, and opening one does not move it', async () => {
+    it('prioritizes unread received value and reorders after reading and receiving', async () => {
       const store = useChatStore()
-      // The older message pays far more: money does not decide the order.
       await store.receiveMessages([inbound('a', peerAddress, 100, ONE_MON)])
       await store.receiveMessages([inbound('b', otherAddress, 200, 1n)])
       const order = () => store.getSortedChatOrder.map(c => c.address)
-      expect(order()).toEqual([otherAddress, peerAddress])
-      // Reading a conversation changes its unread count and read time, not its place.
+      expect(order()).toEqual([peerAddress, otherAddress])
+      // Unread wins over the larger amount in the conversation we just read.
       store.setActiveConversation(store.chats[peerAddress]!.id)
       expect(order()).toEqual([otherAddress, peerAddress])
+      // Read conversations retain their received value instead of tying at zero.
       store.setActiveConversation(store.chats[otherAddress]!.id)
-      expect(order()).toEqual([otherAddress, peerAddress])
-      // A new message moves its conversation to the top.
+      expect(order()).toEqual([peerAddress, otherAddress])
       await store.receiveMessages([inbound('c', peerAddress, 300, 1n)])
       expect(order()).toEqual([peerAddress, otherAddress])
     })

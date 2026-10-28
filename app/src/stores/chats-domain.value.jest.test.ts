@@ -5,10 +5,12 @@ import {
   accountedMessageValue,
   amountsInAvu,
   receivedMessageAmounts,
+  receivedValueAvu,
+  sortConversationsByReceivedValue,
   unreadValueAvu,
   type ChainAmount,
 } from './chats-domain'
-import type { ChatMessage } from './chats'
+import type { ChatMessage, Conversation } from './chats'
 
 jest.mock('./settings', () => ({ useSettingsStore: () => ({}) }))
 
@@ -156,5 +158,137 @@ describe('values on different chains are added in AVU', () => {
     expect(amountsInAvu(amounts, toAvu)).toBeUndefined()
     expect(amountsInAvu(amounts.slice(0, 1), toAvu)).toBeCloseTo(2)
     expect(amountsInAvu([], toAvu)).toBe(0)
+  })
+})
+
+describe('inbox received-value ordering', () => {
+  const value = {
+    stampChainIdentifier: 'monad-testnet',
+    verifiedReceipts: noReceipts,
+    toAvu,
+  }
+  function conversation(
+    id: string,
+    amount: bigint,
+    unread = false,
+    time = 100,
+  ): Conversation {
+    return {
+      id,
+      address: id,
+      kind: 'direct',
+      participants: [],
+      totalUnreadMessages: unread ? 1 : 0,
+      lastRead: unread ? 0 : time,
+      lastReceived: time,
+      messages: [
+        received({
+          payloadDigest: id,
+          serverTime: time,
+          stampValueWei: amount,
+        }),
+      ],
+    } as Conversation
+  }
+  const ids = (rows: Conversation[], context = value) =>
+    sortConversationsByReceivedValue(rows, null, context).map(c => c.id)
+
+  it('puts unread first and sorts both unread and read groups by descending AVU', () => {
+    const rows = [
+      conversation('read-rich', 100n * 10n ** 18n),
+      conversation('unread-small', 1n, true),
+      conversation('read-small', 1n),
+      conversation('unread-rich', 10n ** 18n, true),
+    ]
+    expect(ids(rows)).toEqual([
+      'unread-rich',
+      'unread-small',
+      'read-rich',
+      'read-small',
+    ])
+    expect(rows.map(c => c.id)).toEqual([
+      'read-rich',
+      'unread-small',
+      'read-small',
+      'unread-rich',
+    ])
+    expect(receivedValueAvu(rows[0], value)).toBe(200)
+  })
+
+  it('uses unread amounts for unread rows and all received amounts after reading', () => {
+    const a = conversation('a', 100n * 10n ** 18n, true, 50)
+    a.lastRead = 100
+    a.messages.push(
+      received({ payloadDigest: 'new-a', serverTime: 150, stampValueWei: 1n }),
+    )
+    const b = conversation('b', 10n ** 18n, true, 150)
+    expect(ids([a, b])).toEqual(['b', 'a'])
+    a.totalUnreadMessages = 0
+    a.lastRead = 200
+    b.totalUnreadMessages = 0
+    b.lastRead = 200
+    expect(ids([a, b])).toEqual(['a', 'b'])
+  })
+
+  it('values verified cross-chain receipts before comparing and ignores claimed payments', () => {
+    const a = conversation('native', 10n ** 18n)
+    const b = conversation('sol', 0n)
+    expect(ids([a, b])).toEqual(['native', 'sol'])
+    const receipts = jest.fn((digest: string): ChainAmount[] =>
+      digest === 'sol'
+        ? [{ chainIdentifier: 'solana-devnet', baseUnits: 10n ** 7n }]
+        : [],
+    )
+    expect(ids([a, b], { ...value, verifiedReceipts: receipts })).toEqual([
+      'sol',
+      'native',
+    ])
+    // Each message is valued once, not repeatedly by the sorting comparator.
+    expect(receipts).toHaveBeenCalledTimes(2)
+  })
+
+  it('orders known zero ahead of unknown and makes equal/unknown ties independent of insertion', () => {
+    const known = conversation('known-zero', 0n, true)
+    const unknownA = conversation('unknown-a', 0n, true)
+    const unknownB = conversation('unknown-b', 0n, true)
+    const receipts = (digest: string): ChainAmount[] =>
+      digest.startsWith('unknown')
+        ? [{ chainIdentifier: 'ethereum-sepolia', baseUnits: 10n ** 18n }]
+        : []
+    const context = { ...value, verifiedReceipts: receipts }
+    expect(ids([unknownB, known, unknownA], context)).toEqual([
+      'known-zero',
+      'unknown-a',
+      'unknown-b',
+    ])
+    expect(ids([unknownA, unknownB, known], context)).toEqual([
+      'known-zero',
+      'unknown-a',
+      'unknown-b',
+    ])
+    const older = conversation('older', 10n ** 18n, false, 50)
+    const newer = conversation('newer', 10n ** 18n, false, 100)
+    expect(ids([older, newer])).toEqual(['newer', 'older'])
+    expect(ids([conversation('b', 1n), conversation('a', 1n)])).toEqual([
+      'a',
+      'b',
+    ])
+  })
+
+  it('does not promote outgoing, unconfirmed, or partly unpriced claimed value', () => {
+    const a = conversation('a', 0n)
+    a.messages.push(
+      received({ outbound: true, stampValueWei: 100n * 10n ** 18n }),
+    )
+    a.messages.push(
+      received({ status: 'pending', stampValueWei: 100n * 10n ** 18n }),
+    )
+    expect(receivedValueAvu(a, value)).toBe(0)
+    const b = conversation('b', 1n)
+    expect(ids([a, b])).toEqual(['b', 'a'])
+    expect(ids([b, a], { ...value, toAvu: () => Number.NaN })).toEqual([
+      'a',
+      'b',
+    ])
   })
 })

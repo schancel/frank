@@ -486,4 +486,79 @@ suite('another device of the account spends a message coin at the same moment (a
     expect(await chain.getBalance(prepared.recipientAddress)).toBe(0n)
     await laterSendGoesThrough(2, 5n * 10n ** 16n)
   })
+  it('a contact payment of a combined set another transaction took, the stamp untouched: the relay (which checks only the stamp) is not handed the message; it ends saying so', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.99)
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    await mine(5)
+    await alice.refreshTransactionSetInventory!()
+    const intent0 = {
+      operationId: 'contact-collision-carried', chainIdentifier: 'monad-testnet', asset: { kind: 'native' as const },
+      recipientSpendPublicKey: f.bob.identity.compressedPubKey, amountAtomic: 10n ** 16n,
+    }
+    const quote = await alice.stealthPayments!.quote!(intent0)
+    const stamp = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP })
+    if (stamp.status !== 'available') throw new Error('stamp unavailable')
+    const intent: StealthPaymentIntent = {
+      ...intent0, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stamp.maximumNativeFeeAtomic },
+    }
+    const prepared = await alice.stealthPayments!.prepare(intent)
+    let reached!: (digest: string) => void
+    const atHold = new Promise<string>(resolve => (reached = resolve))
+    let release!: () => void
+    const released = new Promise<void>(resolve => (release = resolve))
+    const sent = f.chain.directMessages
+      .send({
+        wallet: alice, recipient: f.bob.identity.address, messageId: ID(3),
+        paymentOperationId: intent.operationId, stampValue: STAMP,
+        items: [recipientAssetPaymentFromPrepared(prepared)],
+        onEnvelopeDurable: d => alice.stealthPayments!.expose({ operationId: intent.operationId, payloadDigest: d }),
+        onAttemptCreated: async digest => {
+          reached(digest)
+          await released
+        },
+      })
+      .then(() => 'returned', (error: Error) => `${error.name}: ${error.message}`)
+    const digest = await atHold
+    const first = rowOf(digest)
+    expect(first.transactionSetStageId).toBeDefined()
+    const operationId = evmStealthTransactionSetOperationId(intent.operationId)
+    const original = (await operationOf(operationId))!
+    // The contact payment (the operation's own, no stage) travels inside the message; the relay
+    // sees and checks only the stamp.
+    const contactPayment = original.members.find(m =>
+      m.transactionSet?.role === 'payment' && m.transactionSet.stageId === undefined)!
+    // The other device uses that account's next nonce: the contact payment's own, or that of the
+    // set's move from the same account it stands on.
+    const next = await chain.getTransactionCount(contactPayment.source.address, 'latest')
+    expect(next).toBeLessThanOrEqual(Transaction.from(contactPayment.signed!.rawTransaction).nonce)
+    await takeNonce(contactPayment.source.address, next, 1n)
+    release()
+    expect(await sent).toMatch(/Another transaction used the coin/)
+    const ended = await reconcileUntil(digest, row => row.outcome === 'dead')
+    expect(ended.reason).toBe('payment_taken')
+    expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: digest })).toEqual({ reason: 'payment-taken' })
+    expect(bobMailbox).toHaveLength(0)
+    // No payment of the set landed (the contact's nor the stamp); the wallet's own move that
+    // funded the stamp's account may have, and stays the wallet's. None of it is held.
+    const old = (await operationOf(operationId))!
+    for (const member of old.members) {
+      if (member.observation.state === 'included-success') {
+        expect(member.transactionSet?.role).not.toBe('payment')
+        continue
+      }
+      expect(member.observation.state === 'abandoned' || nativeMemberSuperseded(member)).toBe(true)
+      expect(await chain.getTransactionReceipt(member.signed!.transactionHash)).toBeNull()
+    }
+    // Both payments are given up: the taken nonce was the contact payment's own or a move it
+    // stands on, and the stamp was withdrawn with it (the relay never held it).
+    const paymentStates = old.members.filter(m => m.transactionSet?.role === 'payment').map(m =>
+      nativeMemberSuperseded(m) ? 'superseded' : m.observation.state)
+    expect(paymentStates).toHaveLength(2)
+    for (const state of paymentStates) expect(['abandoned', 'superseded']).toContain(state)
+    expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
+    expect(await chain.getBalance(prepared.recipientAddress)).toBe(0n)
+    await laterSendGoesThrough(2, 5n * 10n ** 16n)
+  })
 })

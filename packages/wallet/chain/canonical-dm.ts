@@ -157,6 +157,7 @@ import {
   nativeMemberAbandoned,
   nativeMemberEnded,
   nativeMemberSuperseded,
+  type EvmNativeMember,
 } from '../storage/evm-native-operation-journal'
 import { findNonceConsumer } from '../evm-nonce-consumer'
 import { abandonTakenMembers, paymentsEnded, takenMembers } from '../evm-transaction-set-taken'
@@ -808,12 +809,21 @@ async function submitStored(
       // A payment whose nonce another transaction used is not waiting for anything: it can never
       // land, and the resend pass builds the payment again once the chain confirms that.
       const operation = await shared.preparer.readOperation(row.transactionSetOperationId)
+      // So is one standing on a move whose nonce another transaction used.
       const taken = operation?.members.some(member =>
-        member.transactionSet?.role === 'payment' &&
-        member.transactionSet.stageId === row.transactionSetStageId &&
-        nativeMemberEnded(member))
+        carriedPayment(member, row.transactionSetStageId) &&
+        nativeMemberEnded(member)) ||
+        await carriedPaymentUsedElsewhere(owner, row.transactionSetOperationId, row.transactionSetStageId)
       return taken ? { row, paymentTaken: true } : { row, awaitingFunding: true }
     }
+    // The relay checks a combined message's stamp, not the contact payment inside it: the chain
+    // is read first, and a message whose carried payment another transaction took is not handed
+    // over. It ends saying so once the chain confirms the take (`rebuildTakenPayment`).
+    if (
+      row.transactionSetStageId !== undefined && row.unstored === true &&
+      await carriedPaymentUsedElsewhere(owner, row.transactionSetOperationId, row.transactionSetStageId)
+    )
+      return { row, paymentTaken: true }
   }
   // A shared set whose own payments are all this message's and of which nothing has left the
   // wallet yet: a first refusal before the relay stores anything frees it, as for version 1.
@@ -1426,8 +1436,50 @@ async function paymentTaken(
   })
   return operation.members.some(
     (member, index) =>
-      member.transactionSet?.role === 'payment' &&
-      member.transactionSet.stageId === stageId &&
+      carriedPayment(member, stageId) &&
+      member.observation.state !== 'included-success' &&
+      member.observation.state !== 'included-revert' &&
+      dead.has(index),
+  )
+}
+
+/**
+ * Whether `member` is a payment the message of `stageId` carries: its own stage's, and for a
+ * stage of a combined payment operation also the operation's own payment (the contact payment,
+ * no stage), which travels inside that message.
+ */
+function carriedPayment(member: EvmNativeMember, stageId: string | undefined): boolean {
+  return member.transactionSet?.role === 'payment' &&
+    (member.transactionSet.stageId === stageId ||
+      (stageId !== undefined && member.transactionSet.stageId === undefined))
+}
+
+/**
+ * Before a message goes to the relay: whether the chain shows the nonce of a payment it carries,
+ * or of a move one stands on, used by a different transaction (at any depth). For a stage of a
+ * combined payment operation the relay checks only the stamp, so it would store a message whose
+ * contact payment can never land. Chain reads only; `false` when the chain cannot say.
+ */
+async function carriedPaymentUsedElsewhere(
+  owner: CanonicalMessagingOwner,
+  operationId: string,
+  stageId: string | undefined,
+): Promise<boolean> {
+  if (!(await setNonceUsedElsewhere(owner, operationId))) return false
+  const operation = await owner.transactionSets?.preparer.readOperation(operationId)
+  if (!operation) return false
+  const dead = new Set<number>()
+  operation.members.forEach((member, index) => {
+    if (
+      nativeMemberSuperseded(member) ||
+      nativeMemberAbandoned(member) ||
+      member.dependencies.some(dependency => dead.has(dependency))
+    )
+      dead.add(index)
+  })
+  return operation.members.some(
+    (member, index) =>
+      carriedPayment(member, stageId) &&
       member.observation.state !== 'included-success' &&
       member.observation.state !== 'included-revert' &&
       dead.has(index),

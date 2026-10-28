@@ -24,7 +24,7 @@ import { selectStampAccounts } from './evm-stamp-account-selection'
 import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { resignedTransaction } from './chain/evm-refused-resign'
-import { readSpendRuleHead } from './chain/evm-spend-rule'
+import { fundsSettleBlocks, readSpendRuleHead } from './chain/evm-spend-rule'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -1162,12 +1162,16 @@ export class EvmStampPayer {
           this.config.sync.markDirty(account)
         } else {
           const spacing = this.config.spendSpacingBlocks ?? 0
+          // What the account held at `included` may include money that arrived in that very
+          // block: the same wait as any money that just arrived (`fundsSettleBlocks`: the
+          // node's two blocks and two more), which also covers the quiet window after the
+          // account's own transfer (`spacing - 1`).
           await coins.recordMined(coin, {
             block: included,
             successor: {
               valueWei: balance,
               ...(spacing > 0
-                ? { spendableFromBlock: included + spacing - 1 }
+                ? { spendableFromBlock: included + fundsSettleBlocks(spacing) }
                 : {}),
             },
           })

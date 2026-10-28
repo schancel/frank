@@ -427,8 +427,11 @@ export class EvmCoinListSync {
       observeRead(provider.getTransactionCount(account, 'latest')),
       observeRead(provider.getTransactionCount(account, 'pending')),
       observeRead(provider.getBalance(account)),
-      spacing > 0 && head >= lag
-        ? provider.getBalance(account, head - lag).catch(optionalHistoricalRead)
+      // A chain younger than `lag` blocks: what the account held at its first block.
+      spacing > 0
+        ? provider
+            .getBalance(account, Math.max(0, head - lag))
+            .catch(optionalHistoricalRead)
         : Promise.resolve(undefined),
       spacing > 0 && head >= spacing
         ? provider
@@ -504,10 +507,9 @@ export class EvmCoinListSync {
     let newest: number | undefined
     const newestBlock = async () =>
       (newest ??= Math.max(head, await observeRead(provider.getBlockNumber())))
-    // A chain younger than `lag` (or `spacing`) blocks has no earlier block to read; otherwise a
-    // read that was made and failed (a timeout, a 5xx, a replica whose finalized block is below
-    // it) leaves the answer unknown, and unknown is not settled.
-    const settledUnknown = spacing > 0 && head >= lag && settledBalance === undefined
+    // A read that failed (a timeout, a 5xx, a replica whose finalized block is below it) leaves
+    // the answer unknown, and unknown is not settled.
+    const settledUnknown = spacing > 0 && settledBalance === undefined
     const beforeUnknown = spacing > 0 && head >= spacing && before === undefined
     let spendableFromBlock: number | undefined
     if (settledBalance !== undefined && settledBalance < balance) {

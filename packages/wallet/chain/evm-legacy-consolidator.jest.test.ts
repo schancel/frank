@@ -2270,70 +2270,107 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(state.raws).toHaveLength(1)
   })
 
-  // A node whose finalized block stopped moving (seen on solonet), or money that is still not
-  // shown settled after the last look: handing the signed transfer over would only get those
-  // bytes refused, and the node keeps refusing them for 15 minutes.
-  for (const [name, node] of [
-    ["the node stops reporting final blocks", "frozen"],
-    ["the money is not shown settled after the last look", "unsettled"],
+  /** A paying account funded at `fundedAt()`, judged on the finalized head `finalized()`, with
+   * the newest block `ahead` past the looks' block `head`. */
+  function settleNode(node: {
+    fundedAt: (head: number) => number
+    finalized: (head: number) => number
+    ahead: number
+  }) {
+    const state = chain([200000n])
+    let head = 10
+    let clock = 0
+    const payer = wallets[0]!.address.toLowerCase()
+    const provider = state.provider as unknown as Record<string, unknown>
+    provider.getBlockNumber = jest.fn(async () => head + node.ahead)
+    state.provider.getBlock.mockImplementation((async (tag: unknown) => ({
+      hash: '0x' + 'ab'.repeat(32),
+      number: tag === 'finalized' ? node.finalized(head) : head + node.ahead,
+    })) as never)
+    const latest = state.provider.getBalance.getMockImplementation()!
+    state.provider.getBalance.mockImplementation((async (
+      address: string,
+      block?: number,
+    ) =>
+      block !== undefined &&
+      block < node.fundedAt(head) &&
+      address.toLowerCase() === payer
+        ? 80000n
+        : latest(address)) as never)
+    const looks = { count: 0, moves: true }
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      mainSource: sources()[0]!,
+      ownedSource: address =>
+        sources().find(source => source.address === address.toLowerCase()),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      nextLook: async () => {
+        looks.count++
+        clock += 400
+        if (looks.moves) head++
+      },
+      now: () => clock,
+      fundsSettleBlocks: 4,
+      spendRuleHead: 'finalized',
+    })
+    return { state, executor, looks, head: () => head }
+  }
+
+  // A node whose finalized block stopped moving (seen on solonet), money that is still not shown
+  // settled once the head is past where it would show, or a chain that stopped: handing the
+  // signed transfer over would only get those bytes refused, and the node keeps refusing them
+  // for 15 minutes.
+  for (const [name, kind] of [
+    ['the node stops reporting final blocks', 'frozen'],
+    ['the money is not shown settled once the head is past where it would show', 'unsettled'],
+    ['the chain stops making blocks', 'stalled'],
   ] as const)
     it(`a transfer whose funds the node cannot show settled is kept signed and not handed over: ${name}`, async () => {
-      const state = chain([200000n]);
-      let head = 10;
-      const payer = wallets[0]!.address.toLowerCase();
-      // 'unsettled': the money always arrived in the last three blocks.
-      let fundedAt = () => (node === "unsettled" ? head - 3 : 10);
-      let finalized = () => (node === "frozen" ? 10 : head);
-      const provider = state.provider as unknown as Record<string, unknown>;
-      let ahead = node === "frozen" ? 100 : 0;
-      provider.getBlockNumber = jest.fn(async () => head + ahead);
-      state.provider.getBlock.mockImplementation((async (tag: unknown) => ({
-        hash: "0x" + "ab".repeat(32),
-        number: tag === "finalized" ? finalized() : head,
-      })) as never);
-      const latest = state.provider.getBalance.getMockImplementation()!;
-      state.provider.getBalance.mockImplementation((async (
-        address: string,
-        block?: number
-      ) =>
-        block !== undefined &&
-        block < fundedAt() &&
-        address.toLowerCase() === payer
-          ? 80000n
-          : latest(address)) as never);
-      const executor = new EvmLegacyConsolidator({
-        journal,
-        provider: state.provider as unknown as Provider,
-        transactionBuilder: new NativeEvmTransactionBuilder(),
-        mainSource: sources()[0]!,
-        ownedSource: (address) =>
-          sources().find((source) => source.address === address.toLowerCase()),
-        sign: async (source, raw) =>
-          wallets
-            .find((w) => w.address.toLowerCase() === source.address)!
-            .signTransaction(Transaction.from(raw)),
-        nextLook: async () => void head++,
-        fundsSettleBlocks: 4,
-        spendRuleHead: "finalized",
-      });
-      const refused = await pay(executor, { value: 100000n }).catch(
-        (error) => error
-      );
-      expect(refused).toBeInstanceOf(EvmNativeOperationPendingError);
-      expect(state.provider.broadcastTransaction).not.toHaveBeenCalled();
-      const row = journal.list().find((r) => !r.cancelled)!;
-      expect(row.members[0]!.signed).toBeDefined();
-      expect(row.members[0]!.exposed).toBeFalsy();
+      const node = {
+        // 'unsettled', 'stalled': the money arrived in the last three blocks.
+        fundedAt: (head: number) => (kind === 'frozen' ? 10 : head - 3),
+        finalized: (head: number) => (kind === 'frozen' ? 10 : head),
+        ahead: kind === 'frozen' ? 100 : 0,
+      }
+      const { state, executor, looks } = settleNode(node)
+      looks.moves = kind !== 'stalled'
+      const refused = await pay(executor, { value: 100000n }).catch(error => error)
+      expect(refused).toBeInstanceOf(EvmNativeOperationPendingError)
+      expect(state.provider.broadcastTransaction).not.toHaveBeenCalled()
+      const row = journal.list().find(r => !r.cancelled)!
+      expect(row.members[0]!.signed).toBeDefined()
+      expect(row.members[0]!.exposed).toBeFalsy()
       // Once the node can show it, the same signed bytes go out.
-      fundedAt = () => 10;
-      finalized = () => head;
-      ahead = 0;
-      const done = await executor.resumeOperation(row.operationId);
-      expect(state.raws).toEqual([row.members[0]!.signed!.rawTransaction]);
+      node.fundedAt = () => 10
+      node.finalized = head => head
+      node.ahead = 0
+      looks.moves = true
+      const done = await executor.resumeOperation(row.operationId)
+      expect(state.raws).toEqual([row.members[0]!.signed!.rawTransaction])
       expect(done.members[0]!.signed!.transactionHash).toBe(
-        row.members[0]!.signed!.transactionHash
-      );
-    });
+        row.members[0]!.signed!.transactionHash,
+      )
+    })
+
+  it('a transfer out of money just funded waits through a finalized head 8 blocks behind and a slow chain, however many looks that takes', async () => {
+    // The newest block is 8 past the finalized head, and the finalized head moves one block every
+    // fourth look: the money, funded at the newest block, shows settled after 48 looks.
+    const node = {
+      fundedAt: () => 18,
+      finalized: (head: number) => 10 + Math.floor((head - 10) / 4),
+      ahead: 8,
+    }
+    const { state, executor, looks, head } = settleNode(node)
+    await pay(executor, { value: 100000n })
+    expect(state.raws).toHaveLength(1)
+    expect(node.finalized(head())).toBe(18 + 4)
+    expect(looks.count).toBeGreaterThan(30)
+  })
 
   // Seen on a local Monad chain: a send failed "Native account block changed" before it
   // signed anything. Monad's newest block is only proposed and is often

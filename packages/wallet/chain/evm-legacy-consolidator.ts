@@ -250,6 +250,9 @@ interface ReobserveCandidate {
   readonly key: string
 }
 
+/** The longest a transfer waits for the money it spends to show settled before it is kept,
+ * not sent: a chain that stopped making blocks. */
+export const FUNDS_SETTLE_WAIT_MS = 120_000
 /** Wallet-lifetime native executor. Journal owns recovery; this module owns dependencies. */
 export class EvmLegacyConsolidator {
   private tail: Promise<unknown> = Promise.resolve()
@@ -747,10 +750,14 @@ export class EvmLegacyConsolidator {
    * funding transfer mined, the payment unknown to the node eight minutes later), and the node
    * then keeps refusing those bytes for 15 minutes.
    *
-   * Rejects, the member kept signed and not handed to anyone, when the money is not shown
-   * settled after 30 looks, or the node cannot say (a failed read, a finalized block that
-   * stopped moving: `FinalizedHeadUnavailableError`). Handing it over then would only get those
-   * bytes refused; `resumeOperation` offers them again.
+   * Rejects, the member kept signed and not handed to anyone, when the node cannot say (a failed
+   * read, a finalized block that stopped moving: `FinalizedHeadUnavailableError`), or when the
+   * money is still not shown settled once the head it counts on is `fundsSettleBlocks + 2` past
+   * the newest block at the start (the funding was mined by then, so it would show by that
+   * head), or after `FUNDS_SETTLE_WAIT_MS` (a chain that stopped). The wait is counted in
+   * blocks the head moved, not in looks: a finalized head 7 or 8 blocks behind the newest one
+   * takes that many blocks more. Handing it over unsettled would only get those bytes refused;
+   * `resumeOperation` offers them again.
    */
   private async untilFundsSettled(member: {
     source: EvmNativeSource
@@ -760,9 +767,13 @@ export class EvmLegacyConsolidator {
     if (!nextLook || !fundsSettleBlocks) return
     const tx = Transaction.from(member.unsignedTransaction)
     const needed = tx.value + nativeMaximumFee(tx)
-    for (let looks = 0; looks < 30 && !this.reobserveStopped; looks++) {
+    const startedAt = this.now()
+    let giveUpAt: number | undefined
+    for (;;) {
+      if (this.reobserveStopped) break
       const head = await readSpendRuleHead(provider, this.config.spendRuleHead)
       if (head < fundsSettleBlocks) return
+      giveUpAt ??= Math.max(head, await provider.getBlockNumber()) + fundsSettleBlocks + 2
       if (
         (await provider.getBalance(
           member.source.address,
@@ -770,6 +781,7 @@ export class EvmLegacyConsolidator {
         )) >= needed
       )
         return
+      if (head >= giveUpAt || this.now() - startedAt >= FUNDS_SETTLE_WAIT_MS) break
       await nextLook()
     }
     throw new Error(

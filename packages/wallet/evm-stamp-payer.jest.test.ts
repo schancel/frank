@@ -420,7 +420,9 @@ describe('settlement: the chain decides', () => {
     f.node.head = 1001
     await f.payer.recordSpent('one', signed!, 1001)
     f.payer.releasePayment('one', signed!)
-    expect(f.list.get(at(main), 1)?.spendableFromBlock).toBe(1003)
+    // Four blocks: what the account held at block 1001 may include money that arrived in that
+    // block, which the node counts from two blocks later; the wallet keeps two more.
+    expect(f.list.get(at(main), 1)?.spendableFromBlock).toBe(1005)
     const waits: (number | undefined)[] = []
     const second = f.payer.claim({
       holder: 'two',
@@ -428,8 +430,8 @@ describe('settlement: the chain decides', () => {
       onWaiting: blocks => waits.push(blocks),
     })
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(waits).toContain(2)
-    f.node.head = 1003
+    expect(waits).toContain(4)
+    f.node.head = 1005
     const made = await second
     expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
   })

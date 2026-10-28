@@ -356,6 +356,7 @@ import {
   ContactPaymentPendingError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeFeeExceededError,
+  type ContactPaymentInfo,
   type ContactPaymentQuote,
   type PreparedContactPayment,
 } from '@frank/wallet/chain'
@@ -382,6 +383,24 @@ import { fundsInPendingSendMessage } from 'src/utils/funds-in-pending-send'
 
 /** The form's review step, in the address (`?step=review`). */
 const REVIEW_STEP = 'review'
+
+/** Whether the wallet released `prepared` (cancelled before anything of it was sent): its own
+ * record of the payment says so. */
+function paymentReleased(
+  wallet: { getContactPayments?: () => ContactPaymentInfo[] },
+  prepared: PreparedContactPayment,
+): boolean {
+  const key = (value: string | undefined) =>
+    value?.replace(/^0x/, '').toLowerCase()
+  const own = key(prepared.item.ephemeralPubKey)
+  return (
+    own !== undefined &&
+    (wallet.getContactPayments?.() ?? []).some(
+      payment =>
+        key(payment.ephemeralPubKey) === own && payment.state === 'released',
+    )
+  )
+}
 
 export default defineComponent({
   setup() {
@@ -763,6 +782,16 @@ export default defineComponent({
             // Saved in the conversation, failed, with its Retry for when that change is out.
             const text = $t('outgoing.reasonFundsInPendingSendNoAmount')
             errorNotify(new Error(outcome.reason), { safeMessage: text })
+          } else if (
+            outcome.state === 'failed' &&
+            paymentReleased(wallet, prepared)
+          ) {
+            // The wallet released the payment before anything of it was sent (Finish under the
+            // wallet's payments in progress): nothing was paid, and its message carries no
+            // payment any more. Said as such, never as a saved payment to retry.
+            errorNotify(new Error(outcome.reason), {
+              safeMessage: $t('sendContactDialog.released'),
+            })
           } else if (outcome.state === 'failed') {
             // Saved in the conversation with its Retry: the same payment, never a second one.
             errorNotify(new Error(outcome.reason), {

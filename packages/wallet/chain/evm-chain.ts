@@ -2565,8 +2565,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             canonicalMessagingFor,
             directMessages,
             receivedCoinFloorWei,
-            runWalletExclusive,
-            runMainAccountExclusive,
           });
 
           const readBalanceParts = async (): Promise<BalanceParts> => {

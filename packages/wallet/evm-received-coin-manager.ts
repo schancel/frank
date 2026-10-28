@@ -34,6 +34,7 @@ import {
   type ContactPaymentQuote,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
+  UnsupportedContactPaymentRecordError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeTransactionSubmissionError,
   type ContactPaymentUnsettledReason,
@@ -46,7 +47,6 @@ import {
   nativeMemberSuperseded,
   type EvmNativeOperation,
 } from "./storage/evm-native-operation-journal";
-import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import {
   configuredEvmStealthToken,
   createEvmStealthPayments,
@@ -111,15 +111,16 @@ import {
   type RecordStore,
 } from "./storage/evm-coin-store";
 import type { EvmNativeSource } from "./storage/evm-native-operation-journal";
+
+/** A contact payment this version acts on: it names its transaction set. */
+type CurrentContactPayment = ContactPayment & {
+  readonly transactionSetOperationId: string;
+};
 import { EvmTransactionSetInsufficientFundsError } from "./evm-transaction-set-types";
 import { EvmTransactionSetFeeExceededError } from "./evm-transaction-set";
 import type { TransactionSetSubmission } from "./transaction-set";
-import type {
-  EvmWalletOperationAdmission,
-  EvmWalletPersistenceBundle,
-} from "./storage/evm-wallet-bundle";
+import type { EvmWalletPersistenceBundle } from "./storage/evm-wallet-bundle";
 import { applyWalletSyncItem } from "./sync-dispatcher";
-import type { MainAccountWait } from "./evm-stamp-coordinator";
 
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;
@@ -446,16 +447,6 @@ export interface EvmReceivedCoinAndContactManagerParams {
   /** The payment floor the balance classifies received coins by, as last read (zero while no
    * gas price is known). A received payment's `tooSmall` uses the same one. */
   readonly receivedCoinFloorWei: () => bigint;
-  readonly runWalletExclusive: <T>(
-    wallet: EvmChainWalletHandle,
-    task: (admission?: EvmWalletOperationAdmission) => Promise<T>,
-    canonical?: boolean
-  ) => Promise<T>;
-  readonly runMainAccountExclusive: <T>(
-    wallet: EvmChainWalletHandle,
-    task: () => Promise<T>,
-    options?: MainAccountWait
-  ) => Promise<T>;
 }
 
 /**
@@ -492,8 +483,6 @@ export function createEvmReceivedCoinAndContactManager(
     canonicalMessagingFor,
     directMessages,
     receivedCoinFloorWei,
-    runWalletExclusive,
-    runMainAccountExclusive,
   } = params;
   const nativeChainId = BigInt(chainId);
 
@@ -902,14 +891,6 @@ export function createEvmReceivedCoinAndContactManager(
     invalidateBalanceRead(coin.address);
   };
 
-  const nativeOwner = (): EvmLegacyConsolidator => {
-    const wallet = getWallet();
-    requireOpenWallet(wallet);
-    const owner = evmWalletInternals(wallet).nativeOperationOwner;
-    if (!owner) throw new Error("Wallet has no durable native-operation owner");
-    return owner;
-  };
-
   const signedTransferTo = (address: string) =>
     getTopicOwner()
       .nativeJournal!.list()
@@ -958,6 +939,24 @@ export function createEvmReceivedCoinAndContactManager(
     (payment.state === "prepared" || payment.state === "failed") &&
     payment.spentElsewhere !== true &&
     !transferIncluded(payment);
+
+  /** Recorded by an older version of the wallet (no transaction set). Such a record is left as
+   * it is: nothing here releases, finishes or deletes it, and its reservations stay. */
+  const olderVersion = (payment: ContactPayment): boolean =>
+    !payment.transactionSetOperationId;
+  /** An older-version record that holds nothing any more (paid or released): ignored. */
+  const olderAndDone = (payment: ContactPayment): boolean =>
+    olderVersion(payment) &&
+    (payment.state === "paid" || payment.state === "released");
+  /** `payment`, when this version acts on it; an older-version record refuses. */
+  const current = (payment: ContactPayment): CurrentContactPayment => {
+    if (olderVersion(payment))
+      throw new UnsupportedContactPaymentRecordError(
+        payment.stealthAddress,
+        payment.messageId
+      );
+    return payment as CurrentContactPayment;
+  };
 
   /** A held payment whose signed set may have left the wallet (the journal shows it authorized
    * for submission or a member exposed) is held until the chain says what became of it. This
@@ -1019,26 +1018,15 @@ export function createEvmReceivedCoinAndContactManager(
 
   const inFlight = new Map<string, number>();
 
-  const cancelReleasedTransfer = async (
-    payment: ContactPayment
-  ): Promise<boolean> => {
-    const wallet = getWallet();
-    const row =
-      (payment.operationId === undefined
-        ? undefined
-        : getTopicOwner()
-            .nativeJournal!.list()
-            .find((r) => r.operationId === payment.operationId)) ??
-      signedTransferTo(payment.stealthAddress);
-    if (row === undefined || row.cancelled) return true;
-    if (payment.transactionSetOperationId) {
-      return wallet.transactionSetPreparer!.releaseUnexposed(payment.transactionSetOperationId);
-    }
-    const released = await runWalletExclusive(wallet, (admission) =>
-      nativeOwner().releaseUnexposed(row.operationId, admission)
+  /** Cancels a released payment's transaction set, found by its own identity however far its
+   * construction got. A set never written holds nothing; any other is cancelled only through
+   * `releaseUnexposed`, which refuses a set any of whose bytes may have left the wallet. */
+  const cancelReleasedTransfer = (
+    payment: CurrentContactPayment
+  ): Promise<boolean> =>
+    getWallet().transactionSetPreparer!.releaseUnexposedOrUnwritten(
+      payment.transactionSetOperationId
     );
-    return released.cancelled === true;
-  };
 
   /** Releases a payment nothing of which can have left the wallet. Without `endedMessage`, that
    * is one no message has learned of yet (no digest) and none is sending. With it, the message
@@ -1051,9 +1039,10 @@ export function createEvmReceivedCoinAndContactManager(
     endedMessage?: string
   ): Promise<boolean> =>
     exposureExclusive(async () => {
-      const payment = paymentStore.get(stealthAddress);
+      const stored = paymentStore.get(stealthAddress);
+      if (stored === undefined) return false;
+      const payment = current(stored);
       if (
-        payment === undefined ||
         (payment.state !== "prepared" && payment.state !== "planned") ||
         (endedMessage === undefined
           ? payment.payloadDigest !== undefined ||
@@ -1093,24 +1082,17 @@ export function createEvmReceivedCoinAndContactManager(
    * once the chain shows it included. Never signs or pays anything new: an already included
    * transfer is only recorded; otherwise the original operation is resumed (its same bytes). */
   const broadcastContactTransfer = async (
-    payment: ContactPayment
+    stored: ContactPayment
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
-    const operationId = payment.operationId!;
+    const payment = current(stored);
     if ((await readTransferMember(payment))?.observation.state === "included-success") {
       return markPaid(payment);
     }
-    let pendingReason: string | undefined;
-    if (payment.transactionSetOperationId) {
-      const report = await wallet.transactionSetSubmission!.sendTransaction(
-        await wallet.transactionSetPreparer!.readTransactionSet(payment.transactionSetOperationId)
-      );
-      pendingReason = report.pendingReason;
-    } else {
-      await runWalletExclusive(wallet, (admission) =>
-        runMainAccountExclusive(wallet, () => nativeOwner().resumeOperation(operationId, admission))
-      );
-    }
+    const report = await wallet.transactionSetSubmission!.sendTransaction(
+      await wallet.transactionSetPreparer!.readTransactionSet(payment.transactionSetOperationId)
+    );
+    const pendingReason = report.pendingReason;
     invalidateBalanceRead();
     const member = await readTransferMember(payment);
     if (member?.observation.state === "included-success") return markPaid(payment);
@@ -1149,14 +1131,14 @@ export function createEvmReceivedCoinAndContactManager(
 
   const finishContactPayment = async (
     stealthAddress: string,
-    onProgress?: ContactSendParams["onProgress"],
-    takeOver = false
+    onProgress?: ContactSendParams["onProgress"]
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
-    let payment = paymentStore.get(stealthAddress);
-    if (payment === undefined) {
+    const stored = paymentStore.get(stealthAddress);
+    if (stored === undefined) {
       throw new Error("No such payment to a contact");
     }
+    let payment: CurrentContactPayment = current(stored);
     if (payment.state === "planned" && payment.stampValueWei === undefined) {
       throw new Error(
         "Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records."
@@ -1179,7 +1161,7 @@ export function createEvmReceivedCoinAndContactManager(
     }
     // Chain inclusion and delivery are separate facts. Shared submission can settle
     // the recipient transfer before the dependent stamp/encrypted message is delivered.
-    if (payment.transactionSetOperationId && payment.payloadDigest &&
+    if (payment.payloadDigest &&
         (payment.state === "prepared" || payment.state === "paid")) {
       const statuses = await directMessages.reconcileAttempts({
         wallet, payloadDigests: [payment.payloadDigest],
@@ -1232,21 +1214,9 @@ export function createEvmReceivedCoinAndContactManager(
         await paymentStore.put(stealthAddress, payment);
         return broadcastContactTransfer(payment);
       }
-      if (
-        !(status === "dead" || status === "unknown") ||
-        !(takeOver || payment.createdAtMs < openedAtMs)
-      ) {
-        return payment;
-      }
       // A shared graph is bound to the original encrypted host message and stamp stage.
-      // Reconciliation above is the only replay path; takeover cannot create another envelope.
-      if (payment.transactionSetOperationId) return payment;
-      payment = {
-        ...payment,
-        deliveredBy: "wallet",
-        messageId: newMessageId(),
-      };
-      await paymentStore.put(stealthAddress, payment);
+      // Reconciliation above is the only replay path; no takeover creates another envelope.
+      return payment;
     }
     onProgress?.({ stage: "delivering", txHash: payment.txHash });
     let payloadDigest: string;
@@ -1257,7 +1227,7 @@ export function createEvmReceivedCoinAndContactManager(
           recipient: { raw: getAddress(payment.recipientAddress) },
           items: [itemOf(payment)],
           messageId: payment.messageId,
-          ...(payment.transactionSetOperationId ? { paymentOperationId: payment.transactionSetOperationId } : {}),
+          paymentOperationId: payment.transactionSetOperationId,
           ...(payment.conversationId === undefined
             ? {}
             : { conversationId: payment.conversationId }),
@@ -1558,23 +1528,17 @@ export function createEvmReceivedCoinAndContactManager(
     resumingContactPayments ??= contactExclusive(async () => {
       for (const listed of paymentStore.all()) {
         if (evmWalletInternals(wallet).closed) return;
-        let payment = listed;
+        // A record of an older version is never acted on here: not released, finished or
+        // deleted, and whatever it reserves stays reserved.
+        if (olderVersion(listed)) continue;
+        let payment: ContactPayment = listed;
         if (payment.state === "released") {
-          await cancelReleasedTransfer(payment).catch(() => undefined);
+          await cancelReleasedTransfer(current(payment)).catch(() => undefined);
           continue;
         }
         // An exposed set the chain shows can never land holds nothing: failed, not resumed.
         payment = await reconcileHeldContactPayment(payment).catch(() => payment);
         if (payment.spentElsewhere) continue;
-        if (
-          payment.state !== "planned" &&
-          payment.state !== "prepared" &&
-          payment.state !== "delivered" &&
-          payment.state !== "failed" &&
-          !(payment.state === "paid" && payment.transactionSetOperationId !== undefined)
-        ) {
-          continue;
-        }
         if (
           payment.deliveredBy === "host" &&
           payment.state === "prepared" &&
@@ -1585,23 +1549,6 @@ export function createEvmReceivedCoinAndContactManager(
             () => undefined
           );
           continue;
-        }
-        const operationId = payment.operationId;
-        if (
-          operationId !== undefined &&
-          payment.state !== "delivered" &&
-          payment.payloadDigest !== undefined &&
-          !payment.transactionSetOperationId
-        ) {
-          await getTopicOwner()
-            .runLifetime((lifetime) =>
-              nativeOwner().observe(operationId, 0, lifetime)
-            )
-            .catch(() => undefined);
-          if ((await readTransferMember(payment))?.observation.state === "included-success") {
-            payment = await markPaid(payment);
-            continue;
-          }
         }
         if (payment.state !== "failed") {
           await finishContactPayment(payment.stealthAddress).catch(
@@ -1627,34 +1574,29 @@ export function createEvmReceivedCoinAndContactManager(
       const found = paymentStore
         .all()
         .find((row) => row.ephemeralPubKey === key);
-      if (found === undefined) return "none";
+      // An older version's record that holds nothing is not listed or acted on.
+      if (found === undefined || olderAndDone(found)) return "none";
+      // One that may hold funds or have unfinished work is refused, and left as it is.
+      current(found);
       const address = found.stealthAddress;
       if (await releaseContactPayment(address)) return "released";
-      let payment = paymentStore.get(address)!;
-      if (payment.state === "failed" && payment.transactionSetOperationId) {
+      const payment = paymentStore.get(address)!;
+      if (payment.state === "failed") {
+        // Its signed set is bound to the original message: only that message's attempt is
+        // reconciled, never a new message for the same payment.
         if (payment.payloadDigest) await directMessages.reconcileAttempts({
           wallet, payloadDigests: [payment.payloadDigest],
         });
         return paymentStore.get(address)?.state ?? "failed";
       }
-      if (payment.state === "failed") {
-        const { failure: _failure, payloadDigest: _digest, ...rest } = payment;
-        payment = {
-          ...rest,
-          deliveredBy: "wallet",
-          messageId: newMessageId(),
-          state: "prepared",
-        };
-        await paymentStore.put(address, payment);
-      }
       if (
         payment.state === "planned" ||
         payment.state === "prepared" ||
         payment.state === "delivered" ||
-        (payment.state === "paid" && payment.transactionSetOperationId !== undefined)
+        payment.state === "paid"
       ) {
         // A failure is the answer: the host shows it. Nothing here pays again.
-        const finished = await finishContactPayment(address, undefined, true);
+        const finished = await finishContactPayment(address);
         const why = unsettledWhy.get(address);
         if (finished.state === "delivered" && why !== undefined) {
           throw new ContactPaymentNotSettledError(finished.messageId, why);
@@ -2725,6 +2667,14 @@ export function createEvmReceivedCoinAndContactManager(
       beginContactSend: (ephemeralPubKeys) =>
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {
+            // An older version's payment that may still hold funds is never carried out by a
+            // message of this version: refused before anything of the message exists.
+            if (
+              ephemeralPubKeys.includes(payment.ephemeralPubKey) &&
+              olderVersion(payment) &&
+              !olderAndDone(payment)
+            )
+              current(payment);
             if (
               payment.state === "released" &&
               ephemeralPubKeys.includes(payment.ephemeralPubKey)
@@ -2750,6 +2700,7 @@ export function createEvmReceivedCoinAndContactManager(
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {
             if (!ephemeralPubKeys.includes(payment.ephemeralPubKey)) continue;
+            if (olderVersion(payment)) continue;
             if (payment.state === "released") {
               throw new ContactPaymentReleasedError();
             }
@@ -2767,7 +2718,10 @@ export function createEvmReceivedCoinAndContactManager(
       async releaseUnsentContactPayments(ephemeralPubKeys) {
         let released = false;
         for (const payment of paymentStore.all()) {
-          if (ephemeralPubKeys.includes(payment.ephemeralPubKey)) {
+          if (
+            ephemeralPubKeys.includes(payment.ephemeralPubKey) &&
+            !olderVersion(payment)
+          ) {
             released =
               (await releaseContactPayment(payment.stealthAddress)) || released;
           }
@@ -2779,6 +2733,7 @@ export function createEvmReceivedCoinAndContactManager(
           for (const payment of paymentStore.all()) {
             if (
               walletInternals.closed ||
+              olderVersion(payment) ||
               payment.deliveredBy !== "host" ||
               (payment.state !== "prepared" && payment.state !== "failed") ||
               payment.payloadDigest !== payloadDigest
@@ -2841,7 +2796,7 @@ export function createEvmReceivedCoinAndContactManager(
     recordReceivedCoin,
     noteCoins,
     getContactPayments: () =>
-      paymentStore.all().map((payment) => ({
+      paymentStore.all().filter((payment) => !olderAndDone(payment)).map((payment) => ({
         messageId: payment.messageId,
         ephemeralPubKey: payment.ephemeralPubKey,
         recipientAddress: payment.recipientAddress,
@@ -2851,6 +2806,7 @@ export function createEvmReceivedCoinAndContactManager(
         ...(payment.txHash ? { txHash: payment.txHash } : {}),
         ...(payment.failure ? { failure: payment.failure } : {}),
         ...(payment.operationId ? { operationId: payment.operationId } : {}),
+        ...(olderVersion(payment) ? { olderVersion: true as const } : {}),
       })),
     sendToContact: (sendParams: ContactSendParams) =>
       payContact(sendParams, false) as Promise<ContactSendResult>,

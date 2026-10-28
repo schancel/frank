@@ -362,6 +362,7 @@ export default defineComponent({
       keys['fee-exceeded'] = 'outgoing.reasonFeeExceeded'
       keys.blocked = 'outgoing.reasonBlocked'
       keys.unencodable = 'outgoing.reasonUnencodable'
+      keys['payment-older-version'] = 'outgoing.reasonPaymentOlderVersion'
       // Larger than a message carries: names the limit the composer holds a message to.
       if (this.failureReason === 'too-large')
         return this.$t('outgoing.reasonTooLarge', {

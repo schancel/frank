@@ -794,6 +794,25 @@ export interface ReceivedCoinSweep {
   reason?: string;
 }
 
+/** A payment to a contact recorded by an older version of the wallet: a record with no
+ * `transactionSetOperationId` (its transfer journalled as a separate native operation). This
+ * version does nothing with such a payment by itself: it never releases, finishes or deletes it,
+ * and leaves what it reserves reserved. Finish, settle, resume and release refuse it with this
+ * error. Activation and every other payment are unaffected.
+ *
+ * Reset notes, for development profiles only: finish the payment with the version that made it.
+ * Otherwise use a fresh, isolated wallet profile and keep the old one intact. Do not delete keys,
+ * the native operation journal, received coins or unrelated app data, and review any reset of
+ * the old profile's `contact-payments` records only once none of them can have left the device. */
+export class UnsupportedContactPaymentRecordError extends Error {
+  constructor(readonly stealthAddress: string, readonly messageId: string) {
+    super(
+      `Contact payment ${messageId} to one-time address ${stealthAddress} was made by an older version of the wallet. Nothing is done with it automatically and its funds stay reserved: finish it with that version, or follow the reset notes.`
+    );
+    this.name = "UnsupportedContactPaymentRecordError";
+  }
+}
+
 /** The payment was released before a byte of it left this device: its signed transfer is
  * cancelled and can never land, and the funds it held are free. Nothing was sent. Make the
  * payment again; the item of a released payment is never accepted in a message. */
@@ -845,6 +864,9 @@ export interface ContactPaymentInfo {
    * transfer. `failed`: the relay ended the message; `retryContactPayment` sends it again.
    * `released`: nothing of it was ever sent and its transfer was cancelled. */
   state: "planned" | "prepared" | "delivered" | "paid" | "failed" | "released";
+  /** Recorded by an older version of the wallet: nothing is done with it automatically, and
+   * settling it refuses (`UnsupportedContactPaymentRecordError`). */
+  olderVersion?: true;
   txHash?: string;
   failure?: string;
   /** From `prepared` on: the native journal operation that holds its signed transaction set

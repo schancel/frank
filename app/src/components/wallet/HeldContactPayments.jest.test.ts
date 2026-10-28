@@ -2,7 +2,11 @@
 
 import { mount } from '@vue/test-utils'
 import type { ContactPaymentInfo } from '@frank/wallet/chain'
-import { activeChain, ContactPaymentNotSettledError } from '@frank/wallet/chain'
+import {
+  activeChain,
+  ContactPaymentNotSettledError,
+  UnsupportedContactPaymentRecordError,
+} from '@frank/wallet/chain'
 import HeldContactPayments from './HeldContactPayments.vue'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import enUS from '../../i18n/en-us'
@@ -144,6 +148,31 @@ describe('HeldContactPayments', () => {
     wrapper.unmount()
   })
 
+  it('a planned payment whose release the wallet refuses stays held for its message, as its text said', async () => {
+    payments = [payment({ state: 'planned', ephemeralPubKey: '02ff' })]
+    // Its message already learned of it (or is sending it): the wallet only moves it on.
+    settleContactPayment.mockImplementation(async () => {
+      payments = [payment({ state: 'prepared', ephemeralPubKey: '02ff' })]
+      return 'prepared'
+    })
+    const wrapper = mountList()
+    await settle()
+    const said = wrapper
+      .find('[data-testid="held-contact-payment-state"]')
+      .text()
+    // Never promised as completed by Finish: it stays held for the message that carries it.
+    expect(said).not.toMatch(/completes it/)
+    expect(said).toMatch(/stays held, signed, for the message that carries it/)
+    await wrapper
+      .find('[data-testid="held-contact-payment-finish"]')
+      .trigger('click')
+    await settle()
+    expect(
+      wrapper.find('[data-testid="held-contact-payment-state"]').text(),
+    ).toBe(enUS.heldContactPayments.state.prepared)
+    wrapper.unmount()
+  })
+
   it('Finish asks the wallet to settle that payment and then shows what the wallet says', async () => {
     payments = [payment({ state: 'prepared', ephemeralPubKey: '02dd' })]
     settleContactPayment.mockImplementation(async () => {
@@ -199,6 +228,35 @@ describe('HeldContactPayments', () => {
     expect(errorNotify).toHaveBeenLastCalledWith(expect.any(Error), {
       fallbackKey: 'heldContactPayments.finishFailed',
     })
+    expect(
+      wrapper.findAll('[data-testid="held-contact-payment"]'),
+    ).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('a payment an older version made is listed as such, and its Finish says in plain words that it is refused', async () => {
+    payments = [
+      payment({
+        state: 'prepared',
+        ephemeralPubKey: '02ab',
+        olderVersion: true,
+      }),
+    ]
+    const refused = new UnsupportedContactPaymentRecordError('0xabc', 'm')
+    settleContactPayment.mockRejectedValue(refused)
+    const wrapper = mountList()
+    await settle()
+    expect(
+      wrapper.find('[data-testid="held-contact-payment-state"]').text(),
+    ).toBe(enUS.heldContactPayments.state.olderVersion)
+    await wrapper
+      .find('[data-testid="held-contact-payment-finish"]')
+      .trigger('click')
+    await settle()
+    expect(errorNotify).toHaveBeenLastCalledWith(refused, {
+      fallbackKey: 'heldContactPayments.olderVersion',
+    })
+    expect(t('heldContactPayments.olderVersion')).toMatch(/older version/)
     expect(
       wrapper.findAll('[data-testid="held-contact-payment"]'),
     ).toHaveLength(1)

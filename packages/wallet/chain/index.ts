@@ -219,6 +219,7 @@ export {
   ContactPaymentFailedError,
   ContactPaymentNotSettledError,
   ContactPaymentReleasedError,
+  UnsupportedContactPaymentRecordError,
   ContactPaymentBelowFloorError,
   ContactPaymentTooLargeError,
   MAX_STEALTH_ITEM_AMOUNT,

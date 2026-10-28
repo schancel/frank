@@ -4,7 +4,11 @@
  * refused the same way again. Such a message is offered Discard, not Retry.
  */
 export function unretryableFailure(reason: string | undefined): boolean {
-  return reason === 'too-large' || reason === 'unencodable'
+  return (
+    reason === 'too-large' ||
+    reason === 'unencodable' ||
+    reason === 'payment-older-version'
+  )
 }
 
 /**
@@ -16,6 +20,7 @@ export function failedBeforePayment(reason: string | undefined): boolean {
   return (
     reason === 'too-large' ||
     reason === 'unencodable' ||
+    reason === 'payment-older-version' ||
     reason === 'stamp-below-fee' ||
     reason === 'fee-exceeded' ||
     reason === 'blocked' ||

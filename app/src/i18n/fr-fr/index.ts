@@ -992,6 +992,8 @@ export const rawFrFR = {
       'Il dépasse ce qu’un message peut contenir ({limit}). Rien n’a été payé. Raccourcissez-le et envoyez-le de nouveau.',
     reasonUnencodable:
       'Il contient quelque chose qui ne peut pas être envoyé dans un message. Rien n’a été payé.',
+    reasonPaymentOlderVersion:
+      'Il porte un paiement fait par une ancienne version du portefeuille. Rien n’a été envoyé, et rien n’est fait automatiquement avec ce paiement : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
@@ -1266,8 +1268,10 @@ export const rawFrFR = {
     title: 'Paiements à des contacts en cours',
     finish: 'Terminer',
     state: {
+      olderVersion:
+        'Fait par une ancienne version du portefeuille. Rien n’en sera fait automatiquement et ses fonds restent retenus : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
       planned:
-        'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille, et sinon l’achève. Il n’est jamais payé deux fois.',
+        'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille. Sinon il reste retenu, signé, pour le message qui le porte, et la livraison de ce message le paie. Il n’est jamais payé deux fois.',
       prepared:
         'Signé. En attente de la livraison de son message ; ses fonds sont retenus.',
       delivered: 'Message livré. Le paiement est en route vers la chaîne.',
@@ -1288,6 +1292,8 @@ export const rawFrFR = {
       'no-record':
         'Le portefeuille n’a aucune trace du transfert signé de ce paiement. Rien n’a été payé de nouveau.',
     },
+    olderVersion:
+      'Ce paiement a été fait par une ancienne version du portefeuille, et cette version n’en fait rien. Rien n’a été payé ni libéré : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
     finishFailed:
       'Le paiement n’a pas pu être terminé pour le moment. Rien n’a été payé de nouveau ; réessayez plus tard.',
   },
@@ -1796,6 +1802,8 @@ export const rawFrFR = {
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
     heldAfterError:
       "Le paiement est signé et réservé, et son message n'a pas pu être envoyé pour l'instant. Il n'est jamais payé deux fois. Si le message apparaît dans la conversation avec ce contact, réessayez-le là ; sinon, ouvrez « Paiements à des contacts en cours » sur la page du portefeuille, où le portefeuille termine le paiement ou, si rien n'en a été envoyé, le libère sans rien payer.",
+    released:
+      'Ce paiement a été annulé avant que quoi que ce soit ne soit envoyé. Rien n’a été payé ; refaites le paiement.',
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:

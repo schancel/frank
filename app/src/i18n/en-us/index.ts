@@ -973,6 +973,8 @@ export const rawEnUS = {
       'It is larger than one message can carry ({limit}). Nothing was paid. Shorten it and send it again.',
     reasonUnencodable:
       'It holds something that cannot be sent in a message. Nothing was paid.',
+    reasonPaymentOlderVersion:
+      'It carries a payment made by an older version of the wallet. Nothing was sent, and nothing is done with that payment automatically: finish it with that version, or follow the reset notes.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:
@@ -1242,8 +1244,10 @@ export const rawEnUS = {
     title: 'Payments to contacts in progress',
     finish: 'Finish',
     state: {
+      olderVersion:
+        'Made by an older version of the wallet. Nothing will be done with it automatically and its funds stay reserved: finish it with that version, or follow the reset notes.',
       planned:
-        'Not finished being prepared; its funds may be held. Finish releases it unpaid if nothing of it left the wallet, and otherwise completes it. It is never paid twice.',
+        'Not finished being prepared; its funds may be held. Finish releases it unpaid if nothing of it left the wallet. Otherwise it stays held, signed, for the message that carries it, and that message’s delivery pays it. It is never paid twice.',
       prepared:
         'Signed. Waiting for its message to be delivered; its funds are held.',
       delivered: 'Message delivered. The payment is on its way to the chain.',
@@ -1264,6 +1268,8 @@ export const rawEnUS = {
       'no-record':
         'The wallet has no record of this payment’s signed transfer. Nothing was paid again.',
     },
+    olderVersion:
+      'This payment was made by an older version of the wallet, and this version does nothing with it. Nothing was paid or released: finish it with that version, or follow the reset notes.',
     finishFailed:
       'The payment could not be finished just now. Nothing was paid again; try again later.',
   },
@@ -1760,6 +1766,8 @@ export const rawEnUS = {
     notSent: 'The payment could not be made. Nothing was sent.',
     heldAfterError:
       'The payment is signed and held, and its message could not be sent just now. It is never paid twice. If the message shows in the chat with this contact, retry it there; otherwise open “Payments to contacts in progress” on the wallet page, where the wallet either finishes the payment or, if nothing of it was sent, releases it unpaid.',
+    released:
+      'This payment was cancelled before anything was sent. Nothing was paid; make the payment again.',
     messageEnded:
       'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
     tooLarge:

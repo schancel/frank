@@ -3,14 +3,18 @@
 These three fictional profiles are design and usability testing aids. They are working
 hypotheses, not researched people, established audience segments, or evidence of demand.
 
-The owner reports roughly 600 people actively interested in Stamp in 2021–2022. Asking people
-did not establish why they were interested. That observation does not validate any particular
-motivation, including ideology, anonymity, payments, or privacy.
+Earlier interest in Stamp did not establish why people wanted it. These profiles do not
+validate any particular motivation, including ideology, anonymity, payments, or privacy.
 
 The tentative starting audience is privacy-minded, crypto-minded people who are **not
 technical**. Even their motivations remain uncertain. The longer-term ambition includes the
 broader range of people who already use Telegram, Signal, or email; these profiles do not
 establish that those people will want Frank.
+
+The first recruitment hypotheses are approachable community organizers with unwanted inbound
+messages and repeat collaborators who already combine private conversations with small
+payments. Test them with their actual correspondents. A working group, invitation, or payment
+flow demonstrates usability; it does not establish demand or voluntary repeat use.
 
 | Fictional profile             | A situation to test                                        |
 | ----------------------------- | ---------------------------------------------------------- |

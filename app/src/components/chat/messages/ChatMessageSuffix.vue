@@ -127,11 +127,11 @@ import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { useChatStore } from '../../../stores/chats'
 import { blockingMessage } from '../../../stores/chats-self-notes'
-import { fundsInPendingSendReasonText } from '../../../utils/funds-in-pending-send'
 import { messageItems } from '../../../utils/message-items'
-import { MAX_SENT_MESSAGE_BYTES } from '../../../utils/image-data-uri'
-import { formatAttachmentSize } from '../../../utils/post-editor'
-import { unretryableFailure } from '../../../utils/outgoing-failure'
+import {
+  outgoingFailureReasonText,
+  unretryableFailure,
+} from '../../../utils/outgoing-failure'
 import { joinConsecutiveTextItems } from '@frank/wallet/message-item-plugins/text/long-text'
 
 import ChatMessageSuffixButtons from './ChatMessageSuffixButtons.vue'
@@ -347,57 +347,16 @@ export default defineComponent({
       return this.failureText ? `${failed} — ${this.failureText}` : failed
     },
     failureText(): string {
-      const keys: Record<string, string> = {
-        unreachable: 'outgoing.reasonUnreachable',
-        unavailable: 'outgoing.reasonUnavailable',
-        rejected: 'outgoing.reasonRejected',
-        interrupted: 'outgoing.reasonInterrupted',
-        unverified: 'outgoing.reasonUnverified',
-        recovered: 'outgoing.reasonRecovered',
-      }
-      keys['rejected-paid'] = 'outgoing.reasonRejectedPaid'
-      keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
-      keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'
-      keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
-      keys['fee-exceeded'] = 'outgoing.reasonFeeExceeded'
-      keys.blocked = 'outgoing.reasonBlocked'
-      keys.unencodable = 'outgoing.reasonUnencodable'
-      keys['payment-older-version'] = 'outgoing.reasonPaymentOlderVersion'
-      // Larger than a message carries: names the limit the composer holds a message to.
-      if (this.failureReason === 'too-large')
-        return this.$t('outgoing.reasonTooLarge', {
-          limit: formatAttachmentSize(MAX_SENT_MESSAGE_BYTES),
-        })
-      // Money of an earlier send not on the chain yet: says how much (the amount its failure
-      // kept, `errorDetail`) and to try again in a moment.
-      if (this.failureReason === 'funds-in-pending-send')
-        return fundsInPendingSendReasonText(
-          this.failureDetail,
-          wei => `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`,
-          (key, params) => this.$t(key, params ?? {}),
-        )
-      // A group's price rose above the one shown: names the new price its failure kept.
-      if (
-        this.failureReason === 'group-price-changed' &&
-        /^[1-9]\d*$/.test(this.failureDetail)
+      // The shared mapping of every failure reason (`outgoing-failure.ts`).
+      const text = outgoingFailureReasonText(
+        this.failureReason,
+        this.failureDetail,
+        (key, params) => this.$t(key, params ?? {}),
+        activeChain,
       )
-        return this.$t('outgoing.reasonGroupPriceChanged', {
-          amount: activeChain.toDisplayAmount(BigInt(this.failureDetail)),
-          unit: activeChain.unit,
-        })
-      const key = keys[this.failureReason]
-      if (key === undefined) return ''
-      // A payment below the floor names the floor its failure kept (`errorDetail`).
-      if (
-        this.failureReason === 'stamp-below-fee' &&
-        /^[1-9]\d*$/.test(this.failureDetail)
-      )
-        return this.$t('outgoing.reasonStampBelowFeeAmount', {
-          amount: activeChain.toDisplayAmount(BigInt(this.failureDetail)),
-          unit: activeChain.unit,
-        })
+      if (text === undefined) return ''
       const blocking = this.blockingMessageText
-      return blocking ? `${this.$t(key)} ${blocking}` : this.$t(key)
+      return blocking ? `${text} ${blocking}` : text
     },
     /** For a send blocked by an earlier message: that message, by its first words and time. */
     blockingMessageText(): string {

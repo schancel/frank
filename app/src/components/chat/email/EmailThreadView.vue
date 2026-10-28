@@ -232,6 +232,11 @@
                           class="q-mr-xs"
                         />
                         {{ cardDeliveryBadge(card)!.label }}
+                        <q-tooltip
+                          v-if="cardDeliveryBadge(card)!.detail"
+                          max-width="260px"
+                          >{{ cardDeliveryBadge(card)!.detail }}</q-tooltip
+                        >
                       </q-badge>
                       <q-btn
                         v-if="isCardCancelable(card)"
@@ -1220,6 +1225,7 @@ import {
 import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import { activeChain } from '@frank/wallet/chain'
+import { outgoingFailureReasonText } from 'src/utils/outgoing-failure'
 import {
   stampAvu as stampAvuOf,
   stampMultiplierText,
@@ -2161,37 +2167,36 @@ export default defineComponent({
       color: string
       icon: string
       label: string
+      /** Why it failed in full (the shared mapping, `outgoing-failure.ts`), for the tooltip. */
+      detail?: string
     } | null {
       if (!card.isOutbound) return null
       if (card.status === 'error') {
-        if (card.failureReason === 'insufficient-funds') {
-          return {
-            color: 'negative',
-            icon: 'error_outline',
-            label: this.$t('chatMessage.insufficientFunds', {
-              unit: this.chainUnit,
-            }),
-          }
-        }
-        if (card.failureReason === 'funds-in-pending-send') {
-          return {
-            color: 'negative',
-            icon: 'error_outline',
-            label: this.$t('outgoing.reasonFundsInPendingSendNoAmount'),
-          }
-        }
-        if (card.failureReason === 'stamp-below-fee') {
-          return {
-            color: 'negative',
-            icon: 'error_outline',
-            label: this.$t('chatMessage.stampBelowFee'),
-          }
-        }
-        return {
+        const detail = outgoingFailureReasonText(
+          card.failureReason,
+          undefined,
+          (key, params) => this.$t(key, params ?? {}),
+          activeChain,
+        )
+        const failed = (label: string) => ({
           color: 'negative',
           icon: 'error_outline',
-          label: this.$t('chatMessage.failedToSend', 'Failed to send'),
-        }
+          label,
+          ...(detail === undefined ? {} : { detail }),
+        })
+        if (card.failureReason === 'insufficient-funds')
+          return failed(
+            this.$t('chatMessage.insufficientFunds', {
+              unit: this.chainUnit,
+            }),
+          )
+        if (card.failureReason === 'funds-in-pending-send')
+          return failed(this.$t('outgoing.reasonFundsInPendingSendNoAmount'))
+        if (card.failureReason === 'stamp-below-fee')
+          return failed(this.$t('chatMessage.stampBelowFee'))
+        if (card.failureReason === 'payment-older-version')
+          return failed(this.$t('chatMessage.paymentOlderVersion'))
+        return failed(this.$t('chatMessage.failedToSend', 'Failed to send'))
       }
       if (card.payloadDigest && sendsWaitingForChain.has(card.payloadDigest)) {
         return {

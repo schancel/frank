@@ -88,12 +88,13 @@ const message = (error: unknown) =>
 const memberStates = (operation: EvmNativeOperation | undefined) =>
   operation?.members.map(member => member.observation.state) ?? []
 
-/** An operation whose signed members the chain may say more about. */
+/** An operation whose signed members the chain may say more about. A member not signed yet
+ * carries `signed: null`; the chain has nothing to show of it. */
 const observable = (operation: EvmNativeOperation) =>
   operation.kind === 'transaction-set' &&
   !operation.cancelled &&
   operation.members.length > 0 &&
-  operation.members.every(member => member.signed !== undefined) &&
+  operation.members.every(member => member.signed !== null) &&
   operation.members.some(
     member =>
       member.observation.state !== 'included-success' &&

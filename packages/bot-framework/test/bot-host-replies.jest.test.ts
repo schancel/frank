@@ -22,6 +22,7 @@ import {
 } from "../src/bot-host";
 import { FundsInPendingSendError } from "@frank/wallet/evm-transaction-set-types";
 import { InsufficientStampFundsError } from "@frank/wallet/evm-account-pool";
+import { UnsupportedContactPaymentRecordError } from "@frank/wallet/chain/chain-wallet";
 import { joinConsecutiveTextItems } from "@frank/wallet/message-item-plugins/text/long-text";
 import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
 import { MAX_SEALED_MESSAGE_CONTENT_BYTES } from "@frank/wallet/chain/direct-message-limits";
@@ -789,6 +790,49 @@ describe("FrankBotHost replies", () => {
           ([line]) =>
             String(line).includes("is not sent again") &&
             String(line).includes("5000 wei")
+        )
+      ).toBe(true);
+    });
+
+    it("refused because it carries a payment an older version of the wallet made is rejected to the handler at once, saying why, and never sent again by the host", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const outcomes: string[] = [];
+      const { host, instance } = await start(
+        bot("older-payment-bot", async (message) => {
+          try {
+            await message.reply([{ type: "text", text: "you won" }]);
+            outcomes.push("sent");
+          } catch (refusal) {
+            outcomes.push(
+              refusal instanceof UnsupportedContactPaymentRecordError ? "refused" : "other"
+            );
+          }
+        })
+      );
+      // Labelled as having created nothing, the host would otherwise send it again on later
+      // polls; the same message is refused the same way every time.
+      mockSend.mockReset().mockRejectedValue(
+        Object.defineProperty(
+          new UnsupportedContactPaymentRecordError("0xabc", "m-1"),
+          directMessageNotAttempted,
+          { value: true }
+        )
+      );
+      const message = inbound("roll");
+      await poll(host, [message]);
+      await drain(instance);
+      for (let pass = 0; pass < 3; pass++) {
+        await poll(host, [message]);
+        await drain(instance);
+      }
+      expect(outcomes).toEqual(["refused"]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([line]) =>
+            String(line).includes("is not sent again") &&
+            String(line).includes("older version of the wallet")
         )
       ).toBe(true);
     });

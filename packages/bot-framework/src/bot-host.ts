@@ -41,7 +41,7 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import { installMessageItemRegistry } from "@frank/wallet/chain/canonical-dm";
 import { splitLongTextItems } from "@frank/wallet/message-item-plugins/text/long-text";
 import { sealedMessageOverLimit } from "@frank/wallet/chain/direct-message-limits";
-import { unencodableReason } from "@frank/wallet/chain/direct-message-refusal";
+import { permanentRefusalReason } from "@frank/wallet/chain/direct-message-refusal";
 import { fundsInPendingSend } from "@frank/wallet/evm-transaction-set-types";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
@@ -122,16 +122,25 @@ export function outgoingItems(items: readonly MessageItem[]): MessageItem[] {
   return split;
 }
 
+/** The words for each reason the wallet gives that the same message can never be sent. */
+const PERMANENT_REFUSAL_WORDS: Record<
+  NonNullable<ReturnType<typeof permanentRefusalReason>>,
+  string
+> = {
+  "too-large": "it is more than a direct message carries",
+  unencodable: "an item of it cannot be encoded",
+  "payment-older-version":
+    "it carries a payment to a contact made by an older version of the wallet, which this version does nothing with by itself",
+};
+
 /** Why a send refused before anything was paid or handed out can never go through as it is:
- * too large (by the host's count or the wallet's) or an item that cannot be encoded. Undefined
- * for any other refusal. */
+ * too large (by the host's count or the wallet's), an item that cannot be encoded, or a payment
+ * an older version of the wallet made (`permanentRefusalReason`, the reading the app's failure
+ * reasons share). Undefined for any other refusal. */
 function permanentRefusal(error: unknown): string | undefined {
   if (error instanceof BotMessageTooLargeError) return error.message;
-  const unencodable = unencodableReason(error);
-  if (unencodable === "too-large")
-    return "it is more than a direct message carries";
-  if (unencodable === "unencodable") return "an item of it cannot be encoded";
-  return undefined;
+  const reason = permanentRefusalReason(error);
+  return reason === undefined ? undefined : PERMANENT_REFUSAL_WORDS[reason];
 }
 
 /** A send refused because the bot's money is still in its earlier sends, which have not reached
@@ -1906,8 +1915,8 @@ export class FrankBotHost {
       if (error instanceof DirectMessageAlreadyAttemptedError)
         await instance.operations.linkReply(digest, error.payloadDigest);
       if (instance.operations.get(digest)?.reply?.digest) return undefined;
-      // Refused before anything was paid or handed out as too large or unencodable: it never
-      // could be sent, so it is not sent again.
+      // Refused before anything was paid or handed out as too large, unencodable or carrying an
+      // older version's payment: it never could be sent, so it is not sent again.
       const permanent = permanentRefusal(error);
       if (permanent) {
         await this.giveUp(instance, digest, permanent);

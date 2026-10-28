@@ -9,6 +9,7 @@ import {
 } from '@frank/cashweb/message-items/registry'
 import { FrankCodecError } from '@frank/codec'
 import { isDirectMessageNotAttempted } from './active-chain'
+import { UnsupportedContactPaymentRecordError } from './chain-wallet'
 import { SealedSelfCopyTooLargeError } from './canonical-dm'
 
 /** `too-large` when the message (or its note to self) is more than a direct message carries,
@@ -31,4 +32,17 @@ export function unencodableReason(
   )
     return 'unencodable'
   return undefined
+}
+
+/** Why the same direct message can never be sent as it is: `too-large` and `unencodable` as
+ * {@link unencodableReason} reads them, and `payment-older-version` when it carries a payment to a
+ * contact made by an older version of the wallet, which this version does nothing with by itself
+ * (`UnsupportedContactPaymentRecordError`, refused before anything of the message was sent).
+ * Undefined for any other refusal. The app's failure reasons and the bot host both read it. */
+export function permanentRefusalReason(
+  error: unknown,
+): 'too-large' | 'unencodable' | 'payment-older-version' | undefined {
+  if (error instanceof UnsupportedContactPaymentRecordError)
+    return 'payment-older-version'
+  return unencodableReason(error)
 }

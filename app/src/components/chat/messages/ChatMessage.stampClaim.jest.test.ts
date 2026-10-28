@@ -176,7 +176,7 @@ it('never labels or reads a stamp we paid', () => {
 describe('a sent message refused before its stamp was paid', () => {
   const tp = (key: string, params: Record<string, string> = {}) =>
     t(key).replace(/\{(\w+)\}/g, (whole, name: string) => params[name] ?? whole)
-  function mountFailed(failureReason: string) {
+  function mountFailed(failureReason: string, attemptDigest?: string) {
     return shallowMount(ChatMessage, {
       props: {
         address: '0xPEER',
@@ -186,7 +186,10 @@ describe('a sent message refused before its stamp was paid', () => {
         message: {
           outbound: true,
           status: 'error',
-          delivery: { failureReason },
+          delivery: {
+            failureReason,
+            ...(attemptDigest === undefined ? {} : { attemptDigest }),
+          },
           receivedTime: 1,
           serverTime: 1,
           items: [{ type: 'text', text: 'hi' }],
@@ -202,6 +205,7 @@ describe('a sent message refused before its stamp was paid', () => {
   it.each([
     'unencodable',
     'too-large',
+    'payment-older-version',
     'stamp-below-fee',
     'fee-exceeded',
     'blocked',
@@ -211,6 +215,18 @@ describe('a sent message refused before its stamp was paid', () => {
     expect(shown(wrapper)).toBe('0.01 MON, not paid')
     wrapper.unmount()
   })
+
+  // A refusal made before anything of its attempt existed records no attempt of its own. An
+  // attempt the message records beside it is an earlier one of the same message, which an older
+  // version of the app may have made and paid: the bubble does not claim nothing was paid.
+  it.each(['payment-older-version', 'too-large', 'unencodable'])(
+    '%s after an earlier attempt that may have paid: the amount stays as it was',
+    reason => {
+      const wrapper = mountFailed(reason, 'ef'.repeat(32))
+      expect(shown(wrapper)).toBe('0.01 MON')
+      wrapper.unmount()
+    },
+  )
 
   it.each([
     'unverified',

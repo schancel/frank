@@ -27,7 +27,6 @@ import {
   roots,
   mailboxes,
   offlineChain,
-  roots,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
@@ -37,6 +36,7 @@ import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoi
 import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
 import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/stealth-asset/from-prepared'
 import type { StealthPaymentIntent } from '../stealth-payment'
+import { detachPaidContactStamp } from './canonical-contact-recovery'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -478,6 +478,101 @@ suite('another device of the account spends a message coin at the same moment (a
     const coins = evmWalletInternals(alice).coinList!.all().filter(coin => coin.account === untaken!.from!.toLowerCase())
     expect(coins.some(coin => coin.state === 'unspent' || coin.state === 'spent')).toBe(true)
     expect(coins.some(coin => coin.state === 'pending_receipt' && coin.holder === first.transactionSetOperationId)).toBe(false)
+  })
+
+  it('multipart detachment policy waits for every old stamp part (native-preparer shape coverage)', async () => {
+    // Supplemental policy coverage: the normal app writer carves a single stamp reserve.
+    // This real native graph deliberately uses geometric change without that writer policy.
+    await f.close()
+    f = await fixture({ transactionSetPolicy: () => ({
+      sourceOrder: ['stealth', 'stamp', 'change', 'deterministic', 'root', 'identity'],
+      gasPriceWei: 1_000_000_000n, paymentGasLimit: () => 21000n,
+      changeGasLimit: 21000n, paymentFeeIsExact: true, dustWei: 210_000_000_000_000n,
+      radix: 2, jitterBps: 1500, maxChangeOutputs: 20, head: 100,
+    }) })
+    alice = f.alice
+    jest.spyOn(Math, 'random').mockReturnValue(0)
+    const main = (await alice.getReceiveAddress()).raw
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    await mine(5)
+    await alice.refreshTransactionSetInventory!()
+    const preparer = alice.transactionSetPreparer!
+    const lifecycle = alice.transactionSetLifecycle!
+    const operationId = 'multipart-shape-contact'
+    const messageId = 'ab'.repeat(16)
+    const stageId = `stamp-${messageId}`
+    const contactAmount = 10n ** 16n
+    const stampAmount = 8n * 10n ** 17n
+    const feeCap = 10n ** 17n
+    await preparer.constructTransactionSet({ operationId, amountWei: contactAmount,
+      maxFeeWei: feeCap, kdf: () => f.bob.identity.address.raw })
+    const destinations = f.bob.pool.ensureSize(32).map(record => record.address)
+    await f.bob.pool.flush()
+    const stamp = await preparer.appendTransactionSet({ operationId, stageId,
+      amountWei: stampAmount, maxFeeWei: feeCap, kdf: index => destinations[index]! })
+    expect(stamp.bundle.length).toBeGreaterThan(1)
+    const original = (await preparer.readOperation(operationId))!
+    const contacts = original.members.filter(member => member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined)
+    const stamps = original.members.filter(member => member.transactionSet?.stageId === stageId && member.transactionSet.role === 'payment')
+    const signed = original.members.map(member => member.signed)
+    await preparer.authorizeSubmission(operationId)
+    for (let pass = 0; pass < 3; pass++) { await lifecycle.replay(operationId, { payments: false }); await mine(5); await lifecycle.observe(operationId, chain) }
+    for (const contact of contacts) {
+      await preparer.markExposed(operationId, original.members.indexOf(contact))
+      await (await chain.broadcastTransaction(contact.signed!.rawTransaction)).wait()
+    }
+    await lifecycle.observe(operationId, chain)
+    for (const member of stamps) await preparer.markExposed(operationId, original.members.indexOf(member))
+    // Opaque row sentinels test unchanged message identity here; full app cryptography and
+    // actual mailbox delivery are covered by the seven original-operation cases below.
+    const row: StoredMessage = {
+      version: 2, consumerId: `frank-dm:${messageId}`, digest: 'cd'.repeat(32),
+      recipientSubject: toHex(f.bob.identity.compressedPubKey), createdAt: Date.now(),
+      transactionSetOperationId: operationId, transactionSetStageId: stageId,
+      paymentOperationId: 'multipart-original-payment', unstored: true,
+      payments: stamp.bundle.map(payment => ({ source: 'coin', address: payment.sourceAccount,
+        rawTx: payment.rawTransaction, state: 'pending' })), otherTransactions: [],
+      construction: { network: 'MONT', payload: 'cafe', context: 'beef',
+        amountWei: stampAmount.toString(), boundary: 'multipart-shape' },
+      request: { body: 'deadbeef', contentType: 'multipart/mixed' },
+    }
+    const owner: Parameters<typeof detachPaidContactStamp>[0] = {
+      installedNetworkTag: 'MONT', chainId: 10143n,
+      transactionSets: { preparer, lifecycle, provider: chain,
+        refresh: () => alice.refreshTransactionSetInventory!(), untilBlock: async () => undefined,
+        sendTransaction: prepared => alice.transactionSetSubmission!.sendTransaction(prepared),
+        resolvePaymentOperation: async (id, amount) => {
+          if (id !== row.paymentOperationId || amount !== stampAmount) throw new Error('Different original payment')
+          return operationId
+        },
+      },
+    }
+    const take = async (member: typeof stamps[number]) => {
+      const tx = Transaction.from(member.signed!.rawTransaction)
+      await takeNonce(tx.from!, tx.nonce, 1n)
+      await lifecycle.observe(operationId, chain)
+    }
+    await take(stamps[0]!)
+    for (const live of stamps.slice(1)) {
+      const tx = Transaction.from(live.signed!.rawTransaction)
+      expect(await chain.getTransactionCount(tx.from!)).toBe(tx.nonce)
+      expect(await chain.getBalance(tx.from!)).toBeGreaterThanOrEqual(tx.value + tx.gasLimit * tx.gasPrice!)
+    }
+    expect(await detachPaidContactStamp(owner, row)).toBeUndefined()
+    expect(await preparer.readOperation(`stamp-${messageId}`)).toBeUndefined()
+    for (const member of stamps.slice(1)) await take(member)
+    const recovered = (await detachPaidContactStamp(owner, row))!
+    expect(recovered.originalCombinedOperationId).toBe(operationId)
+    expect(recovered.paymentOperationId).toBe(row.paymentOperationId)
+    expect(recovered.digest).toBe(row.digest)
+    expect(recovered.construction).toMatchObject(row.construction!)
+    expect((await preparer.readOperation(operationId))!.members.map(member => member.signed)).toEqual(signed)
+    expect(await chain.getBalance(f.bob.identity.address.raw)).toBe(contactAmount)
+    expect(stamps.reduce((sum, member) => sum + Transaction.from(member.signed!.rawTransaction).value, 0n)).toBe(stampAmount)
+    for (const member of stamps) {
+      expect(await chain.getTransactionReceipt(member.signed!.transactionHash)).toBeNull()
+      expect(nativeMemberSuperseded((await preparer.readOperation(operationId))!.members[original.members.indexOf(member)]!)).toBe(true)
+    }
   })
 
   async function heldCombinedSend(feeAllowanceMultiplier = 1n, multipleSources = false) {

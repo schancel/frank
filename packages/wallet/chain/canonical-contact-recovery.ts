@@ -6,7 +6,9 @@ import { nativeMaximumFee, nativeMemberEnded, nativeMemberSuperseded, type EvmNa
 import { takenMembers } from '../evm-transaction-set-taken'
 import type { CanonicalMessagingOwner } from './canonical-dm'
 
-export async function originalContactOperation(owner: CanonicalMessagingOwner, row: StoredMessage): Promise<EvmNativeOperation> {
+type ContactRecoveryOwner = Pick<CanonicalMessagingOwner, 'installedNetworkTag' | 'chainId' | 'transactionSets'>
+
+export async function originalContactOperation(owner: ContactRecoveryOwner, row: StoredMessage): Promise<EvmNativeOperation> {
   const shared = owner.transactionSets
   const id = row.originalCombinedOperationId ?? row.transactionSetOperationId
   if (!shared?.resolvePaymentOperation || !row.paymentOperationId || !row.construction || !id ||
@@ -49,7 +51,7 @@ function encumberedFee(operation: EvmNativeOperation): bigint {
 }
 
 /** All preceding attempts count against one approved operation budget, including owned moves. */
-export async function contactRecoveryBudget(owner: CanonicalMessagingOwner, row: StoredMessage) {
+export async function contactRecoveryBudget(owner: ContactRecoveryOwner, row: StoredMessage) {
   const original = await originalContactOperation(owner, row)
   let committed = encumberedFee(original)
   let paidFees = original.members.reduce((sum, member) => sum +
@@ -66,7 +68,7 @@ export async function contactRecoveryBudget(owner: CanonicalMessagingOwner, row:
 }
 
 /** Recover a paid contact only when every original stamp is conclusively unable to land. */
-export async function detachPaidContactStamp(owner: CanonicalMessagingOwner, row: StoredMessage): Promise<StoredMessage | undefined> {
+export async function detachPaidContactStamp(owner: ContactRecoveryOwner, row: StoredMessage): Promise<StoredMessage | undefined> {
   if (!row.transactionSetStageId || !row.transactionSetOperationId || !row.paymentOperationId ||
       row.unstored !== true || row.outcome !== undefined) return undefined
   const original = await originalContactOperation(owner, row)

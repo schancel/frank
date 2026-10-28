@@ -183,6 +183,10 @@ export interface BotContext {
     txHash: string,
     timeoutMs?: number
   ): Promise<TransactionReceipt | null>;
+  /** With `address`, that address's balance on chain. Without, what this bot can pay with now:
+   * the wallet's `getSpendableBalance` (the coins its sends draw on, unreserved and settled at
+   * the current head), not the identity account's balance and not the display balance. Rejects
+   * when it cannot be read. */
   getBalance(address?: string): Promise<bigint>;
   /** What the wallet knows of one of this bot's own outgoing messages, by payload digest:
    * `delivered`, `live` (still being delivered), `dead` (the relay ended it: it never arrives by

@@ -57,6 +57,19 @@ export function installEvmTransactionSetRuntime(
     override: params.policy,
   })
   let policyFailure: { error: unknown } | undefined
+  let coinFailure: { error: unknown } | undefined
+  let stopped = false
+  const assertFundingObserved = () => {
+    try {
+      if (stopped) throw new Error('The wallet observation runtime is stopped')
+      // A pass can fail before per-account observation records the failure.
+      if (coinFailure) throw coinFailure.error
+      coinListSync.assertFundingObserved()
+      if (policyFailure) throw policyFailure.error
+    } catch (error) {
+      throw recordWalletFailure(error, { observationUnavailable: true })
+    }
+  }
   const transactionSetPreparer = new EvmTransactionSetPreparer({
     coins: coinList,
     journal: params.journal,
@@ -73,14 +86,7 @@ export function installEvmTransactionSetRuntime(
         throw recordWalletFailure(policyFailure?.error ?? error, { observationUnavailable: true })
       }
     },
-    assertFundingObserved: () => {
-      try {
-        coinListSync.assertFundingObserved()
-        if (policyFailure) throw policyFailure.error
-      } catch (error) {
-        throw recordWalletFailure(error, { observationUnavailable: true })
-      }
-    },
+    assertFundingObserved,
     deriveChange: index => {
       const derived = changeKeyring.deriveChangeAccount(index)
       return {
@@ -124,7 +130,6 @@ export function installEvmTransactionSetRuntime(
   })
   let refreshing: Promise<void> | undefined
   let initialized = false
-  let stopped = false
   let stopRefresh!: () => void
   const stoppedRefresh = new Promise<void>(resolve => {
     stopRefresh = resolve
@@ -156,7 +161,8 @@ export function installEvmTransactionSetRuntime(
           }
         })(),
         transactionSetPolicy.refresh(),
-      ]).then(([, policy]) => {
+      ]).then(([coins, policy]) => {
+        coinFailure = coins.status === 'rejected' ? { error: coins.reason } : undefined
         policyFailure = policy.status === 'rejected' ? { error: policy.reason } : undefined
       }),
       stoppedRefresh,
@@ -164,7 +170,14 @@ export function installEvmTransactionSetRuntime(
       refreshing = undefined
     }))
   }
+  // A program offering a payable amount needs a complete current observation, unlike an
+  // ordinary send that can use other trusted inputs while one observation is unavailable.
+  const refreshSpendable = async (): Promise<void> => {
+    await refresh()
+    assertFundingObserved()
+  }
   return {
+    refreshSpendable,
     blockWatcher,
     coinListSync,
     transactionSetPolicy,

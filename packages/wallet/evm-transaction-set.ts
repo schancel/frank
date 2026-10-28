@@ -20,6 +20,7 @@ import { EvmNativeJournalError, nativeMemberSuperseded } from './storage/evm-nat
 import { predecessorConsumedAt } from './evm-transaction-set-lifecycle'
 import { resignedTransaction } from './chain/evm-refused-resign'
 import { fundsSettleBlocks } from './chain/evm-spend-rule'
+import { evmPaymentFloorWei } from './chain/payment-floor'
 import type {
   ConstructEvmTransactionSetRequest,
   ConstructLegacySubAccountRequest,
@@ -39,6 +40,12 @@ export type {
 } from './evm-transaction-set-types'
 
 const prefix = 'evm-transaction-set:'
+const MAX_TRANSACTION_SET_MEMBERS = 64
+
+/** Optional change uses only the slots left after recipient transfers and required reserves. */
+function optionalChangeAllowance(allowance: number, memberBudget: number, payments: number, changes: number, reserve = 0): number {
+  return Math.min(allowance, Math.max(0, memberBudget - payments - changes - reserve))
+}
 interface PaymentContext {
   destination: string
   gas: bigint
@@ -832,7 +839,9 @@ export class EvmTransactionSetPreparer {
     }
     try {
       if (fanIn) {
-        members = await this.prepareFanIn(request, policy, context(0), parts, yielder, carve && { wei: carve.reserveWei, carved }, changeAllowance(BIG_RESIDUAL))
+        members = await this.prepareFanIn(request, policy, context(0), parts, yielder, carve && { wei: carve.reserveWei, carved },
+          optionalChangeAllowance(changeAllowance(BIG_RESIDUAL), MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0),
+            parts.length + 1, 0, carve ? 1 : 0))
         spendChange(members, BIG_RESIDUAL)
       }
       else {
@@ -855,14 +864,20 @@ export class EvmTransactionSetPreparer {
           changeBudget = bound - committed - paymentFees - heldForContinuation
         }
         members = []
+        const paymentMembers = planned.filter(item => item.hasPayment).length
+        const memberBudget = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0)
+        let changeMembers = 0
         for (const [position, { part, payment, hasPayment, index }] of planned.entries()) {
           const residual = residuals[position]!
           const source = await this.prepareSource(
             hasPayment ? request : { ...request, calldata: undefined },
             policy, context(hasPayment ? index : 0),
-            { ...part, paymentValueWei: payment }, index, yielder, changeAllowance(residual),
+            { ...part, paymentValueWei: payment }, index, yielder,
+            optionalChangeAllowance(changeAllowance(residual), memberBudget, paymentMembers, changeMembers,
+              carve && !carved.member ? 1 : 0),
             carve && !carved.member ? { wei: carve.reserveWei, carved } : undefined,
           )
+          changeMembers += source.filter(member => member.plan.transactionSet!.role === 'change').length
           spendChange(source, residual)
           members.push(...source)
         }
@@ -880,7 +895,7 @@ export class EvmTransactionSetPreparer {
         // No payment source had the reserve left over: one other coin that holds it moves it
         // to its fresh account (selection: the first that covers it alone). What that coin
         // holds beyond it is change under the bound, or stays with it on its next nonce.
-        const remainingMembers = 64 - (existing?.members.length ?? 0) - members.length
+        const remainingMembers = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0) - members.length
         if (remainingMembers < 1) throw new Error('Insufficient private change for continuation')
         const additional = select(false, { deficit: carve.reserveWei, maxCoins: 1 })
         if (!additional) {
@@ -893,7 +908,8 @@ export class EvmTransactionSetPreparer {
         band.addSource(extraResidual)
         const source = await this.prepareSource(
           { ...request, calldata: undefined }, policy, context(0),
-          { ...additional[0]!, paymentValueWei: 0n }, 0, yielder, changeAllowance(extraResidual),
+          { ...additional[0]!, paymentValueWei: 0n }, 0, yielder,
+          optionalChangeAllowance(changeAllowance(extraResidual), remainingMembers, 0, 0, 1),
           { wei: carve.reserveWei, carved },
         )
         if (!carved.member) throw new Error('Insufficient private change for continuation')
@@ -901,8 +917,8 @@ export class EvmTransactionSetPreparer {
         members.push(...source)
       }
       while (privateValue() < reserve) {
-        const remainingMembers = 64 - (existing?.members.length ?? 0) - members.length
-        const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? 64) - parts.length)
+        const remainingMembers = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0) - members.length
+        const maxCoins = Math.min(remainingMembers, (request.maxPaymentParts ?? MAX_TRANSACTION_SET_MEMBERS) - parts.length)
         if (maxCoins <= 0) throw new Error('Insufficient private change for continuation')
         // A change-only source moves value by change alone: with no change fee left under the
         // bound there is nothing it may sign.
@@ -915,13 +931,15 @@ export class EvmTransactionSetPreparer {
             coin => capacityWei(false, true)(coin, policy.changeGasLimit * policy.gasPriceWei))
         }
         parts.push(...additional)
-        for (const part of additional) {
+        for (const [position, part] of additional.entries()) {
           const residual = part.coin.valueWei
           band.addSource(residual)
           if (changeAllowance(residual, true) < 1) throw new EvmTransactionSetFeeExceededError(bound! - changeBudget! + changeFee)
           const source = await this.prepareSource(
             { ...request, calldata: undefined }, policy, context(0),
-            { ...part, paymentValueWei: 0n }, 0, yielder, changeAllowance(residual, true),
+            { ...part, paymentValueWei: 0n }, 0, yielder,
+            optionalChangeAllowance(changeAllowance(residual, true), MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0),
+              0, members.length, additional.length - position - 1),
           )
           spendChange(source, residual)
           members.push(...source)
@@ -945,7 +963,7 @@ export class EvmTransactionSetPreparer {
       // The continuation's own transfer is counted too: it is paid under this same bound.
       const authorizedFee = totalFee + (carve?.feeWei ?? 0n)
       if ((request.maxFeeWei !== undefined && authorizedFee > request.maxFeeWei) || existing?.transactionSetStages?.some(stage => stage.maxFeeWei !== undefined && authorizedFee > BigInt(stage.maxFeeWei))) throw new EvmTransactionSetFeeExceededError(authorizedFee)
-      if (all.length > 64) throw new Error('Transaction-set exceeds member capacity')
+      if (all.length > MAX_TRANSACTION_SET_MEMBERS) throw new Error('Transaction-set exceeds member capacity')
       if (privateValue() < reserve) throw new Error('Insufficient private change for continuation')
     } catch (error) {
       coins.abandonTransactionSetSources(request.operationId, parts.map(part => part.coin), beforeSelection)
@@ -1023,7 +1041,7 @@ export class EvmTransactionSetPreparer {
       const value = { destination, gas, feeIsExact }; contexts.set(index, value); return value
     }
     context(0)
-    const remainingMemberBudget = 64 - (existing?.members.length ?? 0)
+    const remainingMemberBudget = MAX_TRANSACTION_SET_MEMBERS - (existing?.members.length ?? 0)
     const only = request.sourceAccounts === undefined ? undefined
       : new Set(request.sourceAccounts.map(account => getAddress(account).toLowerCase()))
     const excluded = new Set((request.excludedSourceAccounts ?? []).map(account => getAddress(account).toLowerCase()))
@@ -1189,7 +1207,8 @@ export class EvmTransactionSetPreparer {
     }
     const balance = parts.reduce((sum, part) => sum + part.coin.valueWei - changeFee, 0n)
     const kept = carve ? carve.reserveWei + changeFee : 0n
-    const allowance = this.changeBand(policy, parts, [BIG_RESIDUAL]).allowance(policy.maxChangeOutputs, BIG_RESIDUAL)
+    const allowance = optionalChangeAllowance(this.changeBand(policy, parts, [BIG_RESIDUAL]).allowance(policy.maxChangeOutputs, BIG_RESIDUAL),
+      rules.remainingMemberBudget, parts.length + 1, 0, carve ? 1 : 0)
     const outputs = this.changeOutputs(policy, balance - amountWei! - paymentFee - kept, amountWei!,
       carve ? Math.min(allowance, policy.maxChangeOutputs - 1) : allowance)
     if (parts.length + 1 + outputs.length + (carve ? 1 : 0) > rules.remainingMemberBudget)
@@ -1287,10 +1306,10 @@ export class EvmTransactionSetPreparer {
   ): Omit<EvmTransactionSetQuote, 'amountWei'> {
     const band = this.changeBand(policy, parts, this.sourceResiduals(parts, amountWei, calldata ?? '0x',
       index => rules.context(index).gas * policy.gasPriceWei))
-    const { carved, ...fee } = this.independentFee(parts, amountWei, calldata, policy, rules.context, carve?.reserveWei, band)
+    const { carved, memberCount, ...fee } = this.independentFee(parts, amountWei, calldata, policy, rules.context, carve?.reserveWei, band)
     if (!carve) return fee
     const changeFee = policy.changeGasLimit * policy.gasPriceWei
-    let changeFeeWei = fee.changeFeeWei, inputCount = fee.inputCount
+    let changeFeeWei = fee.changeFeeWei, inputCount = fee.inputCount, totalMembers = memberCount
     if (!carved) {
       const taken = new Set(parts.map(part => part.coin.account))
       const selection = rules.selection(false, { deficit: carve.reserveWei, maxCoins: 1 })
@@ -1302,10 +1321,13 @@ export class EvmTransactionSetPreparer {
       }
       band.addSource(extra[0]!.coin.valueWei)
       const outputs = this.changeOutputs(policy, extra[0]!.coin.valueWei - carve.reserveWei - changeFee, amountWei,
-        Math.min(band.allowance(policy.maxChangeOutputs, extra[0]!.coin.valueWei), policy.maxChangeOutputs - 1))
+        optionalChangeAllowance(Math.min(band.allowance(policy.maxChangeOutputs, extra[0]!.coin.valueWei), policy.maxChangeOutputs - 1),
+          MAX_TRANSACTION_SET_MEMBERS, totalMembers, 0, 1))
       changeFeeWei += BigInt(1 + outputs.length) * changeFee
+      totalMembers += 1 + outputs.length
       inputCount++
     }
+    if (totalMembers > MAX_TRANSACTION_SET_MEMBERS) throw new Error('Transaction-set exceeds member capacity')
     return { inputCount, consolidationFeeWei: fee.consolidationFeeWei, deliveryFeeWei: fee.deliveryFeeWei,
       changeFeeWei, feeWei: fee.deliveryFeeWei + changeFeeWei + carve.feeWei }
   }
@@ -1321,9 +1343,10 @@ export class EvmTransactionSetPreparer {
     /** The coin distribution's band, as construction applies it. */
     band: EvmChangeBand = this.changeBand(policy, parts, this.sourceResiduals(parts, amountWei, calldata ?? '0x',
       index => context(index).gas * policy.gasPriceWei)),
-  ): Omit<EvmTransactionSetQuote, 'amountWei'> & { carved: boolean } {
+  ): Omit<EvmTransactionSetQuote, 'amountWei'> & { carved: boolean; memberCount: number } {
     const data = calldata ?? '0x', changeFee = policy.changeGasLimit * policy.gasPriceWei
     let remaining = amountWei, paymentIndex = 0, deliveryFeeWei = 0n, outputs = 0, carved = false
+    const paymentMembers = amountWei === 0n && data !== '0x' ? 1 : parts.filter(part => part.paymentValueWei > 0n).length
     for (const part of parts) {
       const payment = part.paymentValueWei < remaining ? part.paymentValueWei : remaining
       remaining -= payment
@@ -1331,7 +1354,8 @@ export class EvmTransactionSetPreparer {
       const fee = hasPayment ? context(paymentIndex).gas * policy.gasPriceWei : 0n
       let residual = part.coin.valueWei - payment - fee
       const before = residual
-      const allowance = band.allowance(policy.maxChangeOutputs, before)
+      const allowance = optionalChangeAllowance(band.allowance(policy.maxChangeOutputs, before),
+        MAX_TRANSACTION_SET_MEMBERS, paymentMembers, outputs, carveWei !== undefined && !carved ? 1 : 0)
       let made: number
       if (carveWei !== undefined && !carved && residual >= carveWei + changeFee) {
         carved = true
@@ -1345,8 +1369,9 @@ export class EvmTransactionSetPreparer {
       deliveryFeeWei += fee
       if (hasPayment) paymentIndex++
     }
-    const changeFeeWei = BigInt(outputs) * changeFee
-    return { inputCount: parts.length, consolidationFeeWei: 0n, deliveryFeeWei, changeFeeWei, feeWei: deliveryFeeWei + changeFeeWei, carved }
+    const changeFeeWei = BigInt(outputs) * changeFee, memberCount = paymentMembers + outputs
+    if (memberCount > MAX_TRANSACTION_SET_MEMBERS) throw new Error('Transaction-set exceeds member capacity')
+    return { inputCount: parts.length, consolidationFeeWei: 0n, deliveryFeeWei, changeFeeWei, feeWei: deliveryFeeWei + changeFeeWei, carved, memberCount }
   }
 
   private async prepareFanIn(request: ConstructEvmTransactionSetRequest, policy: EvmTransactionSetPolicy, context: PaymentContext, parts: CoinPart[], yielder: CooperativeBatchYielder,
@@ -1417,6 +1442,43 @@ export class EvmTransactionSetPreparer {
           policy.spendRule.waitBlocks < 0))
     )
       throw new Error('Invalid reviewed EVM transaction-set policy')
+  }
+
+  /**
+   * The largest plain independent payment the current free coins can produce: construction's
+   * source eligibility, protocol output floor, chain reserve and transaction-member budget.
+   * Requires complete observations from the caller's refresh. Reads only; reserves nothing.
+   */
+  async spendableNowWei(): Promise<bigint> {
+    // A balance used to offer a payable wager requires complete current observations. Ordinary
+    // construction may still use trusted inventory and a cached quote while a node recovers.
+    this.options.assertFundingObserved?.()
+    const admittedInput = await this.options.journal.captureInputSelection?.()
+    // Admission may await durable reservation owners; do not use observations that failed
+    // while it was being captured. The capture is read-only and is reused for the whole pass.
+    this.options.assertFundingObserved?.()
+    const policy = this.options.policy(), minimum = evmPaymentFloorWei(policy.gasPriceWei)
+    const rules = this.selectionRules({
+      operationId: '', amountWei: minimum, minimumPaymentWei: minimum,
+      // Plain recipient transfers have no destination-dependent calldata cost.
+      kdf: () => '0x0000000000000000000000000000000000000000',
+    }, policy, false, undefined, admittedInput)
+    const selection = rules.selection(false)
+    const fee = rules.context(0).gas * policy.gasPriceWei
+    const capacity = rules.capacityWei(false)
+    const amountWei = this.options.coins.transactionSetCandidates(selection)
+      .map(coin => capacity(coin, fee))
+      .filter(value => value >= minimum && value > 0n)
+      .sort((a, b) => a > b ? -1 : a < b ? 1 : 0)
+      .slice(0, selection.maxCoins)
+      .reduce((sum, value) => sum + value, 0n)
+    if (amountWei === 0n) return 0n
+    // Use construction's own planner to verify the bound in its actual source order. Nothing
+    // is reserved. The bound is for recipient transfers; any retained reserve stays on its
+    // source, under construction's existing optional-change rules.
+    const parts = this.options.coins.planTransactionSetSources({ ...selection, amountWei })
+    if (!parts) throw new Error('Spendable balance does not match transaction-set selection')
+    return parts.reduce((sum, part) => sum + part.paymentValueWei, 0n)
   }
 
   /**

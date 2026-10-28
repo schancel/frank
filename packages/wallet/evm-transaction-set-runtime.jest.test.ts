@@ -274,3 +274,71 @@ it.each(['cold', 'warm', 'funded'] as const)('keeps failed policy observations v
     await journal.Close()
   }
 })
+
+
+it.each(['head', 'finalized', 'fee', 'outer-inventory', 'account-inventory'] as const)(
+  'strict spendable balance rejects a failed %s observation, joins refreshes, and recovers', async failure => {
+  const { FinalizedHeadUnavailableError } = await import('./chain/evm-spend-rule')
+  const mnemonic = 'test test test test test test test test test test test junk'
+  const mainAccount = new Wallet('0x' + '11'.repeat(32))
+  const identity = MonadIdentity.fromSeed({ mnemonic })
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const coinList = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
+  const journal = new EvmNativeOperationJournal({ testOnlyEphemeral: true,
+    binding: { chainIdentifier: 'monad-regtest', nativeChainId: '20143', publicTuple: 'spendable-current-head' } })
+  await journal.Open()
+  const unavailable = failure === 'head' || failure === 'finalized' ? new FinalizedHeadUnavailableError(100, 200)
+    : Object.assign(new Error('observation unavailable'), { status: 429 })
+  let blocked = false
+  const runtime = installEvmTransactionSetRuntime({ mainAccount, identity, coinList, changeKeyring,
+    changePool: new EvmChangePool({ keyring: changeKeyring }),
+    pool: new EvmSubAccountPool({ keyring: MonadHdKeyring.fromMnemonic(mnemonic) }),
+    coinStore: new MemoryRecordStore<EvmCoin>(), journal, kind: 'monad', knownNoCodeAddress: mainAccount.address,
+    spendRuleHead: failure === 'finalized' ? 'finalized' : 'latest',
+    provider: { getBlockNumber: async () => { if (blocked && failure === 'head') throw unavailable; return blocked && failure === 'finalized' ? 200 : 100 },
+      getBlock: async () => ({ number: 100 }),
+      getTransactionCount: async () => 0,
+      getBalance: async () => { if (blocked && failure === 'account-inventory') throw unavailable; return 1000000000000000000n },
+      getFeeData: async () => { if (blocked && failure === 'fee') throw unavailable; return { gasPrice: 1000n } },
+    } as unknown as Provider })
+  const balance = async () => {
+    await runtime.refreshSpendable()
+    return runtime.transactionSetPreparer.spendableNowWei()
+  }
+  const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  try {
+    expect(await balance()).toBeGreaterThan(0n)
+    blocked = true
+    if (failure === 'outer-inventory') jest.spyOn(runtime.coinListSync, 'refresh').mockRejectedValueOnce(unavailable)
+    // The strict caller must see the failure even when it joins a tolerant caller's pass.
+    const tolerant = runtime.refresh()
+    const strict = balance()
+    await tolerant
+    if (failure === 'finalized') await expect(strict).rejects.toBeInstanceOf(FinalizedHeadUnavailableError)
+    else await expect(strict).rejects.toBe(unavailable)
+    expect(describeWalletFailure(unavailable).observationUnavailable).toBe(true)
+    if (failure === 'head' || failure === 'finalized' || failure === 'fee')
+      await expect(runtime.transactionSetPreparer.spendableNowWei()).rejects.toThrow(unavailable)
+    blocked = false
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61000)
+    try { expect(await balance()).toBeGreaterThan(0n) } finally { clock.mockRestore() }
+    if (failure === 'outer-inventory') {
+      let admit!: (predicate: (account: string, nonce: number) => boolean) => void
+      const capture = jest.fn(() => new Promise<(account: string, nonce: number) => boolean>(resolve => { admit = resolve }))
+      Object.assign(journal, { captureInputSelection: capture })
+      const pending = runtime.transactionSetPreparer.spendableNowWei()
+      jest.spyOn(runtime.coinListSync, 'refresh').mockRejectedValueOnce(unavailable)
+      await runtime.refresh()
+      admit(() => true)
+      await expect(pending).rejects.toBe(unavailable)
+      expect(capture).toHaveBeenCalledTimes(1)
+    }
+    if (failure === 'head') {
+      jest.spyOn(runtime.transactionSetPolicy, 'refresh').mockImplementationOnce(() => new Promise(() => undefined))
+      const pending = balance()
+      await runtime.stop()
+      await expect(pending).rejects.toThrow('stopped')
+    } else await runtime.stop()
+    await expect(balance()).rejects.toThrow('stopped')
+  } finally { warning.mockRestore(); await runtime.stop(); await journal.Close() }
+})

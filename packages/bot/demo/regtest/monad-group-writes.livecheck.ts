@@ -133,7 +133,7 @@ async function returnFunds(stack: RegtestStack, keys: SolonetKeyRun, payees: Set
     const monad = monadOf(stack)
     const rpcUrl = monad.rpcUrl
     // The writer wallet's accounts, found from the keys in the stack's state directory.
-    const accounts = (await findWallets(stack.stateDir).catch(() => [])).flatMap(wallet => wallet.accounts)
+    const accounts = (await findWallets(stack.stateDir)).flatMap(wallet => wallet.accounts)
     const walletKeys = accounts.flatMap(account => (account.privateKey ? [account.privateKey] : []))
     const wallets = await sweepKeysExactly(rpcUrl, walletKeys)
     const own = await keys.sweep(rpcUrl)

@@ -92,7 +92,11 @@ suite('repaid native stamp receiver (real Anvil)', () => {
   const mine = async () => {
     for (let i = 0; i < 4; i++) await node.send('evm_mine', [])
   }
-  async function stamp(wallet: EvmChainWalletHandle, intended = parseEther('0.01')) {
+  async function stamp(
+    wallet: EvmChainWalletHandle,
+    intended = parseEther('0.01'),
+    timestampMs = Date.now(),
+  ) {
     const roles = evmWalletInternals(wallet).material!.canonicalRoles!
     const sharedPoint = getBytes(new Wallet('0x' + '12'.repeat(32)).signingKey.compressedPublicKey)
     const address = hexlify(
@@ -128,7 +132,7 @@ suite('repaid native stamp receiver (real Anvil)', () => {
       payloadDigest: 'ab'.repeat(32),
       valueWei: intended,
       transaction: raw,
-      timestampMs: Date.now(),
+      timestampMs,
     })
     return { address, key, raw, intended, hash: Transaction.from(raw).hash! }
   }
@@ -291,6 +295,7 @@ suite('repaid native stamp receiver (real Anvil)', () => {
     await node.send('evm_revert', [snapshot])
     await node.send('evm_mine', [])
     await mine()
+    await expect(f.bob.refreshReceivedPayments!()).rejects.toThrow('rebuild')
     await f.bob.refreshReceivedPayments!()
     const [payment] = f.bob.getReceivedPayments!()
     expect(payment!.receivedAmountWei).toBe(0n)
@@ -424,6 +429,7 @@ suite('repaid native stamp receiver (real Anvil)', () => {
     await (await node.broadcastTransaction(original.raw)).wait()
     await mine()
     await mine()
+    await expect(f.bob.refreshReceivedPayments!()).rejects.toThrow('rebuild')
     await f.bob.refreshReceivedPayments!()
     const [payment] = f.bob.getReceivedPayments!()
     expect(payment).toMatchObject({
@@ -438,4 +444,90 @@ suite('repaid native stamp receiver (real Anvil)', () => {
     await f.bob.refreshReceivedPayments!()
     expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(original.intended)
   })
+  it.each(['same transaction', 'distinct transaction'])(
+    'rediscovers a canonically moved repayment with the retained live reader: %s',
+    async mode => {
+      const original = await stamp(f.bob, undefined, Date.now() - 24 * 60 * 60 * 1000)
+      const snapshot = await node.send('evm_snapshot', [])
+      const nonce = await node.getTransactionCount(dev.address)
+      const oldRaw = await dev.signTransaction({
+        type: 0,
+        chainId: 10143,
+        nonce,
+        to: original.address,
+        value: original.intended,
+        gasLimit: 21000n,
+        gasPrice: 1000000000n,
+      })
+      const oldReceipt = await (await node.broadcastTransaction(oldRaw)).wait()
+      await mine()
+      await f.bob.refreshReceivedPayments!()
+      await f.bob.refreshTransactionSetInventory!()
+      expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(original.intended)
+      await node.send('evm_revert', [snapshot])
+      await node.send('evm_mine', [])
+      const newRaw =
+        mode === 'same transaction'
+          ? oldRaw
+          : await dev.signTransaction({
+              type: 0,
+              chainId: 10143,
+              nonce,
+              to: original.address,
+              value: original.intended,
+              gasLimit: 21000n,
+              gasPrice: 2000000000n,
+            })
+      const replacement = await (await node.broadcastTransaction(newRaw)).wait()
+      expect(replacement!.blockNumber).toBe(oldReceipt!.blockNumber + 1)
+      await mine()
+      const failures: unknown[] = []
+      try {
+        await f.bob.refreshReceivedPayments!()
+      } catch (error) {
+        failures.push(error)
+      }
+      // No manual strict refresh bypass: these old, previously fully received stamps must be
+      // revisited through the production background owner despite their normal long backoff.
+      for (let pass = 0; pass < 2; pass++)
+        await evmWalletInternals(f.bob).receivedCoinOwner!.checkPendingCoins()
+      const [payment] = f.bob.getReceivedPayments!()
+      expect(payment).toMatchObject({
+        status: 'received',
+        receivedAmountWei: original.intended,
+        amountWei: original.intended,
+        transactions: [original.raw.slice(2)],
+      })
+      expect(payment!.nativeStampRecovery!.receipts).toEqual([
+        expect.objectContaining({
+          txHash: replacement!.hash,
+          blockNumber: replacement!.blockNumber,
+          amount: original.intended.toString(),
+        }),
+      ])
+      expect(failures).toHaveLength(1)
+      await f.bob.refreshTransactionSetInventory!()
+      expect(
+        evmWalletInternals(f.bob)
+          .coinList!.selectableAt({ head: await node.getBlockNumber(), sourceOrder: ['stamp'] })
+          .some(coin => coin.account === original.address),
+      ).toBe(true)
+      await f.bob.refreshReceivedPayments!()
+      expect(f.bob.getReceivedPayments!()[0]!.receivedAmountWei).toBe(original.intended)
+      await f.bob.close()
+      const reopened = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+      try {
+        await reopened.refreshReceivedPayments!()
+        expect(
+          reopened.getReceivedPayments!()[0]!.nativeStampRecovery!.receipts.map(
+            receipt => receipt.txHash,
+          ),
+        ).toEqual([replacement!.hash])
+        expect(reopened.getReceivedPayments!()[0]!.receivedAmountWei).toBe(original.intended)
+        expect(await node.getTransactionReceipt(original.hash)).toBeNull()
+      } finally {
+        await reopened.close()
+      }
+    },
+  )
 })

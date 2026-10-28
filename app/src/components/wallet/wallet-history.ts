@@ -683,7 +683,9 @@ export function buildWalletHistoryGroups(input: {
     // shown again (the deposit scan leaves out the wallet's own transfers and its coins' ones).
     const coinTransactions = new Set(
       load.received.flatMap(payment => [
-        ...(payment.nativeStampRecovery?.receipts.map(receipt => receipt.txHash) ?? []),
+        ...(payment.nativeStampRecovery?.receipts.map(
+          receipt => receipt.txHash,
+        ) ?? []),
         ...(payment.settledTransactions ?? []).map(
           hash => `0x${hash.replace(/^0x/, '').toLowerCase()}`,
         ),

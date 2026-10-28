@@ -845,7 +845,8 @@ export function createEvmReceivedCoinAndContactManager(
     const pending = all.filter(
       (coin) =>
         ((nativeSet(coin) || recoverableStamp(coin)) &&
-          (options.only !== undefined || (options.strict && recoverableStamp(coin)) || pendingCoinDue(coin, now))) ||
+          (options.only !== undefined || (options.strict && recoverableStamp(coin)) ||
+            (coin.nativeStampRecovery !== undefined && stampRecovery.needsRefresh(coin.address)) || pendingCoinDue(coin, now))) ||
         (coin.state === "pending" &&
           (options.only !== undefined || pendingCoinDue(coin, now))) ||
         (coin.state === "failed" &&

@@ -21,7 +21,7 @@ export class NativeStampEvidenceUnavailable extends Error {}
 
 /** The received owner serializes passes; RPC waits never hold spend reservations. */
 export class EvmNativeStampRecoveryReader {
-  private readonly scans = new Map<string, EvmDepositScanner>()
+  private readonly scans = new Map<string, { scanner: EvmDepositScanner; ready: boolean }>()
   private readonly recheckOffsets = new Map<string, number>()
   constructor(
     private readonly options: {
@@ -36,6 +36,12 @@ export class EvmNativeStampRecoveryReader {
       assertActive: () => void
     },
   ) {}
+
+  /** Reopen and canonical reset must get a bounded background pass even for an old received
+   * stamp whose normal observation backoff has not elapsed. No network or durable mutation. */
+  needsRefresh(address: string): boolean {
+    return this.scans.get(address)?.ready !== true
+  }
 
   async read(coin: EvmCoin) {
     const atMs = Date.now()
@@ -155,9 +161,9 @@ export class EvmNativeStampRecoveryReader {
     }
     if (!supersededAt)
       throw new NativeStampEvidenceUnavailable('Native stamp supersession anchor unavailable')
-    let scanner = this.scans.get(coin.address)
-    if (!scanner) {
-      scanner = new EvmDepositScanner({
+    let scan = this.scans.get(coin.address)
+    if (!scan) {
+      const scanner = new EvmDepositScanner({
         chainIdentifier,
         rpc,
         store: new MemoryRecordStore<EvmDepositRow>(),
@@ -166,8 +172,10 @@ export class EvmNativeStampRecoveryReader {
         isOwnAccount: () => false,
         maximumBlock: async () => this.scanHeads.get(coin.address)!,
       })
-      this.scans.set(coin.address, scanner)
+      scan = { scanner, ready: false }
+      this.scans.set(coin.address, scan)
     }
+    const { scanner } = scan
     // The callback of an existing scanner must read this pass's pinned maximum, not its creation head.
     this.scanHeads.set(coin.address, maximumBlock)
     const receipts = new Map<string, EvmNativeTransfer>()
@@ -216,6 +224,22 @@ export class EvmNativeStampRecoveryReader {
         )
           throw new NativeStampEvidenceUnavailable('Native stamp receipt snapshot changed')
         canonicalBlocks.push({ blockNumber, blockHash: block.hash.toLowerCase() })
+        if (
+          known.some(
+            receipt =>
+              receipt.blockNumber === blockNumber &&
+              receipt.blockHash !== block.hash!.toLowerCase(),
+          )
+        ) {
+          // A state-only cursor cannot discover a receipt moved behind it when balance/nonce
+          // are unchanged. Rebuild this address's ephemeral index on the next bounded pass.
+          this.scans.delete(coin.address)
+          this.scanHeads.delete(coin.address)
+          this.recheckOffsets.delete(coin.address)
+          unavailable ??= new NativeStampEvidenceUnavailable(
+            'Native stamp recovery discovery must rebuild after canonical reorganization',
+          )
+        }
         for (const receipt of verified) receipts.set(receipt.txHash, receipt)
       } catch (error) {
         unavailable ??= error
@@ -233,6 +257,7 @@ export class EvmNativeStampRecoveryReader {
     ])
     await this.checkHead(maximumBlock, pinnedHash)
     assertActive()
+    if (!unavailable && scanner.cursorOf(coin.address)?.block === maximumBlock) scan.ready = true
     const recovery: EvmNativeStampRecovery = {
       chainIdentifier,
       originalTransactionHash: tx.hash!,

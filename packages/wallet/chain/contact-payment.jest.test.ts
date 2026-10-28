@@ -9,6 +9,8 @@
  */
 import { evmWalletStateOwner, walletStateLocation } from '../storage/wallet-state-location'
 import { toHex } from '@frank/codec'
+import { isDirectMessageNotAttempted } from './active-chain'
+import { permanentRefusalReason } from './direct-message-refusal'
 import {
   Transaction,
   Wallet,
@@ -1553,6 +1555,45 @@ describe('a payment to a contact', () => {
         await reopened.close()
       }
       expect(await reread()).toEqual(stored)
+    })
+
+    // The same error also comes out of a payment's submit or release, after its set was signed
+    // and perhaps handed out. Only the refusal of a message before anything of it exists is
+    // labelled as not attempted, so only that one reads as permanently unsendable.
+    it('a message carrying a held payment an older version recorded is refused before anything is sent, labelled as not attempted', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      await asOlderVersion(alice)
+
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(reopened, await f.directoryFor('alice-older-message', reopened, bob))
+        const before = f.requests.length
+        const refusal = await f.chain.directMessages
+          .send({ wallet: reopened, recipient: bob.identity.address, items: [prepared.item] })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          )
+        expect(refusal).toBeInstanceOf(UnsupportedContactPaymentRecordError)
+        expect(isDirectMessageNotAttempted(refusal)).toBe(true)
+        expect(permanentRefusalReason(refusal)).toBe('payment-older-version')
+        expect(f.requests).toHaveLength(before)
+        expect(node.broadcasts).toEqual([])
+        // Finish refuses it too, but that refusal is not about a message: it is not labelled.
+        const finish = await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!).then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        expect(finish).toBeInstanceOf(UnsupportedContactPaymentRecordError)
+        expect(isDirectMessageNotAttempted(finish)).toBe(false)
+        expect(permanentRefusalReason(finish)).toBeUndefined()
+      } finally {
+        await reopened.close()
+      }
     })
 
     /** Closes `wallet`, leaves its one payment `failed` on disk (as a relay ending its message

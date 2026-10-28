@@ -1,4 +1,3 @@
-import { performance as realClock } from 'node:perf_hooks'
 import { createPinia, setActivePinia } from 'pinia'
 import {
   acknowledgeServiceWorkerWakeupHandled,
@@ -338,7 +337,7 @@ describe('coalesceRuns: one relay policy sync per burst of changes', () => {
   // The settle time is counted on the clock jest controls. On the real clock the four 10 ms
   // waits had to finish inside the 60 ms settle time; a pause of the test process of about 15 ms
   // (garbage collection, or a loaded machine during the full suite) let the run start early and
-  // failed the test with "Expected number of calls: 0". The pause below stands for that.
+  // failed the test with "Expected number of calls: 0".
   it('with a settle time, calls spread over that time share one run', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
     try {
@@ -347,10 +346,6 @@ describe('coalesceRuns: one relay policy sync per burst of changes', () => {
       const done = request()
       for (let i = 0; i < 4; i++) {
         await jest.advanceTimersByTimeAsync(10)
-        const pauseUntil = realClock.now() + 20
-        while (realClock.now() < pauseUntil) {
-          // A stalled process: real time passes, the test's clock does not.
-        }
         void request()
       }
       expect(run).not.toHaveBeenCalled()

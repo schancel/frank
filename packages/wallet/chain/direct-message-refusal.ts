@@ -37,12 +37,17 @@ export function unencodableReason(
 /** Why the same direct message can never be sent as it is: `too-large` and `unencodable` as
  * {@link unencodableReason} reads them, and `payment-older-version` when it carries a payment to a
  * contact made by an older version of the wallet, which this version does nothing with by itself
- * (`UnsupportedContactPaymentRecordError`, refused before anything of the message was sent).
- * Undefined for any other refusal. The app's failure reasons and the bot host both read it. */
+ * (`UnsupportedContactPaymentRecordError`). Like the others, only a refusal the wallet labelled as
+ * having created nothing counts: the same error out of a payment's submit or release, after its
+ * set was signed and perhaps handed out, is not one. Undefined for any other refusal. The app's
+ * failure reasons and the bot host both read it. */
 export function permanentRefusalReason(
   error: unknown,
 ): 'too-large' | 'unencodable' | 'payment-older-version' | undefined {
-  if (error instanceof UnsupportedContactPaymentRecordError)
+  if (
+    error instanceof UnsupportedContactPaymentRecordError &&
+    isDirectMessageNotAttempted(error)
+  )
     return 'payment-older-version'
   return unencodableReason(error)
 }

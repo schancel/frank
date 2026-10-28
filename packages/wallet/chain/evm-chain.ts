@@ -133,6 +133,7 @@ import {
   TopicPostOutcomeUnknownError,
   NativeWalletHandle,
   WalletHandle,
+  directMessageNotAttempted,
 } from "./active-chain";
 import {
   MessageItem,
@@ -271,7 +272,8 @@ import {
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
-  runNativeTransactionExclusive
+  runNativeTransactionExclusive,
+  UnsupportedContactPaymentRecordError,
 } from "./chain-wallet";
 import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
 import { LevelChangePoolStore } from "../storage/level-change-pool-store";
@@ -1226,7 +1228,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       // released. (3) The payment learns the message's digest before anything durable exists
       // from which those bytes could be submitted, and before a free message is handed over:
       // from that moment "no digest" no longer holds, and the payment is never released.
-      const endSend = await coinOwner.beginContactSend(carried);
+      let endSend: () => void;
+      try {
+        endSend = await coinOwner.beginContactSend(carried);
+      } catch (error) {
+        // An older version's payment refuses the message before anything of it exists: this
+        // call claimed, signed, stored and sent nothing. Labelled so, because the same error
+        // also comes out of a payment's submit or release after its set was signed.
+        if (error instanceof UnsupportedContactPaymentRecordError)
+          Object.defineProperty(error, directMessageNotAttempted, { value: true });
+        throw error;
+      }
       let result: DirectMessageSendResult;
       try {
         const contactIdentity = coinOwner.contactMessageIdentity?.(carried);

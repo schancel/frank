@@ -2061,6 +2061,32 @@ describe("FrankBotHost replies", () => {
       ).toBe(true);
     });
 
+    // The same error also comes out of a payment's submit or release, after its set was signed
+    // and perhaps handed out. Without the wallet's not-attempted label it is not a refusal made
+    // before anything was paid, so the reply is not given up: it stays owed under its one ID.
+    it("an older version's payment refusal the wallet did not label as not attempted is not given up", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(answering());
+      mockSend
+        .mockReset()
+        .mockRejectedValueOnce(new UnsupportedContactPaymentRecordError("0xabc", "m-1"))
+        .mockImplementation(accept);
+      const message = inbound("hello");
+      await poll(host, [message]);
+      await drain(instance);
+      expect(await finished(instance, message)).toBe(false);
+      expect(
+        error.mock.calls.some(([line]) => String(line).includes("Giving up on the reply"))
+      ).toBe(false);
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:hello", "re:hello"]);
+      const ids = mockSend.mock.calls.map(([params]) => params.messageId);
+      expect(new Set(ids).size).toBe(1);
+      expect(await finished(instance, message)).toBe(true);
+    });
+
     it("the wallet refused because the bot's funds are tied up in an earlier send is given up, saying so and how much, and not sent again on later polls", async () => {
       const error = jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(answering());

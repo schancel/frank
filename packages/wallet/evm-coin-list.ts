@@ -72,6 +72,13 @@ export interface EvmListCoin {
   readonly spendingTx?: string
   /** Not selectable before the chain's head reaches this block. */
   readonly spendableFromBlock?: number
+  /** The block from which the node sees all the money in this coin (the funds-settle rule,
+   * `fundsSettleBlocks`). Unlike the rest of `spendableFromBlock` (the reserve rule's quiet
+   * window, which a transfer that leaves the account above the reserve may skip), nothing
+   * relaxes it. At most `spendableFromBlock`. Absent while `spendableFromBlock` is set: the
+   * same as `spendableFromBlock`, so a coin stored before this field existed is never spent
+   * before its whole wait. */
+  readonly fundsVisibleFromBlock?: number
   /** `spent`: the block that included its spending transaction. */
   readonly spentInBlock?: number
   /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
@@ -96,6 +103,7 @@ export interface StoredEvmListCoin {
   readonly holder?: string
   readonly spendingTx?: string
   readonly spendableFromBlock?: number
+  readonly fundsVisibleFromBlock?: number
   readonly spentInBlock?: number
   /** Canonical inclusion/observation bound of the account nonce preceding this coin. */
   readonly lastSpentInBlock?: number
@@ -158,6 +166,9 @@ function toStored(coin: EvmListCoin): StoredEvmListCoin {
     ...(coin.spendableFromBlock === undefined
       ? {}
       : { spendableFromBlock: coin.spendableFromBlock }),
+    ...(coin.fundsVisibleFromBlock === undefined
+      ? {}
+      : { fundsVisibleFromBlock: coin.fundsVisibleFromBlock }),
     ...(coin.spentInBlock === undefined
       ? {}
       : { spentInBlock: coin.spentInBlock }),
@@ -179,7 +190,11 @@ function fromStored(row: StoredEvmListCoin): EvmListCoin {
     (row.lastSpentInBlock !== undefined &&
       (!Number.isSafeInteger(row.lastSpentInBlock) || row.lastSpentInBlock < 0)) ||
     (row.listedInBlock !== undefined &&
-      (!Number.isSafeInteger(row.listedInBlock) || row.listedInBlock < 0))
+      (!Number.isSafeInteger(row.listedInBlock) || row.listedInBlock < 0)) ||
+    (row.fundsVisibleFromBlock !== undefined &&
+      (!Number.isSafeInteger(row.fundsVisibleFromBlock) ||
+        row.spendableFromBlock === undefined ||
+        row.fundsVisibleFromBlock > row.spendableFromBlock))
   )
     throw new EvmCoinListError(
       `Unreadable coin record ${String(row.account)}:${String(row.nonce)} ` +
@@ -393,6 +408,7 @@ export class EvmCoinList {
     changeIndex?: number
     lastSpentInBlock?: number
     spendableFromBlock?: number
+    fundsVisibleFromBlock?: number
     listedInBlock?: number
   }): Promise<EvmListCoin> {
     const snapshot = { ...input }
@@ -410,6 +426,7 @@ export class EvmCoinList {
     changeIndex?: number
     lastSpentInBlock?: number
     spendableFromBlock?: number
+    fundsVisibleFromBlock?: number
     listedInBlock?: number
   }): Promise<EvmListCoin> {
     const account = input.account.toLowerCase()
@@ -428,6 +445,13 @@ export class EvmCoinList {
       (!Number.isSafeInteger(input.listedInBlock) || input.listedInBlock < 0)
     )
       throw new EvmCoinListError('Invalid listing block')
+    if (
+      input.fundsVisibleFromBlock !== undefined &&
+      (!Number.isSafeInteger(input.fundsVisibleFromBlock) ||
+        input.spendableFromBlock === undefined ||
+        input.fundsVisibleFromBlock > input.spendableFromBlock)
+    )
+      throw new EvmCoinListError('Invalid funds-visible block')
     if (input.valueWei < 0n)
       throw new EvmCoinListError('A coin value is not negative')
     const key = coinKey(account, input.nonce)
@@ -466,6 +490,9 @@ export class EvmCoinList {
       ...(input.spendableFromBlock === undefined
         ? {}
         : { spendableFromBlock: input.spendableFromBlock }),
+      ...(input.fundsVisibleFromBlock === undefined
+        ? {}
+        : { fundsVisibleFromBlock: input.fundsVisibleFromBlock }),
       // A new value of the same coin keeps the block it was first listed in.
       ...((existing?.listedInBlock ?? input.listedInBlock) === undefined
         ? {}
@@ -993,7 +1020,11 @@ export class EvmCoinList {
     coin: { account: string; nonce: number },
     outcome: {
       block: number
-      successor?: { valueWei: bigint; spendableFromBlock?: number }
+      successor?: {
+        valueWei: bigint
+        spendableFromBlock?: number
+        fundsVisibleFromBlock?: number
+      }
     },
   ): Promise<void> {
     const source = { ...coin },
@@ -1010,7 +1041,11 @@ export class EvmCoinList {
     coin: { account: string; nonce: number },
     outcome: {
       block: number
-      successor?: { valueWei: bigint; spendableFromBlock?: number }
+      successor?: {
+        valueWei: bigint
+        spendableFromBlock?: number
+        fundsVisibleFromBlock?: number
+      }
     },
   ): Promise<void> {
     const key = coinKey(coin.account, coin.nonce)
@@ -1040,6 +1075,9 @@ export class EvmCoinList {
             ...(outcome.successor.spendableFromBlock === undefined
               ? {}
               : { spendableFromBlock: outcome.successor.spendableFromBlock }),
+            ...(outcome.successor.fundsVisibleFromBlock === undefined
+              ? {}
+              : { fundsVisibleFromBlock: outcome.successor.fundsVisibleFromBlock }),
             listedInBlock: outcome.block,
           }
         : undefined

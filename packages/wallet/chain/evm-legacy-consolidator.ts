@@ -18,6 +18,7 @@ import {
   runNativeTransactionExclusive,
 } from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
+import { readSpendRuleHead } from './evm-spend-rule'
 import type {
   SwapRecordItem,
   WalletSyncItem,
@@ -126,6 +127,9 @@ export interface EvmLegacyConsolidatorConfig {
    * and those bytes stay refused). With `nextLook`, a member is not handed to the network until
    * its account held what it spends that many blocks ago. Absent or 0: no such rule. */
   fundsSettleBlocks?: number
+  /** The head those blocks are counted from (`ChainRegistryEntry.spendRuleHead`; Monad: the
+   * finalized one). Absent: the newest block. */
+  spendRuleHead?: 'latest' | 'finalized'
 }
 /**
  * The id every frontend of the account derives for a swap: from its chain and the transaction
@@ -246,6 +250,9 @@ interface ReobserveCandidate {
   readonly key: string
 }
 
+/** The longest a transfer waits for the money it spends to show settled before it is kept,
+ * not sent: a chain that stopped making blocks. */
+export const FUNDS_SETTLE_WAIT_MS = 120_000
 /** Wallet-lifetime native executor. Journal owns recovery; this module owns dependencies. */
 export class EvmLegacyConsolidator {
   private tail: Promise<unknown> = Promise.resolve()
@@ -713,7 +720,11 @@ export class EvmLegacyConsolidator {
           new Error('Original native prerequisites are pending'),
         )
       if (member.observation.state !== 'included-success') {
-        await this.untilFundsSettled(member)
+        try {
+          await this.untilFundsSettled(member)
+        } catch (reason) {
+          throw new EvmNativeOperationPendingError(journal.get(id), reason)
+        }
         await journal.markExposed(id, i)
         try {
           const response = await provider.broadcastTransaction(
@@ -736,8 +747,17 @@ export class EvmLegacyConsolidator {
    * account already held what the member spends `fundsSettleBlocks` blocks ago. The transfer
    * that pays the recipient out of an account this same operation has just funded is the case:
    * offered at once it was refused by the node and never sent (seen on Monad testnet: the
-   * funding transfer mined, the payment unknown to the node eight minutes later). Gives up
-   * waiting after 30 looks and hands it over as it is. Never throws.
+   * funding transfer mined, the payment unknown to the node eight minutes later), and the node
+   * then keeps refusing those bytes for 15 minutes.
+   *
+   * Rejects, the member kept signed and not handed to anyone, when the node cannot say (a failed
+   * read, a finalized block that stopped moving: `FinalizedHeadUnavailableError`), or when the
+   * money is still not shown settled once the head it counts on is `fundsSettleBlocks + 2` past
+   * the newest block at the start (the funding was mined by then, so it would show by that
+   * head), or after `FUNDS_SETTLE_WAIT_MS` (a chain that stopped). The wait is counted in
+   * blocks the head moved, not in looks: a finalized head 7 or 8 blocks behind the newest one
+   * takes that many blocks more. Handing it over unsettled would only get those bytes refused;
+   * `resumeOperation` offers them again.
    */
   private async untilFundsSettled(member: {
     source: EvmNativeSource
@@ -745,24 +765,28 @@ export class EvmLegacyConsolidator {
   }): Promise<void> {
     const { nextLook, fundsSettleBlocks, provider } = this.config
     if (!nextLook || !fundsSettleBlocks) return
-    try {
-      const tx = Transaction.from(member.unsignedTransaction)
-      const needed = tx.value + nativeMaximumFee(tx)
-      for (let looks = 0; looks < 30 && !this.reobserveStopped; looks++) {
-        const head = await provider.getBlockNumber()
-        if (head < fundsSettleBlocks) return
-        if (
-          (await provider.getBalance(
-            member.source.address,
-            head - fundsSettleBlocks,
-          )) >= needed
-        )
-          return
-        await nextLook()
-      }
-    } catch {
-      /* A node that cannot answer for an earlier block is not waited on. */
+    const tx = Transaction.from(member.unsignedTransaction)
+    const needed = tx.value + nativeMaximumFee(tx)
+    const startedAt = this.now()
+    let giveUpAt: number | undefined
+    for (;;) {
+      if (this.reobserveStopped) break
+      const head = await readSpendRuleHead(provider, this.config.spendRuleHead)
+      if (head < fundsSettleBlocks) return
+      giveUpAt ??= Math.max(head, await provider.getBlockNumber()) + fundsSettleBlocks + 2
+      if (
+        (await provider.getBalance(
+          member.source.address,
+          head - fundsSettleBlocks,
+        )) >= needed
+      )
+        return
+      if (head >= giveUpAt || this.now() - startedAt >= FUNDS_SETTLE_WAIT_MS) break
+      await nextLook()
     }
+    throw new Error(
+      'The money this transfer spends is not settled yet; it is kept and not sent',
+    )
   }
   /**
    * One look at the chain for each transaction of one operation that was handed to the network

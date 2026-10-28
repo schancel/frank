@@ -24,6 +24,7 @@ import { selectStampAccounts } from './evm-stamp-account-selection'
 import { evmPaymentFloorWei } from './chain/payment-floor'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import { resignedTransaction } from './chain/evm-refused-resign'
+import { nextCoinWaits, readSpendRuleHead } from './chain/evm-spend-rule'
 import {
   InsufficientStampFundsError,
   type EvmSubAccountPool as MonadSubAccountPool,
@@ -140,6 +141,14 @@ const MAX_PARTS = 64
  * the account's claim, so nothing of this wallet signs from it meanwhile, and reads the nonce
  * AFTER this returns. Three reads a look, a look every 400 ms; rejects, having signed nothing,
  * when the chain cannot be read for 20 s. `blocks` 0 or absent: no wait and no request.
+ *
+ * The blocks are counted on `options.spendRuleHead` (Monad: the finalized head), the same head
+ * every other spend-rule check of the wallet counts on (`readSpendRuleHead`): the transaction
+ * set compares `lastSpentInBlock + waitBlocks` with it too. The quiet window itself is judged
+ * when transactions execute, on the blocks they are mined in, so the proposed head would be
+ * enough for it alone; counting on the finalized head waits at most the finalized lag longer,
+ * and keeps one head for the whole rule. A transaction mined after that head counts as one
+ * the node still holds (`pending` above the nonce at the head), so it is waited out too.
  */
 export async function waitForSpendSpacing(
   provider: Provider,
@@ -148,13 +157,14 @@ export async function waitForSpendSpacing(
   options?: {
     reserveBalanceWei?: bigint
     spendValueWei?: bigint
+    spendRuleHead?: 'latest' | 'finalized'
   },
 ): Promise<void> {
   if (!blocks || blocks <= 0) return
   let failingSince: number | undefined
   for (;;) {
     try {
-      const head = await provider.getBlockNumber()
+      const head = await readSpendRuleHead(provider, options?.spendRuleHead)
       const [now, before, pending] = await Promise.all([
         provider
           .getTransactionCount(address, head)
@@ -350,7 +360,12 @@ export class EvmStampPayer {
   ): boolean {
     if (coin.spendableFromBlock === undefined) return true
     if (head !== undefined && head >= coin.spendableFromBlock) return true
-    // The chain's rule only bites a transfer that takes the account below its reserve.
+    // Money the node does not see yet cannot pay a transfer's gas, whatever the reserve. A coin
+    // that does not say when its money is visible (one stored before it was recorded) waits its
+    // whole `spendableFromBlock`.
+    const visible = coin.fundsVisibleFromBlock ?? coin.spendableFromBlock
+    if (head === undefined || head < visible) return false
+    // The quiet window only bites a transfer that takes the account below its reserve.
     const floor = this.config.reserveBalanceWei
     return (
       floor !== undefined &&
@@ -1123,7 +1138,13 @@ export class EvmStampPayer {
     const coin = coins.get(account, tx.nonce)
     if (coin !== undefined && coin.state !== 'spent') {
       if (included === undefined) {
-        await coins.recordMined(coin, { block: this.watcher.latest() ?? 0 })
+        // Mined by the newest block at the latest. Not the watcher's head: on Monad that is the
+        // finalized block, which may be below the block it was mined in, and the quiet window
+        // counted from it would end too early.
+        const newest = await this.read(() => this.config.provider.getBlockNumber())
+        await coins.recordMined(coin, {
+          block: Math.max(newest, this.watcher.latest() ?? 0),
+        })
         this.config.sync.markDirty(account)
       } else {
         let balance: bigint | undefined
@@ -1145,14 +1166,17 @@ export class EvmStampPayer {
           await coins.recordMined(coin, { block: included })
           this.config.sync.markDirty(account)
         } else {
-          const spacing = this.config.spendSpacingBlocks ?? 0
+          // More than the coin left it (its value less the payment; the fee came in at most at
+          // its ceiling) is money that arrived by `included` (`nextCoinWaits`).
           await coins.recordMined(coin, {
             block: included,
             successor: {
               valueWei: balance,
-              ...(spacing > 0
-                ? { spendableFromBlock: included + spacing - 1 }
-                : {}),
+              ...nextCoinWaits(
+                included,
+                this.config.spendSpacingBlocks ?? 0,
+                balance > coin.valueWei - tx.value,
+              ),
             },
           })
         }

@@ -127,6 +127,7 @@ function configured(
     stampBurnAddress: host.stampBurnAddress,
     defaultTopicVoteValueWei: host.defaultTopicVoteValueWei,
     spendSpacingBlocks: entry.spendSpacingBlocks,
+    spendRuleHead: entry.spendRuleHead,
     paymentPollIntervalMs: entry.paymentPollIntervalMs,
     reserveBalanceWei:
       entry.reserveBalanceWei === undefined

@@ -9,7 +9,10 @@
  *
  * The chain's spacing rule (Monad's reserve balance) is the adapter's: money that arrived less
  * than `spendSpacingBlocks + 1` blocks ago, or an account that sent less than
- * `spendSpacingBlocks` blocks ago, is listed with the block from which it may be spent.
+ * `spendSpacingBlocks` blocks ago, is listed with the block from which it may be spent. Those
+ * blocks are counted on the watcher's head: the head the node judges a new transaction from
+ * (`readSpendRuleHead`; on Monad the finalized one, which can be several blocks behind the
+ * newest).
  */
 import type { Provider } from 'ethers'
 import {
@@ -424,8 +427,11 @@ export class EvmCoinListSync {
       observeRead(provider.getTransactionCount(account, 'latest')),
       observeRead(provider.getTransactionCount(account, 'pending')),
       observeRead(provider.getBalance(account)),
-      spacing > 0 && head >= lag
-        ? provider.getBalance(account, head - lag).catch(optionalHistoricalRead)
+      // A chain younger than `lag` blocks: what the account held at its first block.
+      spacing > 0
+        ? provider
+            .getBalance(account, Math.max(0, head - lag))
+            .catch(optionalHistoricalRead)
         : Promise.resolve(undefined),
       spacing > 0 && head >= spacing
         ? provider
@@ -493,11 +499,61 @@ export class EvmCoinListSync {
       }
       return
     }
+    // `head` is the head the node judges from (on Monad the finalized one), and the reads above
+    // were at the newest block, which may be past it. What arrived (or was spent) after `head`
+    // is dated by the newest block number, read after them: only blocks the node has finalized
+    // are read by number, since a node answers a numbered read above that only for the blocks
+    // it voted on or the newest one (monad-rpc, `get_block_key`).
+    let newest: number | undefined
+    const newestBlock = async () =>
+      (newest ??= Math.max(head, await observeRead(provider.getBlockNumber())))
+    // A read that failed (a timeout, a 5xx, a replica whose finalized block is below it) leaves
+    // the answer unknown, and unknown is not settled.
+    const settledUnknown = spacing > 0 && settledBalance === undefined
+    const beforeUnknown = spacing > 0 && head >= spacing && before === undefined
+    // `fundsVisibleFromBlock`: the part of the wait that is the funds-settle rule (new money),
+    // which nothing relaxes; the rest of `spendableFromBlock` is the quiet window.
     let spendableFromBlock: number | undefined
-    if (settledBalance !== undefined && settledBalance < balance)
-      spendableFromBlock = head + lag
-    if (before !== undefined && before !== latest)
-      spendableFromBlock = Math.max(spendableFromBlock ?? 0, head + spacing)
+    let fundsVisibleFromBlock: number | undefined
+    if (settledBalance !== undefined && settledBalance < balance) {
+      // Arrived after `head - lag`. If `head` shows it, it arrived by `head`; else by the newest
+      // block. The node sees it two blocks after its block is finalized; `lag` keeps two more.
+      const atHead =
+        head > 0
+          ? await provider.getBalance(account, head).catch(optionalHistoricalRead)
+          : undefined
+      spendableFromBlock =
+        (atHead !== undefined && atHead >= balance ? head : await newestBlock()) + lag
+      fundsVisibleFromBlock = spendableFromBlock
+    } else if (settledUnknown) {
+      // What the list already knows of this coin stands: the same nonce and no more money than it
+      // listed is no new money. Anything else may have arrived as late as the newest block.
+      if (live?.state === 'unspent' && live.nonce === latest && balance <= live.valueWei) {
+        spendableFromBlock = live.spendableFromBlock
+        fundsVisibleFromBlock = live.fundsVisibleFromBlock ?? live.spendableFromBlock
+      } else fundsVisibleFromBlock = spendableFromBlock = (await newestBlock()) + lag
+    }
+    // The account sent after `head - spacing`: by the newest block at the latest, and the coin
+    // waits out the quiet window from there. When that nonce could not be read, the last spend
+    // is dated by the newest block too (it may have been mined after `head`), and the
+    // transaction set keeps the quiet window from `lastSpentInBlock`. Otherwise it was by
+    // `head`. A spend the list already dated at this nonce keeps its date.
+    const spendDated = live?.nonce === latest && live.lastSpentInBlock !== undefined
+    let spentBy = head
+    if (before !== undefined && before !== latest) {
+      spentBy = await newestBlock()
+      spendableFromBlock = Math.max(spendableFromBlock ?? 0, spentBy + spacing)
+    } else if (beforeUnknown && !spendDated) spentBy = await newestBlock()
+    // Only the quiet window holds the coin: its money is visible already, and a transfer that
+    // leaves the account above the reserve may go (an absent field would mean the whole wait).
+    if (spendableFromBlock !== undefined && fundsVisibleFromBlock === undefined)
+      fundsVisibleFromBlock = head
+    // Marked dirty while those later reads were out: what they saw may predate the mark.
+    if (
+      (newest !== undefined || spendableFromBlock !== undefined) &&
+      (this.stopped || (this.generations.get(account) ?? 0) !== generation)
+    )
+      return
     // A read never makes the same coin spendable sooner than the list already knew (settlement
     // set it from the block that included the account's last spend).
     if (
@@ -507,10 +563,17 @@ export class EvmCoinListSync {
     )
       spendableFromBlock = live.spendableFromBlock
     if (
+      live?.nonce === latest &&
+      live.fundsVisibleFromBlock !== undefined &&
+      live.fundsVisibleFromBlock > (fundsVisibleFromBlock ?? 0)
+    )
+      fundsVisibleFromBlock = live.fundsVisibleFromBlock
+    if (
       live?.state === 'unspent' &&
       live.nonce === latest &&
       live.valueWei === balance &&
       live.spendableFromBlock === spendableFromBlock &&
+      live.fundsVisibleFromBlock === fundsVisibleFromBlock &&
       (latest === 0 || live.lastSpentInBlock !== undefined)
     ) {
       this.empty.delete(account)
@@ -518,6 +581,12 @@ export class EvmCoinListSync {
       this.dirty.delete(account)
       return
     }
+    const lastSpentInBlock =
+      latest === 0
+        ? undefined
+        : live?.nonce === latest && live.lastSpentInBlock !== undefined
+          ? live.lastSpentInBlock
+          : spentBy
     await this.mutate(() =>
       list.put({
         account,
@@ -531,10 +600,10 @@ export class EvmCoinListSync {
         ...(latest === 0
           ? {}
           : {
-              lastSpentInBlock:
-                live?.nonce === latest ? live.lastSpentInBlock ?? head : head,
+              lastSpentInBlock: lastSpentInBlock!,
             }),
         ...(spendableFromBlock === undefined ? {} : { spendableFromBlock }),
+        ...(fundsVisibleFromBlock === undefined ? {} : { fundsVisibleFromBlock }),
         listedInBlock: head,
       }),
     )

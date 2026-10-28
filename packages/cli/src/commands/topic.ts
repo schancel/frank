@@ -62,6 +62,7 @@ export async function topicPostCommand(
       rpcChain: network.id,
       chainId: BigInt(network.nativeChainId!),
       spendSpacingBlocks: network.spendSpacingBlocks,
+      spendRuleHead: network.spendRuleHead,
       reserveBalanceWei: network.reserveBalanceWei === undefined
         ? undefined : BigInt(network.reserveBalanceWei),
       paymentPollIntervalMs: network.paymentPollIntervalMs,

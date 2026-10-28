@@ -369,6 +369,20 @@ describe('settlement: the chain decides', () => {
     expect(f.list.get(at(main), 1)?.valueWei).toBe(f.node.balances.get(at(main)))
   })
 
+  it('a payment seen mined with no block is dated by the newest block, not by a head behind it', async () => {
+    // On Monad the watcher's head is the finalized block, which may be below the block the
+    // payment was mined in: dated by it, the account's quiet window would end too early.
+    const f = await make()
+    f.node.balances.set(at(main), MON)
+    const claim = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, claim)
+    f.node.nonces.set(at(main), 1)
+    f.node.head = 1005
+    jest.spyOn(f.watcher, 'latest').mockReturnValue(997)
+    await f.payer.recordSpent('one', signed!)
+    expect(f.list.get(at(main), 0)).toMatchObject({ state: 'spent', spentInBlock: 1005 })
+  })
+
   it('a payment is called replaced only when, read again after the nonce, it still has no receipt', async () => {
     const f = await make()
     f.node.balances.set(at(main), MON)
@@ -406,7 +420,9 @@ describe('settlement: the chain decides', () => {
     f.node.head = 1001
     await f.payer.recordSpent('one', signed!, 1001)
     f.payer.releasePayment('one', signed!)
-    expect(f.list.get(at(main), 1)?.spendableFromBlock).toBe(1003)
+    // Four blocks: what the account held at block 1001 may include money that arrived in that
+    // block, which the node counts from two blocks later; the wallet keeps two more.
+    expect(f.list.get(at(main), 1)?.spendableFromBlock).toBe(1005)
     const waits: (number | undefined)[] = []
     const second = f.payer.claim({
       holder: 'two',
@@ -414,8 +430,8 @@ describe('settlement: the chain decides', () => {
       onWaiting: blocks => waits.push(blocks),
     })
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(waits).toContain(2)
-    f.node.head = 1003
+    expect(waits).toContain(4)
+    f.node.head = 1005
     const made = await second
     expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
   })
@@ -431,6 +447,83 @@ describe('settlement: the chain decides', () => {
     f.payer.releasePayment('one', signed!)
     const made = await f.payer.claim({ holder: 'two', stampValueWei: MON / 100n })
     expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('above the reserve, money that just arrived still waits until the node can see it', async () => {
+    // 50 MON arrived in block 1000, the head. The stamp leaves the account far above the reserve,
+    // so the quiet window would not hold it back, but the node judges the gas against the
+    // balance at its head minus 2 (monad-eth-txpool): it refuses the stamp until the head is
+    // 1002, and the wallet keeps two blocks more.
+    const ARRIVED = 1000
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    f.node.balanceAt = (_account, block) => (block >= ARRIVED ? 50n * MON : 0n)
+    const admits = () => f.node.head - 2 >= ARRIVED
+    await f.sync.refresh()
+    let claimedAt: number | undefined
+    const claim = f.payer
+      .claim({ holder: 'one', stampValueWei: MON / 100n })
+      .then(made => ((claimedAt = f.node.head), made))
+    for (const head of [1001, 1002, 1003, ARRIVED + 4]) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      // Whenever the wallet signs, the node admits it.
+      if (claimedAt !== undefined) break
+      f.node.head = head
+    }
+    const made = await claim
+    expect(made.accounts[0]).toMatchObject({ address: at(main), nonce: 0 })
+    expect(admits()).toBe(true)
+    expect(claimedAt).toBe(ARRIVED + 4)
+    expect(admits()).toBe(true)
+    expect(f.list.get(at(main), 0)?.fundsVisibleFromBlock).toBe(ARRIVED + 4)
+  })
+
+  it('above the reserve, the next coin of an account that just sent waits for money that arrived with the payment', async () => {
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    const first = await f.payer.claim({ holder: 'one', stampValueWei: MON / 100n })
+    const [signed] = await signAndRecord(f, first)
+    mine(f.node, signed!.rawTx, 1001)
+    f.node.head = 1001
+    // 5 MON more arrived in block 1001 too.
+    f.node.balances.set(at(main), f.node.balances.get(at(main))! + 5n * MON)
+    await f.payer.recordSpent('one', signed!, 1001)
+    f.payer.releasePayment('one', signed!)
+    expect(f.list.get(at(main), 1)).toMatchObject({
+      spendableFromBlock: 1005,
+      fundsVisibleFromBlock: 1005,
+    })
+    let claimed = false
+    const second = f.payer
+      .claim({ holder: 'two', stampValueWei: MON / 100n })
+      .then(made => ((claimed = true), made))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(claimed).toBe(false)
+    f.node.head = 1005
+    expect((await second).accounts[0]).toMatchObject({ address: at(main), nonce: 1 })
+  })
+
+  it('a coin stored without its funds-visible block is not spent before its whole wait, above the reserve too', async () => {
+    // A coin list written before `fundsVisibleFromBlock` existed: its wait may be money that just
+    // arrived, so the absent field means the whole of `spendableFromBlock`.
+    const f = await make({ spendSpacingBlocks: 3, reserveBalanceWei: MON })
+    f.node.balances.set(at(main), 50n * MON)
+    await f.list.put({
+      account: at(main),
+      nonce: 0,
+      privateKey: main.privateKey,
+      valueWei: 50n * MON,
+      origin: 'root',
+      spendableFromBlock: 1004,
+    })
+    let claimed = false
+    const claim = f.payer
+      .claim({ holder: 'one', stampValueWei: MON / 100n })
+      .then(made => ((claimed = true), made))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(claimed).toBe(false)
+    f.node.head = 1004
+    expect((await claim).accounts[0]).toMatchObject({ address: at(main), nonce: 0 })
   })
 
   it('funds that just arrived are listed with the block from which they may be spent', async () => {

@@ -109,6 +109,10 @@ export interface EvmBlockWatcherConfig {
   maxBackoffMs?: number
   /** Called when the chain becomes unreachable, and when it is reachable again. */
   onHealth?: (health: ChainHealth) => void
+  /** A failed look whose error this accepts ends every wait with that error, instead of the
+   * waits looking again until the node answers: an answer that will not come by waiting (the
+   * node no longer reports final blocks). */
+  endsWaits?: (error: unknown) => boolean
 }
 
 export class EvmBlockWatcher {
@@ -259,6 +263,8 @@ export class EvmBlockWatcher {
       if (this.head === undefined || head > this.head) this.head = head
     } catch (error) {
       this.noteFailure(error)
+      if (this.config.endsWaits?.(error))
+        for (const waiter of this.waiters.splice(0)) waiter.reject(error)
       this.delayMs = Math.min(
         Math.max(this.delayMs * 2, base * 2),
         this.config.maxBackoffMs ?? 15_000,

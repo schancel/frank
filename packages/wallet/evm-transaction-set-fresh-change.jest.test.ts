@@ -42,7 +42,7 @@ const feePaid = (set: PreparedEvmTransactionSet) =>
     return sum + parsed.gasLimit * parsed.gasPrice!
   }, 0n)
 
-async function withLargeChange() {
+async function withLargeChange(arrivedAtSourceWei = 0n) {
   let head = 100
   const coins = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
   await coins.put({
@@ -94,7 +94,11 @@ async function withLargeChange() {
         blockHash,
         blockNumber: MINED,
         nonce: signed.nonce + 1,
-        balanceWei: each.transactionSet!.balanceAfterWei,
+        // `arrivedAtSourceWei`: a deposit to the paying account mined in the same block.
+        balanceWei: (
+          BigInt(each.transactionSet!.balanceAfterWei) +
+          (each.source.address === signer(1).address.toLowerCase() ? arrivedAtSourceWei : 0n)
+        ).toString(),
       },
     )
   }
@@ -109,6 +113,22 @@ async function withLargeChange() {
     },
   }
 }
+
+describe('money that reached the paying account with the payment is fresh money', () => {
+  it('above the reserve, the account\'s next coin waits for it like any deposit', async () => {
+    // 20 MON more than the send left it: well above the 10 MON reserve, so the quiet window
+    // would not hold the coin back; the node still does not see the 20 MON before MINED + 2.
+    const f = await withLargeChange(parseEther('20'))
+    try {
+      const source = signer(1).address.toLowerCase()
+      const next = f.coins.latestOf(source)!
+      expect(next.valueWei).toBeGreaterThanOrEqual(parseEther('20'))
+      expect(next).toMatchObject({ spendableFromBlock: MINED + 4, fundsVisibleFromBlock: MINED + 4 })
+    } finally {
+      await f.journal.Close()
+    }
+  })
+})
 
 describe('change of 10 MON or more is fresh money', () => {
   it('is listed as spendable only from the block the node judges it from', async () => {

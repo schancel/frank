@@ -2610,13 +2610,20 @@ async function resend(
     ? Promise.all(
         owner.transactionSets.preparer.undecidedSupersededOperations().map(async id => {
           if (!due(takenSetPace(owner, id), CHAIN_EVERY, options.now === true)) return
-          await owner.lifetime(() =>
-            abandonTakenMembers({
+          await owner.lifetime(async () => {
+            const shared = owner.transactionSets!
+            const operation = await shared.preparer.readOperation(id)
+            // A terminal graph may still owe an interrupted inventory projection. Its durable
+            // abandonment evidence is replayed by the same lifecycle/CAS as authorized recovery.
+            if (operation?.members.some(member => nativeMemberAbandoned(member) &&
+                member.transactionSet?.inventoryApplied !== true))
+              await shared.lifecycle.observe(id, shared.provider)
+            await abandonTakenMembers({
               authority: owner.transactionSets!.preparer,
               provider: owner.transactionSets!.provider,
               operationId: id,
-            }),
-          )
+            })
+          })
         }),
       )
     : Promise.resolve()

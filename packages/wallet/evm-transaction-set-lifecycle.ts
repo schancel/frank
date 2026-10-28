@@ -20,6 +20,7 @@ export interface EvmTransactionSetAuthority {
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
+    expectedMember?: EvmNativeMember,
   ): Promise<unknown>
   /**
    * Signs member `memberIndex` again at its nonce because the node keeps refusing its bytes
@@ -205,8 +206,14 @@ export class EvmTransactionSetLifecycle {
       // Terminal history must never be fed through inventory observation again.
       if (!this.options.authority.getOperation(id) && member.transactionSet?.inventoryApplied && (member.observation.state === 'included-success' || member.observation.state === 'included-revert' || nativeMemberEnded(member))) continue
       const found = await this.receiptOf(member, provider)
-      // Given up on chain evidence: only a receipt (it landed after all) is recorded over that.
-      if (nativeMemberAbandoned(member) && !found) continue
+      // The durable abandonment may have committed just before interruption of its inventory
+      // projection. Resume that same evidence under the exact-member CAS; never invent a new
+      // chain observation or broadcast. A newly discovered actual receipt takes precedence.
+      if (nativeMemberAbandoned(member) && !found) {
+        if (!member.transactionSet?.inventoryApplied)
+          await this.options.authority.recordObservation(id, index, member.observation, member.account, member)
+        continue
+      }
       const receipt = found?.receipt ?? null
       const block = await provider.getBlock(receipt?.blockNumber ?? 'latest')
       if (!block?.hash)

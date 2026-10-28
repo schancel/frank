@@ -254,16 +254,18 @@ export class EvmTransactionSetPreparer {
     return originals
   }
 
-  /** Active transaction sets a member of which the chain showed superseded while another of
-   * them is not decided yet: what `abandonTakenMembers` looks at. Logical IDs. Read only. */
+  /** Active sets with superseded dependencies still to decide, or durable abandonment whose
+   * inventory projection was interrupted. Logical IDs for the recovery pass; read only. */
   undecidedSupersededOperations(): string[] {
     return this.options.journal.list().flatMap(row =>
       row.kind === 'transaction-set' && !row.cancelled && row.preparationId?.startsWith(prefix) &&
-      row.members.some(nativeMemberSuperseded) &&
-      row.members.some(member =>
-        member.observation.state !== 'included-success' &&
-        member.observation.state !== 'included-revert' &&
-        !nativeMemberEnded(member))
+      ((row.members.some(nativeMemberSuperseded) &&
+        row.members.some(member =>
+          member.observation.state !== 'included-success' &&
+          member.observation.state !== 'included-revert' &&
+          !nativeMemberEnded(member))) ||
+        row.members.some(member => nativeMemberAbandoned(member) &&
+          member.transactionSet?.inventoryApplied !== true))
         ? [row.preparationId.slice(prefix.length)]
         : [])
   }

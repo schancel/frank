@@ -1037,3 +1037,73 @@ test.each(['exposed', 'included', 'unchanged'] as const)('abandonment compares t
     await f.close()
   }
 })
+
+
+test.each([
+  ['journal', false], ['inventory', false], ['journal', true], ['inventory', true],
+] as const)('reopen resumes abandoned inventory after %s commit (newer local nonce=%s)', async (cut, newerNonce) => {
+  const { transactionSetFinancialCompletionReceipt } = await import('./evm-operation-completion')
+  const chain = node()
+  let f = await fixture(location, chain, false, 1n, undefined, 1)
+  const evidenceProvider = {
+    getBlockNumber: async () => 10,
+    getBlock: async (number: number) => ({number, hash: blockHash, transactions: ['0x' + 'ff'.repeat(32)]}),
+    getTransactionCount: async (_address: string, number: number) => number >= 5 ? 1 : 0,
+    getBalance: async () => 1000000n,
+  }
+  try {
+    await f.construct('abandoned-restart')
+    await f.preparer.authorizeSubmission('abandoned-restart')
+    const original = (await f.preparer.readOperation('abandoned-restart'))!
+    const paymentIndex = original.members.findIndex(member => member.transactionSet?.role === 'payment')
+    const firstIndex = original.members.findIndex(member => Transaction.from(member.signed!.rawTransaction).nonce === 0)
+    const account = original.members[paymentIndex]!.source.address
+    await f.preparer.recordObservation('abandoned-restart', firstIndex, {state: 'missing'},
+      {blockHash, blockNumber: 5, nonce: 1, balanceWei: '1000000'})
+    const write = f.journal.recordObservation.bind(f.journal)
+    const interruption = cut === 'journal'
+      ? jest.spyOn(f.journal, 'recordObservation').mockImplementation(async (...args) => {
+          const committed = await write(...args)
+          if (args[1].state === 'abandoned' && committed) throw new Error('closed after durable abandonment')
+          return committed
+        })
+      : jest.spyOn(f.journal, 'markTransactionSetInventoryApplied').mockRejectedValueOnce(new Error('closed after inventory write'))
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await abandonTakenMembers({authority: f.preparer, provider: evidenceProvider as unknown as Provider, operationId: 'abandoned-restart'})
+    interruption.mockRestore()
+    warning.mockRestore()
+    const interrupted = (await f.preparer.readOperation('abandoned-restart'))!
+    expect(interrupted.members[paymentIndex]!.observation.state).toBe('abandoned')
+    expect(interrupted.members[paymentIndex]!.transactionSet!.inventoryApplied).not.toBe(true)
+    await f.close()
+    f = await fixture(location, chain, false, 1n, undefined, 1)
+    chain.provider.getTransactionCount.mockImplementation(async () => 1)
+    chain.provider.getBalance.mockImplementation(async () => 1000000n)
+    const atOpen = (await f.preparer.readOperation('abandoned-restart'))!
+    // Opening restores claims only: projection is an explicit recovery mutation.
+    expect(atOpen.members[paymentIndex]!.transactionSet!.inventoryApplied).not.toBe(true)
+    const selectedAtOpen = f.preparer.undecidedSupersededOperations()
+    if (newerNonce) {
+      const known = f.coins.all().find(coin => coin.account === account)!
+      await f.coins.put({account, nonce: 2, privateKey: known.privateKey, origin: known.origin, valueWei: 765432n, listedInBlock: 12})
+    }
+    const broadcasts = [...chain.raws]
+    await f.submission.reconcileAuthorized()
+    await f.submission.reconcileAuthorized()
+    const recovered = (await f.preparer.readOperation('abandoned-restart'))!
+    expect(recovered.members[paymentIndex]!.transactionSet!.inventoryApplied).toBe(true)
+    expect(selectedAtOpen).toContain('abandoned-restart')
+    expect(recovered.members[paymentIndex]!.signed).toEqual(original.members[paymentIndex]!.signed)
+    expect(f.preparer.isSourceReserved(account)).toBe(false)
+    expect(f.coins.liveUnspent().some(coin => coin.account === account && coin.nonce === (newerNonce ? 2 : 1) && coin.valueWei === (newerNonce ? 765432n : 1000000n))).toBe(true)
+    if (newerNonce) expect(f.coins.liveUnspent().some(coin => coin.account === account && coin.nonce === 1)).toBe(false)
+    expect(transactionSetFinancialCompletionReceipt(recovered)).toBeDefined()
+    expect(f.preparer.undecidedSupersededOperations()).not.toContain('abandoned-restart')
+    expect(chain.raws).toEqual(broadcasts)
+    const inventory = structuredClone(f.coins.all())
+    await f.submission.reconcileAuthorized()
+    expect(f.coins.all()).toEqual(inventory)
+  } finally {
+    await f.close()
+  }
+})

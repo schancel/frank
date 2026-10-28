@@ -37,6 +37,7 @@
  * Every account the wallets used is swept back to the faucet at the end.
  */
 import assert from 'assert'
+import { randomUUID } from 'crypto'
 import type { EvmNativeOperation } from '@frank/wallet/storage/evm-native-operation-journal'
 import { fork, type ChildProcess } from 'child_process'
 import { copyFileSync, mkdirSync, readdirSync } from 'fs'
@@ -489,7 +490,8 @@ async function main() {
       await shareCoin(label, giver)
       const payments = b.handle.stealthPayments!
       const intent0 = {
-        operationId: `contact-${Date.now()}`,
+        // The message's own ID, which `send` takes as `paymentOperationId` (a UUID).
+        operationId: randomUUID(),
         chainIdentifier: 'monad-regtest',
         asset: { kind: 'native' as const },
         recipientSpendPublicKey: bob.handle.identity.compressedPubKey,

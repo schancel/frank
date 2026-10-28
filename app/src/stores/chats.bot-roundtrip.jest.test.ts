@@ -71,6 +71,12 @@ jest.mock('../accounts/session', () => ({
   },
 }))
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
+// External notification-policy publication is outside this financial/message round trip.
+// Keep actual local wakeup derivation while avoiding a five-second relay timer after teardown.
+jest.mock('../utils/webpush-sync', () => ({
+  ...jest.requireActual('../utils/webpush-sync'),
+  requestRelayNotificationPolicySync: async () => undefined,
+}))
 // Profile metadata publication is outside the message/financial boundary under test.
 jest.mock('../utils/own-profile', () => ({
   syncOwnProfileWithRelay: async () => true,

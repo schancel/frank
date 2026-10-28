@@ -223,7 +223,7 @@ export function offlineProviderModule() {
           const tx = ethers.Transaction.from(offlineChain.signedTransactions.get(hash))
           return {
             transactionHash: hash,
-            transactionIndex: '0x0',
+            transactionIndex: ethers.toQuantity([...offlineChain.mined.keys()].indexOf(hash)),
             blockHash: '0x' + '11'.repeat(32),
             blockNumber: '0x1',
             from,
@@ -248,6 +248,10 @@ export function offlineProviderModule() {
           const tx = ethers.Transaction.from(raw)
           return {
             ...tx.toJSON(),
+            value: ethers.toQuantity(tx.value),
+            nonce: ethers.toQuantity(tx.nonce),
+            chainId: ethers.toQuantity(tx.chainId),
+            type: ethers.toQuantity(tx.type),
             hash,
             // Mining already recovered and checked the sender of these exact bytes.
             from: offlineChain.mined.get(hash),
@@ -255,8 +259,8 @@ export function offlineProviderModule() {
             gas: ethers.toQuantity(tx.gasLimit),
             blockHash: '0x' + '11'.repeat(32),
             blockNumber: '0x1',
-            transactionIndex: '0x0',
-            v: ethers.toQuantity(tx.signature.v),
+            transactionIndex: ethers.toQuantity([...offlineChain.mined.keys()].indexOf(hash)),
+            v: ethers.toQuantity(tx.signature.networkV ?? tx.signature.v),
             r: tx.signature.r,
             s: tx.signature.s,
           }
@@ -283,9 +287,43 @@ export function offlineProviderModule() {
             miner: '0x' + '00'.repeat(20),
             extraData: '0x',
             baseFeePerGas: '0x1',
-            transactions: [],
+            transactions: [...offlineChain.mined.keys()],
           }
         throw new Error(`unexpected provider call ${request.method}`)
+      }
+      // Read through the current typed fixture surface, including a consumer's own node
+      // spies. Its _perform handlers above serve these reads directly and never call send,
+      // so this raw bridge does not recurse or maintain a second signed/mined ledger.
+      provider.send = async (method: string, params: unknown[]) => {
+        if (method === 'eth_chainId') {
+          providerRequests.push(method)
+          return ethers.toQuantity((await provider.getNetwork()).chainId)
+        }
+        if (method === 'eth_getBlockByNumber') {
+          if (params[1] !== false) throw new Error('offline fixture supports hash-only blocks')
+          if (!['0x1', 'latest', 'finalized'].includes(String(params[0]))) return null
+          const block = await provider.getBlock(params[0])
+          return block === null ? null : { hash: block.hash, number: ethers.toQuantity(block.number),
+            timestamp: ethers.toQuantity(block.timestamp), transactions: block.transactions }
+        }
+        if (method === 'eth_getTransactionByHash') {
+          const tx = await provider.getTransaction(params[0])
+          return tx === null ? null : {
+            hash: tx.hash, from: tx.from, to: tx.to, input: tx.data,
+            value: ethers.toQuantity(tx.value), chainId: ethers.toQuantity(tx.chainId),
+            type: ethers.toQuantity(tx.type), nonce: ethers.toQuantity(tx.nonce), gas: ethers.toQuantity(tx.gasLimit),
+            blockHash: tx.blockHash, blockNumber: tx.blockNumber === null ? null : ethers.toQuantity(tx.blockNumber),
+            transactionIndex: tx.index === undefined ? null : ethers.toQuantity(tx.index),
+            v: ethers.toQuantity(tx.signature.networkV ?? tx.signature.v), r: tx.signature.r, s: tx.signature.s,
+          }
+        }
+        if (method === 'eth_getTransactionReceipt') {
+          const receipt = await provider.getTransactionReceipt(params[0])
+          return receipt === null ? null : { transactionHash: receipt.hash, from: receipt.from, to: receipt.to,
+            blockHash: receipt.blockHash, blockNumber: ethers.toQuantity(receipt.blockNumber),
+            transactionIndex: ethers.toQuantity(receipt.index), status: ethers.toQuantity(receipt.status) }
+        }
+        throw new Error(`unexpected raw provider call ${method}`)
       }
       return provider
     },

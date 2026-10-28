@@ -1,4 +1,5 @@
 import { Transaction, Wallet } from 'ethers'
+import { readCanonicalNativeTransfers } from '../evm-native-receipt'
 import {
   mailboxes,
   mockBalances,
@@ -58,4 +59,94 @@ test('combined mailbox preserves the inclusive cursor and explicit inbound direc
   const client = offlineMailboxModule()
   await expect(client.fetchCanonicalMailboxPage({ subject: 'subject', sinceMs: 100 }))
     .resolves.toEqual({ records: [{ ...record, direction: 'in' }] })
+})
+
+it('serves identical raw/typed canonical membership and actual signed native receipt facts', async () => {
+  const provider = offlineProviderModule().createMonadJsonRpcProvider()
+  try {
+    const sender = new Wallet('0x' + '11'.repeat(32))
+    const receiver = new Wallet('0x' + '22'.repeat(32)).address.toLowerCase()
+    const hashes: string[] = []
+    for (let nonce = 0; nonce < 3; nonce++) {
+      const raw = await sender.signTransaction({
+        type: 0,
+        chainId: 10143,
+        nonce,
+        to: nonce === 0 ? sender.address : receiver,
+        value: BigInt(nonce + 1),
+        gasLimit: 21000n,
+        gasPrice: 1n,
+      })
+      hashes.push(offlineChain.mine(raw))
+    }
+    const block = await provider.getBlock(1)
+    const rawBlock = await provider.send('eth_getBlockByNumber', ['0x1', false])
+    expect(rawBlock.transactions).toEqual(hashes)
+    expect(block.transactions).toEqual(rawBlock.transactions)
+    for (const [index, hash] of hashes.entries()) {
+      const typed = await provider.getTransactionReceipt(hash)
+      const raw = await provider.send('eth_getTransactionReceipt', [hash])
+      expect(raw.transactionHash).toBe(typed.hash)
+      expect(raw.blockHash).toBe(block.hash)
+      expect(raw.transactionIndex).toBe(`0x${index.toString(16)}`)
+      expect(typed.index).toBe(index)
+    }
+    const facts = await readCanonicalNativeTransfers({
+      rpc: provider,
+      chainIdentifier: 'monad-testnet',
+      address: receiver,
+      blockNumber: 1,
+      maximumBlock: 1,
+    })
+    expect(facts.map(fact => [fact.txHash, fact.amount, fact.from])).toEqual([
+      [hashes[1], '2', sender.address.toLowerCase()],
+      [hashes[2], '3', sender.address.toLowerCase()],
+    ])
+    expect(Transaction.from(offlineChain.signedTransactions.get(hashes[2]!)!).hash).toBe(
+      facts[1]!.txHash,
+    )
+    await expect(
+      provider.send('eth_getTransactionByHash', ['0x' + '99'.repeat(32)]),
+    ).resolves.toBeNull()
+    await expect(provider.send('eth_getLogs', [])).rejects.toThrow('unexpected raw provider call')
+  } finally {
+    provider.destroy()
+  }
+})
+
+it('still rejects inconsistent receipt inclusion instead of bypassing canonical validation', async () => {
+  const provider = offlineProviderModule().createMonadJsonRpcProvider()
+  try {
+    const sender = new Wallet('0x' + '33'.repeat(32))
+    const receiver = new Wallet('0x' + '44'.repeat(32)).address.toLowerCase()
+    for (let nonce = 0; nonce < 2; nonce++)
+      offlineChain.mine(
+        await sender.signTransaction({
+          type: 0,
+          chainId: 10143,
+          nonce,
+          to: receiver,
+          value: 1n,
+          gasLimit: 21000n,
+          gasPrice: 1n,
+        }),
+      )
+    const receipt = provider.getTransactionReceipt.bind(provider)
+    // A consumer's local typed node remains the authority for raw reads too.
+    jest.spyOn(provider, 'getTransactionReceipt').mockImplementation(async (hash: string) => {
+      const result = await receipt(hash)
+      return result ? { ...result, index: 0 } : null
+    })
+    await expect(
+      readCanonicalNativeTransfers({
+        rpc: provider,
+        chainIdentifier: 'monad-testnet',
+        address: receiver,
+        blockNumber: 1,
+        maximumBlock: 1,
+      }),
+    ).rejects.toThrow('receipt inclusion mismatch')
+  } finally {
+    provider.destroy()
+  }
 })

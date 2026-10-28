@@ -174,9 +174,21 @@ export class EvmTransactionSetPreparer {
 
   /** Uses the same logical ID as construction. Authorization/exposure is never cancelled. */
   releaseUnexposed(operationId: string): Promise<boolean> {
+    return this.releaseUnexposedWithin(operationId, false)
+  }
+
+  /** `releaseUnexposed`, where a set of that ID that was never written counts as released:
+   * nothing of it exists to hold anything. The journal is read inside the set's own exclusive
+   * section, so no construction of that ID lands between the read and the answer. */
+  releaseUnexposedOrUnwritten(operationId: string): Promise<boolean> {
+    return this.releaseUnexposedWithin(operationId, true)
+  }
+
+  private releaseUnexposedWithin(operationId: string, unwrittenIsReleased: boolean): Promise<boolean> {
     return this.options.coins.runTransactionSetExclusive(operationId, async () => {
       let row = await this.options.journal.refreshPreparation(prefix + operationId)
-      if (!row || row.submissionAuthorized || row.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) return false
+      if (!row) return unwrittenIsReleased
+      if (row.submissionAuthorized || row.members.some(member => member.exposed || nativeMemberSuperseded(member) || !['unknown', 'missing'].includes(member.observation.state))) return false
       if (row.cancelled && !this.getOperation(operationId)) return true
       const originals = this.cancellationSources(row)
       if (!row.cancelled) row = await this.options.journal.discardUnexposed(row.operationId)

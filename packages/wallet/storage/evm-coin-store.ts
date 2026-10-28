@@ -543,9 +543,9 @@ export interface ContactPayment {
   /** From `prepared` on: the native operation that holds the signed transfer. */
   readonly operationId?: string
   /** Shared construction identity; the journal operationId remains its durable native row.
-   * Every supported record has one: a record without it is an unsupported development format
-   * and fails wallet activation (`UnsupportedContactPaymentRecordError`, with its reset path). */
-  readonly transactionSetOperationId: string
+   * Every record this version writes has one. A record without it was made by an older version:
+   * it is left as it is (see `UnsupportedContactPaymentRecordError`). */
+  readonly transactionSetOperationId?: string
   readonly rawTransaction?: string
   readonly txHash?: string
   readonly payloadDigest?: string

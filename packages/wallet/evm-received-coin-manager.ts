@@ -34,6 +34,7 @@ import {
   type ContactPaymentQuote,
   ContactPaymentReleasedError,
   ContactPaymentTooLargeError,
+  UnsupportedContactPaymentRecordError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeTransactionSubmissionError,
   type ContactPaymentUnsettledReason,
@@ -110,6 +111,11 @@ import {
   type RecordStore,
 } from "./storage/evm-coin-store";
 import type { EvmNativeSource } from "./storage/evm-native-operation-journal";
+
+/** A contact payment this version acts on: it names its transaction set. */
+type CurrentContactPayment = ContactPayment & {
+  readonly transactionSetOperationId: string;
+};
 import { EvmTransactionSetInsufficientFundsError } from "./evm-transaction-set-types";
 import { EvmTransactionSetFeeExceededError } from "./evm-transaction-set";
 import type { TransactionSetSubmission } from "./transaction-set";
@@ -934,6 +940,24 @@ export function createEvmReceivedCoinAndContactManager(
     payment.spentElsewhere !== true &&
     !transferIncluded(payment);
 
+  /** Recorded by an older version of the wallet (no transaction set). Such a record is left as
+   * it is: nothing here releases, finishes or deletes it, and its reservations stay. */
+  const olderVersion = (payment: ContactPayment): boolean =>
+    !payment.transactionSetOperationId;
+  /** An older-version record that holds nothing any more (paid or released): ignored. */
+  const olderAndDone = (payment: ContactPayment): boolean =>
+    olderVersion(payment) &&
+    (payment.state === "paid" || payment.state === "released");
+  /** `payment`, when this version acts on it; an older-version record refuses. */
+  const current = (payment: ContactPayment): CurrentContactPayment => {
+    if (olderVersion(payment))
+      throw new UnsupportedContactPaymentRecordError(
+        payment.stealthAddress,
+        payment.messageId
+      );
+    return payment as CurrentContactPayment;
+  };
+
   /** A held payment whose signed set may have left the wallet (the journal shows it authorized
    * for submission or a member exposed) is held until the chain says what became of it. This
    * asks the chain: when every transaction of the set is either included or can never land
@@ -948,7 +972,7 @@ export function createEvmReceivedCoinAndContactManager(
     const id = payment.transactionSetOperationId;
     const preparer = wallet.transactionSetPreparer;
     const lifecycle = wallet.transactionSetLifecycle;
-    if (!holdsItsSource(payment) || !preparer || !lifecycle) return payment;
+    if (!holdsItsSource(payment) || !id || !preparer || !lifecycle) return payment;
     const row = await preparer.readOperation(id);
     if (!row || row.cancelled ||
         (!row.submissionAuthorized && !row.members.some((member) => member.exposed)))
@@ -997,14 +1021,12 @@ export function createEvmReceivedCoinAndContactManager(
   /** Cancels a released payment's transaction set, found by its own identity however far its
    * construction got. A set never written holds nothing; any other is cancelled only through
    * `releaseUnexposed`, which refuses a set any of whose bytes may have left the wallet. */
-  const cancelReleasedTransfer = async (
-    payment: ContactPayment
-  ): Promise<boolean> => {
-    const preparer = getWallet().transactionSetPreparer!;
-    if ((await preparer.readOperation(payment.transactionSetOperationId)) === undefined)
-      return true;
-    return preparer.releaseUnexposed(payment.transactionSetOperationId);
-  };
+  const cancelReleasedTransfer = (
+    payment: CurrentContactPayment
+  ): Promise<boolean> =>
+    getWallet().transactionSetPreparer!.releaseUnexposedOrUnwritten(
+      payment.transactionSetOperationId
+    );
 
   /** Releases a payment nothing of which can have left the wallet. Without `endedMessage`, that
    * is one no message has learned of yet (no digest) and none is sending. With it, the message
@@ -1017,9 +1039,10 @@ export function createEvmReceivedCoinAndContactManager(
     endedMessage?: string
   ): Promise<boolean> =>
     exposureExclusive(async () => {
-      const payment = paymentStore.get(stealthAddress);
+      const stored = paymentStore.get(stealthAddress);
+      if (stored === undefined) return false;
+      const payment = current(stored);
       if (
-        payment === undefined ||
         (payment.state !== "prepared" && payment.state !== "planned") ||
         (endedMessage === undefined
           ? payment.payloadDigest !== undefined ||
@@ -1059,9 +1082,10 @@ export function createEvmReceivedCoinAndContactManager(
    * once the chain shows it included. Never signs or pays anything new: an already included
    * transfer is only recorded; otherwise the original operation is resumed (its same bytes). */
   const broadcastContactTransfer = async (
-    payment: ContactPayment
+    stored: ContactPayment
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
+    const payment = current(stored);
     if ((await readTransferMember(payment))?.observation.state === "included-success") {
       return markPaid(payment);
     }
@@ -1110,10 +1134,11 @@ export function createEvmReceivedCoinAndContactManager(
     onProgress?: ContactSendParams["onProgress"]
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
-    let payment = paymentStore.get(stealthAddress);
-    if (payment === undefined) {
+    const stored = paymentStore.get(stealthAddress);
+    if (stored === undefined) {
       throw new Error("No such payment to a contact");
     }
+    let payment: CurrentContactPayment = current(stored);
     if (payment.state === "planned" && payment.stampValueWei === undefined) {
       throw new Error(
         "Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records."
@@ -1503,9 +1528,12 @@ export function createEvmReceivedCoinAndContactManager(
     resumingContactPayments ??= contactExclusive(async () => {
       for (const listed of paymentStore.all()) {
         if (evmWalletInternals(wallet).closed) return;
-        let payment = listed;
+        // A record of an older version is never acted on here: not released, finished or
+        // deleted, and whatever it reserves stays reserved.
+        if (olderVersion(listed)) continue;
+        let payment: ContactPayment = listed;
         if (payment.state === "released") {
-          await cancelReleasedTransfer(payment).catch(() => undefined);
+          await cancelReleasedTransfer(current(payment)).catch(() => undefined);
           continue;
         }
         // An exposed set the chain shows can never land holds nothing: failed, not resumed.
@@ -1546,7 +1574,10 @@ export function createEvmReceivedCoinAndContactManager(
       const found = paymentStore
         .all()
         .find((row) => row.ephemeralPubKey === key);
-      if (found === undefined) return "none";
+      // An older version's record that holds nothing is not listed or acted on.
+      if (found === undefined || olderAndDone(found)) return "none";
+      // One that may hold funds or have unfinished work is refused, and left as it is.
+      current(found);
       const address = found.stealthAddress;
       if (await releaseContactPayment(address)) return "released";
       const payment = paymentStore.get(address)!;
@@ -2636,6 +2667,14 @@ export function createEvmReceivedCoinAndContactManager(
       beginContactSend: (ephemeralPubKeys) =>
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {
+            // An older version's payment that may still hold funds is never carried out by a
+            // message of this version: refused before anything of the message exists.
+            if (
+              ephemeralPubKeys.includes(payment.ephemeralPubKey) &&
+              olderVersion(payment) &&
+              !olderAndDone(payment)
+            )
+              current(payment);
             if (
               payment.state === "released" &&
               ephemeralPubKeys.includes(payment.ephemeralPubKey)
@@ -2661,6 +2700,7 @@ export function createEvmReceivedCoinAndContactManager(
         exposureExclusive(async () => {
           for (const payment of paymentStore.all()) {
             if (!ephemeralPubKeys.includes(payment.ephemeralPubKey)) continue;
+            if (olderVersion(payment)) continue;
             if (payment.state === "released") {
               throw new ContactPaymentReleasedError();
             }
@@ -2678,7 +2718,10 @@ export function createEvmReceivedCoinAndContactManager(
       async releaseUnsentContactPayments(ephemeralPubKeys) {
         let released = false;
         for (const payment of paymentStore.all()) {
-          if (ephemeralPubKeys.includes(payment.ephemeralPubKey)) {
+          if (
+            ephemeralPubKeys.includes(payment.ephemeralPubKey) &&
+            !olderVersion(payment)
+          ) {
             released =
               (await releaseContactPayment(payment.stealthAddress)) || released;
           }
@@ -2690,6 +2733,7 @@ export function createEvmReceivedCoinAndContactManager(
           for (const payment of paymentStore.all()) {
             if (
               walletInternals.closed ||
+              olderVersion(payment) ||
               payment.deliveredBy !== "host" ||
               (payment.state !== "prepared" && payment.state !== "failed") ||
               payment.payloadDigest !== payloadDigest
@@ -2752,7 +2796,7 @@ export function createEvmReceivedCoinAndContactManager(
     recordReceivedCoin,
     noteCoins,
     getContactPayments: () =>
-      paymentStore.all().map((payment) => ({
+      paymentStore.all().filter((payment) => !olderAndDone(payment)).map((payment) => ({
         messageId: payment.messageId,
         ephemeralPubKey: payment.ephemeralPubKey,
         recipientAddress: payment.recipientAddress,
@@ -2762,6 +2806,7 @@ export function createEvmReceivedCoinAndContactManager(
         ...(payment.txHash ? { txHash: payment.txHash } : {}),
         ...(payment.failure ? { failure: payment.failure } : {}),
         ...(payment.operationId ? { operationId: payment.operationId } : {}),
+        ...(olderVersion(payment) ? { olderVersion: true as const } : {}),
       })),
     sendToContact: (sendParams: ContactSendParams) =>
       payContact(sendParams, false) as Promise<ContactSendResult>,

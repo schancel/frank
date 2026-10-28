@@ -3,6 +3,9 @@
  * finish is its own reason, keeps no attempt (nothing was paid for it), and says which message.
  */
 import { StampBlockedError } from '@frank/wallet/evm-stamp-client'
+import { UnsupportedContactPaymentRecordError } from '@frank/wallet/chain'
+import { unretryableFailure } from '../utils/outgoing-failure'
+import enUS from '../i18n/en-us'
 import {
   blockingMessage,
   classifySendFailure,
@@ -28,5 +31,17 @@ describe('classifySendFailure', () => {
       ),
     ).toBe(sent)
     expect(blockingMessage([sent], 'not a digest')).toBeUndefined()
+  })
+
+  it('a message carrying a payment an older version made is refused as such: no attempt kept, no Retry, said in plain words', () => {
+    const error = new UnsupportedContactPaymentRecordError(
+      '0x' + '11'.repeat(20),
+      'm',
+    )
+    expect(classifySendFailure(error, 'cd'.repeat(32))).toEqual({
+      reason: 'payment-older-version',
+    })
+    expect(unretryableFailure('payment-older-version')).toBe(true)
+    expect(enUS.outgoing.reasonPaymentOlderVersion).toMatch(/older version/)
   })
 })

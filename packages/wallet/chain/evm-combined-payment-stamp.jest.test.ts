@@ -218,7 +218,9 @@ test('refused financial cancellation leaves the contact payment and its signed b
     await f.alice.refreshTransactionSetInventory!()
     const prepared = await f.alice.prepareContactPayment!({ recipient: f.bob.identity.address, value: 300000n, stampValue: stamp })
     const original = f.alice.getContactPayments!()[0]!
-    jest.spyOn(f.alice.transactionSetPreparer!, 'releaseUnexposed').mockResolvedValue(false)
+    // The contact release cancels through `releaseUnexposedOrUnwritten` (a set never written
+    // counts as released); the journal refuses this one.
+    jest.spyOn(f.alice.transactionSetPreparer!, 'releaseUnexposedOrUnwritten').mockResolvedValue(false)
     await f.alice.settleContactPayment!(prepared.item.ephemeralPubKey.replace(/^0x/, ''))
     expect(f.alice.getContactPayments!()[0]).toEqual(original)
     expect(offlineChain.walletBroadcasts).toHaveLength(0)

@@ -964,6 +964,10 @@ export type OutgoingFailureReason =
   /** Refused before anything was paid or handed out: one of its items cannot be encoded (a
    * plugin refused it). Sending it again fails the same way, so it is not offered a Retry. */
   | 'unencodable'
+  /** Refused before anything was sent: it carries a payment to a contact made by an older
+   * version of the wallet, which this version does nothing with by itself. Sending it again
+   * fails the same way, so it is not offered a Retry. */
+  | 'payment-older-version'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

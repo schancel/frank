@@ -992,6 +992,8 @@ export const rawFrFR = {
       'Il dépasse ce qu’un message peut contenir ({limit}). Rien n’a été payé. Raccourcissez-le et envoyez-le de nouveau.',
     reasonUnencodable:
       'Il contient quelque chose qui ne peut pas être envoyé dans un message. Rien n’a été payé.',
+    reasonPaymentOlderVersion:
+      'Il porte un paiement fait par une ancienne version du portefeuille. Rien n’a été envoyé, et rien n’est fait automatiquement avec ce paiement : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
@@ -1266,6 +1268,8 @@ export const rawFrFR = {
     title: 'Paiements à des contacts en cours',
     finish: 'Terminer',
     state: {
+      olderVersion:
+        'Fait par une ancienne version du portefeuille. Rien n’en sera fait automatiquement et ses fonds restent retenus : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
       planned:
         'Préparation inachevée ; ses fonds peuvent être retenus. Terminer le libère sans rien payer si rien n’en a quitté le portefeuille. Sinon il reste retenu, signé, pour le message qui le porte, et la livraison de ce message le paie. Il n’est jamais payé deux fois.',
       prepared:
@@ -1288,6 +1292,8 @@ export const rawFrFR = {
       'no-record':
         'Le portefeuille n’a aucune trace du transfert signé de ce paiement. Rien n’a été payé de nouveau.',
     },
+    olderVersion:
+      'Ce paiement a été fait par une ancienne version du portefeuille, et cette version n’en fait rien. Rien n’a été payé ni libéré : terminez-le avec cette version, ou suivez les notes de réinitialisation.',
     finishFailed:
       'Le paiement n’a pas pu être terminé pour le moment. Rien n’a été payé de nouveau ; réessayez plus tard.',
   },

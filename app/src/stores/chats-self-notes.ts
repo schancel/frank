@@ -2,6 +2,7 @@ import {
   CanonicalRecipientNotPublishedError,
   DirectMessageStampBelowFeeError,
   NativeFeeExceededError,
+  UnsupportedContactPaymentRecordError,
 } from '@frank/wallet/chain'
 import {
   MonadStampAbandonedError,
@@ -301,6 +302,10 @@ export function classifySendFailure(
       return { reason: 'stamp-below-fee' }
     if (error instanceof NativeFeeExceededError)
       return { reason: 'fee-exceeded' }
+    // It carries a payment an older version of the wallet made: refused before anything of
+    // the message existed, and refused the same way again.
+    if (error instanceof UnsupportedContactPaymentRecordError)
+      return { reason: 'payment-older-version' }
     // Refused before anything was paid or handed out, and the same message is refused again:
     // larger than a message carries, or an item no plugin can encode.
     const unencodable = unencodableReason(error)

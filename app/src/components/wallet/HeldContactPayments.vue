@@ -18,7 +18,11 @@
           {{ amountOf(payment) }}
         </q-item-label>
         <q-item-label caption data-testid="held-contact-payment-state">
-          {{ $t(`heldContactPayments.state.${payment.state}`) }}
+          {{
+            payment.olderVersion
+              ? $t('heldContactPayments.state.olderVersion')
+              : $t(`heldContactPayments.state.${payment.state}`)
+          }}
         </q-item-label>
       </q-item-section>
       <q-item-section side>
@@ -39,7 +43,11 @@
 
 <script lang="ts">
 import { defineComponent, onBeforeUnmount, onMounted, ref } from 'vue'
-import { activeChain, ContactPaymentNotSettledError } from '@frank/wallet/chain'
+import {
+  activeChain,
+  ContactPaymentNotSettledError,
+  UnsupportedContactPaymentRecordError,
+} from '@frank/wallet/chain'
 import type { ContactPaymentInfo } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { errorNotify } from 'src/utils/notifications'
@@ -93,6 +101,8 @@ export default defineComponent({
           fallbackKey:
             error instanceof ContactPaymentNotSettledError
               ? `heldContactPayments.notSettled.${error.reason}`
+              : error instanceof UnsupportedContactPaymentRecordError
+              ? 'heldContactPayments.olderVersion'
               : 'heldContactPayments.finishFailed',
         })
       } finally {

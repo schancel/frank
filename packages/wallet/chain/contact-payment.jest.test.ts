@@ -1456,45 +1456,93 @@ describe('a payment to a contact', () => {
       }
     })
 
-    it('a stored payment in the old format (no transaction set) is refused at activation, named, and nothing of it is released', async () => {
+    /** Rewrites the stored records as an older version of the wallet left them: no
+     * transaction set named. Returns them as stored. */
+    const asOlderVersion = async (wallet: EvmChainWalletHandle) => {
+      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(await mainOf(wallet)) })
+      await wallet.close()
+      const store = await LevelRecordStore.open<ContactPayment>(location, CONTACT_PAYMENT_NAMESPACE)
+      for (const saved of store.all()) {
+        const { transactionSetOperationId: _set, ...older } = saved
+        await store.put(saved.stealthAddress, older as ContactPayment)
+      }
+      const stored = store.all()
+      await store.close()
+      return {
+        stored,
+        reread: async () => {
+          const again = await LevelRecordStore.open<ContactPayment>(location, CONTACT_PAYMENT_NAMESPACE)
+          const rows = again.all()
+          await again.close()
+          return rows
+        },
+      }
+    }
+
+    it('a profile whose finished payments an older version recorded (paid, released) activates, works, and leaves them alone', async () => {
+      const paid = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: 0n,
+      })
+      await hostSends(paid.item, { stampValue: 0n })
+      await alice.resumeContactPayments!()
+      await alice.resumeContactPayments!()
+      const released = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      expect(await alice.settleContactPayment!(released.item.ephemeralPubKey!)).toBe('released')
+      expect(alice.getContactPayments!().map((payment) => payment.state).sort()).toEqual(['paid', 'released'])
+      const { stored, reread } = await asOlderVersion(alice)
+      const broadcastsBefore = node.broadcasts.length
+
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(reopened, await f.directoryFor('alice-older-done', reopened, bob))
+        // Not listed, not acted on.
+        expect(reopened.getContactPayments!()).toEqual([])
+        await reopened.resumeContactPayments!()
+        expect(await reopened.settleContactPayment!(paid.item.ephemeralPubKey!)).toBe('none')
+        expect(await reopened.settleContactPayment!(released.item.ephemeralPubKey!)).toBe('none')
+        // The wallet works: an ordinary send goes out.
+        const spent = await reopened.sendLegacy!({ recipient: { raw: '0x' + 'ca'.repeat(20) }, value: 10n ** 17n })
+        expect(node.broadcasts.slice(broadcastsBefore)).toContainEqual(expect.objectContaining({ hash: spent.txHash }))
+      } finally {
+        await reopened.close()
+      }
+      expect(await reread()).toEqual(stored)
+    })
+
+    it('a held payment an older version recorded activates, stays reserved, is listed as such, and Finish refuses it', async () => {
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,
         value: VALUE,
       })
-      const aliceMain = await mainOf(alice)
-      await alice.close()
-      const location = walletStateLocation({ base: f.config.walletStorageLocation as string, chainIdentifier: 'monad-testnet', owner: evmWalletStateOwner(aliceMain) })
-      const open = () => LevelRecordStore.open<ContactPayment>(location, CONTACT_PAYMENT_NAMESPACE)
-      // The old development format: the record names no transaction set.
-      let store = await open()
-      const [saved] = store.all()
-      const { transactionSetOperationId, ...oldFormat } = saved
-      await store.put(saved.stealthAddress, oldFormat as ContactPayment)
-      await store.close()
+      const { stored, reread } = await asOlderVersion(alice)
 
-      const refused = await f.chain.createWallet(roots(0)).then(
-        (wallet) => wallet.close().then(() => undefined),
-        (error: unknown) => error,
-      )
-      expect(refused).toBeInstanceOf(UnsupportedContactPaymentRecordError)
-      expect(refused).toMatchObject({
-        stealthAddress: saved.stealthAddress,
-        messageId: saved.messageId,
-      })
-      expect((refused as Error).message).toMatch(/fresh isolated wallet profile/)
-
-      // Nothing was changed: the record is as it was stored, and once it names its set again
-      // the journal still holds the signed transfer, uncancelled, its account still held.
-      store = await open()
-      expect(store.get(saved.stealthAddress)).toEqual(oldFormat)
-      await store.put(saved.stealthAddress, { ...oldFormat, transactionSetOperationId } as ContactPayment)
-      await store.close()
       const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
       attach(reopened)
       try {
+        installCanonicalDirectory(reopened, await f.directoryFor('alice-older-held', reopened, bob))
         expect(reopened.getContactPayments!()).toEqual([
-          expect.objectContaining({ state: saved.state, holdsFunds: true }),
+          expect.objectContaining({ state: 'prepared', holdsFunds: true, olderVersion: true }),
         ])
+        // Nothing does anything with it by itself, and its funds stay reserved.
+        await reopened.resumeContactPayments!()
+        await expect(
+          reopened.sendLegacy!({ recipient: { raw: '0x' + 'cb'.repeat(20) }, value: 10n ** 17n }),
+        ).rejects.toThrow('Insufficient available EVM coins')
+        // Finish (settle) refuses it by name.
+        await expect(reopened.settleContactPayment!(prepared.item.ephemeralPubKey!)).rejects.toMatchObject({
+          name: 'UnsupportedContactPaymentRecordError',
+          stealthAddress: prepared.stealthAddress.toLowerCase(),
+        })
+        await expect(reopened.settleContactPayment!(prepared.item.ephemeralPubKey!)).rejects.toBeInstanceOf(
+          UnsupportedContactPaymentRecordError,
+        )
+        // Its signed set is still in the journal, not cancelled; nothing went to the network.
         expect(
           reopened.getNativeOperations!()
             .filter((row) => row.recipient === prepared.stealthAddress.toLowerCase())
@@ -1504,6 +1552,7 @@ describe('a payment to a contact', () => {
       } finally {
         await reopened.close()
       }
+      expect(await reread()).toEqual(stored)
     })
 
     it('the outgoing message is deleted before anything was sent: settle releases it', async () => {

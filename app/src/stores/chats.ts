@@ -61,7 +61,10 @@ import {
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
 import { nativeAmountAvu } from '../utils/stamp-display'
-import { verifiedReceiptsReader } from '../utils/message-receipts'
+import {
+  receivedValueRevision,
+  verifiedReceiptsReader,
+} from '../utils/message-receipts'
 import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yield'
 import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
@@ -2974,6 +2977,8 @@ export const useChatStore = defineStore('chats', {
     /** Unread first, then verified received AVU. Read conversations keep their total
      * received value; unknown prices and equal values have deterministic tie-breakers. */
     getSortedChatOrder(state) {
+      // The same receipt clock invalidates ranking for the list and its navigation consumers.
+      void receivedValueRevision.value
       const conversations = Object.values(state.conversations).filter(
         c => !c.deletedAt,
       )

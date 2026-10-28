@@ -90,8 +90,17 @@ const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
 jest.mock('../utils/stamp-display', () => ({
   nativeAmountAvu: (_chain: string, units: bigint) => Number(units) / 1e18,
 }))
+const mockReceiptAmounts = new Map<string, bigint>()
+const mockReceiptSnapshot = jest.fn(() => {
+  const snapshot = new Map(mockReceiptAmounts)
+  return (digest: string) =>
+    snapshot.has(digest)
+      ? [{ chainIdentifier: 'monad-regtest', baseUnits: snapshot.get(digest)! }]
+      : []
+})
 jest.mock('../utils/message-receipts', () => ({
-  verifiedReceiptsReader: () => () => [],
+  receivedValueRevision: jest.requireActual('vue').ref(0),
+  verifiedReceiptsReader: () => mockReceiptSnapshot(),
 }))
 
 jest.mock('../adapters/level-message-store', () => ({
@@ -193,6 +202,65 @@ describe('stores/chats.ts (ticket #42)', () => {
     mockOwnAddress.mockReset()
     mockOwnAddress.mockResolvedValue(SENDER_ADDRESS)
     jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+  })
+
+  it('refreshes the authoritative order and adjacent navigation when only verified receipts change', async () => {
+    const { receivedValueRevision } = await import('../utils/message-receipts')
+    const { readFileSync } = await import('fs')
+    const { resolve } = await import('path')
+    const store = useChatStore()
+    mockReceiptAmounts.clear()
+    mockReceiptSnapshot.mockClear()
+    const inbound = (digest: string) =>
+      ({
+        outbound: false,
+        status: 'confirmed',
+        payloadDigest: digest,
+        stampValueWei: 0n,
+        serverTime: 1,
+        receivedTime: 1,
+        items: [],
+        senderAddress: THIRD_ADDRESS,
+        destinationAddress: SENDER_ADDRESS,
+      } as ChatMessage)
+    const a = seedConversation(store, RECIPIENT_ADDRESS, {
+      lastRead: 100,
+      totalUnreadMessages: 0,
+      messages: [inbound('a-digest')],
+    })
+    const b = seedConversation(store, THIRD_ADDRESS, {
+      lastRead: 100,
+      totalUnreadMessages: 0,
+      messages: [inbound('b-digest')],
+    })
+    store.setActiveConversation(a.id)
+    const ids = () => store.getSortedChatOrder.map(c => c.id)
+    const serialize = () =>
+      JSON.stringify(store.$state, (_key, value) =>
+        typeof value === 'bigint' ? value.toString() : value,
+      )
+    try {
+      mockReceiptAmounts.set('b-digest', 10n ** 18n)
+      expect(ids()).toEqual([b.id, a.id])
+      const callsBefore = mockReceiptSnapshot.mock.calls.length
+      const before = serialize()
+      mockReceiptAmounts.set('a-digest', 2n * 10n ** 18n)
+      // The existing list clock invalidates the single store order, including navigation.
+      receivedValueRevision.value++
+      expect(ids()).toEqual([a.id, b.id])
+      expect(mockReceiptSnapshot).toHaveBeenCalledTimes(callsBefore + 1)
+      expect(serialize()).toBe(before)
+      const page = readFileSync(resolve(__dirname, '../pages/Chat.vue'), 'utf8')
+      const body = page.match(
+        /findAdjacentThreadId\(direction: -1 \| 1\): string \| null \{([\s\S]*?)\n {4}\},/,
+      )![1]!
+      const adjacent = new Function('direction', body)
+      expect(
+        adjacent.call({ chatStore: store, conversation: a, address: a.id }, 1),
+      ).toBe(b.id)
+    } finally {
+      mockReceiptAmounts.clear()
+    }
   })
 
   describe('required chat metadata IO', () => {

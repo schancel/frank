@@ -267,10 +267,7 @@ import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
-import {
-  sortConversationsByReceivedValue,
-  unreadValueAvu,
-} from '../../stores/chats-domain'
+import { unreadValueAvu } from '../../stores/chats-domain'
 import { useContactStore } from '../../stores/contacts'
 import { useMailboxStatusStore } from '../../stores/mailbox-status'
 
@@ -284,7 +281,10 @@ import { accountSession } from '../../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { formatAvu } from 'src/utils/avu-units'
 import { nativeAmountAvu } from 'src/utils/stamp-display'
-import { verifiedReceiptsReader } from 'src/utils/message-receipts'
+import {
+  receivedValueRevision as receiptsRead,
+  verifiedReceiptsReader,
+} from 'src/utils/message-receipts'
 import {
   ChatSearchIndex,
   type SearchSnippet,
@@ -306,7 +306,6 @@ const UNREAD_VALUE_REREAD_MS = 15_000
 
 /** The read count every mounted list follows. A list that mounts makes them all read again,
  * so a list opened later never shows newer values than one already on screen. */
-const receiptsRead = ref(0)
 let receiptsReaders = 0
 let receiptsTimer: ReturnType<typeof setInterval> | undefined
 function startReceiptsClock() {
@@ -329,27 +328,12 @@ export default defineComponent({
   emits: ['closeDrawer'],
   setup(props, { emit }) {
     const chatStore = useChatStore()
-    const { getSortedChatOrder: storeChatOrder } = storeToRefs(chatStore)
+    const { getSortedChatOrder } = storeToRefs(chatStore)
     // Refresh ranking and badges together through the existing shared receipt clock.
     // Wallet receipts are read from memory; this does not open wallets or make RPC calls.
     const verifiedReceipts = computed(() => {
       void receiptsRead.value
       return verifiedReceiptsReader()
-    })
-    const getSortedChatOrder = computed(() => {
-      const conversations = Array.isArray(storeChatOrder?.value)
-        ? storeChatOrder.value
-        : []
-      if (conversations.length < 2) return conversations
-      return sortConversationsByReceivedValue(
-        conversations,
-        chatStore.activeConversationId ?? null,
-        {
-          stampChainIdentifier: activeChain.chainIdentifier,
-          verifiedReceipts: verifiedReceipts.value,
-          toAvu: nativeAmountAvu,
-        },
-      )
     })
 
     const contactStore = useContactStore()

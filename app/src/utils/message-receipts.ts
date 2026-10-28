@@ -1,3 +1,4 @@
+import { ref } from 'vue'
 import type { NativeWalletHandle } from '@frank/wallet/chain'
 import { accountSession } from '../accounts/session'
 import { peekOpenedEvmWallets } from '../accounts/evm-wallets'
@@ -5,6 +6,10 @@ import type {
   ChainAmount,
   VerifiedMessageReceipts,
 } from '../stores/chats-domain'
+
+/** Shared invalidation for derived receipt views, driven by the existing mounted-list clock.
+ * This revision carries no wallet facts and does not start a timer or open a wallet. */
+export const receivedValueRevision = ref(0)
 
 /** The account's wallets that are open now, one per canonical chain. Opens nothing. */
 function openWallets(): NativeWalletHandle[] {

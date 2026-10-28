@@ -98,6 +98,7 @@ const mockReadReceipts = jest.fn(
   () => (digest: string) => mockReceipts[digest] ?? [],
 )
 jest.mock('src/utils/message-receipts', () => ({
+  receivedValueRevision: jest.requireActual('vue').ref(0),
   verifiedReceiptsReader: () => mockReadReceipts(),
 }))
 jest.mock('./ChatListItem.vue', () => ({
@@ -157,90 +158,52 @@ function unreadClaim(payloadDigest: string, stampValueWei: bigint) {
 }
 
 describe('received-value inbox presentation', () => {
-  afterEach(() => {
-    mockChatStore.getSortedChatOrder = [
-      { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
-    ]
-  })
-  function row(id: string, stamp: bigint, unread: boolean) {
-    return {
+  it('renders the authoritative store order and follows its changes without a second ranking', async () => {
+    const row = (id: string, unread: number) => ({
       id,
       address: id,
-      kind: 'direct',
-      totalUnreadMessages: unread ? 1 : 0,
-      lastRead: unread ? 0 : 100,
-      lastReceived: 100,
-      messages: [unreadClaim(id, stamp)],
-    }
-  }
-  const rendered = (wrapper: ReturnType<typeof mount>) =>
-    wrapper
-      .findAll('[data-testid="chat-item"]')
-      .map(node => node.attributes('data-conversation-id'))
-
-  it('renders unread first and valued amounts descending in both groups, including verified other-chain receipts', async () => {
+      totalUnreadMessages: unread,
+      lastRead: 100,
+      messages: [],
+    })
     mockChatStore.getSortedChatOrder = [
-      row('read-rich', 100n * 10n ** 18n, false),
-      row('unread-native', 5n * 10n ** 17n, true),
-      row('read-small', 10n ** 18n, false),
-      row('unread-sol', 0n, true),
-    ]
-    mockReceipts['unread-sol'] = [
-      { chainIdentifier: 'solana-devnet', baseUnits: 10n ** 7n },
+      row('unread-high', 1),
+      row('unread-low', 1),
+      row('read-high', 0),
+      row('read-low', 0),
     ]
     const wrapper = mount(ChatList, {
       global: { mocks: { $status: { setup: true }, $t: (k: string) => k } },
     })
+    const ids = () =>
+      wrapper
+        .findAll('[data-testid="chat-item"]')
+        .map(node => node.attributes('data-conversation-id'))
     try {
-      await nextTick()
-      expect(rendered(wrapper)).toEqual([
-        'unread-sol',
-        'unread-native',
-        'read-rich',
-        'read-small',
+      expect(ids()).toEqual([
+        'unread-high',
+        'unread-low',
+        'read-high',
+        'read-low',
       ])
-      mockChatStore.getSortedChatOrder[3].totalUnreadMessages = 0
-      mockChatStore.getSortedChatOrder[3].lastRead = 100
-      await nextTick()
-      expect(rendered(wrapper)).toEqual([
-        'unread-native',
-        'read-rich',
-        'unread-sol',
-        'read-small',
-      ])
-    } finally {
-      wrapper.unmount()
-      delete mockReceipts['unread-sol']
-    }
-  })
-
-  it('reorders read rows when verified receipts arrive using the existing shared clock', async () => {
-    const interval = jest.spyOn(globalThis, 'setInterval')
-    mockChatStore.getSortedChatOrder = [
-      row('a', 0n, false),
-      row('b', 10n ** 18n, false),
-    ]
-    const wrapper = mount(ChatList, {
-      global: { mocks: { $status: { setup: true }, $t: (k: string) => k } },
-    })
-    try {
-      await nextTick()
-      expect(rendered(wrapper)).toEqual(['b', 'a'])
-      const reads = mockReadReceipts.mock.calls.length
-      mockReceipts.a = [
-        { chainIdentifier: 'solana-devnet', baseUnits: 10n ** 7n },
+      mockChatStore.getSortedChatOrder = [
+        row('unread-low', 1),
+        row('read-high', 0),
+        row('unread-high', 0),
+        row('read-low', 0),
       ]
-      const tick = interval.mock.calls.find(call => call[1] === 15_000)?.[0]
-      if (typeof tick !== 'function')
-        throw new Error('Receipt refresh clock was not installed')
-      tick()
       await nextTick()
-      expect(rendered(wrapper)).toEqual(['a', 'b'])
-      expect(mockReadReceipts.mock.calls.length - reads).toBe(1)
+      expect(ids()).toEqual([
+        'unread-low',
+        'read-high',
+        'unread-high',
+        'read-low',
+      ])
     } finally {
       wrapper.unmount()
-      delete mockReceipts.a
-      interval.mockRestore()
+      mockChatStore.getSortedChatOrder = [
+        { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
+      ]
     }
   })
 })
@@ -832,6 +795,11 @@ describe('ChatList browser screener contact classification', () => {
           },
         ],
       },
+    ]
+    mockChatStore.getSortedChatOrder = [
+      mockChatStore.getSortedChatOrder[0],
+      mockChatStore.getSortedChatOrder[2],
+      mockChatStore.getSortedChatOrder[1],
     ]
     const wrapper = mount(loadBrowserChatList(), {
       props: { compact: false },

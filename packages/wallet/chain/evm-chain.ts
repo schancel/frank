@@ -2772,7 +2772,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // read. Not cached and not the display figure above.
             async getSpendableBalance() {
               requireOpenWallet(wallet);
-              await transactionSetRuntime.refresh();
+              await transactionSetRuntime.refreshSpendable();
               return transactionSetPreparer.spendableNowWei();
             },
             getBalanceObservation() {

@@ -296,7 +296,8 @@ export interface NativeWalletHandle {
    */
   getBalanceParts?(): Promise<WalletBalanceParts>;
   /**
-   * What one send could draw on right now, as coin selection sees it: unreserved coins past
+   * What one plain independent payment could draw on right now, within its member limit:
+   * unreserved coins able to produce a protocol-minimum output, past
    * their funds-settle and spendable blocks at the current head, each less its own transfer fee.
    * Smaller than `getBalance` whenever money is held by an operation, still settling, or on its
    * way between the wallet's accounts. Reads the coins and the head first; rejects when they

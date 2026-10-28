@@ -57,6 +57,7 @@ export function installEvmTransactionSetRuntime(
     override: params.policy,
   })
   let policyFailure: { error: unknown } | undefined
+  let coinFailure: { error: unknown } | undefined
   const transactionSetPreparer = new EvmTransactionSetPreparer({
     coins: coinList,
     journal: params.journal,
@@ -156,7 +157,8 @@ export function installEvmTransactionSetRuntime(
           }
         })(),
         transactionSetPolicy.refresh(),
-      ]).then(([, policy]) => {
+      ]).then(([coins, policy]) => {
+        coinFailure = coins.status === 'rejected' ? { error: coins.reason } : undefined
         policyFailure = policy.status === 'rejected' ? { error: policy.reason } : undefined
       }),
       stoppedRefresh,
@@ -164,7 +166,23 @@ export function installEvmTransactionSetRuntime(
       refreshing = undefined
     }))
   }
+  // A program offering a payable amount needs a complete current observation, unlike an
+  // ordinary send that can use other trusted inputs while one observation is unavailable.
+  const refreshSpendable = async (): Promise<void> => {
+    await refresh()
+    try {
+      if (stopped) throw new Error('The wallet observation runtime is stopped')
+      // A pass may fail outside per-account observation (for example its head read), so the
+      // per-account failure assertion alone cannot establish a complete balance.
+      if (coinFailure) throw coinFailure.error
+      coinListSync.assertFundingObserved()
+      if (policyFailure) throw policyFailure.error
+    } catch (error) {
+      throw recordWalletFailure(error, { observationUnavailable: true })
+    }
+  }
   return {
+    refreshSpendable,
     blockWatcher,
     coinListSync,
     transactionSetPolicy,

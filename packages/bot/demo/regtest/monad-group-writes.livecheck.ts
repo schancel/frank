@@ -55,8 +55,9 @@ import {
 } from '../../../cashweb/groups/group-test.testutil'
 import { bytesToHex, groupWritePaymentPlan } from '../../../cashweb/groups'
 import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID } from './monad-regtest'
-import { findWallets } from '../funds'
-import { monadOf, openMonadWallet } from './monad-wallets'
+import { findWallets, TRANSFER_GAS } from '../funds'
+import { describeRanges } from './chain-reach'
+import { accountsOutsideTheKeys, monadOf, openMonadWallet } from './monad-wallets'
 import { deliverPaidGroupWrite } from '../../../group-messaging/groups/write-payment'
 import type { StoredGroupWritePayment } from '../../../cashweb/groups/group-write-payment'
 import { type RegtestStack, startRegtestStack } from './regtest-stack'
@@ -101,15 +102,17 @@ async function main() {
   const startedAt = Date.now()
   // Accounts this run funds outside the stack's wallets, saved before they are funded.
   const keys = SolonetKeyRun.open('group-writes')
+  // The payees the hosts' write policies name: the wallets pay them, they are not the wallets'.
+  const payees = new Set<string>()
   let stack: RegtestStack | undefined
   try {
     stack = await startRegtestStack({
       chains: [MONAD_REGTEST_CHAIN],
       relays: 2,
     })
-    await check(stack, keys, startedAt)
+    await check(stack, keys, startedAt, payees)
   } finally {
-    if (stack) await returnFunds(stack, keys)
+    if (stack) await returnFunds(stack, keys, payees)
     keys.close()
   }
   console.log(
@@ -125,16 +128,31 @@ async function main() {
  * swept; this run's key files go one by one as their sweeps land. Cleanup always runs: a failed
  * sweep is reported, never thrown past `stop()`.
  */
-async function returnFunds(stack: RegtestStack, keys: SolonetKeyRun): Promise<void> {
+async function returnFunds(stack: RegtestStack, keys: SolonetKeyRun, payees: Set<string>): Promise<void> {
   try {
-    const rpcUrl = monadOf(stack).rpcUrl
+    const monad = monadOf(stack)
+    const rpcUrl = monad.rpcUrl
     // The writer wallet's accounts, found from the keys in the stack's state directory.
-    const walletKeys = (await findWallets(stack.stateDir).catch(() => []))
-      .flatMap(wallet => wallet.accounts)
-      .flatMap(account => (account.privateKey ? [account.privateKey] : []))
+    const accounts = (await findWallets(stack.stateDir).catch(() => [])).flatMap(wallet => wallet.accounts)
+    const walletKeys = accounts.flatMap(account => (account.privateKey ? [account.privateKey] : []))
     const wallets = await sweepKeysExactly(rpcUrl, walletKeys)
     const own = await keys.sweep(rpcUrl)
     const unswept = [...wallets.report.unswept, ...own.unswept]
+    // The found keys are checked against the chain, as `returnToFaucet` does.
+    const found = new Set([
+      ...accounts.flatMap(account => (account.privateKey ? [account.address.toLowerCase()] : [])),
+      ...keys.addresses,
+    ])
+    const dust = 2n * TRANSFER_GAS * BigInt(await monad.provider.send('eth_gasPrice', []))
+    const { missed, missing } = await accountsOutsideTheKeys(monad, found, dust, payees)
+    for (const { address, held } of missed) {
+      console.warn(`${address} received money from this run's accounts and holds ${held} wei, but its key is not among those found`)
+      unswept.push(address)
+    }
+    if (missing.length > 0) {
+      console.warn(`the node no longer has ${describeRanges(missing)}; where this run's money went there is unknown`)
+      unswept.push(describeRanges(missing))
+    }
     console.log(
       `swept ${wallets.report.returnedWei + own.returnedWei} wei back to the faucet${
         unswept.length > 0 ? `; ${unswept.length} accounts still hold funds: ${unswept.join(', ')}` : ''
@@ -148,7 +166,7 @@ async function returnFunds(stack: RegtestStack, keys: SolonetKeyRun): Promise<vo
   }
 }
 
-async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number): Promise<void> {
+async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number, payees: Set<string>): Promise<void> {
   {
     const [hostUrl, otherUrl] = stack.relayUrls as [string, string]
     const monad = monadOf(stack)
@@ -186,6 +204,7 @@ async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number
         .messages
 
     const policy = await host.getWritePolicy(id)
+    payees.add(policy.payee.toLowerCase())
     assert.equal(policy.network, MONAD_REGTEST_CHAIN)
     assert.equal(policy.hostOrigin, hostUrl)
     console.log(

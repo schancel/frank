@@ -320,9 +320,14 @@ export class SolonetKeyRun {
     return new SolonetKeyRun(dir, heartbeat)
   }
 
+  /** The addresses of the keys this run saved. */
+  readonly addresses = new Set<string>()
+
   /** Save `privateKey` durably; call before anything funds it. */
   save(privateKey: string): void {
-    writeDurably(join(this.dir, `${new Wallet(privateKey).address.toLowerCase()}.key`), privateKey)
+    const address = new Wallet(privateKey).address.toLowerCase()
+    writeDurably(join(this.dir, `${address}.key`), privateKey)
+    this.addresses.add(address)
   }
 
   /** Sweep every key of this run back to the faucet, removing each file once it is done. */

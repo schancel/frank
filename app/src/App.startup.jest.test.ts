@@ -430,7 +430,7 @@ describe('visible read-only startup failure', () => {
     expect(startupRestoration.value.phase).toBe('restored')
     expect(useContactStore().contacts).toEqual({})
     expect(useForumStore().messages).toEqual([])
-    expect(useTopicStore().messageIndex).toEqual({})
+    expect(useTopicStore().discoveredTopics).toEqual({})
     expect(useSettingsStore().notificationFeeThresholdAvu).toBe(0)
     assertNoWrites(snapshot)
   })

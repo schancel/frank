@@ -129,6 +129,7 @@ import { computed, defineComponent, onMounted } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { sortModes, SortMode } from '../../utils/sorting'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { showForumTopic } from 'src/utils/forum-topic'
 
 const DURATIONS = [
   { label: '1 Day', value: 1000 * 60 * 60 * 24 * 1 },
@@ -205,7 +206,6 @@ export default defineComponent({
       storeVoteAmountDisplay: voteAmountDisplay,
       topicWeights,
       refreshMessages: forum.refreshMessages,
-      setSelectedTopic: forum.setSelectedTopic,
       setSortMode: forum.setSortMode,
       setDuration: forum.setDuration,
       setVoteThreshold: forum.setVoteThreshold,
@@ -257,19 +257,12 @@ export default defineComponent({
         // Handled: forumStore records outageStatus; no unhandled browser exception
       }
     },
+    // The topic is the forum's address (`?topic=`); the forum reads the posts again.
     async setTopic(text: string) {
-      this.selectedTopic = text
-      if (this.$route.path !== '/forum') {
-        await this.$router.push('/forum')
-      }
-      void this.refreshContent()
+      await showForumTopic(this.$router, text)
     },
     async onTopicClear() {
-      this.selectedTopic = ''
-      if (this.$route.path !== '/forum') {
-        await this.$router.push('/forum')
-      }
-      void this.refreshContent()
+      await showForumTopic(this.$router, '')
     },
     onSliderChange(val: number | null) {
       if (val === null || val === undefined) return
@@ -376,13 +369,8 @@ export default defineComponent({
         return this.storeSortMode
       },
     },
-    selectedTopic: {
-      set(newVal?: string) {
-        this.setSelectedTopic(newVal ?? '')
-      },
-      get(): string {
-        return this.storeSelectedTopic
-      },
+    selectedTopic(): string {
+      return this.storeSelectedTopic
     },
     duration: {
       set(newVal?: { label: string; value: number }) {

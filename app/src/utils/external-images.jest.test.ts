@@ -19,7 +19,6 @@ import {
 import { bindExternalImages, vExternalImages } from './external-images'
 import ForumMessage from 'src/components/forum/ForumMessage.vue'
 import ForumPost from 'src/components/forum/ForumPost.vue'
-import TopicMessage from 'src/components/topic/TopicMessage.vue'
 import CreatePost from 'src/pages/CreatePost.vue'
 import ChatMessageText from 'src/components/chat/messages/ChatMessageText.vue'
 import EmailThreadView from 'src/components/chat/email/EmailThreadView.vue'
@@ -120,10 +119,6 @@ describe('each surface renders a tracking picture as a placeholder', () => {
     [
       'a forum post',
       () => call(ForumPost, 'methods', 'markedMessage', {}, markdown, ''),
-    ],
-    [
-      'a topic message',
-      () => call(TopicMessage, 'methods', 'markedMessage', {}, markdown),
     ],
     [
       'the CreatePost preview',
@@ -311,7 +306,7 @@ describe('every v-html in the app', () => {
       if (found.length) offenders.push(`${rel} (${found.length})`)
       if (descriptor.template.content.includes('v-html')) checked++
     }
-    expect(checked).toBeGreaterThanOrEqual(6)
+    expect(checked).toBeGreaterThanOrEqual(5)
     expect(offenders).toEqual([])
   })
 })

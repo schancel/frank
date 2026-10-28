@@ -19,7 +19,7 @@
 
     <div class="flex-break" />
     <!-- Drawer -->
-    <q-scroll-area class="settings-scroll-area col">
+    <q-scroll-area class="settings-scroll-area col" data-scroll-key="settings">
       <q-list>
         <q-item clickable v-ripple @click="openProfile">
           <q-item-section avatar>

@@ -342,13 +342,22 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, ref } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   activeChain,
+  ContactPaymentPendingError,
   MAX_STEALTH_ITEM_AMOUNT,
   NativeFeeExceededError,
   type ContactPaymentQuote,
+  type PreparedContactPayment,
 } from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
 import { useMonadWallet } from 'src/utils/clients'
@@ -356,13 +365,23 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { useContactStore } from 'src/stores/contacts'
 import { useTranslate } from 'src/composables/useTranslate'
-import { goBack } from 'src/utils/navigation'
+import {
+  formStart,
+  formStep,
+  formStepLocation,
+  goBack,
+  leaveForm,
+  settleForm,
+} from 'src/utils/navigation'
 import {
   sentTransactionNotify,
   errorNotify,
   infoNotify,
 } from 'src/utils/notifications'
 import { fundsInPendingSendMessage } from 'src/utils/funds-in-pending-send'
+
+/** The form's review step, in the address (`?step=review`). */
+const REVIEW_STEP = 'review'
 
 export default defineComponent({
   setup() {
@@ -555,6 +574,77 @@ export default defineComponent({
       })()
     }
 
+    // The form's first entry (utils/navigation). A review reached by its address alone (a
+    // reload, a link) has nothing to review: the form shows in its place.
+    if (formStep(route)) void router.replace(formStepLocation(route, null))
+    const start = formStart()
+    // A payment finishing after the user went elsewhere does not pull them back.
+    let disposed = false
+    onBeforeUnmount(() => {
+      disposed = true
+    })
+    /**
+     * Once the payment is signed (it may be handed over from then on), its form and review
+     * give way to one entry above where the form was opened, so neither Back nor Forward
+     * reaches this payment's form again. Refused before signing, the review stays a step.
+     */
+    let settling: Promise<void> | undefined
+    const settleOutcome = () => {
+      if (disposed) return Promise.resolve()
+      settling ??= (async () => {
+        if (formStep(route)) await router.replace(formStepLocation(route, null))
+        if (!disposed) await settleForm(router, start, '/wallet')
+      })()
+      return settling
+    }
+
+    function reviewTransfer() {
+      if (tooLarge.value) {
+        errorNotify(new Error(tooLargeText.value), {
+          safeMessage: tooLargeText.value,
+        })
+        return false
+      }
+      if (belowFloor.value) {
+        errorNotify(new Error(belowFloorText.value), {
+          safeMessage: belowFloorText.value,
+        })
+        return false
+      }
+      if (!isValid.value) {
+        errorNotify(new Error('Invalid transfer details'), {
+          fallbackKey: 'sendContactDialog.invalidAmount',
+        })
+        return false
+      }
+      isReviewing.value = true
+      feeChanged.value = false
+      requote()
+      // The review is a step of its own: Back returns to the form, filled in.
+      if (formStep(route) !== REVIEW_STEP)
+        void router.push(formStepLocation(route, REVIEW_STEP))
+      return true
+    }
+    // Back from the review shows the form as it was; Forward onto it reviews the form again
+    // (a fresh quote). A payment being sent stays as it is, and an address with nothing to
+    // review shows the form.
+    watch(
+      () => formStep(route),
+      step => {
+        if (step === REVIEW_STEP) {
+          if (isReviewing.value) return
+          if (sending.value || !isValid.value)
+            void router.replace(formStepLocation(route, null))
+          else reviewTransfer()
+          return
+        }
+        if (isReviewing.value && !sending.value) {
+          isReviewing.value = false
+          feeChanged.value = false
+        }
+      },
+    )
+
     return {
       quote,
       feeChanged,
@@ -587,32 +677,17 @@ export default defineComponent({
         selectedContactAddress.value = ''
       },
       cancelEdit() {
-        goBack(router, '/wallet')
+        leaveForm(router, start, '/wallet')
       },
       reviewTransfer() {
-        if (tooLarge.value) {
-          errorNotify(new Error(tooLargeText.value), {
-            safeMessage: tooLargeText.value,
-          })
-          return
-        }
-        if (belowFloor.value) {
-          errorNotify(new Error(belowFloorText.value), {
-            safeMessage: belowFloorText.value,
-          })
-          return
-        }
-        if (!isValid.value) {
-          errorNotify(new Error('Invalid transfer details'), {
-            fallbackKey: 'sendContactDialog.invalidAmount',
-          })
-          return
-        }
-        isReviewing.value = true
-        feeChanged.value = false
-        requote()
+        reviewTransfer()
       },
       cancelReview() {
+        if (formStep(route) === REVIEW_STEP) {
+          // Back, as from the review: the form shows when its entry does.
+          goBack(router, formStepLocation(route, null))
+          return
+        }
         isReviewing.value = false
         feeChanged.value = false
       },
@@ -623,6 +698,8 @@ export default defineComponent({
           // The details stopped being a payment that can be sent (the contact or the amount
           // is gone): said, and back to the form, never a button that does nothing.
           isReviewing.value = false
+          if (formStep(route) === REVIEW_STEP)
+            goBack(router, formStepLocation(route, null))
           errorNotify(new Error('Invalid transfer details'), {
             fallbackKey: 'sendContactDialog.invalidAmount',
           })
@@ -630,6 +707,9 @@ export default defineComponent({
         }
         sending.value = true
         feeChanged.value = false
+        // Set once the wallet has signed and held the payment for its message: from then on the
+        // payment belongs to that message, whatever the send says, and this form never pays again.
+        let prepared: PreparedContactPayment | undefined
 
         try {
           const wallet = await useActiveWallet()
@@ -652,7 +732,7 @@ export default defineComponent({
             reviewed.state === 'known'
               ? reviewed.quote.stampWei
               : chatStore.getStampWei(selectedContactAddress.value)
-          const prepared = await wallet.prepareContactPayment({
+          prepared = await wallet.prepareContactPayment({
             recipient: { raw: selectedContactAddress.value },
             value: parsedValue.value!,
             memo: memo.value.trim() || undefined,
@@ -662,6 +742,7 @@ export default defineComponent({
               ? { maxFeeWei: reviewed.quote.networkFeeWei }
               : {}),
           })
+          void settleOutcome()
           const outcome = await chatStore.sendMessage({
             wallet: messaging,
             address: selectedContactAddress.value,
@@ -690,8 +771,25 @@ export default defineComponent({
           } else {
             infoNotify($t('sendContactDialog.pending'))
           }
-          goBack(router, '/wallet')
+          // Done: back to where the form was opened from (the payment's one entry stays
+          // above it, a fresh form if Forward reaches it), unless the user already left.
+          await settleOutcome()
+          if (!disposed) leaveForm(router, start, '/wallet')
         } catch (err) {
+          if (prepared || err instanceof ContactPaymentPendingError) {
+            // The payment was signed and held, and then its message's send failed (its row may
+            // already be saved, its bytes may have reached a relay), or the wallet itself could
+            // not finish preparing it (`ContactPaymentPendingError`: saved, no chat row yet).
+            // It is never paid again from here: the user is told where that one payment is,
+            // and the form is left as after any other outcome. Its message's Retry, or the
+            // wallet's held payments, finish it or release it unpaid.
+            errorNotify(err, {
+              safeMessage: $t('sendContactDialog.heldAfterError'),
+            })
+            await settleOutcome()
+            if (!disposed) leaveForm(router, start, '/wallet')
+            return
+          }
           // Nothing was signed: the fee is now higher than the one reviewed. The review stays,
           // says so and shows the new quote, whose fee bounds the payment if confirmed again.
           if (err instanceof NativeFeeExceededError) {

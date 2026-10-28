@@ -19,6 +19,7 @@ import { accountSession, accountStatus } from '../accounts/session'
 import { notePendingChatRoute, takeInterruptedChatRoute } from './pending-chat'
 import { checkDebouncedAppUpdate } from 'src/utils/pwa'
 import { installNavigation } from 'src/utils/navigation'
+import { installScrollMemory } from 'src/utils/scroll-memory'
 import { isNarrowWidth } from 'src/utils/layout'
 import { getEffectiveScreenWidth } from 'src/utils/mobile-viewport-scale'
 import {
@@ -125,8 +126,7 @@ export default () => {
       to.path === '/docs' ||
       to.path.startsWith('/docs/') ||
       to.path === '/' ||
-      to.path.startsWith('/forum') ||
-      to.path.startsWith('/topic')
+      to.path.startsWith('/forum')
     ) {
       if (
         to.path === '/' ||
@@ -157,7 +157,10 @@ export default () => {
   )
   const Router = createRouter({
     routes,
-    scrollBehavior: () => ({ left: 0, top: 0 }),
+    // Pages scroll in their own elements, not the window: `installScrollMemory` keeps each
+    // entry's place and starts a new page at the top. Given, so that the browser leaves
+    // scrolling to the app (`history.scrollRestoration = 'manual'`).
+    scrollBehavior: () => false,
     history,
   })
   // First: it must see a Back before any other guard does (see utils/navigation).
@@ -167,6 +170,7 @@ export default () => {
       process.env.MODE !== 'capacitor' &&
       isNarrowWidth(getEffectiveScreenWidth(window.innerWidth)),
   })
+  installScrollMemory(Router, history)
   // Read before the first navigation starts: a chat that was being opened when the page was
   // reloaded (see `./pending-chat`).
   const interrupted = takeInterruptedChatRoute()

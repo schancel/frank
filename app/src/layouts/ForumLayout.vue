@@ -120,6 +120,7 @@
         <q-scroll-area
           ref="chatScroll"
           class="q-px-sm absolute full-width full-height"
+          data-scroll-key="forum"
           @wheel.capture="pullWithWheel"
           :content-style="{ display: 'flex', flexDirection: 'column' }"
           :content-active-style="{ display: 'flex', flexDirection: 'column' }"
@@ -196,6 +197,7 @@ import ExtensionPopoutBtn from '../components/navigation/ExtensionPopoutBtn.vue'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 import { getEffectiveScreenWidth } from '../utils/mobile-viewport-scale'
 import { backDismissible, goBack } from '../utils/navigation'
+import { routeForumTopic, showForumTopic } from '../utils/forum-topic'
 
 const MIN_REFRESH_FEEDBACK_MS = 700
 const RESULT_FEEDBACK_MS = 900
@@ -275,12 +277,12 @@ export default defineComponent({
       getRefreshRequestToken: forumStore.getRefreshRequestToken,
       setSelectedTopic: forumStore.setSelectedTopic,
       // Ticket #72: `refreshDiscoveredTopics` merges relay-discovered topics into `useTopicStore`
-      // (the store `AddTopic.vue`/`TopicList.vue`/`TopicDrawer.vue` read from, distinct from this
+      // (the store `AddTopic.vue` and the drawers' topic lists read from, distinct from this
       // layout's own `forumStore`) alongside its hardcoded `defaultTopics` fallback. Wired here
       // (this layout's `mounted()` below) rather than at global app startup: unlike ticket #49's
       // curated contacts (which matter immediately, before the user picks a screen), a topic list
       // is only relevant once someone has actually opened the Forum -- this layout wraps every
-      // Forum-area route (`Forum.vue`/`Topic.vue` via `router-view`), so its `mounted()` hook is
+      // Forum-area route (`Forum.vue` and the post pages via `router-view`), so its `mounted()` hook is
       // this codebase's real "the user opened the Forum" moment.
       refreshDiscoveredTopics: topicStore.refreshDiscoveredTopics,
       topics,
@@ -292,6 +294,10 @@ export default defineComponent({
   },
   components: { ForumDrawer, ExtensionPopoutBtn },
   emits: ['toggleMyDrawerOpen'],
+  created() {
+    // The topic filter is the forum's address (`?topic=`): the store follows it.
+    this.followRouteTopic()
+  },
   mounted() {
     void this.refreshContent()
     // Fire-and-forget: `refreshDiscoveredTopics` already fails soft (never throws, see
@@ -305,6 +311,7 @@ export default defineComponent({
   watch: {
     '$route.fullPath'() {
       this.clearWheelFeedback()
+      if (this.followRouteTopic()) void this.refreshContent()
     },
   },
   methods: {
@@ -468,20 +475,27 @@ export default defineComponent({
         return false
       }
     },
+    /** The topic a post names (its chip): the forum filtered to it. */
     async setTopic(text: string) {
-      this.selectedTopic = text
-      if (this.$route.path !== '/forum') {
-        await this.$router.push('/forum')
-      }
-      void this.refreshContent()
+      await showForumTopic(this.$router, text)
+    },
+    /**
+     * On the forum's list, the store's topic is the one its address names. True when that
+     * changed it (the posts are then read again).
+     */
+    followRouteTopic(): boolean {
+      if (this.$route?.path !== '/forum') return false
+      const topic = routeForumTopic(this.$route)
+      if (topic === this.storeSelectedTopic) return false
+      this.setSelectedTopic(topic)
+      return true
     },
     // The thread's (or new post's) back arrow: Back, or the forum when this was opened directly.
     navigateBack() {
       goBack(this.$router, '/forum')
     },
     clearTopic() {
-      this.selectedTopic = ''
-      void this.refreshContent()
+      void showForumTopic(this.$router, '')
     },
   },
   computed: {
@@ -514,17 +528,8 @@ export default defineComponent({
         Boolean(this.$route?.path?.startsWith('/new-post'))
       )
     },
-    selectedTopic: {
-      set(newVal?: string) {
-        this.setSelectedTopic(newVal ?? '')
-        // If the contents were cleared then we should refresh.
-        if (!newVal) {
-          void this.refreshContent()
-        }
-      },
-      get(): string {
-        return this.storeSelectedTopic
-      },
+    selectedTopic(): string {
+      return this.storeSelectedTopic
     },
   },
 })

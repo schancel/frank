@@ -44,6 +44,7 @@
 
 <script lang="ts">
 import { goBack } from 'src/utils/navigation'
+import { forumTopicLocation } from 'src/utils/forum-topic'
 import { defineComponent, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { QInput } from 'quasar'
@@ -64,7 +65,7 @@ export default defineComponent({
         return
       }
       topicStore.ensureTopic(topic.value.toLowerCase())
-      router.replace(`/topic/${topic.value}`)
+      router.replace(forumTopicLocation(topic.value))
     }
     return {
       topic,

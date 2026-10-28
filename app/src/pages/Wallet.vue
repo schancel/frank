@@ -77,6 +77,7 @@
         widening the whole page past a phone's screen. -->
         <q-scroll-area
           class="absolute-full"
+          data-scroll-key="wallet"
           :content-style="{ width: '100%', minWidth: '100%', maxWidth: '100%' }"
           :content-active-style="{
             width: '100%',
@@ -701,6 +702,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useChainBalance } from 'src/composables/useChainBalance'
 import { useBalance } from 'src/composables/useBalance'
 import { useMyDrawerOpen } from 'src/composables/useMyDrawerOpen'
+import { useQueryState } from 'src/composables/useQueryState'
 import { useWalletNames } from 'src/composables/useWalletNames'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
@@ -741,6 +743,7 @@ import { viewportPageStyle } from 'src/utils/layout'
 // initiation is deliberately absent until the stealth design (#71) lands -- no dead controls.
 /** How often History is read again while it is open. */
 const HISTORY_REFRESH_MS = 15_000
+const WALLET_TABS = ['balance', 'history', 'swap', 'parity'] as const
 
 export default defineComponent({
   components: {
@@ -786,7 +789,13 @@ export default defineComponent({
       setCustomName(renameChain.value, name)
     }
     const oracle = useSafeOracleStore()
-    const activeTab = ref<'balance' | 'history' | 'swap' | 'parity'>('balance')
+    // The open tab is in the address (`?tab=`): Back, Forward, a reload and a link show it, and
+    // switching tabs adds no history entry.
+    const activeTab = useQueryState('tab', {
+      fallback: 'balance',
+      allowed: WALLET_TABS,
+      owns: current => current.path.startsWith('/wallet'),
+    })
 
     const selectedWallet = computed<string>(() => {
       const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)

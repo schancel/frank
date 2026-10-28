@@ -9,7 +9,6 @@ export const chatDraftRevision = ref(0)
 
 const CHAT_DRAFT_PREFIX = 'frank:draft:chat:'
 const FORUM_DRAFT_PREFIX = 'frank:draft:forum:'
-const TOPIC_DRAFT_PREFIX = 'frank:draft:topic:'
 
 export interface ChatDraftRecord {
   message: string
@@ -266,37 +265,6 @@ export function clearForumPostDraft(
   if (!storage) return
   try {
     storage.removeItem(`${FORUM_DRAFT_PREFIX}${key}`)
-  } catch {
-    // Ignore
-  }
-}
-
-export function loadTopicDraft(topic: string | null | undefined): string {
-  const key = normalizeKey(topic)
-  if (!key) return ''
-  const storage = getStorage()
-  if (!storage) return ''
-  try {
-    return storage.getItem(`${TOPIC_DRAFT_PREFIX}${key}`) ?? ''
-  } catch {
-    return ''
-  }
-}
-
-export function saveTopicDraft(
-  topic: string | null | undefined,
-  message: string,
-): void {
-  const key = normalizeKey(topic)
-  if (!key) return
-  const storage = getStorage()
-  if (!storage) return
-  try {
-    if (!message) {
-      storage.removeItem(`${TOPIC_DRAFT_PREFIX}${key}`)
-      return
-    }
-    storage.setItem(`${TOPIC_DRAFT_PREFIX}${key}`, message)
   } catch {
     // Ignore
   }

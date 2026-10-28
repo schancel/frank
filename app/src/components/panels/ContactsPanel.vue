@@ -6,6 +6,7 @@
   >
     <q-scroll-area
       class="q-px-none col full-width contacts-scroll-area"
+      data-scroll-key="contacts-list"
       :content-style="{ width: '100%', minWidth: '100%' }"
       :content-active-style="{ width: '100%', minWidth: '100%' }"
     >

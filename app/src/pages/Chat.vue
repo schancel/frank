@@ -224,10 +224,13 @@
       />
       <q-page v-else class="chat-page-background column no-wrap">
         <div class="col relative-position">
+          <!-- A conversation keeps its own place (its newest message, or its history anchor):
+          Back and Forward do not restore this scroll (utils/scroll-memory). -->
           <q-scroll-area
             ref="chatScroll"
             @scroll="scrollHandler"
             class="q-px-none absolute full-width full-height column"
+            data-scroll-restore="off"
           >
             <!-- Clearance tracks the overlay height so a wrapped banner cannot cover the
             oldest bubble. q-py-md is the gap when the overlay is empty. -->

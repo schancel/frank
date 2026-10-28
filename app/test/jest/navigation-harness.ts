@@ -8,6 +8,7 @@ import {
   createWebHashHistory,
   type RouteRecordRaw,
   type Router,
+  type RouterHistory,
 } from 'vue-router'
 import { installNavigation } from '../../src/utils/navigation'
 
@@ -61,12 +62,38 @@ export function historyPosition(): number {
 export async function openApp(
   routes: (string | RouteRecordRaw)[],
   start: string,
-  options: { backClosesOverlays: () => boolean } = {
+  options: NavigationOptions = {
     backClosesOverlays: () => true,
   },
 ) {
   window.history.pushState(null, '', '#/before-the-app')
   window.history.pushState(null, '', `#${start}`)
+  return startRouter(routes, start, options)
+}
+
+interface NavigationOptions {
+  backClosesOverlays: () => boolean
+  /** Installs more on the router and its history, as `router/index.ts` does. */
+  install?: (router: Router, history: RouterHistory) => void
+}
+
+/**
+ * A reload: the page's session history entries stay (with their `history.state`); a new router
+ * starts on the current entry. The previous router must have been destroyed.
+ */
+export async function reloadApp(
+  routes: (string | RouteRecordRaw)[],
+  options: NavigationOptions = { backClosesOverlays: () => true },
+) {
+  const start = window.location.hash.slice(1) || '/'
+  return startRouter(routes, start, options)
+}
+
+async function startRouter(
+  routes: (string | RouteRecordRaw)[],
+  start: string,
+  options: NavigationOptions,
+) {
   const history = createWebHashHistory()
   const router = createRouter({
     history,
@@ -75,6 +102,7 @@ export async function openApp(
     ),
   })
   installNavigation(router, history, options)
+  options.install?.(router, history)
   await router.push(start)
   await router.isReady()
   return { router, destroy: () => history.destroy() }

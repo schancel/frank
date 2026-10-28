@@ -14,6 +14,15 @@ import frFR from '../i18n/fr-fr'
 const mockFetchByTopic = jest.fn()
 const mockDiscoverTopics = jest.fn()
 
+const mockRouterReplace = jest.fn()
+const mockRouterPush = jest.fn()
+jest.mock('vue-router', () => ({
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    currentRoute: { value: { path: '/forum', query: {} } },
+  }),
+}))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     defaultTopicVoteValue: 100_000_000n,
@@ -386,10 +395,9 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     await clearBtn.trigger('click')
     await flushPromises()
 
-    expect(store.selectedTopic).toBe('')
-    expect(
-      wrapper.find('[data-test="forum-active-topic-banner"]').exists(),
-    ).toBe(false)
+    // The topic is the forum's address: clearing it is a change in place (the layout follows).
+    expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/forum' })
+    expect(mockRouterPush).not.toHaveBeenCalled()
   })
 
   it('renders clear topic button in empty state when topic has no posts', async () => {
@@ -414,7 +422,7 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     await emptyClearBtn.trigger('click')
     await flushPromises()
 
-    expect(store.selectedTopic).toBe('')
+    expect(mockRouterReplace).toHaveBeenCalledWith({ path: '/forum' })
   })
 
   async function loadFeed(rows: ForumMessage[]) {

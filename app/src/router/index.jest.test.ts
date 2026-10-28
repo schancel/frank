@@ -96,15 +96,7 @@ test('root redirects to /welcome when not logged in, and /forum when ready', asy
   )
 })
 
-test.each([
-  '/',
-  '/welcome',
-  '/forum',
-  '/topic/example',
-  '/onboard',
-  '/chat/peer',
-  '/wallet',
-])(
+test.each(['/', '/welcome', '/forum', '/onboard', '/chat/peer', '/wallet'])(
   'standby account opens the existing-account takeover screen from %s',
   async path => {
     mockStatus.status = 'standby'
@@ -126,7 +118,7 @@ describe.each(['unavailable', 'locked'])(
         )
       },
     )
-    test.each(['/setup', '/forum', '/topic/example', '/docs', '/about'])(
+    test.each(['/setup', '/forum', '/docs', '/about'])(
       'can still read %s',
       async path => {
         mockStatus.status = status

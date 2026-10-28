@@ -303,7 +303,11 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     await openDrawer(wrapper)
     await byText(wrapper, 'alpha').slice(-1)[0].trigger('click')
     await flushPromises()
-    expect(router.push).toHaveBeenCalledWith('/forum')
+    // The topic is the forum's address.
+    expect(router.push).toHaveBeenCalledWith({
+      path: '/forum',
+      query: { topic: 'alpha' },
+    })
     expect(open(wrapper)).toBe('false')
   })
 

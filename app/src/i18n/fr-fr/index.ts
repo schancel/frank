@@ -552,8 +552,6 @@ export const rawFrFR = {
     contactActions: 'Options du contact {name}',
     openNavigation: 'Ouvrir le menu de navigation',
     addContact: 'Ajouter un contact',
-    addTopic: 'Ajouter un sujet',
-    deleteTopic: 'Supprimer le sujet {topic}',
     deleteContact: 'Supprimer le contact {name}',
     sendMessage: 'Envoyer le message',
     voteUp: 'Voter pour',
@@ -561,7 +559,6 @@ export const rawFrFR = {
     forumRefresh: 'Actualiser le forum',
     newPost: 'Nouvelle publication',
     forumSettings: 'Paramètres du forum',
-    topicSettings: 'Paramètres du sujet',
     chatMenu: 'Options de la conversation',
     closeInfo: 'Retour à la conversation',
     exitSelectMode: 'Quitter la suppression de messages',
@@ -1364,10 +1361,6 @@ export const rawFrFR = {
     notReceivedNotice:
       'Un paiement annoncé par un expéditeur ({amount}) n’est pas arrivé.',
   },
-  topicDrawer: {
-    offering: 'Offre:',
-    filter: 'Filtrer:',
-  },
   setup: {
     loginOrSignUp: 'Connexion/Inscription',
     welcome: 'Bienvenue',
@@ -1799,6 +1792,8 @@ export const rawFrFR = {
     pending:
       'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
+    heldAfterError:
+      "Le paiement est signé et réservé, et son message n'a pas pu être envoyé pour l'instant. Il n'est jamais payé deux fois. Si le message apparaît dans la conversation avec ce contact, réessayez-le là ; sinon, ouvrez « Paiements à des contacts en cours » sur la page du portefeuille, où le portefeuille termine le paiement ou, si rien n'en a été envoyé, le libère sans rien payer.",
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
     tooLarge:

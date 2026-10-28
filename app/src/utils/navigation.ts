@@ -1,5 +1,6 @@
 import { defineComponent, onBeforeUnmount, watch } from 'vue'
 import type {
+  LocationQuery,
   RouteLocationNormalized,
   RouteLocationRaw,
   Router,
@@ -56,6 +57,7 @@ function isMessagesPath(path: string) {
 
 interface EntryState {
   back?: unknown
+  forward?: unknown
   position?: unknown
   [START_KEY]?: unknown
 }
@@ -280,7 +282,7 @@ function takeAppPop(position: number | null): boolean {
 }
 
 /** Resolves once no navigation is pending (or after a second, whatever happens). */
-function navigationIdle(): Promise<void> {
+export function navigationIdle(): Promise<void> {
   const started = Date.now()
   return new Promise(resolve => {
     const check = () => {
@@ -399,6 +401,43 @@ function goAndSettle(router: Router, delta: number): Promise<void> {
   })
 }
 
+/** Unseen moves under way (`moveUnseen` and the entry rewrite after it). */
+let unseenMoves = 0
+/** Told after an unseen move has settled, with whether it dropped the entries after it. */
+const unseenMoveListeners = new Set<(truncated: boolean) => void>()
+
+/** True while the session history moves under the page on screen (it is not that entry's). */
+export function movingUnseen(): boolean {
+  return unseenMoves > 0
+}
+
+/**
+ * Calls `listener` after each unseen move has settled (the entry under the page has changed
+ * with no navigation for the router to report). `truncated`: the entries after it are gone.
+ */
+export function onUnseenMove(
+  listener: (truncated: boolean) => void,
+): () => void {
+  unseenMoveListeners.add(listener)
+  return () => unseenMoveListeners.delete(listener)
+}
+
+/** Runs `move` as one unseen move; listeners hear of it when it moved anything. */
+async function unseenMove(
+  move: () => Promise<boolean | 'truncated'>,
+): Promise<void> {
+  unseenMoves++
+  let moved: boolean | 'truncated' = false
+  try {
+    moved = await move()
+  } finally {
+    unseenMoves--
+  }
+  if (moved)
+    for (const listener of [...unseenMoveListeners])
+      listener(moved === 'truncated')
+}
+
 /**
  * Moves the session history by `delta` without the router following: neither the pages in
  * between nor the one landed on are shown. Resolves true once moved, false when the browser
@@ -437,12 +476,15 @@ function moveUnseen(delta: number): Promise<boolean> {
  * none of the entries passed is shown.
  */
 async function settleOnEarlierEntry(router: Router, delta: number) {
-  if (!(await moveUnseen(delta)) || !routerHistory) return
-  const current = router.currentRoute.value
-  // Keeps the landing entry's own `back` and record of the Messages entry under it.
-  routerHistory.replace(current.fullPath)
-  committedStart = null
-  recordStartTab(current.path)
+  await unseenMove(async () => {
+    if (!(await moveUnseen(delta)) || !routerHistory) return false
+    const current = router.currentRoute.value
+    // Keeps the landing entry's own `back` and record of the Messages entry under it.
+    routerHistory.replace(current.fullPath)
+    committedStart = null
+    recordStartTab(current.path)
+    return true
+  })
 }
 
 /** A router call's outcome: true when it committed. */
@@ -510,6 +552,121 @@ export async function replaceFlow(
 }
 
 /**
+ * Where a multi-step form starts: the history position of its first entry, and whether an
+ * in-app page is under it (the page the form was opened from). Read on that first entry.
+ *
+ * A multi-step form keeps each later step (a review) as an entry of its own, pushed on the
+ * form's (`?step=`), so Back from a step returns to the step before it, filled in as it was.
+ * Leaving the form (`leaveForm`) or finishing it on an outcome (`settleForm`) leaves none of
+ * its steps for Back to return to.
+ */
+export interface FormStart {
+  position: number | null
+  parentInApp: boolean
+}
+
+/** The query key a multi-step form keeps its step in (none: its first step). */
+export const FORM_STEP = 'step'
+
+/** The step of its form `route` shows; null for the form's first step. */
+export function formStep(route: { query: LocationQuery }): string | null {
+  const raw = route.query[FORM_STEP]
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return typeof value === 'string' && value ? value : null
+}
+
+/** `route` at `step` of its form (null: the form's first step). */
+export function formStepLocation(
+  route: { path: string; query: LocationQuery; hash: string },
+  step: string | null,
+): RouteLocationRaw {
+  const query: LocationQuery = { ...route.query }
+  if (step) query[FORM_STEP] = step
+  else delete query[FORM_STEP]
+  return { path: route.path, query, hash: route.hash }
+}
+
+export function formStart(): FormStart {
+  return {
+    position: entryPosition(),
+    parentInApp: previousInAppLocation() !== null,
+  }
+}
+
+/**
+ * Leaves a multi-step form (Cancel, or done) from whichever of its steps is showing: back, in
+ * one step, to the page it was opened from, like Back past every step. A form opened first (a
+ * link, a reload: nothing in the app under it) gives way to its `parent` instead, replacing
+ * the entry showing.
+ */
+export function leaveForm(
+  router: Pick<Router, 'go' | 'replace'>,
+  start: FormStart,
+  parent: RouteLocationRaw,
+): void {
+  const position = entryPosition()
+  if (
+    start.parentInApp &&
+    start.position !== null &&
+    position !== null &&
+    position >= start.position
+  ) {
+    historyGo(router, start.position - 1 - position)
+    return
+  }
+  void settled(router.replace(parent))
+}
+
+/**
+ * A multi-step form that stays on its outcome (a send in progress, then done): the form's
+ * entries give way to the route now committed, unseen. It takes the place of the form's first
+ * entry, above the page the form was opened from, and the entries after it are gone: Back
+ * returns to that page and Forward cannot reach any step of the form again. A form opened
+ * first (nothing in the app under it) has its first entry turned into its `parent` (as
+ * `leaveForm` gives way to it), with the outcome above: Back from the outcome is that parent,
+ * and here too nothing of the form is left to go Forward to. This holds also when the user
+ * went Back to the form's first entry while the form was busy: its later steps still go.
+ *
+ * Once folded, `start` describes the outcome's entry, with the page under it in the app, so a
+ * `leaveForm` after it goes Back to that page instead of replacing the outcome with another
+ * copy of it.
+ */
+export async function settleForm(
+  router: Router,
+  start: FormStart,
+  parent: RouteLocationRaw,
+): Promise<void> {
+  const position = entryPosition()
+  if (start.position === null || position === null || position < start.position)
+    return
+  // On the form's first entry with nothing after it: none of its steps is left to drop.
+  if (position === start.position && entryState()?.forward == null) return
+  const startPosition = start.position
+  const below = start.parentInApp ? startPosition - 1 : startPosition
+  await unseenMove(async () => {
+    if (below !== position && !(await moveUnseen(below - position)))
+      return false
+    if (!routerHistory) return false
+    const current = router.currentRoute.value
+    committedStart = null
+    if (start.parentInApp) {
+      // On the page under the form: the Messages entry under it, if any, is the outcome's too.
+      recordStartTab(routerHistory.location.split(/[?#]/)[0] ?? '')
+    } else {
+      // On the form's first entry: it becomes the parent.
+      const under = router.resolve(parent)
+      routerHistory.replace(under.fullPath)
+      recordStartTab(under.path)
+    }
+    routerHistory.push(current.fullPath)
+    recordStartTab(current.path)
+    start.position = below + 1
+    start.parentInApp = true
+    return 'truncated'
+  })
+}
+
+/**
  * A bottom-tab (or rail) tap. Tabs do not stack: Messages (`START_TAB`: the list, or the
  * conversation open in it) rests at the bottom and every other tab's root replaces the one
  * above it, so Back from any tab lands where the user left Messages and Back from Messages
@@ -543,7 +700,13 @@ async function switchTabNow(router: Router, tab: string, step: () => void) {
       // On Messages. Messages itself, from a conversation: its list (Back to it when it is
       // right under the conversation). Any other tab opens above it.
       step()
-      if (tab === START_TAB && previousInAppLocation() === START_TAB)
+      // The list as the user left it (its search and filter are in its address).
+      const previous = previousInAppLocation()
+      if (
+        tab === START_TAB &&
+        previous !== null &&
+        router.resolve(previous).path === START_TAB
+      )
         await goAndSettle(router, -1)
       else await settled(router.push(tab))
       return
@@ -601,6 +764,7 @@ export function resetNavigationForTests() {
   pendingTarget = null
   refusedPopDelta = null
   switching = false
+  unseenMoves = 0
   openOverlays.splice(0)
   backClosesOverlays = () => false
 }

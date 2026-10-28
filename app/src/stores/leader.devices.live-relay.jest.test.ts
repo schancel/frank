@@ -126,9 +126,7 @@ interface Device {
 const globals = global as any
 
 live('the active device, through the real relay', () => {
-  const stateDir = mkdtempSync(
-    join(process.env.FRANK_LIVE_STATE_DIR ?? tmpdir(), 'frank-active-device-'),
-  )
+  let stateDir: string
   const relayUrl = RELAY as string
   const devices: Device[] = []
   const stoppers: Array<{ stop: () => void }> = []
@@ -326,6 +324,12 @@ live('the active device, through the real relay', () => {
     target.maintainCalls.filter(call => call?.startNew === false).length
 
   beforeAll(async () => {
+    stateDir = mkdtempSync(
+      join(
+        process.env.FRANK_LIVE_STATE_DIR ?? tmpdir(),
+        'frank-active-device-',
+      ),
+    )
     savedBroadcastChannel = globals.BroadcastChannel
     delete globals.BroadcastChannel
     jest.spyOn(console, 'log').mockImplementation(() => undefined)

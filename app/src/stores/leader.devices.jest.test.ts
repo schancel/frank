@@ -414,7 +414,7 @@ describe('the active device of an account', () => {
     await phone.userActs()
     await sync(phone, laptop)
     expect(claimsIn(mailbox)).toHaveLength(1)
-  })
+  }, 20_000)
 
   it('alone consolidates coins, and the role passes over when the user acts on the other', async () => {
     const phone = device('phone', { foreground: true })

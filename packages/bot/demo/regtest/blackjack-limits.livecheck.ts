@@ -6,14 +6,17 @@
  * of CI.
  *
  *   yarn --cwd packages/bot regtest:blackjack-limits
+ *   BLACKJACK_LIMITS_MIN_HANDS=30 BLACKJACK_LIMITS_MAX_HANDS=40 yarn --cwd packages/bot regtest:blackjack-limits
  *
  * Checked:
  *   1. the dealer's challenge carries `minBetWei` and `maxBetWei` (the bot's `limits()`), and the
  *      app's own check (`checkWager`) refuses a bet below the one and above the other;
  *   2. a bet below the minimum, sent anyway (as an old app would), is not taken by the hand and
  *      is returned in full, on chain;
- *   3. hands at the minimum are played until one ends in a push and one in a player win (the
- *      cards come from both sides' entropy, so an outcome cannot be chosen). For every payout:
+ *   3. hands at the minimum are played until one ends in a push and one in a player win, and
+ *      BLACKJACK_LIMITS_MIN_HANDS fully checked hands have completed (default 0, at most
+ *      BLACKJACK_LIMITS_MAX_HANDS attempts, default 40). The cards come from both sides'
+ *      entropy, so an outcome cannot be chosen. For every payout:
  *      the reveal pays exactly what the hand owes; each transfer it names lands, succeeds and
  *      moves exactly its value to the player's account (balance before and after its block);
  *      the player's wallet counts exactly that; no other message of the hand carries money; and
@@ -55,6 +58,11 @@ const say = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 
 const randomHex32 = () => Wallet.createRandom().privateKey.slice(2)
 
 async function main(): Promise<boolean> {
+  const minHands = Number(process.env.BLACKJACK_LIMITS_MIN_HANDS ?? '0')
+  const maxHands = Number(process.env.BLACKJACK_LIMITS_MAX_HANDS ?? '40')
+  if (!Number.isSafeInteger(minHands) || minHands < 0 ||
+      !Number.isSafeInteger(maxHands) || maxHands < 1 || minHands > maxHands)
+    throw new Error('BLACKJACK_LIMITS_MIN_HANDS and BLACKJACK_LIMITS_MAX_HANDS must be safe integers with 0 <= MIN_HANDS <= MAX_HANDS and MAX_HANDS >= 1')
   const stack = await startRegtestStack({
     chains: ['monad-regtest'],
     env: { ...process.env, FRANK_REGTEST_KEEP: '1' },
@@ -282,14 +290,17 @@ async function main(): Promise<boolean> {
 
     // 3. Hands at the minimum, played until one ended in a push and one in a player win (the
     //    cards come from both sides' entropy, so an outcome cannot be chosen: hands are played
-    //    until each has come up). Every payout is checked on chain: paid once, in full, and the
+    //    until each has come up and the requested minimum number of hands has been verified).
+    //    Every payout is checked on chain: paid once, in full, and the
     //    player's receiving accounts moved by exactly that much.
-    const maxHands = Number(process.env.BLACKJACK_LIMITS_MAX_HANDS ?? '40')
+    let verifiedHands = 0
     const wanted = new Map<string, boolean>([
       ['push', false],
       ['player win', false],
     ])
-    for (let n = 1; n <= maxHands && [...wanted.values()].includes(false); n++) {
+    say(`playing at least ${minHands} verified hands, at most ${maxHands} attempts, requiring a push and a player win`)
+    for (let n = 1; n <= maxHands && (verifiedHands < minHands || [...wanted.values()].includes(false)); n++) {
+      const problemsBeforeHand = problems.length
       const h = hand()
       await sendSettled([{ type: 'text', text: `hand ${n}` }] as never[])
       await h.fromDealer('challenge')
@@ -307,7 +318,9 @@ async function main(): Promise<boolean> {
       if (owed > 0n) await verifyPayout(`hand ${n} (${end.outcome})`, end.gameId, reveal, owed)
       else check((reveal.stampValueWei ?? 0n) === 0n, `hand ${n}: a reveal that owes nothing pays nothing`)
       if (kind) wanted.set(kind, true)
+      if (problems.length === problemsBeforeHand) verifiedHands++
     }
+    check(verifiedHands >= minHands, `${verifiedHands} fully checked hands completed (at least ${minHands} required)`)
     for (const [kind, seen] of wanted) check(seen, `a ${kind} came up within ${maxHands} hands and was paid`)
   } catch (error) {
     problems.push(error instanceof Error ? error.stack ?? error.message : String(error))

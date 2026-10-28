@@ -1,6 +1,7 @@
 /** Actual wallet composition and LevelDB; only network effects and capacity are configured. */
 import { evmPaymentFloorWei } from './payment-floor'
-import { getBytes, SigningKey } from 'ethers'
+import { getBytes, hexlify, SigningKey } from 'ethers'
+import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import { fixture, mockBalances, offlineChain, roots, useProviderStandIns } from './canonical-two-wallets.testutil'
 import { installCanonicalDirectory } from './evm-chain'
 import { LevelOutgoingMessageStore, type StoredMessage } from '../storage/outgoing-message-store'
@@ -120,6 +121,8 @@ test('settled wallet history does not complete or discard an undelivered message
       await put.call(this, row)
       if (row.request) stored = structuredClone(row)
     })
+    // Exactly the payment plus its fee: no private change member is exposed or mined.
+    mockBalances.set(wallet.mainAccount!.address.toLowerCase(), 22000n)
     f.setPhase('retained')
     await f.chain.directMessages.send({ wallet, recipient: f.bob.identity.address,
       messageId: messageId(10), stampValue: 1000n, items: [{ type: 'text', text: 'still owed delivery' }],
@@ -133,7 +136,15 @@ test('settled wallet history does not complete or discard an undelivered message
       .some(member => offlineChain.walletBroadcasts.includes(member.signed!.rawTransaction))).toBe(false)
     // Another holder of the bytes (the relay, the recipient) puts them on the chain while the
     // message is still undelivered: the set settles into history.
-    for (const member of active!.members) offlineChain.mine(member.signed!.rawTransaction)
+    expect(active!.members).toHaveLength(1)
+    expect(active!.members[0]!.transactionSet?.role).toBe('payment')
+    expect(active!.submissionAuthorized).toBeFalsy()
+    const exposed = f.requests.flatMap(request =>
+      restoreCanonicalRequest(request).parts.transactions.map(raw => hexlify(raw)))
+    for (const member of active!.members) {
+      expect(exposed).toContain(member.signed!.rawTransaction)
+      offlineChain.mine(member.signed!.rawTransaction)
+    }
     await wallet.transactionSetLifecycle!.observe(active!.preparationId!.slice('evm-transaction-set:'.length), wallet.provider)
     await wallet.flushNativeSync!()
     expect(wallet.getNativeOperations!()).toEqual([])
@@ -148,13 +159,63 @@ test('settled wallet history does not complete or discard an undelivered message
     installCanonicalDirectory(wallet, f.directory)
     f.setPhase('delivered')
     const before = [...offlineChain.walletBroadcasts]
+    const sign = jest.spyOn(SigningKey.prototype, 'sign')
     expect(await f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: [digest], maxPutAttempts: 1 }))
       .toEqual({ [digest]: 'delivered' })
+    expect(await f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: [digest], maxPutAttempts: 1 }))
+      .toEqual({ [digest]: 'delivered' })
+    expect(sign).not.toHaveBeenCalled()
+    expect((await wallet.getNativeOperationHistory!({ limit: 100 })).operations).toEqual(history)
     expect(stored!.request!.body).toBe(body)
     expect(stored!.digest).toBe(digest)
     expect(offlineChain.walletBroadcasts).toEqual(before)
     expect((await wallet.readNativeOperation!(history[0]!.operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(original)
   } finally { await wallet.close(); await f.close() }
+})
+
+
+test('delivery settlement reads completed facts when another recovery pass archives during submission', async () => {
+  const f = await setup()
+  const wallet = f.alice
+  try {
+    mockBalances.set(wallet.mainAccount!.address.toLowerCase(), 22000n)
+    f.setPhase('retained')
+    const id = messageId(11)
+    await f.chain.directMessages.send({ wallet, recipient: f.bob.identity.address,
+      messageId: id, stampValue: 1000n, items: [{ type: 'text', text: 'concurrent completion' }],
+    }).catch(() => undefined)
+    const [active] = wallet.getNativeOperations!()
+    expect(active!.members).toHaveLength(1)
+    const raw = active!.members[0]!.signed!.rawTransaction
+    expect(f.requests.flatMap(request => restoreCanonicalRequest(request).parts.transactions.map(hexlify)))
+      .toContain(raw)
+    offlineChain.mine(raw)
+    const operationId = active!.preparationId!.slice('evm-transaction-set:'.length)
+    const preparer = wallet.transactionSetPreparer!
+    const read = preparer.readTransactionSet.bind(preparer)
+    jest.spyOn(preparer, 'readTransactionSet').mockImplementationOnce(async requested => {
+      expect(requested).toBe(operationId)
+      // The canonical consumer has read an active row; a separate normal recovery pass
+      // completes its existing inventory/sync checkpoints before submission resumes.
+      await wallet.transactionSetLifecycle!.observe(operationId, wallet.provider)
+      await wallet.flushNativeSync!()
+      expect(wallet.getNativeOperations!()).toEqual([])
+      return read(requested)
+    })
+    const before = [...offlineChain.walletBroadcasts]
+    const sign = jest.spyOn(SigningKey.prototype, 'sign')
+    f.setPhase('delivered')
+    const digest = restoreCanonicalRequest(f.requests[0]!).identity.payload_hash
+    expect(await f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: [digest], maxPutAttempts: 1 }))
+      .toEqual({ [digest]: 'delivered' })
+    expect(preparer.readTransactionSet).toHaveBeenCalled()
+    expect(offlineChain.walletBroadcasts).toEqual(before)
+    expect(sign).not.toHaveBeenCalled()
+    const history = (await wallet.getNativeOperationHistory!({ limit: 100 })).operations
+    expect(history).toHaveLength(1)
+    expect(history[0]!.submissionAuthorized).toBeFalsy()
+    expect(history[0]!.members[0]!.signed!.rawTransaction).toBe(raw)
+  } finally { await f.close() }
 })
 
 

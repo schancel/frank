@@ -1365,18 +1365,28 @@ async function settleSharedPayments(
   const shared = owner.transactionSets
   const operationId = row.transactionSetOperationId
   if (!shared || !operationId) throw new Error('Stored stamp transaction set is unavailable')
-  // Until the relay has stored the message only what landed is read: its payments (and a
-  // contact transfer it carries) go to the chain once it is delivered, never before.
-  if (row.exposurePending || !broadcast)
-    await shared.lifecycle.observe(operationId, shared.provider)
-  else
-    // Submission owns observation failures and retains the original graph for recovery.
-    // An extra failing read here must not turn confirmed relay delivery into send failure.
-    await shared.sendTransaction(await shared.preparer.readTransactionSet(operationId))
-  const operation = await shared.preparer.readOperation(operationId)
+  let operation = await shared.preparer.readOperation(operationId)
   if (!operation) throw new Error('Stored stamp transaction set is unavailable')
+  // Completed history supplies settlement facts without reopening submission authority.
+  if (shared.preparer.getOperation(operationId)) {
+    try {
+      // Until relay delivery, observe only the payments already exposed to other holders.
+      if (row.exposurePending || !broadcast)
+        await shared.lifecycle.observe(operationId, shared.provider)
+      else
+        await shared.sendTransaction(await shared.preparer.readTransactionSet(operationId))
+    } catch (error) {
+      // Another recovery pass may archive the original operation while this pass awaits it.
+      // Only validated completion makes its submission error obsolete.
+      operation = await shared.preparer.readOperation(operationId)
+      if (!operation || shared.preparer.getOperation(operationId)) throw error
+    }
+    operation = await shared.preparer.readOperation(operationId)
+    if (!operation) throw new Error('Stored stamp transaction set is unavailable')
+  }
+  const settledOperation = operation
   const stateOf = (payment: StoredPayment): StoredPayment => {
-    const member = operation.members.find(candidate => candidate.signed?.rawTransaction === payment.rawTx)
+    const member = settledOperation.members.find(candidate => candidate.signed?.rawTransaction === payment.rawTx)
     if (!member) throw new Error('Stored stamp differs from durable transaction set')
     const state = member.observation.state === 'included-success' ? 'spent'
       : member.observation.state === 'included-revert' ? 'reverted'

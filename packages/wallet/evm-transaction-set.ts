@@ -656,7 +656,14 @@ export class EvmTransactionSetPreparer {
         (coins.latestOf(source.account)?.nonce ?? 0) <= account.nonce
       ) {
         const existing = coins.get(member.source.address, account.nonce)
-        if (!existing || existing.state === 'unspent') {
+        // A retained terminal replay owns consumption/projection debt, not a new balance
+        // observation. A canonical successor already held by the inventory (unlike an
+        // `after` construction coin) may have been refreshed since that retained bound.
+        const retainedTerminal = expectedMember && nativeMemberSuperseded(expectedMember) &&
+          JSON.stringify(expectedMember.observation) === JSON.stringify(observation) &&
+          JSON.stringify(expectedMember.account) === JSON.stringify(account)
+        const authoritativeSuccessor = existing?.state === 'unspent' && !existing.after
+        if ((!existing || existing.state === 'unspent') && !(retainedTerminal && authoritativeSuccessor)) {
           const rule = this.recoverySpendRule
           // More than this set left the account holding is money that arrived since: fresh, by
           // the block this read was at, whatever the reserve. `balanceAfterWei` counts each fee

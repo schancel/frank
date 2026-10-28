@@ -7,6 +7,8 @@ import level from 'level'
 import { Transaction, Wallet, type Provider } from 'ethers'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
+import { EvmCoinListSync } from './evm-coin-list-sync'
+import { EvmBlockWatcher } from './evm-block-watcher'
 import {
   EvmNativeOperationJournal,
   evmNativeOperationDigest,
@@ -1078,3 +1080,131 @@ test('ordinary superseded projection loses to a newer inclusion while its lifecy
   ).not.toBe(true)
   expect(rpc.broadcastTransaction).not.toHaveBeenCalled()
 })
+
+test.each([12345n, -12345n])(
+  'delayed terminal projection preserves actual newer same-nonce sync balance change %s across restart',
+  async (delta) => {
+    let w = await open()
+    for (const coin of saved.retainedInventory)
+      await w.coins.put({ ...coin, valueWei: BigInt(coin.valueWei) })
+    const member = original.members[1]!,
+      account = saved.laterCanonicalEvidence.account,
+      address = member.source.address
+    const custody = saved.retainedInventory.find(
+      (coin: { account: string }) => coin.account === address
+    )!
+    let balance = BigInt(account.balanceWei),
+      head = account.blockNumber
+    const rpc = {
+      getTransactionReceipt: async () => null,
+      getTransaction: async () => null,
+      getBlock: async () => ({ hash: '0x' + 'aa'.repeat(32), number: head }),
+      getBlockNumber: async () => head,
+      getTransactionCount: async () => account.nonce,
+      getBalance: jest.fn(async (_address: string, at?: number | string) =>
+        typeof at === 'number' && at < head
+          ? BigInt(account.balanceWei)
+          : balance
+      ),
+      broadcastTransaction: jest.fn(),
+    }
+    const provider = rpc as unknown as Provider
+    const createSync = () =>
+      new EvmCoinListSync({
+        list: w.coins,
+        provider,
+        spendSpacingBlocks: 3,
+        watcher: new EvmBlockWatcher({ provider }),
+        sources: () => [
+          {
+            account: address,
+            origin: 'stealth',
+            privateKey: () => custody.privateKey,
+          },
+        ],
+      })
+    let sync = createSync()
+    try {
+      // Both observations are made by the real sync owner. Same-pair listedInBlock stays
+      // at the first read, so it cannot be used as a balance-observation version.
+      await sync.refreshAccounts([address])
+      await w.preparer.recoverArchivedOwnMoves({
+        ...input,
+        terminalEvidence: [
+          {
+            memberIndex: 1,
+            signedTransactionHash: member.signed!.transactionHash,
+            observation: { state: 'missing' },
+            account,
+          },
+        ],
+      })
+      balance += delta
+      head += 10
+      await sync.refreshAccounts([address])
+      const fresh = w.coins.get(address, account.nonce)!
+      expect(fresh.valueWei).toBe(balance)
+      if (delta > 0n) {
+        expect(fresh.spendableFromBlock).toBeGreaterThan(head)
+        expect(fresh.fundsVisibleFromBlock).toBe(fresh.spendableFromBlock)
+      }
+      expect(fresh.listedInBlock).toBe(account.blockNumber)
+      await sync.stop()
+      await journal.Close()
+      await store.close()
+      w = await open()
+      sync = createSync()
+      const lifecycle = new EvmTransactionSetLifecycle({
+        authority: w.preparer,
+        provider,
+        head: () => head,
+      })
+      const submission = createEvmTransactionSetSubmission({
+        preparer: w.preparer,
+        lifecycle,
+        provider,
+        refresh: async () => undefined,
+        operations: () => journal.list(),
+      })
+      expect((await submission.reconcileAuthorized())[0]!.status).not.toBe(
+        'pending'
+      )
+      await lifecycle.observe(
+        original.preparationId!.slice('evm-transaction-set:'.length),
+        provider
+      )
+      expect(w.coins.get(address, account.nonce)).toEqual(fresh)
+      expect(journal.get(original.operationId).members[1]!.account).toEqual(
+        account
+      )
+      expect(
+        journal.get(original.operationId).members[1]!.transactionSet!
+          .inventoryApplied
+      ).toBe(true)
+      const before = rpc.getBalance.mock.calls.length
+      await sync.refresh()
+      expect(rpc.getBalance).toHaveBeenCalledTimes(before)
+      expect(
+        w.coins.liveUnspent().find((coin) => coin.account === address)?.valueWei
+      ).toBe(balance)
+      const completion = transactionSetFinancialCompletionReceipt(
+        journal.get(original.operationId)
+      )
+      expect(completion).toBeDefined()
+      await journal.archiveCompleted(original.operationId, completion!)
+      expect(await journal.readArchivedOperation(original.operationId)).toEqual(
+        original
+      )
+      expect(rpc.broadcastTransaction).not.toHaveBeenCalled()
+      await sync.stop()
+      await journal.Close()
+      await store.close()
+      w = await open()
+      sync = createSync()
+      expect(w.coins.get(address, account.nonce)).toEqual(fresh)
+      expect(journal.list()).toEqual([])
+    } finally {
+      await sync.stop()
+    }
+  }
+)

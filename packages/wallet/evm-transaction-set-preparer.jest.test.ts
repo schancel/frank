@@ -1731,13 +1731,21 @@ it('constructs around a legacy lease through the production admission adapter an
     const journal = evmTransactionSetJournal(owner)
     const capture = jest.spyOn(journal, 'captureInputSelection')
     const preparer = new EvmTransactionSetPreparer({ coins, journal, policy: () => policy,
+      canSelectCoin: coin => !owner.pool.isAccountClaimed(coin.account),
       deriveChange: index => {
         const key = changeKeys.deriveChangeAccount(index)
         return { account: key.address.toLowerCase(), privateKey: key.privateKey, changeIndex: index }
       },
       reserveChange: (_operation, minimum) => owner.changePool.reserveFreshChange(minimum),
     })
-    const request = { operationId: 'original-message', amountWei: 479000n, kdf }
+    expect(owner.pool.isAccountClaimed(keys.deriveSubAccount(0).address)).toBe(false)
+    expect((await journal.captureInputSelection!())(keys.deriveSubAccount(0).address, 0)).toBe(false)
+    capture.mockClear()
+    const amountWei = await preparer.spendableNowWei()
+    expect(amountWei).toBe(479000n)
+    expect(capture).toHaveBeenCalledTimes(1)
+    capture.mockClear()
+    const request = { operationId: 'original-message', amountWei, kdf }
     const result = await preparer.constructTransactionSet(request)
     expect(result.bundle.length).toBeGreaterThan(0)
     expect(result.bundle.every(tx => tx.sourceAccount === keys.deriveSubAccount(1).address.toLowerCase())).toBe(true)

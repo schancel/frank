@@ -4,6 +4,7 @@
 // #1947), so money an operation holds or that is still settling must not be in it.
 import { Wallet, parseEther } from 'ethers'
 import { evmPaymentFloorWei } from './chain/payment-floor'
+import { evmCoinDistribution } from './evm-coin-distribution'
 import { EvmCoinList, type StoredEvmListCoin } from './evm-coin-list'
 import { MemoryRecordStore } from './storage/evm-coin-store'
 import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
@@ -15,7 +16,7 @@ const RECIPIENT = signer(50).address
 const GAS_PRICE = 1_000n
 const FEE = 21_000n * GAS_PRICE
 
-async function wallet(spendRule?: EvmTransactionSetPolicy['spendRule']) {
+async function wallet(spendRule?: EvmTransactionSetPolicy['spendRule'], maxChangeOutputs = 1, coinDistribution?: EvmTransactionSetPolicy['coinDistribution']) {
   const head = { value: 100 }
   const coins = await EvmCoinList.open(new MemoryRecordStore<StoredEvmListCoin>())
   const journal = new EvmNativeOperationJournal({
@@ -29,10 +30,11 @@ async function wallet(spendRule?: EvmTransactionSetPolicy['spendRule']) {
     paymentGasLimit: () => 21_000n,
     changeGasLimit: 21_000n,
     paymentFeeIsExact: true,
-    dustWei: 1_000n,
+    dustWei: coinDistribution?.floorWei ?? 1_000n,
+    coinDistribution,
     radix: 2,
     jitterBps: 0,
-    maxChangeOutputs: 1,
+    maxChangeOutputs,
     head: head.value,
     spendRule,
   })
@@ -62,7 +64,7 @@ describe('what a send can draw on right now', () => {
     const w = await wallet()
     await w.put(parseEther('1'))
     await w.put(parseEther('2'))
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('3') - 2n * FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('3') - 2n * FEE)
     await w.journal.Close()
   })
 
@@ -79,7 +81,7 @@ describe('what a send can draw on right now', () => {
     })
     expect([...set.bundle, ...set.otherTransactions].every(tx => tx.sourceAccount.toLowerCase() === held)).toBe(true)
     // Its change coin is the payment's until the payment lands, and the source is held.
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('2') - FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('2') - FEE)
     await w.journal.Close()
   })
 
@@ -87,11 +89,11 @@ describe('what a send can draw on right now', () => {
     const w = await wallet()
     await w.put(parseEther('1'))
     await w.put(parseEther('2'), { spendableFromBlock: 104, fundsVisibleFromBlock: 104 })
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
     w.head.value = 103
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
     w.head.value = 104
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('3') - 2n * FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('3') - 2n * FEE)
     await w.journal.Close()
   })
 
@@ -99,7 +101,7 @@ describe('what a send can draw on right now', () => {
     const w = await wallet()
     await w.put(parseEther('1'))
     await w.put(FEE - 1n)
-    expect(w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
+    expect(await w.preparer.spendableNowWei()).toBe(parseEther('1') - FEE)
     await w.journal.Close()
   })
 })
@@ -112,7 +114,7 @@ describe('independent payment capacity', () => {
       for (let i = 0; i < 4; i++) await w.put(floor)
       await expect(w.preparer.constructTransactionSet({ operationId: 'too-small', amountWei: floor,
         minimumPaymentWei: floor, kdf: () => RECIPIENT })).rejects.toThrow('Insufficient available EVM coins')
-      expect(w.preparer.spendableNowWei()).toBe(0n)
+      expect(await w.preparer.spendableNowWei()).toBe(0n)
     } finally { await w.journal.Close() }
   })
 
@@ -121,7 +123,7 @@ describe('independent payment capacity', () => {
     try {
       await w.put(floor + FEE - 1n)
       await w.put(floor + FEE)
-      expect(w.preparer.spendableNowWei()).toBe(floor)
+      expect(await w.preparer.spendableNowWei()).toBe(floor)
       const set = await w.preparer.constructTransactionSet({ operationId: 'exact-floor', amountWei: floor,
         minimumPaymentWei: floor, kdf: () => RECIPIENT })
       expect(set.bundle).toHaveLength(1)
@@ -134,7 +136,7 @@ describe('independent payment capacity', () => {
     try {
       for (let i = 0; i < 64; i++) await w.put(largerLast ? floor + FEE : parseEther('1'), { origin: 'change', changeIndex: i })
       await w.put(parseEther('1'), { origin: 'change', changeIndex: 64 })
-      const amountWei = w.preparer.spendableNowWei()
+      const amountWei = await w.preparer.spendableNowWei()
       expect(amountWei).toBe(largerLast ? parseEther('1') - FEE + 63n * floor : 64n * (parseEther('1') - FEE))
       const set = await w.preparer.constructTransactionSet({ operationId: 'bounded-payout', amountWei,
         minimumPaymentWei: floor, kdf: () => RECIPIENT })
@@ -150,8 +152,68 @@ it('applies the protocol floor after the current chain reserve and releases the 
   const w = await wallet({ belowWei: reserve, waitBlocks: 3 })
   try {
     await w.put(reserve + floor + FEE - 1n, { nonce: 1, lastSpentInBlock: 99 })
-    expect(w.preparer.spendableNowWei()).toBe(0n)
+    expect(await w.preparer.spendableNowWei()).toBe(0n)
     w.head.value = 102
-    expect(w.preparer.spendableNowWei()).toBe(reserve + floor - 1n)
+    expect(await w.preparer.spendableNowWei()).toBe(reserve + floor - 1n)
+  } finally { await w.journal.Close() }
+})
+
+
+it.each([4, 16])('keeps the full payable amount with a %s-output change policy at the member boundary', async maxChangeOutputs => {
+  const reserve = parseEther('1'), floor = evmPaymentFloorWei(GAS_PRICE)
+  const w = await wallet({ belowWei: reserve, waitBlocks: 3 }, maxChangeOutputs, maxChangeOutputs === 4 ? evmCoinDistribution(GAS_PRICE) : undefined)
+  try {
+    const reservedSource = await w.put(2n * reserve + FEE, { nonce: 1, lastSpentInBlock: 99 })
+    for (let i = 0; i < 63; i++) await w.put(reserve + FEE)
+    const amountWei = await w.preparer.spendableNowWei()
+    expect(amountWei).toBe(64n * reserve)
+    const request = { operationId: 'full-member-payout', amountWei, minimumPaymentWei: floor, kdf: () => RECIPIENT }
+    const quote = await w.preparer.quoteTransactionSet(request)
+    expect(quote.feeWei).toBe(64n * FEE)
+    const set = await w.preparer.constructTransactionSet(request)
+    expect(set.bundle).toHaveLength(64)
+    expect(set.otherTransactions).toHaveLength(0)
+    expect([...set.bundle, ...set.otherTransactions].reduce((sum, tx) => sum + tx.gasLimit * GAS_PRICE, 0n)).toBe(quote.feeWei)
+    const sourceMember = w.preparer.getOperation(request.operationId)!.members.find(member => member.source.address === reservedSource)!
+    expect(sourceMember.transactionSet!.balanceAfterWei).toBe(reserve.toString())
+  } finally { await w.journal.Close() }
+})
+
+it('rejects balance admission failure without signing or reserving any coin', async () => {
+  const w = await wallet()
+  try {
+    await w.put(parseEther('1'))
+    const unavailable = new Error('reservation authority unavailable')
+    const capture = jest.fn().mockRejectedValue(unavailable)
+    Object.assign(w.journal, { captureInputSelection: capture })
+    await expect(Promise.resolve().then(() => w.preparer.spendableNowWei())).rejects.toBe(unavailable)
+    expect(capture).toHaveBeenCalledTimes(1)
+    expect(w.coins.liveUnspent().every(coin => !coin.holder)).toBe(true)
+    expect(w.journal.list()).toHaveLength(0)
+  } finally { await w.journal.Close() }
+})
+
+
+it.each([1, 2, 4])('quote and construction conserve the reserve with %s slots for optional change', async freeSlots => {
+  const reserve = parseEther('1'), count = 64 - freeSlots
+  const w = await wallet({ belowWei: reserve, waitBlocks: 3 }, 4, evmCoinDistribution(GAS_PRICE))
+  try {
+    const reservedSource = await w.put(2n * reserve + FEE, { nonce: 1, lastSpentInBlock: 99 })
+    for (let i = 1; i < count; i++) await w.put(reserve + FEE)
+    const amountWei = await w.preparer.spendableNowWei()
+    expect(amountWei).toBe(BigInt(count) * reserve)
+    const request = { operationId: 'optional-change-budget', amountWei,
+      minimumPaymentWei: evmPaymentFloorWei(GAS_PRICE), kdf: () => RECIPIENT }
+    const quote = await w.preparer.quoteTransactionSet(request)
+    const set = await w.preparer.constructTransactionSet(request)
+    expect(set.bundle).toHaveLength(count)
+    expect(set.otherTransactions.length).toBeLessThanOrEqual(freeSlots)
+    if (freeSlots === 4) expect(set.otherTransactions.length).toBeGreaterThan(0)
+    expect(set.bundle.reduce((sum, tx) => sum + tx.valueWei, 0n)).toBe(amountWei)
+    expect([...set.bundle, ...set.otherTransactions].reduce((sum, tx) => sum + tx.gasLimit * GAS_PRICE, 0n)).toBe(quote.feeWei)
+    const sourceMembers = w.preparer.getOperation(request.operationId)!.members.filter(member => member.source.address === reservedSource)
+    const successorBalance = BigInt(sourceMembers.at(-1)!.transactionSet!.balanceAfterWei)
+    const sourceChange = set.otherTransactions.filter(tx => tx.sourceAccount === reservedSource)
+    expect(successorBalance + sourceChange.reduce((sum, tx) => sum + tx.valueWei + tx.gasLimit * GAS_PRICE, 0n)).toBe(reserve)
   } finally { await w.journal.Close() }
 })

@@ -58,6 +58,18 @@ export function installEvmTransactionSetRuntime(
   })
   let policyFailure: { error: unknown } | undefined
   let coinFailure: { error: unknown } | undefined
+  let stopped = false
+  const assertFundingObserved = () => {
+    try {
+      if (stopped) throw new Error('The wallet observation runtime is stopped')
+      // A pass can fail before per-account observation records the failure.
+      if (coinFailure) throw coinFailure.error
+      coinListSync.assertFundingObserved()
+      if (policyFailure) throw policyFailure.error
+    } catch (error) {
+      throw recordWalletFailure(error, { observationUnavailable: true })
+    }
+  }
   const transactionSetPreparer = new EvmTransactionSetPreparer({
     coins: coinList,
     journal: params.journal,
@@ -74,14 +86,7 @@ export function installEvmTransactionSetRuntime(
         throw recordWalletFailure(policyFailure?.error ?? error, { observationUnavailable: true })
       }
     },
-    assertFundingObserved: () => {
-      try {
-        coinListSync.assertFundingObserved()
-        if (policyFailure) throw policyFailure.error
-      } catch (error) {
-        throw recordWalletFailure(error, { observationUnavailable: true })
-      }
-    },
+    assertFundingObserved,
     deriveChange: index => {
       const derived = changeKeyring.deriveChangeAccount(index)
       return {
@@ -125,7 +130,6 @@ export function installEvmTransactionSetRuntime(
   })
   let refreshing: Promise<void> | undefined
   let initialized = false
-  let stopped = false
   let stopRefresh!: () => void
   const stoppedRefresh = new Promise<void>(resolve => {
     stopRefresh = resolve
@@ -170,16 +174,7 @@ export function installEvmTransactionSetRuntime(
   // ordinary send that can use other trusted inputs while one observation is unavailable.
   const refreshSpendable = async (): Promise<void> => {
     await refresh()
-    try {
-      if (stopped) throw new Error('The wallet observation runtime is stopped')
-      // A pass may fail outside per-account observation (for example its head read), so the
-      // per-account failure assertion alone cannot establish a complete balance.
-      if (coinFailure) throw coinFailure.error
-      coinListSync.assertFundingObserved()
-      if (policyFailure) throw policyFailure.error
-    } catch (error) {
-      throw recordWalletFailure(error, { observationUnavailable: true })
-    }
+    assertFundingObserved()
   }
   return {
     refreshSpendable,

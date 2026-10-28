@@ -318,10 +318,21 @@ it.each(['head', 'finalized', 'fee', 'outer-inventory', 'account-inventory'] as 
     else await expect(strict).rejects.toBe(unavailable)
     expect(describeWalletFailure(unavailable).observationUnavailable).toBe(true)
     if (failure === 'head' || failure === 'finalized' || failure === 'fee')
-      expect(() => runtime.transactionSetPreparer.spendableNowWei()).toThrow(unavailable)
+      await expect(runtime.transactionSetPreparer.spendableNowWei()).rejects.toThrow(unavailable)
     blocked = false
     const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 61000)
     try { expect(await balance()).toBeGreaterThan(0n) } finally { clock.mockRestore() }
+    if (failure === 'outer-inventory') {
+      let admit!: (predicate: (account: string, nonce: number) => boolean) => void
+      const capture = jest.fn(() => new Promise<(account: string, nonce: number) => boolean>(resolve => { admit = resolve }))
+      Object.assign(journal, { captureInputSelection: capture })
+      const pending = runtime.transactionSetPreparer.spendableNowWei()
+      jest.spyOn(runtime.coinListSync, 'refresh').mockRejectedValueOnce(unavailable)
+      await runtime.refresh()
+      admit(() => true)
+      await expect(pending).rejects.toBe(unavailable)
+      expect(capture).toHaveBeenCalledTimes(1)
+    }
     if (failure === 'head') {
       jest.spyOn(runtime.transactionSetPolicy, 'refresh').mockImplementationOnce(() => new Promise(() => undefined))
       const pending = balance()

@@ -2150,7 +2150,7 @@ export class EvmNativeOperationJournal {
       // A retained active own move is restored only from the exact snapshot read before RPC.
       // A concurrent inclusion, capture or ownership change must win over stale recovery.
       const recovering = nativeMemberNeedsOwnMoveRecovery(m)
-      if (this.recoveries.has(row.operationId) &&
+      if ((this.recoveries.has(row.operationId) || (frozenExpected && nativeMemberSuperseded(frozenExpected))) &&
           (!frozenExpected || JSON.stringify(m) !== JSON.stringify(frozenExpected))) return false
       if (recovering || (frozenExpected && nativeMemberNeedsOwnMoveRecovery(frozenExpected))) {
         if (!frozenExpected || JSON.stringify(m) !== JSON.stringify(frozenExpected) ||

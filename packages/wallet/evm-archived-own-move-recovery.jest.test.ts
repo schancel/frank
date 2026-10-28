@@ -4,7 +4,9 @@ import { mkdtemp, rm } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import level from 'level'
-import { Transaction, Wallet } from 'ethers'
+import { Transaction, Wallet, type Provider } from 'ethers'
+import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
+import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
 import {
   EvmNativeOperationJournal,
   evmNativeOperationDigest,
@@ -844,3 +846,235 @@ test.each([false, true])(
     }
   }
 )
+
+test.each(['before-observe', 'after-projection', 'close-during-observe'])(
+  'terminal observe-only recovery projects through lifecycle/submission and completion across %s',
+  async (cut) => {
+    let w = await open()
+    for (const coin of saved.retainedInventory)
+      await w.coins.put({ ...coin, valueWei: BigInt(coin.valueWei) })
+    const member = original.members[1]!,
+      account = saved.laterCanonicalEvidence.account
+    await w.preparer.recoverArchivedOwnMoves({
+      ...input,
+      terminalEvidence: [
+        {
+          memberIndex: 1,
+          signedTransactionHash: member.signed!.transactionHash,
+          observation: { state: 'missing' },
+          account,
+        },
+      ],
+    })
+    const logical = original.preparationId!.slice('evm-transaction-set:'.length)
+    const reopen = async () => {
+      await journal.Close()
+      await store.close()
+      w = await open()
+    }
+    if (cut === 'before-observe') await reopen()
+    let entered!: () => void, release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let hold = cut === 'close-during-observe'
+    // Fresh canonical state is later than the recorded consumption bound. Projection
+    // must resume that bound rather than postponing dependent-member readiness.
+    const rpc = {
+      getTransactionReceipt: async () => null,
+      getTransaction: async () => null,
+      getBlock: async () => ({
+        hash: '0x' + 'aa'.repeat(32),
+        number: account.blockNumber + 10,
+      }),
+      getTransactionCount: async () => account.nonce,
+      getBalance: async () => {
+        if (hold) {
+          hold = false
+          entered()
+          await held
+        }
+        return BigInt(account.balanceWei)
+      },
+      broadcastTransaction: jest.fn(),
+    }
+    const provider = rpc as unknown as Provider
+    const lifecycle = () =>
+      new EvmTransactionSetLifecycle({
+        authority: w.preparer,
+        provider,
+        head: () => 100,
+      })
+    if (cut === 'close-during-observe') {
+      const observing = lifecycle().observe(logical, provider)
+      observing.catch(() => undefined)
+      await reached
+      await journal.Close()
+      await store.close()
+      release()
+      await expect(observing).rejects.toThrow()
+      w = await open()
+      expect(
+        journal.get(original.operationId).members[1]!.transactionSet!
+          .inventoryApplied
+      ).not.toBe(true)
+    }
+    const record = jest.spyOn(w.preparer, 'recordObservation')
+    const submission = () =>
+      createEvmTransactionSetSubmission({
+        preparer: w.preparer,
+        lifecycle: lifecycle(),
+        provider,
+        refresh: async () => undefined,
+        operations: () => journal.list(),
+      })
+    expect(
+      w.coins
+        .liveUnspent()
+        .some((coin) => coin.account === member.source.address)
+    ).toBe(false)
+    const reports = await submission().reconcileAuthorized()
+    expect(reports).toHaveLength(1)
+    expect(reports[0]!.status).not.toBe('pending')
+    expect(record.mock.calls.filter((call) => call[1] === 1)).toHaveLength(1)
+    expect(record.mock.calls.find((call) => call[1] === 1)?.slice(2)).toEqual([
+      { state: 'missing' },
+      account,
+      expect.objectContaining({ account, observation: { state: 'missing' } }),
+    ])
+    expect(journal.get(original.operationId).members[1]!.account).toEqual(
+      account
+    )
+    if (cut === 'after-projection') await reopen()
+    await lifecycle().observe(logical, provider)
+    expect(await submission().reconcileAuthorized()).toEqual([])
+    expect(rpc.broadcastTransaction).not.toHaveBeenCalled()
+    expect(
+      w.coins
+        .liveUnspent()
+        .find((coin) => coin.account === member.source.address)
+    ).toMatchObject({
+      nonce: account.nonce,
+      valueWei: BigInt(account.balanceWei),
+      state: 'unspent',
+    })
+    const completion = transactionSetFinancialCompletionReceipt(
+      journal.get(original.operationId)
+    )
+    expect(completion).toBeDefined()
+    await journal.archiveCompleted(original.operationId, completion!)
+    await reopen()
+    expect(await submission().reconcileAuthorized()).toEqual([])
+    expect(journal.list()).toEqual([])
+    expect(await journal.readArchivedOperation(original.operationId)).toEqual(
+      original
+    )
+    expect(
+      (await journal.readOperation(original.operationId))!.members[1]!.account
+    ).toEqual(account)
+    expect(
+      w.coins
+        .liveUnspent()
+        .find((coin) => coin.account === member.source.address)?.nonce
+    ).toBe(account.nonce)
+  }
+)
+
+test('ordinary superseded projection loses to a newer inclusion while its lifecycle RPC is held', async () => {
+  const w = await open(),
+    key = new Wallet('0x' + (999).toString(16).padStart(64, '0'))
+  await w.coins.put({
+    account: key.address,
+    privateKey: key.privateKey,
+    nonce: 0,
+    valueWei: 10n ** 19n,
+    origin: 'stealth',
+  })
+  const logical = 'ordinary-superseded-projection'
+  await w.preparer.constructTransactionSet({
+    operationId: logical,
+    amountWei: 10n ** 15n,
+    maxFeeWei: 21000n * 1000000000n,
+    kdf: () => key.address,
+    sourceAccounts: [key.address],
+  })
+  const row = w.preparer.getOperation(logical)!,
+    member = row.members[0]!
+  await w.preparer.markExposed(logical, 0)
+  const account = {
+    blockHash: '0x' + 'bb'.repeat(32),
+    blockNumber: 5,
+    nonce: 1,
+    balanceWei: '1001',
+  }
+  await journal.recordObservation(
+    journal.beginCapture(row.operationId, 0),
+    { state: 'missing' },
+    account
+  )
+  let entered!: () => void, release!: () => void
+  const reached = new Promise<void>((resolve) => {
+      entered = resolve
+    }),
+    held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+  let first = true
+  const rpc = {
+    getTransactionReceipt: async () => null,
+    getTransaction: async () => null,
+    getBlock: async () => ({ hash: '0x' + 'cc'.repeat(32), number: 10 }),
+    getTransactionCount: async () => 1,
+    getBalance: async () => {
+      if (first) {
+        first = false
+        entered()
+        await held
+      }
+      return 1001n
+    },
+    broadcastTransaction: jest.fn(),
+  }
+  const provider = rpc as unknown as Provider
+  const lifecycle = new EvmTransactionSetLifecycle({
+    authority: w.preparer,
+    provider,
+    head: () => 100,
+  })
+  const observing = lifecycle.observe(logical, provider)
+  const newer = {
+    ...account,
+    blockHash: '0x' + 'dd'.repeat(32),
+    blockNumber: 8,
+    balanceWei: '2002',
+  }
+  try {
+    await reached
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 0),
+      {
+        state: 'included-success',
+        transactionHash: member.signed!.transactionHash,
+        blockHash: newer.blockHash,
+        blockNumber: newer.blockNumber,
+        transactionIndex: 0,
+        feeWei: '1',
+      },
+      newer
+    )
+  } finally {
+    release()
+  }
+  await observing
+  expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+    'included-success'
+  )
+  expect(journal.get(row.operationId).members[0]!.account).toEqual(newer)
+  expect(
+    journal.get(row.operationId).members[0]!.transactionSet!.inventoryApplied
+  ).not.toBe(true)
+  expect(rpc.broadcastTransaction).not.toHaveBeenCalled()
+})

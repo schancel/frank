@@ -31,7 +31,7 @@ import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
-import { ContactPaymentPendingError, type ReceivedPayment } from './chain-wallet'
+import { ContactPaymentPendingError, ContactPaymentNotSettledError, type ReceivedPayment } from './chain-wallet'
 import {
   fixture,
   mailboxes,
@@ -45,6 +45,11 @@ import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
+import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
+import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/stealth-asset/from-prepared'
+import { sourceIsHeld } from '../evm-received-coin-manager'
+import { evmWalletInternals } from '../evm-wallet'
+import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
 import type { LegacySendResult } from './chain-wallet'
 
 // The wallet normally reaches its node through the relay's RPC gateway. Here it is pointed
@@ -309,6 +314,284 @@ describe('payments between two wallets on a real EVM node', () => {
     jest.restoreAllMocks()
     await f?.close().catch(() => undefined)
     for (const root of extraRoots) rmSync(root, { recursive: true, force: true })
+  })
+
+  it.each(['fragmented', 'many-contact', 'partial-contact', 'single', 'durable-reopen', 'partial-reopen'] as const)('a normal pooled contact and stamp preserve the quoted amount, fees and original bytes (%s)', async variant => {
+    let sender = bob
+    const recipient = alice
+    let reopened: EvmChainWalletHandle | undefined
+    try {
+      const value = parseEther(variant === 'many-contact' || variant === 'partial-contact' ? '0.02' : '0.005')
+      const stamp = parseEther(variant === 'many-contact' || variant === 'partial-contact' ? '0.005' : '0.015')
+      const sources = sender.pool.ensureSize(variant === 'single' ? 0 : 3)
+      await sender.pool.flush()
+      if (variant === 'single') await fund((await sender.getReceiveAddress()).raw, parseEther('0.03'))
+      else for (const source of sources) await fund(source.address, parseEther('0.01'))
+      for (let index = 0; index < 5; index++) await node.send('evm_mine', [])
+      await sender.refreshTransactionSetInventory!()
+      const beforeQuote = sender.getNativeOperations!()
+      const quote = await sender.quoteContactPayment!({ recipient: recipient.identity.address, value, stampValue: stamp })
+      expect(quote.totalWei).toBeLessThan(await sender.getSpendableBalance!())
+      expect(sender.getNativeOperations!()).toEqual(beforeQuote)
+      const prepared = await sender.prepareContactPayment!({ recipient: recipient.identity.address,
+        value, stampValue: quote.stampWei, maxFeeWei: quote.networkFeeWei })
+      const original = sender.getNativeOperations!().find(row => row.members.some(member => member.signed?.transactionHash === prepared.txHash))!
+      const operationId = original.preparationId!.slice('evm-transaction-set:'.length)
+      expect(original!.members.filter(member => member.transactionSet?.role === 'funding')).toHaveLength(0)
+      if (variant === 'many-contact' || variant === 'partial-contact') expect(original.members.filter(member => member.transactionSet?.role === 'payment').length).toBeGreaterThan(1)
+      const originalBytes = original!.members.map(member => member.signed!.rawTransaction)
+      const received = mailboxes.get(subjectOf(recipient))!
+      f.setMailbox(received)
+      let digest: string
+      const blocked = new Set<string>()
+      const broadcast = sender.provider.broadcastTransaction.bind(sender.provider)
+      const transport = variant === 'partial-reopen' || variant === 'partial-contact' ? jest.spyOn(sender.provider, 'broadcastTransaction')
+        .mockImplementation(async raw => {
+          if (blocked.has(Transaction.from(raw).hash!)) throw new Error('isolated multipart stamp transport cut')
+          return broadcast(raw)
+        }) : undefined
+      const recipientBroadcast = recipient.provider.broadcastTransaction.bind(recipient.provider)
+      const recipientTransport = variant === 'partial-contact' ? jest.spyOn(recipient.provider, 'broadcastTransaction')
+        .mockImplementation(async raw => {
+          if (blocked.has(Transaction.from(raw).hash!)) throw new Error('isolated partial contact transport cut')
+          return recipientBroadcast(raw)
+        }) : undefined
+      const onAttemptCreated = async () => {
+        if (variant !== 'partial-reopen' && variant !== 'partial-contact') return
+        const signed = (await sender.transactionSetPreparer!.readOperation(operationId))!.members
+          .filter(member => member.transactionSet?.role === 'payment' && (variant === 'partial-contact'
+            ? member.transactionSet.stageId === undefined : member.transactionSet.stageId !== undefined))
+          .sort((a, b) => a.transactionSet!.logicalIndex - b.transactionSet!.logicalIndex)
+        for (const member of signed.slice(1)) blocked.add(member.signed!.transactionHash)
+      }
+      if (variant === 'durable-reopen') {
+        f.setPhase('fail')
+        const pending = await f.chain.directMessages.send({ wallet: sender,
+          recipient: recipient.identity.address, items: [prepared.item], stampValue: prepared.stampValue })
+          .catch(error => error)
+        expect(pending).toBeInstanceOf(MonadStampPendingAttemptError)
+        digest = pending.payloadHashes[0]
+        // The failed relay is reached only after the complete signed stamp stage and sealed
+        // request are durable. The stand-in intentionally records no request on network failure.
+        expect(received).toHaveLength(0)
+        const saved = await sender.transactionSetPreparer!.readOperation(operationId)
+        const signed = saved!.members.map(member => member.signed!.rawTransaction)
+        await sender.close()
+        reopened = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+        sender = reopened
+        installCanonicalDirectory(sender, await f.directoryFor('fragmented-reopened', sender, recipient))
+        expect((await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(signed)
+        f.setPhase('delivered')
+        await until('original fragmented message delivery after reopen', async () => {
+          await node.send('evm_mine', [])
+          return (await f.chain.directMessages.reconcileAttempts({wallet: sender, payloadDigests: [digest]}))[digest]
+        }, status => status === 'delivered')
+      } else {
+        digest = (await delivered(sender, f.chain.directMessages.send({ wallet: sender,
+          recipient: recipient.identity.address, items: [prepared.item], stampValue: prepared.stampValue,
+          onAttemptCreated }))).payloadDigest
+      }
+      const request = restoreCanonicalRequest(f.requests.at(-1)!)
+      if (variant === 'single' || variant === 'many-contact' || variant === 'partial-contact') expect(request.parts.transactions).toHaveLength(1)
+      else expect(request.parts.transactions.length).toBeGreaterThanOrEqual(2)
+      if (variant === 'partial-contact') {
+        const contacts = (await sender.transactionSetPreparer!.readOperation(operationId))!.members
+          .filter(member => member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined)
+          .sort((a, b) => a.transactionSet!.logicalIndex - b.transactionSet!.logicalIndex)
+        const primary = contacts[0]!
+        if (!(await node.getTransactionReceipt(primary.signed!.transactionHash)))
+          await (await node.broadcastTransaction(primary.signed!.rawTransaction)).wait()
+        for (const member of contacts.slice(1)) expect(await node.getTransactionReceipt(member.signed!.transactionHash)).toBeNull()
+        await sender.resumeContactPayments!()
+        expect(sender.getContactPayments!().find(payment => payment.txHash === prepared.txHash)!.state).not.toBe('paid')
+        expect(sourceIsHeld(sender, primary.source.address)).toBe(false)
+        for (const member of contacts.slice(1)) expect(sourceIsHeld(sender, member.source.address)).toBe(true)
+        expect(await sender.settleContactPayment!(prepared.item.ephemeralPubKey!).catch(error => {
+          expect(error).toBeInstanceOf(ContactPaymentNotSettledError)
+          return 'still-pending'
+        })).not.toBe('released')
+        for (const member of contacts.slice(1)) expect(sourceIsHeld(sender, member.source.address)).toBe(true)
+        await poll(recipient)
+        await recipient.checkMessagePayment!(digest).catch(error => expect(String(error)).toContain('transport cut'))
+        const partial = recipient.getMessagePayment!(digest)
+        expect(partial.contentStatedWei).toBe(value)
+        expect(partial.contentReceivedWei).toBeGreaterThan(0n)
+        expect(partial.contentReceivedWei).toBeLessThan(value)
+        expect(partial.partial).toBe(true)
+        expect(partial.contentStatus).not.toBe('received')
+        const saved = (await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)
+        transport!.mockRestore()
+        recipientTransport!.mockRestore()
+        await sender.close()
+        reopened = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+        sender = reopened
+        installCanonicalDirectory(sender, await f.directoryFor('fragmented-contact-reopened', sender, recipient))
+        expect((await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(saved)
+      }
+      if (variant === 'partial-reopen') {
+        const first = '0x' + toHex(request.parts.transactions[0])
+        const firstHash = Transaction.from(first).hash!
+        if (!(await node.getTransactionReceipt(firstHash))) await (await node.broadcastTransaction(first)).wait()
+        expect((await node.getTransactionReceipt(firstHash))!.status).toBe(1)
+        for (const raw of request.parts.transactions.slice(1)) {
+          const tx = Transaction.from('0x' + toHex(raw))
+          expect(await node.getTransactionReceipt(tx.hash!)).toBeNull()
+          expect(await node.getBalance(tx.from!)).toBeGreaterThanOrEqual(tx.value + tx.gasLimit * tx.gasPrice!)
+        }
+        const saved = (await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)
+        transport!.mockRestore()
+        await sender.close()
+        reopened = (await f.chain.createWallet(roots(1))) as EvmChainWalletHandle
+        sender = reopened
+        installCanonicalDirectory(sender, await f.directoryFor('fragmented-partial-reopened', sender, recipient))
+        expect((await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)).toEqual(saved)
+      }
+      await relayBroadcasts(f.requests.length - 1)
+      await poll(recipient)
+      await until('all original contact parts verified', async () => {
+        await recipient.checkMessagePayment!(digest)
+        return recipient.getMessagePayment!(digest)
+      }, status => status.contentStatus === 'received')
+      await settled(recipient)
+      const complete = (await sender.transactionSetPreparer!.readOperation(operationId))!
+      expect(complete.members.slice(0, originalBytes.length).map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+      const stampMembers = complete.members.filter(member => member.transactionSet?.stageId !== undefined && member.transactionSet.role === 'payment')
+      if (variant === 'single' || variant === 'many-contact' || variant === 'partial-contact') expect(stampMembers).toHaveLength(1)
+      else expect(stampMembers.length).toBeGreaterThanOrEqual(2)
+      expect(stampMembers.reduce((sum, member) => sum + Transaction.from(member.signed!.rawTransaction).value, 0n)).toBe(stamp)
+      expect(stampMembers.every(member => Transaction.from(member.signed!.rawTransaction).value >= quote.floorWei)).toBe(true)
+      const verifiedStamps = stampsOf(recipient, digest)
+      expect(verifiedStamps.every(coin => coin.status === 'received' && coin.spendable)).toBe(true)
+      expect(verifiedStamps.reduce((sum, coin) => sum + coin.amountWei, 0n)).toBe(stamp)
+      expect(verifiedStamps.map(coin => coin.address.toLowerCase()).sort()).toEqual(stampMembers
+        .map(member => Transaction.from(member.signed!.rawTransaction).to!.toLowerCase()).sort())
+      expect(await node.getBalance(prepared.stealthAddress)).toBe(value)
+      expect(stealthOf(recipient).find(payment => payment.address === prepared.stealthAddress.toLowerCase()))
+        .toMatchObject({ status: 'received', amountWei: value, spendable: true })
+      expect(recipient.getMessagePayment!(digest)).toMatchObject({contentStatus: 'received', contentReceivedWei: value, contentStatedWei: value})
+      expect(received).toHaveLength(1)
+      await sender.resumeContactPayments!()
+      expect(sender.getContactPayments!().find(payment => payment.txHash === prepared.txHash)!.state).toBe('paid')
+      const fees = complete.members.reduce((sum, member) => {
+        const tx = Transaction.from(member.signed!.rawTransaction)
+        return sum + tx.gasLimit * tx.gasPrice!
+      }, 0n)
+      expect(fees).toBe(quote.networkFeeWei)
+      const receipts = await Promise.all(complete.members.map(member => node.getTransactionReceipt(member.signed!.transactionHash)))
+      expect(receipts.every(receipt => receipt?.status === 1)).toBe(true)
+      expect(receipts.reduce((sum, receipt) => sum + receipt!.fee, 0n)).toBe(fees)
+      sender.invalidateBalanceCache!()
+      expect(await sender.getBalance()).toBe(parseEther('0.03') - value - stamp - fees)
+      const seen = recipient.getReceivedPayments!()
+      await poll(recipient)
+      await settled(recipient)
+      expect(recipient.getReceivedPayments!()).toEqual(seen)
+    } finally { await reopened?.close() }
+  })
+
+  it('a fragmented native stealth quote captures the aggregate stamp fee used by its original prepared operation', async () => {
+    const sender = bob, recipient = alice
+    const amountAtomic = parseEther('0.005'), stamp = parseEther('0.015')
+    const sources = sender.pool.ensureSize(3)
+    await sender.pool.flush()
+    for (const source of sources) await fund(source.address, parseEther('0.01'))
+    for (let index = 0; index < 5; index++) await node.send('evm_mine', [])
+    await sender.refreshTransactionSetInventory!()
+    const intent = { operationId: 'fragmented-native-quote', chainIdentifier: 'monad-testnet',
+      asset: { kind: 'native' as const }, recipientSpendPublicKey: recipient.identity.compressedPubKey, amountAtomic }
+    const quote = await sender.stealthPayments!.quote!({ ...intent, messageStamp: { amountAtomic: stamp } })
+    const fee = sender.transactionSetPreparer!.transactionSetPolicy().paymentGasLimit('0x') *
+      sender.transactionSetPreparer!.transactionSetPolicy().gasPriceWei
+    expect(quote.messageStampFeeAtomic!).toBeGreaterThan(fee)
+    expect(sender.getNativeOperations!()).toHaveLength(0)
+    const prepared = await sender.stealthPayments!.prepare({ ...intent, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+      messageStamp: { amountAtomic: stamp, maxNativeFeeAtomic: quote.messageStampFeeAtomic! } })
+    const operationId = evmStealthTransactionSetOperationId(intent.operationId)
+    const original = (await sender.transactionSetPreparer!.readOperation(operationId))!
+    const originalBytes = original.members.map(member => member.signed!.rawTransaction)
+    f.setMailbox(mailboxes.get(subjectOf(recipient)))
+    const sent = await delivered(sender, f.chain.directMessages.send({ wallet: sender,
+      recipient: recipient.identity.address, paymentOperationId: intent.operationId,
+      messageId: '00000000-0000-4000-8000-000000000123',
+      items: [recipientAssetPaymentFromPrepared(prepared)], stampValue: stamp,
+      onEnvelopeDurable: payloadDigest => sender.stealthPayments!.expose({operationId: intent.operationId, payloadDigest}) }))
+    await relayBroadcasts(f.requests.length - 1)
+    await poll(recipient)
+    await settled(recipient)
+    const complete = (await sender.transactionSetPreparer!.readOperation(operationId))!
+    expect(complete.members.slice(0, originalBytes.length).map(member => member.signed!.rawTransaction)).toEqual(originalBytes)
+    const stampPayments = complete.members.filter(member => member.transactionSet?.stageId !== undefined && member.transactionSet.role === 'payment')
+    expect(stampPayments.length).toBeGreaterThan(1)
+    expect(BigInt(stampPayments.length) * fee).toBe(quote.messageStampFeeAtomic)
+    const receipts = await Promise.all(complete.members.map(member => node.getTransactionReceipt(member.signed!.transactionHash)))
+    expect(receipts.every(receipt => receipt?.status === 1)).toBe(true)
+    expect(receipts.reduce((sum, receipt) => sum + receipt!.fee, 0n)).toBe(quote.estimatedNativeFeeAtomic + quote.messageStampFeeAtomic!)
+    expect(await node.getBalance(prepared.recipientAddress)).toBe(amountAtomic)
+    expect(stampsOf(recipient, sent.payloadDigest).reduce((sum, payment) => sum + payment.amountWei, 0n)).toBe(stamp)
+    expect((await sender.stealthPayments!.reconcile(intent.operationId)).verifiedReceivedAmountAtomic).toBe(amountAtomic)
+  })
+
+  it('an ended primary contact part does not erase other paid parts or hold its now-free successor', async () => {
+    const sender = bob, recipient = alice
+    const value = parseEther('0.02'), stamp = parseEther('0.005')
+    const sources = sender.pool.ensureSize(3)
+    await sender.pool.flush()
+    for (const source of sources) await fund(source.address, parseEther('0.01'))
+    for (let index = 0; index < 5; index++) await node.send('evm_mine', [])
+    await sender.refreshTransactionSetInventory!()
+    const quote = await sender.quoteContactPayment!({recipient: recipient.identity.address, value, stampValue: stamp})
+    const prepared = await sender.prepareContactPayment!({recipient: recipient.identity.address, value,
+      stampValue: stamp, maxFeeWei: quote.networkFeeWei})
+    const original = sender.getNativeOperations!().find(row => row.members.some(member => member.signed?.transactionHash === prepared.txHash))!
+    const operationId = original.preparationId!.slice('evm-transaction-set:'.length)
+    const contacts = original.members.filter(member => member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined)
+      .sort((a, b) => a.transactionSet!.logicalIndex - b.transactionSet!.logicalIndex)
+    expect(contacts.length).toBeGreaterThan(1)
+    const blocked = new Set(contacts.map(member => member.signed!.transactionHash))
+    const cut = (wallet: EvmChainWalletHandle) => {
+      const broadcast = wallet.provider.broadcastTransaction.bind(wallet.provider)
+      return jest.spyOn(wallet.provider, 'broadcastTransaction').mockImplementation(async raw => {
+        if (blocked.has(Transaction.from(raw).hash!)) throw new Error('isolated ended-primary transport cut')
+        return broadcast(raw)
+      })
+    }
+    cut(sender)
+    cut(recipient)
+    f.setMailbox(mailboxes.get(subjectOf(recipient)))
+    const sent = await delivered(sender, f.chain.directMessages.send({wallet: sender, recipient: recipient.identity.address,
+      items: [prepared.item], stampValue: stamp}))
+    const signedBefore = (await sender.transactionSetPreparer!.readOperation(operationId))!.members.map(member => member.signed!.rawTransaction)
+    const primary = contacts[0]!
+    const source = sources.find(record => record.address.toLowerCase() === primary.source.address)!
+    // A different frontend's valid transaction consumes the primary's exact original nonce.
+    // These are only the fixture's deterministic test keys; no source/inventory is mutated.
+    const key = evmWalletInternals(sender).material!.keyring.deriveSubAccount(source.index)
+    const foreign = await new Wallet(key.privateKey, node).sendTransaction({to: Wallet.createRandom().address,
+      value: 1n, nonce: Transaction.from(primary.unsignedTransaction).nonce, gasLimit: 21000n, gasPrice: 2_000_000_000n})
+    expect((await foreign.wait())!.status).toBe(1)
+    for (const member of contacts.slice(1)) blocked.delete(member.signed!.transactionHash)
+    await relayBroadcasts(f.requests.length - 1)
+    await poll(recipient)
+    await recipient.checkMessagePayment!(sent.payloadDigest).catch(error => expect(String(error)).toContain('transport cut'))
+    for (let index = 0; index < 5; index++) await node.send('evm_mine', [])
+    await sender.reobserveNativeOperations!()
+    await sender.resumeContactPayments!()
+    const observed = (await sender.transactionSetPreparer!.readOperation(operationId))!
+    const observedContacts = observed.members.filter(member => member.transactionSet?.role === 'payment' && member.transactionSet.stageId === undefined)
+    expect(nativeMemberSuperseded(observedContacts[0]!)).toBe(true)
+    expect(observedContacts.slice(1).every(member => member.observation.state === 'included-success')).toBe(true)
+    expect(observed.members.map(member => member.signed!.rawTransaction)).toEqual(signedBefore)
+    const projected = sender.getContactPayments!().find(payment => payment.txHash === prepared.txHash)!
+    expect(projected.state).toBe('delivered')
+    expect(sourceIsHeld(sender, primary.source.address)).toBe(false)
+    expect(await sender.getSpendableBalance!()).toBeGreaterThan(0n)
+    const partial = recipient.getMessagePayment!(sent.payloadDigest)
+    expect(partial.contentStatedWei).toBe(value)
+    expect(partial.contentReceivedWei).toBe(value - Transaction.from(primary.unsignedTransaction).value)
+    expect(partial.partial).toBe(true)
+    expect(partial.contentStatus).not.toBe('received')
+    expect(await node.getTransactionReceipt(primary.signed!.transactionHash)).toBeNull()
+    expect(await node.getBalance(prepared.stealthAddress)).toBe(partial.contentReceivedWei)
   })
 
   it('A pays B: B sees it pending, then received from the chain, spends it, still has it after a reload, and finds it again on a fresh restore', async () => {

@@ -942,6 +942,12 @@ export function createEvmReceivedCoinAndContactManager(
     invalidateBalanceRead(coin.address);
   };
 
+  const contactMembers = (row: EvmNativeOperation | undefined) => row?.kind === "transaction-set"
+    ? row.members.filter(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined)
+    : row?.members ?? [];
+  const allTransfersIncluded = (members: ReturnType<typeof contactMembers>): boolean =>
+    members.length > 0 && members.every(member => member.observation.state === "included-success");
+
   const signedTransferTo = (address: string) =>
     getTopicOwner()
       .nativeJournal!.list()
@@ -950,7 +956,7 @@ export function createEvmReceivedCoinAndContactManager(
           !row.cancelled &&
           row.recipient === address &&
           (row.kind === "transaction-set"
-            ? row.members.filter(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined).length === 1
+            ? contactMembers(row).length > 0
             : row.members.length === 1) &&
           row.members.every(member => member.signed)
       );
@@ -967,23 +973,20 @@ export function createEvmReceivedCoinAndContactManager(
   };
 
   const openedAtMs = Date.now();
-  const primaryMember = (row: EvmNativeOperation | undefined) => row?.kind === "transaction-set"
-    ? row.members.find(member => member.transactionSet?.role === "payment" && member.transactionSet.stageId === undefined)
-    : row?.members[0];
-  const transferMember = (payment: ContactPayment) =>
+  // The scalar hash/raw fields are primary display references; the journal owns all parts.
+  const primaryMember = (row: EvmNativeOperation | undefined) => contactMembers(row)[0];
+  const transferMembers = (payment: ContactPayment) =>
     payment.operationId === undefined
-      ? undefined
-      : primaryMember(getTopicOwner().nativeJournal!.list()
+      ? []
+      : contactMembers(getTopicOwner().nativeJournal!.list()
           .find((row) => row.operationId === payment.operationId));
-  const transferIncluded = (payment: ContactPayment): boolean =>
-    transferMember(payment)?.observation.state === "included-success";
-  /** The payment's transfer as the durable journal records it, active or retired to completed
-   * history. A settled transaction set leaves the active list (its financial completion is
-   * archived), so settlement must never depend on finding it there. */
-  const readTransferMember = async (payment: ContactPayment) =>
+  const transferIncluded = (payment: ContactPayment): boolean => allTransfersIncluded(transferMembers(payment));
+  /** Original recipient members from the durable journal, active or completed. The primary
+   * display hash is never proof that all independent recipient parts have been paid. */
+  const readTransferMembers = async (payment: ContactPayment) =>
     payment.operationId === undefined
-      ? undefined
-      : primaryMember(await getTopicOwner().runLifetime(() =>
+      ? []
+      : contactMembers(await getTopicOwner().runLifetime(() =>
           getTopicOwner().nativeJournal!.readOperation(payment.operationId!)));
 
   const holdsItsSource = (payment: ContactPayment): boolean =>
@@ -1030,8 +1033,8 @@ export function createEvmReceivedCoinAndContactManager(
       return payment;
     await getTopicOwner().runLifetime(() => lifecycle.observe(id, wallet.provider));
     const observed = await preparer.readOperation(id);
-    const transfer = primaryMember(observed);
-    if (!observed || !transfer || !nativeMemberEnded(transfer) ||
+    const transfers = contactMembers(observed);
+    if (!observed || !transfers.length || !transfers.every(nativeMemberEnded) ||
         !observed.members.every((member) => nativeMemberEnded(member) ||
           member.observation.state === "included-success" ||
           member.observation.state === "included-revert"))
@@ -1129,15 +1132,14 @@ export function createEvmReceivedCoinAndContactManager(
     return paid;
   };
 
-  /** Brings a delivered payment's original signed transfer to the chain and records `paid`
-   * once the chain shows it included. Never signs or pays anything new: an already included
-   * transfer is only recorded; otherwise the original operation is resumed (its same bytes). */
+  /** Brings a delivered payment's original signed recipient set to the chain and records
+   * `paid` only when every part is included. Otherwise resumes the same operation and bytes. */
   const broadcastContactTransfer = async (
     stored: ContactPayment
   ): Promise<ContactPayment> => {
     const wallet = getWallet();
     const payment = current(stored);
-    if ((await readTransferMember(payment))?.observation.state === "included-success") {
+    if (allTransfersIncluded(await readTransferMembers(payment))) {
       return markPaid(payment);
     }
     const report = await wallet.transactionSetSubmission!.sendTransaction(
@@ -1145,8 +1147,9 @@ export function createEvmReceivedCoinAndContactManager(
     );
     const pendingReason = report.pendingReason;
     invalidateBalanceRead();
-    const member = await readTransferMember(payment);
-    if (member?.observation.state === "included-success") return markPaid(payment);
+    const members = await readTransferMembers(payment);
+    if (allTransfersIncluded(members)) return markPaid(payment);
+    const member = members.find(part => part.observation.state !== "included-success");
     unsettledWhy.set(
       payment.stealthAddress,
       member === undefined
@@ -1171,14 +1174,21 @@ export function createEvmReceivedCoinAndContactManager(
     return run;
   };
 
-  const itemOf = (payment: ContactPayment): StealthItem =>
-    evmStealthItem({
-      networkTag,
-      ephemeralPubKey: getBytes(`0x${payment.ephemeralPubKey}`),
-      rawTransaction: payment.rawTransaction!,
-      amountWei: BigInt(payment.valueWei),
-      memo: payment.memo,
-    });
+  const itemOf = async (payment: ContactPayment): Promise<StealthItem> => {
+    const members = await readTransferMembers(payment);
+    if (!members.length || members.some(member => !member.signed))
+      throw new Error("Original contact payment transactions unavailable");
+    const transactions = members.map(member => Transaction.from(member.signed!.rawTransaction));
+    if (transactions.some(tx => tx.to?.toLowerCase() !== payment.stealthAddress ||
+          tx.chainId !== nativeChainId || tx.data !== "0x" || tx.value <= 0n) ||
+        transactions.reduce((sum, tx) => sum + tx.value, 0n) !== BigInt(payment.valueWei))
+      throw new Error("Original contact payment differs from its intended recipient amount");
+    return {
+      ...evmStealthItem({ networkTag, ephemeralPubKey: getBytes(`0x${payment.ephemeralPubKey}`),
+        rawTransaction: members[0]!.signed!.rawTransaction, amountWei: BigInt(payment.valueWei), memo: payment.memo }),
+      transactions: members.map(member => member.signed!.rawTransaction.replace(/^0x/, "")),
+    };
+  };
 
   const finishContactPayment = async (
     stealthAddress: string,
@@ -1276,7 +1286,7 @@ export function createEvmReceivedCoinAndContactManager(
         await directMessages.send({
           wallet,
           recipient: { raw: getAddress(payment.recipientAddress) },
-          items: [itemOf(payment)],
+          items: [await itemOf(payment)],
           messageId: payment.messageId,
           paymentOperationId: payment.transactionSetOperationId,
           ...(payment.conversationId === undefined
@@ -1344,8 +1354,8 @@ export function createEvmReceivedCoinAndContactManager(
     return quote.amount;
   };
 
-  /** What `payContact` keeps back for the message's stamp: one fresh account holding the stamp
-   * and the fee of the one transfer that pays it. None for a message without a stamp. */
+  /** Captured stamp amount plus an initial fee allocation. The normal preparer quotes and
+   * reserves the actual aggregate fees when independent inputs require several carriers. */
   const stampContinuation = (
     wallet: EvmChainWalletHandle,
     stampWei: bigint
@@ -1357,15 +1367,16 @@ export function createEvmReceivedCoinAndContactManager(
   };
 
   /** The network fee of a contact payment and its stamp, from the same selection `payContact`
-   * builds with (`quoteLegacyTransactionSet` given the stamp's continuation): the payment's own
-   * transfers, the transfer that keeps the stamp's account, and the stamp's one transfer.
+   * builds with (independent `quoteTransactionSet` given the captured stamp): recipient
+   * transfers, private continuation carriers and all stamp recipient transfers.
    * `payContact` constructs under this fee as its bound: the built set pays exactly this, or is
    * refused before anything is signed. */
   const contactNetworkFeeWei = async (
     wallet: EvmChainWalletHandle,
     recipient: ContactSendParams["recipient"],
     value: bigint,
-    stampWei: bigint
+    stampWei: bigint,
+    minimumPaymentWei: bigint
   ): Promise<bigint> => {
     const preparer = wallet.transactionSetPreparer;
     if (!preparer || !wallet.refreshTransactionSetInventory) {
@@ -1373,10 +1384,13 @@ export function createEvmReceivedCoinAndContactManager(
     }
     await wallet.refreshTransactionSetInventory();
     const continuation = stampContinuation(wallet, stampWei);
-    const quote = await preparer.quoteLegacyTransactionSet({
-      destination: recipient.raw,
+    const quote = await preparer.quoteTransactionSet({
+      kdf: () => recipient.raw,
       amountWei: value,
-      ...(continuation ? { continuation } : {}),
+      maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
+      minimumPaymentWei,
+      ...(continuation ? { reserveForContinuationWei: continuation.reserveWei,
+        continuationFeeWei: continuation.feeWei } : {}),
     });
     return quote.feeWei;
   };
@@ -1398,7 +1412,8 @@ export function createEvmReceivedCoinAndContactManager(
       wallet,
       quoteParams.recipient,
       quoteParams.value,
-      stampWei
+      stampWei,
+      floorWei
     );
     return {
       valueWei: quoteParams.value,
@@ -1431,7 +1446,7 @@ export function createEvmReceivedCoinAndContactManager(
         ).slice(0, 4)} ${unit}); send it in parts`
       );
     }
-    await requireContactPaymentAtFloor(wallet, contactParams.value);
+    const minimumPaymentWei = await requireContactPaymentAtFloor(wallet, contactParams.value);
     const recipientAddress = getAddress(
       contactParams.recipient.raw
     ).toLowerCase();
@@ -1509,12 +1524,15 @@ export function createEvmReceivedCoinAndContactManager(
             wallet,
             contactParams.recipient,
             contactParams.value,
-            stampWei
+            stampWei,
+            minimumPaymentWei
           ));
         const continuation = stampContinuation(wallet, stampWei);
-        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructLegacyTransactionSet({
+        await getTopicOwner().runLifetime(() => wallet.transactionSetPreparer!.constructTransactionSet({
           operationId: transactionSetOperationId,
           amountWei: contactParams.value,
+          maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
+          minimumPaymentWei,
           maxFeeWei,
           kdf: () => stealthAddress,
           ...(continuation ? {
@@ -1555,7 +1573,7 @@ export function createEvmReceivedCoinAndContactManager(
       }
       if (hostDelivers) {
         return {
-          item: itemOf(payment),
+          item: await itemOf(payment),
           stampValue: stampWei,
           txHash: payment.txHash!,
           stealthAddress: destination.stealthAddress,
@@ -1594,8 +1612,7 @@ export function createEvmReceivedCoinAndContactManager(
         // itself. Releasing one is the user's Finish (`endFailedContactPayment`).
         if (
           payment.state === "failed" &&
-          (await readTransferMember(payment).catch(() => undefined))?.observation.state ===
-            "included-success"
+          allTransfersIncluded(await readTransferMembers(payment).catch(() => []))
         ) {
           await markPaid(payment).catch(() => undefined);
           continue;
@@ -1637,7 +1654,7 @@ export function createEvmReceivedCoinAndContactManager(
     if (stored === undefined || stored.state !== "failed" || stored.spentElsewhere)
       return stored;
     const payment = current(stored);
-    if ((await readTransferMember(payment))?.observation.state === "included-success")
+    if (allTransfersIncluded(await readTransferMembers(payment)))
       return markPaid(payment);
     const released = await exposureExclusive(async () => {
       const now = paymentStore.get(stealthAddress);
@@ -2130,17 +2147,20 @@ export function createEvmReceivedCoinAndContactManager(
           return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance, estimatedNativeFeeAtomic: 0n };
         // The fee of the inputs this amount needs, from the selection the payment itself makes
         // (the same arguments `constructNativePayment` receives from the stealth owner).
-        // A combined stamp, kept back as `prepare` keeps it: one fresh account of the stamp and
-        // the fee of the one transfer that pays it.
+        // The same captured stamp shape as preparation: its actual aggregate transfer fees
+        // are quoted together with the private carriers, never as a separate pool estimate.
         const stampFeeWei = stampWei === undefined ? undefined : policy.paymentGasLimit("0x") * policy.gasPriceWei;
         const quote = await preparer.quoteTransactionSet({ amountWei, kdf: () => recipientAddress, maxPaymentParts: STEALTH_NATIVE_PAYMENT_PARTS,
           ...(minimumPaymentWei === undefined ? {} : { minimumPaymentWei }),
           ...(stampFeeWei === undefined ? {} : {
             reserveForContinuationWei: stampWei! + stampFeeWei, continuationFeeWei: stampFeeWei }) });
         assertFinancialActive();
+        if (stampFeeWei !== undefined && quote.continuationFeeWei === undefined)
+          throw new Error("Combined stamp quote has no aggregate continuation fee");
+        const continuationFeeWei = quote.continuationFeeWei ?? 0n;
         return { nativeBalanceAtomic: balance, assetBalanceAtomic: balance,
-          estimatedNativeFeeAtomic: quote.feeWei - (stampFeeWei ?? 0n),
-          ...(stampFeeWei === undefined ? {} : { messageStampFeeAtomic: stampFeeWei }) };
+          estimatedNativeFeeAtomic: quote.feeWei - continuationFeeWei,
+          ...(stampFeeWei === undefined ? {} : { messageStampFeeAtomic: continuationFeeWei }) };
       },
       constructNativePayment: async (request) => {
         const preparer = wallet.transactionSetPreparer;
@@ -2646,9 +2666,11 @@ export function createEvmReceivedCoinAndContactManager(
     walletInternals.heldTransferSources = () => {
       const held = financialPayments.heldSources();
       for (const payment of paymentStore.all()) {
-        if (!holdsItsSource(payment)) continue;
-        const source = transferMember(payment)?.source.address;
-        if (source !== undefined) held.add(source);
+        if (payment.state === "released" || payment.spentElsewhere) continue;
+        // Delivery/paid projections do not own nonce reservations. Included sources are free
+        // as soon as the state owner permits their successor; unfinished sources stay fenced.
+        for (const member of transferMembers(payment))
+          if (wallet.transactionSetPreparer!.isSourceReserved(member.source.address)) held.add(member.source.address);
       }
       return held;
     };

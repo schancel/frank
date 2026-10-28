@@ -29,13 +29,14 @@ export interface ConstructEvmTransactionSetRequest {
   readonly kdf: (paymentIndex: number) => string
   readonly calldata?: string
   readonly maxFeeWei?: bigint
-  /** Value kept in private change for a later leg of this same operation. */
+  /** Captured value/fee allocation for a later leg of this same operation. With
+   * continuationFeeWei, their difference is the exact continuation recipient amount. */
   readonly reserveForContinuationWei?: bigint
-  /** The continuation is one transfer, and this is its fee (part of the reserve). The reserve is
-   * then kept as one fresh account holding exactly `reserveForContinuationWei`, which that one
-   * transfer spends whole, and the fee bound (`maxFeeWei`) counts this fee: change is never
-   * planned from it, and a set whose continuation would not fit under the bound is refused here,
-   * before anything is signed, instead of at the continuation. */
+  /** Captured continuation fee allocation within the reserve; the recipient amount is reserve
+   * minus this allocation. Normal independent construction keeps fee-bearing private outputs
+   * for that amount across eligible inputs and quotes their aggregate actual transfer fees.
+   * Explicit legacy construction retains a single continuation carrier. maxFeeWei bounds the
+   * complete graph, including the eventual continuation's actual fees. */
   readonly continuationFeeWei?: bigint
   /** Internal protocol constraint for consumers that require one on-chain payment. */
   readonly maxPaymentParts?: number

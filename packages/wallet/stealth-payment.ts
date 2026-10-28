@@ -102,7 +102,7 @@ export interface StealthPaymentQuote {
   readonly assetBalanceAtomic: bigint
   readonly estimatedNativeFeeAtomic: bigint
   /** Quoted with a combined same-chain stamp (`messageStamp` of the quoted intent): the fee of
-   * the one transfer that pays the stamp, the stamp's `maxNativeFeeAtomic` to approve.
+   * all recipient transfers paying the stamp, the stamp's `maxNativeFeeAtomic` to approve.
    * `estimatedNativeFeeAtomic` then already counts what the payment does to keep the stamp
    * back, so the two together are exactly what the prepared payment and its stamp pay. */
   readonly messageStampFeeAtomic?: bigint

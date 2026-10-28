@@ -1723,6 +1723,7 @@ export class EvmNativeOperationJournal {
       const m = row.members[index]
       if (
         !m?.signed ||
+        nativeMemberAbandoned(m) ||
         (row.kind === 'transaction-set' &&
           row.members.some(member => !member.signed)) ||
         row.cancelled ||
@@ -1843,11 +1844,13 @@ export class EvmNativeOperationJournal {
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
     contradiction?: EvmNativeInclusionContradiction,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const frozenObservation = checked('observation', () =>
       validateObservation(observation),
     )
     const frozenAccount = checked('account', () => validateAccount(account))
+    const frozenExpected = expectedMember === undefined ? undefined : clone(expectedMember)
     const frozenContradiction =
       contradiction &&
       checked('observation', () => {
@@ -1868,6 +1871,13 @@ export class EvmNativeOperationJournal {
       if (this.captures.get(key) !== capture.token) return false
       const m = row.members[capture.memberIndex]
       if (row.cancelled || !m?.signed) return false
+      // Giving up signed bytes requires the exact member inspected before asynchronous chain
+      // reads. Exposure or inclusion may have advanced while those reads were pending. Compare
+      // under this same durable mutation; a separate read followed by a write would race again.
+      if (frozenObservation.state === 'abandoned' &&
+          (frozenExpected === undefined || JSON.stringify(m) !== JSON.stringify(frozenExpected) ||
+            m.observation.state === 'included-success' || m.observation.state === 'included-revert'))
+        return false
       // Given up on chain evidence: only a receipt (it landed after all) replaces that.
       if (
         nativeMemberAbandoned(m) &&

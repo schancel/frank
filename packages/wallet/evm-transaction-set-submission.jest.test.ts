@@ -15,6 +15,7 @@ import { EvmNativeOperationJournal, type EvmNativeMember } from './storage/evm-n
 import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import { createEvmTransactionSetSubmission } from './evm-transaction-set-submission'
+import { abandonTakenMembers } from './evm-transaction-set-taken'
 import { evmTransactionSetCapability } from './evm-transaction-set-public'
 import { MAX_SIGNINGS, REFUSALS_BEFORE_RESIGN, RESIGN_AFTER_MS } from './chain/evm-refused-resign'
 import {
@@ -125,6 +126,7 @@ async function fixture(
   delayed = false,
   gasPriceWei = 1n,
   canBroadcastPayments?: (operationId: string) => boolean,
+  maxChangeOutputs = 8,
 ) {
   const store = await LevelRecordStore.open<StoredEvmListCoin>(
     location,
@@ -164,7 +166,7 @@ async function fixture(
       dustWei: 1000n,
       radix: 2,
       jitterBps: 0,
-      maxChangeOutputs: 8,
+      maxChangeOutputs,
       head: chain.head(),
       ...(rule ? { spendRule: rule } : {}),
     }),
@@ -963,6 +965,74 @@ test('restart respects durable message delivery even for an already authorized r
     delivered = true
     await f.submission.reconcileAuthorized()
     expect(chain.raws.filter(raw => paymentBytes.includes(raw))).toEqual(paymentBytes)
+  } finally {
+    await f.close()
+  }
+})
+
+
+test.each(['exposed', 'included', 'unchanged'] as const)('abandonment compares the inspected member atomically after pending RPC (%s)', async transition => {
+  const chain = node()
+  const f = await fixture(location, chain, false, 1n, undefined, 1)
+  try {
+    await f.construct('taken-race')
+    const original = (await f.preparer.readOperation('taken-race'))!
+    const paymentIndex = original.members.findIndex(member => member.transactionSet?.role === 'payment')
+    const payment = original.members[paymentIndex]!
+    const tx = Transaction.from(payment.signed!.rawTransaction)
+    expect(tx.nonce).toBe(1)
+    const firstIndex = original.members.findIndex(member => Transaction.from(member.signed!.rawTransaction).nonce === 0)
+    await f.preparer.recordObservation('taken-race', firstIndex, {state: 'missing'},
+      {blockHash, blockNumber: 5, nonce: 1, balanceWei: '1000000'})
+    let reached!: () => void
+    const paused = new Promise<void>(resolve => { reached = resolve })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let first = true
+    const provider = {
+      getBlockNumber: async () => 10,
+      getBlock: async (number: number) => ({number, hash: blockHash, transactions: ['0x' + 'ff'.repeat(32)]}),
+      getTransactionCount: async (_address: string, number: number) => number >= 5 ? 1 : 0,
+      getBalance: async () => {
+        if (first) { first = false; reached(); await gate }
+        return 1000000n
+      },
+    }
+    const abandoning = abandonTakenMembers({authority: f.preparer, provider: provider as unknown as Provider, operationId: 'taken-race'})
+    await paused
+    if (transition !== 'unchanged') await f.preparer.markExposed('taken-race', paymentIndex)
+    if (transition === 'included')
+      await f.preparer.recordObservation('taken-race', paymentIndex, {
+        state: 'included-success', transactionHash: payment.signed!.transactionHash,
+        blockHash, blockNumber: 7, transactionIndex: 0, feeWei: '21000',
+      }, {blockHash, blockNumber: 7, nonce: 2, balanceWei: '800000'})
+    const memberBeforeCommit = (await f.preparer.readOperation('taken-race'))!.members[paymentIndex]!
+    const coinsBeforeCommit = structuredClone(f.coins.all())
+    release()
+    const result = await abandoning
+    const current = (await f.preparer.readOperation('taken-race'))!.members[paymentIndex]!
+    if (transition === 'unchanged') {
+      expect(result.abandoned).toContain(paymentIndex)
+      expect(current.observation.state).toBe('abandoned')
+      // A replay that read the old graph before abandonment may still try to expose it.
+      await expect(f.preparer.markExposed('taken-race', paymentIndex)).rejects.toThrow()
+      const { transactionSetFinancialCompletionReceipt } = await import('./evm-operation-completion')
+      const ended = (await f.preparer.readOperation('taken-race'))!
+      const receipt = transactionSetFinancialCompletionReceipt(ended)!
+      expect(receipt).toBeDefined()
+      await f.journal.archiveCompleted(ended.operationId, receipt)
+      // Completed-history idempotence must not turn this rejected exposure into success for
+      // a stale replay that would broadcast after markExposed returns.
+      await expect(f.preparer.markExposed('taken-race', paymentIndex)).rejects.toThrow()
+      expect(chain.raws).toEqual([])
+    } else {
+      expect(result.abandoned).not.toContain(paymentIndex)
+      expect(current).toEqual(memberBeforeCommit)
+      expect(f.coins.all()).toEqual(coinsBeforeCommit)
+      expect(current.exposed).toBe(true)
+      expect(current.observation.state).not.toBe('abandoned')
+      expect(f.preparer.isSourceReserved(payment.source.address)).toBe(transition !== 'included')
+    }
   } finally {
     await f.close()
   }

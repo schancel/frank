@@ -51,7 +51,8 @@ export interface TakenSetAuthority {
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
-  ): Promise<unknown>
+    expectedMember?: EvmNativeMember,
+  ): Promise<boolean>
 }
 
 export type TakenSetProvider = Pick<
@@ -191,23 +192,29 @@ export async function abandonTakenMembers(params: {
       given.add(index)
       abandon.push(index)
     }
+    const committed: number[] = []
     for (const index of abandon) {
       const address = operation.members[index]!.source.address
       const { nonce, atHead } = await read(address)
-      await authority.recordObservation(
+      const recorded = await authority.recordObservation(
         operationId,
         index,
         { state: 'abandoned', blockNumber: takenAt },
         { blockHash: block.hash, blockNumber: head, nonce, balanceWei: atHead.toString() },
+        operation.members[index]!,
       )
+      // A newer exposure/observation invalidates this plan and everything downstream of it.
+      // Leave those members to a fresh chain pass; never report a rejected write as released.
+      if (!recorded) break
+      committed.push(index)
     }
-    if (abandon.length > 0)
+    if (committed.length > 0)
       console.warn(
         `[evm-transaction-set] ${operationId}: another transaction used the nonce of ${[...taken.keys()]
           .map(index => operation.members[index]!.signed!.transactionHash)
-          .join(', ')}; ${abandon.length} transaction(s) of the set that stood on it can never land and are given up: their accounts are listed again at what the chain shows.`,
+          .join(', ')}; ${committed.length} transaction(s) of the set that stood on it can never land and are given up: their accounts are listed again at what the chain shows.`,
       )
-    return { taken: [...taken.keys()], abandoned: abandon }
+    return { taken: [...taken.keys()], abandoned: committed }
   } catch (error) {
     console.warn(`[evm-transaction-set] ${operationId}: could not read whether its transactions were taken; looked at again later:`, error)
     return none

@@ -2296,6 +2296,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
           const { transactionSetPreparer, transactionSetLifecycle } = transactionSetRuntime;
+          const canonicalNetworkTag =
+            config.networkTag === "MONT" ||
+            config.networkTag === "MON1" ||
+            config.networkTag === "MONR"
+              ? config.networkTag
+              : undefined;
+          const canonicalMessagingInstalled =
+            material.canonicalRoles !== undefined &&
+            topicOwner.canonicalJournal !== undefined &&
+            canonicalNetworkTag !== undefined;
           const transactionSetSender = createEvmTransactionSetSubmission({
             preparer: transactionSetPreparer, lifecycle: transactionSetLifecycle, provider,
             refresh: transactionSetRuntime.refresh,
@@ -2304,6 +2314,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // The canonical outbox owns delivery, including for graphs authorized by an
               // earlier process before its relay request was answered. Authorization alone
               // never permits sending the contact payment carried inside that request.
+              if (!canonicalMessagingInstalled) return true;
               if (!canonicalLinks) return false;
               const messages = canonicalLinks.all().filter(message =>
                 message.transactionSetOperationId === operationId);
@@ -3476,15 +3487,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               network: forumPolicy.network,
               chainId: BigInt(config.chainId),
             };
-          if (
-            material.canonicalRoles !== undefined &&
-            topicOwner.canonicalJournal !== undefined &&
-            (config.networkTag === "MONT" ||
-              config.networkTag === "MON1" ||
-              config.networkTag === "MONR")
-          ) {
+          if (canonicalMessagingInstalled) {
             const canonicalRoles = material.canonicalRoles;
-            const installedNetworkTag = config.networkTag;
+            const installedNetworkTag = canonicalNetworkTag;
             const stampPayer = installEvmStampCoordinator({
               wallet,
               topicOwner,

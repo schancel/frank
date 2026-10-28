@@ -10,6 +10,7 @@ import type {
 } from './evm-coin-list'
 import type {
   EvmNativeMemberPlan,
+  EvmNativeMember,
   EvmTransactionSetStage,
   EvmNativeOperation,
   EvmNativeObservation,
@@ -281,10 +282,11 @@ export class EvmTransactionSetPreparer {
     )
   }
 
-  private async archivedMemberComplete(operationId: string, memberIndex: number): Promise<boolean> {
+  private async archivedMemberComplete(operationId: string, memberIndex: number, allowAbandoned = true): Promise<boolean> {
     const row = await this.readOperation(operationId)
     if (!row || this.getOperation(operationId) || row.cancelled) return false
     const member = row.members[memberIndex]
+    if (member && !allowAbandoned && nativeMemberAbandoned(member)) return false
     return !!member && member.transactionSet?.inventoryApplied === true &&
       (member.observation.state === 'included-success' ||
        member.observation.state === 'included-revert' || nativeMemberEnded(member))
@@ -293,7 +295,7 @@ export class EvmTransactionSetPreparer {
   async markExposed(operationId: string, memberIndex: number): Promise<void> {
     const row = this.getOperation(operationId)
     if (!row) {
-      if (await this.archivedMemberComplete(operationId, memberIndex)) return
+      if (await this.archivedMemberComplete(operationId, memberIndex, false)) return
       throw new Error('Unknown transaction-set operation')
     }
     const member = row.members[memberIndex]
@@ -316,7 +318,7 @@ export class EvmTransactionSetPreparer {
     try {
       await this.options.journal.markExposed(row.operationId, memberIndex)
     } catch (error) {
-      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex)) return
+      if (error instanceof EvmNativeJournalError && ['invalid', 'conflict'].includes(error.code) && await this.archivedMemberComplete(operationId, memberIndex, false)) return
       throw error
     }
   }
@@ -326,6 +328,7 @@ export class EvmTransactionSetPreparer {
     memberIndex: number,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const row = this.getOperation(operationId)
     const member = row?.members[memberIndex]
@@ -335,6 +338,7 @@ export class EvmTransactionSetPreparer {
     }
     const frozenObservation = { ...observation }
     const frozenAccount = account === null ? null : { ...account }
+    const frozenExpected = expectedMember === undefined ? undefined : structuredClone(expectedMember)
     try {
       const recorded = await this.options.coins.projectTransactionSetAccount(
         member.source.address,
@@ -346,6 +350,7 @@ export class EvmTransactionSetPreparer {
             frozenObservation,
             frozenAccount,
             writer,
+            frozenExpected,
           ),
       )
       if (!recorded) return false
@@ -443,6 +448,7 @@ export class EvmTransactionSetPreparer {
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
     writer: EvmCoinAccountProjection,
+    expectedMember?: EvmNativeMember,
   ): Promise<boolean> {
     const { journal, coins } = this.options
     const row = this.getOperation(operationId)
@@ -455,6 +461,8 @@ export class EvmTransactionSetPreparer {
       capture,
       observation,
       account,
+      undefined,
+      expectedMember,
     )
     if (!recorded) return false
     const current = journal.get(row.operationId),

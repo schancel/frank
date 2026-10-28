@@ -90,6 +90,7 @@ jest.mock('src/utils/stamp-display', () => ({
   nativeAmountAvu: () => undefined,
 }))
 jest.mock('src/utils/message-receipts', () => ({
+  receivedValueRevision: jest.requireActual('vue').ref(0),
   verifiedReceiptsReader: () => () => [],
 }))
 jest.mock('../../utils/notifications', () => ({ errorNotify: jest.fn() }))

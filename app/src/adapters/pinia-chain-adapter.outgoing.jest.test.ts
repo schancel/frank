@@ -73,6 +73,10 @@ describe('startOutgoingReconciliation (#270)', () => {
     // Likewise it holds no payment attempts: asked, it has nothing to report. Tests that give
     // it an attempt replace these.
     jest.spyOn(directMessages, 'reconcileAttempts').mockResolvedValue({})
+    // This synthetic wallet holds no paid-contact recovery obligations either. Real adapter
+    // methods require an adapter-produced handle, just like the other mocked capabilities.
+    jest.spyOn(directMessages, 'recoveryFeeRequiredOf').mockReturnValue(false)
+    jest.spyOn(directMessages, 'recoveryFeeRequiredDigests').mockReturnValue([])
     wholeWallet = jest
       .spyOn(directMessages, 'unattributedAttempts')
       .mockResolvedValue([])

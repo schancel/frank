@@ -34,7 +34,7 @@ const storeInputs = {
   'src/utils/messaging-state': `export const messagingState={status:'ready'}`,
   '@frank/wallet/chain': `export const activeChain={capabilities:{directMessages:true},chainIdentifier:'monad-testnet',unit:'MONT'}`,
   'src/utils/stamp-display': `export const nativeAmountAvu=()=>undefined`,
-  'src/utils/message-receipts': `export const verifiedReceiptsReader=()=>()=>[]`,
+  'src/utils/message-receipts': `import {ref} from 'vue'; export const receivedValueRevision=ref(0); export const verifiedReceiptsReader=()=>()=>[]`,
   'src/utils/notifications': `export const errorNotify=()=>{}`,
   'src/utils/chain-address': `export const isChainAddress=a=>/^0x[0-9a-f]{40}$/i.test(a);export const toChainDisplayAddress=a=>a.toLowerCase()`,
   'src/utils/own-address': `export const sameCanonicalAddress=(a,b)=>a.toLowerCase()===b.toLowerCase()`,

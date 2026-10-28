@@ -499,15 +499,17 @@ export function amountsInAvu(
   return total
 }
 
+export interface ReceivedValueContext {
+  stampChainIdentifier: string
+  verifiedReceipts: VerifiedMessageReceipts
+  toAvu: AmountInAvu
+}
+
 /** What a conversation's unread received messages brought, in AVU (see `amountsInAvu`). */
 export function unreadValueAvu(
   chat: Pick<ChatState, 'id' | 'lastRead' | 'messages'>,
   activeConversationId: string | null,
-  value: {
-    stampChainIdentifier: string
-    verifiedReceipts: VerifiedMessageReceipts
-    toAvu: AmountInAvu
-  },
+  value: ReceivedValueContext,
 ): number | undefined {
   const amounts = (chat.messages ?? []).flatMap(message =>
     isUnreadReceived(chat, message, activeConversationId)
@@ -519,6 +521,68 @@ export function unreadValueAvu(
       : [],
   )
   return amountsInAvu(amounts, value.toAvu)
+}
+
+/** All received value remains meaningful after a conversation is read. Uses the same
+ * verified receipts and per-chain conversion as the unread badge, never sender claims. */
+export function receivedValueAvu(
+  chat: Pick<ChatState, 'messages'>,
+  value: ReceivedValueContext,
+): number | undefined {
+  return amountsInAvu(
+    (chat.messages ?? []).flatMap(message =>
+      receivedMessageAmounts(
+        message,
+        value.stampChainIdentifier,
+        value.verifiedReceipts,
+      ),
+    ),
+    value.toAvu,
+  )
+}
+
+/** Unread first, then highest received AVU: unread value for unread conversations,
+ * total retained received value for read conversations. Unknown valuations follow known values
+ * (including zero). Recency, then the stable conversation ID, break ties deterministically.
+ * Compute each value once; the comparator never scans messages or reads wallets. */
+export function sortConversationsByReceivedValue(
+  conversations: readonly Conversation[],
+  activeConversationId: string | null,
+  value: ReceivedValueContext,
+): Conversation[] {
+  return conversations
+    .map(conversation => {
+      const unread = conversation.totalUnreadMessages > 0
+      const amount = unread
+        ? unreadValueAvu(conversation, activeConversationId, value)
+        : receivedValueAvu(conversation, value)
+      return {
+        conversation,
+        unread,
+        amount:
+          amount !== undefined && Number.isFinite(amount) ? amount : undefined,
+      }
+    })
+    .sort((a, b) => {
+      if (a.unread !== b.unread) return a.unread ? -1 : 1
+      if (a.amount === undefined && b.amount !== undefined) return 1
+      if (b.amount === undefined && a.amount !== undefined) return -1
+      if (
+        a.amount !== undefined &&
+        b.amount !== undefined &&
+        a.amount !== b.amount
+      )
+        return a.amount > b.amount ? -1 : 1
+      const latest = (c: Conversation) => c.lastReceived || c.createdAt || 0
+      const time = latest(b.conversation) - latest(a.conversation)
+      if (Number.isFinite(time) && time !== 0) return time
+      return a.conversation.id < b.conversation.id
+        ? -1
+        : a.conversation.id > b.conversation.id
+        ? 1
+        : 0
+    })
+    .map(row => row.conversation)
 }
 
 export const defaultContactObject = {

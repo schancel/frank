@@ -281,7 +281,10 @@ import { accountSession } from '../../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { formatAvu } from 'src/utils/avu-units'
 import { nativeAmountAvu } from 'src/utils/stamp-display'
-import { verifiedReceiptsReader } from 'src/utils/message-receipts'
+import {
+  receivedValueRevision as receiptsRead,
+  verifiedReceiptsReader,
+} from 'src/utils/message-receipts'
 import {
   ChatSearchIndex,
   type SearchSnippet,
@@ -290,7 +293,6 @@ import {
   formatScreenerStampValue,
   getPendingScreenerStampValueWei,
   isScreenerConversation,
-  rankScreenerConversations,
   summarizeScreenerQueue,
 } from '../../utils/screener-triage'
 import { isListedConversation } from '../../utils/listed-conversations'
@@ -304,7 +306,6 @@ const UNREAD_VALUE_REREAD_MS = 15_000
 
 /** The read count every mounted list follows. A list that mounts makes them all read again,
  * so a list opened later never shows newer values than one already on screen. */
-const receiptsRead = ref(0)
 let receiptsReaders = 0
 let receiptsTimer: ReturnType<typeof setInterval> | undefined
 function startReceiptsClock() {
@@ -328,6 +329,12 @@ export default defineComponent({
   setup(props, { emit }) {
     const chatStore = useChatStore()
     const { getSortedChatOrder } = storeToRefs(chatStore)
+    // Refresh ranking and badges together through the existing shared receipt clock.
+    // Wallet receipts are read from memory; this does not open wallets or make RPC calls.
+    const verifiedReceipts = computed(() => {
+      void receiptsRead.value
+      return verifiedReceiptsReader()
+    })
 
     const contactStore = useContactStore()
     const mailboxStatus = useMailboxStatusStore()
@@ -404,33 +411,16 @@ export default defineComponent({
     })
 
     const displayedConversations = computed<Conversation[]>(() => {
-      const list: Conversation[] = listedConversations.value
-      if (normalizedQuery.value) {
-        const byId = new Map<string, Conversation>()
-        for (const c of list) {
-          const key = c.id || c.address
-          if (key) byId.set(key, c)
-        }
-        const matched: Conversation[] = []
-        for (const hit of searchResults.value) {
-          const conv = byId.get(hit.conversationId)
-          if (conv) matched.push(conv)
-        }
-        if (activeFilter.value === 'screener') {
-          return rankScreenerConversations(matched, {
-            isContact: isContactFn,
-          })
-        }
-        return matched
-      }
-
-      if (activeFilter.value === 'screener') {
-        return rankScreenerConversations(list, {
-          isContact: isContactFn,
-        })
-      }
-
-      return list
+      const matches = normalizedQuery.value
+        ? new Set(searchResults.value.map(hit => hit.conversationId))
+        : undefined
+      // Search and Screener select membership; they must not override inbox priority.
+      return listedConversations.value.filter(
+        conversation =>
+          (!matches || matches.has(conversation.id || conversation.address)) &&
+          (activeFilter.value !== 'screener' ||
+            isScreenerConversation(conversation, { isContact: isContactFn })),
+      )
     })
 
     // The wallets' view of what arrived is not reactive: read it again now and then, on one
@@ -465,12 +455,6 @@ export default defineComponent({
       },
       { immediate: true },
     )
-    // One read of each wallet's coins per tick, shared by every row and message.
-    const verifiedReceipts = computed(() => {
-      void receiptsRead.value
-      return verifiedReceiptsReader()
-    })
-
     const router = useRouter()
     const $q = useQuasar()
     // The ⌘K hint only where there is a keyboard shortcut to use: not on a phone.

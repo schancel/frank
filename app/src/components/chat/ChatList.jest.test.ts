@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { readFileSync } from 'fs'
 import { parse } from '@vue/compiler-sfc'
@@ -98,12 +98,13 @@ const mockReadReceipts = jest.fn(
   () => (digest: string) => mockReceipts[digest] ?? [],
 )
 jest.mock('src/utils/message-receipts', () => ({
+  receivedValueRevision: jest.requireActual('vue').ref(0),
   verifiedReceiptsReader: () => mockReadReceipts(),
 }))
 jest.mock('./ChatListItem.vue', () => ({
-  props: ['valueUnread', 'numUnread', 'screenerStamp'],
+  props: ['conversationId', 'valueUnread', 'numUnread', 'screenerStamp'],
   template:
-    '<div data-testid="chat-item"><span data-testid="unread-value">{{ valueUnread }}</span><span v-if="screenerStamp" data-testid="chat-screener-stamp">{{ screenerStamp }}</span></div>',
+    '<div data-testid="chat-item" :data-conversation-id="conversationId"><span data-testid="unread-value">{{ valueUnread }}</span><span v-if="screenerStamp" data-testid="chat-screener-stamp">{{ screenerStamp }}</span></div>',
 }))
 
 let mockWidth = 0
@@ -155,6 +156,57 @@ function unreadClaim(payloadDigest: string, stampValueWei: bigint) {
     items: [{ type: 'stealth', networkTag: 'monad-testnet', amount: 1e21 }],
   }
 }
+
+describe('received-value inbox presentation', () => {
+  it('renders the authoritative store order and follows its changes without a second ranking', async () => {
+    const row = (id: string, unread: number) => ({
+      id,
+      address: id,
+      totalUnreadMessages: unread,
+      lastRead: 100,
+      messages: [],
+    })
+    mockChatStore.getSortedChatOrder = [
+      row('unread-high', 1),
+      row('unread-low', 1),
+      row('read-high', 0),
+      row('read-low', 0),
+    ]
+    const wrapper = mount(ChatList, {
+      global: { mocks: { $status: { setup: true }, $t: (k: string) => k } },
+    })
+    const ids = () =>
+      wrapper
+        .findAll('[data-testid="chat-item"]')
+        .map(node => node.attributes('data-conversation-id'))
+    try {
+      expect(ids()).toEqual([
+        'unread-high',
+        'unread-low',
+        'read-high',
+        'read-low',
+      ])
+      mockChatStore.getSortedChatOrder = [
+        row('unread-low', 1),
+        row('read-high', 0),
+        row('unread-high', 0),
+        row('read-low', 0),
+      ]
+      await nextTick()
+      expect(ids()).toEqual([
+        'unread-low',
+        'read-high',
+        'unread-high',
+        'read-low',
+      ])
+    } finally {
+      wrapper.unmount()
+      mockChatStore.getSortedChatOrder = [
+        { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
+      ]
+    }
+  })
+})
 
 describe('eager conversation profiles', () => {
   it('waits for restored messaging readiness, then resolves all peer rows and later arrivals', async () => {
@@ -695,7 +747,7 @@ function loadBrowserChatList() {
 }
 
 describe('ChatList browser screener contact classification', () => {
-  it('excludes paid inbound contacts from the queue and in:screener search, and displays per-row screener stamps (#1696)', async () => {
+  it('filters contacts, preserves unread-first inbox priority in Screener/search, and displays per-row stamps (#1696)', async () => {
     mockChatStore.getSortedChatOrder = [
       {
         id: 'known-thread',
@@ -744,6 +796,11 @@ describe('ChatList browser screener contact classification', () => {
         ],
       },
     ]
+    mockChatStore.getSortedChatOrder = [
+      mockChatStore.getSortedChatOrder[0],
+      mockChatStore.getSortedChatOrder[2],
+      mockChatStore.getSortedChatOrder[1],
+    ]
     const wrapper = mount(loadBrowserChatList(), {
       props: { compact: false },
       global: {
@@ -772,17 +829,17 @@ describe('ChatList browser screener contact classification', () => {
     vm.activeFilter = 'screener'
     await wrapper.vm.$nextTick()
     expect(vm.displayedConversations.map(c => c.id)).toEqual([
-      'stranger-thread',
       'another-stranger-thread',
+      'stranger-thread',
     ])
     const stampBadges = wrapper.findAll('[data-testid="chat-screener-stamp"]')
     expect(stampBadges).toHaveLength(2)
-    expect(stampBadges[0].text()).toContain('7 MON')
-    expect(stampBadges[1].text()).toContain('3 MON')
+    expect(stampBadges[0].text()).toContain('3 MON')
+    expect(stampBadges[1].text()).toContain('7 MON')
     vm.activeFilter = 'all'
     vm.searchQuery = 'in:screener'
     await wrapper.vm.$nextTick()
-    expect(vm.displayedConversations.map(c => c.id).sort()).toEqual([
+    expect(vm.displayedConversations.map(c => c.id)).toEqual([
       'another-stranger-thread',
       'stranger-thread',
     ])

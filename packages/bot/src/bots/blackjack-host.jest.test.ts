@@ -41,6 +41,8 @@ const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
 const mockReconcileAttempts = jest.fn();
 const mockCheckMessagePayment = jest.fn();
+/** What the dealer's wallet can spend: every coin it pays from. */
+const mockWalletBalance = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/evm-chain", () => {
@@ -73,6 +75,7 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
         return {
           identity,
           checkMessagePayment: mockCheckMessagePayment,
+          getBalance: mockWalletBalance,
           getReceiveAddress: jest.fn(async () => ({ raw: mockLocalAddress })),
           close: jest.fn().mockResolvedValue(undefined),
         };
@@ -213,7 +216,9 @@ describe("blackjack dealer behind the bot host", () => {
       stateDir,
       watchRegistrations: false,
     });
-    // The dealer sizes its table from its balance; no RPC is reachable in this test.
+    // The dealer sizes its table from what its wallet can spend; no RPC is reachable in this
+    // test.
+    mockWalletBalance.mockResolvedValue(500_000_000_000_000_000n);
     (host as any).provider.getBalance = jest.fn(
       async () => 500_000_000_000_000_000n
     );
@@ -310,4 +315,54 @@ describe("blackjack dealer behind the bot host", () => {
       expect(sentItems(1)[0]).toMatchObject({ action: "deal" });
     }
   );
+
+  // Solonet, 2026-10-27: the dealer's first payout spent from its identity account and
+  // maintenance moved the rest of that account into its other coins. The identity account read
+  // 0 while the wallet held 2 MON, and the next "deal me in" was told the dealer could not cover
+  // a hand.
+  it("offers a hand when its identity account is empty and its other coins cover it", async () => {
+    (host as any).provider.getBalance = jest.fn(async () => 0n);
+    mockWalletBalance.mockResolvedValue(2_000_000_000_000_000_000n);
+
+    const bet = await openTable();
+    await deliver(inbound([bet], BET, BET));
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    expect(sentItems(1)[0]).toMatchObject({
+      type: "blackjack-hand",
+      action: "deal",
+      gameId: bet.gameId,
+    });
+  });
+
+  it("offers nothing when its wallet cannot cover a hand, whatever its identity account holds", async () => {
+    (host as any).provider.getBalance = jest.fn(
+      async () => 2_000_000_000_000_000_000n
+    );
+    mockWalletBalance.mockResolvedValue(0n);
+
+    await deliver(inbound([{ type: "text", text: "deal me in" }], STAMP));
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(sentItems(0)).toEqual([
+      {
+        type: "text",
+        text: "The dealer cannot cover a hand right now. Try again later.",
+      },
+    ]);
+  });
+
+  it("says it cannot check what it covers, and offers nothing, when its wallet's balance cannot be read", async () => {
+    mockWalletBalance.mockRejectedValue(new Error("node unreachable"));
+
+    await deliver(inbound([{ type: "text", text: "deal me in" }], STAMP));
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(sentItems(0)).toEqual([
+      {
+        type: "text",
+        text: "The dealer cannot check what it can cover right now. Try again in a moment.",
+      },
+    ]);
+  });
 });

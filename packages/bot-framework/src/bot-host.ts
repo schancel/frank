@@ -900,8 +900,9 @@ export class FrankBotHost {
           if (address) {
             return this.provider.getBalance(address);
           }
-          if (definition.id === "faucet") return wallet.getBalance();
-          return this.provider.getBalance(botAddress);
+          // What the bot can spend: every coin its wallet pays from, not only the identity
+          // account (which the wallet spends from and maintenance splits like any other).
+          return wallet.getBalance();
         },
 
         publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {

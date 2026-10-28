@@ -435,6 +435,30 @@ describe('background merge', () => {
     }
   })
 
+  it('on a device that may not start merges, plans none but still finishes the one it signed: offers it again and lists its target', async () => {
+    const f = await open()
+    f.head.value = 600
+    for (let i = 0; i < 12; i++) await putCoin(f, { valueWei: BigInt(3 + i) * FLOOR, listedInBlock: 10 })
+    // Above the band, but this device is not the account's active one: nothing is planned.
+    expect(await f.consolidator.maintain({ startNew: false })).toEqual({ outcome: 'idle' })
+    expect(f.submitted).toEqual([])
+    // A merge it signed while it was active ...
+    const merge = (await f.consolidator.maintain()) as { outcome: string; operationId: string }
+    expect(merge.outcome).toBe('merged')
+    const [set] = f.submitted
+    const target = set!.bundle[0]!.destination.toLowerCase()
+    // ... is offered again, the same signed set, after it stopped being active.
+    expect(await f.consolidator.maintain({ startNew: false })).toEqual({ outcome: 'waiting', operationId: merge.operationId })
+    expect(all(f.submitted[1]!).map(tx => tx.txHash)).toEqual(all(set!).map(tx => tx.txHash))
+    // Once it lands, its target is listed as the wallet's own, and still nothing new is planned.
+    await settle(f, merge.operationId, 601)
+    const before = f.submitted.length
+    expect(await f.consolidator.maintain({ startNew: false })).toEqual({ outcome: 'idle' })
+    expect(f.listed).toContain(target)
+    expect(f.submitted.length).toBe(before)
+    await f.journal.Close()
+  })
+
   it('concurrent maintenance calls make one merge', async () => {
     const f = await open()
     f.head.value = 600

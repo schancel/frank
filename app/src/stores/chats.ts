@@ -161,6 +161,7 @@ import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
 import { useSettingsStore } from './settings'
 import { useContactStore } from './contacts'
+import { useLeaderStore } from './leader'
 import { useBalance } from '../composables/useBalance'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import {
@@ -492,6 +493,7 @@ import {
   normalizeOutboxWrapper,
   ownConversationStates,
   ownContactStates,
+  ownDeviceClaims,
   ownJournalCheckpoints,
   ownMessageTombstones,
   ownSwapRecords,
@@ -686,6 +688,18 @@ async function readFinancialBootstrapAuthority(
     paid: stored.stampValueWei > 0n,
     financialOperations: storedReferences.map(reference => ({ ...reference })),
   }
+}
+
+/** A received row that carries value: a stamp of any chain (the relay-verified value, UTXO
+ * outpoints, or account-chain stamp payments). Such a row is never a mere copy of another. */
+function carriesValue(wrapper: ReceivedMessageWrapper): boolean {
+  const message = wrapper.message
+  return (
+    !!wrapper.stampValue ||
+    !!message.outpoints?.length ||
+    !!message.stampValueWei ||
+    !!message.stampPayments?.length
+  )
 }
 
 /** A wallet's own records (`wallet-sync`, `payment-transfer`) are never taken from a mailbox row
@@ -2120,6 +2134,7 @@ function isInternalMessage(items: unknown): boolean {
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||
           item.type === 'contact-state' ||
+          item.type === 'device-claim' ||
           item.type === 'message-tombstone' ||
           item.type === 'journal-checkpoint' ||
           item.type === 'outbox-message' ||
@@ -5334,6 +5349,16 @@ export const useChatStore = defineStore('chats', {
         for (const note of contactNotes)
           await contacts.applyContactState(note, ownAddress)
       }
+      // Which of the account's devices its user acts on now (`stores/leader.ts`).
+      const deviceClaims = recordRows.flatMap(wrapper =>
+        ownDeviceClaims(wrapper, ownAddress),
+      )
+      // A claim about another account than the one whose session is open is dropped there.
+      if (deviceClaims.length > 0 && ownAddress) {
+        const leader = useLeaderStore()
+        for (const claim of deviceClaims)
+          leader.handleIncomingClaim(claim, ownAddress)
+      }
       // What the account's administrator devices noted to themselves about their groups.
       let groupRecords = 0
       for (const wrapper of recordRows) {
@@ -5712,6 +5737,132 @@ export const useChatStore = defineStore('chats', {
       deliverableWrappers = deliverableWrappers.filter(
         wrapper => !coveredEchoes.has(wrapper.index),
       )
+
+      // The same free message delivered twice: a second row with the message ID, sender and
+      // conversation of one already filed, and the content of that message's latest revision.
+      // Two devices of the sender sent the same automatic game step around a hand-over, each
+      // sealing its own copy: the peer reads both, and so does each of the sender's devices,
+      // which holds its own copy under the local key it sent it from (the ID on the wire is
+      // derived from that key). It is one message: the row filed first keeps it, and the copy
+      // is never saved, shown or read again. Only the latest revision is compared, so an edit
+      // back to earlier content (A, then B, then A again) is a revision of its own and is kept.
+      // A copy that carries any value (a stamp, UTXO outpoints, a payment) is kept: its payment
+      // is its own.
+      type Content = { digest?: string; items?: string }
+      const latestContent = new Map<string, Content>()
+      let scannedFiled = false
+      const revisionKey = (
+        conversationId: string,
+        sender: string | undefined,
+        logicalId: string | undefined,
+      ) =>
+        sender && logicalId
+          ? `${conversationId}|${sender.toLowerCase()}|${logicalId}`
+          : undefined
+      const itemsOf = (items: unknown): string | undefined => {
+        try {
+          return JSON.stringify(items)
+        } catch {
+          return undefined
+        }
+      }
+      // The content digest when both rows have one; this device's own copy of a message it sent
+      // has none until its own echo has been read, and is compared by its items.
+      const sameContent = (held: Content | undefined, row: Content) =>
+        !!held &&
+        (held.digest && row.digest
+          ? held.digest === row.digest
+          : !!held.items && held.items === row.items)
+      const remember = (
+        conversationId: string,
+        message: {
+          outbound?: boolean
+          senderAddress?: string
+          logicalMessageId?: string
+          sealedMessageId?: string
+          contentDigest?: string
+          items?: unknown
+        },
+      ) => {
+        const content = {
+          digest: message.contentDigest,
+          items: itemsOf(message.items),
+        }
+        if (!content.digest && !content.items) return
+        const local = message.logicalMessageId
+        const ids = [local]
+        // A message this account sent from this device is on the wire under the ID derived from
+        // the local key it was sent from.
+        if (
+          message.outbound &&
+          local?.startsWith('pending:') &&
+          ownAddress &&
+          sameCanonicalAddress(message.senderAddress, ownAddress)
+        )
+          ids.push(message.sealedMessageId ?? outgoingMessageId(local))
+        for (const id of ids) {
+          const key = revisionKey(conversationId, message.senderAddress, id)
+          if (key) latestContent.set(key, content)
+        }
+      }
+      const duplicates: ReceivedMessageWrapper[] = []
+      for (const wrapper of deliverableWrappers) {
+        const conv = receivedConversations.get(wrapper.index)
+        if (!conv || outboundMatches.has(wrapper.index)) continue
+        if (wrapper.index in this.messages) continue
+        if (!scannedFiled) {
+          scannedFiled = true
+          // A conversation's messages are in order, so the last revision seen is the latest.
+          for (const held of Object.values(this.conversations))
+            for (const message of held?.messages ?? [])
+              remember(held!.id, message)
+          // This device's own sends whose echo is in this read.
+          for (const loopback of outboundMatches.values())
+            remember(loopback.conversationId, loopback.message)
+        }
+        const key = revisionKey(
+          conv.id,
+          wrapper.senderAddress,
+          receivedLogicalIds.get(wrapper.index),
+        )
+        const content = {
+          digest: wrapper.message.contentDigest,
+          items: itemsOf(wrapper.message.items),
+        }
+        // A copy with no content digest is compared only when it is this account's own
+        // outbound copy (the wallet's note to self of a send from another of its devices, which
+        // carries none): by its items, under the same wire ID, sender and conversation.
+        const ownCopy =
+          wrapper.outbound === true &&
+          !!ownAddress &&
+          sameCanonicalAddress(wrapper.senderAddress, ownAddress)
+        if (!key || (!content.digest && !ownCopy)) continue
+        if (
+          sameContent(latestContent.get(key), content) &&
+          !carriesValue(wrapper)
+        )
+          duplicates.push(wrapper)
+        else latestContent.set(key, content)
+      }
+      if (duplicates.length > 0) {
+        for (const wrapper of duplicates) {
+          suppressedDigests.add(wrapper.index)
+          toNotify.delete(wrapper.index)
+        }
+        const copies = new Set(duplicates.map(wrapper => wrapper.index))
+        deliverableWrappers = deliverableWrappers.filter(
+          wrapper => !copies.has(wrapper.index),
+        )
+        if (ownAddress && typeof messageStore?.suppressAndDelete === 'function')
+          await messageStore.suppressAndDelete(
+            ownAddress,
+            duplicates.map(wrapper => wrapper.index),
+            duplicates.map(wrapper => ({
+              payloadDigest: wrapper.index,
+              receivedTime: wrapper.message.receivedTime,
+            })),
+          )
+      }
 
       const persistYielder = createCooperativeBatchYielder()
       let persistStarted = false

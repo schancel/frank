@@ -18,7 +18,9 @@
  *   (`listTarget`); another device finds it from the accounts the merge emptied.
  *
  * One merge at a time: while one is still on its way, the next call only resumes it.
- * Composition calls `maintain` from a host's idle tick (no message being sent or reconciled).
+ * Composition calls `maintain` from a host's idle tick (no message being sent or reconciled); a
+ * host that may not start merges (not the account's active device) calls it with
+ * `startNew: false`, which still finishes the merges already signed.
  */
 import { sha256 } from '@noble/hashes/sha256'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils'
@@ -135,7 +137,7 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
           row.members.some(member => member.observation.state === 'included-success'),
       )
 
-  const once = async (): Promise<EvmCoinMaintenance> => {
+  const once = async (startNew: boolean): Promise<EvmCoinMaintenance> => {
     for (const row of unlisted()) await deps.listTarget?.(targetOf(row)).catch(() => undefined)
     const open = unfinished()
     if (open.length > 0) {
@@ -146,6 +148,9 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
       await deps.listTarget?.(targetOf(row)).catch(() => undefined)
       return { outcome: 'waiting', operationId: logicalId }
     }
+    // Listing a merge's money and offering a signed merge again finish what was already signed;
+    // planning a new merge is left to the caller that may start one.
+    if (!startNew) return { outcome: 'idle' }
     // Without more pool coins than the band's top, whatever their value, there is nothing to
     // merge: an idle wallet's step ends here, with no node request.
     const pooled = deps.coins.liveUnspent().filter(coin => EVM_POOL_COIN_ORIGINS.has(coin.origin)).length
@@ -210,9 +215,13 @@ export function createEvmCoinConsolidator(deps: EvmCoinConsolidatorDeps) {
   }
 
   return {
-    /** One maintenance step; concurrent callers share it. */
-    maintain(): Promise<EvmCoinMaintenance> {
-      return (running ??= once().finally(() => {
+    /**
+     * One maintenance step; concurrent callers share it. With `startNew: false` it only finishes
+     * merges already signed (lists their target, offers their signed set again) and plans none:
+     * a host that is not the account's active device calls it so.
+     */
+    maintain({ startNew = true }: { startNew?: boolean } = {}): Promise<EvmCoinMaintenance> {
+      return (running ??= once(startNew).finally(() => {
         running = undefined
       }))
     },

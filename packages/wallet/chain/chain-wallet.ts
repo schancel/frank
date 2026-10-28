@@ -489,8 +489,12 @@ export interface NativeWalletHandle {
    * as one transaction set like any send (`merged`); while that merge is on its way, a call
    * offers it to the network again (`waiting`). Holds no send: a payment built meanwhile takes
    * other coins. Absent on a handle with nothing to maintain.
+   *
+   * `startNew: false` only finishes merges already signed (lists the account a landed merge
+   * filled, offers an unfinished merge again) and plans none: for a host that is not the
+   * account's active device.
    */
-  maintainCoins?(): Promise<CoinMaintenanceResult>;
+  maintainCoins?(options?: { startNew?: boolean }): Promise<CoinMaintenanceResult>;
   /**
    * Waits for the wallet's next look at the chain (its block watcher), then looks at the
    * transactions of one native operation that are not yet seen in a block. A host showing a

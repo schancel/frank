@@ -37,6 +37,10 @@ jest.mock('../accounts/native-transfer', () => ({
     mockCreateFinancialContext(chainIdentifier),
 }))
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => mockWallet }))
+// This is the account's active device (`stores/leader.ts`).
+jest.mock('../stores/leader', () => ({
+  useLeaderStore: () => ({ isActiveMaster: true }),
+}))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),
@@ -1146,6 +1150,8 @@ describe('Chat.vue automatic dealer steps', () => {
       address: '0xPeer',
       messages,
       blackjackAttempted: new Set<string>(),
+      conversation: { id: 'conversation-1' },
+      activeDevice: true,
       ...over,
     })
     self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
@@ -1161,9 +1167,20 @@ describe('Chat.vue automatic dealer steps', () => {
     expect(sent.items[0].action).toBe('deal')
     // An automatic step pays nothing.
     expect(sent.stampValueWei).toBe(0n)
+    // It is sent under a key derived from the conversation and the step, so another device of
+    // the account sending the same step sends the same message.
+    expect(sent.operationId).toMatch(/^pending:automatic-step:conversation-1:/)
     // The same position is never attempted twice, even if the send left no message behind.
     await methods.runBlackjackDealer.call(self)
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends no automatic step on a device that is not the active one', async () => {
+    const self = dealerThis(hand(challenge, [false, betItem, 300n]), {
+      activeDevice: false,
+    })
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
   })
 
   it("does not take a bet posted into the chat by someone else for the peer's move", async () => {

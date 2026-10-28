@@ -12,6 +12,7 @@
  * account changes.
  */
 import { watch } from 'vue'
+import { startActiveDeviceClaims } from '../stores/leader'
 import { startAppNegotiationRecovery } from './negotiation-recovery'
 import { startAppSwapExecution } from '../swap/live-swap-execution'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
@@ -67,6 +68,7 @@ interface Live {
   uninstall: () => void
   polling: Stoppable
   reconcile: Stoppable
+  activeDevice?: Stoppable
   negotiation?: { stop(): Promise<void> }
   swapExecution?: { stop(): Promise<void> }
 }
@@ -90,8 +92,16 @@ export interface MessagingDeps {
     | 'pins'
   >
   install: typeof installCanonicalDirectory
-  startPolling: (options: { wallet: WalletHandle }) => Stoppable
+  startPolling: (options: {
+    wallet: WalletHandle
+  }) => Stoppable & { firstRead?: Promise<unknown> }
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  /** Makes this device the account's active one whenever its user acts on it, and tells the
+   * account's other devices (`stores/leader.ts`). Its claim at start waits for `firstRead`. */
+  startActiveDevice?: (options: {
+    wallet: WalletHandle
+    firstRead?: Promise<unknown>
+  }) => Stoppable
   startNegotiation?: typeof startAppNegotiationRecovery
   startSwapExecution?: typeof startAppSwapExecution
   /**
@@ -282,6 +292,7 @@ function productionDeps(): MessagingDeps {
     },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
+    startActiveDevice: startActiveDeviceClaims,
     resumeLegacy: () => {
       const runResume = () =>
         void import('../composables/useSolanaSwap')
@@ -471,6 +482,7 @@ export async function stopMessaging(): Promise<void> {
   const swapExecutionCleanup = previous.swapExecution
     ?.stop()
     .catch(() => undefined)
+  previous.activeDevice?.stop()
   previous.polling.stop()
   previous.reconcile.stop()
   previous.uninstall()
@@ -655,13 +667,20 @@ async function startMessagingInternal(): Promise<void> {
       const uninstall = d.install(wallet, directory)
       const handle = wallet as unknown as WalletHandle
       const found = directory
+      const polling = d.startPolling({ wallet: handle })
       live = {
         wallet,
         directory,
         revision,
         accountId: accountIdOf(account),
         uninstall,
-        polling: d.startPolling({ wallet: handle }),
+        polling,
+        // Its claim at start waits for the first mailbox read, so it is later than the latest
+        // claim stored there.
+        activeDevice: d.startActiveDevice?.({
+          wallet: handle,
+          firstRead: polling.firstRead,
+        }),
         reconcile: d.startReconcile({ wallet: handle }),
       }
       live.negotiation = d.startNegotiation?.({
@@ -702,6 +721,7 @@ async function startMessagingInternal(): Promise<void> {
       if (live) {
         const partial = live
         live = undefined
+        partial.activeDevice?.stop()
         partial.polling.stop()
         partial.reconcile.stop()
         try {

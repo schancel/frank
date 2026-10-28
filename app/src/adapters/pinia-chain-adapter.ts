@@ -70,6 +70,7 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
+import { useLeaderStore } from '../stores/leader'
 import { useContactStore } from '../stores/contacts'
 import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
@@ -169,6 +170,9 @@ export async function toReceivedMessageWrapper(
 
 export interface DirectMessagePolling {
   stop: () => void
+  /** Settles once the session's first read of the mailbox has ended, whether it worked or not:
+   * what the mailbox held then has been handed to the stores. */
+  firstRead: Promise<void>
 }
 
 /**
@@ -227,6 +231,10 @@ export function startDirectMessagePolling({
   const mailboxStatus = useMailboxStatusStore()
   const pollSession = mailboxStatus.beginPollSession()
   let initialPollSettled = false
+  let settleFirstRead!: () => void
+  const firstRead = new Promise<void>(resolve => {
+    settleFirstRead = resolve
+  })
   const recipientAddress = activeChain.formatAddress(wallet.identity.address)
   let sinceMs = 0
   const cursorReady = chats.relayCursor(recipientAddress).then(cursor => {
@@ -349,6 +357,7 @@ export function startDirectMessagePolling({
       ) {
         mailboxStatus.settleInitialPoll(pollSession, 'ready')
         initialPollSettled = true
+        settleFirstRead()
         return
       }
 
@@ -443,6 +452,7 @@ export function startDirectMessagePolling({
       sinceMs = nextSinceMs
       mailboxStatus.settleInitialPoll(pollSession, 'ready')
       initialPollSettled = true
+      settleFirstRead()
     } catch (err) {
       // stop() cannot cancel an in-flight request: a poll that fails after stop() must not put a
       // problem back on screen after stop() cleared it.
@@ -450,6 +460,7 @@ export function startDirectMessagePolling({
       if (!initialPollSettled) {
         mailboxStatus.settleInitialPoll(pollSession, 'error')
         initialPollSettled = true
+        settleFirstRead()
       }
       profileSynced = false
       const isChallengeCapacity =
@@ -587,6 +598,7 @@ export function startDirectMessagePolling({
   void poll()
 
   return {
+    firstRead,
     stop: () => {
       stopped = true
       profileAbort.abort()
@@ -618,11 +630,12 @@ export interface OutgoingReconciliation {
 
 /** Starts one step of the wallet's background coin maintenance (`maintainCoins`), if the handle
  * has it. Only from an idle tick. Never awaited and never throws: its failure is not the
- * caller's, and the next idle tick tries again. */
-function maintainIdleCoins(wallet: WalletHandle): void {
+ * caller's, and the next idle tick tries again. `startNew: false` only finishes merges already
+ * signed. */
+function maintainIdleCoins(wallet: WalletHandle, startNew: boolean): void {
   try {
     void (wallet as WalletHandle & Pick<NativeWalletHandle, 'maintainCoins'>)
-      .maintainCoins?.()
+      .maintainCoins?.({ startNew })
       .catch(error => console.warn('Background coin maintenance failed', error))
   } catch {
     /* Nothing to do. */
@@ -702,12 +715,20 @@ export function startOutgoingReconciliation({
   maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
   idleIntervalMs = IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
   backgroundIntervalMs = BACKGROUND_OUTGOING_RECONCILE_INTERVAL_MS,
+  isActiveDevice = () => useLeaderStore().isActiveMaster,
 }: {
   wallet: WalletHandle
   intervalMs?: number
   maxIntervalMs?: number
   idleIntervalMs?: number
   backgroundIntervalMs?: number
+  /**
+   * Whether this is the device the account's user acts on now (`stores/leader.ts`). Only that
+   * device starts new coin merges. Everything else this tick does, including listing and
+   * resubmitting a merge already signed, finishes what was already authorized on this device
+   * (the same signed bytes, from this device's journal) and runs on every device, active or not.
+   */
+  isActiveDevice?: () => boolean
 }): OutgoingReconciliation {
   const chats = useChatStore()
   let stopped = false
@@ -1030,8 +1051,11 @@ export function startOutgoingReconciliation({
     pending += walletUnsettled
     // Idle: nothing being sent or reconciled. The wallet may merge the small coins stamps and
     // payouts left (owner, 2026-10-26); a merge it starts is one of its own unfinished sets on
-    // the next tick, which keeps the short pauses until it lands.
-    if (pending === 0 && !stopped) maintainIdleCoins(wallet)
+    // the next tick, which keeps the short pauses until it lands. Only the active device plans
+    // a new merge: two devices reading the chain at different heads could plan different ones.
+    // Every device finishes the merges it already signed (lists the account a landed merge
+    // filled, offers an unfinished one again), active or not.
+    if (pending === 0 && !stopped) maintainIdleCoins(wallet, isActiveDevice())
     delayMs =
       pending > 0 && !resetRequested
         ? Math.min(maxIntervalMs, delayMs * 2)

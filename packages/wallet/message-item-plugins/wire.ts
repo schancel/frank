@@ -75,13 +75,12 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  * one is refused before anything is paid, as it always was; one that arrives is kept as an
  * unsupported item and is not interpreted.
  *
- * None has a safe receiver on this path yet. Four are records a wallet writes for itself:
+ * None has a safe receiver on this path yet. One is a record a wallet writes for itself:
  * - `payment-transfer`: the shape of a wallet sync record, which must enter through
  *   `applyWalletSyncItem` with wallet and chain affinity checked. Nothing sends one, and the app
  *   refuses a whole received batch that holds one, so a single such item from any peer would stop
  *   its inbox.
- * - `device-claim`: the app sends one to itself on every leadership claim; carrying it would turn
- *   each claim into a paid message.
+ * One is a legacy item:
  * - `p2pkh`: a UTXO-era item whose self-reported amount counts toward a conversation's value.
  * Two more are a peer's proposal that today's receivers would act on without checking it:
  * - `swap-offer`: receiving one enables an unconfirmed deposit; carried once the swap flow
@@ -93,7 +92,6 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  */
 export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
   'payment-transfer',
-  'device-claim',
   'p2pkh',
   'swap-offer',
   'blackjack-move',
@@ -130,6 +128,12 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   does not interpret it: a host hands it to its contact list. Because it is carried only here,
  *   another person cannot add or remove someone in an account's contacts.
  *
+ * - `device-claim`: that the account's user is now acting on this device, so this device alone
+ *   starts the account's automatic signing work (background coin merges, automatic game
+ *   steps). The wallet does not interpret it: a host hands it to its active-device record
+ *   (`app/src/stores/leader.ts`). A note to self is free. Because it is carried only here,
+ *   another person cannot make an account's device stand by.
+ *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
  * item and is not interpreted: another person must not be able to hand a wallet a record of its
@@ -145,6 +149,7 @@ export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'outbox-message',
   'message-tombstone',
   'journal-checkpoint',
+  'device-claim',
 ])
 
 /** Who one message is between, as far as the item rule needs to know. */

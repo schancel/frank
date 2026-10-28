@@ -545,7 +545,6 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import { defaultAcceptancePrice } from '../utils/constants'
 import { useSettingsStore } from '../stores/settings'
 import {
-  automaticDealerSteps,
   handItemStillNext,
   HAND_FEE_RESERVE_WEI,
   storedOutgoingMessages,
@@ -556,20 +555,18 @@ import {
   saveSeed,
 } from '../utils/blackjack-hand'
 import {
-  automaticP2pGameSteps,
-  buildDiceChallenge,
-  buildRpsChallenge,
-} from '../utils/p2p-games'
-import {
-  automaticMentalPokerSteps,
-  buildMentalPokerChallenge,
-} from '../utils/p2p-mental-poker'
+  automaticGameSteps,
+  automaticStepOperationId,
+  isAutomaticGameItem,
+} from '../utils/automatic-game-steps'
+import { useLeaderStore } from '../stores/leader'
+import { buildDiceChallenge, buildRpsChallenge } from '../utils/p2p-games'
+import { buildMentalPokerChallenge } from '../utils/p2p-mental-poker'
 import type { RpsMove } from '@frank/wallet/message-item-plugins/rps/fair'
 import {
   toArticleApplicationItem,
   type ArticlePayload,
 } from '@frank/wallet/message-item-plugins/article'
-import { MENTAL_POKER_PLUGIN_ID } from '@frank/wallet/message-item-plugins/mental-poker'
 import { extractWebRtcCallPayload } from '@frank/wallet/message-item-plugins/webrtc-call'
 import ChatMessageWebRtcCall from '../components/chat/messages/ChatMessageWebRtcCall.vue'
 import {
@@ -1923,16 +1920,24 @@ export default defineComponent({
       items,
       stampValueWei,
       settled,
+      operationId,
     }: {
       items: MessageItem[]
       stampValueWei?: bigint
+      /** The local key the message is sent under, when its sender derives one (an automatic
+       * game step); otherwise a fresh one. */
+      operationId?: string
       /** Called exactly once with whether the message was sent, so a renderer that spent money
        * on the click (a purchase) can hold its own in-flight guard until then. */
       settled?: (sent: boolean) => void
     }): Promise<boolean> {
       let sent = false
       try {
-        sent = await this.sendFollowUpItemsUnsettled({ items, stampValueWei })
+        sent = await this.sendFollowUpItemsUnsettled({
+          items,
+          stampValueWei,
+          operationId,
+        })
         return sent
       } finally {
         // Exactly once, even if the send throws (a throw counts as not sent).
@@ -1942,9 +1947,11 @@ export default defineComponent({
     async sendFollowUpItemsUnsettled({
       items,
       stampValueWei,
+      operationId,
     }: {
       items: MessageItem[]
       stampValueWei?: bigint
+      operationId?: string
     }): Promise<boolean> {
       if (this.sendingMessage) {
         return false
@@ -2016,6 +2023,7 @@ export default defineComponent({
           items: capturedItems,
           stampValue,
           stampIsDeliveryFee,
+          ...(operationId === undefined ? {} : { operationId }),
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
@@ -2253,21 +2261,11 @@ export default defineComponent({
     // session; a failed send stays in the chat with its Retry.
     async runBlackjackDealer() {
       if (this.sendingMessage || this.resumingHand) return
+      if (!this.peerMessages.some(m => m.items?.some(isAutomaticGameItem)))
+        return
       const hasBlackjack = this.peerMessages.some(m =>
         m.items?.some(it => it.type === 'blackjack-hand'),
       )
-      const hasP2pGame = this.peerMessages.some(m =>
-        m.items?.some(it => it.type === 'dice' || it.type === 'rps'),
-      )
-      const hasMentalPoker = this.peerMessages.some(m =>
-        m.items?.some(
-          it =>
-            it.type === 'application' && it.itemType === MENTAL_POKER_PLUGIN_ID,
-        ),
-      )
-      if (!hasBlackjack && !hasP2pGame && !hasMentalPoker) {
-        return
-      }
       const own = await getOwnCanonicalAddress()
       if (!own || this.sendingMessage || this.resumingHand) return
       const peer = this.recipientAddress || this.address
@@ -2306,21 +2304,21 @@ export default defineComponent({
           return
         }
       }
-      const step = [
-        ...(hasBlackjack
-          ? automaticDealerSteps(this.peerMessages, own, peer)
-          : []),
-        ...(hasP2pGame
-          ? automaticP2pGameSteps(this.peerMessages, own, peer)
-          : []),
-        ...(hasMentalPoker
-          ? automaticMentalPokerSteps(this.peerMessages, own, peer)
-          : []),
-      ].find(candidate => !this.blackjackAttempted.has(candidate.key))
-      if (!step || this.sendingMessage || this.resumingHand) return
+      // Only the account's active device sends a step: every device computes the same one.
+      const step = automaticGameSteps(this.peerMessages, own, peer, {
+        activeDevice: this.activeDevice,
+      }).find(candidate => !this.blackjackAttempted.has(candidate.key))
+      const conversationId = this.conversation?.id
+      if (!step || !conversationId || this.sendingMessage || this.resumingHand)
+        return
       this.blackjackAttempted.add(step.key)
-      // Every automatic step pays nothing (see above), so it carries no stamp either.
-      await this.sendFollowUpItems({ items: [step.item], stampValueWei: 0n })
+      // Every automatic step pays nothing (see above), so it carries no stamp either. Its
+      // message ID is derived from the step, so another device's copy of it is the same message.
+      await this.sendFollowUpItems({
+        items: [step.item],
+        stampValueWei: 0n,
+        operationId: automaticStepOperationId(conversationId, step.key),
+      })
     },
     /** The name of whoever sent this message: this user, or the message's own sender. */
     messageSenderName(msg: ChatMessage, index: number): string {
@@ -2722,6 +2720,10 @@ export default defineComponent({
     messages(): ChatMessage[] {
       return this.conversation?.messages ?? []
     },
+    /** This is the account's active device (`stores/leader.ts`). */
+    activeDevice(): boolean {
+      return useLeaderStore().isActiveMaster
+    },
     /** What this user and the conversation's peer sent. A game is between those two; what
      * anyone else posted into the conversation is not one of its moves. */
     peerMessages(): ChatMessage[] {
@@ -3037,6 +3039,10 @@ export default defineComponent({
     },
     'sendingMessage'(sending: boolean) {
       if (!sending) void this.runBlackjackDealer()
+    },
+    // This device became the account's active one: it sends the steps still owed.
+    'activeDevice'(active: boolean) {
+      if (active) void this.runBlackjackDealer()
     },
     'active'(newActive) {
       if (!newActive) {

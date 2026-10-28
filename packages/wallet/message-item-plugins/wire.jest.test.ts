@@ -153,6 +153,7 @@ describe('the dispatch rule', () => {
       'outbox-message',
       'message-tombstone',
       'journal-checkpoint',
+      'device-claim',
     ])
     for (const type of SELF_ONLY_ITEM_TYPES) {
       expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)

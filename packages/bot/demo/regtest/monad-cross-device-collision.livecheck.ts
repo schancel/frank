@@ -518,6 +518,7 @@ async function main() {
           items: [recipientAssetPaymentFromPrepared(prepared)],
           sealedSender: true,
           stampValue: STAMP_WEI,
+          messageId: intent.operationId,
           paymentOperationId: intent.operationId,
           onEnvelopeDurable: digest => payments.expose({ operationId: intent.operationId, payloadDigest: digest }),
           onAttemptCreated: async digest => {

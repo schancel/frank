@@ -452,6 +452,44 @@ export interface EvmReceivedCoinAndContactManagerParams {
   /** The payment floor the balance classifies received coins by, as last read (zero while no
    * gas price is known). A received payment's `tooSmall` uses the same one. */
   readonly receivedCoinFloorWei: () => bigint;
+  /** One snapshot of conclusive account observations from the inventory owner. No RPC. */
+  readonly currentReceivedBalances: (addresses: readonly string[]) => ReadonlyMap<string, bigint>;
+}
+
+/** Arrival records own history; the coin list owns current funds. This owner-local derived
+ * memo retains the last conclusive current observation when a later read is unknown. It is
+ * bounded to receipt addresses, not persisted, and never consulted by spending/recovery. */
+export function createReceivedPaymentProjection(params: {
+  coins: () => readonly EvmCoin[];
+  currentBalances: (addresses: readonly string[]) => ReadonlyMap<string, bigint>;
+  floorWei: () => bigint;
+}): { read(): ReturnType<typeof receivedPaymentOf>[]; clear(): void } {
+  const observed = new Map<string, bigint>();
+  const read = () => {
+    const coins = params.coins();
+    const addresses = new Set(coins.map(coin => coin.address));
+    for (const address of observed.keys())
+      if (!addresses.has(address)) observed.delete(address);
+    const balances = params.currentBalances([...addresses]);
+    const floor = params.floorWei();
+    return coins.map(coin => {
+      const payment = receivedPaymentOf(coin, Date.now(), floor);
+      // Current funds cannot turn an unverified claim into a verified receipt.
+      if ((payment.receivedAmountWei ?? 0n) <= 0n) return payment;
+      const current = balances.get(coin.address);
+      if (current !== undefined) observed.set(coin.address, current);
+      const amount = observed.get(coin.address);
+      if (amount === undefined) return payment;
+      const { tooSmall: _tooSmall, ...history } = payment;
+      return {
+        ...history,
+        amountWei: amount,
+        spendable: amount > 0n,
+        ...(amount > 0n && amount < floor ? { tooSmall: true as const } : {}),
+      };
+    });
+  };
+  return { read, clear: () => observed.clear() };
 }
 
 /**
@@ -488,7 +526,13 @@ export function createEvmReceivedCoinAndContactManager(
     canonicalMessagingFor,
     directMessages,
     receivedCoinFloorWei,
+    currentReceivedBalances,
   } = params;
+  const receivedPayments = createReceivedPaymentProjection({
+    coins: () => coinStore.all(),
+    currentBalances: currentReceivedBalances,
+    floorWei: receivedCoinFloorWei,
+  });
   const nativeChainId = BigInt(chainId);
   for (const coin of coinStore.all()) validateNativeStampRecovery(coin, chainIdentifier);
 
@@ -2887,19 +2931,12 @@ export function createEvmReceivedCoinAndContactManager(
     heldForItsMessage,
     holdsItsSource,
     installStealthAndContactOwners,
-    getReceivedPayments: () => {
-      const floorWei = receivedCoinFloorWei();
-      return coinStore
-        .all()
-        .map((coin) => receivedPaymentOf(coin, Date.now(), floorWei));
-    },
+    getReceivedPayments: receivedPayments.read,
+    clearReceivedPaymentProjection: receivedPayments.clear,
     refreshReceivedPayments: async () => {
       requireOpenWallet(getWallet());
       await readCoinsPass({ strict: true });
-      const floorWei = receivedCoinFloorWei();
-      return coinStore
-        .all()
-        .map((coin) => receivedPaymentOf(coin, Date.now(), floorWei));
+      return receivedPayments.read();
     },
     getMessagePayment: (payloadDigest: string) =>
       messagePaymentOf(coinStore.all(), payloadDigest),

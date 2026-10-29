@@ -1,4 +1,5 @@
 import type { StealthPaymentStatus } from '@frank/wallet/stealth-payment'
+import { computed } from 'vue'
 import {
   outgoingStealthPayments,
   refreshOutgoingStealthPayments,
@@ -6,6 +7,8 @@ import {
 } from './outgoing-stealth-payments'
 import { sentStealthAssetDetail } from './stealth-transaction-details'
 import { buildWalletHistoryGroups } from 'src/components/wallet/wallet-history'
+import * as history from 'src/components/wallet/wallet-history'
+import type { NotedSendStatus } from '@frank/wallet/chain'
 
 const HASH_A = '0x' + 'a7'.repeat(32)
 const HASH_B = '0x' + 'b8'.repeat(32)
@@ -69,6 +72,275 @@ const shown = () =>
   sentStealthAssetDetail(outgoingStealthPayments.get(DIGEST), item)
 
 beforeEach(() => outgoingStealthPayments.clear())
+afterEach(() => jest.restoreAllMocks())
+
+const NOTE_FEE = 2142000000000000n
+async function foreignFeeFixture(seed = 1) {
+  const { Wallet, Transaction } = await import('ethers')
+  const signer = new Wallet('0x' + seed.toString(16).padStart(64, '0'))
+  const to = '0x' + (70 + seed).toString(16).repeat(20)
+  const raw = await signer.signTransaction({
+    type: 2,
+    chainId: 20143n,
+    nonce: 0,
+    to,
+    value: 500n,
+    gasLimit: 21000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  })
+  const hash = Transaction.from(raw).hash!.toLowerCase()
+  const operation = { id: `evm-transaction-set:contact-late-${seed}` }
+  const note = (index: number): NotedSendStatus => ({
+    txHash:
+      index === 0
+        ? hash
+        : '0x' + (100 + seed * 10 + index).toString(16).repeat(32),
+    from: signer.address.toLowerCase(),
+    nonce: index,
+    to,
+    valueWei: '1',
+    call: false,
+    purpose: 'contact-payment',
+    operation,
+    noteIndex: index,
+    notedAtMs: index + 1,
+    state: 'included',
+    inclusion: {
+      status: 'success',
+      blockNumber: index + 1,
+      blockHash: '0x' + '01'.repeat(32),
+      feeWei: NOTE_FEE.toString(),
+    },
+  })
+  const notes = [0, 1, 2, 3].map(note)
+  const receipt = jest.fn(async (tx: string) =>
+    tx === hash ? { to, status: 1 } : null,
+  )
+  const readNotes = jest.fn(async () => notes)
+  const other: StealthPaymentOwner = {
+    chainIdentifier: 'monad-regtest',
+    stealthPayments: { list: async () => [], status: async () => undefined },
+    evmReader: { getTransactionReceipt: receipt },
+    getNotedSends: readNotes,
+  }
+  const digest = (200 + seed).toString(16).repeat(32)
+  const message = sentMessage({
+    payloadDigest: digest,
+    delivery: undefined,
+    items: [
+      {
+        type: 'stealth',
+        networkTag: 'monad-regtest',
+        transactions: [raw.slice(2)],
+      },
+    ],
+  })
+  return {
+    other,
+    message,
+    digest,
+    notes,
+    note,
+    hash,
+    to,
+    receipt,
+    readNotes,
+    shown: () => outgoingStealthPayments.get(digest)![0]!,
+  }
+}
+
+test('late original notes update an already landed card without restart or another transfer receipt lookup', async () => {
+  const f = await foreignFeeFixture()
+  const card = computed(() =>
+    sentStealthAssetDetail(outgoingStealthPayments.get(f.digest), {
+      transfers: [{ chainIdentifier: f.other.chainIdentifier, txId: f.hash }],
+    }),
+  )
+  expect(await refreshOutgoingStealthPayments([f.other], [f.message])).toBe(0)
+  expect(f.shown().status.nativeFeeAtomic).toBe(4n * NOTE_FEE)
+  expect(card.value).toMatchObject({
+    state: 'paid',
+    payment: { nativeFeeAtomic: 4n * NOTE_FEE },
+  })
+  const paid = f.shown().status.members
+  f.notes.push(f.note(4), f.note(5))
+  for (let pass = 0; pass < 3; pass++)
+    await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(f.shown().status.nativeFeeAtomic).toBe(6n * NOTE_FEE)
+  expect(card.value).toMatchObject({
+    state: 'paid',
+    payment: { nativeFeeAtomic: 6n * NOTE_FEE },
+  })
+  expect(card.value.payment).not.toHaveProperty('feeFromNotes')
+  expect(f.shown().status.members).toEqual(paid)
+  expect(f.shown().status.verifiedReceivedAmountAtomic).toBe(500n)
+  expect(f.receipt).toHaveBeenCalledTimes(1)
+  expect(f.readNotes).toHaveBeenCalledTimes(4)
+})
+
+test('same note receipt updates remain partial until known fees land, without re-reading the paid transfer', async () => {
+  const f = await foreignFeeFixture()
+  f.notes[3] = { ...f.notes[3]!, inclusion: undefined, state: 'pending' }
+  expect(await refreshOutgoingStealthPayments([f.other], [f.message])).toBe(1)
+  expect(f.shown().feePartial).toBe(true)
+  expect(f.shown().status.nativeFeeAtomic).toBe(3n * NOTE_FEE)
+  f.notes[3] = f.note(3)
+  expect(await refreshOutgoingStealthPayments([f.other], [f.message])).toBe(0)
+  expect(f.shown().feePartial).toBeUndefined()
+  expect(f.shown().status.nativeFeeAtomic).toBe(4n * NOTE_FEE)
+  expect(f.receipt).toHaveBeenCalledTimes(1)
+})
+
+test('a previously unnamed fee learns same-cardinality operation metadata without losing the paid state', async () => {
+  const f = await foreignFeeFixture()
+  f.notes[0] = { ...f.notes[0]!, operation: undefined }
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(f.shown().feeUnknowable).toBe(true)
+  f.notes[0] = f.note(0)
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(f.shown().feeUnknowable).toBeUndefined()
+  expect(f.shown().status.nativeFeeAtomic).toBe(4n * NOTE_FEE)
+  expect(f.shown().status.status).toBe('succeeded')
+  expect(f.receipt).toHaveBeenCalledTimes(1)
+})
+
+test('multiple settled messages share one owner snapshot and grouping per pass with operation isolation', async () => {
+  const a = await foreignFeeFixture(1),
+    b = await foreignFeeFixture(2)
+  const notes = [...a.notes, ...b.notes]
+  const read = jest.fn(async () => notes)
+  const receipts = jest.fn(async (hash: string) =>
+    hash === a.hash
+      ? { to: a.to, status: 1 }
+      : hash === b.hash
+      ? { to: b.to, status: 1 }
+      : null,
+  )
+  const other = {
+    ...a.other,
+    getNotedSends: read,
+    evmReader: { getTransactionReceipt: receipts },
+  }
+  const groups = jest.spyOn(history, 'groupNotedSends')
+  await refreshOutgoingStealthPayments([other], [a.message, b.message])
+  expect(read).toHaveBeenCalledTimes(1)
+  expect(groups).toHaveBeenCalledTimes(1)
+  notes.push(a.note(4), a.note(5))
+  await refreshOutgoingStealthPayments([other], [a.message, b.message])
+  expect(a.shown().status.nativeFeeAtomic).toBe(6n * NOTE_FEE)
+  expect(b.shown().status.nativeFeeAtomic).toBe(4n * NOTE_FEE)
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(groups).toHaveBeenCalledTimes(2)
+  expect(receipts).toHaveBeenCalledTimes(2)
+})
+
+test('note read failures preserve the last known fee and definitive recipient facts', async () => {
+  const f = await foreignFeeFixture()
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  const before = f.shown()
+  f.readNotes.mockRejectedValueOnce(new Error('unavailable'))
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(f.shown()).toEqual(before)
+  f.notes.push(f.note(4), f.note(5))
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(f.shown().status.nativeFeeAtomic).toBe(6n * NOTE_FEE)
+  expect(f.receipt).toHaveBeenCalledTimes(1)
+})
+
+test('late fees preserve a partial recipient payment with a definitively reverted member', async () => {
+  const a = await foreignFeeFixture(1),
+    b = await foreignFeeFixture(2)
+  const failed = b.note(0)
+  const notes = [
+    ...a.notes,
+    {
+      ...failed,
+      operation: a.note(0).operation,
+      state: 'reverted' as const,
+      inclusion: { ...failed.inclusion!, status: 'revert' as const },
+    },
+  ]
+  const receipts = jest.fn(async (hash: string) =>
+    hash === a.hash ? { to: a.to, status: 1 } : { to: b.to, status: 0 },
+  )
+  const other = {
+    ...a.other,
+    getNotedSends: async () => notes,
+    evmReader: { getTransactionReceipt: receipts },
+  }
+  const message = sentMessage({
+    payloadDigest: a.digest,
+    delivery: undefined,
+    items: [
+      {
+        type: 'stealth-asset',
+        transfers: [a, b].map(part => ({
+          chainIdentifier: other.chainIdentifier,
+          txId: part.hash,
+          destination: part.to,
+          amountAtomic: '500',
+          asset: { kind: 'native' },
+        })),
+      },
+    ],
+  })
+  await refreshOutgoingStealthPayments([other], [message])
+  expect(a.shown().status).toMatchObject({
+    status: 'partial',
+    intendedAmountAtomic: 1000n,
+    verifiedReceivedAmountAtomic: 500n,
+  })
+  const members = a.shown().status.members
+  notes.push(a.note(4), a.note(5))
+  await refreshOutgoingStealthPayments([other], [message])
+  expect(a.shown().status).toMatchObject({
+    status: 'partial',
+    verifiedReceivedAmountAtomic: 500n,
+    nativeFeeAtomic: 7n * NOTE_FEE,
+  })
+  expect(a.shown().status.members).toEqual(members)
+  expect(receipts).toHaveBeenCalledTimes(2)
+})
+
+test('local journal-complete fees remain authoritative and do not read lesser foreign notes', async () => {
+  const journal = {
+    now: status({
+      status: 'succeeded',
+      states: ['landed', 'landed'],
+      nativeFeeAtomic: 42n,
+    }),
+  }
+  const foreign = await foreignFeeFixture()
+  const f = owner(journal),
+    read = jest.fn(async () => [
+      {
+        ...foreign.note(0),
+        txHash: HASH_A,
+        inclusion: { ...foreign.note(0).inclusion!, feeWei: '1' },
+      },
+    ])
+  const receipt = jest.fn(async () => null)
+  const local = {
+    ...f.wallet,
+    getNotedSends: read,
+    evmReader: { getTransactionReceipt: receipt },
+  }
+  await refreshOutgoingStealthPayments([local], [sentMessage()])
+  await refreshOutgoingStealthPayments([local], [sentMessage()])
+  expect(shown().payment?.nativeFeeAtomic).toBe(42n)
+  expect(f.asked).toEqual(['op-1'])
+  expect(read).not.toHaveBeenCalled()
+  expect(receipt).not.toHaveBeenCalled()
+})
+
+test('a receipt to another recipient cannot acquire a fee projection or a paid state', async () => {
+  const f = await foreignFeeFixture()
+  f.receipt.mockResolvedValueOnce({ to: '0x' + '99'.repeat(20), status: 1 })
+  await refreshOutgoingStealthPayments([f.other], [f.message])
+  expect(outgoingStealthPayments.has(f.digest)).toBe(false)
+  expect(f.readNotes).not.toHaveBeenCalled()
+})
 
 test('the card follows the journal from not sent to pending to partly landed to paid, and reads it again after a reload', async () => {
   const journal = { now: status() as StealthPaymentStatus | undefined }

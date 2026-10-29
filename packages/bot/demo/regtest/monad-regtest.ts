@@ -18,8 +18,9 @@
  *      16 GB after the first run) with `--activate=false`, so your Docker context does not change;
  *   2. raises the VM's network buffer limits, which the consensus client needs and a container
  *      on a bridge network cannot set for itself (once per VM boot);
- *   3. runs the `monadcrypto/monad-solonet` image with its JSON-RPC on 127.0.0.1:48080 and
- *      WebSocket on 127.0.0.1:48081 (solonet's own default, host networking on port 8080, would
+ *   3. creates the chain only when its container is absent; a stopped container is retained
+ *      for explicit recovery or disposal. Runs `monadcrypto/monad-solonet` with JSON-RPC on
+ *      127.0.0.1:48080 and WebSocket on 127.0.0.1:48081 (its host-networking default on port 8080 would
  *      take a port the demo uses);
  *   4. waits for blocks.
  * A cold start takes 5 to 8 minutes (VM boot about 3, the chain about 5) and the VM then uses about
@@ -150,8 +151,8 @@ export async function solonetStatus(env: Record<string, string | undefined> = pr
   return { external: false, vm: 'running', container, rpcUrl, block: container === 'running' ? await blockNumber(rpcUrl) : undefined }
 }
 
-/** Starts whatever of the VM and the chain is not running, and waits for blocks. Returns the
- * chain's JSON-RPC and WebSocket URLs. Leaves a running solonet as it is. */
+/** Starts the VM if needed and creates a chain only when absent, then waits for blocks.
+ * Returns the chain's RPC URLs. Retains stopped chains and leaves running chains as they are. */
 export async function ensureSolonet(
   env: Record<string, string | undefined> = process.env,
   log: (line: string) => void = line => console.log(line),
@@ -182,16 +183,19 @@ export async function ensureSolonet(
     )
     status = await solonetStatus(env)
   }
-  if (status.container !== 'running') {
+  if (status.container === 'stopped') {
+    throw new Error(
+      `the existing ${CONTAINER} container is stopped; its chain data is retained. ` +
+      'Recover the existing container or explicitly dispose of it before starting a new chain.',
+    )
+  }
+  if (status.container === 'absent') {
     // The limits are lost when the VM restarts; setting them again is harmless.
     await must('colima', [
       'ssh', '-p', PROFILE, '--', 'sudo', 'sysctl', '-w',
       'net.core.rmem_max=62500000', 'net.core.rmem_default=62500000',
       'net.core.wmem_max=62500000', 'net.core.wmem_default=62500000',
     ])
-    // A stopped container of an earlier run holds an old chain; start a new one. Only a container
-    // known not to be running is removed.
-    if (status.container === 'stopped') await must('docker', [...DOCKER, 'rm', CONTAINER], 60_000)
     log('[solonet] starting the chain (about 5 minutes under emulation; the first run also downloads the image)')
     await must(
       'docker',

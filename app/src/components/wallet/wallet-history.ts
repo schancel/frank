@@ -303,6 +303,7 @@ export function observedFees(members: EvmNativeOperationStatus['members']): {
 function operationTime(
   operation: EvmNativeOperationStatus,
   blockTimes: ReadonlyMap<string, number>,
+  notedByHash: ReadonlyMap<string, NotedSendStatus>,
 ): number | undefined {
   let time: number | undefined
   const unstaged = operation.members.filter(
@@ -312,9 +313,32 @@ function operationTime(
   for (const member of (unstaged.length ? unstaged : operation.members).filter(
     member => member.role === 'payment',
   )) {
-    const at = member.blockHash
+    let at = member.blockHash
       ? blockTimes.get(member.blockHash.toLowerCase())
       : undefined
+    // A cold wallet may no longer read an old block, while its already-loaded note retains
+    // that inclusion's verified time. The journal still owns every financial fact of this row.
+    if (at === undefined && member.transactionHash && member.blockHash) {
+      const note = notedByHash.get(member.transactionHash.toLowerCase())
+      const inclusion = note?.inclusion
+      const outcome =
+        member.state === 'included-success'
+          ? 'success'
+          : member.state === 'included-revert'
+          ? 'revert'
+          : undefined
+      if (
+        outcome !== undefined &&
+        note?.state === (outcome === 'success' ? 'included' : 'reverted') &&
+        inclusion?.status === outcome &&
+        inclusion.blockNumber === member.blockNumber &&
+        inclusion.blockHash.toLowerCase() === member.blockHash.toLowerCase() &&
+        typeof inclusion.blockTimeMs === 'number' &&
+        Number.isFinite(inclusion.blockTimeMs) &&
+        inclusion.blockTimeMs > 0
+      )
+        at = inclusion.blockTimeMs
+    }
     if (at !== undefined && (time === undefined || at > time)) time = at
   }
   return time
@@ -532,6 +556,10 @@ export function buildWalletHistoryGroups(input: {
     ),
   )
   const noted = load.status === 'available' ? load.noted : []
+  // One lookup index for all native rows, before their notes are hidden by presentation dedup.
+  const notedByHash = new Map(
+    noted.map(send => [send.txHash.toLowerCase(), send]),
+  )
   // Who took each account's nonce, of the transactions the chain included.
   const included = new Map<string, string>()
   for (const send of noted)
@@ -609,7 +637,7 @@ export function buildWalletHistoryGroups(input: {
         ...(outcome === 'failed' || outcome === 'released'
           ? { contactOutcome: outcome }
           : {}),
-        timeMs: operationTime(operation, blockTimes),
+        timeMs: operationTime(operation, blockTimes, notedByHash),
         stampWei: stamps
           .reduce((total, stamp) => total + BigInt(stamp.intendedValueWei), 0n)
           .toString(),

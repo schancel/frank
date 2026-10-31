@@ -165,12 +165,12 @@ pub enum RegistryError {
         next: i64,
     },
 
-    /// Ticket #45: same invariant as [`RegistryError::TimestampNotMonotonicallyIncreasing`], for
-    /// Monad-native profile registrations (`Registry::put_evm_profile`) rather than Lotus
-    /// [`SignedPayload`] metadata.
+    /// EVM profile registrations enforce the same timestamp invariant as other metadata.
+    /// The variant spelling and display text are retained wire identifiers: ErrorMeta derives
+    /// the public `monad-profile-timestamp-not-monotonically-increasing` code from this name.
     #[invalid_user_input()]
     #[error("Monad profile timestamp is not monotonically increasing: {previous} >= {next}")]
-    EvmProfileTimestampNotMonotonicallyIncreasing {
+    MonadProfileTimestampNotMonotonicallyIncreasing {
         /// Current profile timestamp as recorded in the database.
         previous: i64,
         /// Timestamp of the new profile.
@@ -750,7 +750,7 @@ impl Registry {
             });
             match previous {
                 Some(previous) if previous >= verified.profile.timestamp => {
-                    Err(EvmProfileTimestampNotMonotonicallyIncreasing {
+                    Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                         previous,
                         next: verified.profile.timestamp,
                     }
@@ -782,7 +782,7 @@ impl Registry {
                 if !crate::store::evm_profiles::is_cbor_frame(existing) {
                     if let Some(previous) = stored_protobuf_timestamp(existing) {
                         if previous >= verified.timestamp_ms {
-                            return Err(EvmProfileTimestampNotMonotonicallyIncreasing {
+                            return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                                 previous,
                                 next: verified.timestamp_ms,
                             }
@@ -794,7 +794,7 @@ impl Registry {
                         || (info.timestamp_ms == verified.timestamp_ms
                             && info.revision >= verified.revision)
                     {
-                        return Err(EvmProfileTimestampNotMonotonicallyIncreasing {
+                        return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
                             previous: info.timestamp_ms,
                             next: verified.timestamp_ms,
                         }
@@ -2011,7 +2011,7 @@ mod tests {
             .downcast::<RegistryError>()?;
         assert_eq!(
             err,
-            RegistryError::EvmProfileTimestampNotMonotonicallyIncreasing {
+            RegistryError::MonadProfileTimestampNotMonotonicallyIncreasing {
                 previous: 1000,
                 next: 999,
             },

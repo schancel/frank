@@ -71,7 +71,7 @@ export const FROZEN_FILES = [
   'docs/protocol/proposals/blackjack-items/vectors.json',
   'docs/protocol/proposals/blackjack-items/README.md',
   'backend/cashweb/frank-cbor/tests/blackjack_hand.rs',
-  'backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs',
+  'backend/cashweb/cashweb-registry/src/http/evm_direct_messages_tests.rs',
   'backend/cashweb/cashweb-registry/tests/test_cbor_registration.rs',
   'packages/frank-codec/browsercheck/runner.js',
   'packages/frank-codec/test/typed.jest.test.ts',

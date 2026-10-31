@@ -96,7 +96,7 @@ max_get_logs_range = 10
 # The least a paid message carries, in wei: at or above the network's payment floor, which the
 # relay enforces on every payment and refuses to start below (docs/protocol/chains/README.md,
 # "Payment floor"). On Monad: 10 x 21000 gas x 100 gwei = 21000000000000000 wei = 0.021 MON.
-[registry.monad_mailbox]
+[registry.evm_mailbox]
 enabled = true
 min_value_wei = "21000000000000000"
 
@@ -108,7 +108,7 @@ burn_address = "0x000000000000000000000000000000000000dEaD"
 
 [registry.pop]
 enabled = false
-monad_rpc_url = "http://unused.invalid"
+evm_rpc_url = "http://unused.invalid"
 hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"

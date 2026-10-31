@@ -58,3 +58,41 @@ pub fn report_to_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn historical_public_error_codes_survive_implementation_owner_renaming() {
+        let report = Report::new(
+            RegistryError::MonadProfileTimestampNotMonotonicallyIncreasing {
+                previous: 1000,
+                next: 999,
+            },
+        );
+        let details = report_to_details(&report, report_to_error_meta);
+        assert_eq!(
+            details.error_code,
+            "monad-profile-timestamp-not-monotonically-increasing"
+        );
+        let (status, body) = details_to_status_proto(details);
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body.0.error_code,
+            "monad-profile-timestamp-not-monotonically-increasing"
+        );
+        assert!(body.0.is_user_error);
+
+        // ErrorMeta derives codes from variant identifiers. Keep the historical identifier
+        // even when this critical internal error is redacted by the HTTP projection.
+        let report = Report::new(DbEvmProfilesError::CannotDecodeMonadProfile(
+            "fixture".into(),
+        ));
+        let details = report_to_details(&report, report_to_error_meta);
+        assert_eq!(details.error_code, "cannot-decode-monad-profile");
+        let (status, body) = details_to_status_proto(details);
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.0.error_code, "internal-server-error");
+    }
+}

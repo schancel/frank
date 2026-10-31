@@ -97,7 +97,7 @@ impl ProfileRow {
     /// The row for a protobuf registration.
     pub fn protobuf(signed: &cashweb_payload::proto::SignedPayload) -> Result<Self> {
         let profile = proto::MonadProfile::decode(signed.payload.as_slice())
-            .wrap_err_with(|| CannotDecodeEvmProfile(hex::encode(&signed.payload)))?;
+            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
         Ok(Self {
             raw: signed.encode_to_vec(),
             timestamp_ms: profile.timestamp,
@@ -120,9 +120,11 @@ pub enum DbEvmProfilesError {
     /// already requires a valid `MonadProfile` to check the monotonic-timestamp invariant before
     /// ever calling `DbEvmProfiles::put`), so this is a caller-contract violation, not a
     /// reachable runtime state.
+    // Retain the historical ErrorMeta code and protobuf DTO name independently of the
+    // EVM implementation owner's name.
     #[critical()]
     #[error("Cannot index profile by time: payload doesn't decode as MonadProfile: {0}")]
-    CannotDecodeEvmProfile(String),
+    CannotDecodeMonadProfile(String),
 
     /// Database contains an invalid by-time index entry (not a 20-byte Monad address).
     #[critical()]

@@ -27,9 +27,15 @@ wallet reset. Checked-in configuration writers and fixtures use the new names.
 
 ## Wire and storage stability
 
+This document maps current implementation owners; it does not allocate or amend a
+protocol. The pinned canonical CBOR specification retains historical source-path
+references unchanged. Use this owner map for current implementation paths.
+
 Public URL paths, signing-domain bytes, exact message encodings, key derivation,
 canonical `monad-*` identifiers, persisted store extensions/subspaces/keys and
-historical protobuf DTO names remain unchanged. The retained protobuf names are
+historical protobuf DTO names remain unchanged. Historical ErrorMeta variant identifiers
+also remain where their names generate an externally visible error code; implementation
+type names change, but those error codes do not. The retained protobuf names are
 wire/schema identifiers, not Rust implementation owners. Only their source file
 paths changed to `evm_message.proto` and `evm_profile.proto`; message packages,
 fields and tags did not change.

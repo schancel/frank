@@ -14,7 +14,7 @@
  * 4. The builders run again (`directory-preview.json` reads the suite-1 proposal and
  *    `rust-origin.json`); the directory-admission corpus is expanded from the suite-1 proposal;
  *    the canonical direct-message request fixtures in cashweb-registry's
- *    `monad_message_cbor_tests.rs` are re-signed as plain transfers (#826).
+ *    `evm_direct_messages_tests.rs` are re-signed as plain transfers (#826).
  * 5. The Rust-origin and interoperability corpora are rewritten by their Rust tests.
  *
  * 6. The Rust proposal checkers (suite-1 directory, Forum content read, message stamp
@@ -126,7 +126,7 @@ else
     'backend/cashweb/cashweb-registry/tests/directory_preview_corpus.cjs',
   ])
 rewrites(
-  'backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs',
+  'backend/cashweb/cashweb-registry/src/http/evm_direct_messages_tests.rs',
   () =>
     run('node', [
       'backend/cashweb/cashweb-registry/tests/support/canonical_dm_plain_transfer_fixtures.cjs',

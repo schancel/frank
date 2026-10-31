@@ -4108,4 +4108,29 @@ min_value_wei = "0"
                 .to_string();
         assert!(error.contains("monad_rpc_url"), "{error}");
     }
+    #[test]
+    fn actual_ha_relay_template_parses_after_public_placeholder_rendering() {
+        let rendered = include_str!("../../../labs/cluster/relay.toml.in")
+            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18380")
+            .replace("@SOLONET_CHECKPOINT_NUMBER@", "100")
+            .replace(
+                "@SOLONET_CHECKPOINT_HASH@",
+                &format!("0x{}", "11".repeat(32)),
+            );
+        assert!(!rendered.contains('@'));
+        let config =
+            parse_conf(&rendered).expect("the actual rendered three-replica template parses");
+        assert!(config.registry.evm_mailbox.enabled);
+        assert_eq!(
+            config.registry.pop.evm_rpc_url.as_str(),
+            "http://unused.invalid/"
+        );
+        assert!(config.registry.is_cluster_mode());
+        assert!(config.registry.cluster.as_ref().unwrap().is_nats_enabled());
+        assert_eq!(config.registry.network, "monad-regtest");
+        assert_eq!(
+            config.registry.validate_network().unwrap().id,
+            "monad-regtest"
+        );
+    }
 }

@@ -1823,8 +1823,8 @@ frame after a V6.3 projection, which a future manifest field may assert.
 Status: the migration first slice of #106. This section pins the exact
 deterministic-CBOR encoding of the account/attestation registration record that
 today's protobuf `SignedPayload` wrapping `MonadProfile` carries (`packages/
-cashweb/registry/proto/metadata.proto`, the backend `evm_profile.proto`, and
-the verifier in `backend/cashweb/cashweb-registry/src/evm_profile_verify.rs`).
+cashweb/registry/proto/metadata.proto`, the backend `monad_profile.proto`, and
+the verifier in `backend/cashweb/cashweb-registry/src/monad_profile_verify.rs`).
 It is a pure serialization-format migration: same fields, same semantics, no new
 identity schema. An explicit CBOR registration route and wallet helper exist,
 but normal app and bot registration remain protobuf until the directory cutover
@@ -1949,7 +1949,7 @@ reinterpreted (V5, M8).
 
 M6. Canonical address. The statement subject is the public key; the canonical
 address is the low 20 bytes of `Keccak256(uncompressed_pubkey_without_04_prefix)`
-— the exact rule of `evm_transaction::address_from_uncompressed_pubkey`, applied
+— the exact rule of `monad_evm_tx::address_from_uncompressed_pubkey`, applied
 to the 65-byte uncompressed encoding of the subject key. The address is
 derived, never stored: no CBOR field of the record carries it. A consumer that
 registers or serves the record under a claimed address MUST derive the address

@@ -3,7 +3,7 @@ import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
  * Joined wallet -> transport -> native relay proof driver (#777).
  *
  * Spawned one phase per process by the native harness in
- * `backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs`. It contains no wire
+ * `backend/cashweb/cashweb-registry/src/http/evm_direct_messages_tests.rs`. It contains no wire
  * encoding of its own: every request byte comes from `MonadCanonicalStampClient`, its durable
  * canonical journal, and the public canonical transport/mailbox/directory clients.
  *

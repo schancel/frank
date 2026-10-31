@@ -1,6 +1,6 @@
 /** Wallet inventory composition, independent of canonical messaging and fund-ahead. */
 import type { Provider, Wallet } from 'ethers'
-import type { EvmCoinList } from './evm-coin-list'
+import type { EvmCoinList, EvmListCoin } from './evm-coin-list'
 import { EvmCoinListSync, type CoinListSource } from './evm-coin-list-sync'
 import type { EvmBlockWatcher } from './evm-block-watcher'
 import type { EvmSubAccountPool } from './evm-account-pool'
@@ -13,6 +13,39 @@ import { discoverSeedBranch } from './evm-seed-discovery'
 import type { EvmMergeAnchor, EvmMergeTargets } from './evm-merge-targets'
 import type { MonadIdentity } from './evm-identity'
 import type { EvmCoin, RecordStore } from './storage/evm-coin-store'
+
+/** Current account evidence for receipt views, never a selection/reservation source. Missing,
+ * held, dirty and provisional inputs say nothing about what remains at an account. In
+ * particular, retiring one nonce is not proof that its positive successor was emptied. */
+export function receivedAccountBalanceSnapshot(
+  list: EvmCoinList,
+  sync: Pick<EvmCoinListSync, 'isDirty' | 'hasObservedEmpty'>,
+  addresses: readonly string[],
+): ReadonlyMap<string, bigint> {
+  const latest = new Map<string, EvmListCoin>()
+  for (const coin of list.all()) {
+    const previous = latest.get(coin.account)
+    if (previous === undefined || coin.nonce > previous.nonce)
+      latest.set(coin.account, coin)
+  }
+  const amounts = new Map<string, bigint>()
+  for (const address of addresses) {
+    const key = address.toLowerCase()
+    if (sync.isDirty(key)) continue
+    if (sync.hasObservedEmpty(key)) {
+      amounts.set(key, 0n)
+      continue
+    }
+    const coin = latest.get(key)
+    if (
+      coin?.state === 'unspent' &&
+      coin.after === undefined &&
+      coin.listedInBlock !== undefined
+    )
+      amounts.set(key, coin.valueWei)
+  }
+  return amounts
+}
 
 export function installEvmWalletCoinList(params: {
   coinList: EvmCoinList

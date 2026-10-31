@@ -47,6 +47,7 @@ import {
   type StoredEvmListCoin,
 } from "../evm-coin-list";
 import { installEvmTransactionSetRuntime } from "../evm-transaction-set-runtime";
+import { receivedAccountBalanceSnapshot } from "../evm-wallet-coin-list";
 import { evmTransactionSetJournal } from "../evm-transaction-set-journal";
 import { observeRetainedForumSpend } from "../evm-forum-operation";
 import {
@@ -2683,6 +2684,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             canonicalMessagingFor,
             directMessages,
             receivedCoinFloorWei,
+            currentReceivedBalances: addresses => receivedAccountBalanceSnapshot(
+              coinList, transactionSetRuntime.coinListSync, addresses,
+            ),
           });
 
           // This is a derived observation, not an inventory: the existing owners provide the
@@ -3317,6 +3321,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (closing !== undefined) return closing;
               const internals = evmWalletInternals(wallet);
               internals.closed = true;
+              coinAndContactManager.clearReceivedPaymentProjection();
               // Every wait on the chain ends now: nothing a waiter had was signed.
               internals.blockWatcher?.stop();
               closing = (async () => {

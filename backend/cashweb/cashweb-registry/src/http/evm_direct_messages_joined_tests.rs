@@ -7,7 +7,7 @@
 //! entries, which each account publishes itself over HTTP. No account is configured on the relay.
 //! The chain is an owned in-process JSON-RPC fake: no funded-chain finality is claimed.
 use super::*;
-use crate::monad_evm_tx::DecodedSignedTransaction;
+use crate::evm_transaction::DecodedSignedTransaction;
 use std::sync::Mutex;
 
 const JOINED_CLOCK_SECONDS: &str = "1700000100";
@@ -50,7 +50,7 @@ impl JoinedChain {
             .count()
     }
     fn answer(&self, query: &serde_json::Value) -> std::result::Result<serde_json::Value, String> {
-        use crate::monad_http::Hash32;
+        use crate::evm_rpc::Hash32;
         let method = query["method"].as_str().unwrap_or_default();
         self.methods.lock().unwrap().push(method.to_owned());
         let by_hash = || {
@@ -80,7 +80,7 @@ impl JoinedChain {
                     .as_str()
                     .and_then(|raw| hex::decode(raw.trim_start_matches("0x")).ok())
                     .ok_or("malformed raw transaction")?;
-                let decoded = crate::monad_evm_tx::decode_signed_transaction(&raw)
+                let decoded = crate::evm_transaction::decode_signed_transaction(&raw)
                     .map_err(|error| error.to_string())?;
                 let hash = decoded.tx_hash.to_hex();
                 let mut broadcasts = self.broadcasts.lock().unwrap();
@@ -286,8 +286,8 @@ impl Joined {
         let owner = self.fixture.registry.canonical_dm();
         let Principals { recipient, .. } = request_principals(&request, "monad-testnet").unwrap();
         let recipient = current(owner, "monad-testnet", &recipient).await.unwrap();
-        crate::monad_dm_verify::verify_canonical_stamp(
-            crate::monad_dm_verify::CanonicalStampCheckInput {
+        crate::evm_dm_verify::verify_canonical_stamp(
+            crate::evm_dm_verify::CanonicalStampCheckInput {
                 delivery: request.delivery(),
                 context: request.context(),
                 recipient_current: &recipient,
@@ -295,7 +295,7 @@ impl Joined {
             },
         )
         .expect("wallet delivery/context must pass the native public stamp verifier");
-        crate::monad_dm_payment::validate_canonical_payment_set(
+        crate::evm_dm_payment::validate_canonical_payment_set(
             request.clone(),
             &recipient,
             None,
@@ -309,7 +309,10 @@ impl Joined {
         .expect("wallet signed members must pass native financial CPU admission");
         request
     }
-    fn claim(&self, freeze: &serde_json::Value) -> Option<crate::store::monad_dm_cbor::Claim> {
+    fn claim(
+        &self,
+        freeze: &serde_json::Value,
+    ) -> Option<crate::store::evm_direct_messages::Claim> {
         let hash = hash_hex(freeze["identity"]["payload_hash"].as_str().unwrap()).unwrap();
         self.fixture.registry.canonical_dm().get(&hash).unwrap()
     }

@@ -92,7 +92,7 @@ if [[ "${1:-}" == "--check-config" ]]; then
     # Record that the launcher itself ran the pre-flight check, and let a test make it fail.
     [[ -z "${FRANK_LAUNCHER_CHECK_LOG:-}" ]] || echo "check-config" >>"$FRANK_LAUNCHER_CHECK_LOG"
     [[ "${FRANK_FAKE_CHECK_FAIL:-}" != "1" ]] || exit 1
-    grep -q '^\[registry\.monad_mailbox\]$' <<<"$config"
+    grep -q '^\[registry\.evm_mailbox\]$' <<<"$config"
     grep -q '^enabled = true$' <<<"$config"
     # The complete generated document goes through the real production parser, with the same
     # environment the launcher hands the daemon.
@@ -177,7 +177,7 @@ diff -u <(printf '%s\n' -) "$args_file"
 # The launcher must run `--check-config` itself, before starting the daemon.
 # ... and then the database check, in that order.
 [[ "$(cat "$fixture_root/check.log")" == "$(printf 'check-config\ncheck-db')" ]] || exit 1
-[[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
+[[ "$(grep -c '^\[registry\.evm_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 4 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
 # generated config, and the relay network defaults to monad-testnet.

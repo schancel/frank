@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    monad_evm_tx::{decode_signed_transaction, DecodedSignedTransaction},
-    monad_http::{Address, Hash32},
+    evm_rpc::{Address, Hash32},
+    evm_transaction::{decode_signed_transaction, DecodedSignedTransaction},
 };
 
 /// Most payments one message may carry.
@@ -15,8 +15,8 @@ pub(crate) const MAX_STAMP_PAYMENTS: usize = 64;
 
 /// A request that has passed every check, ready to be stored. Only this module makes one.
 pub(crate) struct CanonicalPaymentInput {
-    pub(crate) request: crate::http::monad_message_cbor::ExactRequest,
-    pub(crate) policy: crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
+    pub(crate) request: crate::http::evm_direct_messages::ExactRequest,
+    pub(crate) policy: crate::store::evm_direct_messages::FrozenCanonicalPolicy,
     payments: Vec<DecodedSignedTransaction>,
 }
 
@@ -38,9 +38,9 @@ impl CanonicalPaymentInput {
     /// Test seam for storing many messages quickly: skips the directory lookups, which were
     /// already made for `policy`. Every check that reads only the request bytes still runs.
     pub(crate) fn without_directory(
-        request: crate::http::monad_message_cbor::ExactRequest,
-        policy: crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
-    ) -> crate::http::monad_message_cbor::Result<Self> {
+        request: crate::http::evm_direct_messages::ExactRequest,
+        policy: crate::store::evm_direct_messages::FrozenCanonicalPolicy,
+    ) -> crate::http::evm_direct_messages::Result<Self> {
         let payments = canonical_signed_set(&request, &policy)?;
         Ok(Self {
             request,
@@ -54,21 +54,21 @@ impl CanonicalPaymentInput {
 /// statement as Current. The sender is whoever the request says: the relay neither looks the
 /// sender up nor checks what the context states about the sender's directory entry.
 pub(crate) fn validate_canonical_payment_set(
-    request: crate::http::monad_message_cbor::ExactRequest,
+    request: crate::http::evm_direct_messages::ExactRequest,
     recipient: &crate::directory_admission::Current,
     recipient_evidence: Option<&crate::directory_admission::HistoricalEvidence>,
     network: &str,
     chain_id: u64,
     minimum: u128,
     payment_floor: u128,
-) -> crate::http::monad_message_cbor::Result<CanonicalPaymentInput> {
+) -> crate::http::evm_direct_messages::Result<CanonicalPaymentInput> {
     use crate::{
-        http::monad_message_cbor::CanonicalError as Error,
-        store::monad_dm_cbor::FrozenCanonicalPolicy,
+        http::evm_direct_messages::CanonicalError as Error,
+        store::evm_direct_messages::FrozenCanonicalPolicy,
     };
     use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
-    let checks = crate::monad_dm_verify::verify_canonical_stamp(
-        crate::monad_dm_verify::CanonicalStampCheckInput {
+    let checks = crate::evm_dm_verify::verify_canonical_stamp(
+        crate::evm_dm_verify::CanonicalStampCheckInput {
             delivery: request.delivery(),
             context: request.context(),
             recipient_current: recipient,
@@ -147,10 +147,10 @@ pub(crate) fn validate_canonical_payment_set(
 /// Every check of a message's payments that needs only the request bytes and the policy:
 /// frame, context, proof, and each signed transaction against its listed member.
 fn canonical_signed_set(
-    request: &crate::http::monad_message_cbor::ExactRequest,
-    policy: &crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
-) -> crate::http::monad_message_cbor::Result<Vec<DecodedSignedTransaction>> {
-    use crate::http::monad_message_cbor::CanonicalError as Error;
+    request: &crate::http::evm_direct_messages::ExactRequest,
+    policy: &crate::store::evm_direct_messages::FrozenCanonicalPolicy,
+) -> crate::http::evm_direct_messages::Result<Vec<DecodedSignedTransaction>> {
+    use crate::http::evm_direct_messages::CanonicalError as Error;
     use frank_cbor::{
         encode_direct_message_crypto_context, payment_commitment, recipient_payload_digest,
         relay_context, validate_frame, AccountRef, DirectMessageCryptoContext, TypedPayload,
@@ -227,7 +227,7 @@ fn canonical_signed_set(
     if !request.context().is_empty() && context != request.context() {
         return Err(Error::Invalid);
     }
-    crate::monad_dm_verify::verify_canonical_stamp_proof(
+    crate::evm_dm_verify::verify_canonical_stamp_proof(
         network,
         destination,
         ephemeral_point,
@@ -248,7 +248,7 @@ fn canonical_signed_set(
         if member.stealth.is_some() || member.network != policy.network {
             return Err(Error::Invalid);
         }
-        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+        let (_, address) = crate::evm_dm_verify::canonical_stamp_destination(
             &policy.network,
             destination,
             shared_point,

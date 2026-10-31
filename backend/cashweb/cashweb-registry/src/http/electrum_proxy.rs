@@ -43,6 +43,7 @@ use tokio_tungstenite::{
 use url::Url;
 
 use crate::{
+    evm_rpc::Address,
     http::{
         bitcoin_proxy::BitcoinProxyRuntime,
         evm_rpc::{rpc_error, RpcRejection},
@@ -50,7 +51,6 @@ use crate::{
         json_rpc::{parse_without_duplicate_keys, rpc_id_is_bounded, sanitize_response_errors},
         server::RegistryServer,
     },
-    monad_http::Address,
 };
 
 /// Largest single upstream message forwarded to a client.

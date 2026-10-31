@@ -1,22 +1,7 @@
-//! Standalone WebSocket subscriber for Monad's `eth_subscribe("newHeads")` feed (served by
-//! Alchemy for Monad testnet/mainnet).
+//! Shared EVM WebSocket `eth_subscribe("newHeads")` transport with reconnect backoff.
 //!
-//! This is the direct replacement for `cashweb-registry`'s ZMQ-style block-tip watcher (see
-//! [`crate::lotus_adapter::LotusAdapter::subscribe_new_blocks`] for the polling-based pattern
-//! this is meant to eventually replace for Monad).
-//!
-//! Deliberately **not** wired up to anything yet:
-//! - It does not implement `cashweb_payload::chain_adapter::ChainAdapter`. A future
-//!   `MonadAdapter` (assembled once both this ticket and the sibling HTTP JSON-RPC ticket land,
-//!   see ticket #2) will implement `ChainAdapter::subscribe_new_blocks` by delegating to
-//!   [`MonadBlockSubscriber`] here.
-//! - It is not called from `Registry` or any other application code.
-//!
-//! [`MonadNewHead::hash`] is kept as a plain `0x`-prefixed hex string rather than parsed into
-//! `bitcoinsuite_core::Sha256d`: Ethereum-style (and Monad) hashes are serialized big-endian with
-//! no byte reversal, whereas `Sha256d::from_hex_be` reverses bytes to match Lotus/Bitcoin's
-//! display convention. Converting to a chain-agnostic hash type is left to whichever future
-//! ticket assembles the real `ChainAdapter` impl.
+//! This subscriber is currently standalone; configured chain adapters own activation. Head
+//! hashes retain the EVM wire byte order rather than using a Bitcoin reversed-display hash.
 
 use std::time::Duration;
 
@@ -39,7 +24,7 @@ const SUBSCRIBE_REQUEST_ID: i32 = 1;
 
 /// A new block head observed from Monad's `eth_subscribe("newHeads")` feed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonadNewHead {
+pub struct EvmNewHead {
     /// The new block's hash, as the `0x`-prefixed hex string reported by the node (see the
     /// module docs for why this isn't parsed into `Sha256d`).
     pub hash: String,
@@ -48,9 +33,9 @@ pub struct MonadNewHead {
     pub number: Option<u64>,
 }
 
-/// Errors from [`MonadBlockSubscriber`].
+/// Errors from [`EvmBlockSubscriber`].
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
-pub enum MonadWsError {
+pub enum EvmWsError {
     /// The initial WS handshake/connect to the Monad WS endpoint failed.
     #[critical()]
     #[error("Failed to connect to Monad WS endpoint: {0}")]
@@ -76,7 +61,7 @@ pub enum MonadWsError {
 /// Maps errors occurring in this module to an [`ErrorMeta`] trait object.
 pub fn extract_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
     report
-        .downcast_ref::<MonadWsError>()
+        .downcast_ref::<EvmWsError>()
         .map(|err| err as &dyn ErrorMeta)
 }
 
@@ -87,17 +72,17 @@ pub fn extract_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
 /// This is a plain standalone subscriber, not a [`ChainAdapter`](cashweb_payload::chain_adapter::ChainAdapter)
 /// implementation -- see the module docs.
 #[derive(Debug, Clone)]
-pub struct MonadBlockSubscriber {
+pub struct EvmBlockSubscriber {
     ws_url: String,
 }
 
-impl MonadBlockSubscriber {
+impl EvmBlockSubscriber {
     /// Create a new subscriber against the given WS JSON-RPC endpoint.
     ///
     /// The URL is never hardcoded by this module: callers must source it themselves, e.g. from
     /// the `MONAD_TESTNET_WS_RPC_URL` env var (see `frank/.env`, which is gitignored).
     pub fn new(ws_url: impl Into<String>) -> Self {
-        MonadBlockSubscriber {
+        EvmBlockSubscriber {
             ws_url: ws_url.into(),
         }
     }
@@ -115,7 +100,7 @@ impl MonadBlockSubscriber {
     /// reconnect (`eth_subscribe` has no cursor/replay semantics); a reconnect can miss whatever
     /// blocks landed during the outage. Callers that need gap-free coverage should reconcile
     /// against the current tip (e.g. via the HTTP JSON-RPC adapter) after a reconnect.
-    pub fn subscribe(&self) -> mpsc::Receiver<MonadNewHead> {
+    pub fn subscribe(&self) -> mpsc::Receiver<EvmNewHead> {
         let (sender, receiver) = mpsc::channel(64);
         let ws_url = self.ws_url.clone();
         tokio::spawn(async move {
@@ -153,10 +138,10 @@ impl MonadBlockSubscriber {
 ///
 /// Returns `Ok(())` only on a clean shutdown (receiver dropped). Any connection problem is
 /// surfaced as `Err` so the caller can reconnect.
-async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> Result<()> {
+async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<EvmNewHead>) -> Result<()> {
     let (ws_stream, _response) = tokio_tungstenite::connect_async(ws_url)
         .await
-        .map_err(|err| MonadWsError::ConnectFailed(err.to_string()))?;
+        .map_err(|err| EvmWsError::ConnectFailed(err.to_string()))?;
     debug!("Connected to Monad WS endpoint");
     let (mut write, mut read) = ws_stream.split();
 
@@ -169,14 +154,14 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
     write
         .send(Message::Text(subscribe_request.dump()))
         .await
-        .map_err(|err| MonadWsError::SubscribeSendFailed(err.to_string()))?;
+        .map_err(|err| EvmWsError::SubscribeSendFailed(err.to_string()))?;
 
     // Whether we've seen the JSON-RPC response acking (or rejecting) the `eth_subscribe` call.
     let mut subscription_confirmed = false;
 
     while let Some(msg) = read.next().await {
         let msg =
-            msg.map_err(|err| MonadWsError::ConnectionClosed(format!("WS read error: {err}")))?;
+            msg.map_err(|err| EvmWsError::ConnectionClosed(format!("WS read error: {err}")))?;
         match msg {
             Message::Text(text) => {
                 let value = match json::parse(&text) {
@@ -189,7 +174,7 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
 
                 if !subscription_confirmed && value["id"].as_i32() == Some(SUBSCRIBE_REQUEST_ID) {
                     if !value["error"].is_null() {
-                        return Err(MonadWsError::SubscribeRejected(value["error"].dump()).into());
+                        return Err(EvmWsError::SubscribeRejected(value["error"].dump()).into());
                     }
                     subscription_confirmed = true;
                     debug!(
@@ -216,7 +201,7 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
                         .and_then(|hex| hex.strip_prefix("0x"))
                         .and_then(|hex| u64::from_str_radix(hex, 16).ok());
 
-                    if sender.send(MonadNewHead { hash, number }).await.is_err() {
+                    if sender.send(EvmNewHead { hash, number }).await.is_err() {
                         // Receiver dropped; clean shutdown.
                         return Ok(());
                     }
@@ -224,12 +209,12 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
             }
             Message::Ping(payload) => {
                 if write.send(Message::Pong(payload)).await.is_err() {
-                    return Err(MonadWsError::ConnectionClosed("failed to send pong".into()).into());
+                    return Err(EvmWsError::ConnectionClosed("failed to send pong".into()).into());
                 }
             }
             Message::Close(frame) => {
                 return Err(
-                    MonadWsError::ConnectionClosed(format!("closed by peer: {frame:?}")).into(),
+                    EvmWsError::ConnectionClosed(format!("closed by peer: {frame:?}")).into(),
                 );
             }
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {
@@ -239,7 +224,7 @@ async fn run_subscription(ws_url: &str, sender: &mpsc::Sender<MonadNewHead>) -> 
     }
 
     // Stream ended without an explicit `Close` message.
-    Err(MonadWsError::ConnectionClosed("stream ended unexpectedly".into()).into())
+    Err(EvmWsError::ConnectionClosed("stream ended unexpectedly".into()).into())
 }
 
 #[cfg(test)]
@@ -248,7 +233,7 @@ mod tests {
 
     use tokio::time::timeout;
 
-    use super::MonadBlockSubscriber;
+    use super::EvmBlockSubscriber;
 
     /// Live smoke test against the real Monad testnet WS endpoint (via Alchemy). This is the
     /// "did it really work" proof for ticket #15: it requires genuine network access and a real
@@ -258,7 +243,7 @@ mod tests {
     ///
     /// ```sh
     /// MONAD_TESTNET_WS_RPC_URL=<url from frank/.env> \
-    ///     cargo test -p cashweb-registry --lib monad_ws::tests::live_smoke_test_observes_new_block \
+    ///     cargo test -p cashweb-registry --lib evm_ws::tests::live_smoke_test_observes_new_block \
     ///     -- --ignored --nocapture
     /// ```
     #[ignore = "requires live network access and MONAD_TESTNET_WS_RPC_URL"]
@@ -268,7 +253,7 @@ mod tests {
         let ws_url = std::env::var("MONAD_TESTNET_WS_RPC_URL")
             .expect("MONAD_TESTNET_WS_RPC_URL must be set to run this live smoke test");
 
-        let subscriber = MonadBlockSubscriber::new(ws_url);
+        let subscriber = EvmBlockSubscriber::new(ws_url);
         let mut new_heads = subscriber.subscribe();
 
         let start = Instant::now();

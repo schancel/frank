@@ -13,7 +13,7 @@ use super::{
     upstreams::{resolve_urls, UpstreamSet},
     ChainsStartError, IdentityError,
 };
-use crate::{http::json_rpc::JsonRpcVersion, monad_http::HttpTransport};
+use crate::{evm_rpc::HttpTransport, http::json_rpc::JsonRpcVersion};
 
 /// One EVM network the relay is configured for: its protocol identity, its upstreams and
 /// whether each has proved it is this chain.

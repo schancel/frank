@@ -1,5 +1,5 @@
 use super::*;
-use crate::monad_http::Address;
+use crate::evm_rpc::Address;
 
 fn policy() -> TopicBurnPolicy {
     TopicBurnPolicy {
@@ -115,7 +115,7 @@ pub(crate) fn event_frame(
             let secret = EccSecp256k1::default()
                 .seckey_from_array([key; 32])
                 .unwrap();
-            crate::monad_evm_tx::test_support::signed_eip1559_tx(
+            crate::evm_transaction::test_support::signed_eip1559_tx(
                 &secret,
                 10143,
                 nonce,
@@ -210,7 +210,7 @@ pub(crate) fn optional_observation(nonce: u64) -> Observation {
     calldata.extend([2, 1]);
     calldata.extend(preliminary.commitment());
     let secret = EccSecp256k1::default().seckey_from_array([3; 32]).unwrap();
-    let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+    let (raw, _) = crate::evm_transaction::test_support::signed_eip1559_tx(
         &secret,
         10143,
         nonce,

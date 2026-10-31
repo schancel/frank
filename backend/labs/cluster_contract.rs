@@ -1716,7 +1716,7 @@ fn forum_event(
             )
         }
     };
-    let preliminary = cashweb_registry::monad_topic_cbor::parse_topic_event(
+    let preliminary = cashweb_registry::evm_topic_cbor::parse_topic_event(
         &forum_frame(type_id, item.clone(), vec![1]),
         solonet_payer::SOLONET_NETWORK,
     )
@@ -1737,7 +1737,7 @@ fn forum_event(
 }
 
 fn target_of(event: &[u8]) -> [u8; 32] {
-    *cashweb_registry::monad_topic_cbor::parse_topic_event(event, solonet_payer::SOLONET_NETWORK)
+    *cashweb_registry::evm_topic_cbor::parse_topic_event(event, solonet_payer::SOLONET_NETWORK)
         .unwrap()
         .target_hash()
 }

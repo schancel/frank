@@ -498,7 +498,7 @@ impl<'a> Worker<'a> {
             statement: &statement,
             attestation: &bytes,
         };
-        let address = crate::monad_stamp_stealth::recipient_address_from_public_key(&subject)
+        let address = crate::evm_stamp_stealth::recipient_address_from_public_key(&subject)
             .map_err(|_| RuntimeError::Invalid)?
             .0;
         // When this first publication happened, for the public listing of new accounts.

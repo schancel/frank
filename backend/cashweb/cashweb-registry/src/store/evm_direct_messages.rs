@@ -50,10 +50,10 @@ use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
 
 use crate::{
     directory_runtime::DirectoryRuntime,
-    http::monad_message_cbor::{CanonicalError, ExactRequest, Result, SubmissionEcho},
-    monad_dm_payment::CanonicalPaymentInput,
-    monad_http::{Address, Hash32},
-    monad_mailbox::ChallengeConsumption,
+    evm_dm_payment::CanonicalPaymentInput,
+    evm_mailbox::ChallengeConsumption,
+    evm_rpc::{Address, Hash32},
+    http::evm_direct_messages::{CanonicalError, ExactRequest, Result, SubmissionEcho},
     store::{
         kv_store::{
             key_after, prefix_end, KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact,
@@ -92,7 +92,7 @@ pub(crate) struct FrozenCanonicalPolicy {
 }
 impl FrozenCanonicalPolicy {
     pub(crate) fn sender(&self) -> Result<Address> {
-        crate::monad_stamp_stealth::recipient_address_from_public_key(&self.sender_p)
+        crate::evm_stamp_stealth::recipient_address_from_public_key(&self.sender_p)
             .map_err(|_| CanonicalError::Unavailable)
     }
 
@@ -116,7 +116,7 @@ impl FrozenCanonicalPolicy {
     }
 
     pub(crate) fn recipient(&self) -> Result<Address> {
-        crate::monad_stamp_stealth::recipient_address_from_public_key(&self.recipient_p)
+        crate::evm_stamp_stealth::recipient_address_from_public_key(&self.recipient_p)
             .map_err(|_| CanonicalError::Unavailable)
     }
 }
@@ -1469,7 +1469,7 @@ mod persistence_tests {
             policy.payload_hash = frank_cbor::recipient_payload_digest(network, &frame).unwrap();
             frame
         });
-        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+        let (_, address) = crate::evm_dm_verify::canonical_stamp_destination(
             network,
             destination,
             shared_point,
@@ -1479,7 +1479,7 @@ mod persistence_tests {
         let secret = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default()
             .seckey_from_array([17; 32])
             .unwrap();
-        let transaction = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        let transaction = crate::evm_transaction::test_support::signed_eip1559_tx(
             &secret,
             10143,
             0,
@@ -2154,7 +2154,7 @@ mod large_request_tests {
 mod storage_boundary_tests {
     #[test]
     fn canonical_facade_does_not_depend_on_native_storage_types() {
-        let source = include_str!("monad_dm_cbor.rs");
+        let source = include_str!("evm_direct_messages.rs");
         let production = source
             .split("#[cfg(test)]\nmod challenge_tests")
             .next()

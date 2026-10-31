@@ -1,5 +1,5 @@
 // Regenerates the canonical direct-message request fixtures embedded in
-// src/http/monad_message_cbor_tests.rs so that every signed stamp payment is a plain value
+// src/http/evm_direct_messages_tests.rs so that every signed stamp payment is a plain value
 // transfer with empty calldata (#826).
 //
 // The sealed recipient payload, the crypto context and the multipart boundary of each fixture
@@ -32,7 +32,7 @@ const { Wallet, Transaction, keccak256 } = require(repo + '/node_modules/ethers'
 const codec = require(repo + '/packages/frank-codec/src/index.ts')
 const transport = require(repo + '/packages/cashweb/relay/canonical-dm-transport.ts')
 
-const target = path.join(__dirname, '../../src/http/monad_message_cbor_tests.rs')
+const target = path.join(__dirname, '../../src/http/evm_direct_messages_tests.rs')
 const funding = new Map(
   [1, 2].map(scalar => {
     const wallet = new Wallet('0x' + scalar.toString(16).padStart(64, '0'))

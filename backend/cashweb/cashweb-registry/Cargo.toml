@@ -18,7 +18,7 @@ bitcoinsuite-test-utils = { path = "../../bitcoinsuite/bitcoinsuite-test-utils" 
 bitcoinsuite-test-utils-blockchain = { path = "../../bitcoinsuite/bitcoinsuite-test-utils-blockchain" }
 
 # Frank deterministic CBOR (docs/protocol/cbor): decodes and validates topic events (types 10 and
-# 11) for `monad_topic_cbor`. Pure and dependency-light (no I/O).
+# 11) for `evm_topic_cbor`. Pure and dependency-light (no I/O).
 frank-cbor = { path = "../frank-cbor" }
 
 cashweb-http-utils = { path = "../cashweb-http-utils" }
@@ -62,7 +62,7 @@ rocksdb = "0.19"
 # For Deserialize
 serde = { version = "1.0.147", features = ["derive"] }
 
-# JSON (de)serialization for Monad's JSON-RPC-over-HTTPS transport (monad_http.rs)
+# JSON (de)serialization for Monad's JSON-RPC-over-HTTPS transport (evm_rpc.rs)
 serde_json = "1.0"
 
 # Derive error enums
@@ -75,7 +75,7 @@ tokio = { version = "1.17", features = ["full"] }
 # envelope validation does not materialize opaque result values in memory.
 tempfile = "3"
 
-# WS client, used by `monad_ws` to subscribe to Monad's `eth_subscribe("newHeads")` feed over
+# WS client, used by `evm_ws` to subscribe to Monad's `eth_subscribe("newHeads")` feed over
 # Alchemy. Already present in the workspace lockfile (pulled in transitively by axum's "ws"
 # feature); adding it directly here just adds the "native-tls" feature so we can dial `wss://`.
 tokio-tungstenite = { version = "0.17", features = ["native-tls"] }
@@ -100,13 +100,13 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # transaction's signing preimage so its sender can be recovered via `ecrecover`. Nothing in this
 # codebase implements RLP today (bitcoinsuite is Bitcoin/Lotus-shaped, not RLP/EVM); `rlp`
 # (parity-common) is the de facto minimal, dependency-light RLP implementation in the Rust
-# ecosystem, used here purely as a decoder/encoder for `monad_evm_tx.rs`'s own signing-preimage
+# ecosystem, used here purely as a decoder/encoder for `evm_transaction.rs`'s own signing-preimage
 # reconstruction -- it doesn't know anything about EVM transaction semantics itself.
 rlp = "0.5"
 
 # Keccak256 (ticket #27): Monad/EVM transactions are hashed (for both signing and address
 # derivation) with Keccak256, not SHA256/SHA256d like the rest of this Bitcoin/Lotus-derived
-# codebase. This is the *only* new primitive `monad_evm_tx.rs` needs -- the actual secp256k1 ECDSA
+# codebase. This is the *only* new primitive `evm_transaction.rs` needs -- the actual secp256k1 ECDSA
 # recovery math reuses the already-present `bitcoinsuite_ecc_secp256k1::EccSecp256k1::recover_sig`
 # (Ethereum's `ecrecover` is the same curve/signature scheme, just over a Keccak256 digest instead
 # of a SHA256 one), so no new elliptic-curve crate (e.g. `k256`) is needed.

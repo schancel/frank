@@ -1,14 +1,14 @@
-//! Recover the sender of a raw, signed Monad (EVM-style) transaction, Ethereum's `ecrecover`
+//! Recover the sender of a raw, signed EVM transaction, Ethereum's `ecrecover`
 //! convention, without requiring a separate app-level signature (ticket #27; see PLAN.md
-//! constraint 5 and `crate::monad_stamp_verify`'s module docs for why this exists).
+//! constraint 5 and `crate::evm_stamp_verify`'s module docs for why this exists).
 //!
 //! ## Scope
 //!
 //! This module only decodes as much of a raw transaction as is needed to reconstruct its signing
 //! preimage and pull out its `(v, r, s)` (or `(yParity, r, s)`) signature components -- it doesn't
 //! decode `to`/`value`/`input` (those are read back from the chain, post-confirmation, by
-//! [`crate::monad_stamp_verify::verify_stamp_transaction`] instead, via
-//! [`crate::monad_http::MonadHttpClient::get_transaction_by_hash`]).
+//! [`crate::evm_stamp_verify::verify_stamp_transaction`] instead, via
+//! [`crate::evm_rpc::EvmHttpClient::get_transaction_by_hash`]).
 //!
 //! Two transaction shapes are supported, covering the overwhelming majority of what any modern
 //! EVM wallet produces:
@@ -53,7 +53,7 @@ use thiserror::Error;
 // Shared immutable recovery context, not a cache of transaction validation results.
 static RECOVERY_CONTEXT: OnceLock<EccSecp256k1> = OnceLock::new();
 
-use crate::monad_http::Address;
+use crate::evm_rpc::Address;
 
 /// [EIP-2718] transaction-type byte for an EIP-1559 transaction.
 const EIP1559_TYPE: u8 = 0x02;
@@ -121,7 +121,7 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
 /// unlike Lotus, which hashes the *compressed* pubkey with `SHA256`+`RIPEMD160`
 /// ([`bitcoinsuite_core::pubkeyhash`]-style).
 ///
-/// `pub(crate)` (rather than private) since [`crate::monad_profile_verify`] (ticket #45) reuses
+/// `pub(crate)` (rather than private) since [`crate::evm_profile_verify`] (ticket #45) reuses
 /// this exact derivation to check a profile registration's signing pubkey matches its claimed
 /// `:addr` -- the same Ethereum address convention, just starting from an explicitly-provided
 /// pubkey instead of one recovered via [`recover_sender`]'s `ecrecover`.
@@ -161,7 +161,7 @@ struct SigningMaterial {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSignedTransaction {
     /// Keccak256 hash of the signed raw bytes.
-    pub tx_hash: crate::monad_http::Hash32,
+    pub tx_hash: crate::evm_rpc::Hash32,
     /// EIP-155/EIP-1559 chain identity (`None` only for an unprotected legacy transaction).
     pub chain_id: Option<u64>,
     /// ECDSA-recovered disposable funding account.
@@ -336,7 +336,7 @@ fn decode_eip1559(payload: &[u8]) -> Result<SigningMaterial, EvmTxError> {
     })
 }
 
-/// Recover the sender address of a raw, signed Monad (EVM-style) transaction.
+/// Recover the sender address of a raw, signed EVM transaction.
 ///
 /// This is the Monad equivalent of checking a Lotus `SignedPayload`'s `pubkey`/`sig` fields
 /// against its `payload_hash` -- except here there's no separate app-level signature to check at
@@ -399,7 +399,7 @@ pub fn decode_signed_transaction(raw_tx: &[u8]) -> Result<DecodedSignedTransacti
     let (nonce, destination, value_wei, input, max_gas_cost_wei) =
         decode_transaction_fields(raw_tx)?;
     Ok(DecodedSignedTransaction {
-        tx_hash: crate::monad_http::Hash32(keccak256(raw_tx)),
+        tx_hash: crate::evm_rpc::Hash32(keccak256(raw_tx)),
         chain_id,
         sender,
         nonce,

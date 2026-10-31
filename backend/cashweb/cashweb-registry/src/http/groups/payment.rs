@@ -276,9 +276,9 @@ impl GroupWriteRuntime {
                 "no upstream of the relay network has proved its identity yet".into(),
             ));
         };
-        let client = crate::monad_http::MonadHttpClient::with_transport(transport);
+        let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
         let read = async {
-            use crate::monad_http::BlockTag;
+            use crate::evm_rpc::BlockTag;
             let (nonce, balance) = futures::future::join(
                 client.get_transaction_count(payment.sender, BlockTag::Pending),
                 client.get_balance(payment.sender, BlockTag::Latest),
@@ -296,7 +296,7 @@ impl GroupWriteRuntime {
             } else {
                 false
             };
-            Ok::<_, crate::monad_http::MonadRpcError>((account, held))
+            Ok::<_, crate::evm_rpc::EvmRpcError>((account, held))
         };
         match tokio::time::timeout(NODE_TIMEOUT, read).await {
             Ok(Ok((account, held))) => match judge_funding(payment, &account, held) {
@@ -331,7 +331,7 @@ impl GroupWriteRuntime {
             );
             return;
         };
-        let client = crate::monad_http::MonadHttpClient::with_transport(transport);
+        let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
         match tokio::time::timeout(
             NODE_TIMEOUT,
             client.send_raw_transaction(&payment.raw_transaction),

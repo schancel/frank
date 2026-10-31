@@ -12,7 +12,7 @@
 use bitcoinsuite_core::{Hashed, Sha256};
 use serde::{Deserialize, Serialize};
 
-use crate::monad_http::Address;
+use crate::evm_rpc::Address;
 
 /// Domain prefix used for domain-separated contact wakeup token blinding (`#1574`).
 pub const WAKEUP_TOKEN_DOMAIN: &[u8] = b"frank-wakeup-v1";

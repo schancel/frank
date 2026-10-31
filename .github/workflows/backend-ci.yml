@@ -130,6 +130,9 @@ jobs:
         bash backend/cashweb/run-local-monad-overrides.test.sh
       shell: bash
 
+    - name: Check relay family ownership names
+      run: python3 backend/cashweb/check-family-names.py
+
     - name: Check protobuf source and generated-binding inventory
       run: ./docs/protocol/check-protobuf-inventory.sh --check
       shell: bash

@@ -1,12 +1,12 @@
-//! Relay-side broadcast-and-verify wiring for a Monad Stamp transaction (ticket #19).
+//! Relay-side broadcast-and-verify wiring for an EVM stamp transaction (ticket #19).
 //!
 //! Per the parent design (`PLAN.md` M4 / ticket #6's acceptance criterion), Stamp differs from
 //! POP in that the **relay itself broadcasts** the sender's pre-signed raw stamp tx (rather than
 //! requiring the client to have already landed it on-chain), matching the existing Lotus-path
 //! pattern (`Registry::validate_burn_tx` calling `ChainAdapter::submit_tx`/`test_accept`). This
 //! module is the Monad counterpart of that broadcast step, built on top of:
-//! - [`crate::monad_http::MonadHttpClient::send_raw_transaction`] (ticket #12) to broadcast, and
-//! - [`crate::monad_stamp_verify::verify_stamp_transaction`] (ticket #16) to confirm + verify it
+//! - [`crate::evm_rpc::EvmHttpClient::send_raw_transaction`] (ticket #12) to broadcast, and
+//! - [`crate::evm_stamp_verify::verify_stamp_transaction`] (ticket #16) to confirm + verify it
 //!   once mined.
 //!
 //! [`broadcast_and_verify_stamp`] wires those two together with a poll loop (Monad confirmation
@@ -45,7 +45,7 @@
 //!   at new wire-format decisions"), this module stops here: it hands the next
 //!   ticket/decision-maker a fully-implemented, fully-tested broadcast+verify primitive ready to
 //!   be called the moment a request shape exists to feed it (`raw_tx: &[u8]` +
-//!   `monad_stamp_verify::ExpectedStampTransaction`), rather than inventing that request shape itself.
+//!   `evm_stamp_verify::ExpectedStampTransaction`), rather than inventing that request shape itself.
 //!
 //! Whoever picks up that wire-format decision should gate `Registry`-equivalent message storage
 //! on `StampRelayOutcome::Verified` exactly the way `Registry::put_message`'s Lotus path gates on
@@ -58,8 +58,8 @@ use bitcoinsuite_error::{Result, WrapErr};
 use sha3::{Digest, Keccak256};
 
 use crate::{
-    monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
-    monad_stamp_verify::{
+    evm_rpc::{EvmHttpClient, EvmRpcError, Hash32, JsonRpcTransport},
+    evm_stamp_verify::{
         verify_stamp_transaction, ExpectedStampTransaction, StampTransactionVerification,
     },
 };
@@ -91,7 +91,7 @@ impl Default for PollConfig {
 /// same generic error.
 ///
 /// Doesn't derive `Clone`/`PartialEq`/`Eq`: [`StampRelayOutcome::BroadcastFailed`] wraps
-/// [`MonadRpcError`], which itself wraps a `reqwest::Error` that implements neither (tests below
+/// [`EvmRpcError`], which itself wraps a `reqwest::Error` that implements neither (tests below
 /// compare via `matches!`/field access instead).
 #[derive(Debug)]
 pub enum StampRelayOutcome {
@@ -103,11 +103,11 @@ pub enum StampRelayOutcome {
         /// Exact value carried by the verified transaction.
         value_wei: u128,
     },
-    /// `eth_sendRawTransaction` itself failed (e.g. `MonadRpcError::NonceTooLow`,
+    /// `eth_sendRawTransaction` itself failed (e.g. `EvmRpcError::NonceTooLow`,
     /// `InsufficientFunds`, `ReplacementUnderpriced`). Distinguishable from
     /// [`StampRelayOutcome::VerificationFailed`] so the nonce-race subtask can assert on it
     /// specifically rather than it being swallowed into a generic verification failure.
-    BroadcastFailed(MonadRpcError),
+    BroadcastFailed(EvmRpcError),
     /// The tx broadcast without error, but never confirmed within the configured polling budget.
     /// Treated as a rejection, not stored, same as any other non-`Verified` outcome.
     ConfirmationTimedOut {
@@ -154,18 +154,18 @@ pub async fn broadcast_and_verify_stamp<T>(
 where
     T: JsonRpcTransport + Clone,
 {
-    let client = MonadHttpClient::with_transport(transport.clone());
+    let client = EvmHttpClient::with_transport(transport.clone());
 
     let (tx_hash, nonce_error) = match client.send_raw_transaction(raw_tx).await {
         Ok(submitted) => (submitted.tx_hash, None),
         // Retrying the exact canonical set after a partial response loss must resume verification,
         // not fail merely because the node has already seen the same bytes. Continue using the
         // deterministic hash of the submitted raw transaction.
-        Err(MonadRpcError::AlreadyKnown { .. }) => (Hash32(Keccak256::digest(raw_tx).into()), None),
+        Err(EvmRpcError::AlreadyKnown { .. }) => (Hash32(Keccak256::digest(raw_tx).into()), None),
         // The exact bytes may already be mined even when the node reports a consumed nonce. Verify
         // their deterministic hash; if no exact receipt appears, preserve the nonce failure because
         // a replacement transaction may instead have consumed it.
-        Err(err @ MonadRpcError::NonceTooLow { .. }) => {
+        Err(err @ EvmRpcError::NonceTooLow { .. }) => {
             (Hash32(Keccak256::digest(raw_tx).into()), Some(err))
         }
         Err(err) => return Ok(StampRelayOutcome::BroadcastFailed(err)),
@@ -222,10 +222,10 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::monad_http::Address;
+    use crate::evm_rpc::Address;
 
     const STMP: [u8; 4] = *b"STMP";
-    const COMMITMENT_VERSION_TAG: u8 = crate::monad_stamp_verify::COMMITMENT_VERSION_TAG;
+    const COMMITMENT_VERSION_TAG: u8 = crate::evm_stamp_verify::COMMITMENT_VERSION_TAG;
 
     fn hex_addr(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 20]))
@@ -333,7 +333,7 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             *self
                 .call_counts
                 .lock()
@@ -343,13 +343,13 @@ mod tests {
 
             if method == "eth_sendRawTransaction" {
                 if *self.send_raw_transaction_already_known.lock().unwrap() {
-                    return Err(MonadRpcError::AlreadyKnown {
+                    return Err(EvmRpcError::AlreadyKnown {
                         method: method.to_string(),
                         message: "already known".to_string(),
                     });
                 }
                 if let Some(message) = self.send_raw_transaction_error.lock().unwrap().clone() {
-                    return Err(MonadRpcError::NonceTooLow {
+                    return Err(EvmRpcError::NonceTooLow {
                         method: method.to_string(),
                         message,
                     });
@@ -362,7 +362,7 @@ mod tests {
                 let responses = self.responses.lock().unwrap();
                 let seq = responses.get(method).cloned().unwrap_or_default();
                 if seq.is_empty() {
-                    return Err(MonadRpcError::InvalidResponse {
+                    return Err(EvmRpcError::InvalidResponse {
                         method: method.to_string(),
                         reason: "no mock response configured".to_string(),
                     });
@@ -379,7 +379,7 @@ mod tests {
                 .unwrap()
                 .get(method)
                 .and_then(|seq| seq.first().cloned())
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured for this method".to_string(),
                 })
@@ -506,7 +506,7 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            StampRelayOutcome::BroadcastFailed(MonadRpcError::NonceTooLow { .. })
+            StampRelayOutcome::BroadcastFailed(EvmRpcError::NonceTooLow { .. })
         ));
         assert!(!outcome.is_verified());
         // It checks the exact raw hash before preserving the nonce failure, because the exact
@@ -613,7 +613,7 @@ mod tests {
 
     /// Sanity check that [`PUBKEY_LENGTH`] is still imported/used (keeps the import from going
     /// stale if the other tests above are trimmed later); also documents that
-    /// [`crate::monad_stamp_verify::calc_expected_commitment`] is the intended way callers should
+    /// [`crate::evm_stamp_verify::calc_expected_commitment`] is the intended way callers should
     /// compute a real `ExpectedStampTransaction.commitment` (this module doesn't recompute it itself).
     #[test]
     fn pubkey_length_sanity() {

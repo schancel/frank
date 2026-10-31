@@ -16,10 +16,10 @@
 //! | `tp/` payload hash | topic `SignedPayload` (all known burns merged) | `topics.rs` |
 //! | `tm/` topic digest ++ timestamp_be ++ txid | payload-less message; derived | `topics.rs` |
 //! | `tb/` txid | empty; burns already indexed | `topics.rs` |
-//! | `p/` address | profile bytes (protobuf or Frank-CBOR) | `monad_profiles.rs` |
-//! | `pt/` timestamp_be ++ address | address; derived by-time index | `monad_profiles.rs` |
-//! | `pn/` normalized name ++ address | address; derived by-name index | `monad_profiles.rs` |
-//! | `pc` | profile count (little-endian u64, atomic add); derived | `monad_profiles.rs` |
+//! | `p/` address | profile bytes (protobuf or Frank-CBOR) | `evm_profiles.rs` |
+//! | `pt/` timestamp_be ++ address | address; derived by-time index | `evm_profiles.rs` |
+//! | `pn/` normalized name ++ address | address; derived by-name index | `evm_profiles.rs` |
+//! | `pc` | profile count (little-endian u64, atomic add); derived | `evm_profiles.rs` |
 //! | `u/n` name | username record (JSON) | `directory_usernames.rs` |
 //! | `u/a` address | name; derived reverse index | `directory_usernames.rs` |
 //! | `x/` key ++ part_be32 | parts of a value longer than the store's value limit | this module |
@@ -38,11 +38,11 @@ use bitcoinsuite_error::{ErrorMeta, Report, Result, WrapErr};
 use thiserror::Error;
 
 use crate::store::directory_usernames::DbDirectoryUsernames;
+use crate::store::evm_profiles::DbEvmProfiles;
 use crate::store::kv_store::{
     KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact, MAX_VALUE_BYTES,
 };
 use crate::store::metadata::DbMetadata;
-use crate::store::monad_profiles::DbMonadProfiles;
 use crate::store::topics::DbTopics;
 
 /// Format marker key; present once any registry row has been written by this format.
@@ -295,7 +295,7 @@ impl Db {
     /// reader for an earlier one. A message store left beside the database under an earlier
     /// name stops the relay here, at startup, with what to delete.
     fn refuse_old_message_store(path: &Path) -> Result<()> {
-        let left_behind = super::monad_dm_cbor::OLD_STORE_EXTENSIONS
+        let left_behind = super::evm_direct_messages::OLD_STORE_EXTENSIONS
             .iter()
             .any(|extension| path.with_extension(extension).exists());
         if left_behind {
@@ -359,12 +359,12 @@ impl Db {
         // namespace its predecessor claimed.
         let mut delete = vec![
             path.to_path_buf(),
-            path.with_extension(super::monad_dm_cbor::STORE_EXTENSION),
+            path.with_extension(super::evm_direct_messages::STORE_EXTENSION),
             crate::registry::Registry::local_large_values_path(path)
-                .join(super::monad_dm_cbor::OBJECT_NAMESPACE),
+                .join(super::evm_direct_messages::OBJECT_NAMESPACE),
         ];
         delete.extend(
-            super::monad_dm_cbor::OLD_STORE_EXTENSIONS
+            super::evm_direct_messages::OLD_STORE_EXTENSIONS
                 .iter()
                 .map(|extension| path.with_extension(extension)),
         );
@@ -435,10 +435,10 @@ impl Db {
         DbTopics::new(self)
     }
 
-    /// Returns `DbMonadProfiles`, allowing access to stored Monad-native profile registrations
+    /// Returns `DbEvmProfiles`, allowing access to stored Monad-native profile registrations
     /// (ticket #45).
-    pub fn monad_profiles(&self) -> DbMonadProfiles<'_> {
-        DbMonadProfiles::new(self)
+    pub fn evm_profiles(&self) -> DbEvmProfiles<'_> {
+        DbEvmProfiles::new(self)
     }
 
     /// Returns `DbDirectoryUsernames`, the store of unique usernames.
@@ -683,11 +683,11 @@ mod tests {
             drop(rocksdb::DB::open_cf(
                 &options,
                 &path,
-                ["metadata", "monad_profiles", "directory_usernames"],
+                ["metadata", "evm_profiles", "directory_usernames"],
             )?);
         }
         let error = format!("{:#}", Db::open(&path).unwrap_err());
-        assert!(error.contains("monad_profiles"), "{error}");
+        assert!(error.contains("evm_profiles"), "{error}");
         assert!(error.contains("Development reset"), "{error}");
         Ok(())
     }
@@ -701,8 +701,8 @@ mod tests {
         let path = tempdir.path().join("db.rocksdb");
         {
             let db = Db::open(&path)?;
-            db.monad_profiles()
-                .put_raw(&crate::monad_http::Address([1; 20]), b"raw", 1, None)?;
+            db.evm_profiles()
+                .put_raw(&crate::evm_rpc::Address([1; 20]), b"raw", 1, None)?;
             assert_eq!(
                 db.raw_rows(b"F")?,
                 vec![(b"F".to_vec(), b"registry-kv-v1".to_vec())]
@@ -749,7 +749,7 @@ mod replica_conflict_tests {
 
     use super::Db;
     use crate::{
-        monad_http::Address,
+        evm_rpc::Address,
         proto,
         store::{
             directory_usernames::{
@@ -902,12 +902,12 @@ mod replica_conflict_tests {
         let (_store, db_a, a, db_b) = replicas(dir.path())?;
         let db_b = Arc::new(db_b);
         let address = Address([4; 20]);
-        db_b.monad_profiles()
+        db_b.evm_profiles()
             .put(&address, &signed_profile(100, "OldName"))?;
         {
             let db_b = db_b.clone();
             *a.pending.lock().unwrap() = Some(Box::new(move || {
-                db_b.monad_profiles()
+                db_b.evm_profiles()
                     .put(&address, &signed_profile(200, "Other"))
                     .unwrap();
             }));
@@ -915,7 +915,7 @@ mod replica_conflict_tests {
         // A's first attempt read OldName and staged removing its rows; B replaced it with Other
         // meanwhile, so A re-runs and removes Other's rows instead.
         let newest = signed_profile(300, "NewName");
-        db_a.monad_profiles().put(&address, &newest)?;
+        db_a.evm_profiles().put(&address, &newest)?;
         assert_eq!(a.attempts.load(Ordering::SeqCst), 2);
         for db in [&db_a, db_b.as_ref()] {
             let keys = |prefix: &[u8]| -> Result<Vec<Vec<u8>>> {
@@ -930,12 +930,12 @@ mod replica_conflict_tests {
                 vec![[b"pn/newname".as_slice(), &address.0].concat()]
             );
             assert_eq!(
-                db.monad_profiles().list_since(0)?,
+                db.evm_profiles().list_since(0)?,
                 vec![(address, newest.clone())]
             );
-            assert_eq!(db.monad_profiles().count_records()?, 1);
-            assert!(db.monad_profiles().search_by_name("old", 10)?.is_empty());
-            assert!(db.monad_profiles().search_by_name("other", 10)?.is_empty());
+            assert_eq!(db.evm_profiles().count_records()?, 1);
+            assert!(db.evm_profiles().search_by_name("old", 10)?.is_empty());
+            assert!(db.evm_profiles().search_by_name("other", 10)?.is_empty());
         }
         Ok(())
     }

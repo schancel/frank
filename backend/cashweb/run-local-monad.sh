@@ -84,7 +84,7 @@ case "$min_value_wei" in
 esac
 
 if ! awk '
-    /^\[registry\.monad_mailbox\]$/ {
+    /^\[registry\.evm_mailbox\]$/ {
         sections += 1
         in_monad_mailbox = 1
         next
@@ -202,8 +202,8 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
         print "network = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
         next
     }
-    /^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 1 }
-    in_monad_mailbox && /^\[/ && !/^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 0 }
+    /^\[registry\.evm_mailbox\]$/ { in_monad_mailbox = 1 }
+    in_monad_mailbox && /^\[/ && !/^\[registry\.evm_mailbox\]$/ { in_monad_mailbox = 0 }
     in_monad_mailbox && /^min_value_wei[[:space:]]*=/ {
         print "min_value_wei = \"" ENVIRON["LAUNCHER_MIN_VALUE_WEI"] "\""
         next

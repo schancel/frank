@@ -2,17 +2,17 @@ use std::{io::Read, net::SocketAddr, sync::Arc, time::Duration};
 
 use bitcoinsuite_bitcoind::rpc_client::BitcoindRpcClient;
 use bitcoinsuite_error::{Result, WrapErr};
-use cashweb_config::{parse_conf, CashwebdConf, MonadMailboxMode, RelayStorageDriver};
+use cashweb_config::{parse_conf, CashwebdConf, EvmMailboxMode, RelayStorageDriver};
 use cashweb_registry::{
     chains::RelayChains,
     disabled_chain_adapter::DisabledChainAdapter,
+    evm_mailbox::{EvmMailboxRuntime, MailboxConfig, SessionSecret},
     http::{
         bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
-        evm_rpc::EvmRpcRuntime, monad_topics::ForumRuntime, pop_protection::PopGate,
+        evm_rpc::EvmRpcRuntime, evm_topics::ForumRuntime, pop_protection::PopGate,
         server::RegistryServer, solana_proxy::SolanaProxyRuntime,
     },
     lotus_adapter::LotusAdapter,
-    monad_mailbox::{MailboxConfig, MonadMailboxRuntime, SessionSecret},
     p2p::{
         peer::Peer,
         peers::{InitialMetadataDownloadParams, Peers},
@@ -146,7 +146,7 @@ fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> 
 fn read_and_validate_conf(
     conf_path: &str,
     stdin: &mut impl Read,
-) -> Result<(CashwebdConf, MonadMailboxMode, RelayChains)> {
+) -> Result<(CashwebdConf, EvmMailboxMode, RelayChains)> {
     read_and_validate_conf_with_env(conf_path, stdin, |name| std::env::var(name).ok())
 }
 
@@ -158,7 +158,7 @@ fn read_and_validate_conf_with_env(
     conf_path: &str,
     stdin: &mut impl Read,
     env: impl Fn(&str) -> Option<String>,
-) -> Result<(CashwebdConf, MonadMailboxMode, RelayChains)> {
+) -> Result<(CashwebdConf, EvmMailboxMode, RelayChains)> {
     let conf_contents = read_conf_contents(conf_path, stdin)?;
     let conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
@@ -169,9 +169,9 @@ fn read_and_validate_conf_with_env(
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
     let mailbox_mode = conf
         .registry
-        .monad_mailbox
+        .evm_mailbox
         .mode()
-        .wrap_err("Invalid registry.monad_mailbox configuration")?;
+        .wrap_err("Invalid registry.evm_mailbox configuration")?;
     if let Some(oracle) = &conf.registry.oracle {
         oracle
             .validate()
@@ -632,7 +632,7 @@ fn watch_fdb_network() {
 
 async fn run(
     conf: CashwebdConf,
-    mailbox_mode: MonadMailboxMode,
+    mailbox_mode: EvmMailboxMode,
     chains: RelayChains,
     driver: RelayStorageDriver,
     provisioned: Provisioned,
@@ -790,16 +790,16 @@ async fn run(
             ))
         })
     };
-    let monad_mailbox = match mailbox_mode {
-        MonadMailboxMode::Disabled => {
+    let evm_mailbox = match mailbox_mode {
+        EvmMailboxMode::Disabled => {
             tracing::event!(
                 tracing::Level::WARN,
                 "Message routes are disabled by configuration: this relay stores and serves no \
                  direct messages"
             );
-            MonadMailboxRuntime::Disabled
+            EvmMailboxRuntime::Disabled
         }
-        MonadMailboxMode::Enabled { min_value_wei } => {
+        EvmMailboxMode::Enabled { min_value_wei } => {
             // Cluster mode requires the provisioned key, so every replica signs with it. A single
             // node keeps its own beside the database, made on first start.
             let vapid = match provisioned_vapid {
@@ -810,7 +810,7 @@ async fn run(
                         .wrap_err_with(|| format!("Reading VAPID key {}", vapid_path.display()))?
                 }
             };
-            MonadMailboxRuntime::enabled(
+            EvmMailboxRuntime::enabled(
                 network_adapter()?,
                 MailboxConfig::default(),
                 min_value_wei,
@@ -953,7 +953,7 @@ async fn run(
         peers: Arc::clone(&peers),
         pop_gate,
         curated_defaults,
-        monad_mailbox,
+        evm_mailbox,
         evm_rpc,
         bitcoin_proxy,
         solana_proxy,
@@ -1097,7 +1097,7 @@ async fn shutdown_signal() {
 mod tests {
     use std::io::{Cursor, Error, ErrorKind, Read};
 
-    use cashweb_config::MonadMailboxMode;
+    use cashweb_config::EvmMailboxMode;
 
     use super::{read_and_validate_conf_with_env, read_conf_contents};
 
@@ -1347,7 +1347,7 @@ max_get_logs_range = 10\n\n\
                 read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
                     .unwrap_or_else(|err| panic!("{name}: {err:?}"));
             assert!(
-                matches!(mode, MonadMailboxMode::Enabled { .. }),
+                matches!(mode, EvmMailboxMode::Enabled { .. }),
                 "{name}: mailbox must stay enabled"
             );
             assert_eq!(chains.network().id, "monad-testnet", "{name}");
@@ -1411,7 +1411,7 @@ max_get_logs_range = 10\n\n\
             owned_env(vars.clone()),
         )
         .expect("a relay on ethereum-sepolia starts");
-        assert!(matches!(mode, MonadMailboxMode::Enabled { .. }));
+        assert!(matches!(mode, EvmMailboxMode::Enabled { .. }));
         assert_eq!(chains.network().id, "ethereum-sepolia");
         assert_eq!(chains.network_tag(), b"SEPO");
         let adapter = chains.network_adapter().unwrap();
@@ -1521,7 +1521,7 @@ max_get_logs_range = 10\n\n\
             owned_env(full_env_with("MONAD_TESTNET_HTTP_RPC_URL", None)),
         )
         .expect("nothing verifies payments, so the network needs no upstream");
-        assert!(matches!(mode, MonadMailboxMode::Disabled));
+        assert!(matches!(mode, EvmMailboxMode::Disabled));
         assert!(conf.registry.forum.is_none());
         assert_eq!(chains.network().id, "monad-testnet");
         assert!(chains.network_adapter().is_none());

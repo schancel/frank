@@ -41,7 +41,7 @@ Both run `packages/frank-codec/scripts/vectors.mts`. The `typecheck` workflow ru
    `rust-origin.json`), `backend/cashweb/cashweb-registry/tests/directory_preview_corpus.cjs`
    writes `directory-admission.json`, and
    `backend/cashweb/cashweb-registry/tests/support/canonical_dm_plain_transfer_fixtures.cjs`
-   re-signs the request fixtures in `monad_message_cbor_tests.rs` as plain transfers.
+   re-signs the request fixtures in `evm_direct_messages_tests.rs` as plain transfers.
 5. `cargo test` with `FRANK_UPDATE_RUST_VECTORS=1` and `FRANK_UPDATE_INTEROPERABILITY_VECTORS=1`
    rewrites `rust-origin.json` and `interoperability.json`.
 

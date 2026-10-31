@@ -39,14 +39,14 @@ use tokio_tungstenite::{
 
 use crate::{
     chains::{EvmChainAdapter, IdentityError, RelayChains},
+    evm_mailbox::ChallengeConsumption,
+    evm_rpc::Address,
     http::{
         bitcoin_proxy::BitcoinProxyRuntime,
         hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaDenial},
         server::RegistryServer,
         upstream_cooldown::UpstreamCooldownTracker,
     },
-    monad_http::Address,
-    monad_mailbox::ChallengeConsumption,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -260,15 +260,12 @@ impl RpcAuthState {
     /// Signing state for this process only.
     #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self::for_session(&crate::monad_mailbox::SessionSecret::random(), "process")
+        Self::for_session(&crate::evm_mailbox::SessionSecret::random(), "process")
     }
 
     /// Signing state derived from the relay's session secret, so challenges and capabilities
     /// issued before a restart are still good after it. Each proxy names its own `purpose`.
-    pub(crate) fn for_session(
-        session: &crate::monad_mailbox::SessionSecret,
-        purpose: &str,
-    ) -> Self {
+    pub(crate) fn for_session(session: &crate::evm_mailbox::SessionSecret, purpose: &str) -> Self {
         let (epoch, secret) = session.derive(purpose);
         Self { epoch, secret }
     }
@@ -478,7 +475,7 @@ impl EvmRpcRuntime {
     pub fn new(
         conf: &EvmRpcConf,
         chains: Arc<RelayChains>,
-        session: &crate::monad_mailbox::SessionSecret,
+        session: &crate::evm_mailbox::SessionSecret,
     ) -> Result<Option<Arc<Self>>, EvmRpcStartError> {
         conf.validate().map_err(EvmRpcStartError::InvalidConfig)?;
         if !conf.enabled {
@@ -525,7 +522,7 @@ impl EvmRpcRuntime {
         )?);
         chains.start_verifying().await;
         Ok(
-            Self::new(conf, chains, &crate::monad_mailbox::SessionSecret::random())
+            Self::new(conf, chains, &crate::evm_mailbox::SessionSecret::random())
                 .expect("validated by RelayChains"),
         )
     }
@@ -1030,7 +1027,7 @@ async fn admitted_customer(
     };
     #[cfg(test)]
     DIRECTORY_LOOKUPS.set(DIRECTORY_LOOKUPS.get() + 1);
-    super::monad_message_cbor::admitted_point_or_busy(server, network, customer, point)
+    super::evm_direct_messages::admitted_point_or_busy(server, network, customer, point)
         .await
         .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_auth_busy"))
 }
@@ -1092,7 +1089,7 @@ fn finish_authentication(
     } = parsed;
     let digest: [u8; 32] = Sha256::digest(auth_preimage(challenge, binding, network_tag)).into();
     let valid = match admitted {
-        Some(point) => server.registry.verify_admitted_monad_recipient_signature(
+        Some(point) => server.registry.verify_admitted_evm_recipient_signature(
             binding.customer,
             Some(point),
             digest,
@@ -1101,7 +1098,7 @@ fn finish_authentication(
         None => {
             server
                 .registry
-                .verify_monad_recipient_signature(binding.customer, digest, &signature)
+                .verify_evm_recipient_signature(binding.customer, digest, &signature)
         }
     }
     .map_err(|_| rpc_error(StatusCode::INTERNAL_SERVER_ERROR, "rpc_auth_unavailable"))?;
@@ -1110,7 +1107,7 @@ fn finish_authentication(
     }
     match server
         .registry
-        .consume_monad_mailbox_challenge(
+        .consume_evm_mailbox_challenge(
             challenge.epoch,
             binding.customer,
             challenge.nonce,
@@ -2610,7 +2607,7 @@ mod tests {
     fn customer_address() -> Address {
         let ecc = EccSecp256k1::default();
         let pubkey = ecc.derive_pubkey(&customer_secret());
-        crate::monad_evm_tx::address_from_uncompressed_pubkey(
+        crate::evm_transaction::address_from_uncompressed_pubkey(
             &ecc.serialize_pubkey_uncompressed(&pubkey),
         )
     }
@@ -2629,7 +2626,7 @@ mod tests {
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(pop_gate),
                 curated_defaults: Arc::new(vec![]),
-                monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+                evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
                 evm_rpc: Some(Arc::clone(&runtime)),
                 bitcoin_proxy: None,
                 solana_proxy: None,
@@ -2655,7 +2652,7 @@ mod tests {
         .encode_to_vec();
         let hash = BitcoinSha256::digest(payload.clone().into());
         registry
-            .put_monad_profile(
+            .put_evm_profile(
                 customer_address(),
                 cashweb_payload::proto::SignedPayload {
                     pubkey: pubkey.as_slice().to_vec(),
@@ -2741,7 +2738,7 @@ mod tests {
         // The forum takes burn payments on the relay network.
         let network = server.chains.evm("monad-testnet").unwrap().clone();
         server.forum = Some(Arc::new(
-            crate::http::monad_topics::ForumRuntime::new(
+            crate::http::evm_topics::ForumRuntime::new(
                 network,
                 &cashweb_config::ForumConf {
                     burn_address: format!("0x{}", "00".repeat(19) + "01"),
@@ -3597,7 +3594,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: Some(runtime),
             bitcoin_proxy: None,
             solana_proxy: None,
@@ -4559,7 +4556,7 @@ mod tests {
         use super::*;
         use crate::{
             directory_runtime::{Operation, Submission},
-            http::monad_message_cbor::tests::{public_p_signature, NativeDirectoryFixture},
+            http::evm_direct_messages::tests::{public_p_signature, NativeDirectoryFixture},
         };
 
         fn lookups() -> usize {
@@ -4572,7 +4569,7 @@ mod tests {
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
                 curated_defaults: Arc::new(vec![]),
-                monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+                evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
                 evm_rpc: Some(Arc::new(runtime)),
                 bitcoin_proxy: None,
                 solana_proxy: None,
@@ -4589,7 +4586,7 @@ mod tests {
         /// The self-published account the fixture's wallet signer holds the key of.
         fn subject(fixture: &NativeDirectoryFixture) -> (String, Address) {
             let point = fixture.accounts[1].subject.clone();
-            let address = crate::monad_stamp_stealth::recipient_address_from_public_key(
+            let address = crate::evm_stamp_stealth::recipient_address_from_public_key(
                 &hex::decode(&point).unwrap(),
             )
             .unwrap();

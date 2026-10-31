@@ -42,7 +42,7 @@ message Peer {
 message Peers { repeated Peer peers = 1; }
 
 // One entry of ListMonadProfilesResponse (ticket #77, client-side counterpart of the backend's
-// `ListMonadProfilesEntry` -- see `backend/cashweb/cashweb-registry/proto/monad_profile.proto`).
+// `ListMonadProfilesEntry` -- see `backend/cashweb/cashweb-registry/proto/evm_profile.proto`).
 // Field-number-matched to the backend message so the wire format is identical even though the
 // package/message names differ, mirroring this file's existing `AddressMetadata`/`MonadProfile`
 // relationship (see that backend proto's own doc comment).

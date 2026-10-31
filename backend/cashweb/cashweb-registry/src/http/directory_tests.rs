@@ -155,7 +155,7 @@ fn signed(secret: u32, signer: u32, edit: impl Fn(&mut Vec<(u64, CborValue)>)) -
     .unwrap();
     Entry {
         subject: hex::encode(point),
-        address: crate::monad_stamp_stealth::recipient_address_from_public_key(&point)
+        address: crate::evm_stamp_stealth::recipient_address_from_public_key(&point)
             .unwrap()
             .to_hex(),
         attestation,
@@ -641,11 +641,10 @@ async fn exact_http_admission_duplicate_history_and_restart() {
         .0,
         StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
-    let address = crate::monad_stamp_stealth::recipient_address_from_public_key(
-        &hex::decode(SUBJECT).unwrap(),
-    )
-    .unwrap()
-    .to_hex();
+    let address =
+        crate::evm_stamp_stealth::recipient_address_from_public_key(&hex::decode(SUBJECT).unwrap())
+            .unwrap()
+            .to_hex();
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
     drop(routes);
@@ -1015,7 +1014,7 @@ async fn real_http_socket_exact_bytes_and_expired_current_never_promote_history(
     let by_address = format!(
         "http://{address}{}",
         by_address(
-            &crate::monad_stamp_stealth::recipient_address_from_public_key(
+            &crate::evm_stamp_stealth::recipient_address_from_public_key(
                 &hex::decode(SUBJECT).unwrap()
             )
             .unwrap()

@@ -88,7 +88,7 @@ impl RegistryTestInstance {
             pop_gate,
             // No curated defaults needed by any current caller of this test instance (ticket #49).
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
@@ -164,7 +164,7 @@ pub fn placeholder_pop_conf() -> PopConf {
         enabled: false,
         // Deliberately not a real/reachable endpoint: nothing in this default config path should
         // ever need to make a live Monad RPC call.
-        monad_rpc_url: "http://127.0.0.1:1".parse().expect("valid URL"),
+        evm_rpc_url: "http://127.0.0.1:1".parse().expect("valid URL"),
         hmac_secret: "registry-test-instance-placeholder-hmac-secret-not-for-production"
             .to_string(),
         payment_recipient: format!("0x{}", "00".repeat(20)),

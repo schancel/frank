@@ -1,7 +1,7 @@
 //! Exact canonical DM transport. No legacy protobuf projection or implicit admission.
 use std::{ops::Range, sync::Arc};
 
-use crate::monad_http::Address;
+use crate::evm_rpc::Address;
 use axum::{
     extract::RawBody,
     http::HeaderMap,
@@ -29,7 +29,7 @@ pub(crate) async fn handle_put(
 ) -> Result<Response> {
     use hyper::body::HttpBody;
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
     let network = runtime.network();
@@ -78,7 +78,7 @@ pub(crate) async fn handle_put(
             }
             (stored, false)
         } else {
-            if request.transaction_count() > crate::monad_dm_payment::MAX_STAMP_PAYMENTS {
+            if request.transaction_count() > crate::evm_dm_payment::MAX_STAMP_PAYMENTS {
                 return Err(CanonicalError::Invalid);
             }
             let principals = request_principals(&request, network)?;
@@ -100,7 +100,7 @@ pub(crate) async fn handle_put(
             };
             // Everything that can refuse the message is decided from its bytes, here and in the
             // store's own checks, before anything is stored or broadcast.
-            let input = crate::monad_dm_payment::validate_canonical_payment_set(
+            let input = crate::evm_dm_payment::validate_canonical_payment_set(
                 request,
                 &recipient_current,
                 historical.as_ref(),
@@ -131,7 +131,7 @@ pub(crate) async fn handle_put(
         let stamp_value_wei: u128 = claim
             .request
             .raw_transactions()
-            .filter_map(|raw| crate::monad_evm_tx::decode_signed_transaction(raw).ok())
+            .filter_map(|raw| crate::evm_transaction::decode_signed_transaction(raw).ok())
             .fold(0u128, |acc, tx| acc.saturating_add(tx.value_wei));
         let stamp_value_avu_micros = headers
             .get("x-cashweb-stamp-avu-micros")
@@ -179,7 +179,7 @@ const EVENT_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1)
 pub(crate) async fn on_store<T, F>(server: &super::server::RegistryServer, call: F) -> Result<T>
 where
     T: Send + 'static,
-    F: FnOnce(&crate::store::monad_dm_cbor::Owner) -> Result<T> + Send + 'static,
+    F: FnOnce(&crate::store::evm_direct_messages::Owner) -> Result<T> + Send + 'static,
 {
     let registry = Arc::clone(&server.registry);
     tokio::task::spawn_blocking(move || call(registry.canonical_dm()))
@@ -193,7 +193,7 @@ where
 /// finds the row from its cursor. A slow event bus must not hold up the payments or the answer.
 async fn announce(
     server: &super::server::RegistryServer,
-    claim: &crate::store::monad_dm_cbor::Claim,
+    claim: &crate::store::evm_direct_messages::Claim,
 ) {
     // A sealed-sender message names no sender, so only the recipient's mailbox has it.
     let Ok(mailboxes) = claim.policy.parties() else {
@@ -240,8 +240,8 @@ const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// Returns what was logged for each payment: the outcome of one that went out, or the reason
 /// one did not.
 async fn broadcast_payments(
-    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
-    claim: &crate::store::monad_dm_cbor::Claim,
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
+    claim: &crate::store::evm_direct_messages::Claim,
 ) -> Vec<std::result::Result<&'static str, String>> {
     let Some(transport) = runtime.transport() else {
         tracing::event!(
@@ -256,7 +256,7 @@ async fn broadcast_payments(
             .map(|_| Err("no verified node".to_owned()))
             .collect();
     };
-    let client = crate::monad_http::MonadHttpClient::with_transport(transport);
+    let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
     let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
     let payload_hash = hex::encode(claim.policy.payload_hash);
     let sends = claim.request.raw_transactions().map(|raw| {
@@ -331,8 +331,8 @@ pub(crate) struct SenderState {
 /// lookup by hash only for a payment whose nonce is already used. The whole check waits on
 /// the node no longer than one broadcast does.
 async fn precheck_payments(
-    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
-    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
 ) -> Option<DeadPayment> {
     if payments.is_empty() {
         return None;
@@ -341,7 +341,7 @@ async fn precheck_payments(
     let outcome = match runtime.transport() {
         None => Err("no verified node".to_owned()),
         Some(transport) => {
-            let client = crate::monad_http::MonadHttpClient::with_transport(transport);
+            let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
             match tokio::time::timeout(wait, ask_node(&client, payments)).await {
                 Ok(outcome) => outcome,
                 Err(_) => Err("no answer from the node in time".to_owned()),
@@ -362,11 +362,11 @@ async fn precheck_payments(
 }
 
 /// The reads behind [`precheck_payments`]. `Err` when any read failed.
-pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
-    client: &crate::monad_http::MonadHttpClient<T>,
-    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+pub(crate) async fn ask_node<T: crate::evm_rpc::JsonRpcTransport>(
+    client: &crate::evm_rpc::EvmHttpClient<T>,
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
 ) -> std::result::Result<Option<DeadPayment>, String> {
-    use crate::monad_http::BlockTag;
+    use crate::evm_rpc::BlockTag;
     use std::collections::{HashMap, HashSet};
     let senders: HashSet<Address> = payments.iter().map(|payment| payment.sender).collect();
     let reads = senders.iter().map(|&sender| async move {
@@ -375,7 +375,7 @@ pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
             client.get_balance(sender, BlockTag::Latest),
         )
         .await;
-        Ok::<_, crate::monad_http::MonadRpcError>((
+        Ok::<_, crate::evm_rpc::EvmRpcError>((
             sender,
             SenderState {
                 pending_nonce: nonce?,
@@ -422,9 +422,9 @@ pub(crate) async fn ask_node<T: crate::monad_http::JsonRpcTransport>(
 /// `pending` tag behaves as `latest` (docs.monad.xyz/reference/rpc-differences), so asking for
 /// `pending` would not help there.
 pub(crate) fn judge_payments(
-    payments: &[crate::monad_evm_tx::DecodedSignedTransaction],
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
     states: &std::collections::HashMap<Address, SenderState>,
-    known: &std::collections::HashSet<crate::monad_http::Hash32>,
+    known: &std::collections::HashSet<crate::evm_rpc::Hash32>,
 ) -> Option<DeadPayment> {
     if payments
         .iter()
@@ -469,7 +469,7 @@ fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
 }
 #[cfg(test)]
 async fn current(
-    owner: &crate::store::monad_dm_cbor::Owner,
+    owner: &crate::store::evm_direct_messages::Owner,
     network: &str,
     subject: &[u8],
 ) -> Result<crate::directory_admission::Current> {
@@ -489,7 +489,7 @@ async fn current(
     }
 }
 async fn history(
-    owner: &crate::store::monad_dm_cbor::Owner,
+    owner: &crate::store::evm_direct_messages::Owner,
     network: &str,
     subject: &[u8],
     hash: [u8; 32],
@@ -520,7 +520,7 @@ pub(crate) struct Principals {
 /// never deliver the message: the recipient has no current entry here, or its entry names
 /// another relay. A directory that is merely busy is an error the sender may retry.
 async fn deliverable_recipient(
-    owner: &crate::store::monad_dm_cbor::Owner,
+    owner: &crate::store::evm_direct_messages::Owner,
     network: &str,
     subject: &[u8],
 ) -> Result<Option<crate::directory_admission::Current>> {
@@ -556,7 +556,7 @@ fn dead_response(
     reason: &str,
 ) -> Result<Response> {
     let recipient =
-        crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
+        crate::evm_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
             .map_err(|_| CanonicalError::Invalid)?;
     let sender_t1 = principals.sender_t1.unwrap_or([0; 32]);
     let recipient_t1 = principals.recipient_t1.unwrap_or([0; 32]);
@@ -644,7 +644,7 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
             .map_err(|_| CanonicalError::Invalid)?,
     })
 }
-fn accepted_response(claim: &crate::store::monad_dm_cbor::Claim) -> Result<Response> {
+fn accepted_response(claim: &crate::store::evm_direct_messages::Claim) -> Result<Response> {
     let identity = claim.echo()?;
     let timestamp = claim.delivered_at;
     // The client reads this as a JSON number, which is exact only up to 2^53 - 1.
@@ -690,7 +690,7 @@ impl IntoResponse for CanonicalError {
                 StatusCode::TOO_MANY_REQUESTS,
                 [(
                     axum::http::header::RETRY_AFTER,
-                    (crate::monad_mailbox::CHALLENGE_TTL_MS / 1000).to_string(),
+                    (crate::evm_mailbox::CHALLENGE_TTL_MS / 1000).to_string(),
                 )],
                 Json(serde_json::json!({"version":1,"error":"mailbox_challenge_capacity"})),
             )
@@ -983,7 +983,7 @@ impl SubmissionEcho {
     pub(crate) fn new(
         request: &ExactRequest,
         network: &str,
-        recipient: crate::monad_http::Address,
+        recipient: crate::evm_rpc::Address,
         payload_hash: &[u8; 32],
         sender_t1: &[u8; 32],
         recipient_t1: &[u8; 32],
@@ -1032,12 +1032,12 @@ fn hash_hex(value: &str) -> Result<[u8; 32]> {
     Ok(hash)
 }
 fn private_binding(
-    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
     recipient: Address,
-    resource: crate::monad_mailbox::MailboxResource,
+    resource: crate::evm_mailbox::MailboxResource,
     query: &PrivateQuery,
-) -> Result<crate::monad_mailbox::MailboxRequestBinding> {
-    use crate::monad_mailbox::{MailboxCursorBinding, MailboxRequestBinding, MailboxResource};
+) -> Result<crate::evm_mailbox::MailboxRequestBinding> {
+    use crate::evm_mailbox::{MailboxCursorBinding, MailboxRequestBinding, MailboxResource};
     let stream = resource == MailboxResource::MailboxStream;
     let since = query.since.unwrap_or(0);
     if !(0..=9_007_199_254_740_991).contains(&since) || (stream && since != 0) {
@@ -1083,7 +1083,7 @@ async fn admitted_subject(
     headers: &HeaderMap,
     recipient: Address,
 ) -> Result<Option<Vec<u8>>> {
-    let Some(runtime) = server.monad_mailbox.as_enabled() else {
+    let Some(runtime) = server.evm_mailbox.as_enabled() else {
         return Ok(None);
     };
     let network = runtime.network();
@@ -1116,8 +1116,7 @@ pub(crate) async fn admitted_point_or_busy(
     point: Vec<u8>,
 ) -> std::result::Result<Option<Vec<u8>>, crate::directory_runtime::RuntimeError> {
     use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
-    if crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok() != Some(recipient)
-    {
+    if crate::evm_stamp_stealth::recipient_address_from_public_key(&point).ok() != Some(recipient) {
         return Ok(None);
     }
     let Some(directory) = server.registry.canonical_dm().directory() else {
@@ -1168,16 +1167,16 @@ fn verified_point(
 async fn authenticate(
     server: &super::server::RegistryServer,
     headers: &HeaderMap,
-    binding: &crate::monad_mailbox::MailboxRequestBinding,
+    binding: &crate::evm_mailbox::MailboxRequestBinding,
 ) -> Result<()> {
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
     // A challenge this relay did not issue for this request fails here, before any key
     // lookup or storage read.
     let (challenge, signature) =
-        crate::monad_mailbox::parse_mailbox_authentication(headers, runtime, binding, now_ms())
+        crate::evm_mailbox::parse_mailbox_authentication(headers, runtime, binding, now_ms())
             .ok_or(CanonicalError::Unauthorized)?;
     let point = admitted_subject(server, headers, binding.recipient).await?;
     // The signature names the relay it was made for: this relay's configured public origin.
@@ -1187,7 +1186,7 @@ async fn authenticate(
         .directory()
         .ok_or(CanonicalError::Unavailable)?;
     let digest = Sha256::digest(
-        crate::monad_mailbox::mailbox_auth_preimage(
+        crate::evm_mailbox::mailbox_auth_preimage(
             challenge,
             binding,
             runtime.network_tag(),
@@ -1197,7 +1196,7 @@ async fn authenticate(
     );
     let valid = server
         .registry
-        .verify_admitted_monad_recipient_signature(
+        .verify_admitted_evm_recipient_signature(
             binding.recipient,
             point.as_deref(),
             digest.as_slice().try_into().expect("SHA256"),
@@ -1214,9 +1213,9 @@ async fn authenticate(
 async fn consume(
     server: &super::server::RegistryServer,
     recipient: Address,
-    challenge: crate::monad_mailbox::MailboxChallenge,
+    challenge: crate::evm_mailbox::MailboxChallenge,
 ) -> Result<()> {
-    use crate::monad_mailbox::ChallengeConsumption;
+    use crate::evm_mailbox::ChallengeConsumption;
     let consumed = on_store(server, move |owner| {
         owner.consume_challenge(
             challenge.epoch,
@@ -1224,7 +1223,7 @@ async fn consume(
             challenge.nonce,
             challenge.expires_at_ms,
             now_ms(),
-            crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
+            crate::evm_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
         )
     })
     .await?;
@@ -1240,10 +1239,10 @@ pub(crate) async fn handle_challenge(
     Extension(server): Extension<super::server::RegistryServer>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    use crate::monad_mailbox::MailboxResource;
+    use crate::evm_mailbox::MailboxResource;
     let recipient = Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?;
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
     let resource = match query.resource.as_deref() {
@@ -1260,18 +1259,16 @@ pub(crate) async fn handle_challenge(
         .is_none()
     {
         // Preserve the existing strict ECC unknown-key primitive; never reveal a profile lookup.
-        let _ = server.registry.verify_admitted_monad_recipient_signature(
-            recipient,
-            None,
-            [0; 32],
-            &[],
-        );
+        let _ =
+            server
+                .registry
+                .verify_admitted_evm_recipient_signature(recipient, None, [0; 32], &[]);
         return Err(CanonicalError::Unauthorized);
     }
     let challenge = runtime.issue_challenge(&binding, now_ms());
     Ok(Json(serde_json::json!({
         "epoch":hex::encode(challenge.epoch), "nonce":hex::encode(challenge.nonce), "expires_at_ms":challenge.expires_at_ms, "token":hex::encode(challenge.token),
-        "signing_domain":crate::monad_mailbox::MAILBOX_AUTH_DOMAIN, "resource":query.resource, "since":binding.since, "cursor":query.cursor, "limit":binding.limit, "max_bytes":binding.max_bytes, "network_tag":hex::encode(runtime.network_tag()),
+        "signing_domain":crate::evm_mailbox::MAILBOX_AUTH_DOMAIN, "resource":query.resource, "since":binding.since, "cursor":query.cursor, "limit":binding.limit, "max_bytes":binding.max_bytes, "network_tag":hex::encode(runtime.network_tag()),
     })).into_response())
 }
 
@@ -1293,7 +1290,7 @@ fn fresh_boundary(parts: &[&[u8]], prefix: &str) -> Result<String> {
 }
 /// One stored message as a part of a mailbox page: the delivery frame and its context.
 fn record_bytes(
-    claim: &crate::store::monad_dm_cbor::Claim,
+    claim: &crate::store::evm_direct_messages::Claim,
     outer: &str,
     direction: Option<&str>,
 ) -> Result<Vec<u8>> {
@@ -1359,14 +1356,14 @@ async fn page(
     headers: &HeaderMap,
     recipient: Address,
     query: &PrivateQuery,
-    resource: crate::monad_mailbox::MailboxResource,
+    resource: crate::evm_mailbox::MailboxResource,
 ) -> Result<Response> {
-    use crate::monad_mailbox::{MailboxCursor, MailboxResource};
+    use crate::evm_mailbox::{MailboxCursor, MailboxResource};
     if query.resource.is_some() {
         return Err(CanonicalError::Invalid);
     }
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
     let _cpu = runtime
@@ -1375,8 +1372,8 @@ async fn page(
     let binding = private_binding(runtime, recipient, resource, query)?;
     authenticate(server, headers, &binding).await?;
     type Record = (
-        crate::store::monad_dm_cbor::Claim,
-        Option<crate::store::monad_dm_cbor::MailboxDirection>,
+        crate::store::evm_direct_messages::Claim,
+        Option<crate::store::evm_direct_messages::MailboxDirection>,
     );
     let since = binding.since;
     // The next record strictly after a position. The store starts its scan there.
@@ -1411,7 +1408,7 @@ async fn page(
             })
         })
     };
-    let position = |claim: &crate::store::monad_dm_cbor::Claim| match resource {
+    let position = |claim: &crate::store::evm_direct_messages::Claim| match resource {
         MailboxResource::Inbox => MailboxCursor::Inbox {
             timestamp: claim.delivered_at,
             payload_hash: claim.policy.payload_hash,
@@ -1489,7 +1486,7 @@ pub(crate) async fn handle_inbox(
         &headers,
         Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?,
         &query,
-        crate::monad_mailbox::MailboxResource::Inbox,
+        crate::evm_mailbox::MailboxResource::Inbox,
     )
     .await
 }
@@ -1504,7 +1501,7 @@ pub(crate) async fn handle_mailbox(
         &headers,
         Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?,
         &query,
-        crate::monad_mailbox::MailboxResource::Mailbox,
+        crate::evm_mailbox::MailboxResource::Mailbox,
     )
     .await
 }
@@ -1518,9 +1515,9 @@ const NOTIFICATION_POLICY_SUBJECT_HEADER: &str = "x-frank-mailbox-subject";
 
 fn notification_policy_binding(
     address: Address,
-    resource: crate::monad_mailbox::MailboxResource,
-) -> crate::monad_mailbox::MailboxRequestBinding {
-    crate::monad_mailbox::MailboxRequestBinding {
+    resource: crate::evm_mailbox::MailboxResource,
+) -> crate::evm_mailbox::MailboxRequestBinding {
+    crate::evm_mailbox::MailboxRequestBinding {
         resource,
         recipient: address,
         since: 0,
@@ -1534,7 +1531,7 @@ fn notification_policy_binding(
 /// single-use challenge (its epoch and MAC name this relay), the method, the mailbox address,
 /// the relay's network tag and SHA-256 of the exact request body (empty for GET).
 pub(crate) fn notification_policy_auth_preimage(
-    challenge: crate::monad_mailbox::MailboxChallenge,
+    challenge: crate::evm_mailbox::MailboxChallenge,
     method: &str,
     address: Address,
     network_tag: &[u8],
@@ -1558,8 +1555,8 @@ pub(crate) fn notification_policy_auth_preimage(
 
 /// `401` carrying a fresh challenge for exactly this request; the client signs it and retries.
 fn notification_policy_challenge(
-    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
-    binding: &crate::monad_mailbox::MailboxRequestBinding,
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
+    binding: &crate::evm_mailbox::MailboxRequestBinding,
 ) -> Response {
     let challenge = runtime.issue_challenge(binding, now_ms());
     (
@@ -1585,10 +1582,10 @@ fn notification_policy_challenge(
 /// one this relay issued for this method and address and still live.
 async fn authenticate_notification_policy(
     server: &super::server::RegistryServer,
-    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
     headers: &HeaderMap,
-    binding: &crate::monad_mailbox::MailboxRequestBinding,
-    (challenge, signature): (crate::monad_mailbox::MailboxChallenge, Vec<u8>),
+    binding: &crate::evm_mailbox::MailboxRequestBinding,
+    (challenge, signature): (crate::evm_mailbox::MailboxChallenge, Vec<u8>),
     method: &str,
     body: &[u8],
 ) -> Result<()> {
@@ -1596,7 +1593,7 @@ async fn authenticate_notification_policy(
         .map_err(|_| CanonicalError::Unauthorized)?;
     let mut pubkey = [0u8; 33];
     hex::decode_to_slice(subject, &mut pubkey).map_err(|_| CanonicalError::Unauthorized)?;
-    let derived = crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey)
+    let derived = crate::evm_stamp_stealth::recipient_address_from_public_key(&pubkey)
         .map_err(|_| CanonicalError::Unauthorized)?;
     if derived != binding.recipient {
         return Err(CanonicalError::Unauthorized);
@@ -1635,7 +1632,7 @@ pub(crate) async fn handle_get_vapid_public_key(
     Extension(server): Extension<super::server::RegistryServer>,
 ) -> Result<Response> {
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
     let pubkey = runtime.vapid().public_key_base64url();
@@ -1661,15 +1658,15 @@ pub(crate) async fn handle_get_notification_policy(
 ) -> Result<Response> {
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
     let binding = notification_policy_binding(
         address,
-        crate::monad_mailbox::MailboxResource::NotificationPolicyRead,
+        crate::evm_mailbox::MailboxResource::NotificationPolicyRead,
     );
     let Some(auth) =
-        crate::monad_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
+        crate::evm_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
     else {
         return Ok(notification_policy_challenge(runtime, &binding));
     };
@@ -1694,16 +1691,16 @@ pub(crate) async fn handle_put_notification_policy(
     use hyper::body::HttpBody;
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
     let runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
     let binding = notification_policy_binding(
         address,
-        crate::monad_mailbox::MailboxResource::NotificationPolicyWrite,
+        crate::evm_mailbox::MailboxResource::NotificationPolicyWrite,
     );
     // A challenge this relay did not issue for this request is answered before the body is read.
     let Some(auth) =
-        crate::monad_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
+        crate::evm_mailbox::parse_mailbox_authentication(&headers, runtime, &binding, now_ms())
     else {
         return Ok(notification_policy_challenge(runtime, &binding));
     };
@@ -1777,11 +1774,11 @@ pub(crate) async fn handle_mailbox_ws(
     Extension(server): Extension<super::server::RegistryServer>,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Result<Response> {
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    use crate::evm_mailbox::{MailboxRequestBinding, MailboxResource};
 
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
     let _runtime = server
-        .monad_mailbox
+        .evm_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
 
@@ -1926,5 +1923,5 @@ async fn mailbox_push(
     })
 }
 #[cfg(test)]
-#[path = "monad_message_cbor_tests.rs"]
+#[path = "evm_direct_messages_tests.rs"]
 pub(crate) mod tests;

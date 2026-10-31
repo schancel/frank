@@ -1,60 +1,7 @@
-//! Verification for Monad-native profile registration (`PUT`/`GET /metadata/monad/:addr`, and
-//! the plain `/metadata/:addr` route's Monad-address dispatch branch -- see
-//! `crate::http::monad_profile`'s module docs -- ticket #45).
+//! Verify EVM-addressed profile signatures and retain the exact submitted envelope bytes.
 //!
-//! ## The open question this ticket exists to resolve: how does the relay authenticate a PUT?
-//!
-//! Every other Monad-native write path in this crate (`monad_stamp_verify`, `monad_topic_verify`)
-//! authenticates its sender by `ecrecover`-ing a signature off a *burn transaction the client
-//! already had to construct anyway* (see [`crate::monad_evm_tx::recover_sender`]'s docs) --
-//! there's no separate app-level signature field needed, since a raw signed EVM tx already proves
-//! who sent it. Profile registration has no such transaction: it's a bare HTTP `PUT`, never
-//! burn-gated (POP is disabled for the hackathon demo, and profile registration was never
-//! POP-gated to begin with -- see PLAN.md constraint 4 and this ticket's non-goals). So the naive
-//! extension of the established pattern -- have the client sign an arbitrary message and
-//! `ecrecover` the address back out, with no separate pubkey field needed -- doesn't have
-//! anything to recover a signature *from*.
-//!
-//! This ticket's own instructions were explicit: don't design that in isolation from the real,
-//! already-merged TS client this route is meant to unblock. Checking `app/src/cashweb/wallet/
-//! monad-identity.ts`'s `registerMonadIdentity`/`buildSignedAddressMetadata`/`signHash` (ticket
-//! #41) directly (rather than assuming the "ecrecover, no pubkey field" shape some earlier
-//! grooming notes speculated) found it does something different from that speculation in two
-//! ways:
-//!
-//! 1. It builds a `cashweb_payload::proto::SignedPayload` -- the *exact* wire message Lotus's own
-//!    `lotus-identity.ts`'s `registerIdentity` already sends to this same route -- carrying an
-//!    **explicit `pubkey` field**, not just a bare signature.
-//! 2. It signs `SHA256(payload)` (not Keccak256) with `bitcore-lib-xpi`'s plain DER ECDSA signer
-//!    (`bitcoreCrypto.ECDSA.sign(...).toDER()`), which produces a signature with **no recovery id**
-//!    (`v`/`yParity`) at all -- unlike a raw EVM tx's `(v, r, s)`, a bare DER signature is `(r, s)`
-//!    only. `ecrecover`-style single-shot recovery isn't directly available from it; recovering a
-//!    candidate pubkey would mean trying both possible recovery ids and disambiguating some other
-//!    way, for no benefit, since the client already sends the pubkey outright.
-//!
-//! So the actual resolution mirrors **Lotus's own solution to this identical problem**: an
-//! explicit `pubkey`/`sig` pair on `SignedPayload`, verified with plain [`Ecc::verify`] (exactly
-//! `cashweb_payload::payload::SignedPayload::verify`'s `SignatureScheme::Ecdsa` branch) -- not
-//! `ecrecover`. The only genuinely Monad-native piece is the *address* check: instead of Lotus's
-//! `PubKeyHash::from_address` (`SHA256`+`RIPEMD160` of the compressed pubkey, matched against a
-//! `LotusAddress`'s P2PKH script), this derives the Ethereum-style address from the pubkey
-//! (`Keccak256` of the uncompressed `X||Y` coordinates, low 20 bytes -- see
-//! [`crate::monad_evm_tx::address_from_uncompressed_pubkey`], reused here rather than
-//! reimplemented) and checks it matches the claimed `:addr`. `ecrecover` never enters into it:
-//! there's no signature-without-a-declared-signer to recover an identity *from* here, since the
-//! signer is already named up front, same as it always was on the Lotus side.
-//!
-//! ## Why not reuse `cashweb_payload::payload::SignedPayload<T>::verify` directly
-//!
-//! That method also loops over `burn_txs`, parsing each entry's `tx` bytes as a Lotus
-//! [`bitcoinsuite_core::Tx`] via `UnhashedTx::deser` -- harmless when `burn_txs` is empty (which
-//! is what the real client always sends, and what [`verify_monad_profile`] requires below) but
-//! wrong to depend on silently. Rather than inherit that Lotus-shaped parsing path implicitly,
-//! [`verify_monad_profile`] explicitly rejects a non-empty `burn_txs` up front instead --
-//! reinforcing (not just documenting) that profile registration is never burn-gated. `cashweb-
-//! payload` itself is left untouched, per this session's established "don't try to make
-//! `SignedPayload`/`PubKeyHash` dual-chain, build a parallel Monad-native path" precedent
-//! (PLAN.md constraint 5/6).
+//! The configured canonical chain identifier scopes the active profile path. Historical
+//! protobuf DTO and signing-domain identifiers remain unchanged by source ownership renaming.
 
 use bitcoinsuite_core::{
     ecc::{Ecc, PUBKEY_LENGTH},
@@ -67,12 +14,12 @@ use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use prost::Message;
 use thiserror::Error;
 
-use crate::{monad_evm_tx::address_from_uncompressed_pubkey, monad_http::Address, proto};
+use crate::{evm_rpc::Address, evm_transaction::address_from_uncompressed_pubkey, proto};
 
 /// Errors verifying a Monad-native profile registration's `cashweb_payload::proto::SignedPayload`
 /// envelope (see this module's docs for the overall scheme).
 #[derive(Debug, Error, ErrorMeta, Clone, PartialEq, Eq)]
-pub enum MonadProfileVerifyError {
+pub enum EvmProfileVerifyError {
     /// `pubkey` wasn't exactly 33 bytes (a compressed secp256k1 public key).
     #[invalid_client_input()]
     #[error("Public key len should be {PUBKEY_LENGTH}, but got {0}")]
@@ -165,7 +112,7 @@ pub enum MonadProfileVerifyError {
     MissingSubjectSignature,
 }
 
-use self::MonadProfileVerifyError::*;
+use self::EvmProfileVerifyError::*;
 
 const DISPLAY_NAME_MAX_SCALARS: usize = 128;
 const DISPLAY_NAME_MAX_UTF8_BYTES: usize = 512;
@@ -214,7 +161,7 @@ fn validate_display_names(profile: &proto::MonadProfile) -> Result<()> {
 
 /// A successfully-verified Monad profile registration.
 #[derive(Debug, Clone, PartialEq)]
-pub struct VerifiedMonadProfile {
+pub struct VerifiedEvmProfile {
     /// `SHA256(payload)`, verified to match the claimed `payload_hash` (or computed, if
     /// `payload_hash` was left empty).
     pub payload_hash: Sha256,
@@ -290,11 +237,11 @@ pub fn verify_signed_payload(
 /// this module's docs for the full rationale): the envelope must pass [`verify_signed_payload`]
 /// and the Ethereum-style address derived from `pubkey` must equal `claimed_address`. Returns the
 /// decoded [`proto::MonadProfile`] and its verified `payload_hash` on success.
-pub fn verify_monad_profile(
+pub fn verify_evm_profile(
     ecc: &EccSecp256k1,
     claimed_address: Address,
     signed: &cashweb_payload::proto::SignedPayload,
-) -> Result<VerifiedMonadProfile> {
+) -> Result<VerifiedEvmProfile> {
     let signer = verify_signed_payload(ecc, signed)?;
     if signer.address != claimed_address {
         return Err(AddressMismatch {
@@ -308,7 +255,7 @@ pub fn verify_monad_profile(
         .map_err(|err| InvalidProfilePayload(err.to_string()))?;
     validate_display_names(&profile)?;
 
-    Ok(VerifiedMonadProfile {
+    Ok(VerifiedEvmProfile {
         payload_hash: signer.payload_hash,
         profile,
     })
@@ -578,7 +525,7 @@ mod tests {
         let profile = sample_profile(1234);
         let (signed, address) = sign_profile(&seckey, &profile);
 
-        let verified = verify_monad_profile(&ecc, address, &signed).unwrap();
+        let verified = verify_evm_profile(&ecc, address, &signed).unwrap();
         assert_eq!(verified.profile, profile);
         assert_eq!(
             verified.payload_hash,
@@ -601,7 +548,7 @@ mod tests {
                 && test_case.normalized.as_deref().unwrap_or(input.as_str()) == input;
             let profile = display_name_profile(&input);
             let (signed, address) = sign_profile(&seckey, &profile);
-            let result = verify_monad_profile(&ecc, address, &signed);
+            let result = verify_evm_profile(&ecc, address, &signed);
 
             if wire_valid {
                 assert_eq!(result.unwrap().profile, profile, "fixture {}", test_case.id);
@@ -610,9 +557,9 @@ mod tests {
                     matches!(
                         result
                             .unwrap_err()
-                            .downcast::<MonadProfileVerifyError>()
+                            .downcast::<EvmProfileVerifyError>()
                             .unwrap(),
-                        MonadProfileVerifyError::InvalidDisplayName(_)
+                        EvmProfileVerifyError::InvalidDisplayName(_)
                     ),
                     "fixture {}",
                     test_case.id
@@ -634,11 +581,11 @@ mod tests {
         let (signed, address) = sign_profile(&seckey, &profile);
 
         assert!(matches!(
-            verify_monad_profile(&ecc, address, &signed)
+            verify_evm_profile(&ecc, address, &signed)
                 .unwrap_err()
-                .downcast::<MonadProfileVerifyError>()
+                .downcast::<EvmProfileVerifyError>()
                 .unwrap(),
-            MonadProfileVerifyError::InvalidDisplayName(_)
+            EvmProfileVerifyError::InvalidDisplayName(_)
         ));
     }
 
@@ -651,10 +598,10 @@ mod tests {
         let other_pubkey = ecc.derive_pubkey(&seckey(0x43));
         signed.pubkey = other_pubkey.as_slice().to_vec();
 
-        let err = verify_monad_profile(&ecc, address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, address, &signed).unwrap_err();
         assert_eq!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::InvalidSignature(
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::InvalidSignature(
                 bitcoinsuite_core::ecc::VerifySignatureError::IncorrectSignature
             ),
         );
@@ -667,10 +614,10 @@ mod tests {
         let (signed, _address) = sign_profile(&seckey(0x42), &profile);
         let (_, wrong_address) = sign_profile(&seckey(0x99), &sample_profile(1));
 
-        let err = verify_monad_profile(&ecc, wrong_address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, wrong_address, &signed).unwrap_err();
         assert_eq!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::AddressMismatch {
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::AddressMismatch {
                 expected: wrong_address,
                 actual: address_from_uncompressed_pubkey(
                     &ecc.serialize_pubkey_uncompressed(&ecc.derive_pubkey(&seckey(0x42)))
@@ -687,10 +634,10 @@ mod tests {
         // Tamper with the payload after signing: SHA256(payload) no longer matches payload_hash.
         signed.payload = sample_profile(9999).encode_to_vec();
 
-        let err = verify_monad_profile(&ecc, address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, address, &signed).unwrap_err();
         assert!(matches!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::PayloadHashMismatch { .. }
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::PayloadHashMismatch { .. }
         ));
     }
 
@@ -701,10 +648,10 @@ mod tests {
         let (mut signed, address) = sign_profile(&seckey(0x42), &profile);
         signed.sig_scheme = SignatureScheme::Schnorr as i32;
 
-        let err = verify_monad_profile(&ecc, address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, address, &signed).unwrap_err();
         assert_eq!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::UnsupportedSignatureScheme(SignatureScheme::Schnorr as i32),
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::UnsupportedSignatureScheme(SignatureScheme::Schnorr as i32),
         );
     }
 
@@ -718,10 +665,10 @@ mod tests {
             burn_idx: 0,
         }];
 
-        let err = verify_monad_profile(&ecc, address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, address, &signed).unwrap_err();
         assert_eq!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::UnexpectedBurnTxs(1),
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::UnexpectedBurnTxs(1),
         );
     }
 
@@ -732,10 +679,10 @@ mod tests {
         let (mut signed, address) = sign_profile(&seckey(0x42), &profile);
         signed.pubkey = vec![2; 32];
 
-        let err = verify_monad_profile(&ecc, address, &signed).unwrap_err();
+        let err = verify_evm_profile(&ecc, address, &signed).unwrap_err();
         assert_eq!(
-            err.downcast::<MonadProfileVerifyError>().unwrap(),
-            MonadProfileVerifyError::InvalidPubKeyLen(32),
+            err.downcast::<EvmProfileVerifyError>().unwrap(),
+            EvmProfileVerifyError::InvalidPubKeyLen(32),
         );
     }
 }

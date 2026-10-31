@@ -1,40 +1,8 @@
-//! [`MonadHttpClient`]: a thin JSON-RPC-over-HTTPS client for Monad (an EVM-compatible chain),
-//! talking to an Alchemy-hosted RPC endpoint.
+//! Shared EVM JSON-RPC transport and typed chain observations.
 //!
-//! ## Scope (ticket #12)
-//!
-//! This module implements the plain HTTPS request/response JSON-RPC methods needed to submit a
-//! transaction and read back chain state:
-//! - `eth_sendRawTransaction` ([`MonadHttpClient::send_raw_transaction`])
-//! - `eth_getTransactionReceipt` ([`MonadHttpClient::get_transaction_receipt`])
-//! - `eth_getLogs` ([`MonadHttpClient::get_logs`])
-//! - `eth_getTransactionByHash` ([`MonadHttpClient::get_transaction_by_hash`])
-//! - `eth_getRawTransactionByHash` ([`MonadHttpClient::get_raw_transaction_by_hash`])
-//!
-//! plus a small `eth_blockNumber` helper ([`MonadHttpClient::block_number`]) used to bound
-//! `eth_getLogs` block ranges (both in the live smoke test and for general callers).
-//!
-//! ## `eth_getTransactionByHash` (ticket #25)
-//!
-//! Originally out of scope here (see the note below), this was added once ticket #25 (assembling
-//! `MonadAdapter`) hit the same gap two other in-flight tickets (#16's `monad_stamp_verify.rs` and
-//! #23's `monad_pop_verify.rs`) had already independently worked around with their own private
-//! `JsonRpcTransport`-based calls: `TransactionReceipt` doesn't carry `to`/`value`/`input` (those
-//! live on the transaction itself), so verifying a burn/payment's value and calldata needs the
-//! full transaction. Both call sites now consume [`MonadHttpClient::get_transaction_by_hash`]
-//! instead of duplicating the call.
-//!
-//! **This is deliberately *not* a [`cashweb_payload::chain_adapter::ChainAdapter`]
-//! implementation.** Ticket #15 (the `eth_subscribe("newHeads")` WS path) is being implemented
-//! in parallel against the same eventual `MonadAdapter`, owning `monad_ws.rs`. To avoid both
-//! tickets editing the same file, this module only exposes a standalone
-//! [`MonadHttpClient`] struct with plain async methods; assembling this together with the WS
-//! client into a single `impl ChainAdapter for MonadAdapter` is out of scope here (tracked under
-//! the parent ticket #2).
-//!
-//! The endpoint URL (including any Alchemy API key embedded in its path) is passed in by the
-//! caller (e.g. read from the `MONAD_TESTNET_HTTP_RPC_URL` env var) — this module never reads
-//! env/config itself and never hardcodes an endpoint or key.
+//! Composition supplies the configured network endpoint and verifies its identity. This client
+//! handles native EVM transaction submission, receipts, logs and account state; it does not
+//! select a default network or own application payment policy.
 
 use std::{
     fmt,
@@ -376,7 +344,7 @@ pub struct Transaction {
 /// errors returned by the node, and further classifying the RPC-level errors we expect
 /// downstream callers (M3/M4) to need to branch on.
 #[derive(Debug, Error)]
-pub enum MonadRpcError {
+pub enum EvmRpcError {
     /// The HTTP request itself failed (connection error, timeout, TLS error, etc).
     #[error("transport error calling {method}: {source}")]
     Transport {
@@ -467,7 +435,7 @@ pub enum MonadRpcError {
     },
 }
 
-impl MonadRpcError {
+impl EvmRpcError {
     /// Whether this error from `eth_sendRawTransaction` proves the node did NOT accept the
     /// transaction. Anything else is ambiguous: the node may have accepted it.
     ///
@@ -482,17 +450,17 @@ impl MonadRpcError {
     /// - Transport errors, timeouts and unparsable replies are ambiguous.
     pub fn definitively_rejected_send(&self) -> bool {
         match self {
-            MonadRpcError::InsufficientFunds { .. }
-            | MonadRpcError::ReplacementUnderpriced { .. }
-            | MonadRpcError::NonceTooLow { .. } => true,
-            MonadRpcError::Rpc { message, .. } => {
+            EvmRpcError::InsufficientFunds { .. }
+            | EvmRpcError::ReplacementUnderpriced { .. }
+            | EvmRpcError::NonceTooLow { .. } => true,
+            EvmRpcError::Rpc { message, .. } => {
                 let lower = message.to_lowercase();
                 !says_node_holds_tx(&lower)
                     && DEFINITIVE_REJECTION_PHRASES
                         .iter()
                         .any(|phrase| lower.contains(phrase))
             }
-            MonadRpcError::HttpStatus { status, body, .. } => {
+            EvmRpcError::HttpStatus { status, body, .. } => {
                 matches!(status, 400 | 401 | 403 | 404 | 405 | 413 | 414 | 429)
                     && !says_node_holds_tx(&body.to_lowercase())
             }
@@ -504,8 +472,8 @@ impl MonadRpcError {
     /// HTTP status whose body says so).
     pub fn says_tx_already_held(&self) -> bool {
         match self {
-            MonadRpcError::AlreadyKnown { .. } => true,
-            MonadRpcError::HttpStatus { body, .. } => {
+            EvmRpcError::AlreadyKnown { .. } => true,
+            EvmRpcError::HttpStatus { body, .. } => {
                 let lower = body.to_lowercase();
                 ALREADY_KNOWN_PHRASES
                     .iter()
@@ -519,7 +487,7 @@ impl MonadRpcError {
     /// errors. It is removed here, where every transport error is made, so no caller can log
     /// or return it.
     fn transport(method: &str, source: reqwest::Error) -> Self {
-        MonadRpcError::Transport {
+        EvmRpcError::Transport {
             method: method.to_string(),
             source: source.without_url(),
         }
@@ -635,11 +603,11 @@ const DEFINITIVE_REJECTION_PHRASES: &[&str] = &[
     "nonce too high",
 ];
 
-/// Classify a raw JSON-RPC error object into a [`MonadRpcError`], recognizing well-known
+/// Classify a raw JSON-RPC error object into a [`EvmRpcError`], recognizing well-known
 /// EVM-node error message patterns (these providers, including Alchemy, don't expose stable
 /// error *codes* for these cases, only conventional message text, so classification is
 /// message-pattern based).
-fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> MonadRpcError {
+fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> EvmRpcError {
     // What an upstream says is kept without any URL it may have echoed, and bounded.
     error.message = from_upstream(&error.message);
     error.data = error
@@ -652,13 +620,13 @@ fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> MonadRpcErro
             .iter()
             .any(|phrase| lower.contains(phrase))
         {
-            MonadRpcError::AlreadyKnown {
+            EvmRpcError::AlreadyKnown {
                 method,
                 message: error.message,
             }
         } else {
             // "queued" without an already-known phrase: the node holds it; ambiguous generic error.
-            MonadRpcError::Rpc {
+            EvmRpcError::Rpc {
                 method,
                 code: error.code,
                 message: error.message,
@@ -669,22 +637,22 @@ fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> MonadRpcErro
         .iter()
         .any(|phrase| lower.contains(phrase))
     {
-        MonadRpcError::NonceTooLow {
+        EvmRpcError::NonceTooLow {
             method,
             message: error.message,
         }
     } else if lower.contains("insufficient funds") {
-        MonadRpcError::InsufficientFunds {
+        EvmRpcError::InsufficientFunds {
             method,
             message: error.message,
         }
     } else if lower.contains("replacement transaction underpriced") {
-        MonadRpcError::ReplacementUnderpriced {
+        EvmRpcError::ReplacementUnderpriced {
             method,
             message: error.message,
         }
     } else {
-        MonadRpcError::Rpc {
+        EvmRpcError::Rpc {
             method,
             code: error.code,
             message: error.message,
@@ -717,14 +685,14 @@ struct JsonRpcErrorBody {
     data: Option<Value>,
 }
 
-/// Transport abstraction for a single JSON-RPC call, so [`MonadHttpClient`]'s request-shaping
+/// Transport abstraction for a single JSON-RPC call, so [`EvmHttpClient`]'s request-shaping
 /// logic (method name, params encoding) can be unit-tested against a mock without a real network
 /// call. [`HttpTransport`] is the real implementation, POSTing to an HTTPS endpoint.
 #[async_trait]
 pub trait JsonRpcTransport: fmt::Debug + Send + Sync {
     /// Perform a single JSON-RPC call, returning the decoded `result` value on success, or a
-    /// classified [`MonadRpcError`] on transport/HTTP/RPC failure.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError>;
+    /// classified [`EvmRpcError`] on transport/HTTP/RPC failure.
+    async fn call(&self, method: &str, params: Value) -> Result<Value, EvmRpcError>;
 }
 
 /// Real [`JsonRpcTransport`], POSTing JSON-RPC requests to an HTTPS endpoint via `reqwest`.
@@ -790,10 +758,10 @@ impl fmt::Debug for HttpTransport {
 
 #[async_trait]
 impl JsonRpcTransport for HttpTransport {
-    async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, EvmRpcError> {
         let num_urls = self.rpc_urls.len();
         if num_urls == 0 {
-            return Err(MonadRpcError::InvalidResponse {
+            return Err(EvmRpcError::InvalidResponse {
                 method: method.to_string(),
                 reason: "no RPC endpoints configured".to_string(),
             });
@@ -808,11 +776,10 @@ impl JsonRpcTransport for HttpTransport {
         // Serialize/send manually (rather than reqwest's `.json()` convenience, which needs the
         // `json` feature) to avoid adding another feature-flag dependency for this one call
         // site.
-        let body =
-            serde_json::to_vec(&request).map_err(|source| MonadRpcError::InvalidResponse {
-                method: method.to_string(),
-                reason: source.to_string(),
-            })?;
+        let body = serde_json::to_vec(&request).map_err(|source| EvmRpcError::InvalidResponse {
+            method: method.to_string(),
+            reason: source.to_string(),
+        })?;
 
         let start_idx = self.next_index.fetch_add(1, Ordering::Relaxed) % num_urls;
         let mut last_error = None;
@@ -831,14 +798,14 @@ impl JsonRpcTransport for HttpTransport {
             {
                 Ok(resp) => resp,
                 Err(source) => {
-                    last_error = Some(MonadRpcError::transport(method, source));
+                    last_error = Some(EvmRpcError::transport(method, source));
                     continue;
                 }
             };
 
             let status = response.status();
             if status.is_server_error() && attempt + 1 < num_urls {
-                last_error = Some(MonadRpcError::HttpStatus {
+                last_error = Some(EvmRpcError::HttpStatus {
                     method: method.to_string(),
                     status: status.as_u16(),
                     body: "upstream server error".to_string(),
@@ -849,19 +816,19 @@ impl JsonRpcTransport for HttpTransport {
             let body_bytes = match read_bounded(response).await {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => {
-                    return Err(MonadRpcError::InvalidResponse {
+                    return Err(EvmRpcError::InvalidResponse {
                         method: method.to_string(),
                         reason: format!("response larger than {MAX_RPC_RESPONSE_BYTES} bytes"),
                     })
                 }
                 Err(source) => {
-                    last_error = Some(MonadRpcError::transport(method, source));
+                    last_error = Some(EvmRpcError::transport(method, source));
                     continue;
                 }
             };
 
             if !status.is_success() {
-                last_error = Some(MonadRpcError::HttpStatus {
+                last_error = Some(EvmRpcError::HttpStatus {
                     method: method.to_string(),
                     status: status.as_u16(),
                     body: from_upstream(&String::from_utf8_lossy(&body_bytes)),
@@ -875,7 +842,7 @@ impl JsonRpcTransport for HttpTransport {
 
             let parsed: JsonRpcResponse =
                 serde_json::from_slice(&body_bytes).map_err(|source| {
-                    MonadRpcError::InvalidResponse {
+                    EvmRpcError::InvalidResponse {
                         method: method.to_string(),
                         reason: source.to_string(),
                     }
@@ -887,16 +854,14 @@ impl JsonRpcTransport for HttpTransport {
             return Ok(parsed.result);
         }
 
-        Err(
-            last_error.unwrap_or_else(|| MonadRpcError::InvalidResponse {
-                method: method.to_string(),
-                reason: "all RPC upstreams failed".to_string(),
-            }),
-        )
+        Err(last_error.unwrap_or_else(|| EvmRpcError::InvalidResponse {
+            method: method.to_string(),
+            reason: "all RPC upstreams failed".to_string(),
+        }))
     }
 }
 
-/// Outcome of [`MonadHttpClient::send_raw_transaction`].
+/// Outcome of [`EvmHttpClient::send_raw_transaction`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubmittedTx {
     /// Hash of the newly-submitted transaction, as returned by `eth_sendRawTransaction`.
@@ -904,41 +869,41 @@ pub struct SubmittedTx {
 }
 
 /// Thin JSON-RPC-over-HTTPS client for Monad, generic over its [`JsonRpcTransport`] so tests can
-/// substitute a mock transport. Use [`MonadHttpClient::new`] for the real HTTPS client.
+/// substitute a mock transport. Use [`EvmHttpClient::new`] for the real HTTPS client.
 #[derive(Debug, Clone)]
-pub struct MonadHttpClient<T: JsonRpcTransport = HttpTransport> {
+pub struct EvmHttpClient<T: JsonRpcTransport = HttpTransport> {
     transport: T,
 }
 
-impl MonadHttpClient<HttpTransport> {
+impl EvmHttpClient<HttpTransport> {
     /// Construct a client talking to a real HTTPS JSON-RPC endpoint (e.g. Alchemy's Monad
     /// testnet URL). The caller sources `rpc_url` from env/config; never hardcode it.
     pub fn new(rpc_url: url::Url) -> Self {
-        MonadHttpClient {
+        EvmHttpClient {
             transport: HttpTransport::new(rpc_url),
         }
     }
 
     /// Construct a client talking to multiple HTTPS JSON-RPC endpoints with load balancing and failover.
     pub fn new_multi(rpc_urls: Vec<url::Url>) -> Self {
-        MonadHttpClient {
+        EvmHttpClient {
             transport: HttpTransport::new_multi(rpc_urls),
         }
     }
 }
 
-impl<T: JsonRpcTransport> MonadHttpClient<T> {
+impl<T: JsonRpcTransport> EvmHttpClient<T> {
     /// Construct a client around an arbitrary [`JsonRpcTransport`] (e.g. a mock, for testing
     /// request-shaping logic without a network call).
     pub fn with_transport(transport: T) -> Self {
-        MonadHttpClient { transport }
+        EvmHttpClient { transport }
     }
 
     /// Submit an already-signed raw transaction via `eth_sendRawTransaction`.
     ///
     /// `raw_tx` is the RLP-encoded signed transaction bytes; this method hex-encodes it with a
     /// `0x` prefix as the sole JSON-RPC param, per the Ethereum JSON-RPC spec.
-    pub async fn send_raw_transaction(&self, raw_tx: &[u8]) -> Result<SubmittedTx, MonadRpcError> {
+    pub async fn send_raw_transaction(&self, raw_tx: &[u8]) -> Result<SubmittedTx, EvmRpcError> {
         let params = json!([encode_0x(raw_tx)]);
         let result = self
             .transport
@@ -946,7 +911,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
             .await?;
         let tx_hash_hex = result
             .as_str()
-            .ok_or_else(|| MonadRpcError::InvalidResponse {
+            .ok_or_else(|| EvmRpcError::InvalidResponse {
                 method: "eth_sendRawTransaction".to_string(),
                 // The node's value is not repeated: it is upstream text of any size.
                 reason: format!(
@@ -962,7 +927,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
                 ),
             })?;
         let tx_hash =
-            Hash32::from_hex(tx_hash_hex).map_err(|err| MonadRpcError::InvalidResponse {
+            Hash32::from_hex(tx_hash_hex).map_err(|err| EvmRpcError::InvalidResponse {
                 method: "eth_sendRawTransaction".to_string(),
                 reason: err.to_string(),
             })?;
@@ -974,7 +939,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
     pub async fn get_transaction_receipt(
         &self,
         tx_hash: Hash32,
-    ) -> Result<Option<TransactionReceipt>, MonadRpcError> {
+    ) -> Result<Option<TransactionReceipt>, EvmRpcError> {
         let params = json!([tx_hash.to_hex()]);
         let result = self
             .transport
@@ -984,7 +949,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
             return Ok(None);
         }
         let receipt: TransactionReceipt =
-            serde_json::from_value(result).map_err(|source| MonadRpcError::InvalidResponse {
+            serde_json::from_value(result).map_err(|source| EvmRpcError::InvalidResponse {
                 method: "eth_getTransactionReceipt".to_string(),
                 reason: source.to_string(),
             })?;
@@ -996,12 +961,12 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
     ///
     /// Unlike [`get_transaction_receipt`](Self::get_transaction_receipt), this returns the
     /// transaction's `value` and `input` (calldata) -- needed by callers that must inspect a
-    /// burn/payment tx's value or calldata (e.g. `monad_stamp_verify`, `monad_pop_verify`), which
+    /// burn/payment tx's value or calldata (e.g. `evm_stamp_verify`, `evm_pop_verify`), which
     /// a receipt alone doesn't carry.
     pub async fn get_transaction_by_hash(
         &self,
         tx_hash: Hash32,
-    ) -> Result<Option<Transaction>, MonadRpcError> {
+    ) -> Result<Option<Transaction>, EvmRpcError> {
         let params = json!([tx_hash.to_hex()]);
         let result = self
             .transport
@@ -1011,7 +976,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
             return Ok(None);
         }
         let tx: Transaction =
-            serde_json::from_value(result).map_err(|source| MonadRpcError::InvalidResponse {
+            serde_json::from_value(result).map_err(|source| EvmRpcError::InvalidResponse {
                 method: "eth_getTransactionByHash".to_string(),
                 reason: source.to_string(),
             })?;
@@ -1030,7 +995,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
     pub async fn get_raw_transaction_by_hash(
         &self,
         tx_hash: Hash32,
-    ) -> Result<Option<Vec<u8>>, MonadRpcError> {
+    ) -> Result<Option<Vec<u8>>, EvmRpcError> {
         let params = json!([tx_hash.to_hex()]);
         let result = self
             .transport
@@ -1041,18 +1006,17 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
         }
         let hex_str = result
             .as_str()
-            .ok_or_else(|| MonadRpcError::InvalidResponse {
+            .ok_or_else(|| EvmRpcError::InvalidResponse {
                 method: "eth_getRawTransactionByHash".to_string(),
                 reason: format!("expected a hex string, got {}", result),
             })?;
-        let stripped =
-            hex_str
-                .strip_prefix("0x")
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
-                    method: "eth_getRawTransactionByHash".to_string(),
-                    reason: format!("expected 0x-prefixed hex, got {:?}", hex_str),
-                })?;
-        let bytes = hex::decode(stripped).map_err(|source| MonadRpcError::InvalidResponse {
+        let stripped = hex_str
+            .strip_prefix("0x")
+            .ok_or_else(|| EvmRpcError::InvalidResponse {
+                method: "eth_getRawTransactionByHash".to_string(),
+                reason: format!("expected 0x-prefixed hex, got {:?}", hex_str),
+            })?;
+        let bytes = hex::decode(stripped).map_err(|source| EvmRpcError::InvalidResponse {
             method: "eth_getRawTransactionByHash".to_string(),
             reason: source.to_string(),
         })?;
@@ -1060,11 +1024,11 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
     }
 
     /// Fetch logs matching the given filter via `eth_getLogs`.
-    pub async fn get_logs(&self, filter: &GetLogsFilter) -> Result<Vec<Log>, MonadRpcError> {
+    pub async fn get_logs(&self, filter: &GetLogsFilter) -> Result<Vec<Log>, EvmRpcError> {
         let params = filter.to_params();
         let result = self.transport.call("eth_getLogs", params).await?;
         let logs: Vec<Log> =
-            serde_json::from_value(result).map_err(|source| MonadRpcError::InvalidResponse {
+            serde_json::from_value(result).map_err(|source| EvmRpcError::InvalidResponse {
                 method: "eth_getLogs".to_string(),
                 reason: source.to_string(),
             })?;
@@ -1075,15 +1039,15 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
     /// ticket's required trio, but a cheap, obviously-correct helper needed to bound
     /// `eth_getLogs` block ranges (used by the live smoke test, and useful to any caller of
     /// `get_logs`).
-    pub async fn block_number(&self) -> Result<u64, MonadRpcError> {
+    pub async fn block_number(&self) -> Result<u64, EvmRpcError> {
         let result = self.transport.call("eth_blockNumber", json!([])).await?;
         let hex_str = result
             .as_str()
-            .ok_or_else(|| MonadRpcError::InvalidResponse {
+            .ok_or_else(|| EvmRpcError::InvalidResponse {
                 method: "eth_blockNumber".to_string(),
                 reason: format!("expected a hex string block number, got {}", result),
             })?;
-        parse_hex_quantity(hex_str).map_err(|reason| MonadRpcError::InvalidResponse {
+        parse_hex_quantity(hex_str).map_err(|reason| EvmRpcError::InvalidResponse {
             method: "eth_blockNumber".to_string(),
             reason,
         })
@@ -1094,14 +1058,14 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
         &self,
         address: Address,
         block: BlockTag,
-    ) -> Result<u64, MonadRpcError> {
+    ) -> Result<u64, EvmRpcError> {
         const METHOD: &str = "eth_getTransactionCount";
         let result = self
             .transport
             .call(METHOD, json!([address.to_hex(), block.to_param()]))
             .await?;
         let quantity = quantity_u128(METHOD, &result)?;
-        u64::try_from(quantity).map_err(|_| MonadRpcError::InvalidResponse {
+        u64::try_from(quantity).map_err(|_| EvmRpcError::InvalidResponse {
             method: METHOD.to_string(),
             reason: "nonce does not fit 64 bits".to_string(),
         })
@@ -1112,7 +1076,7 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
         &self,
         address: Address,
         block: BlockTag,
-    ) -> Result<u128, MonadRpcError> {
+    ) -> Result<u128, EvmRpcError> {
         const METHOD: &str = "eth_getBalance";
         let result = self
             .transport
@@ -1123,8 +1087,8 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
 }
 
 /// A `0x`-prefixed hex quantity of at most 128 bits.
-fn quantity_u128(method: &str, value: &Value) -> Result<u128, MonadRpcError> {
-    let invalid = |reason: &str| MonadRpcError::InvalidResponse {
+fn quantity_u128(method: &str, value: &Value) -> Result<u128, EvmRpcError> {
+    let invalid = |reason: &str| EvmRpcError::InvalidResponse {
         method: method.to_string(),
         reason: reason.to_string(),
     };
@@ -1161,7 +1125,7 @@ mod tests {
             },
         );
         // Still classified by what the node said.
-        assert!(matches!(from_rpc, MonadRpcError::NonceTooLow { .. }));
+        assert!(matches!(from_rpc, EvmRpcError::NonceTooLow { .. }));
         assert!(from_rpc.definitively_rejected_send());
         let other = classify_rpc_error(
             "eth_call",
@@ -1171,7 +1135,7 @@ mod tests {
                 data: Some(json!({"url": format!("http://rpc.example/{key}"), "noise": noise})),
             },
         );
-        let status = MonadRpcError::HttpStatus {
+        let status = EvmRpcError::HttpStatus {
             method: "eth_call".into(),
             status: 502,
             body: from_upstream(&said),
@@ -1228,12 +1192,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, MonadRpcError::InvalidResponse { reason, .. } if reason.contains("larger than")),
+            matches!(&error, EvmRpcError::InvalidResponse { reason, .. } if reason.contains("larger than")),
             "{error}"
         );
     }
 
-    fn rpc_error(message: &str) -> MonadRpcError {
+    fn rpc_error(message: &str) -> EvmRpcError {
         classify_rpc_error(
             "eth_sendRawTransaction",
             JsonRpcErrorBody {
@@ -1255,13 +1219,13 @@ mod tests {
             "Already Exists in the pool",
         ] {
             assert!(
-                matches!(rpc_error(message), MonadRpcError::AlreadyKnown { .. }),
+                matches!(rpc_error(message), EvmRpcError::AlreadyKnown { .. }),
                 "{message}"
             );
         }
         for message in ["nonce too low", "Nonce is too low", "NonceTooLow: 3 < 5"] {
             assert!(
-                matches!(rpc_error(message), MonadRpcError::NonceTooLow { .. }),
+                matches!(rpc_error(message), EvmRpcError::NonceTooLow { .. }),
                 "{message}"
             );
         }
@@ -1299,7 +1263,7 @@ mod tests {
                 "{message}"
             );
         }
-        let http = |status, body: &str| MonadRpcError::HttpStatus {
+        let http = |status, body: &str| EvmRpcError::HttpStatus {
             method: "m".into(),
             status,
             body: body.to_string(),
@@ -1338,7 +1302,7 @@ mod tests {
                 );
             }
         }
-        assert!(!MonadRpcError::InvalidResponse {
+        assert!(!EvmRpcError::InvalidResponse {
             method: "m".into(),
             reason: "x".into()
         }
@@ -1394,7 +1358,7 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(
-                matches!(err, MonadRpcError::HttpStatus { .. }),
+                matches!(err, EvmRpcError::HttpStatus { .. }),
                 "{status}: {err:?}"
             );
             assert_eq!(
@@ -1417,16 +1381,16 @@ mod tests {
         }
         assert!(matches!(
             rpc_error("known transaction 0x1 (nonce too low)"),
-            MonadRpcError::AlreadyKnown { .. }
+            EvmRpcError::AlreadyKnown { .. }
         ));
         assert!(matches!(
             rpc_error("nonce too high, tx queued"),
-            MonadRpcError::Rpc { .. }
+            EvmRpcError::Rpc { .. }
         ));
     }
 
     /// Mock [`JsonRpcTransport`] that records every call made to it and returns a
-    /// caller-provided canned response, so [`MonadHttpClient`]'s request-shaping logic (method
+    /// caller-provided canned response, so [`EvmHttpClient`]'s request-shaping logic (method
     /// name, params encoding) can be tested without a network call.
     #[derive(Debug, Default)]
     struct MockTransport {
@@ -1449,7 +1413,7 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, EvmRpcError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -1476,7 +1440,7 @@ mod tests {
     async fn send_raw_transaction_shapes_request_correctly() {
         let expected_hash = format!("0x{}", "11".repeat(32));
         let transport = MockTransport::with_response(json!(expected_hash));
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let raw_tx = vec![0xde, 0xad, 0xbe, 0xef];
         let submitted = client.send_raw_transaction(&raw_tx).await.unwrap();
@@ -1500,10 +1464,10 @@ mod tests {
                 "nonce too low: next nonce 5, tx nonce 3".to_string()
             ))),
         };
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let err = client.send_raw_transaction(&[1, 2, 3]).await.unwrap_err();
-        assert!(matches!(err, MonadRpcError::NonceTooLow { .. }));
+        assert!(matches!(err, EvmRpcError::NonceTooLow { .. }));
     }
 
     #[tokio::test]
@@ -1514,16 +1478,16 @@ mod tests {
                 "insufficient funds for gas * price + value".to_string()
             ))),
         };
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let err = client.send_raw_transaction(&[1, 2, 3]).await.unwrap_err();
-        assert!(matches!(err, MonadRpcError::InsufficientFunds { .. }));
+        assert!(matches!(err, EvmRpcError::InsufficientFunds { .. }));
     }
 
     #[tokio::test]
     async fn get_transaction_receipt_shapes_request_and_handles_missing() {
         let transport = MockTransport::with_response(Value::Null);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let tx_hash = Hash32::from_hex(&format!("0x{}", "22".repeat(32))).unwrap();
         let receipt = client.get_transaction_receipt(tx_hash).await.unwrap();
@@ -1554,7 +1518,7 @@ mod tests {
             "logs": [],
         });
         let transport = MockTransport::with_response(response);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let receipt = client
             .get_transaction_receipt(Hash32::from_hex(&tx_hash).unwrap())
@@ -1570,7 +1534,7 @@ mod tests {
     #[tokio::test]
     async fn get_transaction_by_hash_shapes_request_and_handles_missing() {
         let transport = MockTransport::with_response(Value::Null);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let tx_hash = Hash32::from_hex(&format!("0x{}", "22".repeat(32))).unwrap();
         let tx = client.get_transaction_by_hash(tx_hash).await.unwrap();
@@ -1597,7 +1561,7 @@ mod tests {
             "input": "0xdeadbeef",
         });
         let transport = MockTransport::with_response(response);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let tx = client
             .get_transaction_by_hash(Hash32::from_hex(&tx_hash).unwrap())
@@ -1612,7 +1576,7 @@ mod tests {
     #[tokio::test]
     async fn get_raw_transaction_by_hash_shapes_request_and_handles_missing() {
         let transport = MockTransport::with_response(Value::Null);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let tx_hash = Hash32::from_hex(&format!("0x{}", "44".repeat(32))).unwrap();
         let raw = client.get_raw_transaction_by_hash(tx_hash).await.unwrap();
@@ -1628,7 +1592,7 @@ mod tests {
     #[tokio::test]
     async fn get_raw_transaction_by_hash_decodes_hex() {
         let transport = MockTransport::with_response(json!("0xdeadbeef"));
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let tx_hash = Hash32::from_hex(&format!("0x{}", "55".repeat(32))).unwrap();
         let raw = client
@@ -1642,7 +1606,7 @@ mod tests {
     #[tokio::test]
     async fn get_logs_shapes_filter_params_correctly() {
         let transport = MockTransport::with_response(json!([]));
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let address = Address::from_hex(&format!("0x{}", "77".repeat(20))).unwrap();
         let topic = Hash32::from_hex(&format!("0x{}", "88".repeat(32))).unwrap();
@@ -1684,7 +1648,7 @@ mod tests {
             "removed": false,
         }]);
         let transport = MockTransport::with_response(response);
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
 
         let logs = client.get_logs(&GetLogsFilter::default()).await.unwrap();
         assert_eq!(logs.len(), 1);
@@ -1696,7 +1660,7 @@ mod tests {
     #[tokio::test]
     async fn block_number_parses_hex_response() {
         let transport = MockTransport::with_response(json!("0x2a"));
-        let client = MonadHttpClient::with_transport(transport);
+        let client = EvmHttpClient::with_transport(transport);
         assert_eq!(client.block_number().await.unwrap(), 42);
     }
 

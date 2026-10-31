@@ -39,7 +39,7 @@ The directory publisher requests 365 days of validity, capped by the relay bindi
 renews before the last 30 days (or half of a shorter lifetime). See
 [`open-directory.ts`](../packages/cashweb/relay/open-directory.ts),
 [`directory_admission/policy.rs`](../backend/cashweb/cashweb-registry/src/directory_admission/policy.rs),
-and the counted store's [`monad_profiles.rs`](../backend/cashweb/cashweb-registry/src/store/monad_profiles.rs).
+and the counted store's [`evm_profiles.rs`](../backend/cashweb/cashweb-registry/src/store/evm_profiles.rs).
 Introducing age-based deletion would be a separate storage-policy change.
 The dashboard JSON above is mounted directly by `docker-compose.yml`; there is no generated copy.
 

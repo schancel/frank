@@ -1,61 +1,9 @@
-//! Contains `DbMonadProfiles`, storage for Monad-native profile registrations (`PUT`/`GET
-//! /metadata/monad/:addr`, ticket #45), keyed directly by the registrant's raw 20-byte Monad
-//! address.
+//! EVM-addressed profile records and transactional timestamp/name indexes.
 //!
-//! ## Why this is a separate store from `DbMetadata`
-//!
-//! `DbMetadata` (`crate::store::metadata`) keys by `crate::store::pubkeyhash::PubKeyHash`, whose
-//! only constructor (`PubKeyHash::from_address`) derives a hash from a `LotusAddress`'s P2PKH
-//! script -- there's no Monad-address equivalent, and per this session's established "don't make
-//! `PubKeyHash`/`SignedPayload` dual-chain, build a parallel Monad-native path" precedent (PLAN.md
-//! constraint 5/6, and this ticket's own issue text), this crate doesn't try to make `PubKeyHash`
-//! accept a second address format. This store is therefore new and parallel, mirroring
-//! `DbMonadMessages`'s "new CF, keyed directly by the chain-native identifier" shape.
-//!
-//! ## `list_since` (ticket #75)
-//!
-//! The by-time index (`pt/`) is a secondary index, keyed by `timestamp.to_be_bytes() ++ address`
-//! (value: the raw address), maintained alongside the primary profile record (`p/`) on every
-//! [`DbMonadProfiles::put`] -- mirrors `DbMonadMessages`'s identical `CF_MONAD_MESSAGES_BY_TIME`/
-//! `list_since` pattern exactly. `timestamp` here is the *registration's own* timestamp (the
-//! decoded `proto::MonadProfile.timestamp` inside `signed.payload` -- not any storage-write
-//! wall-clock time), the same field `Registry::put_monad_profile`'s existing monotonic-timestamp
-//! check already decodes. Lets a bot (or any other client) discover newly-registered profiles by
-//! polling with an advancing cursor, without already knowing their addresses out of band.
-//!
-//! ## What's stored
-//!
-//! The *exact* `cashweb_payload::proto::SignedPayload` envelope the client `PUT`s -- not a custom
-//! wrapper -- mirroring `DbMetadata::put`/`get`'s own "store/return the wire `SignedPayload`
-//! as-is" shape. This matters because `GET /metadata/monad/:addr` (and the plain `/metadata/:addr`
-//! route's Monad dispatch branch) must return something `app/src/cashweb/wallet/monad-identity.ts`'s
-//! `fetchMonadIdentityPubKey` can decode with a bare `SignedPayload.deserializeBinary(response.data)`
-//! -- verified against that file directly (see `crate::monad_profile_verify`'s module docs for the
-//! full wire-format cross-check this ticket did against the real, already-merged TS client), not
-//! assumed.
-//!
-//! ## `search_by_name` (ticket #48)
-//!
-//! The by-name index (`pn/`) is a second secondary index, keyed by `normalized_name.as_bytes()
-//! ++ address` (value: the raw address), maintained alongside the by-time index (`pt/`) on
-//! every [`DbMonadProfiles::put`]. `normalized_name` is the first `entries` item with `kind ==
-//! "display_name"`, its `body` decoded as UTF-8 and lowercased -- see
-//! [`normalized_display_name`]. A profile with no `display_name` entry, an empty/whitespace-only
-//! one, or one whose body isn't valid UTF-8, isn't indexed at all (nothing to search on; this is a
-//! best-effort optional field, not an error). Keeping the raw (unhashed) UTF-8 bytes as the key
-//! prefix -- unlike the retired topic store's hashed-topic index -- is deliberate: this
-//! index's whole purpose is prefix scanning ([`DbMonadProfiles::search_by_name`]), and hashing
-//! would destroy the sort order a prefix scan depends on. Search is intentionally prefix-only (not
-//! fuzzy) for this first pass, matching ticket #48's own scoping decision.
-
-//!
-//! ## Storage
-//!
-//! In the registry's transaction store (see `crate::store::db`): `p/` + address holds the
-//! profile bytes, `pt/` and `pn/` are the two indexes above, and `pc` counts profiles. A replace
-//! ([`DbMonadProfiles::replace`]) reads the stored record, lets the caller decide on the new one,
-//! and writes the record, removes the old record's index rows and adds the new ones, all in one
-//! transaction: two replicas replacing one profile leave exactly one record and its own rows.
+//! Records use the existing 20-byte address keys and exact retained protobuf or canonical CBOR
+//! bytes. `p/`, `pt/`, `pn/` and `pc` are persistent protocol facts and remain unchanged. Profile
+//! replacement updates the record and its derived indexes in one transaction. Historical
+//! protobuf DTO names are retained; their names do not define this store's network identity.
 
 use frank_cbor::message_types::TYPE_DIRECTORY_ATTESTATION;
 use std::fmt::Debug;
@@ -65,7 +13,7 @@ use prost::Message;
 use thiserror::Error;
 
 use crate::{
-    monad_http::Address,
+    evm_rpc::Address,
     proto,
     store::{
         db::{get_value, mark_format, prefix_end, put_value, Db, SCAN_BATCH},
@@ -82,21 +30,21 @@ fn profile_key(address: &[u8]) -> Vec<u8> {
     [PROFILES_PREFIX, address].concat()
 }
 
-/// Server-side clamp on how many results [`DbMonadProfiles::search_by_name`] (and therefore `GET
+/// Server-side clamp on how many results [`DbEvmProfiles::search_by_name`] (and therefore `GET
 /// /metadata/monad/search`) will ever return in one page, regardless of what a caller requests --
 /// matches `/metadata`'s existing Lotus range-endpoint convention
 /// (`crate::http::server::handle_get_metadata_range`'s `MAX_NUM_ITEMS`).
 pub const MAX_SEARCH_RESULTS: usize = 100;
 
 /// Build the by-time index (`pt/`) key for a given `(timestamp, address)` pair. Kept as a
-/// free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::list_since`] can't disagree on
+/// free function so [`DbEvmProfiles::put`] and [`DbEvmProfiles::list_since`] can't disagree on
 /// the encoding -- mirrors `store::monad_messages::by_time_key` exactly.
 fn by_time_key(timestamp: i64, address: &[u8]) -> Vec<u8> {
     [BY_TIME_PREFIX, timestamp.to_be_bytes().as_ref(), address].concat()
 }
 
 /// Build the by-name index (`pn/`) key for a given `(normalized_name, address)` pair. Kept
-/// as a free function so [`DbMonadProfiles::put`] and [`DbMonadProfiles::search_by_name`] can't
+/// as a free function so [`DbEvmProfiles::put`] and [`DbEvmProfiles::search_by_name`] can't
 /// disagree on the encoding -- mirrors [`by_time_key`] exactly.
 fn by_name_key(normalized_name: &str, address: &[u8]) -> Vec<u8> {
     [BY_NAME_PREFIX, normalized_name.as_bytes(), address].concat()
@@ -104,7 +52,7 @@ fn by_name_key(normalized_name: &str, address: &[u8]) -> Vec<u8> {
 
 /// Lowercase-normalize a raw display-name string -- the same normalization applied both when
 /// indexing a profile's `display_name` entry ([`normalized_display_name`]) and when a search
-/// prefix is submitted ([`DbMonadProfiles::search_by_name`]), so the two can't drift. Trims
+/// prefix is submitted ([`DbEvmProfiles::search_by_name`]), so the two can't drift. Trims
 /// leading/trailing whitespace first; an empty result means "nothing to search on".
 fn normalize_name(raw: &str) -> String {
     raw.trim().to_lowercase()
@@ -130,7 +78,7 @@ fn normalized_display_name(profile: &proto::MonadProfile) -> Option<String> {
 }
 
 /// Allows access to stored Monad-native profile registrations.
-pub struct DbMonadProfiles<'a> {
+pub struct DbEvmProfiles<'a> {
     db: &'a Db,
 }
 
@@ -149,7 +97,7 @@ impl ProfileRow {
     /// The row for a protobuf registration.
     pub fn protobuf(signed: &cashweb_payload::proto::SignedPayload) -> Result<Self> {
         let profile = proto::MonadProfile::decode(signed.payload.as_slice())
-            .wrap_err_with(|| CannotDecodeMonadProfile(hex::encode(&signed.payload)))?;
+            .wrap_err_with(|| CannotDecodeEvmProfile(hex::encode(&signed.payload)))?;
         Ok(Self {
             raw: signed.encode_to_vec(),
             timestamp_ms: profile.timestamp,
@@ -160,7 +108,7 @@ impl ProfileRow {
 
 /// Errors indicating some Monad-profile store error.
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
-pub enum DbMonadProfilesError {
+pub enum DbEvmProfilesError {
     /// Database contains an invalid protobuf `SignedPayload`.
     #[critical()]
     #[error("Inconsistent db: Cannot decode SignedPayload: {0}")]
@@ -168,13 +116,13 @@ pub enum DbMonadProfilesError {
 
     /// A `SignedPayload`'s `payload` field isn't a valid `proto::MonadProfile` -- ticket #75's
     /// by-time index needs to decode this to get the registration's `timestamp`. In practice this
-    /// can't happen via the real `PUT /metadata/monad/:addr` path (`Registry::put_monad_profile`
+    /// can't happen via the real `PUT /metadata/monad/:addr` path (`Registry::put_evm_profile`
     /// already requires a valid `MonadProfile` to check the monotonic-timestamp invariant before
-    /// ever calling `DbMonadProfiles::put`), so this is a caller-contract violation, not a
+    /// ever calling `DbEvmProfiles::put`), so this is a caller-contract violation, not a
     /// reachable runtime state.
     #[critical()]
     #[error("Cannot index profile by time: payload doesn't decode as MonadProfile: {0}")]
-    CannotDecodeMonadProfile(String),
+    CannotDecodeEvmProfile(String),
 
     /// Database contains an invalid by-time index entry (not a 20-byte Monad address).
     #[critical()]
@@ -182,7 +130,7 @@ pub enum DbMonadProfilesError {
     InvalidIndexedAddress(String),
 }
 
-use self::DbMonadProfilesError::*;
+use self::DbEvmProfilesError::*;
 
 /// Check if a byte slice begins with Frank-CBOR magic (`FRAME_MAGIC`) and version 1.
 pub fn is_cbor_frame(bytes: &[u8]) -> bool {
@@ -343,10 +291,10 @@ fn indexed_record(tx: &mut dyn KvTransaction, address: &Address) -> Result<Vec<u
     })?)
 }
 
-impl<'a> DbMonadProfiles<'a> {
-    /// Create a new [`DbMonadProfiles`] instance.
+impl<'a> DbEvmProfiles<'a> {
+    /// Create a new [`DbEvmProfiles`] instance.
     pub fn new(db: &'a Db) -> Self {
-        DbMonadProfiles { db }
+        DbEvmProfiles { db }
     }
 
     /// Replace the profile at `address` in one transaction. `decide` receives the stored bytes
@@ -574,9 +522,9 @@ impl<'a> DbMonadProfiles<'a> {
     }
 }
 
-impl Debug for DbMonadProfiles<'_> {
+impl Debug for DbEvmProfiles<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DbMonadProfiles {{ .. }}")
+        write!(f, "DbEvmProfiles {{ .. }}")
     }
 }
 
@@ -586,7 +534,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use prost::Message;
 
-    use crate::{monad_http::Address, proto, store::db::Db};
+    use crate::{evm_rpc::Address, proto, store::db::Db};
 
     use super::{normalized_display_name, MAX_SEARCH_RESULTS};
 
@@ -636,35 +584,35 @@ mod tests {
     }
 
     #[test]
-    fn test_db_monad_profiles() -> Result<()> {
+    fn test_db_evm_profiles() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles")?;
         let db_path = tempdir.path().join("db.rocksdb");
         let db = Db::open(&db_path)?;
         let address = Address([7u8; 20]);
 
-        assert_eq!(db.monad_profiles().get(&address)?, None);
-        assert_eq!(db.monad_profiles().count_records()?, 0);
+        assert_eq!(db.evm_profiles().get(&address)?, None);
+        assert_eq!(db.evm_profiles().count_records()?, 0);
 
         let signed = sample_signed_payload(100);
-        db.monad_profiles().put(&address, &signed)?;
-        assert_eq!(db.monad_profiles().count_records()?, 1);
-        assert_eq!(db.monad_profiles().get(&address)?, Some(signed.clone()));
+        db.evm_profiles().put(&address, &signed)?;
+        assert_eq!(db.evm_profiles().count_records()?, 1);
+        assert_eq!(db.evm_profiles().get(&address)?, Some(signed.clone()));
 
         // A different address is unaffected.
         let other_address = Address([8u8; 20]);
-        assert_eq!(db.monad_profiles().get(&other_address)?, None);
+        assert_eq!(db.evm_profiles().get(&other_address)?, None);
 
         // Overwriting replaces the stored value.
         let updated = sample_signed_payload(200);
-        db.monad_profiles().put(&address, &updated)?;
-        assert_eq!(db.monad_profiles().count_records()?, 1);
-        assert_eq!(db.monad_profiles().get(&address)?, Some(updated.clone()));
+        db.evm_profiles().put(&address, &updated)?;
+        assert_eq!(db.evm_profiles().count_records()?, 1);
+        assert_eq!(db.evm_profiles().get(&address)?, Some(updated.clone()));
 
         drop(db);
         let reopened = Db::open(&db_path)?;
         assert_eq!(
-            reopened.monad_profiles().get(&address)?,
+            reopened.evm_profiles().get(&address)?,
             Some(updated),
             "Monad profiles must survive a server/database restart"
         );
@@ -673,14 +621,11 @@ mod tests {
     }
 
     #[test]
-    fn test_db_monad_profiles_debug() -> Result<()> {
+    fn test_db_evm_profiles_debug() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-debug")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        assert_eq!(
-            format!("{:?}", db.monad_profiles()),
-            "DbMonadProfiles { .. }"
-        );
+        assert_eq!(format!("{:?}", db.evm_profiles()), "DbEvmProfiles { .. }");
         Ok(())
     }
 
@@ -689,7 +634,7 @@ mod tests {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-list-since")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.monad_profiles();
+        let store = db.evm_profiles();
 
         let early = Address([1u8; 20]);
         let middle = Address([2u8; 20]);
@@ -726,7 +671,7 @@ mod tests {
         let tempdir =
             tempdir::TempDir::new("cashweb-registry-store--monad-profiles-list-since-retry")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.monad_profiles();
+        let store = db.evm_profiles();
         let address = Address([7u8; 20]);
 
         store.put(&address, &sample_signed_payload(100))?;
@@ -796,7 +741,7 @@ mod tests {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.monad_profiles();
+        let store = db.evm_profiles();
 
         let alice = Address([1u8; 20]);
         let alicia = Address([2u8; 20]);
@@ -862,7 +807,7 @@ mod tests {
         let tempdir =
             tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search-update")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.monad_profiles();
+        let store = db.evm_profiles();
         let address = Address([9u8; 20]);
 
         store.put(&address, &sample_signed_payload_named(100, "OldName"))?;
@@ -890,7 +835,7 @@ mod tests {
         let _ = bitcoinsuite_error::install();
         let tempdir = tempdir::TempDir::new("cashweb-registry-store--monad-profiles-search-clamp")?;
         let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.monad_profiles();
+        let store = db.evm_profiles();
 
         // Register more than MAX_SEARCH_RESULTS profiles sharing a common name prefix.
         let total = MAX_SEARCH_RESULTS + 5;

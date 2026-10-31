@@ -702,7 +702,7 @@ function freezePaidMessage(
  * message's first submission, which nothing else has seen, they prove its payments unexposed.
  *
  * Tied to the relay's message handler (`backend/cashweb/cashweb-registry/src/http/
- * monad_message_cbor.rs`, `handle_put`): there `undeliverable` (`deliverable_recipient` found
+ * evm_direct_messages.rs`, `handle_put`): there `undeliverable` (`deliverable_recipient` found
  * no mailbox here) and `precheck_payments`' `stale_nonce` / `insufficient_total` are answered by
  * `dead_response` before `owner.claim` stores anything. A change there must change this list.
  *

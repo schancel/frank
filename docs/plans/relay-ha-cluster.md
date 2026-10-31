@@ -25,7 +25,7 @@ the cutover PR, `main` keeps running the single-replica RocksDB relay by default
   constructs any `BlobStore`. MinIO appears only in the root compose file, for the mail
   gateway.
 - NATS (`events::RelayEventBus`) carries hints only. A DM arrival is published only when a
-  push wakeup triggers (`http/monad_message_cbor.rs`), so a reader connected to another replica
+  push wakeup triggers (`http/evm_direct_messages.rs`), so a reader connected to another replica
   misses most arrivals. Subjects have no cluster namespace.
 - Labs: one RocksDB relay plus NATS, and FDB plus NATS with a KV contract test. No lab runs
   several relays, MinIO, or HTTP checks.
@@ -45,7 +45,7 @@ variables.
 | Owner | Single-replica assumption to remove | Target |
 |---|---|---|
 | Registry `Db` (profiles, indexes, usernames, metadata) | `monad_profile_lock` / `username_lock` mutexes; retired topic column families | One transaction per claim or profile replace, including its index rows. Retired column families deleted. |
-| DM owner (`monad_dm_cbor`) | One process mutex around the DB; one global last-delivery key `L`; in-process broadcast channel for the websocket | Per-mailbox delivery-time keys (no cluster-wide hot key). Requests over 64 KiB in S3. The websocket uses only the bus. |
+| DM owner (`evm_direct_messages`) | One process mutex around the DB; one global last-delivery key `L`; in-process broadcast channel for the websocket | Per-mailbox delivery-time keys (no cluster-wide hot key). Requests over 64 KiB in S3. The websocket uses only the bus. |
 | Groups | Mirror ingest does get-then-put on the sequence; JSON rows with hex ciphertext | Transactional ingest, binary rows, ciphertext over 64 KiB in S3, payment dedup key in the accept transaction. |
 | Directory preview, subjects, forwards | Single worker thread with cached handles and counters; no CAS | CAS on the previous checkpoint, atomic counters, forwards claimed by CAS, peer sync under a lease, bodies in S3. |
 | Forum | `revision`/`incarnation` in memory but carried in cursors | Stored revision counter, so a cursor from replica A works on B. |

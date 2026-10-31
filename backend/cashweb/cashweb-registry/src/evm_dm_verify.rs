@@ -387,5 +387,5 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
 }
 
 #[cfg(test)]
-#[path = "monad_dm_verify_tests.rs"]
+#[path = "evm_dm_verify_tests.rs"]
 mod tests;

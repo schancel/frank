@@ -1,7 +1,7 @@
 //! Standalone, **not wired into app logic**, live smoke test for
-//! [`cashweb_registry::monad_stamp_verify`] (ticket #16), proving the mechanics of
+//! [`cashweb_registry::evm_stamp_verify`] (ticket #16), proving the mechanics of
 //! `verify_stamp_transaction` (and the `eth_getTransactionByHash` call it needs, now
-//! `MonadHttpClient::get_transaction_by_hash` -- see ticket #25) actually work against real Monad
+//! `EvmHttpClient::get_transaction_by_hash` -- see ticket #25) actually work against real Monad
 //! testnet chain data, not simulated data.
 //!
 //! Mirrors `monad_http_live_smoke.rs`'s pattern: `#[ignore]`d so the normal gate
@@ -18,8 +18,8 @@
 //!   keeps working as the testnet chain moves forward), then feeds its hash into
 //!   `verify_stamp_transaction`.
 //! - It proves the full pipeline runs against live data end-to-end: fetching the real receipt via
-//!   `MonadHttpClient::get_transaction_receipt`, fetching the real transaction via
-//!   `MonadHttpClient::get_transaction_by_hash`, and running the real transaction's `value` and
+//!   `EvmHttpClient::get_transaction_receipt`, fetching the real transaction via
+//!   `EvmHttpClient::get_transaction_by_hash`, and running the real transaction's `value` and
 //!   `input` bytes through the same recipient/value/calldata checks `verify_stamp_transaction` would
 //!   apply to an actual Stamp burn.
 //! - It deliberately does **not** prove verification of a *genuine* Stamp burn (no real STMP/POND
@@ -32,8 +32,8 @@
 //!   with a `MalformedCalldata` outcome -- proving the decode-and-reject path runs against actual
 //!   chain bytes, not a mock.
 
-use cashweb_registry::monad_http::{BlockTag, GetLogsFilter, Hash32, MonadHttpClient};
-use cashweb_registry::monad_stamp_verify::{
+use cashweb_registry::evm_rpc::{BlockTag, EvmHttpClient, GetLogsFilter, Hash32};
+use cashweb_registry::evm_stamp_verify::{
     verify_stamp_transaction, ExpectedStampTransaction, StampTransactionVerification,
 };
 
@@ -55,11 +55,11 @@ async fn live_verify_stamp_transaction_against_real_tx() {
         .parse()
         .expect("MONAD_TESTNET_HTTP_RPC_URL is not a valid URL");
 
-    // `MonadHttpClient` and `verify_stamp_transaction` both need a `JsonRpcTransport` (the latter builds
-    // its own internal `MonadHttpClient` from it). `HttpTransport` is `Clone`, so one instance
+    // `EvmHttpClient` and `verify_stamp_transaction` both need a `JsonRpcTransport` (the latter builds
+    // its own internal `EvmHttpClient` from it). `HttpTransport` is `Clone`, so one instance
     // covers both.
-    let transport = cashweb_registry::monad_http::HttpTransport::new(rpc_url);
-    let client = MonadHttpClient::with_transport(transport.clone());
+    let transport = cashweb_registry::evm_rpc::HttpTransport::new(rpc_url);
+    let client = EvmHttpClient::with_transport(transport.clone());
 
     // 1. Find a real, currently-live transaction hash by scanning recent blocks for any log (same
     // technique as `monad_http_live_smoke.rs`, so we never depend on a hardcoded hash staying
@@ -100,7 +100,7 @@ async fn live_verify_stamp_transaction_against_real_tx() {
          chain has gone unusually quiet, or eth_getLogs is broken",
     );
 
-    // 2. Fetch the real transaction directly (via `MonadHttpClient::get_transaction_by_hash`) so
+    // 2. Fetch the real transaction directly (via `EvmHttpClient::get_transaction_by_hash`) so
     // we know its genuine `to`/`value`, to use as a guaranteed-passing "expected" recipient/value
     // below.
     let real_tx = client

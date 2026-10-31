@@ -1522,14 +1522,14 @@ descriptor: |
     syntax: "proto3"
   }
 ---
-source: backend/cashweb/cashweb-registry/proto/monad_message.proto
+source: backend/cashweb/cashweb-registry/proto/evm_message.proto
 owner: cashweb-registry Monad mailbox
 family: Monad stamped direct message
 disposition: retained constrained legacy reader
 explicit_source_group: monad-message-mirror
 descriptor: |
   file {
-    name: "backend/cashweb/cashweb-registry/proto/monad_message.proto"
+    name: "backend/cashweb/cashweb-registry/proto/evm_message.proto"
     package: "cashweb.registry"
     message_type {
       name: "MonadStampPayment"
@@ -1627,14 +1627,14 @@ descriptor: |
     syntax: "proto3"
   }
 ---
-source: backend/cashweb/cashweb-registry/proto/monad_profile.proto
+source: backend/cashweb/cashweb-registry/proto/evm_profile.proto
 owner: cashweb-registry Monad profiles
 family: Monad profile discovery
 disposition: retained constrained legacy reader
 explicit_source_group: monad-profile-backend
 descriptor: |
   file {
-    name: "backend/cashweb/cashweb-registry/proto/monad_profile.proto"
+    name: "backend/cashweb/cashweb-registry/proto/evm_profile.proto"
     package: "cashweb.registry"
     dependency: "registry.proto"
     dependency: "payload.proto"

@@ -1,4 +1,4 @@
-//! Frank-CBOR topic events for the Monad relay (ticket #136): decoding, commitment derivation, and
+//! Frank-CBOR topic events for an EVM relay (ticket #136): decoding, commitment derivation, and
 //! burn verification for a type-41 topic post submission and a type-42 topic vote submission
 //! (`docs/protocol/cbor`, README section 6 "Topic events", T7, T8).
 //!
@@ -16,7 +16,7 @@
 //!   anything is broadcast, one that pays the wrong address, on the wrong chain, with no value,
 //!   or whose calldata does not carry exactly the derived commitment under the CBOR version byte.
 //! - [`broadcast_and_verify_topic_event`] then broadcasts, confirms on chain with
-//!   [`crate::monad_topic_verify::TopicCalldataVersion::Cbor`], and binds the result to the exact
+//!   [`crate::evm_topic_verify::TopicCalldataVersion::Cbor`], and binds the result to the exact
 //!   signed transaction: the hash the node returns must be the keccak256 of the bytes that were
 //!   decoded and checked.
 //!
@@ -39,15 +39,15 @@ use frank_cbor::{
 use thiserror::Error;
 
 use crate::{
-    monad_evm_tx::{
-        decode_signed_transaction, has_no_trailing_bytes, DecodedSignedTransaction, EvmTxError,
-    },
-    monad_http::{Address, Hash32, JsonRpcTransport},
-    monad_stamp_relay::PollConfig,
-    monad_topic_relay::TopicVoteRelayOutcome,
-    monad_topic_verify::{
+    evm_rpc::{Address, Hash32, JsonRpcTransport},
+    evm_stamp_relay::PollConfig,
+    evm_topic_relay::TopicVoteRelayOutcome,
+    evm_topic_verify::{
         parse_topic_calldata_versioned, ExpectedTopicBurn, TopicCalldataError,
         TopicCalldataVersion, TopicVoteBurnVerification, VoteDirection,
+    },
+    evm_transaction::{
+        decode_signed_transaction, has_no_trailing_bytes, DecodedSignedTransaction, EvmTxError,
     },
 };
 
@@ -577,7 +577,7 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
     let mut sent = Vec::with_capacity(order.len());
     for i in order {
         let member = &checked.members[i];
-        let hash = crate::monad_topic_relay::broadcast_topic_burn(
+        let hash = crate::evm_topic_relay::broadcast_topic_burn(
             transport,
             &event.burn_txs()[i],
             Some(member.tx_hash),
@@ -591,7 +591,7 @@ async fn broadcast_topic_event<T: JsonRpcTransport + Clone>(
         async move {
             match hash {
                 Ok(tx_hash) => {
-                    crate::monad_topic_relay::confirm_topic_burn(
+                    crate::evm_topic_relay::confirm_topic_burn(
                         transport,
                         tx_hash,
                         expected,
@@ -644,7 +644,7 @@ pub(crate) async fn hand_forum_event_to_node<T: JsonRpcTransport + Clone>(
     policy: &TopicBurnPolicy,
     wait: std::time::Duration,
 ) -> Vec<Handoff> {
-    let client = crate::monad_http::MonadHttpClient::with_transport(transport.clone());
+    let client = crate::evm_rpc::EvmHttpClient::with_transport(transport.clone());
     let mut order: Vec<usize> = (0..checked.members.len()).collect();
     order.sort_by_key(|&i| (checked.members[i].sender.0, checked.members[i].nonce));
     let mut handoffs = vec![Handoff::Unknown(String::new()); order.len()];
@@ -658,7 +658,7 @@ pub(crate) async fn hand_forum_event_to_node<T: JsonRpcTransport + Clone>(
                 submitted.tx_hash
             )),
             Ok(Err(error)) if error.says_tx_already_held() => Handoff::Accepted,
-            Ok(Err(error @ crate::monad_http::MonadRpcError::NonceTooLow { .. })) => {
+            Ok(Err(error @ crate::evm_rpc::EvmRpcError::NonceTooLow { .. })) => {
                 Handoff::Unknown(error.to_string())
             }
             Ok(Err(error)) if error.definitively_rejected_send() => {
@@ -711,12 +711,12 @@ pub(crate) async fn probe_forum_burn<T: JsonRpcTransport + Clone>(
     member: &DecodedSignedTransaction,
     direction: VoteDirection,
     expected: &ExpectedTopicBurn,
-) -> Result<LandedBurn, crate::monad_http::MonadRpcError> {
-    let client = crate::monad_http::MonadHttpClient::with_transport(transport.clone());
+) -> Result<LandedBurn, crate::evm_rpc::EvmRpcError> {
+    let client = crate::evm_rpc::EvmHttpClient::with_transport(transport.clone());
     let nonce = client
-        .get_transaction_count(member.sender, crate::monad_http::BlockTag::Latest)
+        .get_transaction_count(member.sender, crate::evm_rpc::BlockTag::Latest)
         .await?;
-    let outcome = crate::monad_topic_verify::verify_topic_burn_checked(
+    let outcome = crate::evm_topic_verify::verify_topic_burn_checked(
         transport,
         member.tx_hash,
         expected,
@@ -724,7 +724,7 @@ pub(crate) async fn probe_forum_burn<T: JsonRpcTransport + Clone>(
         Some(member.sender),
     )
     .await
-    .map_err(|error| crate::monad_http::MonadRpcError::InvalidResponse {
+    .map_err(|error| crate::evm_rpc::EvmRpcError::InvalidResponse {
         method: "eth_getTransactionReceipt".to_owned(),
         reason: error.to_string(),
     })?;
@@ -812,9 +812,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        monad_evm_tx::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx},
-        monad_http::MonadRpcError,
-        monad_topic_verify::{TOPIC_COMMITMENT_VERSION_TAG, TOPIC_VOTE_LOKAD_ID},
+        evm_rpc::EvmRpcError,
+        evm_topic_verify::{TOPIC_COMMITMENT_VERSION_TAG, TOPIC_VOTE_LOKAD_ID},
+        evm_transaction::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx},
         proto,
     };
 
@@ -1349,11 +1349,7 @@ mod tests {
     fn cbor_version_calldata_never_verifies_for_the_protobuf_path() {
         let commitment = [3u8; 32];
         assert!(matches!(
-            crate::monad_topic_verify::parse_topic_vote_calldata(&calldata(
-                0x02,
-                0x01,
-                &commitment
-            )),
+            crate::evm_topic_verify::parse_topic_vote_calldata(&calldata(0x02, 0x01, &commitment)),
             Err(TopicCalldataError::InvalidVersion { actual: 0x02 })
         ));
     }
@@ -1496,14 +1492,14 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             self.calls.lock().unwrap().push(method.to_string());
             self.responses
                 .lock()
                 .unwrap()
                 .get(method)
                 .cloned()
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response".to_string(),
                 })
@@ -1621,7 +1617,7 @@ mod tests {
             matches!(
                 error,
                 TopicBurnError::Rejected(TopicVoteRelayOutcome::VerificationFailed {
-                    outcome: crate::monad_topic_verify::TopicVoteBurnVerification::TxFailed,
+                    outcome: crate::evm_topic_verify::TopicVoteBurnVerification::TxFailed,
                     ..
                 })
             ),
@@ -1755,7 +1751,7 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for SetChain {
-        async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, EvmRpcError> {
             let arg = params[0].as_str().unwrap_or_default().to_string();
             match method {
                 "eth_sendRawTransaction" => {
@@ -1763,7 +1759,7 @@ mod tests {
                     let hash = hex_hash(&decode_signed_transaction(&raw).unwrap().tx_hash);
                     self.sent.lock().unwrap().push(hash.clone());
                     if self.refused.lock().unwrap().contains(&hash) {
-                        return Err(MonadRpcError::InsufficientFunds {
+                        return Err(EvmRpcError::InsufficientFunds {
                             method: method.to_string(),
                             message: "insufficient funds for gas * price + value".to_string(),
                         });
@@ -1795,7 +1791,7 @@ mod tests {
                     }),
                     None => Value::Null,
                 }),
-                other => Err(MonadRpcError::InvalidResponse {
+                other => Err(EvmRpcError::InvalidResponse {
                     method: other.to_string(),
                     reason: "no mock response".to_string(),
                 }),

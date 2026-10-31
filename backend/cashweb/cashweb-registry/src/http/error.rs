@@ -6,11 +6,11 @@ use bitcoinsuite_error::{report_to_details, ErrorMeta, Report};
 use cashweb_http_utils::error::details_to_status_proto;
 
 use crate::{
-    http::{monad_profile::MonadProfileRouteError, server::RegistryServerError},
-    monad_profile_verify::MonadProfileVerifyError,
+    evm_profile_verify::EvmProfileVerifyError,
+    http::{evm_profile::EvmProfileRouteError, server::RegistryServerError},
     p2p::relay_info::RelayInfoError,
     registry::RegistryError,
-    store::{monad_profiles::DbMonadProfilesError, pubkeyhash::PkhError},
+    store::{evm_profiles::DbEvmProfilesError, pubkeyhash::PkhError},
 };
 
 /// Newtype around [`Report`], implements [`IntoResponse`].
@@ -46,11 +46,11 @@ pub fn report_to_error_meta(report: &Report) -> Option<&dyn ErrorMeta> {
         Some(err)
     } else if let Some(err) = report.downcast_ref::<RelayInfoError>() {
         Some(err)
-    } else if let Some(err) = report.downcast_ref::<MonadProfileRouteError>() {
+    } else if let Some(err) = report.downcast_ref::<EvmProfileRouteError>() {
         Some(err)
-    } else if let Some(err) = report.downcast_ref::<MonadProfileVerifyError>() {
+    } else if let Some(err) = report.downcast_ref::<EvmProfileVerifyError>() {
         Some(err)
-    } else if let Some(err) = report.downcast_ref::<DbMonadProfilesError>() {
+    } else if let Some(err) = report.downcast_ref::<DbEvmProfilesError>() {
         Some(err)
     } else if let Some(err) = cashweb_payload::error::report_to_error_meta(report) {
         Some(err)

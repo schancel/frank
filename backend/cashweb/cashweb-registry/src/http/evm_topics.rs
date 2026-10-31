@@ -5,9 +5,9 @@
 
 use crate::{
     chains::EvmChainAdapter,
+    evm_rpc::{Address, JsonRpcTransport},
+    evm_topic_cbor::{parse_topic_event, TopicEvent, MAX_TOPIC_EVENT_FRAME_BYTES},
     http::server::RegistryServer,
-    monad_http::{Address, JsonRpcTransport},
-    monad_topic_cbor::{parse_topic_event, TopicEvent, MAX_TOPIC_EVENT_FRAME_BYTES},
     registry::Registry,
     store::forum::{invalid, ForumError},
 };
@@ -47,7 +47,7 @@ impl ForumRuntime {
         self.chain.id()
     }
 
-    fn policy(&self) -> crate::monad_topic_cbor::TopicBurnPolicy {
+    fn policy(&self) -> crate::evm_topic_cbor::TopicBurnPolicy {
         crate::forum::policy(self.chain.evm_chain_id(), self.burn_address)
     }
 
@@ -98,7 +98,7 @@ impl ForumRuntime {
 
 /// JSON error body for a rejected topic request.
 #[derive(Debug, Serialize)]
-struct MonadTopicErrorBody {
+struct EvmTopicErrorBody {
     error: &'static str,
     detail: String,
 }
@@ -232,7 +232,7 @@ fn forum_error(error: crate::store::forum::ForumError) -> Response {
     vary_accept(
         (
             status,
-            Json(MonadTopicErrorBody {
+            Json(EvmTopicErrorBody {
                 error: code,
                 detail: error.to_string(),
             }),
@@ -245,7 +245,7 @@ fn request_error(status: StatusCode, code: &'static str, detail: &str) -> Respon
     vary_accept(
         (
             status,
-            Json(MonadTopicErrorBody {
+            Json(EvmTopicErrorBody {
                 error: code,
                 detail: detail.into(),
             }),
@@ -286,7 +286,7 @@ fn write_headers(headers: &HeaderMap, body: &[u8]) -> Option<Response> {
 async fn forum_submission<T: JsonRpcTransport + Clone>(
     registry: &Registry,
     network: &str,
-    policy: crate::monad_topic_cbor::TopicBurnPolicy,
+    policy: crate::evm_topic_cbor::TopicBurnPolicy,
     transport: &T,
     frame: &[u8],
     post: bool,
@@ -573,9 +573,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{
-        monad_evm_tx::decode_signed_transaction, monad_http::MonadRpcError, store::db::Db,
-    };
+    use crate::{evm_rpc::EvmRpcError, evm_transaction::decode_signed_transaction, store::db::Db};
     use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 
     /// [`ChainAdapter`] stub, mirroring `http::monad_message`'s test support: never touched by
@@ -622,7 +620,7 @@ mod tests {
         (tempdir, registry)
     }
 
-    fn policy() -> crate::monad_topic_cbor::TopicBurnPolicy {
+    fn policy() -> crate::evm_topic_cbor::TopicBurnPolicy {
         crate::forum::policy(10_143, burn_address())
     }
 
@@ -688,7 +686,7 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             self.call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if method == "eth_sendRawTransaction" {
@@ -709,7 +707,7 @@ mod tests {
                 .unwrap()
                 .get(method)
                 .cloned()
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured".to_string(),
                 })
@@ -852,7 +850,7 @@ mod tests {
                 .env(CHILD, "1")
                 .args([
                     "--exact",
-                    "http::monad_topics::tests::forum_retained_vote_missing_post_is_unavailable",
+                    "http::evm_topics::tests::forum_retained_vote_missing_post_is_unavailable",
                     "--nocapture",
                 ])
                 .output()
@@ -972,7 +970,7 @@ mod tests {
         const CHILD: &str = "FRANK_FORUM_ROUTER_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output=std::process::Command::new(std::env::current_exe().unwrap())
-                .env(CHILD,"1").args(["--exact","http::monad_topics::tests::forum_actual_router_post_vote_read_status_and_restart","--nocapture"])
+                .env(CHILD,"1").args(["--exact","http::evm_topics::tests::forum_actual_router_post_vote_read_status_and_restart","--nocapture"])
                 .output().unwrap();
             assert!(
                 output.status.success(),
@@ -1189,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn retired_protobuf_topic_tables_are_refused_and_their_routes_serve_nothing() {
         if isolated(
-            "http::monad_topics::tests::retired_protobuf_topic_tables_are_refused_and_their_routes_serve_nothing",
+            "http::evm_topics::tests::retired_protobuf_topic_tables_are_refused_and_their_routes_serve_nothing",
             "FRANK_FORUM_RETENTION_ROUTE_CHILD",
         ) {
             return;
@@ -1293,7 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn actual_router_restart_returns_410_for_both_old_cursor_families() {
-        if isolated("http::monad_topics::tests::actual_router_restart_returns_410_for_both_old_cursor_families", "FRANK_FORUM_CURSOR_HTTP_CHILD") { return; }
+        if isolated("http::evm_topics::tests::actual_router_restart_returns_410_for_both_old_cursor_families", "FRANK_FORUM_CURSOR_HTTP_CHILD") { return; }
         use crate::store::forum::tests::{distinct_post, facts, open_beside};
         use frank_cbor::{Timestamp, TypedPayload, ValidationResult};
         use tower::ServiceExt;
@@ -1443,7 +1441,7 @@ mod tests {
     #[tokio::test]
     async fn canonical_chain_agnostic_topic_routes_and_payment_network_boundary() {
         if isolated(
-            "http::monad_topics::tests::canonical_chain_agnostic_topic_routes_and_payment_network_boundary",
+            "http::evm_topics::tests::canonical_chain_agnostic_topic_routes_and_payment_network_boundary",
             "FRANK_FORUM_CANONICAL_TOPICS_CHILD",
         ) {
             return;
@@ -1518,7 +1516,7 @@ mod tests {
             // No curated defaults needed by this route's tests (ticket #49, merged after this
             // helper was originally written).
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,

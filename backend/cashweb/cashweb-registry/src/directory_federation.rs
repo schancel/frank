@@ -299,7 +299,7 @@ impl Federation {
         &self,
         runtime: &DirectoryRuntime,
         network: &str,
-        address: crate::monad_http::Address,
+        address: crate::evm_rpc::Address,
     ) -> Option<String> {
         let key = format!("a:{network}:{}", address.to_hex());
         if self.peers.is_empty() || self.recently_unknown(&key) {
@@ -322,7 +322,7 @@ impl Federation {
                 continue;
             };
             let matches = hex::decode(&subject).ok().is_some_and(|point| {
-                crate::monad_stamp_stealth::recipient_address_from_public_key(&point).ok()
+                crate::evm_stamp_stealth::recipient_address_from_public_key(&point).ok()
                     == Some(address)
             });
             if !matches || !crate::directory_runtime::valid_key(network, &subject) {

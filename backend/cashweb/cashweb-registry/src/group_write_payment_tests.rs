@@ -7,7 +7,7 @@ use bitcoinsuite_core::ecc::{Ecc, SecKey};
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 
 use super::*;
-use crate::monad_evm_tx::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx};
+use crate::evm_transaction::test_support::{signed_eip1559_tx, signed_unprotected_legacy_tx};
 
 /// The burn address `0x…dEaD`, which the labs configure as their payee.
 const BURN_ADDRESS: [u8; 20] = [

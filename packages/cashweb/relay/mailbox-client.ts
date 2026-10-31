@@ -1,6 +1,6 @@
 /**
  * Client for the relay's authenticated, recipient-private canonical mailbox
- * (`backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs`, `monad_mailbox.rs`).
+ * (`backend/cashweb/cashweb-registry/src/http/evm_direct_messages.rs`, `evm_mailbox.rs`).
  *
  * A recipient reads its own mailbox by proving control of its directory P key for each request:
  *
@@ -59,7 +59,7 @@ import {
   type CanonicalSubmissionEcho,
 } from "./canonical-dm-transport";
 
-/** `MAILBOX_AUTH_DOMAIN` in `monad_mailbox.rs`. */
+/** `MAILBOX_AUTH_DOMAIN` in `evm_mailbox.rs`. */
 export const MAILBOX_AUTH_DOMAIN = "frank:mailbox-http-auth:v3";
 export const MAILBOX_NEXT_CURSOR_HEADER = "x-frank-mailbox-next-cursor";
 // The relay issues 60-second challenges using its own clock. Allow a small

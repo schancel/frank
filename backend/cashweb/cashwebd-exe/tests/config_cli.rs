@@ -78,7 +78,7 @@ fn shipped_configurations_name_their_network_and_need_its_rpc_url() {
         let text = std::str::from_utf8(config).unwrap();
         assert!(text.contains("network = \"monad-testnet\"\n"), "{name}");
         assert!(
-            text.contains("[registry.monad_mailbox]\nenabled = true\n"),
+            text.contains("[registry.evm_mailbox]\nenabled = true\n"),
             "{name}"
         );
         assert!(text.contains("[registry.forum]\nburn_address = "), "{name}");
@@ -114,14 +114,14 @@ fn check_config_cli_rejects_an_enabled_mailbox_without_a_decimal_minimum() {
         ("non-decimal minimum", "min_value_wei = \"1e12\"\n"),
     ] {
         let invalid = include_str!("../../cashwebd.local.toml").replace(
-            "[registry.monad_mailbox]\nenabled = true\nmin_value_wei = \"21000000000000000\"\n",
-            &format!("[registry.monad_mailbox]\nenabled = true\n{extra}"),
+            "[registry.evm_mailbox]\nenabled = true\nmin_value_wei = \"21000000000000000\"\n",
+            &format!("[registry.evm_mailbox]\nenabled = true\n{extra}"),
         );
         let output = check_stdin(invalid.as_bytes());
         assert!(!output.status.success(), "{case}: unexpectedly accepted");
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("Invalid registry.monad_mailbox configuration"),
+                .contains("Invalid registry.evm_mailbox configuration"),
             "{case}"
         );
     }
@@ -186,8 +186,8 @@ fn local_config(db: &std::path::Path, extra: &str) -> String {
         include_str!("../../cashwebd.local.toml")
             .replace("data/registry.rocksdb", db.to_str().unwrap())
             .replace(
-                "[registry.monad_mailbox]\nenabled = true",
-                "[registry.monad_mailbox]\nenabled = false",
+                "[registry.evm_mailbox]\nenabled = true",
+                "[registry.evm_mailbox]\nenabled = false",
             )
             .replace(
                 "[registry.evm_rpc]\nenabled = true",

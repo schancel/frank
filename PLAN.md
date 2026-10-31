@@ -432,11 +432,11 @@ flat feed, both consuming the same always-voted messages). Tickets #30/
 (`MonadForumPost`, `http/forum.rs`, `ForumGateConfig`, `/message/monad/
 forum`, ...), copying the product framing ("let's build a forum") into code that should have stayed a general topic-broadcast
 primitive. Renamed the whole surface once caught, while it was still
-small: `MonadForumPost`/`MonadForumVote` → `MonadTopicPost`/
-`MonadTopicVote` (and every derived type), `http/forum.rs` →
-`http/monad_topics.rs`, `store/forum.rs` → `store/monad_topics.rs`,
-`monad_forum_verify.rs`/`monad_forum_relay.rs` → `monad_topic_verify.rs`/
-`monad_topic_relay.rs`, `forum_message.proto` → `topic_message.proto`,
+small: `MonadForumPost`/`MonadForumVote` → `EvmTopicPost`/
+`EvmTopicVote` (and every derived type), `http/forum.rs` →
+`http/evm_topics.rs`, `store/forum.rs` → `store/evm_topics.rs`,
+`monad_forum_verify.rs`/`monad_forum_relay.rs` → `evm_topic_verify.rs`/
+`evm_topic_relay.rs`, `forum_message.proto` → `topic_message.proto`,
 routes `/message/monad/forum*` → `/message/monad/topics*`, the app-side
 `monad-forum-{post,vote}-client.ts` → `monad-topic-{post,vote}-client.ts`,
 and the wire-format LOKAD ID `"FRUM"` → `"TPIC"` (safe to change bytes
@@ -453,7 +453,7 @@ merged and renamed alongside the above).
 
 **Considered and deliberately deferred (2026-09-26): making the proto
 messages themselves cross-chain-generic** (a shared `TopicPost{chain, ...}`
-schema instead of `MonadTopicPost`), rather than just correctly-named but
+schema instead of `EvmTopicPost`), rather than just correctly-named but
 still Monad-specific types. Rejected for now, for concrete reasons, not
 just caution: (1) the HTTP routes are already chain-namespaced
 (`/message/monad/topics`, mirroring `/message/monad`'s own precedent) —
@@ -553,7 +553,7 @@ issue body for the full detail):
   as "required UX." Not scoped.
 - **Chain-first route restructuring**: `/message/monad/*` →
   `/monad/messages/*`, `/message/monad/topics/*` → `/monad/topics/*` —
-  mirrors the already-separate `http::monad_message`/`http::monad_topics`
+  mirrors the already-separate `http::monad_message`/`http::evm_topics`
   Rust modules, supports clean `axum::Router::nest("/monad", ...)`
   composition, and is symmetric for whenever a second chain is added.
   Requires a coordinated backend route-registration change + every TS

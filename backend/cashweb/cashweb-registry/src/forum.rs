@@ -26,12 +26,12 @@ use frank_cbor::{
 };
 
 use crate::{
-    monad_http::{Address, JsonRpcTransport},
-    monad_topic_cbor::{
+    evm_rpc::{Address, JsonRpcTransport},
+    evm_topic_cbor::{
         check_topic_burn_before_broadcast, hand_forum_event_to_node, parse_topic_event, Handoff,
         TopicBurnPolicy, TopicEvent,
     },
-    monad_topic_verify::VoteDirection,
+    evm_topic_verify::VoteDirection,
     store::{
         forum::{
             invalid, time_key, time_value, ForumError, Observation, Phase, Result, Row, Store,
@@ -507,8 +507,8 @@ async fn reconcile_one<T: JsonRpcTransport + Clone>(
     transport: &T,
     now: Timestamp,
 ) -> Result<Option<Phase>> {
-    use crate::monad_topic_cbor::{probe_forum_burn, LandedBurn};
-    let expected = crate::monad_topic_verify::ExpectedTopicBurn {
+    use crate::evm_topic_cbor::{probe_forum_burn, LandedBurn};
+    let expected = crate::evm_topic_verify::ExpectedTopicBurn {
         commitment: bitcoinsuite_core::Sha256::new(*op.event.commitment()),
         burn_address: policy.burn_address,
     };

@@ -3,10 +3,10 @@
 //!
 //! Ticket #24: wires together ticket #22's chain-agnostic bearer-token layer
 //! (`cashweb_pop_token`: [`extract_pop_or_query`], [`HmacBearerScheme`], [`TokenIssuer`]) and
-//! ticket #23's Monad-backed payment-verification logic (`crate::monad_pop_verify`) via a small
-//! `PaymentVerifier` adapter, [`MonadReceiptVerifier`], since `monad_pop_verify` was written
+//! ticket #23's Monad-backed payment-verification logic (`crate::evm_pop_verify`) via a small
+//! `PaymentVerifier` adapter, [`EvmReceiptVerifier`], since `evm_pop_verify` was written
 //! before #22's `PaymentVerifier` trait existed and doesn't implement it itself (documented in
-//! `monad_pop_verify.rs`'s module docs).
+//! `evm_pop_verify.rs`'s module docs).
 //!
 //! ## Request shape for submitting a payment proof (this ticket's own decision)
 //!
@@ -18,8 +18,8 @@
 //!   access.
 //!
 //! (An earlier revision of this module also required a client-supplied `pop_value_wei`, because
-//! `MonadHttpClient` could only fetch a tx's *receipt* -- not its `value` -- at the time this was
-//! written; see `monad_pop_verify.rs`'s module docs. Ticket #25 closed that gap by adding
+//! `EvmHttpClient` could only fetch a tx's *receipt* -- not its `value` -- at the time this was
+//! written; see `evm_pop_verify.rs`'s module docs. Ticket #25 closed that gap by adding
 //! `get_transaction_by_hash`, so `verify_payment_via_receipt` now looks `value` up on-chain itself
 //! instead of trusting a client-asserted figure -- strictly stronger, since the old shape only
 //! ever checked the number the client *claimed*, not the number the chain actually recorded. The
@@ -68,10 +68,10 @@ use axum::http::HeaderMap;
 
 use cashweb_pop_token::{extract_pop_or_query, HmacBearerScheme, PaymentVerifier, TokenIssuer};
 
-use crate::monad_http::{
-    Address, Hash32, HexTypeError, HttpTransport, JsonRpcTransport, MonadHttpClient, MonadRpcError,
+use crate::evm_pop_verify::{verify_payment_via_receipt, ExpectedPayment, PopVerification};
+use crate::evm_rpc::{
+    Address, EvmHttpClient, EvmRpcError, Hash32, HexTypeError, HttpTransport, JsonRpcTransport,
 };
-use crate::monad_pop_verify::{verify_payment_via_receipt, ExpectedPayment, PopVerification};
 
 /// Query parameter carrying a fallback bearer token (mirrors the deprecated `relayserver`'s
 /// convention; see `cashweb_pop_token::extract_pop_or_query`).
@@ -81,9 +81,9 @@ const ACCESS_TOKEN_PARAM: &str = "access_token";
 const TX_HASH_PARAM: &str = "pop_tx_hash";
 
 /// Error decoding a `pop_tx_hash`, or verifying it on-chain, when implementing [`PaymentVerifier`]
-/// via [`MonadReceiptVerifier`].
+/// via [`EvmReceiptVerifier`].
 #[derive(Debug, thiserror::Error)]
-pub enum MonadProofError {
+pub enum EvmProofError {
     /// `pop_tx_hash` wasn't a valid `0x`-prefixed 32-byte hash.
     #[error("invalid pop_tx_hash: {0}")]
     BadTxHash(HexTypeError),
@@ -93,33 +93,33 @@ pub enum MonadProofError {
     NotVerified(PopVerification),
     /// Talking to the Monad RPC node failed at the transport/RPC level.
     #[error("Monad RPC error: {0}")]
-    Rpc(#[from] MonadRpcError),
+    Rpc(#[from] EvmRpcError),
 }
 
-/// [`PaymentVerifier`] adapter backed by [`crate::monad_pop_verify::verify_payment_via_receipt`].
+/// [`PaymentVerifier`] adapter backed by [`crate::evm_pop_verify::verify_payment_via_receipt`].
 ///
 /// `scope` is ignored by this implementation: Monad-side verification here only checks that
 /// *some* payment of the expected shape confirmed, not which resource it was "for" -- binding a
 /// minted token to a specific `scope` (e.g. an address) is [`HmacBearerScheme`]'s job, applied by
 /// [`TokenIssuer`] after this verifier succeeds.
-pub struct MonadReceiptVerifier<T: JsonRpcTransport = HttpTransport> {
-    client: Arc<MonadHttpClient<T>>,
+pub struct EvmReceiptVerifier<T: JsonRpcTransport = HttpTransport> {
+    client: Arc<EvmHttpClient<T>>,
     expected: ExpectedPayment,
 }
 
-impl<T: JsonRpcTransport> fmt::Debug for MonadReceiptVerifier<T> {
+impl<T: JsonRpcTransport> fmt::Debug for EvmReceiptVerifier<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MonadReceiptVerifier")
+        f.debug_struct("EvmReceiptVerifier")
             .field("client", &self.client)
             .field("expected", &self.expected)
             .finish()
     }
 }
 
-impl<T: JsonRpcTransport> MonadReceiptVerifier<T> {
+impl<T: JsonRpcTransport> EvmReceiptVerifier<T> {
     /// Construct a verifier that checks payment proofs against `expected`, using `client` to
     /// fetch tx receipts.
-    pub fn new(client: Arc<MonadHttpClient<T>>, expected: ExpectedPayment) -> Self {
+    pub fn new(client: Arc<EvmHttpClient<T>>, expected: ExpectedPayment) -> Self {
         Self { client, expected }
     }
 
@@ -129,30 +129,30 @@ impl<T: JsonRpcTransport> MonadReceiptVerifier<T> {
     }
 }
 
-/// Encode a tx hash into the opaque `proof` bytes [`MonadReceiptVerifier`] expects. Internal to
+/// Encode a tx hash into the opaque `proof` bytes [`EvmReceiptVerifier`] expects. Internal to
 /// this module; not part of the client-facing wire contract (see module docs for that).
 fn encode_proof(tx_hash_hex: &str) -> Vec<u8> {
     tx_hash_hex.as_bytes().to_vec()
 }
 
-fn decode_proof(proof: &[u8]) -> Result<Hash32, MonadProofError> {
+fn decode_proof(proof: &[u8]) -> Result<Hash32, EvmProofError> {
     let tx_hash_hex = std::str::from_utf8(proof).map_err(|_| {
-        MonadProofError::BadTxHash(HexTypeError::InvalidHex(
+        EvmProofError::BadTxHash(HexTypeError::InvalidHex(
             "pop_tx_hash was not valid UTF-8".to_string(),
         ))
     })?;
-    Hash32::from_hex(tx_hash_hex).map_err(MonadProofError::BadTxHash)
+    Hash32::from_hex(tx_hash_hex).map_err(EvmProofError::BadTxHash)
 }
 
 #[async_trait::async_trait]
-impl<T: JsonRpcTransport> PaymentVerifier for MonadReceiptVerifier<T> {
-    type Error = MonadProofError;
+impl<T: JsonRpcTransport> PaymentVerifier for EvmReceiptVerifier<T> {
+    type Error = EvmProofError;
 
     async fn verify_payment(&self, _scope: &[u8], proof: &[u8]) -> Result<(), Self::Error> {
         let tx_hash = decode_proof(proof)?;
         match verify_payment_via_receipt(&self.client, tx_hash, &self.expected).await? {
             PopVerification::Verified => Ok(()),
-            other => Err(MonadProofError::NotVerified(other)),
+            other => Err(EvmProofError::NotVerified(other)),
         }
     }
 }
@@ -241,7 +241,7 @@ impl fmt::Display for PopGateConfigError {
 
 impl std::error::Error for PopGateConfigError {}
 
-impl PopGate<MonadReceiptVerifier<HttpTransport>> {
+impl PopGate<EvmReceiptVerifier<HttpTransport>> {
     /// Build a [`PopGate`] backed by a real Monad HTTPS RPC client, sourcing all configuration
     /// from a [`cashweb_config::PopConf`] (ticket #4's real config-file wiring, replacing ticket
     /// #24's raw-env-var `PopGate::from_env`/process-wide `OnceLock`).
@@ -263,8 +263,8 @@ impl PopGate<MonadReceiptVerifier<HttpTransport>> {
             recipient,
             min_value_wei,
         };
-        let client = Arc::new(MonadHttpClient::new(conf.monad_rpc_url.clone()));
-        let verifier = MonadReceiptVerifier::new(client, expected);
+        let client = Arc::new(EvmHttpClient::new(conf.evm_rpc_url.clone()));
+        let verifier = EvmReceiptVerifier::new(client, expected);
         let scheme = HmacBearerScheme::new(conf.hmac_secret.clone().into_bytes());
         let issuer = TokenIssuer::new(verifier, scheme);
         Ok(PopGate::new(issuer, expected))
@@ -336,7 +336,7 @@ mod tests {
     }
 
     /// [`JsonRpcTransport`] mock returning a canned response per JSON-RPC method, mirroring
-    /// `monad_pop_verify.rs`'s own test mock (private to that module, so re-declared here) --
+    /// `evm_pop_verify.rs`'s own test mock (private to that module, so re-declared here) --
     /// needed because `verify_payment_via_receipt` now makes two calls (receipt, then full tx).
     #[derive(Debug, Default)]
     struct MockTransport {
@@ -356,11 +356,11 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             self.responses
                 .get(method)
                 .cloned()
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured for this method".to_string(),
                 })
@@ -398,7 +398,7 @@ mod tests {
         min_value_wei: u128,
         receipt: Value,
         tx: Value,
-    ) -> PopGate<MonadReceiptVerifier<MockTransport>> {
+    ) -> PopGate<EvmReceiptVerifier<MockTransport>> {
         let expected = ExpectedPayment {
             recipient,
             min_value_wei,
@@ -407,8 +407,8 @@ mod tests {
             ("eth_getTransactionReceipt", receipt),
             ("eth_getTransactionByHash", tx),
         ]);
-        let client = Arc::new(MonadHttpClient::with_transport(transport));
-        let verifier = MonadReceiptVerifier::new(client, expected);
+        let client = Arc::new(EvmHttpClient::with_transport(transport));
+        let verifier = EvmReceiptVerifier::new(client, expected);
         let scheme = HmacBearerScheme::new(b"test-secret".to_vec());
         PopGate::new(TokenIssuer::new(verifier, scheme), expected)
     }
@@ -428,7 +428,7 @@ mod tests {
     fn decode_proof_rejects_malformed() {
         assert!(matches!(
             decode_proof(b"not-hex"),
-            Err(MonadProofError::BadTxHash(_))
+            Err(EvmProofError::BadTxHash(_))
         ));
     }
 
@@ -442,8 +442,8 @@ mod tests {
                 verified_transaction(recipient, "0x3e8"),
             ),
         ]);
-        let verifier_client = Arc::new(MonadHttpClient::with_transport(transport));
-        let verifier = MonadReceiptVerifier::new(
+        let verifier_client = Arc::new(EvmHttpClient::with_transport(transport));
+        let verifier = EvmReceiptVerifier::new(
             verifier_client,
             ExpectedPayment {
                 recipient,
@@ -464,8 +464,8 @@ mod tests {
                 verified_transaction(recipient, "0x3e8"),
             ),
         ]);
-        let verifier_client = Arc::new(MonadHttpClient::with_transport(transport));
-        let verifier = MonadReceiptVerifier::new(
+        let verifier_client = Arc::new(EvmHttpClient::with_transport(transport));
+        let verifier = EvmReceiptVerifier::new(
             verifier_client,
             ExpectedPayment {
                 recipient,
@@ -479,7 +479,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            MonadProofError::NotVerified(PopVerification::InsufficientAmount)
+            EvmProofError::NotVerified(PopVerification::InsufficientAmount)
         ));
     }
 
@@ -588,7 +588,7 @@ mod tests {
     fn valid_pop_conf() -> cashweb_config::PopConf {
         cashweb_config::PopConf {
             enabled: true,
-            monad_rpc_url: "https://example.invalid".parse().unwrap(),
+            evm_rpc_url: "https://example.invalid".parse().unwrap(),
             hmac_secret: "test-secret".to_string(),
             payment_recipient: format!("0x{}", "aa".repeat(20)),
             min_value_wei: "1000".to_string(),

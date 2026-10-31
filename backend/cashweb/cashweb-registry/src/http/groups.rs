@@ -1704,11 +1704,11 @@ mod tests {
         .unwrap();
         // One accepted write per payer nonce: each write's payment takes its own nonce.
         let nonce = u64::from_be_bytes(target.signing_digest[..8].try_into().unwrap()) >> 1;
-        let (raw, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        let (raw, _) = crate::evm_transaction::test_support::signed_eip1559_tx(
             &payer,
             chain_id,
             nonce,
-            crate::monad_http::Address(to),
+            crate::evm_rpc::Address(to),
             value_wei,
             &calldata,
         );
@@ -2779,8 +2779,8 @@ mod tests {
     fn a_payment_lands_in_the_payers_nonce_window_with_its_value_and_gas_covered() {
         use super::payment::{judge_funding, FundingProblem, PayerAccount, PAYMENT_NONCE_WINDOW};
         let payment = |nonce| crate::group_write_payment::VerifiedGroupPayment {
-            tx_hash: crate::monad_http::Hash32([1; 32]),
-            sender: crate::monad_http::Address([2; 20]),
+            tx_hash: crate::evm_rpc::Hash32([1; 32]),
+            sender: crate::evm_rpc::Address([2; 20]),
             payee: [3; 20],
             value_wei: 1_000,
             nonce,

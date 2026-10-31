@@ -23,11 +23,11 @@ use prost::Message;
 use crate::{
     directory_runtime::{DirectoryRuntime, TestClock},
     disabled_chain_adapter::DisabledChainAdapter,
+    evm_transaction::address_from_uncompressed_pubkey,
     http::{
         directory::tests::{entry, relay_config},
         server::RegistryServer,
     },
-    monad_evm_tx::address_from_uncompressed_pubkey,
     p2p::peers::Peers,
     proto,
     registry::Registry,
@@ -102,7 +102,7 @@ async fn serve_until_stdin_closes(dir: std::path::PathBuf, subspace: String) {
         peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
         pop_gate: Arc::new(None),
         curated_defaults: Arc::new(vec![]),
-        monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+        evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
@@ -402,7 +402,7 @@ async fn registry_is_shared_by_two_relays_through_foundationdb() {
         keys(b"pn/"),
         vec![[b"pn/newname".as_slice(), &address_bytes].concat()]
     );
-    assert_eq!(inspect.monad_profiles().count_records().unwrap(), 1);
+    assert_eq!(inspect.evm_profiles().count_records().unwrap(), 1);
 
     a.stop();
     b.stop();

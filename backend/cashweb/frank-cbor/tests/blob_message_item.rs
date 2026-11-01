@@ -3,7 +3,10 @@ mod common;
 use frank_cbor::{validate_frame, ValidationResult};
 #[test]
 fn binary_mime_plugin_corpus_is_retained_byte_exactly() {
-    let corpus: serde_json::Value = serde_json::from_str(include_str!("../../../../docs/protocol/cbor/vectors/blob-message-item.json")).unwrap();
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/protocol/cbor/vectors/blob-message-item.json"
+    ))
+    .unwrap();
     let mut context = common::typed_context();
     context.opaque_retention_allowed = true;
     for item in corpus["frames"].as_array().unwrap() {

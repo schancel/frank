@@ -8,6 +8,7 @@
     "test": "jest --passWithNoTests"
   },
   "dependencies": {
+    "superjson": "^2.2.2",
     "@noble/hashes": "1.8.0",
     "@frank/crypto-box": "*",
     "@frank/nakamoto": "*",

@@ -23,6 +23,7 @@ import {
   RelayReceiptIdentity,
 } from './storage'
 import { MessageWrapper } from '../../types/messages'
+import { parseMessageHistory, stringifyMessageHistory } from './message-history-json'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 import {
@@ -121,11 +122,11 @@ export function serializeMessageWrapper(
           }),
     },
   }
-  return JSON.stringify(stored)
+  return stringifyMessageHistory(stored)
 }
 
 export function deserializeMessageWrapper(value: string): MessageWrapper {
-  const stored = JSON.parse(value) as JsonMessageWrapper
+  const stored = parseMessageHistory(value) as JsonMessageWrapper
   const { stampValueWei, stampPayments, ...message } = stored.message
   return {
     ...stored,

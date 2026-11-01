@@ -143,6 +143,54 @@ async function snapshot(location: string): Promise<StoredRows> {
 }
 
 describe('LevelMessageStore', () => {
+  it('reopens binary history through get and iteration without changing existing history or metadata', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-history-bytes-'))
+    const old = wrapper('old-json')
+    const repeated = Uint8Array.of(0, 255, 128)
+    const binary = Object.assign(wrapper('native-bytes'), {
+      binaryFixture: {
+        first: repeated,
+        second: repeated,
+        empty: new Uint8Array(),
+        buffer: Buffer.from([255, 0]),
+        subarray: Uint8Array.of(1, 128, 255, 1).subarray(1, 3),
+      },
+    })
+    const expected = {
+      ...binary,
+      binaryFixture: {
+        ...binary.binaryFixture,
+        buffer: Uint8Array.of(255, 0),
+        subarray: Uint8Array.of(128, 255),
+      },
+    }
+    await seed(location, {
+      messages: { 'old-json': serializeMessageWrapper(old) },
+      metadata: { schemaVersion: '3' },
+    })
+    const before = await snapshot(location)
+    let store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await store.saveMessage(binary)
+      await store.Close()
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.getMessage('native-bytes')).toEqual(expected)
+      expect(await store.getMessage('old-json')).toEqual(old)
+      const rows = []
+      for await (const row of await store.getIterator()) rows.push(row)
+      expect(rows).toEqual(expect.arrayContaining([old, expected]))
+      await store.Close()
+      const after = await snapshot(location)
+      expect(after.metadata).toEqual(before.metadata)
+      expect(after.messages?.['old-json']).toBe(before.messages?.['old-json'])
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
   it('preserves optional authenticated content digests across reopen without rewriting existing rows', async () => {
     const location = await mkdtemp(join(tmpdir(), 'frank-content-digest-'))
     let store = new LevelMessageStore(location)

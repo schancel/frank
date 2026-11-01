@@ -68,6 +68,48 @@ describe('actual browser message-store application records', () => {
       })
   })
 
+  it('reopens binary values with the installed browser backend and preserves existing metadata and JSON', async () => {
+    const repeated = Uint8Array.of(0, 255, 128)
+    const binary = Object.assign(
+      { ...message, index: 'browser-bytes' },
+      {
+        binaryFixture: {
+          first: repeated,
+          second: repeated,
+          empty: new Uint8Array(),
+          buffer: Buffer.from([255, 0]),
+          subarray: Uint8Array.of(1, 128, 255, 1).subarray(1, 3),
+        },
+      },
+    )
+    const before = await raw(location, {
+      messages: { [message.index]: serializeMessageWrapper(message) },
+      metadata: { schemaVersion: '3' },
+    })
+    await store.Open()
+    await store.saveMessage(binary)
+    await store.Close()
+    store = new LevelMessageStore(location)
+    await store.Open()
+    const expected = {
+      ...binary,
+      binaryFixture: {
+        ...binary.binaryFixture,
+        buffer: Uint8Array.of(255, 0),
+        subarray: Uint8Array.of(128, 255),
+      },
+    }
+    expect(await store.getMessage(binary.index)).toEqual(expected)
+    expect(await store.getMessage(message.index)).toEqual(message)
+    const rows = []
+    for await (const row of await store.getIterator()) rows.push(row)
+    expect(rows).toEqual(expect.arrayContaining([message, expected]))
+    await store.Close()
+    const after = await raw(location)
+    expect(after.metadata).toEqual(before.metadata)
+    expect(after.messages[message.index]).toBe(before.messages[message.index])
+  })
+
   it.each<Rows & { label: string; accepted: boolean }>([
     { label: 'nothing survived', accepted: true, messages: {}, metadata: {} },
     {

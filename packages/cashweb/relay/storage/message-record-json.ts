@@ -1,6 +1,6 @@
 import SuperJSON from 'superjson'
 
-// Local history only. Message-item wire codecs never use this representation.
+// Local message records only. Message-item wire codecs never use this representation.
 const BYTE_TRANSFORM = 'frank-history-bytes'
 const byteAnnotation = () => [['custom', BYTE_TRANSFORM]]
 const historyJson = new SuperJSON()
@@ -38,19 +38,12 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   )
 }
 
-function isWrapper(value: unknown): value is Record<string, unknown> {
-  return (
-    record(value) &&
-    record(value.message) &&
-    typeof value.index === 'string' &&
-    typeof value.outbound === 'boolean' &&
-    typeof value.senderAddress === 'string' &&
-    typeof value.copartyAddress === 'string'
-  )
-}
-
 /** Validate library annotations before they can direct object access or instantiate values. */
-function validateAnnotations(json: unknown, meta: unknown): void {
+function validateAnnotations(
+  json: unknown,
+  meta: unknown,
+  allowsBytePath: (path: string) => boolean,
+): void {
   if (
     !record(meta) ||
     !exactKeys(meta, ['values', 'v']) ||
@@ -62,7 +55,8 @@ function validateAnnotations(json: unknown, meta: unknown): void {
   for (const [path, annotation] of Object.entries(meta.values)) {
     if (
       JSON.stringify(annotation) !== JSON.stringify(byteAnnotation()) ||
-      !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(path)
+      !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(path) ||
+      !allowsBytePath(path)
     )
       throw new Error('Unsupported history byte annotation')
     let target: unknown = json
@@ -82,7 +76,7 @@ function validateAnnotations(json: unknown, meta: unknown): void {
 }
 
 /** Ordinary JSON history keeps its exact representation and JSON normalization semantics. */
-export function stringifyMessageHistory(value: object): string {
+export function stringifyMessageRecord(value: object): string {
   let byteCount = 0
   let rootInvocation = true
   const normalized = JSON.stringify(value, function (key, current: unknown) {
@@ -107,23 +101,29 @@ export function stringifyMessageHistory(value: object): string {
   }
   if (Object.keys(values).length !== byteCount)
     throw new Error('History bytes must occupy ordinary JSON properties')
-  validateAnnotations(result.json, result.meta)
+  validateAnnotations(result.json, result.meta, () => true)
   return JSON.stringify(result)
 }
 
 /** Only the explicit outer annotation envelope can revive bytes; payload lookalikes cannot. */
-export function parseMessageHistory(value: string): unknown {
+export function parseMessageRecord(
+  value: string,
+  admitsRoot: (value: unknown) => boolean,
+  allowsBytePath: (path: string) => boolean = () => true,
+): unknown {
   const parsed: unknown = JSON.parse(value)
-  if (isWrapper(parsed)) return parsed
+  if (admitsRoot(parsed)) return parsed
   if (
     !record(parsed) ||
     !exactKeys(parsed, ['json', 'meta']) ||
-    !isWrapper(parsed.json)
+    !admitsRoot(parsed.json)
   )
     throw new Error('Invalid message history wrapper')
-  validateAnnotations(parsed.json, parsed.meta)
-  return historyJson.deserialize({
+  validateAnnotations(parsed.json, parsed.meta, allowsBytePath)
+  const revived = historyJson.deserialize({
     json: parsed.json,
     meta: parsed.meta,
   } as Parameters<typeof historyJson.deserialize>[0])
+  if (!admitsRoot(revived)) throw new Error('Invalid revived message record')
+  return revived
 }

@@ -77,8 +77,8 @@ registerMessageItemRenderer({
 })
 
 registerMessageItemRenderer({
-  type: 'image',
-  wantsLargeBubble: item => item.type === 'image' && item.image.length > 0,
+  type: 'blob',
+  wantsLargeBubble: item => item.type === 'blob' && item.data.length > 0,
 })
 
 registerMessageItemRenderer({

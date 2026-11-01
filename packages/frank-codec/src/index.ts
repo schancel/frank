@@ -108,3 +108,5 @@ export {
   topicPostBurnCalldata,
   topicPostHash,
 } from './topic'
+
+export { isMimeType, MAX_MIME_TYPE_BYTES } from './mime-type'

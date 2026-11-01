@@ -1,9 +1,16 @@
+import {
+  blobOfDataUrl,
+  attachmentByteLength,
+  type ChatImageAttachment,
+} from './chat-binary'
 /**
  * Pictures in a direct message. The composer and the bubble use the forum editor's attachment
  * references (`![name](attachment:ID)`, utils/post-editor.ts). On the wire a message is its
- * text (one text item, or consecutive ones for a long text) followed by its image items, and
- * `attachment:N` in the text is the Nth image item of that same message, counted from 1.
+ * text (one text item, or consecutive ones for a long text) followed by its blob entries, and
+ * `attachment:N` in the text is the Nth blob entry of that same message, counted from 1.
  */
+import { isMimeType } from '@frank/codec'
+import { MAX_BLOB_BYTES } from '@frank/wallet/message-item-plugins/blob/codec'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import { MAX_MESSAGE_ITEMS_TOTAL, MAX_TEXT_STRING_BYTES } from '@frank/codec'
 import {
@@ -20,6 +27,7 @@ import {
   SENT_IMAGE_LIMITS,
   SENT_ITEM_ALLOWANCE_BYTES,
   inspectImageDataUri,
+  inspectImageBytes,
 } from './image-data-uri'
 import {
   attachmentReferenceIds,
@@ -46,13 +54,31 @@ export async function prepareChatImage(
 ): Promise<PreparedChatImage> {
   const name = ('name' in file && file.name) || 'image'
   let dataUrl: string
+  if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+    if (file.size > MAX_BLOB_BYTES)
+      return { ok: false, name, reasonKey: 'reasonTooLarge' }
+    const mimeType = file.type || 'application/octet-stream'
+    if (!isMimeType(mimeType))
+      return { ok: false, name, reasonKey: 'reasonNotInline' }
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let binary = ''
+    for (const byte of bytes) binary += String.fromCharCode(byte)
+    return {
+      ok: true,
+      name,
+      dataUrl: `data:${mimeType};base64,${btoa(binary)}`,
+    }
+  }
   try {
     dataUrl = (await compressPostImage(file, CHAT_IMAGE_TARGET)).dataUrl
   } catch {
     return { ok: false, name, reasonKey: 'reasonNotAnImage' }
   }
   const check = inspectImageDataUri(dataUrl, SENT_IMAGE_LIMITS)
-  if (check.ok) return { ok: true, name, dataUrl }
+  if (check.ok)
+    return attachmentByteLength(dataUrl) <= MAX_BLOB_BYTES
+      ? { ok: true, name, dataUrl }
+      : { ok: false, name, reasonKey: 'reasonTooLarge' }
   return {
     ok: false,
     name,
@@ -77,7 +103,8 @@ export function sentMessageBytes(
     ? utf8ByteLength(text) + textItemCount(text) * SENT_ITEM_ALLOWANCE_BYTES
     : 0
   return attachments.reduce(
-    (sum, a) => sum + a.dataUrl.length + SENT_ITEM_ALLOWANCE_BYTES,
+    (sum, a) =>
+      sum + attachmentByteLength(a.dataUrl) + SENT_ITEM_ALLOWANCE_BYTES,
     textBytes,
   )
 }
@@ -103,7 +130,8 @@ export function fitsOneMessage(
   )
     return false
   const attachmentBytes = attachments.reduce(
-    (sum, a) => sum + a.dataUrl.length + SENT_ITEM_ALLOWANCE_BYTES,
+    (sum, a) =>
+      sum + attachmentByteLength(a.dataUrl) + SENT_ITEM_ALLOWANCE_BYTES,
     0,
   )
   // At most 3 UTF-8 bytes per UTF-16 unit, and a text item for each 128 KiB at the very least.
@@ -139,7 +167,7 @@ export function messageTooLargeText(
 
 /**
  * The items of a composed message: the reply, the text with its references renumbered to the
- * order the pictures are sent in, then the pictures. No text item when there is no text. A text
+ * order the pictures are sent in, then the native binary attachments. No text item when there is no text. A text
  * longer than one text item holds is sent as consecutive text items (`textItemsOf`), which a
  * reader shows as one text (`joinConsecutiveTextItems`).
  */
@@ -162,7 +190,7 @@ export function composeChatItems(
       ),
     )
   }
-  for (const a of attachments) items.push({ type: 'image', image: a.dataUrl })
+  for (const a of attachments) items.push(blobOfDataUrl(a.dataUrl))
   return items
 }
 
@@ -172,18 +200,20 @@ export function composeChatItems(
  */
 export function shownAttachments(
   items: readonly MessageItem[],
-): PostAttachment[] {
-  const shown: PostAttachment[] = []
+): ChatImageAttachment[] {
+  const shown: ChatImageAttachment[] = []
   let position = 0
   for (const item of items) {
-    if (item.type !== 'image') continue
+    if (item.type !== 'blob') continue
     position += 1
-    if (!inspectImageDataUri(item.image, DELIVERED_IMAGE_LIMITS).ok) continue
+    if (!inspectImageBytes(item.data, item.mimeType, DELIVERED_IMAGE_LIMITS).ok)
+      continue
     shown.push({
       id: String(position),
       name: '',
-      dataUrl: item.image,
-      sizeBytes: item.image.length,
+      data: item.data,
+      mimeType: item.mimeType,
+      sizeBytes: item.data.length,
     })
   }
   return shown
@@ -192,7 +222,7 @@ export function shownAttachments(
 /** Positions (from 1) of the image items that the message's text shows inline. */
 export function inlinePositions(
   items: readonly MessageItem[],
-  shown: readonly PostAttachment[],
+  shown: readonly ChatImageAttachment[],
 ): Set<number> {
   const ids = new Set(shown.map(a => a.id))
   const inline = new Set<number>()
@@ -213,7 +243,11 @@ export function inlinePositions(
 export function picturePreview(
   items: readonly MessageItem[],
 ): { photos: number; text: string } | undefined {
-  const photos = items.filter(item => item.type === 'image').length
+  const photos = items.filter(
+    item =>
+      item.type === 'blob' &&
+      /^image\/(png|jpeg|gif|webp)$/.test(item.mimeType),
+  ).length
   if (photos === 0) return undefined
   const text = joinConsecutiveTextItems(items)
     .flatMap(item => (item.type === 'text' ? [item.text] : []))

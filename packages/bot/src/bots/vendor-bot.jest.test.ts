@@ -1,3 +1,4 @@
+import { testBlob } from '../../../wallet/message-item-plugins/blob/blob.testutil'
 import type { DigitalGoodsItem } from "@frank/cashweb/types/messages";
 import type { VendorCatalogItem } from "../../vendor-catalog";
 import { harness, PLAYER } from "./bot-harness.testutil";
@@ -10,7 +11,7 @@ const catalog: VendorCatalogItem[] = [
     description: "Test Art 1",
     priceWei: PRICE,
     image:
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      testBlob("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="),
   },
 ];
 const BUY: DigitalGoodsItem = {
@@ -19,7 +20,7 @@ const BUY: DigitalGoodsItem = {
   itemId: "test-art-1",
 };
 const delivered = (h: ReturnType<typeof harness>) =>
-  h.sent.some((m) => m.items.some((i) => i.type === "image"));
+  h.sent.some((m) => m.items.some((i) => i.type === "blob"));
 
 describe("VendorBot", () => {
   test("shows the catalog to a new user and to any other message", async () => {

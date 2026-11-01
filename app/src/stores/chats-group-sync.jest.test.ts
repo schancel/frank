@@ -1099,6 +1099,76 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     ).resolves.toBe(0)
   })
 
+  it.each([false, true])(
+    'validates signed native blob history after actual close/reopen, optional MIME reply=%s',
+    async withReply => {
+      const { chats, group, client } = await makeGroup()
+      const blob = {
+        type: 'blob' as const,
+        mimeType: 'application/octet-stream',
+        data: Uint8Array.of(0, 255, 128),
+      }
+      const items = withReply
+        ? [
+            blob,
+            {
+              mimeType: 'application/x-reference',
+              type: 'reply' as const,
+              payloadDigest: 'ab'.repeat(32),
+            },
+          ]
+        : [blob]
+      const outcome = await chats.sendGroupMessage({
+        conversationId: group.id,
+        items,
+        relayClient: client,
+        senderAddress: ALICE,
+      })
+      const mockedStore = await messageStorePromise
+      const rows = mockedStore.saveMessage.mock.calls.filter(
+        ([row]) => row.message.conversationId === group.id,
+      )
+      const row = rows[rows.length - 1][0]
+      const { LevelMessageStore } = jest.requireActual(
+        '@frank/cashweb/relay/storage/level-storage',
+      )
+      const { mkdtempSync, rmSync } = require('fs')
+      const { tmpdir } = require('os')
+      const { join } = require('path')
+      const location = mkdtempSync(
+        join(tmpdir(), 'frank-group-binary-history-'),
+      )
+      let history = new LevelMessageStore(location)
+      try {
+        await history.Open()
+        await history.saveMessage(row)
+        await history.Close()
+        history = new LevelMessageStore(location)
+        await history.Open()
+        const saved = await history.getMessage(row.index)
+        await history.Close()
+        mockedStore.getIterator.mockResolvedValueOnce([saved])
+        const metadata = JSON.parse(
+          JSON.stringify({
+            conversations: { [group.id]: { ...group, messages: [] } },
+            lastReceived: chats.lastReceived,
+          }),
+        )
+        setActivePinia(createPinia())
+        const restored = await rehydrateChat(metadata)
+        expect(restored.conversations[group.id].messages[0].items).toEqual(
+          items,
+        )
+        expect(
+          restored.conversations[group.id].messages[0].items[0].data,
+        ).toBeInstanceOf(Uint8Array)
+      } finally {
+        await history.Close()
+        rmSync(location, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('does not advance the cursor when durable incoming receipt fails, then safely retries and reopens', async () => {
     const { chats: alice, group, client } = await makeGroup()
     await alice.sendGroupMessage({

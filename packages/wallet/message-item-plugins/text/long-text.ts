@@ -100,7 +100,7 @@ export function splitLongTextItems(items: readonly MessageItem[]): MessageItem[]
     )
   )
     return items as MessageItem[]
-  return items.flatMap(item =>
+  return items.flatMap<MessageItem>(item =>
     item.type === 'text' && utf8ByteLength(item.text) > MAX_TEXT_STRING_BYTES
       ? textItemsOf(item.text)
       : [item],

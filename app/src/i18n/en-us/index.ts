@@ -264,6 +264,7 @@ export const rawEnUS = {
     fulfilled: "Here's your purchase ({itemId}):",
   },
   chatImage: {
+    downloadAttachment: 'Download attachment',
     onePhoto: '📷 Photo',
     manyPhotos: '📷 {count} photos',
     notShown: 'Image not shown ({reason})',

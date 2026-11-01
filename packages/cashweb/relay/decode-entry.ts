@@ -1,7 +1,6 @@
 import assert from 'assert'
-import type { ReplyItem, StealthItem, ImageItem } from '../types/messages'
+import type { ReplyItem, StealthItem } from '../types/messages'
 import type { PayloadEntry } from './relay_pb'
-import { entryToImage } from './images'
 import stealth from './stealth_pb'
 import { TextItem, MessageItem } from '../types/messages'
 import { Wallet } from '../legacy-wallet'
@@ -161,17 +160,6 @@ export async function decodeEntry(
         type: 'stealth',
         amount: stealthValue,
       } as StealthItem,
-      outpoints,
-    ]
-  }
-
-  if (kind === 'image') {
-    const image = entryToImage(entry)
-    return [
-      {
-        type: 'image',
-        image,
-      } as ImageItem,
       outpoints,
     ]
   }

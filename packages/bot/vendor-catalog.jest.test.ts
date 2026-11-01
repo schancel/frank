@@ -2,8 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { MAX_BLOB_BYTES } from "@frank/wallet/message-item-plugins/blob/codec";
 import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/message-envelope";
-import { serializeMessageItems } from "@frank/wallet/chain/evm-chain";
+import { encodeItemFrames } from "@frank/wallet/message-item-plugins/wire";
+import { createBotMessageItemRegistry } from "./src/message-items";
 
 import {
   buildFulfillItems,
@@ -23,7 +25,7 @@ describe("bundled demo catalog", () => {
     expect(items.length).toBeGreaterThanOrEqual(3);
     expect(new Set(items.map((i) => i.image)).size).toBe(items.length);
     for (const item of items) {
-      const raw = Buffer.from(item.image.split(",")[1], "base64");
+      const raw = Buffer.from(item.image.data);
       // Not the old 1x1 placeholder: real dimensions from the PNG header.
       expect(raw.readUInt32BE(16)).toBeGreaterThanOrEqual(320);
       expect(raw.readUInt32BE(20)).toBeGreaterThanOrEqual(200);
@@ -35,7 +37,7 @@ describe("bundled demo catalog", () => {
 
   it("fits the relay message limit for the catalog and every delivery", () => {
     const bytes = (x: any) =>
-      Buffer.byteLength(serializeMessageItems(x), "utf8");
+      encodeItemFrames(createBotMessageItemRegistry(), x).reduce((sum, frame) => sum + frame.length, 0);
     expect(bytes([catalogItem(items)])).toBeLessThan(
       MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES
     );
@@ -50,13 +52,13 @@ describe("bundled demo catalog", () => {
     const cat = catalogItem(items) as any;
     expect(cat.catalog[0].thumbnail).toBe(items[0].thumbnail);
     expect(cat.catalog[0].priceWei).toBe(items[0].priceWei.toString());
-    expect(JSON.stringify(cat)).not.toContain(items[0].image);
+    expect(JSON.stringify(cat)).not.toContain(Buffer.from(items[0].image.data).toString("base64"));
     const [fulfill, image] = buildFulfillItems(items[0]) as any[];
     expect(fulfill).toMatchObject({
       action: "fulfill",
       itemId: items[0].itemId,
     });
-    expect(image).toEqual({ type: "image", image: items[0].image });
+    expect(image).toEqual(items[0].image);
   });
 });
 
@@ -83,9 +85,7 @@ describe("loadVendorCatalog from a seller-supplied directory", () => {
     manifest([entry({ thumbnail: "cat-t.png" })]);
     const [item] = loadVendorCatalog(dir);
     expect(item).toMatchObject({ itemId: "cat", priceWei: 1000n });
-    expect(item.image).toBe(
-      `data:image/png;base64,${png(10).toString("base64")}`
-    );
+    expect(item.image).toEqual({ type: "blob", mimeType: "image/png", data: Uint8Array.from(png(10)) });
     expect(item.thumbnail).toBe(
       `data:image/png;base64,${png(5).toString("base64")}`
     );
@@ -108,15 +108,13 @@ describe("loadVendorCatalog from a seller-supplied directory", () => {
     );
     manifest([entry()]);
     expect(() => loadVendorCatalog(dir)).toThrow(
-      /item "cat".*over the relay message limit/
+      /item "cat".*blob limit/
     );
   });
 
   it("accepts an image just under the limit (boundary)", () => {
-    // base64 inflates by 4/3; leave room for the JSON wrapper around the data URI.
-    const raw = Math.floor(
-      ((MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES - 200) * 3) / 4
-    );
+    // The attachment payload is raw bytes, independently bounded at 512 KiB.
+    const raw = MAX_BLOB_BYTES;
     writeFileSync(join(dir, "cat.png"), png(raw - PNG_HEAD.length));
     manifest([entry()]);
     expect(loadVendorCatalog(dir)).toHaveLength(1);

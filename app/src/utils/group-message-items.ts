@@ -15,7 +15,7 @@ import {
 } from '@frank/cashweb/message-items/registry'
 import { installMessageItemPlugin } from '@frank/cashweb/message-items/registry'
 import { initTextPlugin } from '@frank/wallet/message-item-plugins/text/plugin'
-import { initImagePlugin } from '@frank/wallet/message-item-plugins/image/plugin'
+import { initBlobPlugin } from '@frank/wallet/message-item-plugins/blob/plugin'
 import { initReplyPlugin } from '@frank/wallet/message-item-plugins/reply/plugin'
 import { initCalendarInvitePlugin } from '@frank/wallet/message-item-plugins/calendar-invite/plugin'
 import { initCalendarRsvpPlugin } from '@frank/wallet/message-item-plugins/calendar-rsvp/plugin'
@@ -27,7 +27,7 @@ import { createArticlePlugin } from '@frank/wallet/message-item-plugins/article'
 const messageItems = createMessageItemRegistry()
 for (const [type, init] of [
   ['text', initTextPlugin],
-  ['image', initImagePlugin],
+  ['blob', initBlobPlugin],
   ['reply', initReplyPlugin],
   ['calendar-invite', initCalendarInvitePlugin],
   ['calendar-rsvp', initCalendarRsvpPlugin],

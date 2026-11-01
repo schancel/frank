@@ -121,9 +121,9 @@ export default defineComponent({
       if (textItem && 'text' in textItem) {
         return textItem.text
       }
-      const imageItem = this.message?.items?.find(it => it.type === 'image')
+      const imageItem = this.message?.items?.find(it => it.type === 'blob')
       if (imageItem) {
-        return 'Image'
+        return this.$t('chatImage.downloadAttachment')
       }
       return ''
     },

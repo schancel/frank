@@ -1,3 +1,4 @@
+import { isMimeType } from './mime-type'
 // Stage 8.1 (type-specific limits), 8.2 (CDDL structure and ranges) and 8.3 (allocated
 // identifiers) for the version-1 payload schemas.
 import { DEFAULT_FEATURE_CODEC_MAP } from './blackjack-schema'
@@ -2068,7 +2069,11 @@ export function parseDraft(
           at(P, K.itemType),
           'a plugin item type is lowercase letters and digits in hyphen-separated groups',
         )
+      const mimeType = m.has(K.mimeType) ? m.get(K.mimeType) : undefined
+      if (mimeType !== undefined && !isMimeType(mimeType))
+        throw bad(at(P, K.mimeType), 'expected a canonical bare MIME type')
       return {
+        ...(mimeType === undefined ? {} : { mimeType }),
         type: TYPE_PLUGIN_MESSAGE_ITEM,
         itemType,
         data: bstr(

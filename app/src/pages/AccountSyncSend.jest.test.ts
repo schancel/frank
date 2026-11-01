@@ -465,6 +465,17 @@ describe('full-page account sender', () => {
       'ms12frankshareone',
       'ms12franksharetwo',
     ])
+    // Chrome runtime messaging JSON-serializes this account-only bundle: it carries no decoded history.
+    expect(Object.keys(offer.payload.deviceSyncBundle).sort()).toEqual([
+      'accountAddress',
+      'backupShares',
+      'displayName',
+      'exportedAtMs',
+      'version',
+    ])
+    expect(JSON.parse(JSON.stringify(offer.payload.deviceSyncBundle))).toEqual(
+      offer.payload.deviceSyncBundle,
+    )
     expect(post).not.toHaveBeenCalled()
     const update = async (data: object) => {
       listeners.forEach(fn =>

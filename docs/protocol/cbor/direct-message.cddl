@@ -278,6 +278,7 @@ email-attachment = {
 plugin-message-item = {
   0: plugin-item-type,                  ; application item type identifier, e.g. "dice"
   1: bstr .size (0..8388608),           ; the owning plugin's bytes, never interpreted here
+  ? 2: tstr .size (3..127),             ; canonical bare MIME type; required by blob plugin
   * uint => frank-value,                ; forward-compatible extensible fields
 }
 

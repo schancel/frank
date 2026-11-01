@@ -18,7 +18,7 @@ import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
 import { initDigitalGoodsPlugin } from './digital-goods/plugin'
 import { initEmailPlugin } from './email/plugin'
-import { initImagePlugin } from './image/plugin'
+import { initBlobPlugin } from './blob/plugin'
 import { initJournalCheckpointPlugin } from './journal-checkpoint/plugin'
 import { initLiarsDicePlugin } from './liars-dice/plugin'
 import { initMessageTombstonePlugin } from './message-tombstone/plugin'
@@ -50,7 +50,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   readonly [type: string, init: MessageItemPluginInit]
 > = [
   ['text', initTextPlugin],
-  ['image', initImagePlugin],
+  ['blob', initBlobPlugin],
   ['reply', initReplyPlugin],
   ['stealth', initStealthPlugin],
   ['stealth-asset', initRecipientAssetPaymentPlugin],

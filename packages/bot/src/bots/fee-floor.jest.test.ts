@@ -1,3 +1,4 @@
+import { testBlob } from '../../../wallet/message-item-plugins/blob/blob.testutil'
 /**
  * The chain's fee floor at every table with a stake or a price. Unit tests on the bot harness:
  * the floor is what `BotContext.minimumStampWei` reports (the wallet's `minimumStamp` behind the
@@ -211,7 +212,7 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
         description: "A picture",
         priceWei: DUST,
         image:
-          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          testBlob("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="),
       },
     ];
     const bot = new VendorBot({ catalogItems: catalog });
@@ -226,14 +227,14 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
     );
     h.sent.length = 0;
     await bot.onMessage(h.message([buy], [h.pay(DUST)]), h.ctx);
-    expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(
+    expect(h.sent.some((m) => m.items.some((i) => i.type === "blob"))).toBe(
       false
     );
     expect(texts(h)).toContain("Nothing was sold");
     // The mock accepts the full refund request; real wallet refusal must retain the debt.
     expect(h.paidOut()).toBe(DUST);
     await bot.onMessage(h.message([buy], [h.pay(MINIMUM)]), h.ctx);
-    expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(
+    expect(h.sent.some((m) => m.items.some((i) => i.type === "blob"))).toBe(
       true
     );
   });

@@ -903,3 +903,39 @@ describe("the group composer shows the group's price of one message", () => {
     direct.unmount()
   })
 })
+
+describe('native binary file input', () => {
+  it.each(['filesPicked', 'pasted', 'dropped'] as const)(
+    'admits a binary file through %s',
+    async method => {
+      const wrapper = mount(ChatInput, { global: globalOptions })
+      const data = Uint8Array.of(0, 255, 128)
+      const file = new File([data], 'notes.bin', {
+        type: 'application/octet-stream',
+      })
+      Object.defineProperty(file, 'arrayBuffer', {
+        value: async () => data.buffer,
+      })
+      const event = {
+        target: { files: [file], value: 'selected' },
+        clipboardData: { files: [file] },
+        dataTransfer: { files: [file] },
+        preventDefault: jest.fn(),
+      }
+      await (
+        wrapper.vm as unknown as Record<
+          typeof method,
+          (event: unknown) => Promise<void>
+        >
+      )[method](event)
+      expect(wrapper.emitted('update:attachments')?.[0]?.[0]).toEqual([
+        expect.objectContaining({
+          name: 'notes.bin',
+          dataUrl: 'data:application/octet-stream;base64,AP+A',
+          sizeBytes: 3,
+        }),
+      ])
+      wrapper.unmount()
+    },
+  )
+})

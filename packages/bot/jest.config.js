@@ -42,6 +42,6 @@ module.exports = {
       },
     ],
   },
-  transformIgnorePatterns: ['/node_modules/(?!@noble/)'],
+  transformIgnorePatterns: ['/node_modules/(?!@noble/|superjson/|copy-anything/|is-what/)'],
   testPathIgnorePatterns: ['/node_modules/'],
 }

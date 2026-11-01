@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { blobOfDataUrl } from '../../../utils/chat-binary'
 import { mount, flushPromises } from '@vue/test-utils'
 import ChatMessageText from './ChatMessageText.vue'
 import { png } from '../../../utils/image-data-uri.fixtures'
@@ -27,12 +28,12 @@ jest.mock('quasar', () => ({
   colors: { getPaletteColor: (name: string) => `mock-color(${name})` },
 }))
 
-const picture = { id: '1', name: '', dataUrl: png(2, 2), sizeBytes: 1 }
+const picture = { id: '1', name: '', ...blobOfDataUrl(png(2, 2)), sizeBytes: 1 }
 // As large as a real picture: its bytes must not be repeated per reference.
 const large = {
   id: '1',
   name: '',
-  dataUrl: `data:image/png;base64,${'A'.repeat(250_000)}`,
+  ...blobOfDataUrl(`data:image/png;base64,${'A'.repeat(250_000)}`),
   sizeBytes: 1,
 }
 
@@ -78,9 +79,20 @@ describe('ChatMessageText pictures', () => {
   it('hands the picture itself to the image dialog on a click, and frees the URL on unmount', async () => {
     const wrapper = mountText('look ![p](attachment:1)')
     await wrapper.get('img').trigger('click')
-    expect(wrapper.emitted('imageClick')).toEqual([[picture.dataUrl]])
+    expect(wrapper.emitted('imageClick')).toEqual([['blob:test/1']])
     wrapper.unmount()
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:test/1')
+  })
+
+  it('releases a replaced picture URL while the message remains mounted', async () => {
+    const wrapper = mountText('![p](attachment:1)')
+    await wrapper.setProps({
+      attachments: [{ ...picture, data: new Uint8Array([1, 2, 3]) }],
+    })
+    await flushPromises()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:test/1')
+    expect(createObjectURL).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 
   it('shows nothing for a reference to a picture the message does not carry', () => {

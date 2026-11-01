@@ -1,7 +1,5 @@
-import {
-  parseMessageHistory,
-  stringifyMessageHistory,
-} from './message-history-json'
+import { parseMessageRecord, stringifyMessageRecord } from './message-record-json'
+const parseHistory = (value: string) => parseMessageRecord(value, value => !!value && typeof value === 'object' && 'message' in value && 'index' in value)
 
 const wrapper = (payload: unknown) => ({
   index: 'fixture',
@@ -21,23 +19,23 @@ it('leaves existing JSON history byte-for-byte unchanged and never revives paylo
     date: new Date('2026-01-01'),
     values: [undefined, NaN, Infinity, , null],
   })
-  expect(stringifyMessageHistory(original)).toBe(JSON.stringify(original))
-  expect(parseMessageHistory(JSON.stringify(original))).toEqual(
+  expect(stringifyMessageRecord(original)).toBe(JSON.stringify(original))
+  expect(parseHistory(JSON.stringify(original))).toEqual(
     JSON.parse(JSON.stringify(original)),
   )
 })
 
 it('preserves ordinary empty-string properties without confusing them with the root', () => {
   const original = wrapper({ '': { '': 'ordinary JSON' } })
-  expect(stringifyMessageHistory(original)).toBe(JSON.stringify(original))
-  expect(parseMessageHistory(stringifyMessageHistory(original))).toEqual(
+  expect(stringifyMessageRecord(original)).toBe(JSON.stringify(original))
+  expect(parseHistory(stringifyMessageRecord(original))).toEqual(
     original,
   )
 })
 
 it('rejects byte values at unsupported empty-string paths instead of silently writing objects', () => {
   expect(() =>
-    stringifyMessageHistory(wrapper({ '': Uint8Array.of(0, 255) })),
+    stringifyMessageRecord(wrapper({ '': Uint8Array.of(0, 255) })),
   ).toThrow('Unsupported history byte annotation')
 })
 
@@ -53,8 +51,8 @@ it('preserves repeated bytes, Buffer, offsets and JSON semantics alongside binar
     date: new Date('2026-01-01'),
     values: [undefined, NaN, Infinity, , null],
   })
-  const restored = parseMessageHistory(
-    stringifyMessageHistory(original),
+  const restored = parseHistory(
+    stringifyMessageRecord(original),
   ) as ReturnType<typeof wrapper>
   expect(restored.message.items[0].payload).toEqual({
     first: repeated,
@@ -79,9 +77,9 @@ const annotation = [['custom', 'frank-history-bytes']]
 
 it('round-trips a full 512 KiB byte value with base64-sized local storage overhead', () => {
   const bytes = new Uint8Array(512 * 1024).fill(255)
-  const encoded = stringifyMessageHistory(wrapper(bytes))
+  const encoded = stringifyMessageRecord(wrapper(bytes))
   expect(encoded.length).toBeLessThan(4 * Math.ceil(bytes.length / 3) + 512)
-  expect(parseMessageHistory(encoded)).toEqual(wrapper(bytes))
+  expect(parseHistory(encoded)).toEqual(wrapper(bytes))
 })
 
 const envelope = (
@@ -113,15 +111,15 @@ it.each([
 ])(
   'rejects unsupported or unsafe annotation envelopes before revival: %j',
   value => {
-    expect(() => parseMessageHistory(JSON.stringify(value))).toThrow()
+    expect(() => parseHistory(JSON.stringify(value))).toThrow()
     expect(Object.hasOwn(Object.prototype, 'polluted')).toBe(false)
   },
 )
 
 it('keeps annotated-looking objects ordinary within a byte-containing payload', () => {
   const lookalike = envelope()
-  const restored = parseMessageHistory(
-    stringifyMessageHistory(wrapper({ bytes: Uint8Array.of(255), lookalike })),
+  const restored = parseHistory(
+    stringifyMessageRecord(wrapper({ bytes: Uint8Array.of(255), lookalike })),
   )
   expect(restored).toEqual(wrapper({ bytes: Uint8Array.of(255), lookalike }))
 })
@@ -129,6 +127,6 @@ it('keeps annotated-looking objects ordinary within a byte-containing payload', 
 it('keeps ordinary JSON behavior for containers without JSON byte properties', () => {
   // JSON represents a Map as {}, so its contents have no durable JSON property path.
   expect(
-    stringifyMessageHistory(wrapper(new Map([['bytes', Uint8Array.of(1)]]))),
+    stringifyMessageRecord(wrapper(new Map([['bytes', Uint8Array.of(1)]]))),
   ).toBe(JSON.stringify(wrapper({})))
 })

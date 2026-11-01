@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { testBlob } from '../../../../../packages/wallet/message-item-plugins/blob/blob.testutil'
 
 import { shallowMount } from '@vue/test-utils'
 import ChatMessageReply from './ChatMessageReply.vue'
@@ -96,7 +97,7 @@ describe('ChatMessageReply quoting a message with pictures', () => {
           type: 'text',
           text: 'see ![cat](attachment:1) <img src="https://evil.example/t.png">',
         },
-        { type: 'image', image: 'data:image/png;base64,AAAA' },
+        testBlob('data:image/png;base64,AAAA'),
       ],
     }
     const wrapper = shallowMount(ChatMessageReply, {
@@ -132,7 +133,7 @@ describe('ChatMessageReply discriminated preview projection', () => {
   it('passes text, image and stated payment fields unchanged to their actual children', async () => {
     const wrapper = mountPreview([
       { type: 'text', text: 'caption' },
-      { type: 'image', image: 'data:image/png;base64,AAAA' },
+      testBlob('data:image/png;base64,AAAA'),
       {
         type: 'stealth',
         amount: 7,
@@ -149,7 +150,8 @@ describe('ChatMessageReply discriminated preview projection', () => {
     )
     expect(wrapper.getComponent(ChatMessageImage).props()).toEqual(
       expect.objectContaining({
-        image: 'data:image/png;base64,AAAA',
+        data: testBlob('data:image/png;base64,AAAA').data,
+        mimeType: 'image/png',
         isReply: true,
       }),
     )
@@ -172,13 +174,15 @@ describe('ChatMessageReply discriminated preview projection', () => {
     const wrapper = mountPreview([
       { type: 'text', text: 'first' },
       { type: 'text', text: '' },
-      { type: 'image', image: 'first-image' },
-      { type: 'image', image: '' },
+      testBlob('first-image'),
+      testBlob(''),
       { type: 'stealth', amount: 99, amountWei: '99', memo: 'first memo' },
       { type: 'stealth', amount: 0 },
     ])
     expect(wrapper.getComponent(ChatMessageText).props('text')).toBe('')
-    expect(wrapper.getComponent(ChatMessageImage).props('image')).toBe('')
+    expect(wrapper.getComponent(ChatMessageImage).props('data')).toEqual(
+      new Uint8Array(),
+    )
     expect(wrapper.getComponent(ChatMessageStealth).props()).toEqual(
       expect.objectContaining({
         amount: 0,
@@ -189,10 +193,10 @@ describe('ChatMessageReply discriminated preview projection', () => {
   })
 
   it('retains the image caption fallback when there is no text item', () => {
-    const wrapper = mountPreview([{ type: 'image', image: 'image-data' }])
+    const wrapper = mountPreview([testBlob('image-data')])
     expect(wrapper.getComponent(ChatMessageText).props('text')).toBe('Image')
-    expect(wrapper.getComponent(ChatMessageImage).props('image')).toBe(
-      'image-data',
+    expect(wrapper.getComponent(ChatMessageImage).props('data')).toEqual(
+      testBlob('image-data').data,
     )
   })
 

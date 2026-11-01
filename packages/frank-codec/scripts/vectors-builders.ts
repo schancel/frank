@@ -2,13 +2,14 @@
  * Writes (or, with --check, compares) every vector corpus that a fixture builder produces.
  * Run by `yarn vectors:generate` after the frozen and proposal corpora, which some builders read.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { blackjackHandCorpus } from '../fixtures/blackjack-hand'
 import { blackjackHandV3Corpus } from '../fixtures/blackjack-hand-v3'
 import { experimentalSolanaStealthCorpus } from '../fixtures/experimental-solana-stealth'
 import { buildForumCorpus } from '../fixtures/forum-content-read'
+import { blobMessageItemCorpus } from '../fixtures/blob-message-item'
 import { buildManifest } from '../fixtures/manifest'
 import { stealthAssetCorpus } from '../fixtures/stealth-assets'
 import { buildTopicCommitments } from '../fixtures/topic-commitments'
@@ -16,6 +17,7 @@ import { buildTopicCommitments } from '../fixtures/topic-commitments'
 const ROOT = resolve(__dirname, '../../..')
 const V = 'docs/protocol/cbor/vectors'
 const corpora: [string, () => unknown][] = [
+  [`${V}/blob-message-item.json`, blobMessageItemCorpus],
   [`${V}/manifest.json`, buildManifest],
   [`${V}/topic-commitments.json`, buildTopicCommitments],
   [`${V}/stealth-assets.json`, stealthAssetCorpus],
@@ -103,7 +105,7 @@ const check = process.argv.includes('--check')
 const stale: string[] = []
 for (const [path, build] of corpora) {
   const file = resolve(ROOT, path)
-  const old = readFileSync(file, 'utf8')
+  const old = existsSync(file) ? readFileSync(file, 'utf8') : ''
   const text = keepLayout(old, JSON.parse(JSON.stringify(build())))
   if (old === text) continue
   if (check) stale.push(path)

@@ -57,3 +57,11 @@ synthetic application choices, and checks independent-page contention plus proce
 kill/reopen. It excludes wallet implementation imports. It does not qualify physical
 power failure, browser eviction or external messaging. The native tests exercise the
 public seam with owned temporary Level profiles and synchronous-write evidence.
+
+The pure `message-record-json.ts` codec is also used by the existing bot Outbox to
+preserve native bytes in its application items. Each caller admits its own plain
+record shape before and after byte revival. The Outbox allows byte annotations
+only under `items`; destination, amounts, attempts and recovery references remain
+owned and validated by the Outbox. Its index, pending records and sent receipts
+retain their existing JSON encoding. Neither caller accepts arbitrary SuperJSON
+types or reference annotations.

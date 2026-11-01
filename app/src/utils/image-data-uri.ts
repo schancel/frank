@@ -10,7 +10,7 @@ import {
   DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES,
   MAX_SEALED_MESSAGE_CONTENT_BYTES,
 } from '@frank/wallet/chain/direct-message-limits'
-import { MAX_IMAGE_BYTES } from '@frank/wallet/message-item-plugins/image/codec'
+import { MAX_BLOB_BYTES } from '@frank/wallet/message-item-plugins/blob/codec'
 
 export interface ImageLimits {
   /** Max length of the whole URI string (the encoded size). */
@@ -45,7 +45,7 @@ export const SENT_ITEM_ALLOWANCE_BYTES = DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES
 /** One picture: at most what an image item holds (its plugin's 512 KiB, less the item's own
  * framing, counted as one allowance), and what a recipient's app will show. */
 export const SENT_IMAGE_LIMITS: ImageLimits = {
-  maxEncodedLength: MAX_IMAGE_BYTES - SENT_ITEM_ALLOWANCE_BYTES,
+  maxEncodedLength: 4 * Math.ceil(MAX_BLOB_BYTES / 3) + 64,
   maxDimension: DELIVERED_IMAGE_LIMITS.maxDimension,
   maxPixels: DELIVERED_IMAGE_LIMITS.maxPixels,
 }
@@ -166,5 +166,31 @@ export function inspectImageDataUri(
   ) {
     return { ok: false, reason: 'dimensions too large' }
   }
+  return { ok: true, width, height }
+}
+
+/** Native peer bytes are inspected before any browser decoder or object URL receives them. */
+export function inspectImageBytes(
+  data: unknown,
+  mimeType: unknown,
+  limits: ImageLimits = DELIVERED_IMAGE_LIMITS,
+): ImageCheck {
+  if (
+    !(data instanceof Uint8Array) ||
+    typeof mimeType !== 'string' ||
+    !/^image\/(png|jpeg|gif|webp)$/.test(mimeType)
+  )
+    return { ok: false, reason: 'not an inline image' }
+  if (data.length > MAX_BLOB_BYTES) return { ok: false, reason: 'too large' }
+  const dims = dimensions(mimeType.slice(6), data.subarray(0, 48 * 1024))
+  if (!dims) return { ok: false, reason: 'unreadable image header' }
+  const [width, height] = dims
+  if (width < 1 || height < 1) return { ok: false, reason: 'empty image' }
+  if (
+    width > limits.maxDimension ||
+    height > limits.maxDimension ||
+    width * height > limits.maxPixels
+  )
+    return { ok: false, reason: 'dimensions too large' }
   return { ok: true, width, height }
 }

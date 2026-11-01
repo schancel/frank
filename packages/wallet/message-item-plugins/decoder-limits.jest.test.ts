@@ -542,15 +542,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('leaseDurationMs', [3], [-1, 2_592_000_001, '30000']),
     ],
   },
-  {
-    item: { type: 'image', image: 'data:image/png;base64,AAAA' },
-    cases: [
-      ['image: empty', [0], new Uint8Array()],
-      ['image: 524,289 bytes', [0], new Uint8Array(524_289).fill(0x41)],
-      ['image: text instead of bytes', [0], 'data:image/png;base64,AAAA'],
-      ['image: not UTF-8', [0], Uint8Array.of(0xff, 0xfe)],
-    ],
-  },
+
   {
     item: {
       type: 'p2pkh',
@@ -908,7 +900,6 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
         'digital-goods',
         'group-control',
         'group-welcome',
-        'image',
         'journal-checkpoint',
         'liars-dice',
         'message-tombstone',
@@ -982,7 +973,7 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
       },
       { type: 'liars-dice', tableId: 't', action: 'bid', myDice: [7] },
       { type: 'reply', payloadDigest: 'a b' },
-      { type: 'image', image: '' },
+      { type: 'blob', mimeType: '', data: new Uint8Array() },
       {
         type: 'wallet-sync',
         direction: 'out',

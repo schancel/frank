@@ -4406,6 +4406,11 @@ describe('persisted application message handoff', () => {
       itemType: 'synthetic-application',
       value: { exact: 'retained' },
     },
+    {
+      type: 'blob' as const,
+      mimeType: 'application/octet-stream',
+      data: Uint8Array.of(0, 255, 128),
+    },
   ]
   const request = (stampValue: bigint, assertCurrent = () => undefined) => ({
     wallet,

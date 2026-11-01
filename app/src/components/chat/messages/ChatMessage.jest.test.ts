@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { testBlob } from '../../../../../packages/wallet/message-item-plugins/blob/blob.testutil'
 
 /**
  * ChatMessage's Retry / Discard wiring for outgoing messages (#269, #270). The store is mocked at
@@ -324,7 +325,7 @@ describe('ChatMessage shows a long text sent as several text items', () => {
         items: [
           { type: 'reply', payloadDigest: 'ab'.repeat(32) },
           ...pieces.map(text => ({ type: 'text', text })),
-          { type: 'image', image: 'data:image/png;base64,AAAA' },
+          testBlob('data:image/png;base64,AAAA'),
         ],
       } as never,
     })

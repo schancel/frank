@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { testBlob } from '../../../packages/wallet/message-item-plugins/blob/blob.testutil'
 
 import { shallowMount } from '@vue/test-utils'
 import { nextTick } from 'vue'
@@ -206,8 +207,8 @@ describe('Chat Reply and Forward flows', () => {
       items: [
         { type: 'reply', payloadDigest: 'msg-1' },
         { type: 'text', text: 'see ![b](attachment:2) and ![a](attachment:1)' },
-        { type: 'image', image: 'data:image/png;base64,AAAA' },
-        { type: 'image', image: 'data:image/png;base64,BBBB' },
+        testBlob('data:image/png;base64,AAAA'),
+        testBlob('data:image/png;base64,BBBB'),
       ],
     })
     expect(vm.attachments).toEqual([])
@@ -222,8 +223,8 @@ describe('Chat Reply and Forward flows', () => {
     await vm.sendMessage('')
 
     expect(mockSendMessage.mock.calls[0][0].items).toEqual([
-      { type: 'image', image: 'data:image/png;base64,AAAA' },
-      { type: 'image', image: 'data:image/png;base64,BBBB' },
+      testBlob('data:image/png;base64,AAAA'),
+      testBlob('data:image/png;base64,BBBB'),
     ])
   })
 
@@ -240,7 +241,9 @@ describe('Chat Reply and Forward flows', () => {
     const huge = Array.from({ length: 30 }, (_, i) => ({
       id: String(i + 1),
       name: `${i + 1}.png`,
-      dataUrl: String.fromCharCode(65 + i).repeat(300_000),
+      dataUrl:
+        'data:application/octet-stream;base64,' +
+        Buffer.alloc(300_000, i).toString('base64'),
       sizeBytes: 1,
     }))
     vm.attachments = huge

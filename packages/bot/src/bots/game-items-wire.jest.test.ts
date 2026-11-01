@@ -1,3 +1,4 @@
+import { testBlob } from '../../../wallet/message-item-plugins/blob/blob.testutil'
 /**
  * What each game bot actually replies with goes through the canonical wire rule: every item a
  * bot emits in a played-through exchange is encoded as the paid send path encodes it (before any
@@ -22,10 +23,6 @@ const ALICE = "0x" + "a1".repeat(20);
 const BOB = "0x" + "b2".repeat(20);
 const CAROL = "0x" + "c3".repeat(20);
 const BOT = "0x" + "dd".repeat(20);
-
-/** The item as it is after a JSON round trip: no `undefined` properties. */
-const plain = (item: MessageItem): MessageItem =>
-  JSON.parse(JSON.stringify(item));
 
 /** A bot's table: `say` delivers one message from a player, with the payments it came with, and
  * `sent` is every message the bot sent, in order. */
@@ -62,7 +59,7 @@ function expectCarried(sent: MessageItem[][], type: string, actions: string[]) {
   expect(sent.length).toBeGreaterThan(0);
   const seen = new Set<string>();
   for (const items of sent) {
-    expect(overTheWire(items)).toEqual(items.map(plain));
+    expect(overTheWire(items)).toEqual(items);
     for (const item of items)
       if (item.type === type) seen.add((item as { action: string }).action);
   }
@@ -162,7 +159,7 @@ describe("game bot replies cross the canonical wire", () => {
           itemId: "test-art-1",
           description: "Test art",
           priceWei,
-          image,
+          image: testBlob(image),
           thumbnail: "data:image/png;base64," + "A".repeat(5_000),
         },
       ],
@@ -177,11 +174,11 @@ describe("game bot replies cross the canonical wire", () => {
       itemId: "test-art-1",
     };
     await say(bot, ALICE, buy);
-    expect(sent.flat().some((i) => i.type === "image")).toBe(false);
+    expect(sent.flat().some((i) => i.type === "blob")).toBe(false);
     await say(bot, ALICE, buy, priceWei);
     await say(bot, ALICE, { ...buy, itemId: "missing" }, priceWei);
     expectCarried(sent, "digital-goods", ["catalog", "fulfill", "error"]);
-    expect(sent.flat().some((i) => i.type === "image")).toBe(true);
+    expect(sent.flat().some((i) => i.type === "blob")).toBe(true);
   });
 
   it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {

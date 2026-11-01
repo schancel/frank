@@ -15,9 +15,9 @@ import { MAX_DM_CIPHERTEXT_BYTES, MAX_MESSAGE_ITEMS_TOTAL } from '@frank/codec'
 import { utf8ByteLength } from '../message-item-plugins/text/long-text'
 
 /** Counted for each item of a message on top of its content: a text item's frame adds 25 bytes
- * to its text, an image item's 44 to its data URI, and the note to self adds a few bytes per
+ * to its text; a blob's MIME header may be 127 bytes, so 192 covers its frame, and the note to self adds a few bytes per
  * item frame it holds. */
-export const DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES = 64
+export const DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES = 192
 
 /**
  * The fields of a sealed message and of its note to self, at their widest, that are not counted
@@ -33,7 +33,7 @@ export const SEALED_MESSAGE_FIELDS_ALLOWANCE_BYTES = 16 * 1024
 
 /**
  * The most a sealed message's content may take: the sum, over its items, of each one's content
- * bytes (a text's UTF-8 bytes, an image's data URI) plus {@link
+ * bytes (a text's UTF-8 bytes, a blob's native bytes) plus {@link
  * DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES}. A message within it fits both a direct message and its
  * note to self.
  */
@@ -42,7 +42,7 @@ export const MAX_SEALED_MESSAGE_CONTENT_BYTES =
 
 /**
  * What `items` take of a sealed message, counted as {@link MAX_SEALED_MESSAGE_CONTENT_BYTES}
- * counts it: a text's UTF-8 bytes, an image's data URI, and {@link
+ * counts it: a text's UTF-8 bytes, a blob's native bytes, and {@link
  * DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES} for every item. Other items count only their allowance;
  * the wallet still refuses, when it encodes them, a message they make too large.
  */
@@ -51,7 +51,7 @@ export function sealedMessageContentBytes(items: readonly MessageItem[]): number
   for (const item of items) {
     bytes += DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES
     if (item.type === 'text') bytes += utf8ByteLength(item.text)
-    else if (item.type === 'image') bytes += item.image.length
+    else if (item.type === 'blob') bytes += item.data.length
   }
   return bytes
 }

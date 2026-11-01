@@ -636,7 +636,7 @@ function extractMessageFields(
       if (anyItem.summary) bodyParts.push(String(anyItem.summary))
       if (anyItem.description) bodyParts.push(String(anyItem.description))
     } else if (
-      anyItem.type === 'image' ||
+      anyItem.type === 'blob' ||
       anyItem.type === 'attachment' ||
       anyItem.type === 'blob'
     ) {
@@ -645,7 +645,7 @@ function extractMessageFields(
         anyItem.filename ||
         anyItem.blobManifest?.filename ||
         anyItem.name ||
-        (anyItem.type === 'image' ? 'image' : '')
+        (anyItem.type === 'blob' ? 'image' : '')
       if (filename) attachmentNames.push(String(filename))
     }
 

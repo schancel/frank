@@ -1,3 +1,4 @@
+import { testBlob } from './blob/blob.testutil'
 import type {} from '@frank/group-messaging/types'
 /**
  * One realistic item per carried message item type, with the values the app and the bots produce.
@@ -186,7 +187,7 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     ],
   },
   { type: 'digital-goods', action: 'request', itemId: 'sticker_1' },
-  { type: 'image', image: 'data:image/png;base64,AAAA' },
+  testBlob('data:image/png;base64,AAAA'),
   { type: 'reply', payloadDigest: HASH },
   {
     type: 'calendar-invite',

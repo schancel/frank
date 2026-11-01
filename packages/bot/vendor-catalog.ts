@@ -16,8 +16,10 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 
 import { MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES } from "@frank/cashweb/relay/message-envelope";
-import { serializeMessageItems } from "@frank/wallet/chain/evm-chain";
-import { MessageItem } from "@frank/cashweb/types/messages";
+import { MAX_BLOB_BYTES } from "@frank/wallet/message-item-plugins/blob/codec";
+import { encodeItemFrames } from "@frank/wallet/message-item-plugins/wire";
+import { createBotMessageItemRegistry } from "./src/message-items";
+import { MessageItem, BlobItem } from "@frank/cashweb/types/messages";
 
 export const DEFAULT_CATALOG_DIR = join(__dirname, "demo-catalog");
 export const MAX_CATALOG_ITEMS = 50;
@@ -28,8 +30,8 @@ export interface VendorCatalogItem {
   itemId: string;
   description: string;
   priceWei: bigint;
-  /** `data:image/...;base64,...` URI, sent in the delivery message. */
-  image: string;
+  /** Native image content, sent as a blob entry with required MIME metadata. */
+  image: BlobItem;
   /** Optional small `data:` URI shown in the catalog. */
   thumbnail?: string;
 }
@@ -46,13 +48,13 @@ function fail(dir: string, message: string): never {
   throw new Error(`Vendor catalog (${dir}): ${message}`);
 }
 
-function loadDataUri(
+function loadImage(
   dir: string,
   realDir: string,
   itemId: string,
   field: string,
   file: unknown
-): string {
+): BlobItem {
   if (typeof file !== "string" || file === "") {
     fail(dir, `item "${itemId}": "${field}" must be a file name`);
   }
@@ -90,6 +92,7 @@ function loadDataUri(
       `item "${itemId}": ${field} "${file}" must be .png, .jpg, .gif or .webp`
     );
   }
+  if (field === "image" && lstatSync(real).size > MAX_BLOB_BYTES) fail(dir, `item "${itemId}": image exceeds the ${MAX_BLOB_BYTES} byte blob limit`);
   const bytes = readFileSync(real);
   const webpOk =
     kind.mime !== "image/webp" ||
@@ -100,11 +103,18 @@ function loadDataUri(
       `item "${itemId}": ${field} "${file}" is not a valid ${kind.mime} file`
     );
   }
-  return `data:${kind.mime};base64,${bytes.toString("base64")}`;
+  return { type: "blob", mimeType: kind.mime, data: Uint8Array.from(bytes) };
 }
 
 function plaintextBytes(items: MessageItem[]): number {
-  return Buffer.byteLength(serializeMessageItems(items), "utf8");
+  const registry = createBotMessageItemRegistry();
+  return encodeItemFrames(registry, items).reduce((sum, frame) => sum + frame.length, 0);
+}
+
+/** Catalog thumbnails remain presentation metadata; fulfillment content is native binary. */
+function loadDataUri(...args: Parameters<typeof loadImage>): string {
+  const image = loadImage(...args);
+  return `data:${image.mimeType};base64,${Buffer.from(image.data).toString("base64")}`;
 }
 
 export function loadVendorCatalog(dir: string): VendorCatalogItem[] {
@@ -166,7 +176,7 @@ export function loadVendorCatalog(dir: string): VendorCatalogItem[] {
           `item "${itemId}": "priceWei" must be a positive integer string of wei`
         );
       }
-      const image = loadDataUri(dir, realDir, itemId, "image", entry.image);
+      const image = loadImage(dir, realDir, itemId, "image", entry.image);
       const thumbnail =
         entry.thumbnail === undefined
           ? undefined
@@ -189,7 +199,8 @@ export function loadVendorCatalog(dir: string): VendorCatalogItem[] {
         image,
         thumbnail,
       };
-      const deliverySize = plaintextBytes(buildFulfillItems(item));
+      let deliverySize: number;
+      try { deliverySize = plaintextBytes(buildFulfillItems(item)); } catch (error) { fail(dir, `item "${itemId}": ${error instanceof Error ? error.message : String(error)}`); }
       if (deliverySize > MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES) {
         fail(
           dir,
@@ -200,7 +211,8 @@ export function loadVendorCatalog(dir: string): VendorCatalogItem[] {
     }
   );
 
-  const catalogSize = plaintextBytes([catalogItem(items)]);
+  let catalogSize: number;
+  try { catalogSize = plaintextBytes([catalogItem(items)]); } catch (error) { fail(dir, `catalog message: ${error instanceof Error ? error.message : String(error)}`); }
   if (catalogSize > MAX_MONAD_ENVELOPE_PLAINTEXT_BYTES) {
     fail(
       dir,
@@ -214,7 +226,7 @@ export function loadVendorCatalog(dir: string): VendorCatalogItem[] {
 export function buildFulfillItems(item: VendorCatalogItem): MessageItem[] {
   return [
     { type: "digital-goods", action: "fulfill", itemId: item.itemId },
-    { type: "image", image: item.image },
+    item.image,
   ];
 }
 

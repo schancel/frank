@@ -267,6 +267,7 @@ export const rawFrFR = {
     fulfilled: 'Voici votre achat ({itemId}) :',
   },
   chatImage: {
+    downloadAttachment: 'Télécharger la pièce jointe',
     onePhoto: '📷 Photo',
     manyPhotos: '📷 {count} photos',
     notShown: 'Image non affichée ({reason})',

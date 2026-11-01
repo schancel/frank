@@ -1429,10 +1429,12 @@ pub mod plugin_message_item {
     pub const ITEM_TYPE: u64 = 0;
     /// Field `data`.
     pub const DATA: u64 = 1;
+    /// Field `mime-type`.
+    pub const MIME_TYPE: u64 = 2;
     /// `plugin-message-item` map shape (docs/protocol/cbor/direct-message.cddl#plugin-message-item).
     pub const SHAPE: MapShape = MapShape {
         required: &[ITEM_TYPE, DATA],
-        optional: &[],
+        optional: &[MIME_TYPE],
         open: true,
         open_from: 0,
     };

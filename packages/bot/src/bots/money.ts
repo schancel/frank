@@ -18,6 +18,7 @@
  *    kept as FAILED, reported, and never counted as sent.
  */
 import { createHash } from "crypto";
+import { parseMessageRecord, stringifyMessageRecord } from "@frank/cashweb/relay/storage/message-record-json";
 import { claimTransfer, checkStampPayments } from "@frank/bot-framework";
 import type {
   BotContext,
@@ -142,6 +143,29 @@ export interface Owed {
   /** How many times an operator has sent this again after an attempt failed: each is a new
    * message to the wallet. */
   tries?: number;
+}
+
+/** The Outbox owns these facts; only application items can carry native byte annotations. */
+function isOwedRoot(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const optionalString = (key: string) => row[key] === undefined || typeof row[key] === "string";
+  return typeof row.to === "string" && Array.isArray(row.items) &&
+    typeof row.valueWei === "string" && /^(0|[1-9][0-9]*)$/.test(row.valueWei) &&
+    typeof row.sinceMs === "number" && Number.isSafeInteger(row.sinceMs) && row.sinceMs >= 0 &&
+    optionalString("conversationId") && optionalString("attempt") && optionalString("awaitsFor") &&
+    (row.awaits === undefined || Array.isArray(row.awaits)) &&
+    (row.tries === undefined || (typeof row.tries === "number" && Number.isSafeInteger(row.tries) && row.tries >= 0)) &&
+    (row.onlyWithValue === undefined || typeof row.onlyWithValue === "boolean");
+}
+function parseOwed(value: string): Owed {
+  return parseMessageRecord(value, isOwedRoot, path => path.startsWith("items.")) as Owed;
+}
+function stringifyOwed(value: Owed): string {
+  const encoded = stringifyMessageRecord(value);
+  // Refuse annotations outside items before any state mutation can commit them.
+  parseOwed(encoded);
+  return encoded;
 }
 
 /** A message that came with money and has not been settled yet. */
@@ -375,7 +399,7 @@ export class Outbox {
         ops.push({
           type: "put",
           key: `${K}owed:${id}`,
-          value: JSON.stringify(owed),
+          value: stringifyOwed(owed),
         });
       }
       await ctx.state.batch([
@@ -407,7 +431,7 @@ export class Outbox {
     let total = 0n;
     for (const id of (await this.index(ctx.state)).owed) {
       const raw = await ctx.state.get(`${K}owed:${id}`);
-      if (raw !== undefined) total += BigInt((JSON.parse(raw) as Owed).valueWei);
+      if (raw !== undefined) total += BigInt((parseOwed(raw)).valueWei);
     }
     return total;
   }
@@ -439,8 +463,12 @@ export class Outbox {
     failed: (Owed & { id: string })[];
   }> {
     const index = await this.index(ctx.state);
-    const read = async <T>(kind: string, name: string) =>
-      JSON.parse((await ctx.state.get(`${K}${kind}:${name}`)) ?? "{}") as T;
+    const read = async <T>(kind: string, name: string): Promise<T> => {
+      const raw = await ctx.state.get(`${K}${kind}:${name}`);
+      // Preserve the existing missing-row projection; payload parsing must not invent a row.
+      if (raw === undefined) return {} as T;
+      return (kind === "pending" ? JSON.parse(raw) : parseOwed(raw)) as T;
+    };
     return {
       owed: await Promise.all(
         index.owed.map(async (id) => ({ ...(await read<Owed>("owed", id)), id }))
@@ -467,7 +495,7 @@ export class Outbox {
     return this.serial(async () => {
       const raw = await ctx.state.get(`${K}failed:${id}`);
       if (raw === undefined) return false;
-      const { attempt: _attempt, ...owed } = JSON.parse(raw) as Owed;
+      const { attempt: _attempt, ...owed } = parseOwed(raw);
       const index = await this.index(ctx.state);
       index.failed = index.failed.filter((other) => other !== id);
       index.owed.push(id);
@@ -476,7 +504,7 @@ export class Outbox {
         {
           type: "put",
           key: `${K}owed:${id}`,
-          value: JSON.stringify({ ...owed, tries: (owed.tries ?? 0) + 1 }),
+          value: stringifyOwed({ ...owed, tries: (owed.tries ?? 0) + 1 }),
         },
         { type: "put", key: `${K}index`, value: JSON.stringify(index) },
       ]);
@@ -586,7 +614,7 @@ export class Outbox {
     const state = ctx.state;
     const raw = await state.get(`${K}owed:${id}`);
     if (raw === undefined) return;
-    const owed = JSON.parse(raw) as Owed;
+    const owed = parseOwed(raw);
     let value = BigInt(owed.valueWei);
     const sent = (digest: string, stampWei: bigint) =>
       this.finish(
@@ -610,7 +638,7 @@ export class Outbox {
         value += received.confirmedWei;
         owed.valueWei = value.toString();
         delete owed.awaits;
-        await state.put(`${K}owed:${id}`, JSON.stringify(owed));
+        await state.put(`${K}owed:${id}`, stringifyOwed(owed));
       }
       // Nothing landed, so there is nothing to return and nothing to say.
       if (owed.onlyWithValue && value === 0n) return sent("", 0n);
@@ -641,7 +669,7 @@ export class Outbox {
         )
           throw error;
         owed.attempt = (error as { payloadDigest: string }).payloadDigest;
-        await state.put(`${K}owed:${id}`, JSON.stringify(owed));
+        await state.put(`${K}owed:${id}`, stringifyOwed(owed));
       }
     }
 
@@ -651,7 +679,7 @@ export class Outbox {
     console.error(
       `[${this.botId}] FAILED: message ${id} to ${owed.to} carrying ${value} wei was ended by the relay and was NOT delivered (attempt ${owed.attempt}). It is not counted as sent. See the outbox admin tool.`
     );
-    await this.finish(state, id, "failed", JSON.stringify(owed));
+    await this.finish(state, id, "failed", stringifyOwed(owed));
   }
 }
 

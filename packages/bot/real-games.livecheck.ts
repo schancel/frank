@@ -125,7 +125,7 @@ async function main() {
     vendor: () =>
       new VendorBot({
         catalogItems: [
-          { itemId: "pic", description: "A picture", priceWei: STAKE, image },
+          { itemId: "pic", description: "A picture", priceWei: STAKE, image: { type: "blob", mimeType: "image/png", data: Uint8Array.from(Buffer.from(image.split(",")[1], "base64")) } },
         ],
       }),
     raffle: () => new RaffleBot({ entryPriceWei: STAKE, maxEntries: 2 }),

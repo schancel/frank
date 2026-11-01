@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { testBlob } from '../../../packages/wallet/message-item-plugins/blob/blob.testutil'
 import {
   CHAT_IMAGE_TARGET,
   composeChatItems,
@@ -93,15 +94,15 @@ describe('composeChatItems', () => {
         type: 'text',
         text: 'x ![second](attachment:2) y ![first](attachment:1) ![gone](attachment:9)',
       },
-      { type: 'image', image: a.dataUrl },
-      { type: 'image', image: b.dataUrl },
+      testBlob(a.dataUrl),
+      testBlob(b.dataUrl),
     ])
   })
 
   it('sends just the pictures when there is no text', () => {
     expect(composeChatItems('  \n', [a, b])).toEqual([
-      { type: 'image', image: a.dataUrl },
-      { type: 'image', image: b.dataUrl },
+      testBlob(a.dataUrl),
+      testBlob(b.dataUrl),
     ])
   })
 
@@ -113,25 +114,41 @@ describe('composeChatItems', () => {
 })
 
 describe('the size of one message', () => {
-  it('counts the UTF-8 bytes of the text, each data URI, and an allowance per item', () => {
+  it('counts UTF-8 text and actual decoded attachment bytes plus framing', () => {
     expect(sentMessageBytes('', [])).toBe(0)
     expect(sentMessageBytes('hé\u{1F600}', [])).toBe(
       7 + SENT_ITEM_ALLOWANCE_BYTES,
     )
     expect(
       sentMessageBytes('abc', [
-        attachment('1', 'A'.repeat(100)),
-        attachment('2', 'B'.repeat(50)),
+        attachment(
+          '1',
+          'data:application/octet-stream;base64,' +
+            Buffer.alloc(100).toString('base64'),
+        ),
+        attachment(
+          '2',
+          'data:application/octet-stream;base64,' +
+            Buffer.alloc(50).toString('base64'),
+        ),
       ]),
     ).toBe(3 + 100 + 50 + 3 * SENT_ITEM_ALLOWANCE_BYTES)
   })
 
   it('accepts a message exactly at the bound and refuses one byte more', () => {
-    const room = MAX_SENT_MESSAGE_BYTES - 3 * SENT_ITEM_ALLOWANCE_BYTES - 5
-    const pictures = [
-      attachment('1', 'A'.repeat(room - 1000)),
-      attachment('2', 'B'.repeat(1000)),
-    ]
+    const count = 16
+    const room =
+      MAX_SENT_MESSAGE_BYTES - (count + 1) * SENT_ITEM_ALLOWANCE_BYTES - 5
+    const one = Math.floor(room / count)
+    const pictures = Array.from({ length: count }, (_, index) =>
+      attachment(
+        String(index),
+        'data:application/octet-stream;base64,' +
+          Buffer.alloc(
+            index === count - 1 ? room - one * (count - 1) : one,
+          ).toString('base64'),
+      ),
+    )
     expect(fitsOneMessage('hello', pictures)).toBe(true)
     expect(fitsOneMessage('hello!', pictures)).toBe(false)
   })
@@ -151,15 +168,15 @@ describe('the pictures of a received message', () => {
       type: 'text' as const,
       text: '![a](attachment:2) ![b](attachment:3) ![c](attachment:7)',
     },
-    { type: 'image' as const, image: png(2, 2) },
-    { type: 'image' as const, image: gif(3, 3) },
-    { type: 'image' as const, image: png(9000, 9000) },
+    testBlob(png(2, 2)),
+    testBlob(gif(3, 3)),
+    testBlob(png(9000, 9000)),
   ]
 
   it('are those that pass vetting, identified by position among the image items', () => {
-    expect(shownAttachments(items).map(a => [a.id, a.dataUrl])).toEqual([
-      ['1', png(2, 2)],
-      ['2', gif(3, 3)],
+    expect(shownAttachments(items).map(a => [a.id, a.data])).toEqual([
+      ['1', testBlob(png(2, 2)).data],
+      ['2', testBlob(gif(3, 3)).data],
     ])
   })
 
@@ -178,15 +195,15 @@ describe('the preview of a message with pictures', () => {
         type: 'text',
         text: 'before ![a](attachment:1)\nafter ![b](attachment:2)',
       },
-      { type: 'image', image: png(2, 2) },
-      { type: 'image', image: gif(3, 3) },
+      testBlob(png(2, 2)),
+      testBlob(gif(3, 3)),
     ])
     expect(preview).toEqual({ photos: 2, text: 'before after' })
     expect(picturePreviewText(preview!, t)).toBe('2 photos before after')
   })
 
   it('is the count alone for pictures with no text', () => {
-    const preview = picturePreview([{ type: 'image', image: png(2, 2) }])
+    const preview = picturePreview([testBlob(png(2, 2))])
     expect(picturePreviewText(preview!, t)).toBe('Photo')
   })
 
@@ -205,7 +222,7 @@ describe('a text longer than one text item holds', () => {
     const text = '\u{1F600} é ![x](attachment:7) '.repeat(40_000)
     const items = composeChatItems(text, [a], 'digest')
     expect(items[0]).toEqual({ type: 'reply', payloadDigest: 'digest' })
-    expect(items[items.length - 1]).toEqual({ type: 'image', image: a.dataUrl })
+    expect(items[items.length - 1]).toEqual(testBlob(a.dataUrl))
     const texts = items.flatMap(item =>
       item.type === 'text' ? [item.text] : [],
     )
@@ -246,7 +263,7 @@ describe('a text longer than one text item holds', () => {
     const items = [
       { type: 'text' as const, text: 'see ![a](attach' },
       { type: 'text' as const, text: 'ment:1) here' },
-      { type: 'image' as const, image: png(2, 2) },
+      testBlob(png(2, 2)),
     ]
     expect([...inlinePositions(items, shownAttachments(items))]).toEqual([1])
     expect(picturePreview(items)).toEqual({ photos: 1, text: 'see here' })
@@ -267,4 +284,38 @@ describe('the number of items of one message', () => {
     expect(fitsOneMessage('x'.repeat(262_145), pictures(252))).toBe(true)
     expect(fitsOneMessage('x'.repeat(262_145), pictures(253))).toBe(false)
   })
+})
+
+it('prepares an ordinary binary file and composes exact bytes with its MIME type', async () => {
+  const data = Uint8Array.of(0, 255, 128)
+  const file = new File([data], 'notes.bin', {
+    type: 'application/octet-stream',
+  })
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => data.buffer })
+  const prepared = await prepareChatImage(file)
+  if (!prepared.ok) throw new Error('expected accepted file')
+  const items = composeChatItems('', [
+    {
+      id: '1',
+      name: prepared.name,
+      dataUrl: prepared.dataUrl,
+      sizeBytes: data.length,
+    },
+  ])
+  expect(items).toEqual([
+    { type: 'blob', mimeType: 'application/octet-stream', data },
+  ])
+  expect(shownAttachments(items)).toEqual([])
+})
+it('refuses an oversized binary file before reading its bytes', async () => {
+  const file = new File([new Uint8Array(524289)], 'large.bin', {
+    type: 'application/octet-stream',
+  })
+  const read = jest.fn()
+  Object.defineProperty(file, 'arrayBuffer', { value: read })
+  expect(await prepareChatImage(file)).toMatchObject({
+    ok: false,
+    reasonKey: 'reasonTooLarge',
+  })
+  expect(read).not.toHaveBeenCalled()
 })

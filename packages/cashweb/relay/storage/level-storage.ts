@@ -23,7 +23,7 @@ import {
   RelayReceiptIdentity,
 } from './storage'
 import { MessageWrapper } from '../../types/messages'
-import { parseMessageHistory, stringifyMessageHistory } from './message-history-json'
+import { parseMessageRecord, stringifyMessageRecord } from './message-record-json'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
 import {
@@ -80,10 +80,20 @@ type JsonMessageWrapper = Omit<MessageWrapper, 'message'> & {
   }
 }
 
+function isMessageWrapperRoot(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const wrapper = value as Record<string, unknown>
+  return wrapper.message !== null && typeof wrapper.message === 'object' && !Array.isArray(wrapper.message) &&
+    typeof wrapper.index === 'string' && typeof wrapper.outbound === 'boolean' &&
+    typeof wrapper.senderAddress === 'string' && typeof wrapper.copartyAddress === 'string'
+}
+
 function parseStoredWei(
   value: string | number | undefined,
 ): bigint | undefined {
   if (value === undefined) return undefined
+  if (typeof value !== 'number' && typeof value !== 'string')
+    throw new Error('Stored wei value must be text or a safe integer')
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new Error(
@@ -122,11 +132,11 @@ export function serializeMessageWrapper(
           }),
     },
   }
-  return stringifyMessageHistory(stored)
+  return stringifyMessageRecord(stored)
 }
 
 export function deserializeMessageWrapper(value: string): MessageWrapper {
-  const stored = parseMessageHistory(value) as JsonMessageWrapper
+  const stored = parseMessageRecord(value, isMessageWrapperRoot) as JsonMessageWrapper
   const { stampValueWei, stampPayments, ...message } = stored.message
   return {
     ...stored,

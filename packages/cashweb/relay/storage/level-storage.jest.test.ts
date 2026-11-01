@@ -176,6 +176,7 @@ describe('LevelMessageStore', () => {
     const old = wrapper('old-json')
     const repeated = Uint8Array.of(0, 255, 128)
     const binary = Object.assign(wrapper('native-bytes'), {
+      message: { ...wrapper('native-bytes').message, items: [{ type: 'blob' as const, mimeType: 'application/octet-stream', data: repeated }] },
       binaryFixture: {
         first: repeated,
         second: repeated,
@@ -285,6 +286,35 @@ describe('LevelMessageStore', () => {
       await store.Close()
       await rm(location, { recursive: true, force: true })
     }
+  })
+  it.each([[49], { 0: 49 }, true, null])('refuses non-primitive stored financial values: %j', value => {
+    const stored = JSON.parse(serializeMessageWrapper(wrapper()))
+    stored.message.stampValueWei = value
+    expect(() => deserializeMessageWrapper(JSON.stringify(stored))).toThrow('Stored wei value must be text or a safe integer')
+  })
+  it.each(['message.stampValueWei', 'message.stampPayments.0.valueWei'])('refuses a byte annotation that targets financial value %s', path => {
+    const stored = JSON.parse(serializeMessageWrapper(wrapper()))
+    if (path === 'message.stampValueWei') stored.message.stampValueWei = 'MQ=='
+    else stored.message.stampPayments[0].valueWei = 'MQ=='
+    expect(() => deserializeMessageWrapper(JSON.stringify({ json: stored, meta: { v: 1, values: { [path]: [['custom', 'frank-history-bytes']] } } }))).toThrow('Stored wei value must be text or a safe integer')
+  })
+  it('keeps malformed financial history and metadata unchanged when actual native reads reject', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-financial-byte-rejection-'))
+    const row = wrapper('corrupt')
+    const json = JSON.parse(serializeMessageWrapper(row))
+    json.message.stampValueWei = 'MQ=='
+    const raw = JSON.stringify({ json, meta: { v: 1, values: { 'message.stampValueWei': [['custom', 'frank-history-bytes']] } } })
+    await seed(location, { messages: { corrupt: raw }, metadata: { schemaVersion: '3' } })
+    const before = await snapshot(location)
+    const store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      await expect(store.getMessage('corrupt')).rejects.toThrow('Stored wei value must be text or a safe integer')
+      const iterator = await store.getIterator()
+      await expect(iterator.next()).rejects.toThrow('Stored wei value must be text or a safe integer')
+      await store.Close()
+      expect(await snapshot(location)).toEqual(before)
+    } finally { await store.Close(); await rm(location, { recursive: true, force: true }) }
   })
   it('round-trips financial integers beyond Number.MAX_SAFE_INTEGER exactly', () => {
     const encoded = serializeMessageWrapper(wrapper())

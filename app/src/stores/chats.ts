@@ -6838,6 +6838,8 @@ export const useChatStore = defineStore('chats', {
       checkGroup()
       const timestampMs = Date.now()
       const payload = encodeGroupItems(items)
+      // Persist the same projection a receiver derives from these exact signed bytes.
+      const projectedItems = decodeGroupItems(payload)
       const innerDigest = computeInnerMessageSigningHash({
         groupIdHex,
         epoch,
@@ -6865,7 +6867,7 @@ export const useChatStore = defineStore('chats', {
         conversationId: conv.id,
         senderAddress,
         index: payloadDigest,
-        items,
+        items: projectedItems,
         outpoints: [],
         status: 'pending',
         previousHash: null,

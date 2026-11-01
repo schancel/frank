@@ -63,9 +63,10 @@ export interface StealthItem {
   outputIndex?: number
 }
 
-export interface ImageItem {
-  type: 'image'
-  image: string
+export interface BlobItem {
+  type: 'blob'
+  mimeType: string
+  data: Uint8Array
 }
 
 /** One message of a peer-to-peer blackjack hand (type 26, schema 3). It carries no amount (a
@@ -877,14 +878,15 @@ export interface ApplicationMessageItem {
 /** Feature-owned item types extend this map; runtime support requires explicit plugin installation. */
 export interface MessageItemExtensions {}
 
-export type MessageItem =
+/** MIME is common metadata of generic plugin entries, separate from application payload. */
+export type MessageItem = (
   | ApplicationMessageItem
   | StealthItem
   | RecipientAssetPaymentItem
   | P2PKHSendItem
   | TextItem
   | ReplyItem
-  | ImageItem
+  | BlobItem
   | BlackjackMoveItem
   | BlackjackHandItem
   | DigitalGoodsItem
@@ -910,6 +912,7 @@ export type MessageItem =
   | ContactCardItem
   | MessageItemExtensions[keyof MessageItemExtensions]
   | UnsupportedItem
+) & { mimeType?: string }
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

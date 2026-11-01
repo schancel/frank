@@ -1247,8 +1247,16 @@ describe('parallel paid messages', () => {
     const beforeStore = handler.slice(0, handler.indexOf('owner.claim('))
     expect(beforeStore).toContain('"undeliverable"')
     expect(beforeStore).toContain('precheck_payments(')
+    // Payment reasons belong to the EVM adapter; HTTP keeps pre-store orchestration.
+    const paymentSource = readFileSync(
+      join(
+        __dirname,
+        '../../../backend/cashweb/cashweb-registry/src/evm_dm_payment.rs',
+      ),
+      'utf8',
+    )
     for (const reason of ['stale_nonce', 'insufficient_total'])
-      expect(source).toContain(`=> "${reason}"`)
+      expect(paymentSource).toContain(`=> "${reason}"`)
     expect([...REFUSED_BEFORE_EXPOSURE].sort()).toEqual(
       ['insufficient_total', 'stale_nonce', 'undeliverable'],
     )

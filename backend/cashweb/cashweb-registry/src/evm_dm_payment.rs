@@ -1,8 +1,13 @@
 //! What a direct message's payments must look like before the relay stores it.
 //!
-//! Everything here is decided from the request bytes and the recipient's directory entry.
-//! Nothing is asked of the chain: the relay never learns whether a payment confirmed.
+//! Structural validation runs before durable acceptance. The configured EVM runtime supplies
+//! the verified node for prechecks and post-acceptance broadcasts. Delivery orchestration and
+//! durable payment uniqueness remain with the HTTP/store owners.
 
+use crate::canonical_dm_request::ExactRequest;
+use bitcoinsuite_core::{Hashed, Sha256};
+use serde::Serialize;
+use sha3::{Digest, Keccak256};
 use std::collections::HashSet;
 
 use crate::{
@@ -15,7 +20,7 @@ pub(crate) const MAX_STAMP_PAYMENTS: usize = 64;
 
 /// A request that has passed every check, ready to be stored. Only this module makes one.
 pub(crate) struct CanonicalPaymentInput {
-    pub(crate) request: crate::http::evm_direct_messages::ExactRequest,
+    pub(crate) request: crate::canonical_dm_request::ExactRequest,
     pub(crate) policy: crate::store::evm_direct_messages::FrozenCanonicalPolicy,
     payments: Vec<DecodedSignedTransaction>,
 }
@@ -38,9 +43,9 @@ impl CanonicalPaymentInput {
     /// Test seam for storing many messages quickly: skips the directory lookups, which were
     /// already made for `policy`. Every check that reads only the request bytes still runs.
     pub(crate) fn without_directory(
-        request: crate::http::evm_direct_messages::ExactRequest,
+        request: crate::canonical_dm_request::ExactRequest,
         policy: crate::store::evm_direct_messages::FrozenCanonicalPolicy,
-    ) -> crate::http::evm_direct_messages::Result<Self> {
+    ) -> crate::evm_mailbox::Result<Self> {
         let payments = canonical_signed_set(&request, &policy)?;
         Ok(Self {
             request,
@@ -54,17 +59,16 @@ impl CanonicalPaymentInput {
 /// statement as Current. The sender is whoever the request says: the relay neither looks the
 /// sender up nor checks what the context states about the sender's directory entry.
 pub(crate) fn validate_canonical_payment_set(
-    request: crate::http::evm_direct_messages::ExactRequest,
+    request: crate::canonical_dm_request::ExactRequest,
     recipient: &crate::directory_admission::Current,
     recipient_evidence: Option<&crate::directory_admission::HistoricalEvidence>,
     network: &str,
     chain_id: u64,
     minimum: u128,
     payment_floor: u128,
-) -> crate::http::evm_direct_messages::Result<CanonicalPaymentInput> {
+) -> crate::evm_mailbox::Result<CanonicalPaymentInput> {
     use crate::{
-        http::evm_direct_messages::CanonicalError as Error,
-        store::evm_direct_messages::FrozenCanonicalPolicy,
+        evm_mailbox::CanonicalError as Error, store::evm_direct_messages::FrozenCanonicalPolicy,
     };
     use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
     let checks = crate::evm_dm_verify::verify_canonical_stamp(
@@ -147,10 +151,10 @@ pub(crate) fn validate_canonical_payment_set(
 /// Every check of a message's payments that needs only the request bytes and the policy:
 /// frame, context, proof, and each signed transaction against its listed member.
 fn canonical_signed_set(
-    request: &crate::http::evm_direct_messages::ExactRequest,
+    request: &crate::canonical_dm_request::ExactRequest,
     policy: &crate::store::evm_direct_messages::FrozenCanonicalPolicy,
-) -> crate::http::evm_direct_messages::Result<Vec<DecodedSignedTransaction>> {
-    use crate::http::evm_direct_messages::CanonicalError as Error;
+) -> crate::evm_mailbox::Result<Vec<DecodedSignedTransaction>> {
+    use crate::evm_mailbox::CanonicalError as Error;
     use frank_cbor::{
         encode_direct_message_crypto_context, payment_commitment, recipient_payload_digest,
         relay_context, validate_frame, AccountRef, DirectMessageCryptoContext, TypedPayload,
@@ -291,4 +295,288 @@ fn canonical_signed_set(
         return Err(Error::Invalid);
     }
     Ok(decoded)
+}
+
+/// A message's payments are handed to the node at most once in this long. A repeat of the
+/// same message inside it is answered `delivered` without sending them again. That includes a
+/// repeat sent because the first broadcast failed: the window starts at the attempt, not at
+/// a success.
+pub(crate) const REBROADCAST_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(300)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
+/// Longest the relay waits on the node for one payment before answering the sender anyway.
+const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Hand every payment of a delivered message to the node once, all at the same time. The
+/// results are logged and nothing else: a payment the node refused, or one that could not be
+/// sent in time, is simply not sent. A resend of the same message sends them again, once
+/// [`REBROADCAST_INTERVAL`] has passed. The interval starts when the payments are handed over,
+/// whether or not the node took them, so a failed broadcast is not retried inside it either.
+///
+/// Returns what was logged for each payment: the outcome of one that went out, or the reason
+/// one did not.
+pub(crate) async fn broadcast_payments(
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
+    claim: &crate::store::evm_direct_messages::Claim,
+) -> Vec<std::result::Result<&'static str, String>> {
+    let Some(transport) = runtime.transport() else {
+        tracing::event!(
+            tracing::Level::WARN,
+            payload_hash = %hex::encode(claim.policy.payload_hash),
+            "Payments were not handed to the node: no upstream of the relay network has proved \
+             its identity yet. A resend of the message hands them over again"
+        );
+        return claim
+            .request
+            .raw_transactions()
+            .map(|_| Err("no verified node".to_owned()))
+            .collect();
+    };
+    let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
+    let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
+    let payload_hash = hex::encode(claim.policy.payload_hash);
+    let sends = claim.request.raw_transactions().map(|raw| {
+        let (client, payload_hash) = (&client, &payload_hash);
+        let tx_hash = hex::encode(Keccak256::digest(raw));
+        async move {
+            let result = match tokio::time::timeout(wait, client.send_raw_transaction(raw)).await {
+                Ok(Ok(_)) => Ok("accepted"),
+                Ok(Err(error)) if error.says_tx_already_held() => Ok("already held"),
+                Ok(Err(error)) if error.definitively_rejected_send() => {
+                    Err(format!("refused by the node: {error}"))
+                }
+                Ok(Err(error)) => Err(format!("could not be sent: {error}")),
+                Err(_) => Err("no answer from the node in time".to_owned()),
+            };
+            match &result {
+                Ok(outcome) => tracing::event!(
+                    tracing::Level::DEBUG,
+                    payload_hash = %payload_hash,
+                    tx_hash = %tx_hash,
+                    outcome,
+                    "Direct-message payment broadcast"
+                ),
+                Err(reason) => tracing::event!(
+                    tracing::Level::WARN,
+                    payload_hash = %payload_hash,
+                    tx_hash = %tx_hash,
+                    reason = %reason,
+                    "Direct-message payment not broadcast; the message is delivered"
+                ),
+            }
+            result
+        }
+    });
+    futures::future::join_all(sends).await
+}
+
+/// Why a message's payments can never land, as the sender's client names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeadPayment {
+    /// A payment's nonce is already used by a different transaction.
+    StaleNonce,
+    /// A sender's balance cannot cover its payments' value and most gas cost.
+    InsufficientTotal,
+}
+impl DeadPayment {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::StaleNonce => "stale_nonce",
+            Self::InsufficientTotal => "insufficient_total",
+        }
+    }
+}
+
+/// What the node says about one paying account.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SenderState {
+    /// The account's next nonce as `eth_getTransactionCount(pending)` reports it. On Monad
+    /// that is the nonce after the last included transaction: mempool transactions are not
+    /// counted.
+    pub(crate) pending_nonce: u64,
+    /// The account's balance at `latest`.
+    pub(crate) balance_wei: u128,
+}
+
+/// Ask the node whether a new message's payments can still land, before anything is stored.
+/// `Some` only when the node says one cannot. `None` when they can, when there are none, and
+/// when the node could not be asked in time: the message is then delivered as if there had
+/// been no check, and the broadcast after it finds out.
+///
+/// Reads are made together: one pending nonce and one balance per paying account, then a
+/// lookup by hash only for a payment whose nonce is already used. The whole check waits on
+/// the node no longer than one broadcast does.
+pub(crate) async fn precheck_payments(
+    runtime: &crate::evm_mailbox::EnabledEvmMailboxRuntime,
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
+) -> Option<DeadPayment> {
+    if payments.is_empty() {
+        return None;
+    }
+    let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
+    let outcome = match runtime.transport() {
+        None => Err("no verified node".to_owned()),
+        Some(transport) => {
+            let client = crate::evm_rpc::EvmHttpClient::with_transport(transport);
+            match tokio::time::timeout(wait, ask_node(&client, payments)).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err("no answer from the node in time".to_owned()),
+            }
+        }
+    };
+    match outcome {
+        Ok(dead) => dead,
+        Err(reason) => {
+            tracing::event!(
+                tracing::Level::WARN,
+                reason = %reason,
+                "Direct-message payment check skipped; the message is delivered"
+            );
+            None
+        }
+    }
+}
+
+/// The reads behind [`precheck_payments`]. `Err` when any read failed.
+pub(crate) async fn ask_node<T: crate::evm_rpc::JsonRpcTransport>(
+    client: &crate::evm_rpc::EvmHttpClient<T>,
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
+) -> std::result::Result<Option<DeadPayment>, String> {
+    use crate::evm_rpc::BlockTag;
+    use std::collections::{HashMap, HashSet};
+    let senders: HashSet<Address> = payments.iter().map(|payment| payment.sender).collect();
+    let reads = senders.iter().map(|&sender| async move {
+        let (nonce, balance) = futures::future::join(
+            client.get_transaction_count(sender, BlockTag::Pending),
+            client.get_balance(sender, BlockTag::Latest),
+        )
+        .await;
+        Ok::<_, crate::evm_rpc::EvmRpcError>((
+            sender,
+            SenderState {
+                pending_nonce: nonce?,
+                balance_wei: balance?,
+            },
+        ))
+    });
+    let states: HashMap<Address, SenderState> = futures::future::try_join_all(reads)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .collect();
+    // A used nonce may be this very payment, already sent by the client or by an earlier
+    // submission of this message. Only the node's own record of the hash tells. On Monad
+    // `eth_getTransactionByHash` returns included transactions only, which matches a pending
+    // nonce that counts included transactions only.
+    let used = payments
+        .iter()
+        .filter(|payment| payment.nonce < states[&payment.sender].pending_nonce);
+    let lookups = used.map(|payment| async move {
+        client
+            .get_transaction_by_hash(payment.tx_hash)
+            .await
+            .map(|found| found.map(|_| payment.tx_hash))
+    });
+    let known: HashSet<_> = futures::future::try_join_all(lookups)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(judge_payments(payments, &states, &known))
+}
+
+/// Whether a message's payments can still land, given what the node said. A message any of
+/// whose payments the node already holds is delivered as before: it is a retry, and that
+/// payment's cost is already out of the balance.
+///
+/// The balance check assumes a sender signs only from funds already in its `latest`
+/// balance: no nonce stacking (a second transaction from an account whose earlier one is not
+/// yet included), and no spending of unconfirmed incoming funds or change. Both the current
+/// wallet and the coin list hold to this. If either is ever added, this check must move to a
+/// pending balance or be softened, or it will refuse payments that would land. On Monad the
+/// `pending` tag behaves as `latest` (docs.monad.xyz/reference/rpc-differences), so asking for
+/// `pending` would not help there.
+pub(crate) fn judge_payments(
+    payments: &[crate::evm_transaction::DecodedSignedTransaction],
+    states: &std::collections::HashMap<Address, SenderState>,
+    known: &std::collections::HashSet<crate::evm_rpc::Hash32>,
+) -> Option<DeadPayment> {
+    if payments
+        .iter()
+        .any(|payment| known.contains(&payment.tx_hash))
+    {
+        return None;
+    }
+    if payments
+        .iter()
+        .any(|payment| payment.nonce < states[&payment.sender].pending_nonce)
+    {
+        return Some(DeadPayment::StaleNonce);
+    }
+    let mut owed = std::collections::HashMap::<Address, u128>::new();
+    for payment in payments {
+        let total = owed.entry(payment.sender).or_default();
+        *total = total
+            .saturating_add(payment.value_wei)
+            .saturating_add(payment.max_gas_cost_wei);
+    }
+    owed.iter()
+        .any(|(sender, total)| *total > states[sender].balance_wei)
+        .then_some(DeadPayment::InsufficientTotal)
+}
+
+/// Total decoded EVM payment value used by the existing wakeup policy. This is not payment
+/// settlement evidence and does not alter the durable admitted policy or recipient amount.
+pub(crate) fn submitted_stamp_value_wei(claim: &crate::store::evm_direct_messages::Claim) -> u128 {
+    claim
+        .request
+        .raw_transactions()
+        .filter_map(|raw| decode_signed_transaction(raw).ok())
+        .fold(0u128, |acc, tx| acc.saturating_add(tx.value_wei))
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct SubmissionEcho {
+    pub(crate) submission_identity: String,
+    pub(crate) payload_hash: String,
+    pub(crate) network: String,
+    pub(crate) recipient: String,
+    pub(crate) sender_t1: String,
+    pub(crate) recipient_t1: String,
+    pub(crate) delivery_sha256: String,
+    pub(crate) context_sha256: String,
+    pub(crate) transaction_hashes: Vec<String>,
+}
+impl SubmissionEcho {
+    pub(crate) fn new(
+        request: &ExactRequest,
+        network: &str,
+        recipient: crate::evm_rpc::Address,
+        payload_hash: &[u8; 32],
+        sender_t1: &[u8; 32],
+        recipient_t1: &[u8; 32],
+    ) -> Self {
+        Self {
+            submission_identity: hex::encode(request.submission_identity()),
+            payload_hash: hex::encode(payload_hash),
+            network: network.into(),
+            recipient: recipient.to_hex(),
+            sender_t1: hex::encode(sender_t1),
+            recipient_t1: hex::encode(recipient_t1),
+            delivery_sha256: hex::encode(
+                Sha256::digest(request.delivery().to_vec().into()).as_slice(),
+            ),
+            context_sha256: hex::encode(
+                Sha256::digest(request.context().to_vec().into()).as_slice(),
+            ),
+            transaction_hashes: request
+                .raw_transactions()
+                .map(|raw| format!("0x{}", hex::encode(Keccak256::digest(raw))))
+                .collect(),
+        }
+    }
 }

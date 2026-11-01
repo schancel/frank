@@ -49,11 +49,11 @@ use frank_cbor::message_fields::{canonical_dm_message_row as R, canonical_dm_mes
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
 
 use crate::{
+    canonical_dm_request::ExactRequest,
     directory_runtime::DirectoryRuntime,
-    evm_dm_payment::CanonicalPaymentInput,
-    evm_mailbox::ChallengeConsumption,
+    evm_dm_payment::{CanonicalPaymentInput, SubmissionEcho},
+    evm_mailbox::{CanonicalError, ChallengeConsumption, Result},
     evm_rpc::{Address, Hash32},
-    http::evm_direct_messages::{CanonicalError, ExactRequest, Result, SubmissionEcho},
     store::{
         kv_store::{
             key_after, prefix_end, KvError, KvTransaction, RelayKvStore, RocksDbKvStore, Transact,
@@ -468,6 +468,18 @@ impl Owner {
             return Err(CanonicalError::Conflict);
         }
         Ok(Some(existing.with_request(request.clone())))
+    }
+    /// Inspect the real uniqueness index at the node boundary in HTTP integration tests.
+    #[cfg(test)]
+    pub(crate) fn payment_is_committed_to(
+        &self,
+        payment: Hash32,
+        payload: [u8; 32],
+    ) -> Result<bool> {
+        self.read(
+            || false,
+            |tx| Ok(tx.get(&payment_key(&payment))?.as_deref() == Some(payload.as_slice())),
+        )
     }
     /// Store a checked message in the recipient's inbox and the sender's own mailbox, in one
     /// transaction. An exact repeat returns what is already stored, on whichever replica it is

@@ -862,3 +862,22 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum CanonicalError {
+    #[error("invalid canonical submission")]
+    Invalid,
+    #[error("canonical request or record exceeds its byte budget")]
+    TooLarge,
+    #[error("canonical directory predecessor missing")]
+    Predecessor,
+    #[error("canonical exact submission conflict")]
+    Conflict,
+    #[error("canonical mailbox unavailable")]
+    Unavailable,
+    #[error("canonical capacity exhausted")]
+    Capacity,
+    #[error("mailbox authentication failed")]
+    Unauthorized,
+}
+pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;

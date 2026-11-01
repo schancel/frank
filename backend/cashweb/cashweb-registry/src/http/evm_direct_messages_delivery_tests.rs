@@ -3,6 +3,7 @@
 //! they pass the same checks; the node is an in-process fake that records what it was sent.
 use super::*;
 use crate::store::evm_direct_messages::{MailboxDirection, Owner};
+use sha3::{Digest, Keccak256};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -607,12 +608,47 @@ fn sorted(mut values: Vec<String>) -> Vec<String> {
 
 #[tokio::test]
 async fn a_paid_message_is_delivered_to_both_parties_and_each_payment_is_broadcast_once() {
-    let relay = Relay::start(|_| Answer::Accepted).await;
+    // Observe durable state at the actual RPC boundary, before answering a broadcast.
     let request = message(1, 3);
+    let committed = Arc::new(Mutex::new(None::<crate::http::server::RegistryServer>));
+    let successes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let checked = successes.clone();
+    let expected = request.clone();
+    let observed = committed.clone();
+    let relay = Relay::start(move |raw| {
+        let server = observed.lock().unwrap();
+        let owner = server
+            .as_ref()
+            .expect("fixture activated before PUT")
+            .registry
+            .canonical_dm();
+        let claim = owner
+            .find_request(&expected)
+            .unwrap()
+            .expect("complete request committed before exposing any payment");
+        assert!(claim.request.exact_equal(&expected));
+        assert_eq!(claim.policy.payload_hash, payload_hash(&expected));
+        for bytes in expected.raw_transactions() {
+            let payment_hash = crate::evm_rpc::Hash32(Keccak256::digest(bytes).into());
+            assert!(
+                owner
+                    .payment_is_committed_to(payment_hash, claim.policy.payload_hash)
+                    .unwrap(),
+                "every signed payment reference must commit with its complete request"
+            );
+        }
+        assert!(raws(&claim.request).iter().any(|stored| stored == raw));
+        checked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Answer::Accepted
+    })
+    .await;
+    *committed.lock().unwrap() = Some(relay.server.clone());
     assert!(delivered(&relay.put(&request).await, &request) > 0);
     relay.assert_delivered_to_both(&request);
     assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
     relay.stop().await;
+    // RPC task panics must fail this test too, after all fixture services are stopped.
+    assert_eq!(successes.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

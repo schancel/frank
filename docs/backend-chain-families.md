@@ -12,9 +12,21 @@ peers, not specializations of an EVM owner.
 
 The current EVM canonical DM handler is `http/evm_direct_messages.rs`; its store is
 `store/evm_direct_messages.rs`. Source renaming does not make their EVM address,
-native-chain-ID or payment semantics support Lotus. Pure request framing and the
-family payment boundary are the immediate refactor successor; no empty Lotus
-adapter or universal payment framework is introduced by the naming predecessor.
+native-chain-ID or payment semantics support Lotus. The shared `canonical_dm_request.rs` owner parses exact opaque request framing,
+retains byte ranges, applies structural budgets and computes submission identity.
+It does not decode payments, derive addresses, query a node or admit a message.
+
+`evm_dm_payment.rs` owns signed-EVM validation, nonce/balance prechecks, known-payment
+reconciliation, broadcast and the EVM submission echo. `evm_mailbox.rs` owns mailbox
+runtime/error data; HTTP maps those errors to responses. Payment and storage data
+owners do not depend on the HTTP implementation. The EVM HTTP handler composes
+admission, durable storage and family payment calls explicitly. Exact durable
+replays bypass current admission/prechecks; new requests commit the complete
+request and payment uniqueness references before any broadcast.
+
+These boundaries introduce no empty Lotus adapter or universal payment framework.
+A Bitcoin-family payment implementation remains separate work; EVM address and
+proof semantics have not been presented as neutral.
 
 ## Configuration
 
@@ -48,5 +60,7 @@ commands; do not hand-edit the snapshot or generated bindings.
 
 Run `python3 backend/cashweb/check-family-names.py` to reject network-labelled
 relay source modules/types and retired config owners. Backend CI runs this guard.
-It deliberately permits actual network identities and frozen wire/persistence
+It also checks pure framing dependencies and prohibits EVM payment operations in the
+HTTP orchestrator or HTTP implementation imports in payment/storage owners. It
+deliberately permits actual network identities and frozen wire/persistence
 identifiers; it is not proof that every EVM owner is chain-neutral.

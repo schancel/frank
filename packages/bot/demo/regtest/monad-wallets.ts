@@ -11,15 +11,16 @@
  * The wallet is the one the testnet harness opens (`openRealWallet` in ../real-stack.ts), on the
  * `monad-regtest` network: it reads and sends through the relay, never straight to the chain.
  */
-import { join, resolve } from 'path'
+import { closeSync, lstatSync, openSync } from 'fs'
+import { dirname, isAbsolute, join, resolve } from 'path'
 
 import { Wallet } from 'ethers'
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { findWallets, TRANSFER_GAS } from '../funds'
-import { openRealWallet, RealWallet } from '../real-stack'
+import { openRealWallet, RealWallet, type SweepOutcome } from '../real-stack'
 import { describeRanges, followTransfers, notTheWallets, type ReachBlock } from './chain-reach'
-import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_NETWORK_TAG, MonadRegtest } from './monad-regtest'
+import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID, MONAD_REGTEST_NETWORK_TAG, MonadRegtest } from './monad-regtest'
 import type { RegtestStack } from './regtest-stack'
 import { deployContracts, type DeploymentRecord } from '../../../contracts/scripts/deploy'
 
@@ -27,6 +28,50 @@ export function monadOf(stack: RegtestStack): MonadRegtest {
   const chain = stack.chains[MONAD_REGTEST_CHAIN]
   if (!chain) throw new Error("this stack has no Monad network: startRegtestStack({ chains: ['monad-regtest'] })")
   return chain as MonadRegtest
+}
+
+/** One setup-only faucet obligation. This public record is not a wallet payment journal.
+ * A retained/partial record blocks re-running setup after an unknown acknowledgement. */
+export async function fundWithPublicIntent(
+  stack: RegtestStack,
+  wallet: Pick<RealWallet, 'label' | 'mainAccount'>,
+  amountWei: bigint,
+  intentPath: string,
+): Promise<string> {
+  if (!isAbsolute(intentPath) || dirname(resolve(intentPath)) !== dirname(resolve(stack.stateDir)) ||
+      !/^[a-z0-9_-]+$/i.test(wallet.label) || amountWei <= 0n)
+    throw new Error('setup funding requires an absolute original-run sibling intent and a positive amount')
+  const keyFile = lstatSync(join(stack.stateDir, 'wallets', wallet.label, 'account-root.hex'))
+  if (!keyFile.isFile() || keyFile.size === 0)
+    throw new Error('setup wallet keys must already exist in their original state')
+  const monad = monadOf(stack)
+  const [chainId, block, checkpoint, latest, pending] = await Promise.all([
+    monad.provider.send('eth_chainId', []),
+    monad.provider.getBlock('latest'),
+    monad.provider.getBlock(monad.checkpoint.height),
+    monad.provider.getTransactionCount(monad.faucetAddress, 'latest'),
+    monad.provider.getTransactionCount(monad.faucetAddress, 'pending'),
+  ])
+  if (BigInt(chainId) !== MONAD_REGTEST_CHAIN_ID || !block?.hash ||
+      checkpoint?.hash?.toLowerCase() !== monad.checkpoint.hash.toLowerCase() ||
+      !Number.isSafeInteger(latest) || latest < 0 || latest !== pending)
+    throw new Error('setup chain/checkpoint or exclusive faucet nonce baseline is not verified')
+  const intent = {
+    version: 1, phase: 'prepared', chainIdentifier: monad.chainIdentifier,
+    nativeChainId: MONAD_REGTEST_CHAIN_ID.toString(), rpcUrl: monad.rpcUrl,
+    checkpoint: monad.checkpoint, stateDir: resolve(stack.stateDir),
+    recipient: wallet.mainAccount, amountWei: amountWei.toString(),
+    faucet: monad.faucetAddress, faucetNonce: { latest, pending },
+    baselineBlock: { number: block.number, hash: block.hash },
+  }
+  // Reserve the final name atomically. A partial/failed record is retained and fails closed.
+  // Never infer permission to fund again from an empty file, missing receipt or low balance.
+  closeSync(openSync(intentPath, 'wx', 0o600))
+  const { writeDurably } = await import('./solonet-keys')
+  writeDurably(intentPath, `${JSON.stringify(intent, null, 2)}\n`)
+  const transactionHash = await monad.fund(wallet.mainAccount, amountWei)
+  writeDurably(intentPath, `${JSON.stringify({ ...intent, phase: 'confirmed', transactionHash }, null, 2)}\n`)
+  return transactionHash
 }
 
 /** A new account on the stack's relay. Its state is in the stack's directory and goes with it. */
@@ -127,7 +172,7 @@ export async function deployMonadContracts(stack: RegtestStack): Promise<Deploym
 export async function returnToFaucet(
   stack: RegtestStack,
   payees: Iterable<string> = [],
-): Promise<{ returnedWei: bigint; leftWei: bigint; unswept: number }> {
+): Promise<{ returnedWei: bigint; leftWei: bigint; unswept: number; left: SweepOutcome['left'] }> {
   const monad = monadOf(stack)
   await monad.mine(4)
   const gasPrice = BigInt(await monad.provider.send('eth_gasPrice', []))
@@ -135,6 +180,7 @@ export async function returnToFaucet(
   let returnedWei = 0n
   let leftWei = 0n
   let unswept = 0
+  const left: SweepOutcome['left'] = []
   const seen = new Set<string>()
   for (const wallet of await findWallets(stack.stateDir))
     for (const account of wallet.accounts) {
@@ -145,6 +191,7 @@ export async function returnToFaucet(
       // Not worth a transfer that costs about what it returns.
       if (held <= fee * 2n) {
         leftWei += held
+        if (held > 0n) left.push({ wallet: wallet.path, account: account.role, address, balanceWei: held, reason: 'below economical return fee' })
         continue
       }
       // One account that cannot be swept (a payment still in flight, a timeout) leaves the rest
@@ -163,23 +210,26 @@ export async function returnToFaucet(
         else {
           leftWei += held
           unswept += 1
+          left.push({ wallet: wallet.path, account: account.role, address, balanceWei: held, reason: 'return receipt did not succeed' })
         }
       } catch {
         leftWei += held
         unswept += 1
+        left.push({ wallet: wallet.path, account: account.role, address, balanceWei: held, reason: 'return outcome unresolved' })
       }
     }
   const { missed, missing } = await accountsOutsideTheKeys(monad, seen, fee * 2n, payees)
   for (const { address, held } of missed) {
     leftWei += held
     unswept += 1
+    left.push({ wallet: stack.stateDir, account: 'unknown account', address, balanceWei: held, reason: 'key not found in original state' })
     console.warn(`[regtest] ${address} received money from the wallets and holds ${held} wei, but its key is not among those found: the stack's state is kept`)
   }
   if (missing.length > 0) {
     unswept += missing.length
     console.warn(`[regtest] the node no longer has ${describeRanges(missing)}, so where the wallets' money went there is unknown: the stack's state is kept`)
   }
-  return { returnedWei, leftWei, unswept }
+  return { returnedWei, leftWei, unswept, left }
 }
 
 /**

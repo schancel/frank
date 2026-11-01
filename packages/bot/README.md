@@ -268,6 +268,27 @@ first run downloads the eCash node into the git-ignored `.regtest-cache/` and ch
   package's funded send check (`packages/wallet/utxo-funded-send.livecheck.ts`) runs on
   `xec-regtest`, funded from the node's faucet.
 
+- `yarn --cwd packages/bot regtest:monad-exact-payment`: exact paid messages and recipient
+  respending on an already running relay. Set an absolute, newly owned `FRANK_EXACT_DIR`,
+  explicit `FRANK_EXACT_RELAY`, `FRANK_SOLONET_RPC_URL` and a fresh absolute process-level
+  `FRANK_SOLONET_KEY_DIR` before starting. The key directory must already exist, be empty,
+  and lie strictly inside the new `FRANK_EXACT_DIR`, with no symlink components or other
+  historical entries in that run root. For example use `$FRANK_EXACT_DIR/faucet-journal`;
+  keep owner/evidence markers outside that empty run root. Invalid scanner roots reject
+  before chain startup can inspect any leftovers. Keys stay under the original `frank-exact-*` state.
+  The stable sibling `funding-intent.json` records public chain/checkpoint, state, recipient,
+  amount and faucet nonce/block before the single setup funding transfer. An existing or
+  partial intent blocks rerunning setup, even after a lost acknowledgement; reconcile the
+  original transaction/state instead. This setup record contains no keys and does not replace
+  the wallet's message-operation journals. Residual/unswept funds or return errors fail the
+  check, preserve state/intent, and still close its provider. Confirm fee/principal limits separately.
+- The local parallel-send adapter honors explicit external RPC selection, retains its original
+  run state, uses the existing funding helper and returns funds through the existing original-state
+  scanner. Unknown funding or incomplete returns reject acceptance after owned cleanup; known
+  economic residuals remain reported. Use the direct `parallel-send.livecheck.ts` entry with
+  reviewed `PHASES`/`BUDGET_WEI` for bounded runs: the convenience package script overrides the
+  budget to 1000 MON. `FRANK_REGTEST_KEEP=1` preserves original keys/journals for reconciliation.
+
 - `yarn --cwd packages/bot regtest:monad-check`: a local Monad network (monad-solonet, the real
   Monad client; network `monad-regtest`, chain ID 20143) with the real relay's mailbox and EVM
   proxy on it. Deploys GenericHTLC and StateChannel, then two wallets exchange a paid and a free

@@ -157,6 +157,7 @@ describe('message items across the canonical path, two wallets', () => {
           encodePluginMessageItem({
             itemType: type,
             data: registry.encodeItem(item).bytes,
+            mimeType: registry.encodeItem(item).mimeType,
           }),
         ),
       )
@@ -269,8 +270,8 @@ describe('message items across the canonical path, two wallets', () => {
 
   it('one picture as large as an image item holds (the composer per-picture limit) arrives whole', async () => {
     const items: MessageItem[] = [
-      // The app's SENT_IMAGE_LIMITS: the image plugin's limit less one item allowance.
-      testBlob('A'.repeat(MAX_BLOB_BYTES - 64)),
+      // The blob's native payload reaches its full plugin limit; framing is counted separately.
+      testBlob('A'.repeat(MAX_BLOB_BYTES)),
     ]
     const { message } = await roundTrip(items)
     expect(message.items).toEqual(items)
@@ -397,6 +398,7 @@ describe('message items across the canonical path, two wallets', () => {
       const forged = encodePluginMessageItem({
         itemType: type,
         data: registry.encodeItem(item).bytes,
+        mimeType: registry.encodeItem(item).mimeType,
       })
       const peer = jest
         .spyOn(wire, 'encodeItemFrames')

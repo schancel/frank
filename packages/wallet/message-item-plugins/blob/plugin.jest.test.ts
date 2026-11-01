@@ -4,6 +4,7 @@ import {
   projectPluginMessageItem,
   standaloneItemBudget,
   validateFrame,
+  toHex,
   TYPE_MESSAGE_CONTENT_REVISION,
   MESSAGE_CONTENT_REVISION,
 } from '@frank/codec'
@@ -110,7 +111,11 @@ it('preserves unknown plugins and retired image entries as unsupported frames', 
       mimeType: 'application/x-example',
       data: Uint8Array.of(255, 0),
     })
-    expect(read([frame])[0]).toMatchObject({ type: 'unsupported', itemType })
+    expect(read([frame])[0]).toMatchObject({
+      type: 'unsupported',
+      itemType,
+      frame: toHex(frame),
+    })
   }
 })
 
@@ -138,4 +143,18 @@ it('copies Buffer and subarray inputs into owned native bytes', () => {
   data.fill(42)
   expect(encoded.bytes).toEqual(Uint8Array.of(0, 255))
   expect(Buffer.isBuffer(encoded.bytes)).toBe(false)
+})
+
+it('does not let many individually valid blobs exceed the enclosing 8 MiB message', () => {
+  const item = {
+    type: 'blob' as const,
+    mimeType: 'application/octet-stream',
+    data: new Uint8Array(MAX_BLOB_BYTES),
+  }
+  expect(() =>
+    encodeItemFrames(
+      registry,
+      Array.from({ length: 16 }, () => item),
+    ),
+  ).toThrow(MessageItemEncodeError)
 })

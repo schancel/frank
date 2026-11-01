@@ -26,6 +26,14 @@
       "dataHex": "89504e47"
     },
     {
+      "id": "future-unknown-field-3",
+      "frameHex": "46524e4b0100000032a400181b01020201035827a40064626c6f620141ff0278186170706c69636174696f6e2f6f637465742d73747265616d0300",
+      "expected": "parsed",
+      "itemType": "blob",
+      "mimeType": "application/octet-stream",
+      "dataHex": "ff"
+    },
+    {
       "id": "invalid-mime-header",
       "frameHex": "46524e4b010000002ba400181b01010201035820a30064626c6f620141ff0274746578742f68746d6c3b6163746976653d796573",
       "expected": "schema"

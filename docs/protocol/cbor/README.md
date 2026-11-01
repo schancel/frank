@@ -867,6 +867,8 @@ type-27 frame naming one of them is treated as unsupported. Type 27 appears
 only inside encrypted message content, so a relay never sees it.
 `vectors/plugin-message-item.json` pins the container bytes and its rejections.
 
+The frozen historical `newer-schema-extra-key` vector used field 2 as an unknown integer. The current reader explicitly rejects that historical frame because field 2 now owns MIME text; the generated blob corpus qualifies still-unallocated field 3 as retained under a newer schema. The frozen historical corpus remains unchanged.
+
 Field 2 is optional common MIME metadata, a canonical lowercase bare type/subtype
 of at most 127 ASCII bytes (no parameters, whitespace or wildcards). It is separate
 from the semantic item type and from the plugin payload. A `blob` plugin entry

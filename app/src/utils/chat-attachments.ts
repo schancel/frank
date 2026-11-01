@@ -177,6 +177,11 @@ export function composeChatItems(
   replyDigest?: string | null,
 ): MessageItem[] {
   const position = new Map(attachments.map((a, i) => [a.id, i + 1]))
+  const imageIds = new Set(
+    attachments
+      .filter(a => /^data:image\/(png|jpeg|gif|webp);/.test(a.dataUrl))
+      .map(a => a.id),
+  )
   const items: MessageItem[] = []
   if (replyDigest) items.push({ type: 'reply', payloadDigest: replyDigest })
   if (text.trim()) {
@@ -184,7 +189,9 @@ export function composeChatItems(
       ...textItemsOf(
         replaceAttachmentReferences(text, (alt, id) =>
           position.has(id)
-            ? `![${alt}](attachment:${position.get(id)})`
+            ? imageIds.has(id)
+              ? `![${alt}](attachment:${position.get(id)})`
+              : alt
             : undefined,
         ),
       ),

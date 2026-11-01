@@ -16,10 +16,17 @@ import {
   deriveEpochKeys,
   hexToBytes,
   sealGroupMessage,
+  openGroupMessage,
 } from '@frank/cashweb/groups/group-crypto'
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { encodeGroupItems } from '../utils/group-message-items'
+import {
+  encodeFrame,
+  encodePluginMessageItem,
+  encodeCanonical,
+  TYPE_MESSAGE_CONTENT_REVISION,
+} from '@frank/codec'
 import { accountSession } from '../accounts/session'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { fetchContactProfile } from '../utils/directory-peer'
@@ -1162,6 +1169,179 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         expect(
           restored.conversations[group.id].messages[0].items[0].data,
         ).toBeInstanceOf(Uint8Array)
+      } finally {
+        await history.Close()
+        rmSync(location, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.each([
+    'retired-image',
+    'cached-text',
+    'cipher',
+    'sender',
+    'digest',
+    'roster',
+    'malformed-blob',
+  ] as const)(
+    'restores verified signed content read-only, projection case=%s',
+    async mode => {
+      const { chats, group, client } = await makeGroup()
+      await chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'signed original' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      })
+      const mockedStore = await messageStorePromise
+      const rows = mockedStore.saveMessage.mock.calls.filter(
+        ([row]) => row.message.conversationId === group.id,
+      )
+      const original = rows[rows.length - 1][0]
+      let row = {
+        ...original,
+        message: {
+          ...original.message,
+          items: [{ type: 'text', text: 'tampered cache' }],
+        },
+      }
+      const state = group.groupState!
+      const epochKeys = deriveEpochKeys(
+        hexToBytes(state.epochSecretHex),
+        group.groupId!,
+        state.epoch,
+      )
+      let unsupportedFrame: string | undefined
+      if (mode === 'retired-image' || mode === 'malformed-blob') {
+        // Valid unknown historical plugin versus malformed current known plugin: no old codec.
+        const child = encodePluginMessageItem(
+          mode === 'retired-image'
+            ? {
+                itemType: 'image',
+                data: encodeCanonical(
+                  new Map([[0, 'data:image/png;base64,AA==']]),
+                ),
+              }
+            : { itemType: 'blob', data: Uint8Array.of(0, 255) },
+        )
+        unsupportedFrame = bytesToHex(child)
+        const payload = encodeFrame(
+          {
+            typeId: TYPE_MESSAGE_CONTENT_REVISION,
+            schemaVersion: 1,
+            minReaderVersion: 1,
+          },
+          new Map<number, string | Uint8Array[]>([
+            [0, 'frank'],
+            [1, [child]],
+          ]),
+        )
+        const envelope = sealGroupMessage({
+          epochKeys,
+          senderIndex: state.roster.find(member => member.address === ALICE)!
+            .index,
+          senderEpochKeyPair: groupTestSigningKey(
+            ALICE,
+            group.groupId!,
+            state.epoch,
+          ),
+          payload,
+        })
+        const opened = openGroupMessage({
+          envelope,
+          epochKeys,
+          roster: state.roster,
+        })
+        row = {
+          ...row,
+          index: opened.innerDigestHex,
+          message: {
+            ...row.message,
+            groupEnvelope: envelope,
+            items:
+              mode === 'retired-image'
+                ? [{ type: 'image', image: 'data:image/png;base64,AA==' }]
+                : row.message.items,
+          },
+        }
+      }
+      if (mode === 'cipher')
+        row.message.groupEnvelope = {
+          ...row.message.groupEnvelope!,
+          ciphertext:
+            (row.message.groupEnvelope!.ciphertext.startsWith('00')
+              ? 'ff'
+              : '00') + row.message.groupEnvelope!.ciphertext.slice(2),
+        }
+      if (mode === 'sender') row.message.senderAddress = BOB
+      if (mode === 'digest') row.index = '00'.repeat(32)
+      const metadata = JSON.parse(
+        JSON.stringify({
+          conversations: { [group.id]: { ...group, messages: [] } },
+          lastReceived: chats.lastReceived,
+        }),
+      )
+      if (mode === 'roster')
+        metadata.conversations[group.id].groupState.roster = []
+      const metadataSnapshot = JSON.stringify(metadata)
+      const { LevelMessageStore } = jest.requireActual(
+        '@frank/cashweb/relay/storage/level-storage',
+      )
+      const { mkdtempSync, rmSync } = require('fs')
+      const { tmpdir } = require('os')
+      const { join } = require('path')
+      const location = mkdtempSync(join(tmpdir(), 'frank-group-projection-'))
+      let history = new LevelMessageStore(location)
+      try {
+        await history.Open()
+        await history.saveMessage(row)
+        const snapshot = async () =>
+          Promise.all(
+            [history.db, history.metadataDb].map(
+              db =>
+                new Promise((resolve, reject) => {
+                  const rows: unknown[] = []
+                  db.createReadStream()
+                    .on('data', (entry: { key: string; value: string }) =>
+                      rows.push(entry),
+                    )
+                    .on('error', reject)
+                    .on('end', () => resolve(rows))
+                }),
+            ),
+          )
+        const storedSnapshot = await snapshot()
+        await history.Close()
+        history = new LevelMessageStore(location)
+        await history.Open()
+        const saved = await history.getMessage(row.index)
+        mockedStore.getIterator.mockResolvedValueOnce([saved])
+        setActivePinia(createPinia())
+        if (
+          mode === 'retired-image' ||
+          mode === 'cached-text' ||
+          mode === 'malformed-blob'
+        ) {
+          const restored = await rehydrateChat(metadata)
+          const projected = restored.conversations[group.id].messages[0].items
+          expect(projected).toEqual(
+            mode === 'cached-text'
+              ? [{ type: 'text', text: 'signed original' }]
+              : [
+                  expect.objectContaining({
+                    type: 'unsupported',
+                    itemType: mode === 'retired-image' ? 'image' : 'blob',
+                    reason:
+                      mode === 'retired-image' ? 'unknown-type' : 'malformed',
+                    frame: unsupportedFrame,
+                  }),
+                ],
+          )
+          expect(saved.message.items).toEqual(row.message.items)
+        } else await expect(rehydrateChat(metadata)).rejects.toThrow()
+        expect(await snapshot()).toEqual(storedSnapshot)
+        expect(JSON.stringify(metadata)).toBe(metadataSnapshot)
       } finally {
         await history.Close()
         rmSync(location, { recursive: true, force: true })

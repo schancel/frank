@@ -49,6 +49,29 @@ export function blobMessageItemCorpus() {
     frames: [
       ...frames,
       {
+        id: 'future-unknown-field-3',
+        frameHex: toHex(
+          encodeFrame(
+            {
+              typeId: TYPE_PLUGIN_MESSAGE_ITEM,
+              schemaVersion: 2,
+              minReaderVersion: 1,
+            },
+            new Map<number, Encodable>([
+              [PLUGIN_MESSAGE_ITEM.itemType, 'blob'],
+              [PLUGIN_MESSAGE_ITEM.data, Uint8Array.of(255)],
+              [PLUGIN_MESSAGE_ITEM.mimeType, 'application/octet-stream'],
+              // raw-cbor-key: field 3 is intentionally unallocated future metadata (V6.3)
+              [3, 0],
+            ]),
+          ),
+        ),
+        expected: 'parsed',
+        itemType: 'blob',
+        mimeType: 'application/octet-stream',
+        dataHex: 'ff',
+      },
+      {
         id: 'invalid-mime-header',
         frameHex: toHex(invalid),
         expected: 'schema',

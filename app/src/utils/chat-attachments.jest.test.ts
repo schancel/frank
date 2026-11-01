@@ -319,3 +319,20 @@ it('refuses an oversized binary file before reading its bytes', async () => {
   })
   expect(read).not.toHaveBeenCalled()
 })
+
+it('shows a file reference as its name while the opaque file gets its own download card', () => {
+  const items = composeChatItems('![report](attachment:1)', [
+    {
+      id: '1',
+      name: 'report.bin',
+      dataUrl: 'data:application/octet-stream;base64,AP+A',
+      sizeBytes: 3,
+    },
+  ])
+  expect(items[0]).toEqual({ type: 'text', text: 'report' })
+  expect(items[1]).toEqual({
+    type: 'blob',
+    mimeType: 'application/octet-stream',
+    data: Uint8Array.of(0, 255, 128),
+  })
+})

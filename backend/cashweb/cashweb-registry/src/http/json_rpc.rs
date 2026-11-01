@@ -171,6 +171,84 @@ pub(crate) enum SpoolError {
     Io,
 }
 
+/// Fixed diagnostic vocabulary. Never retain or format provider errors: they can contain URLs,
+/// credentials, or request data. The spool owner reports the failed boundary to its caller.
+#[derive(Clone, Copy)]
+pub(crate) enum RpcFailurePhase {
+    UpstreamRequest,
+    UpstreamStatus,
+    UpstreamRead,
+    ResponseSpool,
+    SpoolCreate,
+    SpoolWrite,
+    SpoolFlush,
+    ResponseInspect,
+    ResponseDelivery,
+}
+
+impl RpcFailurePhase {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::UpstreamRequest => "upstream_request",
+            Self::UpstreamStatus => "upstream_status",
+            Self::UpstreamRead => "upstream_read",
+            Self::ResponseSpool => "response_spool",
+            Self::SpoolCreate => "spool_create",
+            Self::SpoolWrite => "spool_write",
+            Self::SpoolFlush => "spool_flush",
+            Self::ResponseInspect => "response_inspect",
+            Self::ResponseDelivery => "response_delivery",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RpcFailureClass {
+    Connect,
+    Timeout,
+    Request,
+    Body,
+    Decode,
+    Io,
+    InvalidResponse,
+    Limit,
+    Status,
+    Other,
+}
+
+impl RpcFailureClass {
+    pub(crate) fn from_reqwest(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_connect() {
+            Self::Connect
+        } else if error.is_decode() {
+            Self::Decode
+        } else if error.is_body() {
+            Self::Body
+        } else if error.is_request() {
+            Self::Request
+        } else {
+            Self::Other
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Timeout => "timeout",
+            Self::Request => "request",
+            Self::Body => "body",
+            Self::Decode => "decode",
+            Self::Io => "io",
+            Self::InvalidResponse => "invalid_response",
+            Self::Limit => "limit",
+            Self::Status => "status",
+            Self::Other => "other",
+        }
+    }
+}
+
 struct SpoolStreamState {
     file: tokio::fs::File,
     rewrites: std::vec::IntoIter<ErrorRewrite>,
@@ -322,34 +400,67 @@ pub(crate) fn hold_response_permit(
 /// Reqwest applies configured content decoding before yielding chunks, so the
 /// limit applies to the representation inspected and delivered to the client.
 pub(crate) async fn spool_response(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     max_bytes: usize,
     idle_timeout: Duration,
 ) -> Result<ResponseSpool, SpoolError> {
-    // `tempfile()` unlinks the directory entry immediately on supported platforms, so crashes and
-    // SIGKILL reclaim the spool when the kernel closes this process's file descriptors.
-    let file = tempfile::tempfile().map_err(|_| SpoolError::Io)?;
-    let mut file = tokio::fs::File::from_std(file);
-    let mut len = 0u64;
-    loop {
-        let chunk = tokio::time::timeout(idle_timeout, response.chunk())
-            .await
-            .map_err(|_| SpoolError::Timeout)?
-            .map_err(|_| SpoolError::Io)?;
-        let Some(chunk) = chunk else {
-            break;
-        };
-        len = len
-            .checked_add(chunk.len() as u64)
-            .ok_or(SpoolError::TooLarge)?;
-        if len > max_bytes as u64 {
-            return Err(SpoolError::TooLarge);
+    spool_response_with_diagnostics(response, max_bytes, idle_timeout, |_, _| {}).await
+}
+
+/// Observe exactly one failed spool boundary, without changing the error contract used by
+/// other chain families. Successful spools do not invoke the observer.
+pub(crate) async fn spool_response_with_diagnostics(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    idle_timeout: Duration,
+    on_failure: impl FnOnce(RpcFailurePhase, RpcFailureClass),
+) -> Result<ResponseSpool, SpoolError> {
+    let mut phase = RpcFailurePhase::SpoolCreate;
+    let mut class = RpcFailureClass::Io;
+    let result = async {
+        // `tempfile()` unlinks the directory entry immediately on supported platforms, so crashes
+        // and SIGKILL reclaim the spool when the kernel closes this process's file descriptors.
+        let file = tempfile::tempfile().map_err(|_| SpoolError::Io)?;
+        let mut file = tokio::fs::File::from_std(file);
+        let mut len = 0u64;
+        loop {
+            phase = RpcFailurePhase::UpstreamRead;
+            let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+                .await
+                .map_err(|_| {
+                    class = RpcFailureClass::Timeout;
+                    SpoolError::Timeout
+                })?
+                .map_err(|error| {
+                    class = RpcFailureClass::from_reqwest(&error);
+                    SpoolError::Io
+                })?;
+            let Some(chunk) = chunk else {
+                break;
+            };
+            len = len.checked_add(chunk.len() as u64).ok_or_else(|| {
+                class = RpcFailureClass::Limit;
+                SpoolError::TooLarge
+            })?;
+            if len > max_bytes as u64 {
+                class = RpcFailureClass::Limit;
+                return Err(SpoolError::TooLarge);
+            }
+            phase = RpcFailurePhase::SpoolWrite;
+            class = RpcFailureClass::Io;
+            file.write_all(&chunk).await.map_err(|_| SpoolError::Io)?;
         }
-        file.write_all(&chunk).await.map_err(|_| SpoolError::Io)?;
+        phase = RpcFailurePhase::SpoolFlush;
+        class = RpcFailureClass::Io;
+        file.flush().await.map_err(|_| SpoolError::Io)?;
+        let file = file.into_std().await;
+        Ok(ResponseSpool { file })
     }
-    file.flush().await.map_err(|_| SpoolError::Io)?;
-    let file = file.into_std().await;
-    Ok(ResponseSpool { file })
+    .await;
+    if result.is_err() {
+        on_failure(phase, class);
+    }
+    result
 }
 
 impl ResponseSpool {

@@ -12,7 +12,11 @@ import { defineComponent, h, nextTick, ref } from 'vue'
 
 import ChatInput from './ChatInput.vue'
 import enUS from '../../i18n/en-us'
-import { MAX_SENT_MESSAGE_BYTES } from '../../utils/image-data-uri'
+import {
+  MAX_SENT_MESSAGE_BYTES,
+  SENT_ITEM_ALLOWANCE_BYTES,
+} from '../../utils/image-data-uri'
+import { MAX_BLOB_BYTES } from '@frank/wallet/message-item-plugins/blob/codec'
 import { png } from '../../utils/image-data-uri.fixtures'
 import type { PostAttachment } from '../../utils/post-editor'
 
@@ -492,30 +496,46 @@ describe('ChatInput holds pictures for the message', () => {
 
   it('does not send a message too large for one message, and says so', async () => {
     const c = mountWithAttachments('hi')
-    c.attachments.value = [
-      {
-        id: '1',
-        name: 'a.png',
-        dataUrl: 'A'.repeat(MAX_SENT_MESSAGE_BYTES),
-        sizeBytes: 1,
-      },
-    ]
+    const dataUrl = `data:application/octet-stream;base64,${btoa(
+      '\0'.repeat(MAX_BLOB_BYTES),
+    )}`
+    const attachments = Array.from({ length: 16 }, (_, i) => ({
+      id: String(i + 1),
+      name: `${i + 1}.bin`,
+      dataUrl,
+      sizeBytes: MAX_BLOB_BYTES,
+    }))
+    // Each valid native blob fits its own limit. Fifteen also fit the message and self-copy allowance.
+    c.attachments.value = attachments.slice(0, 15)
     await flushPromises()
-    // Named: the limit, and this message's size (just over it, so both in bytes).
-    expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
-      enUS.chatInput.messageTooLarge
-        .replace('{limit}', `${MAX_SENT_MESSAGE_BYTES} B`)
-        .replace('{size}', `${2 + MAX_SENT_MESSAGE_BYTES + 128} B`),
-    )
+    expect(
+      c.wrapper.find('[data-testid="chat-message-too-large"]').exists(),
+    ).toBe(false)
     c.box().focus()
     enter()
     await flushPromises()
-    expect(c.sent).toEqual([])
+    expect(c.sent).toEqual(['hi'])
+
+    // Sixteen raw payloads fill 8 MiB before their MIME/frame fields and the text are counted.
+    c.attachments.value = attachments
+    await flushPromises()
+    const messageBytes =
+      2 +
+      attachments.length * MAX_BLOB_BYTES +
+      (attachments.length + 1) * SENT_ITEM_ALLOWANCE_BYTES
+    expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
+      enUS.chatInput.messageTooLarge
+        .replace('{limit}', `${MAX_SENT_MESSAGE_BYTES} B`)
+        .replace('{size}', `${messageBytes} B`),
+    )
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual(['hi'])
     c.attachments.value = []
     await flushPromises()
     enter()
     await flushPromises()
-    expect(c.sent).toEqual(['hi'])
+    expect(c.sent).toEqual(['hi', 'hi'])
   })
 
   it('sends a text far longer than one text item holds, and refuses one over the limit of a message before Send, naming it', async () => {

@@ -32,6 +32,17 @@ inspection. Do not reset a funded account, delete keys/custody databases, or dis
 financial authority to resolve an unsupported history format. This change contains
 no account reset implementation.
 
+History values retain ordinary JSON for existing records. Values containing native
+`Uint8Array` bytes use a local `{json, meta}` SuperJSON envelope with one scoped
+base64 byte transform. Only that transform and validated own-property paths can be
+read; ordinary payload objects never select deserialization behavior. Non-binary
+JSON normalization and financial integer conversions remain unchanged. Repeated
+byte references become independent `Uint8Array` copies on read. This local encoding
+does not change message-item wire formats, metadata schema 3, database names or
+keys, and does not migrate or reset existing history. Base64 uses
+`4 * ceil(byteLength / 3)` characters plus annotation metadata; canonical binary
+message-item payloads are owned separately by their wire codecs.
+
 Qualification commands from the repository root, using already installed dependencies:
 
 ```sh

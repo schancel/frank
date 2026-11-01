@@ -3,7 +3,7 @@
 #
 # The relay runs on `registry.network` (a chain identifier from docs/protocol/chains/v1.json).
 # Direct messages (`PUT /message`, and the signed inbox and mailbox reads under `/message/`) are
-# on by default, configured by `[registry.monad_mailbox]` and `[registry.directory]` below. The
+# on by default, configured by `[registry.evm_mailbox]` and `[registry.directory]` below. The
 # mailbox and the forum reach that network only through its `[[registry.evm_rpc.chains]]` row,
 # whose JSON-RPC URL is secret-bearing and so is NOT stored here: `cashwebd-exe` reads it from
 # the row's `upstream_env` (`MONAD_TESTNET_HTTP_RPC_URL`, which docker-compose.yml passes
@@ -13,7 +13,7 @@
 # `[bitcoin_rpc]` is deliberately omitted: `cashwebd-exe` installs a fail-closed adapter for
 # legacy Lotus routes while continuing to serve Monad routes. Add real Lotus RPC credentials to
 # enable compatibility; a fake endpoint is no longer necessary. `[registry.pop]`'s sub-fields
-# (`monad_rpc_url`/`hmac_secret`/
+# (`evm_rpc_url`/`hmac_secret`/
 # `payment_recipient`/`min_value_wei`) are required by `PopConf`'s schema even though `enabled =
 # false` skips the gate entirely (ticket #35's fail-open demo default) -- see that struct's own doc
 # comment for why `enabled` has no `#[serde(default)]`.
@@ -56,7 +56,7 @@ enrollments_per_source_per_hour = 100000
 # The least a paid message carries, in wei: at or above the network's payment floor, which the
 # relay enforces on every payment and refuses to start below (docs/protocol/chains/README.md,
 # "Payment floor"). On Monad: 10 x 21000 gas x 100 gwei = 21000000000000000 wei = 0.021 MON.
-[registry.monad_mailbox]
+[registry.evm_mailbox]
 enabled = true
 min_value_wei = "21000000000000000"
 
@@ -191,7 +191,7 @@ max_get_logs_range = 10
 
 [registry.pop]
 enabled = false
-monad_rpc_url = "http://unused.invalid"
+evm_rpc_url = "http://unused.invalid"
 hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"

@@ -23,6 +23,7 @@ use url::Url;
 
 use crate::{
     chains::{BitcoinChainAdapter, RelayChains, UpstreamSet},
+    evm_rpc::Address,
     http::{
         electrum_proxy::{ElectrumChain, ElectrumPayer},
         evm_rpc::{
@@ -34,7 +35,6 @@ use crate::{
         server::RegistryServer,
         upstream_cooldown::UpstreamCooldownTracker,
     },
-    monad_http::Address,
 };
 
 const PROXY_METHOD_HEADER: &str = "x-frank-proxy-method";
@@ -134,7 +134,7 @@ impl BitcoinProxyRuntime {
     pub fn new(
         conf: &BitcoinProxyConf,
         chains: Arc<RelayChains>,
-        session: &crate::monad_mailbox::SessionSecret,
+        session: &crate::evm_mailbox::SessionSecret,
     ) -> Result<Option<Arc<Self>>, BitcoinProxyStartError> {
         conf.validate()
             .map_err(BitcoinProxyStartError::InvalidConfig)?;
@@ -179,7 +179,7 @@ impl BitcoinProxyRuntime {
         )?);
         chains.start_verifying().await;
         Ok(
-            Self::new(conf, chains, &crate::monad_mailbox::SessionSecret::random())
+            Self::new(conf, chains, &crate::evm_mailbox::SessionSecret::random())
                 .expect("validated by RelayChains"),
         )
     }
@@ -1897,7 +1897,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: Some(runtime),
             solana_proxy: None,
@@ -2136,7 +2136,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: Some(runtime),
             solana_proxy: None,
@@ -2349,7 +2349,7 @@ mod tests {
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
                 curated_defaults: Arc::new(vec![]),
-                monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+                evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
                 evm_rpc: None,
                 bitcoin_proxy: Some(runtime),
                 solana_proxy: None,
@@ -2475,7 +2475,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: Some(runtime),
             solana_proxy: None,

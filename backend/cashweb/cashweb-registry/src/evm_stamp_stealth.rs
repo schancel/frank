@@ -11,7 +11,7 @@ use sha2::Sha512;
 use sha3::{Digest, Keccak256};
 use thiserror::Error;
 
-use crate::monad_http::Address;
+use crate::evm_rpc::Address;
 
 const HARDENED_CHILD: u32 = 1 << 31;
 const STAMP_PATH_PREFIX: [u32; 2] = [44, 145];
@@ -40,7 +40,7 @@ pub enum StampStealthError {
 
 /// A canonical one-time stamp-payment destination.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MonadStampChild {
+pub struct EvmStampChild {
     /// The non-hardened payment index represented by the third path component.
     pub payment_index: u32,
     /// The derived compressed secp256k1 public key.
@@ -51,9 +51,9 @@ pub struct MonadStampChild {
 
 /// A recipient's spendable form of a canonical one-time stamp-payment destination.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MonadStampPrivateChild {
+pub struct EvmStampPrivateChild {
     /// Public destination information shared with the watch-only derivation.
-    pub destination: MonadStampChild,
+    pub destination: EvmStampChild,
     /// The derived private key controlling the destination.
     pub private_key: [u8; 32],
 }
@@ -66,7 +66,7 @@ pub(crate) fn evm_address(public_key: &PublicKey) -> [u8; 20] {
     address
 }
 
-/// Derive the normalized Monad address that owns a compressed recipient public key.
+/// Derive the normalized EVM address that owns a compressed recipient public key.
 pub(crate) fn recipient_address_from_public_key(
     recipient_public_key: &[u8],
 ) -> Result<Address, StampStealthError> {
@@ -122,11 +122,11 @@ fn derive_private_step(
 }
 
 /// Derive a stamp-payment child from a registered recipient public key.
-pub fn derive_monad_stamp_child_public(
+pub fn derive_evm_stamp_child_public(
     payload_hash: [u8; 32],
     recipient_public_key: &[u8],
     payment_index: u32,
-) -> Result<MonadStampChild, StampStealthError> {
+) -> Result<EvmStampChild, StampStealthError> {
     if payment_index >= HARDENED_CHILD {
         return Err(StampStealthError::InvalidPaymentIndex);
     }
@@ -141,7 +141,7 @@ pub fn derive_monad_stamp_child_public(
     for index in [STAMP_PATH_PREFIX[0], STAMP_PATH_PREFIX[1], payment_index, 0] {
         derive_public_step(&secp, &mut public_key, &mut chain_code, index)?;
     }
-    Ok(MonadStampChild {
+    Ok(EvmStampChild {
         payment_index,
         public_key: public_key.serialize(),
         address: evm_address(&public_key),
@@ -149,11 +149,11 @@ pub fn derive_monad_stamp_child_public(
 }
 
 /// Derive the private key with which the recipient can spend a stamp-payment child.
-pub fn derive_monad_stamp_child_private(
+pub fn derive_evm_stamp_child_private(
     payload_hash: [u8; 32],
     recipient_private_key: [u8; 32],
     payment_index: u32,
-) -> Result<MonadStampPrivateChild, StampStealthError> {
+) -> Result<EvmStampPrivateChild, StampStealthError> {
     if payment_index >= HARDENED_CHILD {
         return Err(StampStealthError::InvalidPaymentIndex);
     }
@@ -169,8 +169,8 @@ pub fn derive_monad_stamp_child_private(
         derive_private_step(&secp, &mut private_key, &mut chain_code, index)?;
     }
     let public_key = PublicKey::from_secret_key(&secp, &private_key);
-    Ok(MonadStampPrivateChild {
-        destination: MonadStampChild {
+    Ok(EvmStampPrivateChild {
+        destination: EvmStampChild {
             payment_index,
             public_key: public_key.serialize(),
             address: evm_address(&public_key),
@@ -221,14 +221,11 @@ mod tests {
 
         for (payment_index, expected_private, expected_public, expected_address) in vectors {
             let from_public =
-                derive_monad_stamp_child_public(PAYLOAD_HASH, &recipient_public_key, payment_index)
+                derive_evm_stamp_child_public(PAYLOAD_HASH, &recipient_public_key, payment_index)
                     .unwrap();
-            let from_private = derive_monad_stamp_child_private(
-                PAYLOAD_HASH,
-                RECIPIENT_PRIVATE_KEY,
-                payment_index,
-            )
-            .unwrap();
+            let from_private =
+                derive_evm_stamp_child_private(PAYLOAD_HASH, RECIPIENT_PRIVATE_KEY, payment_index)
+                    .unwrap();
             assert_eq!(from_public, from_private.destination);
             assert_eq!(from_private.private_key, expected_private);
             assert_eq!(from_public.public_key, expected_public);
@@ -239,19 +236,19 @@ mod tests {
     #[test]
     fn rejects_invalid_scalars_keys_and_hardened_indices() {
         assert_eq!(
-            derive_monad_stamp_child_public([0; 32], &[2; 33], 0),
+            derive_evm_stamp_child_public([0; 32], &[2; 33], 0),
             Err(StampStealthError::InvalidPayloadScalar),
         );
         assert_eq!(
-            derive_monad_stamp_child_public(PAYLOAD_HASH, &[0; 33], 0),
+            derive_evm_stamp_child_public(PAYLOAD_HASH, &[0; 33], 0),
             Err(StampStealthError::InvalidRecipientPublicKey),
         );
         assert_eq!(
-            derive_monad_stamp_child_private(PAYLOAD_HASH, [0; 32], 0),
+            derive_evm_stamp_child_private(PAYLOAD_HASH, [0; 32], 0),
             Err(StampStealthError::InvalidRecipientPrivateKey),
         );
         assert_eq!(
-            derive_monad_stamp_child_private(PAYLOAD_HASH, RECIPIENT_PRIVATE_KEY, HARDENED_CHILD),
+            derive_evm_stamp_child_private(PAYLOAD_HASH, RECIPIENT_PRIVATE_KEY, HARDENED_CHILD),
             Err(StampStealthError::InvalidPaymentIndex),
         );
     }

@@ -1,7 +1,7 @@
 //! Unique usernames: a name points to exactly one account key, and a key holds at most one name.
 //!
 //! A name is taken by a *claim*: a `cashweb_payload::proto::SignedPayload` (the same envelope a
-//! profile uses, checked by [`crate::monad_profile_verify::verify_signed_payload`]) whose payload
+//! profile uses, checked by [`crate::evm_profile_verify::verify_signed_payload`]) whose payload
 //! is the text built by [`claim_text`], signed by the key the name will point to. The stored
 //! record keeps those exact bytes, so a record is a self-contained signed statement: anyone,
 //! including another relay, can re-check it with [`verify_claim`] without trusting this store.
@@ -25,7 +25,7 @@ use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
 use crate::{
-    monad_profile_verify::verify_signed_payload,
+    evm_profile_verify::verify_signed_payload,
     store::{
         db::{mark_format, Db},
         kv_store::KvTransaction,

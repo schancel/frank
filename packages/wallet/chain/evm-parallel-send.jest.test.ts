@@ -1239,7 +1239,7 @@ describe('parallel paid messages', () => {
     const source = readFileSync(
       join(
         __dirname,
-        '../../../backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs',
+        '../../../backend/cashweb/cashweb-registry/src/http/evm_direct_messages.rs',
       ),
       'utf8',
     )

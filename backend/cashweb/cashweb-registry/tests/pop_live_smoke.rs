@@ -47,7 +47,7 @@
 //! therefore a genuine, unstaged, real transaction that really confirmed on live Monad testnet and
 //! really paid its recipient at least the configured minimum -- so the full verification pipeline
 //! (`eth_getTransactionReceipt` + `eth_getTransactionByHash` over the real RPC endpoint,
-//! `verify_payment_via_receipt`, `MonadReceiptVerifier`, bearer-token minting/caching, and the
+//! `verify_payment_via_receipt`, `EvmReceiptVerifier`, bearer-token minting/caching, and the
 //! `handle_put_registry` HTTP wiring) runs against real chain data end-to-end.
 //!
 //! What this does **not** prove: that a wallet can decide, up front, to pay a specific
@@ -59,7 +59,7 @@
 //! If/when a funded Monad testnet account becomes available, replace step 1 below with: build and
 //! sign a real payment transaction to a recipient of your choosing (needs an EVM tx signer, not
 //! present in this repo yet), broadcast it via
-//! `cashweb_registry::monad_http::MonadHttpClient::send_raw_transaction`, and use its hash/
+//! `cashweb_registry::evm_rpc::EvmHttpClient::send_raw_transaction`, and use its hash/
 //! recipient/value directly instead of scanning for someone else's transaction. Everything from
 //! step 2 onward (spinning up the server, making the HTTP requests, checking the token) needs no
 //! changes.
@@ -77,7 +77,7 @@ use bitcoinsuite_test_utils_blockchain::setup_bitcoind_coins;
 use cashweb_config::PopConf;
 use cashweb_http_utils::protobuf::CONTENT_TYPE_PROTOBUF;
 use cashweb_registry::{
-    monad_http::{BlockTag, GetLogsFilter, Hash32, HttpTransport, MonadHttpClient},
+    evm_rpc::{BlockTag, EvmHttpClient, GetLogsFilter, Hash32, HttpTransport},
     proto,
     test_instance::{build_signed_metadata, RegistryTestInstance},
 };
@@ -97,7 +97,7 @@ const MAX_WINDOWS_TO_SCAN: u64 = 500;
 /// Scan recent Monad testnet blocks for any real, currently-live transaction hash (same technique
 /// `monad_http_live_smoke.rs`/`monad_stamp_verify_live_smoke.rs` use), so this test never depends
 /// on a hardcoded hash staying valid.
-async fn find_a_real_tx_hash(client: &MonadHttpClient<HttpTransport>) -> Hash32 {
+async fn find_a_real_tx_hash(client: &EvmHttpClient<HttpTransport>) -> Hash32 {
     let latest = client
         .block_number()
         .await
@@ -150,7 +150,7 @@ async fn live_pop_gated_metadata_put_round_trip() -> Result<()> {
         .parse()
         .expect("MONAD_TESTNET_HTTP_RPC_URL is not a valid URL");
     let transport = HttpTransport::new(rpc_url.clone());
-    let monad_client = MonadHttpClient::with_transport(transport);
+    let monad_client = EvmHttpClient::with_transport(transport);
 
     let tx_hash = find_a_real_tx_hash(&monad_client).await;
     let real_tx = monad_client
@@ -169,7 +169,7 @@ async fn live_pop_gated_metadata_put_round_trip() -> Result<()> {
     // --- 2. Spin up a real RegistryTestInstance with POP gated to that real recipient/value. ---
     let pop_conf = PopConf {
         enabled: true,
-        monad_rpc_url: rpc_url,
+        evm_rpc_url: rpc_url,
         hmac_secret: "pop-live-smoke-test-hmac-secret".to_string(),
         payment_recipient: real_to.to_hex(),
         min_value_wei: real_tx.value.to_string(),

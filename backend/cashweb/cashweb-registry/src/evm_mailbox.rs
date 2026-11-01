@@ -1,4 +1,4 @@
-//! Process-owned configuration and authorization state for durable Monad direct messages.
+//! Process-owned configuration and authorization state for durable EVM direct messages.
 
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -10,7 +10,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     chains::EvmChainAdapter,
-    monad_http::{Address, HttpTransport},
+    evm_rpc::{Address, HttpTransport},
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -27,11 +27,11 @@ const CURSOR_VERSION: u8 = 1;
 
 /// Typed mailbox mode owned by the HTTP server.
 #[derive(Debug, Clone)]
-pub enum MonadMailboxRuntime {
+pub enum EvmMailboxRuntime {
     /// Admission is not installed and no RPC transport is reachable from the router.
     Disabled,
     /// Admission, private reads, and the background worker share this validated runtime.
-    Enabled(Arc<EnabledMonadMailboxRuntime>),
+    Enabled(Arc<EnabledEvmMailboxRuntime>),
 }
 
 /// The mailbox's own limits per request.
@@ -267,7 +267,7 @@ impl MailboxRequestBinding {
 
 /// Immutable runtime facts shared by message admission and mailbox reads.
 #[derive(Debug)]
-pub struct EnabledMonadMailboxRuntime {
+pub struct EnabledEvmMailboxRuntime {
     /// The relay network's EVM chain: payments are checked and broadcast through it.
     chain: Arc<EvmChainAdapter>,
     config: MailboxConfig,
@@ -425,7 +425,7 @@ impl MailboxAuthState {
     }
 }
 
-impl MonadMailboxRuntime {
+impl EvmMailboxRuntime {
     /// The mailbox of the relay network `chain`, after configuration validation. Every stamp
     /// payment it admits is at least the network's payment floor
     /// ([`cashweb_config::protocol_payment_floor_wei`]); it is not configurable.
@@ -476,7 +476,7 @@ impl MonadMailboxRuntime {
         session: &SessionSecret,
         vapid: crate::store::notification_policy::VapidKeyPair,
     ) -> Self {
-        Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
+        Self::Enabled(Arc::new(EnabledEvmMailboxRuntime {
             chain,
             private_read_permits: Arc::new(Semaphore::new(config.private_read_concurrency.max(1))),
             config,
@@ -488,7 +488,7 @@ impl MonadMailboxRuntime {
     }
 
     /// Return the enabled runtime, if admission is configured.
-    pub fn as_enabled(&self) -> Option<&EnabledMonadMailboxRuntime> {
+    pub fn as_enabled(&self) -> Option<&EnabledEvmMailboxRuntime> {
         match self {
             Self::Disabled => None,
             Self::Enabled(runtime) => Some(runtime),
@@ -496,7 +496,7 @@ impl MonadMailboxRuntime {
     }
 }
 
-impl EnabledMonadMailboxRuntime {
+impl EnabledEvmMailboxRuntime {
     /// The relay network's chain adapter.
     pub fn chain(&self) -> &Arc<EvmChainAdapter> {
         &self.chain
@@ -623,7 +623,7 @@ pub(crate) fn mailbox_auth_preimage(
 /// and has not expired; checked before any key lookup or storage read.
 pub(crate) fn parse_mailbox_authentication(
     headers: &HeaderMap,
-    runtime: &EnabledMonadMailboxRuntime,
+    runtime: &EnabledEvmMailboxRuntime,
     binding: &MailboxRequestBinding,
     now_ms: i64,
 ) -> Option<(MailboxChallenge, Vec<u8>)> {
@@ -662,8 +662,8 @@ pub(crate) fn parse_mailbox_authentication(
 mod tests {
     use super::*;
 
-    fn runtime_with(session: &SessionSecret, config: MailboxConfig) -> MonadMailboxRuntime {
-        MonadMailboxRuntime::enabled(
+    fn runtime_with(session: &SessionSecret, config: MailboxConfig) -> EvmMailboxRuntime {
+        EvmMailboxRuntime::enabled(
             std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
                 "monad-testnet",
                 vec!["http://127.0.0.1:1".parse().unwrap()],

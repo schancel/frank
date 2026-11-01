@@ -123,8 +123,7 @@ impl RelayChains {
             &conf.solana_proxy,
             env,
         )?;
-        if (conf.monad_mailbox.enabled || conf.forum.is_some())
-            && chains.network_adapter().is_none()
+        if (conf.evm_mailbox.enabled || conf.forum.is_some()) && chains.network_adapter().is_none()
         {
             let row = conf
                 .evm_rpc

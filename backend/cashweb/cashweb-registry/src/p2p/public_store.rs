@@ -33,7 +33,7 @@ use crate::{proto, registry::Registry};
 /// use cashweb_registry::p2p::public_store::PublicFederationStore;
 ///
 /// fn read_relay_local_profiles(store: &PublicFederationStore<'_>) {
-///     let _ = store.list_monad_profiles_since(0);
+///     let _ = store.list_evm_profiles_since(0);
 /// }
 /// ```
 #[derive(Clone, Copy)]

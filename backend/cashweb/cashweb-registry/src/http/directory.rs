@@ -118,7 +118,7 @@ async fn lookup(
     Path((network, first, second)): Path<(String, String, String)>,
 ) -> Response {
     if first == "address" {
-        let Ok(address) = crate::monad_http::Address::from_hex(&second) else {
+        let Ok(address) = crate::evm_rpc::Address::from_hex(&second) else {
             return error(RuntimeError::Invalid);
         };
         let Some(subject) = routes

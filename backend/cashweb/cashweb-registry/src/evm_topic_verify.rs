@@ -1,8 +1,8 @@
-//! Server-side verification of a Monad topic burn-weighted vote (ticket #30).
+//! Server-side verification of an EVM topic burn-weighted vote (ticket #30).
 //!
 //! This is the direction-aware, exact-value counterpart of
-//! [`crate::monad_stamp_verify::verify_stamp_transaction`]. That module's [`crate::monad_stamp_verify::
-//! ExpectedStampTransaction`]/[`crate::monad_stamp_verify::StampTransactionVerification`] implement a
+//! [`crate::evm_stamp_verify::verify_stamp_transaction`]. That module's [`crate::evm_stamp_verify::
+//! ExpectedStampTransaction`]/[`crate::evm_stamp_verify::StampTransactionVerification`] implement a
 //! *minimum-threshold* pass/fail check (Stamp only cares that *enough* was burned; the exact
 //! amount is discarded) over a `<lokad_id: 4><version: 1><commitment: 32>` calldata layout with no
 //! room for a vote direction. A burn-weighted vote needs both of those things instead: the *exact*
@@ -16,7 +16,7 @@
 //! <lokad_id: 4 bytes = "TPIC"><version: 1 byte><direction: 1 byte><commitment: 32 bytes>
 //! ```
 //!
-//! i.e. [`monad_stamp_verify`](crate::monad_stamp_verify)'s `<lokad_id><version><commitment>`
+//! i.e. [`evm_stamp_verify`](crate::evm_stamp_verify)'s `<lokad_id><version><commitment>`
 //! layout with a single extra direction byte spliced in between `version` and `commitment`,
 //! rather than a distinct up/down LOKAD ID pair (the ticket's other suggested option). One LOKAD
 //! ID keeps a single verification function/route pair for both directions -- the direction is
@@ -31,48 +31,48 @@
 //!   differently-shaped calldata would let an indexer misinterpret one tagged burn as the other;
 //!   a fresh LOKAD ID keeps the "one ID, one calldata shape" invariant those two already rely on.
 //! - `version` is [`TOPIC_COMMITMENT_VERSION_TAG`] (`0x01`), independent of
-//!   [`crate::monad_stamp_verify::COMMITMENT_VERSION_TAG`] even though it happens to share the
+//!   [`crate::evm_stamp_verify::COMMITMENT_VERSION_TAG`] even though it happens to share the
 //!   same numeric value -- it's a distinct constant of a distinct wire format, versioned
 //!   separately going forward.
 //! - `direction` is [`VoteDirection::UP_BYTE`] (`0x01`) for an up-vote or
 //!   [`VoteDirection::DOWN_BYTE`] (`0x00`) for a down-vote, mirroring Lotus's `OP_1`/`OP_0`
 //!   convention numerically (1 = up, 0 = down) even though EVM calldata has no opcode concept to
-//!   literally reuse (same reasoning [`crate::monad_stamp_verify::COMMITMENT_VERSION_TAG`]'s docs
+//!   literally reuse (same reasoning [`crate::evm_stamp_verify::COMMITMENT_VERSION_TAG`]'s docs
 //!   give for using a plain byte instead of a Script opcode).
 //! - `commitment` is simply the *target* `payload_hash` itself (32 bytes, unhashed further) --
 //!   the `payload_hash` of the post being voted on (for a [`crate::proto::MonadTopicVote`]) or of
 //!   the post being created (for a [`crate::proto::MonadTopicPost`]'s own initial vote). This
 //!   mirrors [`crate::http::monad_message::process_monad_message`]'s binding (each stamp payment's
 //!   calldata commits to `payload_hash` directly, not to a further hash of it) rather than
-//!   [`crate::monad_stamp_verify::calc_expected_commitment`]'s pubkey-binding preimage, since
+//!   [`crate::evm_stamp_verify::calc_expected_commitment`]'s pubkey-binding preimage, since
 //!   there's no pubkey field anywhere in this ticket's proto messages to bind against (see
 //!   `proto/topic_message.proto`'s module docs).
 //!
-//! ## Why this can't just call [`crate::monad_stamp_verify::parse_commitment_calldata`]
+//! ## Why this can't just call [`crate::evm_stamp_verify::parse_commitment_calldata`]
 //!
 //! That function's layout has no direction byte at all -- feeding it topic calldata would either
 //! misread the direction byte as the first byte of a (now 33-byte, and therefore rejected as
-//! [`crate::monad_stamp_verify::CalldataCommitmentError::InvalidCommitmentLength`]) commitment, or
+//! [`crate::evm_stamp_verify::CalldataCommitmentError::InvalidCommitmentLength`]) commitment, or
 //! require changing its signature/behavior, which is out of this ticket's edit ownership
-//! (`monad_stamp_verify.rs` must keep working unchanged for #16/#19/#27's existing callers, per
+//! (`evm_stamp_verify.rs` must keep working unchanged for #16/#19/#27's existing callers, per
 //! this ticket's acceptance criteria). [`parse_topic_vote_calldata`] below is therefore a new,
 //! parallel decoder for the new layout, structurally mirroring
 //! `parse_commitment_calldata`'s checks (same ordering: length, LOKAD ID, version, then the
 //! trailing fixed-length field) but not calling it.
 //!
-//! ## Why this can't just call [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]
+//! ## Why this can't just call [`crate::evm_stamp_relay::broadcast_and_verify_stamp`]
 //!
 //! `broadcast_and_verify_stamp` is hardcoded, by its own signature, to
-//! [`crate::monad_stamp_verify::ExpectedStampTransaction`] in and
-//! [`crate::monad_stamp_verify::StampTransactionVerification`] out -- it calls `verify_stamp_transaction`
+//! [`crate::evm_stamp_verify::ExpectedStampTransaction`] in and
+//! [`crate::evm_stamp_verify::StampTransactionVerification`] out -- it calls `verify_stamp_transaction`
 //! directly, with no seam to substitute a different verification function or a differently-shaped
 //! calldata/outcome type. Its outcome type also has nowhere to carry the exact burned value or
 //! direction this ticket needs as the vote's weight, even where its checks otherwise overlap
 //! (confirmed, succeeded, right recipient). Generalizing it (e.g. making it generic over a verify
-//! callback) would mean editing `monad_stamp_relay.rs`, which this ticket's ownership rules
-//! forbid. [`crate::monad_topic_relay::broadcast_and_verify_topic_vote`] therefore mirrors its
+//! callback) would mean editing `evm_stamp_relay.rs`, which this ticket's ownership rules
+//! forbid. [`crate::evm_topic_relay::broadcast_and_verify_topic_vote`] therefore mirrors its
 //! broadcast+poll *shape* byte-for-byte (down to reusing
-//! [`crate::monad_stamp_relay::PollConfig`] directly rather than redefining an equivalent type)
+//! [`crate::evm_stamp_relay::PollConfig`] directly rather than redefining an equivalent type)
 //! but calls [`verify_topic_vote_burn`] instead of `verify_stamp_transaction`. This is the same kind of
 //! "found it's not actually reusable as-is, documented why, extended instead" situation this
 //! ticket's own body already calls out for `ExpectedStampTransaction`/`StampTransactionVerification` -- it turns out
@@ -82,7 +82,7 @@ use bitcoinsuite_core::Sha256;
 use bitcoinsuite_error::{bail, Result, WrapErr};
 use thiserror::Error;
 
-use crate::monad_http::{Address, Hash32, JsonRpcTransport, MonadHttpClient};
+use crate::evm_rpc::{Address, EvmHttpClient, Hash32, JsonRpcTransport};
 
 /// LOKAD ID tagging a Monad topic-vote burn's calldata (this ticket's documented choice -- see
 /// module docs). Distinct from `"STMP"` ([`cashweb_payload::verify::ADDRESS_METADATA_LOKAD_ID`])
@@ -91,7 +91,7 @@ pub const TOPIC_VOTE_LOKAD_ID: [u8; 4] = *b"TPIC";
 
 /// Version tag for the `<lokad_id><version><direction><commitment>` calldata layout this module
 /// decodes (see module docs). Independent of
-/// [`crate::monad_stamp_verify::COMMITMENT_VERSION_TAG`].
+/// [`crate::evm_stamp_verify::COMMITMENT_VERSION_TAG`].
 pub const TOPIC_COMMITMENT_VERSION_TAG: u8 = 0x01;
 
 /// Version tag of the same `<lokad_id><version><direction><commitment>` layout when the
@@ -104,7 +104,7 @@ pub const TOPIC_CBOR_COMMITMENT_VERSION_TAG: u8 = 0x02;
 /// Which encoding of topic event a burn's calldata was made for (README T8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopicCalldataVersion {
-    /// The protobuf path (`MonadTopicPost`/`MonadTopicVote`): version byte `0x01`, the
+    /// The protobuf path (`EvmTopicPost`/`EvmTopicVote`): version byte `0x01`, the
     /// commitment is the protobuf `payload_hash`.
     Protobuf,
     /// The Frank-CBOR path (types 10 and 11): version byte `0x02`, the commitment is T7.
@@ -167,7 +167,7 @@ impl VoteDirection {
 }
 
 /// Errors decoding a topic-vote commitment out of a Monad burn tx's calldata (`input` field).
-/// Structurally mirrors [`crate::monad_stamp_verify::CalldataCommitmentError`], adapted to this
+/// Structurally mirrors [`crate::evm_stamp_verify::CalldataCommitmentError`], adapted to this
 /// module's layout (see module docs).
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum TopicCalldataError {
@@ -228,7 +228,7 @@ pub enum TopicCalldataError {
 /// Calldata must look like this: `<lokad_id: TOPIC_VOTE_LOKAD_ID><version:
 /// TOPIC_COMMITMENT_VERSION_TAG><direction: VoteDirection byte><commitment: 32 bytes>`. Purely a
 /// byte-layout decode -- doesn't require any chain RPC calls, mirroring how
-/// [`crate::monad_stamp_verify::parse_commitment_calldata`] operates purely on already-fetched
+/// [`crate::evm_stamp_verify::parse_commitment_calldata`] operates purely on already-fetched
 /// calldata bytes.
 pub fn parse_topic_vote_calldata(
     calldata: &[u8],
@@ -282,7 +282,7 @@ pub fn parse_topic_calldata_versioned(
 }
 
 /// What's required of a burn tx for it to count as a valid topic vote Unlike
-/// [`crate::monad_stamp_verify::ExpectedStampTransaction`], there is deliberately no `min_value_wei` -- any
+/// [`crate::evm_stamp_verify::ExpectedStampTransaction`], there is deliberately no `min_value_wei` -- any
 /// nonnegative value burned to `burn_address` with the right recipient/commitment is accepted,
 /// and its exact value becomes the vote's weight (see module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,7 +295,7 @@ pub struct ExpectedTopicBurn {
 }
 
 /// Outcome of verifying a Monad burn tx against an [`ExpectedTopicBurn`]. Structurally mirrors
-/// [`crate::monad_stamp_verify::StampTransactionVerification`], minus
+/// [`crate::evm_stamp_verify::StampTransactionVerification`], minus
 /// `InsufficientValue`/`WrongCommitment`'s Stamp framing: verification here doesn't threshold the
 /// value at all, it returns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,7 +339,7 @@ pub enum TopicVoteBurnVerification {
 /// Verify that `tx_hash` is a valid topic-vote burn against `expected`, returning its exact
 /// value + direction as the vote's weight rather than a pass/fail against a minimum.
 ///
-/// Mirrors [`crate::monad_stamp_verify::verify_stamp_transaction`]'s flow (fetch receipt, check
+/// Mirrors [`crate::evm_stamp_verify::verify_stamp_transaction`]'s flow (fetch receipt, check
 /// status/recipient, fetch full tx, decode+check calldata) -- see this module's docs for why it
 /// can't call that function directly given the different calldata layout and richer outcome type.
 ///
@@ -381,7 +381,7 @@ pub(crate) async fn verify_topic_burn_checked<T: JsonRpcTransport + Clone>(
     version: TopicCalldataVersion,
     signed_sender: Option<Address>,
 ) -> Result<TopicVoteBurnVerification> {
-    let client = MonadHttpClient::with_transport(transport.clone());
+    let client = EvmHttpClient::with_transport(transport.clone());
 
     let receipt = client
         .get_transaction_receipt(tx_hash)
@@ -471,7 +471,7 @@ mod tests {
     use bitcoinsuite_core::Hashed;
     use serde_json::Value;
 
-    use crate::monad_http::MonadRpcError;
+    use crate::evm_rpc::EvmRpcError;
 
     use super::*;
 
@@ -574,7 +574,7 @@ mod tests {
     }
 
     /// Mock [`JsonRpcTransport`] that returns a canned response per JSON-RPC method -- same shape
-    /// as `monad_stamp_verify`'s test mock.
+    /// as `evm_stamp_verify`'s test mock.
     #[derive(Clone, Default)]
     struct MockTransport {
         responses: std::sync::Arc<Mutex<HashMap<String, Value>>>,
@@ -603,14 +603,14 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             self.calls.lock().unwrap().push(method.to_string());
             self.responses
                 .lock()
                 .unwrap()
                 .get(method)
                 .cloned()
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured for this method".to_string(),
                 })

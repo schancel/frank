@@ -60,11 +60,11 @@ use frank_cbor::message_fields::{
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue, Timestamp};
 use thiserror::Error;
 
-use crate::monad_topic_cbor::{
+use crate::evm_topic_cbor::{
     check_topic_burn_before_broadcast, parse_topic_event, CheckedTopicBurn, TopicBurnPolicy,
     TopicEvent, VerifiedTopicBurn,
 };
-use crate::monad_topic_verify::VoteDirection;
+use crate::evm_topic_verify::VoteDirection;
 use crate::store::kv_store::{KvError, KvTransaction, RelayKvStore, Transact};
 use crate::store::large_values::{
     LargeValueError, LargeValues, ObjectStore, Staged, Stored, SweepReport, INLINE_LIMIT,
@@ -1433,7 +1433,7 @@ impl Store {
         let TopicEvent::Post(author_post) = &author.event else {
             return Err(ForumError::Unavailable);
         };
-        crate::monad_topic_cbor::validate_topic_post_target(
+        crate::evm_topic_cbor::validate_topic_post_target(
             &author_post.post_frame,
             &self.network,
             &row.hash,

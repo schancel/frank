@@ -17,8 +17,8 @@ use prost::Message;
 use thiserror::Error;
 
 use crate::{
-    monad_http::Address,
-    monad_profile_verify::{verify_cbor_account_registration, verify_monad_profile},
+    evm_profile_verify::{verify_cbor_account_registration, verify_evm_profile},
+    evm_rpc::Address,
     proto::{self, BroadcastMessage},
     store::{db::Db, pubkeyhash::PubKeyHash},
 };
@@ -41,7 +41,7 @@ pub(crate) fn recipient_signature_work() -> usize {
 /// Cashweb [`Registry`] stores [`SignedPayload`]s containing [`proto::AddressMetadata`] for
 /// addresses.
 ///
-/// The message store (`store::monad_dm_cbor`) is private to this crate: messages enter and
+/// The message store (`store::evm_direct_messages`) is private to this crate: messages enter and
 /// leave through the message routes only.
 #[derive(Debug)]
 pub struct Registry {
@@ -50,7 +50,7 @@ pub struct Registry {
     /// The forum's transaction store (posts, votes, burns), opened on first use.
     forum: crate::forum::Owner,
     /// Lazy isolated exact canonical DM owner; shares the registry lifetime.
-    canonical_dm: crate::store::monad_dm_cbor::Owner,
+    canonical_dm: crate::store::evm_direct_messages::Owner,
     /// Lazy isolated shared group mailbox store owner (`'G'`, `'G_meta'`, Issue #70).
     groups: crate::store::groups::Owner,
     /// Ecc for verifying secp256k1 signatures.
@@ -165,9 +165,9 @@ pub enum RegistryError {
         next: i64,
     },
 
-    /// Ticket #45: same invariant as [`RegistryError::TimestampNotMonotonicallyIncreasing`], for
-    /// Monad-native profile registrations (`Registry::put_monad_profile`) rather than Lotus
-    /// [`SignedPayload`] metadata.
+    /// EVM profile registrations enforce the same timestamp invariant as other metadata.
+    /// The variant spelling and display text are retained wire identifiers: ErrorMeta derives
+    /// the public `monad-profile-timestamp-not-monotonically-increasing` code from this name.
     #[invalid_user_input()]
     #[error("Monad profile timestamp is not monotonically increasing: {previous} >= {next}")]
     MonadProfileTimestampNotMonotonicallyIncreasing {
@@ -272,10 +272,11 @@ impl Registry {
             ),
         };
         let canonical_dm = match backends.messages {
-            Some(store) => {
-                crate::store::monad_dm_cbor::Owner::with_store(store, Arc::clone(&backends.objects))
-            }
-            None => crate::store::monad_dm_cbor::Owner::new(
+            Some(store) => crate::store::evm_direct_messages::Owner::with_store(
+                store,
+                Arc::clone(&backends.objects),
+            ),
+            None => crate::store::evm_direct_messages::Owner::new(
                 db.owned_path().to_path_buf(),
                 Arc::clone(&backends.objects),
             ),
@@ -300,7 +301,7 @@ impl Registry {
 
     /// Return the current number of address-keyed public profile records, without exposing keys.
     pub fn stored_public_profile_record_count(&self) -> Result<u64> {
-        self.db.monad_profiles().count_records()
+        self.db.evm_profiles().count_records()
     }
 
     /// Estimated live key/value bytes in the registry RocksDB (not filesystem or PVC usage);
@@ -391,7 +392,7 @@ impl Registry {
             .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn canonical_dm(&self) -> &crate::store::monad_dm_cbor::Owner {
+    pub(crate) fn canonical_dm(&self) -> &crate::store::evm_direct_messages::Owner {
         &self.canonical_dm
     }
 
@@ -720,28 +721,28 @@ impl Registry {
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad
-    /// equivalent of [`Registry::put_metadata`]. See `crate::monad_profile_verify`'s module docs
+    /// equivalent of [`Registry::put_metadata`]. See `crate::evm_profile_verify`'s module docs
     /// for why this uses an explicit pubkey+signature check (mirroring Lotus's own solution to
     /// the identical problem) rather than `ecrecover`, which has nothing to recover a signature
     /// from here (there's no burn transaction backing a profile registration).
     ///
     /// Reachable both from the dedicated `PUT /metadata/monad/:addr` route
-    /// (`crate::http::monad_profile::handle_put_monad_profile`) and from the plain
+    /// (`crate::http::evm_profile::handle_put_evm_profile`) and from the plain
     /// `PUT /metadata/:addr` route's Monad-address dispatch branch
     /// (`crate::http::server::handle_put_registry`) -- see that module's docs for why both exist.
-    pub fn put_monad_profile(
+    pub fn put_evm_profile(
         &self,
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
-        let verified = verify_monad_profile(&self.ecc, address, &signed_profile)?;
-        let row = crate::store::monad_profiles::ProfileRow::protobuf(&signed_profile)?;
+        let verified = verify_evm_profile(&self.ecc, address, &signed_profile)?;
+        let row = crate::store::evm_profiles::ProfileRow::protobuf(&signed_profile)?;
         // The monotonic check runs in the replacing transaction, against the stored record it
         // replaces, so concurrent writes on any replica cannot both pass it.
-        self.db.monad_profiles().replace(&address, |existing| {
+        self.db.evm_profiles().replace(&address, |existing| {
             let previous = existing.and_then(|existing| {
-                if crate::store::monad_profiles::is_cbor_frame(existing) {
-                    crate::store::monad_profiles::cbor_statement_info(existing)
+                if crate::store::evm_profiles::is_cbor_frame(existing) {
+                    crate::store::evm_profiles::cbor_statement_info(existing)
                         .map(|info| info.timestamp_ms)
                 } else {
                     stored_protobuf_timestamp(existing)
@@ -763,14 +764,14 @@ impl Registry {
     /// Fully verify and write a Frank-CBOR type-2 account registration attestation (ticket #605)
     /// for the relay network `network`. Enforces stage 10.6 signature verification and monotonic
     /// revision/timestamp invariants, against the record read in the replacing transaction.
-    pub fn put_monad_profile_cbor(
+    pub fn put_evm_profile_cbor(
         &self,
         address: Address,
         network: &str,
         frame_bytes: &[u8],
     ) -> Result<()> {
-        self.db.monad_profiles().replace(&address, |existing| {
-            let info = existing.and_then(crate::store::monad_profiles::cbor_statement_info);
+        self.db.evm_profiles().replace(&address, |existing| {
+            let info = existing.and_then(crate::store::evm_profiles::cbor_statement_info);
             let prior_statement = match &info {
                 Some(info) => frank_cbor::PriorStatement::Frame(info.type_4_frame.clone()),
                 None => frank_cbor::PriorStatement::None,
@@ -778,7 +779,7 @@ impl Registry {
             let verified =
                 verify_cbor_account_registration(address, network, frame_bytes, prior_statement)?;
             if let Some(existing) = existing {
-                if !crate::store::monad_profiles::is_cbor_frame(existing) {
+                if !crate::store::evm_profiles::is_cbor_frame(existing) {
                     if let Some(previous) = stored_protobuf_timestamp(existing) {
                         if previous >= verified.timestamp_ms {
                             return Err(MonadProfileTimestampNotMonotonicallyIncreasing {
@@ -801,7 +802,7 @@ impl Registry {
                     }
                 }
             }
-            Ok(crate::store::monad_profiles::ProfileRow {
+            Ok(crate::store::evm_profiles::ProfileRow {
                 raw: frame_bytes.to_vec(),
                 timestamp_ms: verified.timestamp_ms,
                 normalized_name: verified.display_name.clone(),
@@ -811,37 +812,37 @@ impl Registry {
 
     /// Read a previously-registered Monad profile's `cashweb_payload::proto::SignedPayload`
     /// envelope. Returns [`None`] if nothing is registered under `address` or if stored as CBOR.
-    pub fn get_monad_profile(
+    pub fn get_evm_profile(
         &self,
         address: Address,
     ) -> Result<Option<cashweb_payload::proto::SignedPayload>> {
-        self.db.monad_profiles().get(&address)
+        self.db.evm_profiles().get(&address)
     }
 
     /// Read raw profile bytes (legacy protobuf or Frank-CBOR) as stored.
-    pub fn get_monad_profile_raw(&self, address: Address) -> Result<Option<Vec<u8>>> {
-        self.db.monad_profiles().get_raw(&address)
+    pub fn get_evm_profile_raw(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        self.db.evm_profiles().get_raw(&address)
     }
 
     /// Read registered public key (33-byte compressed secp256k1) for address, whether
     /// stored as protobuf or CBOR.
-    pub fn get_monad_profile_pubkey(&self, address: Address) -> Result<Option<Vec<u8>>> {
-        self.db.monad_profiles().get_pubkey(&address)
+    pub fn get_evm_profile_pubkey(&self, address: Address) -> Result<Option<Vec<u8>>> {
+        self.db.evm_profiles().get_pubkey(&address)
     }
 
     /// Verify a mailbox request digest with the recipient's already-registered profile key.
     /// Missing/malformed profiles and bad signatures intentionally collapse to `false`.
-    pub(crate) fn verify_monad_recipient_signature(
+    pub(crate) fn verify_evm_recipient_signature(
         &self,
         recipient: Address,
         digest: [u8; 32],
         signature: &[u8],
     ) -> Result<bool> {
-        self.verify_monad_recipient_signature_observed(recipient, digest, signature, || {})
+        self.verify_evm_recipient_signature_observed(recipient, digest, signature, || {})
     }
 
     /// Atomically persist one successfully authenticated mailbox challenge as consumed.
-    pub(crate) fn consume_monad_mailbox_challenge(
+    pub(crate) fn consume_evm_mailbox_challenge(
         &self,
         epoch: [u8; 32],
         recipient: Address,
@@ -849,7 +850,7 @@ impl Registry {
         expires_at_ms: i64,
         now_ms: i64,
         per_recipient_cap: usize,
-    ) -> Result<crate::monad_mailbox::ChallengeConsumption> {
+    ) -> Result<crate::evm_mailbox::ChallengeConsumption> {
         Ok(self.canonical_dm.consume_challenge(
             epoch,
             recipient,
@@ -860,7 +861,7 @@ impl Registry {
         )?)
     }
 
-    fn verify_monad_recipient_signature_observed<F>(
+    fn verify_evm_recipient_signature_observed<F>(
         &self,
         recipient: Address,
         digest: [u8; 32],
@@ -872,14 +873,14 @@ impl Registry {
     {
         #[cfg(test)]
         RECIPIENT_SIGNATURE_WORK.set(RECIPIENT_SIGNATURE_WORK.get() + 1);
-        let pubkey = self.db.monad_profiles().get_pubkey(&recipient)?;
+        let pubkey = self.db.evm_profiles().get_pubkey(&recipient)?;
         self.verify_recipient_key_observed(pubkey, digest, signature, before_verify)
     }
 
     /// Shared existing signature primitive for a P already admitted by the directory owner.
     /// A supplied point is never admission by itself; canonical callers must check the genuine
     /// fresh snapshot, network and exact subject before entering this helper.
-    pub(crate) fn verify_admitted_monad_recipient_signature(
+    pub(crate) fn verify_admitted_evm_recipient_signature(
         &self,
         recipient: Address,
         admitted_p: Option<&[u8]>,
@@ -888,7 +889,7 @@ impl Registry {
     ) -> Result<bool> {
         let key = admitted_p
             .filter(|key| {
-                crate::monad_stamp_stealth::recipient_address_from_public_key(key)
+                crate::evm_stamp_stealth::recipient_address_from_public_key(key)
                     .map(|address| address == recipient)
                     .unwrap_or(false)
             })
@@ -931,39 +932,39 @@ impl Registry {
     }
 
     #[cfg(test)]
-    pub(crate) fn list_monad_profiles_since(
+    pub(crate) fn list_evm_profiles_since(
         &self,
         since: i64,
     ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
-        self.db.monad_profiles().list_since(since)
+        self.db.evm_profiles().list_since(since)
     }
 
     /// List every `(address, raw_bytes)` registered with timestamp >= since, ordered by
     /// timestamp ascending.
-    pub(crate) fn list_monad_profiles_since_raw(
+    pub(crate) fn list_evm_profiles_since_raw(
         &self,
         since: i64,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
-        self.db.monad_profiles().list_since_raw(since)
+        self.db.evm_profiles().list_since_raw(since)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn search_monad_profiles_by_name(
+    pub(crate) fn search_evm_profiles_by_name(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<(Address, cashweb_payload::proto::SignedPayload)>> {
-        self.db.monad_profiles().search_by_name(prefix, limit)
+        self.db.evm_profiles().search_by_name(prefix, limit)
     }
 
     /// Prefix-search registered Monad profiles by their normalized `display_name` returning raw
     /// bytes.
-    pub(crate) fn search_monad_profiles_by_name_raw(
+    pub(crate) fn search_evm_profiles_by_name_raw(
         &self,
         prefix: &str,
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
-        self.db.monad_profiles().search_by_name_raw(prefix, limit)
+        self.db.evm_profiles().search_by_name_raw(prefix, limit)
     }
 }
 
@@ -1837,9 +1838,9 @@ mod tests {
     }
 
     /// A [`cashweb_payload::chain_adapter::ChainAdapter`] that's never actually called for
-    /// anything meaningful. `Registry::put_monad_profile`/`get_monad_profile` never touch
+    /// anything meaningful. `Registry::put_evm_profile`/`get_evm_profile` never touch
     /// `chain_adapter` at all -- there's no burn transaction backing a profile registration (see
-    /// `crate::monad_profile_verify`'s module docs) -- so, unlike `test_registry_metadata`/
+    /// `crate::evm_profile_verify`'s module docs) -- so, unlike `test_registry_metadata`/
     /// `test_registry_message` above, these tests don't need a real bitcoind/Lotus adapter.
     /// Mirrors `examples/e2e_demo_server.rs`'s `DemoChainAdapter`: the async methods return
     /// harmless dummy values (rather than `unimplemented!()`, which triggers clippy's
@@ -1892,7 +1893,7 @@ mod tests {
     /// guard alongside it -- the caller must keep it alive for the registry's lifetime, mirroring
     /// every other `Db::open(tempdir...)` test in this crate (e.g. `store::monad_messages`'s
     /// tests).
-    fn test_monad_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
+    fn test_evm_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
@@ -1902,19 +1903,19 @@ mod tests {
     /// Builds a validly-signed [`cashweb_payload::proto::SignedPayload`] for `profile`, signed by
     /// `seckey` -- mirrors `monad-identity.ts`'s `buildSignedAddressMetadata`/`signHash` exactly
     /// (SHA256 digest, DER ECDSA signature, explicit pubkey field; see
-    /// `crate::monad_profile_verify`'s module docs) -- and the [`crate::monad_http::Address`] it
+    /// `crate::evm_profile_verify`'s module docs) -- and the [`crate::evm_rpc::Address`] it
     /// should be registered under.
-    fn sign_monad_profile(
+    fn sign_evm_profile(
         seckey: &bitcoinsuite_core::ecc::SecKey,
         profile: &proto::MonadProfile,
     ) -> (
         cashweb_payload::proto::SignedPayload,
-        crate::monad_http::Address,
+        crate::evm_rpc::Address,
     ) {
         let ecc = EccSecp256k1::default();
         let pubkey = ecc.derive_pubkey(seckey);
         let uncompressed = ecc.serialize_pubkey_uncompressed(&pubkey);
-        let address = crate::monad_evm_tx::address_from_uncompressed_pubkey(&uncompressed);
+        let address = crate::evm_transaction::address_from_uncompressed_pubkey(&uncompressed);
 
         let payload = profile.encode_to_vec();
         let payload_hash = Sha256::digest(payload.clone().into());
@@ -1932,7 +1933,7 @@ mod tests {
         (signed, address)
     }
 
-    fn sample_monad_profile(timestamp: i64) -> proto::MonadProfile {
+    fn sample_evm_profile(timestamp: i64) -> proto::MonadProfile {
         proto::MonadProfile {
             timestamp,
             ttl: 1000 * 60 * 60 * 24 * 365,
@@ -1941,72 +1942,71 @@ mod tests {
     }
 
     #[test]
-    fn test_put_and_get_monad_profile_round_trip() -> Result<()> {
+    fn test_put_and_get_evm_profile_round_trip() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-round-trip");
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-round-trip");
         let seckey = registry.ecc.seckey_from_array([9; 32])?;
-        let (signed, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        let (signed, address) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
 
         // Nothing registered yet.
-        assert_eq!(registry.get_monad_profile(address)?, None);
+        assert_eq!(registry.get_evm_profile(address)?, None);
 
-        registry.put_monad_profile(address, signed.clone())?;
-        assert_eq!(registry.get_monad_profile(address)?, Some(signed));
+        registry.put_evm_profile(address, signed.clone())?;
+        assert_eq!(registry.get_evm_profile(address)?, Some(signed));
 
         Ok(())
     }
 
     #[test]
-    fn test_list_monad_profiles_since_discovers_new_registrations_by_time() -> Result<()> {
+    fn test_list_evm_profiles_since_discovers_new_registrations_by_time() -> Result<()> {
         // Ticket #75: the actual bot-facing use case -- discover newly-registered addresses via
-        // the full put_monad_profile -> list_monad_profiles_since path (real signature
+        // the full put_evm_profile -> list_evm_profiles_since path (real signature
         // verification, not the store-layer test's bypassed put).
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-list-since");
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-list-since");
 
         let early_key = registry.ecc.seckey_from_array([1; 32])?;
-        let (early_signed, early_address) =
-            sign_monad_profile(&early_key, &sample_monad_profile(100));
-        registry.put_monad_profile(early_address, early_signed.clone())?;
+        let (early_signed, early_address) = sign_evm_profile(&early_key, &sample_evm_profile(100));
+        registry.put_evm_profile(early_address, early_signed.clone())?;
 
         let late_key = registry.ecc.seckey_from_array([2; 32])?;
-        let (late_signed, late_address) = sign_monad_profile(&late_key, &sample_monad_profile(200));
-        registry.put_monad_profile(late_address, late_signed.clone())?;
+        let (late_signed, late_address) = sign_evm_profile(&late_key, &sample_evm_profile(200));
+        registry.put_evm_profile(late_address, late_signed.clone())?;
 
         assert_eq!(
-            registry.list_monad_profiles_since(0)?,
+            registry.list_evm_profiles_since(0)?,
             vec![
                 (early_address, early_signed),
                 (late_address, late_signed.clone())
             ],
         );
         assert_eq!(
-            registry.list_monad_profiles_since(200)?,
+            registry.list_evm_profiles_since(200)?,
             vec![(late_address, late_signed)],
         );
-        assert_eq!(registry.list_monad_profiles_since(201)?, vec![]);
+        assert_eq!(registry.list_evm_profiles_since(201)?, vec![]);
 
         Ok(())
     }
 
     #[test]
-    fn test_put_monad_profile_rejects_stale_timestamp() -> Result<()> {
+    fn test_put_evm_profile_rejects_stale_timestamp() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-stale");
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-stale");
         let seckey = registry.ecc.seckey_from_array([9; 32])?;
 
-        let (first, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
-        registry.put_monad_profile(address, first)?;
+        let (first, address) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
+        registry.put_evm_profile(address, first)?;
 
         // A re-registration with a timestamp that doesn't strictly increase is rejected --
         // mirrors `Registry::put_metadata`'s identical Lotus-side invariant, preventing a stale
         // registration from being replayed.
-        let (stale, _) = sign_monad_profile(&seckey, &sample_monad_profile(999));
+        let (stale, _) = sign_evm_profile(&seckey, &sample_evm_profile(999));
         let err = registry
-            .put_monad_profile(address, stale)
+            .put_evm_profile(address, stale)
             .unwrap_err()
             .downcast::<RegistryError>()?;
         assert_eq!(
@@ -2018,76 +2018,76 @@ mod tests {
         );
 
         // The original registration is untouched.
-        let (original, _) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
-        assert_eq!(registry.get_monad_profile(address)?, Some(original));
+        let (original, _) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
+        assert_eq!(registry.get_evm_profile(address)?, Some(original));
 
         Ok(())
     }
 
     #[test]
-    fn test_put_monad_profile_rejects_a_submission_signed_by_the_wrong_key() -> Result<()> {
+    fn test_put_evm_profile_rejects_a_submission_signed_by_the_wrong_key() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-bad-sig");
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-bad-sig");
         let seckey = registry.ecc.seckey_from_array([9; 32])?;
-        let (signed, claimed_address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        let (signed, claimed_address) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
 
         // Sign with a *different* key, but submit under the first key's address: the derived
         // address won't match what's claimed.
         let other_seckey = registry.ecc.seckey_from_array([10; 32])?;
-        let (mismatched, _) = sign_monad_profile(&other_seckey, &sample_monad_profile(1000));
+        let (mismatched, _) = sign_evm_profile(&other_seckey, &sample_evm_profile(1000));
 
         let err = registry
-            .put_monad_profile(claimed_address, mismatched)
+            .put_evm_profile(claimed_address, mismatched)
             .unwrap_err();
         assert!(err
-            .downcast::<crate::monad_profile_verify::MonadProfileVerifyError>()
+            .downcast::<crate::evm_profile_verify::EvmProfileVerifyError>()
             .is_ok());
 
         // Nothing was stored.
-        assert_eq!(registry.get_monad_profile(claimed_address)?, None);
+        assert_eq!(registry.get_evm_profile(claimed_address)?, None);
         // Sanity: the original, correctly-addressed submission still works.
-        registry.put_monad_profile(claimed_address, signed)?;
-        assert!(registry.get_monad_profile(claimed_address)?.is_some());
+        registry.put_evm_profile(claimed_address, signed)?;
+        assert!(registry.get_evm_profile(claimed_address)?.is_some());
 
         Ok(())
     }
 
     #[test]
-    fn test_put_monad_profile_rejects_an_unsigned_submission() -> Result<()> {
+    fn test_put_evm_profile_rejects_an_unsigned_submission() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-unsigned");
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-unsigned");
         let seckey = registry.ecc.seckey_from_array([9; 32])?;
-        let (mut signed, address) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
+        let (mut signed, address) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
         signed.sig = vec![]; // no signature at all
 
-        let err = registry.put_monad_profile(address, signed).unwrap_err();
+        let err = registry.put_evm_profile(address, signed).unwrap_err();
         assert!(err
-            .downcast::<crate::monad_profile_verify::MonadProfileVerifyError>()
+            .downcast::<crate::evm_profile_verify::EvmProfileVerifyError>()
             .is_ok());
-        assert_eq!(registry.get_monad_profile(address)?, None);
+        assert_eq!(registry.get_evm_profile(address)?, None);
 
         Ok(())
     }
 
     #[test]
-    fn test_get_monad_profile_not_found() -> Result<()> {
+    fn test_get_evm_profile_not_found() -> Result<()> {
         let _ = bitcoinsuite_error::install();
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-monad-profile-not-found");
-        let address = crate::monad_http::Address([3u8; 20]);
-        assert_eq!(registry.get_monad_profile(address)?, None);
+            test_evm_profile_registry("cashweb-registry--registry-monad-profile-not-found");
+        let address = crate::evm_rpc::Address([3u8; 20]);
+        assert_eq!(registry.get_evm_profile(address)?, None);
         Ok(())
     }
 
     #[test]
     fn missing_and_registered_recipients_both_execute_one_signature_verification() -> Result<()> {
         let (_tempdir, registry) =
-            test_monad_profile_registry("cashweb-registry--registry-recipient-auth-work");
+            test_evm_profile_registry("cashweb-registry--registry-recipient-auth-work");
         let seckey = registry.ecc.seckey_from_array([9; 32])?;
-        let (signed, registered) = sign_monad_profile(&seckey, &sample_monad_profile(1000));
-        registry.put_monad_profile(registered, signed)?;
+        let (signed, registered) = sign_evm_profile(&seckey, &sample_evm_profile(1000));
+        registry.put_evm_profile(registered, signed)?;
         let wrong_digest = Sha256::digest(b"wrong digest".as_slice().into());
         let bad_signature = registry
             .ecc
@@ -2095,9 +2095,9 @@ mod tests {
             .to_vec();
         let requested_digest = [0x77; 32];
 
-        for recipient in [registered, crate::monad_http::Address([0xee; 20])] {
+        for recipient in [registered, crate::evm_rpc::Address([0xee; 20])] {
             let calls = std::cell::Cell::new(0);
-            assert!(!registry.verify_monad_recipient_signature_observed(
+            assert!(!registry.verify_evm_recipient_signature_observed(
                 recipient,
                 requested_digest,
                 &bad_signature,

@@ -6,7 +6,7 @@ Readiness: NEEDS_SPECIFICATION. The observed mechanism is concrete, but the quer
 
 Read-only profiling of the reviewed RPC repair running as an unoptimized debug executable showed one CPU near saturation while unrelated relay health/proxy handlers timed out. Stacks show canonical Owner::with holding a synchronous mutex across actions; active_after loads and cryptographically validates retained records before checking whether they are active. Mailbox paging repeats synchronous load/validation under the same mutex. Other Tokio request workers wait on that mutex, including authentication challenge mutation. This is a demonstrated local contention mechanism, not evidence of an infinite loop or upstream RPC failure.
 
-The preserved snapshot had approximately 70 owners, predominantly already delivered. The active scan still traverses retained history to find active work; its result page limit does not bound inspected inactive records or signature-validation cost. Source seams: backend/cashweb canonical store monad_dm_cbor.rs Owner::with, active_after, mailbox/load/validate_canonical_retained; HTTP monad_message_cbor.rs private page; monad_dm_verify.rs context construction. Exact line numbers are revision-dependent.
+The preserved snapshot had approximately 70 owners, predominantly already delivered. The active scan still traverses retained history to find active work; its result page limit does not bound inspected inactive records or signature-validation cost. Source seams: backend/cashweb canonical store evm_direct_messages.rs Owner::with, active_after, mailbox/load/validate_canonical_retained; HTTP evm_direct_messages.rs private page; evm_dm_verify.rs context construction. Exact line numbers are revision-dependent.
 
 ## Current runtime distinction
 

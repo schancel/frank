@@ -2,7 +2,7 @@
 //! node once, answer `delivered`. Messages here are built from the captured genuine one, so
 //! they pass the same checks; the node is an in-process fake that records what it was sent.
 use super::*;
-use crate::store::monad_dm_cbor::{MailboxDirection, Owner};
+use crate::store::evm_direct_messages::{MailboxDirection, Owner};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,7 @@ impl Payment {
         let secret = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default()
             .seckey_from_array(secret)
             .unwrap();
-        crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        crate::evm_transaction::test_support::signed_eip1559_tx(
             &secret,
             CHAIN_ID,
             0,
@@ -163,7 +163,7 @@ fn build_sized(
     let mut members = Vec::new();
     let mut raws = Vec::new();
     for index in 0..payments {
-        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+        let (_, address) = crate::evm_dm_verify::canonical_stamp_destination(
             NETWORK,
             destination,
             shared_point,
@@ -176,7 +176,7 @@ fn build_sized(
             address: Address(address),
         });
         // The frame lists what the transaction itself says, where it can be read.
-        let signed = crate::monad_evm_tx::decode_signed_transaction(&raw).ok();
+        let signed = crate::evm_transaction::decode_signed_transaction(&raw).ok();
         let paid_to = signed
             .as_ref()
             .and_then(|signed| signed.destination)
@@ -244,7 +244,7 @@ fn payload_hash(request: &ExactRequest) -> [u8; 32] {
     request_principals(request, NETWORK).unwrap().payload_hash
 }
 fn address(public_key: &[u8]) -> Address {
-    crate::monad_stamp_stealth::recipient_address_from_public_key(public_key).unwrap()
+    crate::evm_stamp_stealth::recipient_address_from_public_key(public_key).unwrap()
 }
 
 /// How the fake node answers one `eth_sendRawTransaction`.
@@ -303,7 +303,8 @@ impl Chain {
 /// The paying account of a raw transaction as the relay reads it, and its hash, both `0x`.
 fn payer(raw: &str) -> (String, String) {
     let signed =
-        crate::monad_evm_tx::decode_signed_transaction(&hex::decode(&raw[2..]).unwrap()).unwrap();
+        crate::evm_transaction::decode_signed_transaction(&hex::decode(&raw[2..]).unwrap())
+            .unwrap();
     (signed.sender.to_hex(), signed.tx_hash.to_hex())
 }
 
@@ -852,7 +853,7 @@ async fn a_failed_broadcast_never_puts_the_node_url_in_a_log_line_or_the_answer(
         .get(&payload_hash(&request))
         .unwrap()
         .unwrap();
-    let logged = broadcast_payments(server.monad_mailbox.as_enabled().unwrap(), &claim).await;
+    let logged = broadcast_payments(server.evm_mailbox.as_enabled().unwrap(), &claim).await;
     assert_eq!(logged.len(), 2);
     for line in logged {
         let reason = line.expect_err("nothing is listening, so nothing was sent");
@@ -950,7 +951,7 @@ async fn a_message_that_fails_a_check_is_refused_with_nothing_stored_and_nothing
                     .seckey_from_array([0x21; 32])
                     .unwrap();
                 if payment.index == 0 {
-                    crate::monad_evm_tx::test_support::signed_eip1559_tx(
+                    crate::evm_transaction::test_support::signed_eip1559_tx(
                         &secret,
                         1,
                         0,
@@ -1126,7 +1127,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     let request = message(40, 2);
     // Stored, and the relay stops before any payment reaches the node.
     let (sender, recipient) = relay.entries().await;
-    let input = crate::monad_dm_payment::validate_canonical_payment_set(
+    let input = crate::evm_dm_payment::validate_canonical_payment_set(
         request.clone(),
         &recipient,
         None,
@@ -1190,7 +1191,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     fixture.stop().await;
 }
 
-fn delivery_time(claim: &crate::store::monad_dm_cbor::Claim) -> i64 {
+fn delivery_time(claim: &crate::store::evm_direct_messages::Claim) -> i64 {
     claim.delivered_at
 }
 
@@ -1211,7 +1212,7 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
         let request = message(tag, 0);
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
-        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
+        crate::evm_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
     };
     let owner = relay.owner();
     let clock = now_ms() + 60_000;
@@ -1307,7 +1308,7 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
 /// before it are not read, and no payment signature is checked again on the way out.
 #[tokio::test]
 async fn reading_after_a_position_reads_only_what_follows_it() {
-    use crate::store::monad_dm_cbor::ROWS_READ;
+    use crate::store::evm_direct_messages::ROWS_READ;
     let relay = Relay::start(|_| Answer::Accepted).await;
     let first = message(500_000, 1);
     delivered(&relay.put(&first).await, &first);
@@ -1324,7 +1325,7 @@ async fn reading_after_a_position_reads_only_what_follows_it() {
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
         let input =
-            crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
+            crate::evm_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
                 .unwrap();
         times.push(owner.claim(input, now_ms()).unwrap().claim.delivered_at);
     }
@@ -1383,7 +1384,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
         let input =
-            crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
+            crate::evm_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
                 .unwrap();
         relay.owner().claim(input, now_ms()).unwrap().claim;
     }
@@ -1407,7 +1408,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
     let mut policy = policy;
     policy.payload_hash = payload_hash(&after);
     let input =
-        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(after, policy).unwrap();
+        crate::evm_dm_payment::CanonicalPaymentInput::without_directory(after, policy).unwrap();
     owner.claim(input, now_ms()).unwrap().claim;
     fixture.stop().await;
 }
@@ -1416,7 +1417,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
 /// recipient through the signed inbox and mailbox pages. A login works exactly once.
 #[tokio::test]
 async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    use crate::evm_mailbox::{MailboxRequestBinding, MailboxResource};
     let relay = Relay::start(|_| Answer::Accepted).await;
     let request = genuine_fixture();
     delivered(&relay.put(&request).await, &request);
@@ -1588,7 +1589,7 @@ async fn a_payment_its_account_cannot_cover_with_gas_is_dead_and_nothing_happens
     let relay = Relay::start(|_| Answer::Accepted).await;
     let request = message(72, 2);
     let raw = hex::decode(&raws(&request)[0][2..]).unwrap();
-    let signed = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    let signed = crate::evm_transaction::decode_signed_transaction(&raw).unwrap();
     // Enough for the value, one wei short of the value and the most gas it may cost.
     relay.chain.lock().unwrap().balances.insert(
         signed.sender.to_hex(),
@@ -1669,8 +1670,8 @@ async fn a_good_message_costs_one_nonce_and_one_balance_read_per_paying_account(
 fn an_account_paying_twice_must_cover_both_payments_and_their_gas() {
     use std::collections::{HashMap, HashSet};
     let account = Address([0xaa; 20]);
-    let payment = |nonce: u64, byte: u8| crate::monad_evm_tx::DecodedSignedTransaction {
-        tx_hash: crate::monad_http::Hash32([byte; 32]),
+    let payment = |nonce: u64, byte: u8| crate::evm_transaction::DecodedSignedTransaction {
+        tx_hash: crate::evm_rpc::Hash32([byte; 32]),
         chain_id: Some(CHAIN_ID),
         sender: account,
         nonce,
@@ -1728,7 +1729,7 @@ type MailboxSocket =
 
 /// `account`'s authenticated mailbox socket on `relay`.
 async fn mailbox_socket(relay: &Relay, account: usize) -> MailboxSocket {
-    use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
+    use crate::evm_mailbox::{MailboxRequestBinding, MailboxResource};
     let client = reqwest::Client::new();
     let origin = relay.fixture.directory.info().binding.endpoint.clone();
     let point = relay.fixture.accounts[account].subject.clone();
@@ -1801,7 +1802,7 @@ async fn the_mailbox_socket_pushes_only_rows_the_store_holds_after_the_bus_annou
     let stored = relay.owner().get(&payload_hash(&request)).unwrap().unwrap();
     // The first push is the stored message: the missing row's hint was dropped.
     let push = next_push(&mut recipient_socket).await;
-    let sender_push = crate::http::monad_message_cbor::mailbox_push(
+    let sender_push = crate::http::evm_direct_messages::mailbox_push(
         &relay.server,
         relay.sender(),
         payload_hash(&request),
@@ -1823,7 +1824,7 @@ async fn the_mailbox_socket_pushes_only_rows_the_store_holds_after_the_bus_annou
         );
     }
     // A mailbox that is neither side of the row gets nothing.
-    assert!(crate::http::monad_message_cbor::mailbox_push(
+    assert!(crate::http::evm_direct_messages::mailbox_push(
         &relay.server,
         Address([0x77; 20]),
         payload_hash(&request),
@@ -1863,7 +1864,7 @@ async fn replicas_sharing_one_store_agree_on_times_rows_and_challenges() {
         let request = message(tag, 0);
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
-        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
+        crate::evm_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
     };
     let shared: Arc<dyn crate::store::kv_store::RelayKvStore> =
         Arc::new(crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap());
@@ -1960,15 +1961,15 @@ async fn replicas_sharing_one_store_agree_on_times_rows_and_challenges() {
     };
     assert_eq!(
         use_on(&replicas[0]),
-        crate::monad_mailbox::ChallengeConsumption::Consumed
+        crate::evm_mailbox::ChallengeConsumption::Consumed
     );
     assert_eq!(
         use_on(&replicas[1]),
-        crate::monad_mailbox::ChallengeConsumption::Rejected
+        crate::evm_mailbox::ChallengeConsumption::Rejected
     );
     assert_eq!(
         use_on(&replicas[0]),
-        crate::monad_mailbox::ChallengeConsumption::Rejected
+        crate::evm_mailbox::ChallengeConsumption::Rejected
     );
     relay.stop().await;
 }
@@ -2023,7 +2024,7 @@ async fn an_unknown_commit_outcome_is_settled_by_a_fence_and_admits_the_message_
         let request = message(tag, 0);
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
-        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
+        crate::evm_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
     };
     let store = Arc::new(LostAnswers {
         inner: crate::store::kv_store::RocksDbKvStore::open_temporary().unwrap(),
@@ -2080,7 +2081,7 @@ async fn the_largest_message_is_admitted_and_one_byte_more_is_refused_with_nothi
     let largest = build_sized(
         40,
         Parties::Captured,
-        crate::monad_dm_payment::MAX_STAMP_PAYMENTS as u32,
+        crate::evm_dm_payment::MAX_STAMP_PAYMENTS as u32,
         Payment::signed,
         Some(frank_cbor::MAX_DM_CRYPTO_BOX_ENVELOPE_BYTES),
     );

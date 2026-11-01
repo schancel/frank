@@ -3,7 +3,7 @@ package cashweb.registry;
 
 // Monad-native topic post + burn-weighted vote (ticket #30).
 //
-// Mirrors `monad_message.proto`'s `MonadStampedMessage`/`StoredMonadMessage` pattern (ticket
+// Mirrors `evm_message.proto`'s `MonadStampedMessage`/`StoredMonadMessage` pattern (ticket
 // #27): no separate pubkey/signature field anywhere here either -- sender identity always comes
 // from `ecrecover` over a message's `raw_burn_tx` (see `cashweb_registry::monad_evm_tx::
 // recover_sender`), never an app-level signature.
@@ -70,7 +70,7 @@ message StoredMonadTopicPost {
   // Milliseconds since the Unix epoch when this post first became visible at this relay.
   int64 timestamp = 4;
   // Frank-specific network tag (ticket #39, see PLAN.md constraint 9), mirroring
-  // `StoredMonadMessage.network_tag` (`monad_message.proto`) exactly -- see that field's doc for
+  // `StoredMonadMessage.network_tag` (`evm_message.proto`) exactly -- see that field's doc for
   // the full rationale (short Frank-specific code, not a raw EVM `chainId`, stamped by the relay
   // from its configured network, `[registry] network`). NOTE: field number is `5`, not `6` -- this
   // message only has fields 1-4 defined above (`post`, `sender_address`, `tx_hash`, `timestamp`),

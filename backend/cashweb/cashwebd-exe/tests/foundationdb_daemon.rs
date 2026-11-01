@@ -101,12 +101,12 @@ checkpoint_block_number = {checkpoint_number}
 checkpoint_block_hash = "{checkpoint}"
 max_get_logs_range = 10
 
-[registry.monad_mailbox]
+[registry.evm_mailbox]
 enabled = false
 
 [registry.pop]
 enabled = false
-monad_rpc_url = "http://unused.invalid"
+evm_rpc_url = "http://unused.invalid"
 hmac_secret = "unused-because-pop-is-disabled"
 payment_recipient = "0x0000000000000000000000000000000000000000"
 min_value_wei = "0"

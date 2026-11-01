@@ -34,8 +34,8 @@ use axum::{Extension, Json};
 use thiserror::Error;
 
 use crate::{
+    evm_rpc::{Address, HexTypeError},
     http::server::RegistryServer,
-    monad_http::{Address, HexTypeError},
 };
 
 /// One operator-curated default contact, parsed once at server-construction time from
@@ -205,7 +205,7 @@ mod tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(pop_gate),
             curated_defaults: Arc::new(curated_defaults),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,

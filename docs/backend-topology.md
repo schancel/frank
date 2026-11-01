@@ -180,7 +180,7 @@ connection; HTTP `/chain-rpc/:chain/rpc` refuses Electrum methods.
 
 Direct messages (`PUT /message` and the signed inbox and mailbox reads under `/message/`) are
 **enabled by default** in both shipped configs (`backend/cashweb/cashwebd.local.toml`,
-`backend/docker/cashwebd.toml`) via `[registry.monad_mailbox]`: `enabled = true`,
+`backend/docker/cashwebd.toml`) via `[registry.evm_mailbox]`: `enabled = true`,
 `min_value_wei = "21000000000000000"` (the Monad payment floor, 10 x 21000 gas x 100 gwei; the
 relay refuses to start below it, see `docs/protocol/chains/README.md`), together with `[registry.directory]`, without which there are no
 message routes at all. A relay with the mailbox disabled answers 404 on every `/message` route, so a

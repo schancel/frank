@@ -59,10 +59,10 @@ use bitcoinsuite_error::Result;
 use cashweb_config::PopConf;
 use cashweb_payload::chain_adapter::{ChainAdapter, MempoolAcceptResult, SubmitTxOutcome};
 use cashweb_registry::{
+    evm_rpc::Address,
     http::{
         curated_defaults::CuratedDefaultContact, pop_protection::PopGate, server::RegistryServer,
     },
-    monad_http::Address,
     p2p::peers::Peers,
     registry::Registry,
     store::db::Db,
@@ -130,7 +130,7 @@ impl ChainAdapter for DemoChainAdapter {
 fn demo_pop_conf() -> PopConf {
     PopConf {
         enabled: false,
-        monad_rpc_url: "http://127.0.0.1:1".parse().expect("valid URL"),
+        evm_rpc_url: "http://127.0.0.1:1".parse().expect("valid URL"),
         hmac_secret: "e2e-demo-placeholder-hmac-secret-not-for-production".to_string(),
         payment_recipient: format!("0x{}", "00".repeat(20)),
         min_value_wei: "0".to_string(),
@@ -148,8 +148,8 @@ async fn main() -> Result<()> {
         .expect("usage: e2e_demo_server [host:port]");
 
     // This demo constructs its router with the durable Monad mailbox disabled (see
-    // `monad_mailbox` below), so `PUT /message/monad` is not served. The mailbox is configured by
-    // `[registry.monad_mailbox]` in a `cashwebd` config (see `backend/cashweb/run-local-monad.sh`),
+    // `evm_mailbox` below), so `PUT /message/monad` is not served. The mailbox is configured by
+    // `[registry.evm_mailbox]` in a `cashwebd` config (see `backend/cashweb/run-local-monad.sh`),
     // never by environment variables. The forum is off too: it needs `[registry.forum]` and a
     // verified upstream for the relay network.
     info!("Monad mailbox is disabled in this demo: /message/monad is not served");
@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
         peers,
         pop_gate,
         curated_defaults: Arc::new(curated_defaults),
-        monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
+        evm_mailbox: cashweb_registry::evm_mailbox::EvmMailboxRuntime::Disabled,
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,

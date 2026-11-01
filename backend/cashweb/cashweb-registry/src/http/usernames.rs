@@ -18,7 +18,7 @@ use axum::{
 
 use crate::{
     directory_runtime::DirectoryRuntime,
-    monad_http::Address,
+    evm_rpc::Address,
     store::directory_usernames::{
         is_operational_local_part, normalize, UsernameError, UsernameRecord, MAX_CLAIM_BYTES,
         MAX_SEARCH_RESULTS,
@@ -65,12 +65,12 @@ fn user(runtime: &DirectoryRuntime, record: &UsernameRecord) -> serde_json::Valu
     // The account's old-style profile (display name, avatar), when it has published one.
     let entry = runtime
         .registry()
-        .get_monad_profile_raw(Address(record.address))
+        .get_evm_profile_raw(Address(record.address))
         .ok()
         .flatten()
         .map(|raw| {
             serde_json::json!({
-                "content_type": if crate::store::monad_profiles::is_cbor_frame(&raw) {
+                "content_type": if crate::store::evm_profiles::is_cbor_frame(&raw) {
                     "application/cbor"
                 } else {
                     "application/x-protobuf"

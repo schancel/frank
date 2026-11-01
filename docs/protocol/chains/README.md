@@ -75,7 +75,7 @@ Who applies it:
 - **Relay (deterministic).** `cashweb_config::protocol_payment_floor_wei(network)` is the
   multiple at `min_gas_price_wei`: 0.021 MON on every Monad network. The relay refuses, before
   anything is stored or broadcast, a direct message any of whose stamp payments is below it
-  (`monad_dm_payment.rs`), and refuses to start with `[registry.monad_mailbox] min_value_wei` or a
+  (`evm_dm_payment.rs`), and refuses to start with `[registry.evm_mailbox] min_value_wei` or a
   `[registry.group_writes] min_price_wei` below it unless that section's payee is the burn
   address `0x…dEaD`; a group's price is never below `min_price_wei`. It reads no chain for this, so every
   replica decides the same. Because a node's gas price is never below the network's minimum, a

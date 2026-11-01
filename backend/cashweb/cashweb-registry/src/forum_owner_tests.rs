@@ -302,7 +302,7 @@ impl JsonRpcTransport for ProofTransport {
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, crate::monad_http::MonadRpcError> {
+    ) -> std::result::Result<serde_json::Value, crate::evm_rpc::EvmRpcError> {
         use serde_json::json;
         self.calls.lock().unwrap().push(method.to_owned());
         let lead = self.op.checked.lead();
@@ -320,11 +320,11 @@ impl JsonRpcTransport for ProofTransport {
                 }
                 match *self.send.lock().unwrap() {
                     Send::Accept => Ok(json!(hash)),
-                    Send::Uncertain => Err(crate::monad_http::MonadRpcError::InvalidResponse {
+                    Send::Uncertain => Err(crate::evm_rpc::EvmRpcError::InvalidResponse {
                         method: method.into(),
                         reason: "controlled uncertain response".into(),
                     }),
-                    Send::Refuse => Err(crate::monad_http::MonadRpcError::InsufficientFunds {
+                    Send::Refuse => Err(crate::evm_rpc::EvmRpcError::InsufficientFunds {
                         method: method.into(),
                         message: "insufficient funds for gas * price + value".into(),
                     }),

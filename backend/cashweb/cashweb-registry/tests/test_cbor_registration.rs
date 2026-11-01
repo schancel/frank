@@ -20,8 +20,8 @@ use bitcoinsuite_core::{
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use cashweb_payload::payload::SignatureScheme;
 use cashweb_registry::{
+    evm_rpc::Address,
     http::{pop_protection::PopGate, server::RegistryServer},
-    monad_http::Address,
     p2p::peers::Peers,
     proto,
     registry::Registry,
@@ -91,7 +91,7 @@ fn make_server(registry: Registry) -> RegistryServer {
         peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
         pop_gate: Arc::new(pop_gate),
         curated_defaults: Arc::new(vec![]),
-        monad_mailbox: cashweb_registry::monad_mailbox::MonadMailboxRuntime::Disabled,
+        evm_mailbox: cashweb_registry::evm_mailbox::EvmMailboxRuntime::Disabled,
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,

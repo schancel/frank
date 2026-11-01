@@ -1,56 +1,14 @@
-//! Server-side verification of a Stamp transaction on Monad (ticket #16).
+//! EVM stamp verification: successful transaction, intended payee/value and exact commitment.
 //!
-//! This is the Monad counterpart to [`cashweb_payload::verify`]'s Lotus commitment-verification
-//! logic (`SignedPayload::verify` + `parse_commitment`): given a stamp transaction hash and an
-//! expected commitment hash `h_m` (computed the same way as Lotus's `calc_commitment`: SHA256 of
-//! `SHA256(pubkey) || payload_hash`), it confirms on-chain that:
-//!
-//! 1. The tx is confirmed and succeeded (`eth_getTransactionReceipt` status).
-//! 2. It was sent to the expected destination (a DM payment child or a topic burn address).
-//! 3. Its value meets the required minimum.
-//! 4. Its calldata carries a well-formed `<lokad_id><version><commitment>` blob whose commitment
-//!    matches `h_m`.
-//!
-//! ## Scope (ticket #16)
-//!
-//! This module only implements the verification primitive itself: given a tx hash and the
-//! expected commitment/recipient/value, it tells the caller whether the stamp checks out, and if
-//! not, why. It is **not** wired into any HTTP handler or message-ingestion path (that's ticket
-//! #19), and it doesn't broadcast or construct the transaction (that's ticket #13). It also
-//! doesn't implement `cashweb_payload::chain_adapter::ChainAdapter` (ticket #25).
-//!
-//! ## A note on `calc_commitment` and `parse_commitment`
-//!
-//! `cashweb_payload::verify::calc_commitment` (the shared preimage math) and
-//! `cashweb_payload::verify::parse_commitment` (the Lotus OP_RETURN decoder) are both private to
-//! the `verify` module, and this ticket's ownership rules forbid editing `verify.rs` (e.g. to mark
-//! `calc_commitment` `pub(crate)`) to expose them to a sibling crate. [`calc_expected_commitment`]
-//! below therefore duplicates `calc_commitment`'s preimage math byte-for-byte rather than calling
-//! it. **If that math ever changes, this copy must be updated to match by hand** -- ideally a
-//! follow-up ticket makes `calc_commitment` `pub` in `cashweb-payload` so this duplication can be
-//! removed. [`parse_commitment_calldata`] is the intentional *new* half (calldata instead of a
-//! Bitcoin Script), so it isn't a duplicate of anything, just a mirror of `parse_commitment`'s
-//! checks adapted to a flat byte layout.
-//!
-//! ## A note on `MonadHttpClient` and `eth_getTransactionByHash` (resolved by ticket #25)
-//!
-//! [`crate::monad_http::MonadHttpClient`] (ticket #12) originally only implemented
-//! `eth_getTransactionReceipt`, `eth_getLogs`, `eth_blockNumber`, and `eth_sendRawTransaction`.
-//! Its [`crate::monad_http::TransactionReceipt`] has no `to`/`value`/`input` fields (a real Monad
-//! receipt doesn't carry them -- those live on the transaction itself), so verifying the stamp's
-//! value and decoding its commitment out of the calldata needs the full transaction. This module
-//! used to make its own minimal `eth_getTransactionByHash` call (via the same public
-//! [`crate::monad_http::JsonRpcTransport`] trait `MonadHttpClient` is built on) to work around the
-//! gap, since editing `monad_http.rs` was out of scope for ticket #16. Ticket #25 (assembling
-//! `MonadAdapter`) added a real
-//! [`crate::monad_http::MonadHttpClient::get_transaction_by_hash`] method; this module now calls
-//! that instead of duplicating the RPC call.
+//! The shared RPC client supplies receipt and transaction observations. This module verifies
+//! calldata and payment facts; transaction construction and broadcasting have separate owners.
+//! The commitment preimage remains byte-identical to the existing protocol.
 
 use bitcoinsuite_core::{ecc::PUBKEY_LENGTH, BytesMut, Hashed, Sha256};
 use bitcoinsuite_error::{bail, Result, WrapErr};
 use thiserror::Error;
 
-use crate::monad_http::{Address, Hash32, JsonRpcTransport, MonadHttpClient};
+use crate::evm_rpc::{Address, EvmHttpClient, Hash32, JsonRpcTransport};
 
 /// Fixed length, in bytes, of the `<lokad_id><version>` prefix before the commitment in a stamp
 /// tx's calldata.
@@ -177,7 +135,7 @@ pub fn parse_commitment_calldata(
 /// What's required of a stamp tx for it to count as a valid Stamp.
 ///
 /// Ticket #57's terminology fix: `destination_address` is deliberately not called
-/// `burn_address` -- this struct is shared by both the broadcast path (`monad_topics.rs`, where
+/// `burn_address` -- this struct is shared by both the broadcast path (`evm_topics.rs`, where
 /// the value genuinely is burned to a fixed dead address) and the direct-message path
 /// (`monad_message.rs`, where it's a real payment to the message's own recipient, never burned).
 /// Calling a real payment a "burn" is exactly the conflation that caused #57's bug in the first
@@ -246,8 +204,8 @@ pub enum StampTransactionVerification {
 
 /// Verify that `tx_hash` is a valid Stamp transaction against `expected`.
 ///
-/// Fetches the tx's receipt via [`MonadHttpClient::get_transaction_receipt`] and, if confirmed
-/// and successful, the full transaction via [`MonadHttpClient::get_transaction_by_hash`] to check
+/// Fetches the tx's receipt via [`EvmHttpClient::get_transaction_receipt`] and, if confirmed
+/// and successful, the full transaction via [`EvmHttpClient::get_transaction_by_hash`] to check
 /// its recipient, value, and calldata commitment.
 ///
 /// Returns `Err` only for infrastructure failures (RPC/transport errors, or a node returning an
@@ -262,7 +220,7 @@ pub async fn verify_stamp_transaction<T>(
 where
     T: JsonRpcTransport + Clone,
 {
-    let client = MonadHttpClient::with_transport(transport.clone());
+    let client = EvmHttpClient::with_transport(transport.clone());
 
     let receipt = client
         .get_transaction_receipt(tx_hash)
@@ -332,7 +290,7 @@ mod tests {
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use serde_json::Value;
 
-    use crate::monad_http::MonadRpcError;
+    use crate::evm_rpc::EvmRpcError;
 
     use super::*;
 
@@ -421,7 +379,7 @@ mod tests {
     /// Mock [`JsonRpcTransport`] that returns a canned response per JSON-RPC method, so
     /// [`verify_stamp_transaction`]'s multi-call flow (receipt, then full tx) can be exercised without a
     /// network call. Shares state across `Clone`s (via `Arc`) so the clone `verify_stamp_transaction`
-    /// makes internally for `MonadHttpClient::with_transport` sees the same configured
+    /// makes internally for `EvmHttpClient::with_transport` sees the same configured
     /// responses/call log as the original.
     #[derive(Clone, Default)]
     struct MockTransport {
@@ -451,14 +409,14 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             self.calls.lock().unwrap().push(method.to_string());
             self.responses
                 .lock()
                 .unwrap()
                 .get(method)
                 .cloned()
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured for this method".to_string(),
                 })

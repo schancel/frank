@@ -129,7 +129,7 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
           'enrollments_per_source_per_hour = 100000',
           '',
           // Stamps and forum burns are checked through the network's own evm_rpc row below.
-          '[registry.monad_mailbox]',
+          '[registry.evm_mailbox]',
           'enabled = true',
           `min_value_wei = "${mailbox.relay.mailbox.minValueWei}"`,
           '',
@@ -143,10 +143,10 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
           '',
           ...evm.map(entry => `${entry.relay.row}\n`),
         ]
-      : ['[registry.monad_mailbox]', 'enabled = false', '']),
+      : ['[registry.evm_mailbox]', 'enabled = false', '']),
     '[registry.pop]',
     'enabled = false',
-    'monad_rpc_url = "http://unused.invalid"',
+    'evm_rpc_url = "http://unused.invalid"',
     'hmac_secret = "unused-because-pop-is-disabled"',
     'payment_recipient = "0x0000000000000000000000000000000000000000"',
     'min_value_wei = "0"',

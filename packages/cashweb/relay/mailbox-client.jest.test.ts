@@ -2,7 +2,7 @@
  * Tests for `mailbox-client.ts`: the auth preimage and the canonical private mailbox readers.
  *
  * The preimage vectors below come from the Rust `mailbox_auth_preimage`
- * (`backend/cashweb/cashweb-registry/src/monad_mailbox.rs`) over fixed inputs (epoch=0x11..,
+ * (`backend/cashweb/cashweb-registry/src/evm_mailbox.rs`) over fixed inputs (epoch=0x11..,
  * nonce=0x22.., expires=1_700_000_060_000, token=0x33.., recipient=0xab*20, origin
  * https://relay.example.com). `inboxNoCursor` is also asserted byte for byte by the Rust test
  * `the_preimage_names_the_relay_origin_and_matches_the_client_vector`, so the TypeScript builder
@@ -528,7 +528,7 @@ describe("canonical private mailbox", () => {
     expect(CANONICAL_DM_MAX_BYTES).toBe(12 * 1024 * 1024);
   });
   // The outer and inner framing matches record_multipart in
-  // backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs, including the
+  // backend/cashweb/cashweb-registry/src/http/evm_direct_messages.rs, including the
   // direction header emitted by the combined endpoint and omitted by the inbox.
   test.each(["in", "out"] as const)(
     "authenticates and parses the relay's explicit %s combined-mailbox record",

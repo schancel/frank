@@ -34,9 +34,9 @@ classify() {
       owner="cashweb-payload verifier" family="Lotus signed payload and burn evidence" disposition="retained constrained legacy reader" group="lotus-signed-payload-backend" ;;
     backend/cashweb/cashweb-registry/proto/broadcast.proto)
       owner="cashweb-registry Lotus topics" family="Lotus broadcast storage" disposition="retained constrained legacy reader" group="lotus-broadcast-backend" ;;
-    backend/cashweb/cashweb-registry/proto/monad_message.proto)
+    backend/cashweb/cashweb-registry/proto/evm_message.proto)
       owner="cashweb-registry Monad mailbox" family="Monad stamped direct message" disposition="retained constrained legacy reader" group="monad-message-mirror" ;;
-    backend/cashweb/cashweb-registry/proto/monad_profile.proto)
+    backend/cashweb/cashweb-registry/proto/evm_profile.proto)
       owner="cashweb-registry Monad profiles" family="Monad profile discovery" disposition="retained constrained legacy reader" group="monad-profile-backend" ;;
     backend/cashweb/cashweb-registry/proto/registry.proto)
       owner="cashweb-registry legacy directory" family="Lotus registry and federation transport" disposition="retained reader plus transport-only responses" group="lotus-registry-backend" ;;

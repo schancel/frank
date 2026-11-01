@@ -439,7 +439,7 @@ pub(super) fn server_with_floor(
     rpc_timeout: std::time::Duration,
     payment_floor_wei: Option<u128>,
 ) -> super::super::server::RegistryServer {
-    let config = crate::monad_mailbox::MailboxConfig {
+    let config = crate::evm_mailbox::MailboxConfig {
         rpc_timeout,
         ..Default::default()
     };
@@ -447,17 +447,17 @@ pub(super) fn server_with_floor(
         "monad-testnet",
         vec![rpc.parse().unwrap()],
     ));
-    let session = crate::monad_mailbox::SessionSecret::random();
+    let session = crate::evm_mailbox::SessionSecret::random();
     let vapid = crate::store::notification_policy::VapidKeyPair::generate();
-    let monad_mailbox = match payment_floor_wei {
-        None => crate::monad_mailbox::MonadMailboxRuntime::enabled(
+    let evm_mailbox = match payment_floor_wei {
+        None => crate::evm_mailbox::EvmMailboxRuntime::enabled(
             chain,
             config,
             min_value_wei,
             &session,
             vapid,
         ),
-        Some(floor) => crate::monad_mailbox::MonadMailboxRuntime::enabled_with_payment_floor(
+        Some(floor) => crate::evm_mailbox::EvmMailboxRuntime::enabled_with_payment_floor(
             chain,
             config,
             min_value_wei,
@@ -476,7 +476,7 @@ pub(super) fn server_with_floor(
             &crate::test_instance::placeholder_pop_conf(),
         )),
         curated_defaults: Arc::new(vec![]),
-        monad_mailbox,
+        evm_mailbox,
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
@@ -590,7 +590,7 @@ async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, Stri
     let client = reqwest::Client::new();
     if busy {
         // Mailbox authentication under the same condition is "retry", not "who are you".
-        let recipient = crate::monad_stamp_stealth::recipient_address_from_public_key(
+        let recipient = crate::evm_stamp_stealth::recipient_address_from_public_key(
             &hex::decode(&account.subject).unwrap(),
         )
         .unwrap()
@@ -758,7 +758,7 @@ async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
 
     // Verify it is in the recipient inbox
     let recipient_account = &fixture.accounts[1];
-    let recipient = crate::monad_stamp_stealth::recipient_address_from_public_key(
+    let recipient = crate::evm_stamp_stealth::recipient_address_from_public_key(
         &hex::decode(&recipient_account.subject).unwrap(),
     )
     .unwrap();
@@ -778,7 +778,7 @@ async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
     fixture.stop().await;
 }
 
-#[path = "monad_message_cbor_delivery_tests.rs"]
+#[path = "evm_direct_messages_delivery_tests.rs"]
 mod delivery;
 
 // Public child0/1 derivation + independent offline funding keys; no chain authority.
@@ -801,10 +801,10 @@ async fn private_headers(
     url: &str,
     root: &std::path::Path,
     point: &str,
-    binding: &crate::monad_mailbox::MailboxRequestBinding,
+    binding: &crate::evm_mailbox::MailboxRequestBinding,
     relay_origin: &str,
 ) -> reqwest::header::HeaderMap {
-    use crate::monad_mailbox::{MailboxChallenge, MailboxResource};
+    use crate::evm_mailbox::{MailboxChallenge, MailboxResource};
     use bitcoinsuite_core::Sha256;
     let resource = match binding.resource {
         MailboxResource::Inbox => "inbox",
@@ -838,7 +838,7 @@ async fn private_headers(
         expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
     };
     let digest = Sha256::digest(
-        crate::monad_mailbox::mailbox_auth_preimage(token, binding, b"MONT", relay_origin).into(),
+        crate::evm_mailbox::mailbox_auth_preimage(token, binding, b"MONT", relay_origin).into(),
     );
     let signature = public_p_signature(root, digest.as_slice().try_into().unwrap(), point).await;
     let mut headers = reqwest::header::HeaderMap::new();
@@ -868,18 +868,18 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         .registry
         .canonical_dm()
         .attach_directory(fixture.directory.clone());
-    let config = crate::monad_mailbox::MailboxConfig {
+    let config = crate::evm_mailbox::MailboxConfig {
         private_read_concurrency: 1,
         ..Default::default()
     };
-    let runtime = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+    let runtime = crate::evm_mailbox::EvmMailboxRuntime::enabled(
         std::sync::Arc::new(crate::chains::EvmChainAdapter::assume_verified(
             "monad-testnet",
             vec!["http://127.0.0.1:1".parse().unwrap()],
         )),
         config,
         10143,
-        &crate::monad_mailbox::SessionSecret::random(),
+        &crate::evm_mailbox::SessionSecret::random(),
         crate::store::notification_policy::VapidKeyPair::generate(),
     );
     let server = super::super::server::RegistryServer {
@@ -892,7 +892,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
             &crate::test_instance::placeholder_pop_conf(),
         )),
         curated_defaults: Arc::new(vec![]),
-        monad_mailbox: runtime.clone(),
+        evm_mailbox: runtime.clone(),
         evm_rpc: None,
         bitcoin_proxy: None,
         solana_proxy: None,
@@ -905,7 +905,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         event_bus: fixture.registry.event_bus().clone(),
     };
     let account = &fixture.accounts[1];
-    let recipient_hex = crate::monad_stamp_stealth::recipient_address_from_public_key(
+    let recipient_hex = crate::evm_stamp_stealth::recipient_address_from_public_key(
         &hex::decode(&account.subject).unwrap(),
     )
     .unwrap()
@@ -975,7 +975,7 @@ fn cbor_capacity_error_includes_retry_after_header() {
     );
 }
 
-#[path = "monad_message_cbor_joined_tests.rs"]
+#[path = "evm_direct_messages_joined_tests.rs"]
 mod joined;
 
 // #826 payment-reuse fixture, derived by tests/support/canonical_dm_plain_transfer_fixtures.cjs:
@@ -1012,7 +1012,7 @@ fn every_canonical_fixture_payment_is_a_plain_transfer_with_empty_input() {
     let mut members = 0;
     for request in &requests {
         for raw in request.raw_transactions() {
-            let signed = crate::monad_evm_tx::decode_signed_transaction(raw).unwrap();
+            let signed = crate::evm_transaction::decode_signed_transaction(raw).unwrap();
             assert!(signed.input.is_empty());
             assert!(!raw.windows(4).any(|window| window == b"POND"));
             members += 1;
@@ -1024,7 +1024,7 @@ fn every_canonical_fixture_payment_is_a_plain_transfer_with_empty_input() {
 async fn admitted_input(
     fixture: &NativeDirectoryFixture,
     request: &ExactRequest,
-) -> Result<crate::monad_dm_payment::CanonicalPaymentInput> {
+) -> Result<crate::evm_dm_payment::CanonicalPaymentInput> {
     let principals = request_principals(request, "monad-testnet").unwrap();
     let recipient = current(
         fixture.registry.canonical_dm(),
@@ -1033,7 +1033,7 @@ async fn admitted_input(
     )
     .await
     .unwrap();
-    crate::monad_dm_payment::validate_canonical_payment_set(
+    crate::evm_dm_payment::validate_canonical_payment_set(
         request.clone(),
         &recipient,
         None,
@@ -1053,7 +1053,7 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
     let genuine = genuine_fixture();
     assert!(admitted_input(&fixture, &genuine).await.is_ok());
     let raw = genuine.raw_transactions().next().unwrap().to_vec();
-    let plain = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    let plain = crate::evm_transaction::decode_signed_transaction(&raw).unwrap();
     let frank_cbor::ValidationResult::Parsed(frame) =
         frank_cbor::validate_frame(genuine.delivery(), &frank_cbor::default_context()).unwrap()
     else {
@@ -1068,7 +1068,7 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
         panic!("genuine direct message");
     };
     let mut pond = b"POND".to_vec();
-    pond.push(crate::monad_stamp_verify::COMMITMENT_VERSION_TAG);
+    pond.push(crate::evm_stamp_verify::COMMITMENT_VERSION_TAG);
     pond.extend_from_slice(&frank_cbor::payment_commitment(payload_digest, 0));
     let secret = bitcoinsuite_ecc_secp256k1::EccSecp256k1::default()
         .seckey_from_array({
@@ -1079,7 +1079,7 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
         .unwrap();
     // The empty-input control proves the hand-built request is otherwise admissible.
     for input in [Vec::new(), pond, vec![0]] {
-        let (tagged, _) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        let (tagged, _) = crate::evm_transaction::test_support::signed_eip1559_tx(
             &secret,
             10143,
             plain.nonce,
@@ -1087,7 +1087,7 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
             plain.value_wei,
             &input,
         );
-        let signed = crate::monad_evm_tx::decode_signed_transaction(&tagged).unwrap();
+        let signed = crate::evm_transaction::decode_signed_transaction(&tagged).unwrap();
         assert_eq!(signed.sender, plain.sender);
         assert_eq!(signed.input, input);
         // Same frame, with only the listed transaction hash following the tagged member.
@@ -1136,7 +1136,7 @@ async fn canonical_admission_rejects_a_stamp_relabelled_to_another_chain() {
     let fixture = NativeDirectoryFixture::new().await;
     let genuine = genuine_fixture();
     let raw = genuine.raw_transactions().next().unwrap().to_vec();
-    let plain = crate::monad_evm_tx::decode_signed_transaction(&raw).unwrap();
+    let plain = crate::evm_transaction::decode_signed_transaction(&raw).unwrap();
     let frank_cbor::ValidationResult::Parsed(frame) =
         frank_cbor::validate_frame(genuine.delivery(), &frank_cbor::default_context()).unwrap()
     else {
@@ -1170,7 +1170,7 @@ async fn canonical_admission_rejects_a_stamp_relabelled_to_another_chain() {
     }
     // The policy network is the control: the rebuilt request is otherwise admissible.
     for network in ["monad-testnet", "lotus", "xpi-mainnet", "zz-not-a-chain"] {
-        let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
+        let (_, address) = crate::evm_dm_verify::canonical_stamp_destination(
             network,
             destination,
             shared_point,
@@ -1178,18 +1178,18 @@ async fn canonical_admission_rejects_a_stamp_relabelled_to_another_chain() {
         )
         .unwrap();
         if network == "monad-testnet" {
-            assert_eq!(plain.destination, Some(crate::monad_http::Address(address)));
+            assert_eq!(plain.destination, Some(crate::evm_rpc::Address(address)));
         }
-        let (tx, sender) = crate::monad_evm_tx::test_support::signed_eip1559_tx(
+        let (tx, sender) = crate::evm_transaction::test_support::signed_eip1559_tx(
             &secret,
             10143,
             plain.nonce,
-            crate::monad_http::Address(address),
+            crate::evm_rpc::Address(address),
             plain.value_wei,
             &[],
         );
         assert_eq!(sender, plain.sender);
-        let signed = crate::monad_evm_tx::decode_signed_transaction(&tx).unwrap();
+        let signed = crate::evm_transaction::decode_signed_transaction(&tx).unwrap();
         let mut payload = frame.payload.clone();
         let CborValue::Array(members) = field(&mut payload, dmd::PAYMENTS) else {
             panic!("members")
@@ -1246,7 +1246,7 @@ async fn canonical_admission_rejects_a_stamp_relabelled_to_another_chain() {
 /// while exact retries stay idempotent.
 #[tokio::test]
 async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
-    use crate::monad_http::Hash32;
+    use crate::evm_rpc::Hash32;
     use futures::FutureExt;
     let fixture = NativeDirectoryFixture::new().await;
     let (genuine, replay) = (genuine_fixture(), replay_fixture());
@@ -1379,7 +1379,7 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
 #[test]
 fn notification_policy_signing_string_matches_the_typescript_signer() {
     // The same vector is asserted in packages/cashweb/relay/notification-policy.jest.test.ts.
-    let challenge = crate::monad_mailbox::MailboxChallenge {
+    let challenge = crate::evm_mailbox::MailboxChallenge {
         epoch: [1; 32],
         nonce: [2; 32],
         expires_at_ms: 1_700_000_060_000,
@@ -1398,7 +1398,7 @@ async fn notification_policy_challenge_for(
     url: &str,
     owner_hex: &str,
     method: reqwest::Method,
-) -> crate::monad_mailbox::MailboxChallenge {
+) -> crate::evm_mailbox::MailboxChallenge {
     let response = reqwest::Client::new()
         .request(
             method,
@@ -1412,7 +1412,7 @@ async fn notification_policy_challenge_for(
     let challenge = &body["challenge"];
     assert_eq!(challenge["network_tag"], "4d4f4e54");
     assert_eq!(challenge["signing_domain"], NOTIFICATION_POLICY_AUTH_DOMAIN);
-    crate::monad_mailbox::MailboxChallenge {
+    crate::evm_mailbox::MailboxChallenge {
         epoch: hash_hex(challenge["epoch"].as_str().unwrap()).unwrap(),
         nonce: hash_hex(challenge["nonce"].as_str().unwrap()).unwrap(),
         token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
@@ -1423,7 +1423,7 @@ async fn notification_policy_challenge_for(
 /// Headers carrying `challenge` and the owner's signature over `preimage`.
 fn notification_policy_headers(
     sk: &secp256k1_abc::SecretKey,
-    challenge: crate::monad_mailbox::MailboxChallenge,
+    challenge: crate::evm_mailbox::MailboxChallenge,
     preimage: &[u8],
 ) -> reqwest::header::HeaderMap {
     let secp = secp256k1_abc::Secp256k1::new();
@@ -1465,7 +1465,7 @@ async fn signed_notification_policy_headers(
 #[tokio::test]
 async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero_value_inbox_storage(
 ) {
-    use crate::monad_http::Hash32;
+    use crate::evm_rpc::Hash32;
     use futures::FutureExt;
     let genuine = genuine_fixture();
     let fixture = NativeDirectoryFixture::new().await;
@@ -1490,7 +1490,7 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         let pk = secp256k1_abc::PublicKey::from_secret_key(&secp, &sk);
         let pubkey_bytes = pk.serialize();
         let owner_addr =
-            crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes).unwrap();
+            crate::evm_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes).unwrap();
         let owner_hex = owner_addr.to_hex();
         let policy_url = format!("{url}/message/monad/mailbox/{owner_hex}/notification-policy");
         let client = reqwest::Client::new();
@@ -1557,7 +1557,7 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         assert_eq!(decoded_vapid[0], 0x04);
 
         // The key served is the one composition handed the mailbox runtime.
-        let installed_vapid = runtime_server.monad_mailbox.as_enabled().unwrap().vapid();
+        let installed_vapid = runtime_server.evm_mailbox.as_enabled().unwrap().vapid();
         assert_eq!(installed_vapid.public_key_base64url(), vapid_pubkey);
 
         // 2. Authenticated GET returns default policy + x-cashweb-vapid-public-key header
@@ -1737,7 +1737,7 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         // 4. Configure the fixture recipient's notification policy with threshold > 1 wei (100 wei)
         let principals = request_principals(&genuine, "monad-testnet").unwrap();
         let recipient =
-            crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
+            crate::evm_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
                 .unwrap();
         let owner = fixture.registry.canonical_dm();
         owner

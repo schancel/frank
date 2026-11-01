@@ -56,7 +56,7 @@ impl UpstreamErrorReason {
         let prefix = &message.as_bytes()[..message.len().min(MAX_CLASSIFIED_MESSAGE_BYTES)];
         let lower = String::from_utf8_lossy(prefix).to_ascii_lowercase();
         // The same phrase lists the relay's own Monad client classifies by.
-        use crate::monad_http::{ALREADY_KNOWN_PHRASES, NONCE_TOO_LOW_PHRASES, QUEUED_PHRASE};
+        use crate::evm_rpc::{ALREADY_KNOWN_PHRASES, NONCE_TOO_LOW_PHRASES, QUEUED_PHRASE};
         if ALREADY_KNOWN_PHRASES
             .iter()
             .any(|phrase| lower.contains(phrase))

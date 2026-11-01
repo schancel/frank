@@ -1,38 +1,38 @@
-//! Relay-side broadcast-and-verify wiring for a Monad topic-vote burn (ticket #30).
+//! Relay-side broadcast-and-verify wiring for an EVM topic-vote burn (ticket #30).
 //!
 //! Direction-aware, exact-value counterpart of
-//! [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]: broadcasts a vote's raw burn tx
+//! [`crate::evm_stamp_relay::broadcast_and_verify_stamp`]: broadcasts a vote's raw burn tx
 //! itself (the relay never requires the client to have already landed it on-chain, same
 //! convention as Stamp), polls for its confirmation, and verifies it via
-//! [`crate::monad_topic_verify::verify_topic_vote_burn`] instead of `verify_stamp_transaction`.
+//! [`crate::evm_topic_verify::verify_topic_vote_burn`] instead of `verify_stamp_transaction`.
 //!
-//! See [`crate::monad_topic_verify`]'s module docs ("Why this can't just call
+//! See [`crate::evm_topic_verify`]'s module docs ("Why this can't just call
 //! `broadcast_and_verify_stamp`") for why this is a new, sibling function rather than a call into
 //! the existing one: `broadcast_and_verify_stamp` is concretely typed to
-//! [`crate::monad_stamp_verify::ExpectedStampTransaction`]/[`crate::monad_stamp_verify::StampTransactionVerification`]
+//! [`crate::evm_stamp_verify::ExpectedStampTransaction`]/[`crate::evm_stamp_verify::StampTransactionVerification`]
 //! with no seam to substitute this ticket's different calldata layout or its richer
-//! value+direction outcome, and generalizing it would mean editing `monad_stamp_relay.rs`, out of
+//! value+direction outcome, and generalizing it would mean editing `evm_stamp_relay.rs`, out of
 //! this ticket's edit ownership. This module reuses [`PollConfig`] directly (re-exported from
-//! `monad_stamp_relay` rather than redefined) and mirrors `broadcast_and_verify_stamp`'s
+//! `evm_stamp_relay` rather than redefined) and mirrors `broadcast_and_verify_stamp`'s
 //! broadcast+poll loop structure exactly, byte-for-byte, just calling a different verify function.
 
 use bitcoinsuite_error::{Result, WrapErr};
 use sha3::{Digest, Keccak256};
 
 use crate::{
-    monad_http::{Hash32, JsonRpcTransport, MonadHttpClient, MonadRpcError},
-    monad_stamp_relay::PollConfig,
-    monad_topic_verify::{
+    evm_rpc::{EvmHttpClient, EvmRpcError, Hash32, JsonRpcTransport},
+    evm_stamp_relay::PollConfig,
+    evm_topic_verify::{
         ExpectedTopicBurn, TopicCalldataVersion, TopicVoteBurnVerification, VoteDirection,
     },
 };
 
 /// Outcome of [`broadcast_and_verify_topic_vote`]. Structurally mirrors
-/// [`crate::monad_stamp_relay::StampRelayOutcome`], with [`TopicVoteRelayOutcome::Verified`]
+/// [`crate::evm_stamp_relay::StampRelayOutcome`], with [`TopicVoteRelayOutcome::Verified`]
 /// additionally carrying the vote's exact weight (value + direction) rather than just a tx hash.
 ///
 /// Doesn't derive `Clone`/`PartialEq`/`Eq`, for the same reason `StampRelayOutcome` doesn't:
-/// [`TopicVoteRelayOutcome::BroadcastFailed`] wraps [`MonadRpcError`], which wraps a
+/// [`TopicVoteRelayOutcome::BroadcastFailed`] wraps [`EvmRpcError`], which wraps a
 /// non-`Clone`/`PartialEq` `reqwest::Error`.
 #[derive(Debug)]
 pub enum TopicVoteRelayOutcome {
@@ -51,7 +51,7 @@ pub enum TopicVoteRelayOutcome {
         transaction_index: u64,
     },
     /// `eth_sendRawTransaction` itself failed.
-    BroadcastFailed(MonadRpcError),
+    BroadcastFailed(EvmRpcError),
     /// The node accepted the transaction under a different hash from the one the caller computed
     /// from the signed bytes, so nothing it reports would be about that transaction. Detected
     /// before any polling.
@@ -66,7 +66,7 @@ pub enum TopicVoteRelayOutcome {
         /// Hash of the broadcast (still-unconfirmed) transaction.
         tx_hash: Hash32,
     },
-    /// The tx confirmed, but [`crate::monad_topic_verify::verify_topic_vote_burn`] didn't return `Verified` (wrong
+    /// The tx confirmed, but [`crate::evm_topic_verify::verify_topic_vote_burn`] didn't return `Verified` (wrong
     /// recipient, wrong/malformed commitment, or the tx itself reverted).
     VerificationFailed {
         /// Hash of the confirmed transaction that failed verification.
@@ -86,10 +86,10 @@ impl TopicVoteRelayOutcome {
 
 /// Broadcast `raw_tx` via `eth_sendRawTransaction`, then poll for its confirmation and verify it
 /// against `expected`, mirroring
-/// [`crate::monad_stamp_relay::broadcast_and_verify_stamp`]'s loop exactly (see this module's
+/// [`crate::evm_stamp_relay::broadcast_and_verify_stamp`]'s loop exactly (see this module's
 /// docs for why that function itself can't be called here).
 ///
-/// Returns `Err` only for infrastructure failures from [`crate::monad_topic_verify::verify_topic_vote_burn`] itself; every
+/// Returns `Err` only for infrastructure failures from [`crate::evm_topic_verify::verify_topic_vote_burn`] itself; every
 /// expected rejection reason is a distinct `Ok(TopicVoteRelayOutcome)` variant.
 pub async fn broadcast_and_verify_topic_vote<T>(
     transport: &T,
@@ -112,7 +112,7 @@ where
 }
 
 /// [`broadcast_and_verify_topic_vote`] for either encoding (see
-/// [`crate::monad_topic_verify::verify_topic_burn_versioned`]). With `signed_hash`, the hash the
+/// [`crate::evm_topic_verify::verify_topic_burn_versioned`]). With `signed_hash`, the hash the
 /// node returns from `eth_sendRawTransaction` must equal it before anything is polled.
 pub async fn broadcast_and_verify_topic_burn<T>(
     transport: &T,
@@ -144,7 +144,7 @@ pub(crate) async fn broadcast_and_verify_topic_burn_checked<T: JsonRpcTransport 
     expected: &ExpectedTopicBurn,
     version: TopicCalldataVersion,
     signed_hash: Option<Hash32>,
-    signed_sender: Option<crate::monad_http::Address>,
+    signed_sender: Option<crate::evm_rpc::Address>,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome> {
     let tx_hash = match broadcast_topic_burn(transport, raw_tx, signed_hash).await {
@@ -163,7 +163,7 @@ pub(crate) async fn broadcast_topic_burn<T: JsonRpcTransport + Clone>(
     raw_tx: &[u8],
     signed_hash: Option<Hash32>,
 ) -> std::result::Result<Hash32, TopicVoteRelayOutcome> {
-    let client = MonadHttpClient::with_transport(transport.clone());
+    let client = EvmHttpClient::with_transport(transport.clone());
 
     let local_tx_hash = Hash32(Keccak256::digest(raw_tx).into());
     let tx_hash = match client.send_raw_transaction(raw_tx).await {
@@ -174,7 +174,7 @@ pub(crate) async fn broadcast_topic_burn<T: JsonRpcTransport + Clone>(
         // ambiguous sends, verify the only transaction these bytes can identify before deciding.
         Err(err)
             if err.says_tx_already_held()
-                || matches!(err, MonadRpcError::NonceTooLow { .. })
+                || matches!(err, EvmRpcError::NonceTooLow { .. })
                 || !err.definitively_rejected_send() =>
         {
             local_tx_hash
@@ -201,12 +201,12 @@ pub(crate) async fn confirm_topic_burn<T: JsonRpcTransport + Clone>(
     tx_hash: Hash32,
     expected: &ExpectedTopicBurn,
     version: TopicCalldataVersion,
-    signed_sender: Option<crate::monad_http::Address>,
+    signed_sender: Option<crate::evm_rpc::Address>,
     poll: PollConfig,
 ) -> Result<TopicVoteRelayOutcome> {
     let max_attempts = poll.max_attempts.max(1);
     for attempt in 0..max_attempts {
-        let outcome = crate::monad_topic_verify::verify_topic_burn_checked(
+        let outcome = crate::evm_topic_verify::verify_topic_burn_checked(
             transport,
             tx_hash,
             expected,
@@ -268,7 +268,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::{monad_http::Address, monad_topic_verify::TOPIC_VOTE_LOKAD_ID};
+    use crate::{evm_rpc::Address, evm_topic_verify::TOPIC_VOTE_LOKAD_ID};
 
     fn hex_addr(byte: u8) -> String {
         format!("0x{}", hex::encode([byte; 20]))
@@ -281,7 +281,7 @@ mod tests {
     fn commitment_calldata(direction: u8, commitment: &Sha256) -> String {
         let mut calldata = Vec::new();
         calldata.extend_from_slice(&TOPIC_VOTE_LOKAD_ID);
-        calldata.push(crate::monad_topic_verify::TOPIC_COMMITMENT_VERSION_TAG);
+        calldata.push(crate::evm_topic_verify::TOPIC_COMMITMENT_VERSION_TAG);
         calldata.push(direction);
         calldata.extend_from_slice(commitment.as_slice());
         format!("0x{}", hex::encode(calldata))
@@ -372,7 +372,7 @@ mod tests {
 
     #[async_trait]
     impl JsonRpcTransport for MockTransport {
-        async fn call(&self, method: &str, _params: Value) -> Result<Value, MonadRpcError> {
+        async fn call(&self, method: &str, _params: Value) -> Result<Value, EvmRpcError> {
             *self
                 .call_counts
                 .lock()
@@ -384,14 +384,14 @@ mod tests {
                 if let Some((status, body)) =
                     self.send_raw_transaction_http_error.lock().unwrap().clone()
                 {
-                    return Err(MonadRpcError::HttpStatus {
+                    return Err(EvmRpcError::HttpStatus {
                         method: method.to_string(),
                         status,
                         body,
                     });
                 }
                 if let Some(message) = self.send_raw_transaction_error.lock().unwrap().clone() {
-                    return Err(MonadRpcError::NonceTooLow {
+                    return Err(EvmRpcError::NonceTooLow {
                         method: method.to_string(),
                         message,
                     });
@@ -404,7 +404,7 @@ mod tests {
                 let responses = self.responses.lock().unwrap();
                 let seq = responses.get(method).cloned().unwrap_or_default();
                 if seq.is_empty() {
-                    return Err(MonadRpcError::InvalidResponse {
+                    return Err(EvmRpcError::InvalidResponse {
                         method: method.to_string(),
                         reason: "no mock response configured".to_string(),
                     });
@@ -421,7 +421,7 @@ mod tests {
                 .unwrap()
                 .get(method)
                 .and_then(|seq| seq.first().cloned())
-                .ok_or_else(|| MonadRpcError::InvalidResponse {
+                .ok_or_else(|| EvmRpcError::InvalidResponse {
                     method: method.to_string(),
                     reason: "no mock response configured for this method".to_string(),
                 })

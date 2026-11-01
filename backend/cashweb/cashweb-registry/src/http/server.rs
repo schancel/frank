@@ -2,29 +2,29 @@
 
 use crate::{
     chains::RelayChains,
+    evm_mailbox::EvmMailboxRuntime,
+    evm_rpc::{Address as EvmAddress, HttpTransport},
     http::bitcoin_proxy::{
         issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
         BITCOIN_PROXY_CORS_HEADERS,
     },
     http::curated_defaults::{handle_get_curated_default_contacts, CuratedDefaultContact},
     http::error::HttpRegistryError,
+    http::evm_profile::{
+        fetch_profile_raw_or_not_found, handle_get_evm_profile, handle_list_evm_profiles,
+        handle_put_evm_profile, handle_search_evm_profiles, BoundedProfileBody,
+    },
     http::evm_rpc::{
         handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
         handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
         EvmRpcRuntime, RPC_CORS_HEADERS, SOLANA_CLIENT_CORS_HEADER,
     },
-    http::monad_profile::{
-        fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
-        handle_put_monad_profile, handle_search_monad_profiles, BoundedProfileBody,
-    },
-    http::monad_topics::{
+    http::evm_topics::{
         handle_forum_status, handle_get_forum_post, handle_list_forum_discovery,
         handle_list_forum_posts, handle_put_forum_post, handle_put_forum_vote, ForumRuntime,
     },
-    http::pop_protection::{self, MonadReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
+    http::pop_protection::{self, EvmReceiptVerifier, PopChallenge, PopGate, PopGateConfigError},
     http::solana_proxy::SolanaProxyRuntime,
-    monad_http::{Address as MonadAddress, HttpTransport},
-    monad_mailbox::MonadMailboxRuntime,
     p2p::{peers::Peers, relay_info::RelayInfo},
     proto::{self},
     registry::Registry,
@@ -98,7 +98,7 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
         .collect();
     // Stamps and forum burns are accepted on the relay network only, and only while a service
     // that takes them is on.
-    let takes_payments = server.monad_mailbox.as_enabled().is_some() || server.forum.is_some();
+    let takes_payments = server.evm_mailbox.as_enabled().is_some() || server.forum.is_some();
     Json(ChainDiscovery {
         schema_version: 1,
         chains,
@@ -187,17 +187,17 @@ pub struct RegistryServer {
     /// rather than collapsed into one -- "disabled" must never be reachable by a config that's
     /// simply broken, and "misconfigured" must never silently degrade into "disabled".
     pub pop_gate:
-        Arc<Option<Result<PopGate<MonadReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
+        Arc<Option<Result<PopGate<EvmReceiptVerifier<HttpTransport>>, PopGateConfigError>>>,
     /// Operator-curated default contacts (ticket #49), parsed once at construction time from
     /// `cashweb_config::RegistryConf::curated_defaults`. Each entry's address is validated as a
-    /// real Monad `monad_http::Address` at construction time (fail the whole server startup on a
+    /// real Monad `evm_rpc::Address` at construction time (fail the whole server startup on a
     /// malformed operator config, rather than silently dropping or 500-ing per-request) -- same
     /// "no silently bad config" principle as the rest of this crate, just without `pop_gate`'s
     /// `None`/disabled state since there's no disabled state here (an empty `Vec` already means
     /// "no curated defaults", no separate on/off flag needed).
     pub curated_defaults: Arc<Vec<CuratedDefaultContact>>,
     /// Validated direct-message mailbox lifecycle. Disabled mode has no admission route.
-    pub monad_mailbox: MonadMailboxRuntime,
+    pub evm_mailbox: EvmMailboxRuntime,
     /// Optional customer-authenticated EVM proxy runtime. `None` installs no EVM chain routes.
     pub evm_rpc: Option<Arc<EvmRpcRuntime>>,
     /// Optional Bitcoin-family JSON-RPC and Chronik runtime.
@@ -497,7 +497,7 @@ impl RegistryServer {
         directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
         oracle: Option<Arc<crate::oracle::OracleRuntime>>,
     ) -> Router {
-        let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
+        let mailbox_enabled = self.evm_mailbox.as_enabled().is_some();
         let canonical_enabled = mailbox_enabled
             && directory.as_ref().is_some_and(|directory| {
                 self.registry
@@ -540,18 +540,18 @@ impl RegistryServer {
             )
             // Monad-native profile registration (ticket #45), additive alongside the Lotus-only
             // route above (a different path depth, so no route-matching conflict) -- see
-            // `crate::http::monad_profile`'s module docs for why a Monad address is *also*
+            // `crate::http::evm_profile`'s module docs for why a Monad address is *also*
             // handled by `handle_put_registry`/`handle_get_registry` themselves (the plain route
             // above), not only here.
             .route(
                 "/metadata/monad/:addr",
-                routing::put(handle_put_monad_profile).get(handle_get_monad_profile),
+                routing::put(handle_put_evm_profile).get(handle_get_evm_profile),
             )
             // `GET /metadata/monad?since=<timestamp>` (ticket #75): registration discovery, e.g.
             // for a bot to auto-greet/auto-fund new signups -- see
-            // `crate::http::monad_profile`'s module docs. No `:addr` segment, so this can't
+            // `crate::http::evm_profile`'s module docs. No `:addr` segment, so this can't
             // collide with the route directly above.
-            .route("/metadata/monad", routing::get(handle_list_monad_profiles))
+            .route("/metadata/monad", routing::get(handle_list_evm_profiles))
             // `GET /metadata/monad/curated-defaults` (ticket #49): the relay's operator-curated
             // default-contacts list -- see `crate::http::curated_defaults`'s module docs for the
             // security-model rationale. A static segment, so axum/matchit matches it in
@@ -565,24 +565,21 @@ impl RegistryServer {
             )
             // `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search
             // registered profiles by normalized `display_name` -- see
-            // `crate::http::monad_profile`'s module docs for the design this implements. Another
+            // `crate::http::evm_profile`'s module docs for the design this implements. Another
             // static segment alongside `/metadata/monad/curated-defaults` above, so the same
             // static-vs-dynamic precedence reasoning already documented there applies here too:
             // this can't collide with the dynamic `/metadata/monad/:addr` route.
             .route(
                 "/metadata/monad/search",
-                routing::get(handle_search_monad_profiles),
+                routing::get(handle_search_evm_profiles),
             )
             // Canonical network-agnostic profile endpoints (docs/backend-topology.md)
             .route(
                 "/profiles/curated-defaults",
                 routing::get(handle_get_curated_default_contacts),
             )
-            .route(
-                "/profiles/search",
-                routing::get(handle_search_monad_profiles),
-            )
-            .route("/profiles", routing::get(handle_list_monad_profiles))
+            .route("/profiles/search", routing::get(handle_search_evm_profiles))
+            .route("/profiles", routing::get(handle_list_evm_profiles))
             // Protobuf topic endpoints are deprecated and dead; canonical CBOR topic
             // endpoints (/topics and /message/monad/topics) are the only active routes.
             .route(
@@ -664,7 +661,7 @@ impl RegistryServer {
                 routing::put(handle_put_forum_vote),
             )
             // `GET /message/monad/topics/discover` (ticket #72): topic-discovery listing -- see
-            // `crate::http::monad_topics::handle_list_forum_discovery`'s docs. Another static segment at
+            // `crate::http::evm_topics::handle_list_forum_discovery`'s docs. Another static segment at
             // the same path depth as "vote" above, so the same "static segments take priority
             // over the `:payload_hash` wildcard segment at this position" reasoning already
             // documented just above applies here too: this can't be shadowed by, or shadow,
@@ -683,30 +680,30 @@ impl RegistryServer {
             )
             .route(
                 "/push/vapid-public-key",
-                routing::get(crate::http::monad_message_cbor::handle_get_vapid_public_key),
+                routing::get(crate::http::evm_direct_messages::handle_get_vapid_public_key),
             )
             .route(
                 "/message/push/vapid-public-key",
-                routing::get(crate::http::monad_message_cbor::handle_get_vapid_public_key),
+                routing::get(crate::http::evm_direct_messages::handle_get_vapid_public_key),
             )
             .route(
                 "/message/monad/mailbox/:address/notification-policy",
-                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
-                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+                routing::get(crate::http::evm_direct_messages::handle_get_notification_policy)
+                    .put(crate::http::evm_direct_messages::handle_put_notification_policy),
             )
             .route(
                 "/message/mailbox/:address/notification-policy",
-                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
-                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+                routing::get(crate::http::evm_direct_messages::handle_get_notification_policy)
+                    .put(crate::http::evm_direct_messages::handle_put_notification_policy),
             )
             .route(
                 "/mailbox/:address/notification-policy",
-                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
-                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+                routing::get(crate::http::evm_direct_messages::handle_get_notification_policy)
+                    .put(crate::http::evm_direct_messages::handle_put_notification_policy),
             )
             .merge(crate::http::groups::router());
         if canonical_enabled {
-            use crate::http::monad_message_cbor::{
+            use crate::http::evm_direct_messages::{
                 handle_challenge, handle_inbox, handle_mailbox, handle_mailbox_ws, handle_put,
             };
             router = router
@@ -944,23 +941,23 @@ async fn handle_put_registry(
     header_map: HeaderMap,
     BoundedProfileBody(body_bytes): BoundedProfileBody,
 ) -> Result<PutRegistrySuccess, PutRegistryError> {
-    // Monad-native dispatch (ticket #45): see `crate::http::monad_profile`'s module docs for why
+    // Monad-native dispatch (ticket #45): see `crate::http::evm_profile`'s module docs for why
     // a Monad address reaching this historically Lotus-only route must be handled here too, not
     // only at the dedicated `/metadata/monad/:addr` route below -- the real, already-merged TS
     // client this route needs to unblock (`app/src/cashweb/wallet/monad-identity.ts`) calls this
     // plain route with a Monad address, never `/metadata/monad/:addr`. No POP gating on this
     // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
     // explicitly exclude adding it.
-    if let Ok(monad_address) = MonadAddress::from_str(&address) {
+    if let Ok(monad_address) = EvmAddress::from_str(&address) {
         let is_cbor = header_map
             .get(header::CONTENT_TYPE)
             .and_then(|val| val.to_str().ok())
             .map(|ct| ct.starts_with("application/cbor"))
             .unwrap_or(false)
-            || crate::store::monad_profiles::is_cbor_frame(&body_bytes);
+            || crate::store::evm_profiles::is_cbor_frame(&body_bytes);
 
         if is_cbor {
-            server.registry.put_monad_profile_cbor(
+            server.registry.put_evm_profile_cbor(
                 monad_address,
                 server.chains.network().id.as_str(),
                 &body_bytes,
@@ -971,14 +968,14 @@ async fn handle_put_registry(
             )
             .map_err(|err| {
                 PutRegistryError::from(Report::from(
-                    crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                    crate::evm_profile_verify::EvmProfileVerifyError::InvalidProfilePayload(
                         err.to_string(),
                     ),
                 ))
             })?;
             server
                 .registry
-                .put_monad_profile(monad_address, signed_metadata)?;
+                .put_evm_profile(monad_address, signed_metadata)?;
         }
         return Ok(PutRegistrySuccess {
             body: proto::PutSignedPayloadResponse { txid: vec![] },
@@ -990,7 +987,7 @@ async fn handle_put_registry(
     let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
         .map_err(|err| {
             PutRegistryError::from(Report::from(
-                crate::monad_profile_verify::MonadProfileVerifyError::InvalidProfilePayload(
+                crate::evm_profile_verify::EvmProfileVerifyError::InvalidProfilePayload(
                     err.to_string(),
                 ),
             ))
@@ -1058,10 +1055,10 @@ async fn handle_get_registry(
     Extension(server): Extension<RegistryServer>,
 ) -> Result<Response, HttpRegistryError> {
     // Monad-native dispatch (ticket #45) -- see `handle_put_registry`'s identical branch, and
-    // `crate::http::monad_profile`'s module docs, for why.
-    if let Ok(monad_address) = MonadAddress::from_str(&address) {
+    // `crate::http::evm_profile`'s module docs, for why.
+    if let Ok(monad_address) = EvmAddress::from_str(&address) {
         let raw = fetch_profile_raw_or_not_found(&server.registry, monad_address)?;
-        let content_type = if crate::store::monad_profiles::is_cbor_frame(&raw) {
+        let content_type = if crate::store::evm_profiles::is_cbor_frame(&raw) {
             "application/cbor"
         } else {
             "application/x-protobuf"
@@ -1284,7 +1281,7 @@ mod spa_tests {
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(None),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,
@@ -1573,7 +1570,7 @@ mod spa_tests {
             peers: Arc::new(Peers::new("https://relay.signet.mx".to_string(), vec![])),
             pop_gate: Arc::new(None),
             curated_defaults: Arc::new(vec![]),
-            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_mailbox: crate::evm_mailbox::EvmMailboxRuntime::Disabled,
             evm_rpc: None,
             bitcoin_proxy: None,
             solana_proxy: None,

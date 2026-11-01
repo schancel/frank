@@ -130,7 +130,7 @@ describe('calldata / commitment construction', () => {
     // "POND" == 0x504f4e44 -- BROADCAST_MESSAGE_LOKAD_ID
     // (backend/cashweb/cashweb-payload/src/verify.rs:15).
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x50, 0x4f, 0x4e, 0x44])
-    // COMMITMENT_VERSION_TAG (monad_stamp_verify.rs:66).
+    // COMMITMENT_VERSION_TAG (evm_stamp_verify.rs:66).
     expect(bytes[4]).toBe(0x02)
     expect(Array.from(bytes.slice(5))).toEqual(Array.from(commitment))
   })

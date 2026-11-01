@@ -517,6 +517,7 @@ impl CashwebdConf {
 
 /// Configuration for a registry server
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RegistryConf {
     /// Removed: the credit policy `[registry.groups]` is gone, because every group write pays
     /// under `[registry.group_writes]`. A file that still has it is refused.
@@ -552,9 +553,9 @@ pub struct RegistryConf {
     pub imd: InitialMetadataDownloadConf,
     /// POP (proof-of-payment) protection config for the metadata-put endpoint (ticket #4).
     pub pop: PopConf,
-    /// Durable Monad mailbox admission/reconciliation lifecycle. This is required so disabled is
+    /// Durable EVM mailbox admission/reconciliation lifecycle. This is required so disabled is
     /// an explicit operator choice rather than an accidental missing RPC environment variable.
-    pub monad_mailbox: MonadMailboxConf,
+    pub evm_mailbox: EvmMailboxConf,
     /// Customer-authenticated, allowlisted EVM JSON-RPC proxy. Omitted means disabled so old
     /// operator configurations do not acquire a new network surface on upgrade.
     #[serde(default)]
@@ -826,7 +827,7 @@ impl RegistryConf {
         if local_driver {
             owners.push(ReplicaLocalOwner::RegistryDb);
         }
-        if self.monad_mailbox.enabled && local_driver {
+        if self.evm_mailbox.enabled && local_driver {
             owners.push(ReplicaLocalOwner::DirectMessages);
         }
         if self.directory.is_some() {
@@ -968,7 +969,7 @@ pub enum ReplicaLocalOwner {
     /// Registry `Db` on the RocksDB driver: profiles, usernames, metadata, topics and their
     /// indexes.
     RegistryDb,
-    /// Direct-message owner (`registry.monad_mailbox`).
+    /// Direct-message owner (`registry.evm_mailbox`).
     DirectMessages,
     /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`) on
     /// the RocksDB driver.
@@ -991,7 +992,7 @@ impl ReplicaLocalOwner {
     pub fn name(self) -> &'static str {
         match self {
             Self::RegistryDb => "registry database (profiles, usernames, metadata)",
-            Self::DirectMessages => "direct messages (registry.monad_mailbox)",
+            Self::DirectMessages => "direct messages (registry.evm_mailbox)",
             Self::Directory => {
                 "directory (registry.directory, registry.cluster.driver = \"rocksdb\")"
             }
@@ -1372,10 +1373,10 @@ impl RegistryConf {
         // What a recipient (the mailbox owner, a paid operator) must move again is never below
         // the network's protocol floor. A burn is never moved, so it has none.
         if let Some(floor) = protocol_payment_floor_wei(&chain.id) {
-            if let Ok(MonadMailboxMode::Enabled { min_value_wei }) = self.monad_mailbox.mode() {
+            if let Ok(EvmMailboxMode::Enabled { min_value_wei }) = self.evm_mailbox.mode() {
                 if min_value_wei < floor {
                     return Err(RegistryConfigError::BelowPaymentFloor {
-                        field: "registry.monad_mailbox.min_value_wei",
+                        field: "registry.evm_mailbox.min_value_wei",
                         floor,
                     });
                 }
@@ -1388,7 +1389,7 @@ impl RegistryConf {
                 });
             }
         }
-        if self.monad_mailbox.enabled || self.forum.is_some() {
+        if self.evm_mailbox.enabled || self.forum.is_some() {
             let proxied =
                 self.evm_rpc.enabled && self.evm_rpc.chains.iter().any(|row| row.id == chain.id);
             if !proxied {
@@ -2195,7 +2196,7 @@ impl SolanaProxyConf {
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct MonadMailboxConf {
+pub struct EvmMailboxConf {
     /// Whether messages are accepted and delivered. This is the only switch for the message
     /// routes (`PUT /message`, `/message/auth`, `/message/inbox` and `/message/mailbox`); the
     /// shipped configs enable it. The mailbox runs on [`RegistryConf::network`] and reaches that
@@ -2210,7 +2211,7 @@ pub struct MonadMailboxConf {
 
 /// Validated mailbox mode consumed once, before database open or socket readiness.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MonadMailboxMode {
+pub enum EvmMailboxMode {
     /// No worker; the HTTP owner must omit the admission route.
     Disabled,
     /// Worker and admission run on the relay's network.
@@ -2222,36 +2223,36 @@ pub enum MonadMailboxMode {
 
 /// Invalid enabled mailbox configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MonadMailboxConfigError {
+pub enum EvmMailboxConfigError {
     /// Enabled mode omitted or malformed its aggregate stamp minimum.
     InvalidMinValueWei,
 }
 
-impl fmt::Display for MonadMailboxConfigError {
+impl fmt::Display for EvmMailboxConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidMinValueWei => f.write_str(
-                "registry.monad_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
+                "registry.evm_mailbox.min_value_wei must be a decimal u128 when the mailbox is enabled",
             ),
         }
     }
 }
 
-impl Error for MonadMailboxConfigError {}
+impl Error for EvmMailboxConfigError {}
 
-impl MonadMailboxConf {
+impl EvmMailboxConf {
     /// Validate the enabled mailbox before any service becomes ready.
-    pub fn mode(&self) -> std::result::Result<MonadMailboxMode, MonadMailboxConfigError> {
+    pub fn mode(&self) -> std::result::Result<EvmMailboxMode, EvmMailboxConfigError> {
         if !self.enabled {
-            return Ok(MonadMailboxMode::Disabled);
+            return Ok(EvmMailboxMode::Disabled);
         }
         let min_value_wei = self
             .min_value_wei
             .as_deref()
-            .ok_or(MonadMailboxConfigError::InvalidMinValueWei)?
+            .ok_or(EvmMailboxConfigError::InvalidMinValueWei)?
             .parse()
-            .map_err(|_| MonadMailboxConfigError::InvalidMinValueWei)?;
-        Ok(MonadMailboxMode::Enabled { min_value_wei })
+            .map_err(|_| EvmMailboxConfigError::InvalidMinValueWei)?;
+        Ok(EvmMailboxMode::Enabled { min_value_wei })
     }
 }
 
@@ -2284,18 +2285,19 @@ pub struct CuratedContactConf {
 /// on this field: an operator must say explicitly whether POP is on, the same "no silent
 /// defaults" principle the rest of this struct already follows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PopConf {
     /// Whether POP gating is active at all. `false` (the hackathon demo default) skips POP
     /// gating entirely for every request -- no token check, no 402 challenge. `true` requires
     /// the rest of this struct to parse into a valid gate at server-construction time, or every
     /// gated request fails closed with a `500` (see this struct's docs).
     pub enabled: bool,
-    /// Monad JSON-RPC endpoint used to verify payment transaction receipts.
-    pub monad_rpc_url: url::Url,
+    /// EVM JSON-RPC endpoint used to verify payment transaction receipts.
+    pub evm_rpc_url: url::Url,
     /// Server-side secret used to sign/verify bearer tokens (HMAC). Must be a long random string
     /// kept only in server config; there is deliberately no built-in default.
     pub hmac_secret: String,
-    /// `0x`-prefixed, 20-byte Monad address payments must be sent to. Kept as a plain `String`
+    /// `0x`-prefixed, 20-byte EVM address payments must be sent to. Kept as a plain `String`
     /// here (rather than a `cashweb-registry`-defined address type) so this crate doesn't need to
     /// depend on `cashweb-registry`; it's parsed downstream by
     /// `cashweb_registry::http::pop_protection::PopGate::from_conf`.
@@ -2367,8 +2369,8 @@ mod tests {
     use crate::{
         parse_conf, protocol_chain_registry, protocol_payment_floor_wei, BitcoinProxyChainConf,
         BitcoinProxyConf, CashwebdConf, ClusterConf, ClusterNatsConf, CuratedContactConf,
-        EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf,
-        MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode, PopConf, ProtocolChainFamily,
+        EvmMailboxConf, EvmMailboxConfigError, EvmMailboxMode, EvmRpcChainConf, EvmRpcConf,
+        EvmRpcConfigError, ForumConf, InitialMetadataDownloadConf, PopConf, ProtocolChainFamily,
         ProtocolProxyCapability, RegistryConf, RegistryConfigError, SolanaProxyChainConf,
         SolanaProxyConf, SolanaProxyConfigError,
     };
@@ -2838,11 +2840,11 @@ continuity_file = "/var/lib/frank/continuity"
                 network = "monad-testnet"
                 net = "mainnet"
                 peers = []
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
                 [registry.pop]
                 enabled = false
-                monad_rpc_url = "http://unused.invalid"
+                evm_rpc_url = "http://unused.invalid"
                 hmac_secret = "unused"
                 payment_recipient = "0x0000000000000000000000000000000000000000"
                 min_value_wei = "0"
@@ -2888,11 +2890,11 @@ continuity_file = "/var/lib/frank/continuity"
                 net = "mainnet"
                 peers = []
                 {extra}
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
                 [registry.pop]
                 enabled = false
-                monad_rpc_url = "http://unused.invalid"
+                evm_rpc_url = "http://unused.invalid"
                 hmac_secret = "unused"
                 payment_recipient = "0x0000000000000000000000000000000000000000"
                 min_value_wei = "0"
@@ -2961,12 +2963,12 @@ continuity_file = "/var/lib/frank/continuity"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
 
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
 
                 [registry.pop]
                 enabled = true
-                monad_rpc_url = "https://monad.rpc"
+                evm_rpc_url = "https://monad.rpc"
                 hmac_secret = "super-secret"
                 payment_recipient = "0x0000000000000000000000000000000000000abc"
                 min_value_wei = "1000000000000000000"
@@ -3006,12 +3008,12 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     pop: PopConf {
                         enabled: true,
-                        monad_rpc_url: "https://monad.rpc".parse()?,
+                        evm_rpc_url: "https://monad.rpc".parse()?,
                         hmac_secret: "super-secret".to_string(),
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
-                    monad_mailbox: MonadMailboxConf {
+                    evm_mailbox: EvmMailboxConf {
                         enabled: false,
                         min_value_wei: None,
                     },
@@ -3052,12 +3054,12 @@ continuity_file = "/var/lib/frank/continuity"
                 [registry.imd]
                 num_sampled_peers = 2
 
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
 
                 [registry.pop]
                 enabled = true
-                monad_rpc_url = "https://monad.rpc"
+                evm_rpc_url = "https://monad.rpc"
                 hmac_secret = "super-secret"
                 payment_recipient = "0x0000000000000000000000000000000000000abc"
                 min_value_wei = "1000000000000000000"
@@ -3097,12 +3099,12 @@ continuity_file = "/var/lib/frank/continuity"
                     },
                     pop: PopConf {
                         enabled: true,
-                        monad_rpc_url: "https://monad.rpc".parse()?,
+                        evm_rpc_url: "https://monad.rpc".parse()?,
                         hmac_secret: "super-secret".to_string(),
                         payment_recipient: "0x0000000000000000000000000000000000000abc".to_string(),
                         min_value_wei: "1000000000000000000".to_string(),
                     },
-                    monad_mailbox: MonadMailboxConf {
+                    evm_mailbox: EvmMailboxConf {
                         enabled: false,
                         min_value_wei: None,
                     },
@@ -3165,7 +3167,7 @@ continuity_file = "/var/lib/frank/continuity"
         );
         conf.registry.network = "base-sepolia".into();
         assert_eq!(conf.registry.validate_network().unwrap().id, "base-sepolia");
-        conf.registry.monad_mailbox.enabled = false;
+        conf.registry.evm_mailbox.enabled = false;
         conf.registry.forum = None;
         conf.registry.network = "ethereum-sepolia".into();
         assert_eq!(
@@ -3206,12 +3208,12 @@ continuity_file = "/var/lib/frank/continuity"
                 net = "mainnet"
                 peers = []
 
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
 
                 [registry.pop]
                 enabled = false
-                monad_rpc_url = "http://unused.invalid"
+                evm_rpc_url = "http://unused.invalid"
                 hmac_secret = "unused"
                 payment_recipient = "0x0000000000000000000000000000000000000000"
                 min_value_wei = "0"
@@ -3240,12 +3242,12 @@ continuity_file = "/var/lib/frank/continuity"
                 net = "mainnet"
                 peers = ["https://example.com", "http://123.45.67.89"]
 
-                [registry.monad_mailbox]
+                [registry.evm_mailbox]
                 enabled = false
 
                 [registry.pop]
                 enabled = true
-                monad_rpc_url = "https://monad.rpc"
+                evm_rpc_url = "https://monad.rpc"
                 hmac_secret = "super-secret"
                 payment_recipient = "0x0000000000000000000000000000000000000abc"
                 min_value_wei = "1000000000000000000"
@@ -3296,8 +3298,8 @@ continuity_file = "/var/lib/frank/continuity"
         ] {
             let mut conf = parse_conf(config).unwrap_or_else(|err| panic!("{name}: {err}"));
             assert_eq!(
-                conf.registry.monad_mailbox,
-                MonadMailboxConf {
+                conf.registry.evm_mailbox,
+                EvmMailboxConf {
                     enabled: true,
                     min_value_wei: Some("21000000000000000".to_string()),
                 },
@@ -3305,8 +3307,8 @@ continuity_file = "/var/lib/frank/continuity"
             );
             // At the network's payment floor: 10 x 21000 gas x 100 gwei.
             assert_eq!(
-                conf.registry.monad_mailbox.mode(),
-                Ok(MonadMailboxMode::Enabled {
+                conf.registry.evm_mailbox.mode(),
+                Ok(EvmMailboxMode::Enabled {
                     min_value_wei: protocol_payment_floor_wei(&conf.registry.network).unwrap(),
                 }),
                 "{name}"
@@ -3455,25 +3457,25 @@ continuity_file = "/var/lib/frank/continuity"
         assert_eq!(conf.registry.network, "monad-testnet");
         // The shipped minimum is the floor itself.
         assert_eq!(
-            conf.registry.monad_mailbox.mode(),
-            Ok(MonadMailboxMode::Enabled {
+            conf.registry.evm_mailbox.mode(),
+            Ok(EvmMailboxMode::Enabled {
                 min_value_wei: floor
             })
         );
         assert!(conf.registry.validate_network().is_ok());
 
-        conf.registry.monad_mailbox.min_value_wei = Some((floor - 1).to_string());
+        conf.registry.evm_mailbox.min_value_wei = Some((floor - 1).to_string());
         assert_eq!(
             conf.registry.validate_network(),
             Err(RegistryConfigError::BelowPaymentFloor {
-                field: "registry.monad_mailbox.min_value_wei",
+                field: "registry.evm_mailbox.min_value_wei",
                 floor,
             })
         );
         // The old default (0.000001 MON) is refused.
-        conf.registry.monad_mailbox.min_value_wei = Some("1000000000000".into());
+        conf.registry.evm_mailbox.min_value_wei = Some("1000000000000".into());
         assert!(conf.registry.validate_network().is_err());
-        conf.registry.monad_mailbox.min_value_wei = Some(floor.to_string());
+        conf.registry.evm_mailbox.min_value_wei = Some(floor.to_string());
 
         // A group write paid to the burn address is never moved: any positive minimum. A relay
         // paid at its own address moves it.
@@ -3492,37 +3494,37 @@ continuity_file = "/var/lib/frank/continuity"
         assert!(conf.registry.validate_network().is_ok());
 
         // Disabled, the mailbox minimum is not checked.
-        conf.registry.monad_mailbox.enabled = false;
-        conf.registry.monad_mailbox.min_value_wei = None;
+        conf.registry.evm_mailbox.enabled = false;
+        conf.registry.evm_mailbox.min_value_wei = None;
         assert!(conf.registry.validate_network().is_ok());
     }
 
     #[test]
     fn mailbox_mode_requires_a_minimum_exactly_when_enabled() {
         assert_eq!(
-            MonadMailboxConf {
+            EvmMailboxConf {
                 enabled: false,
                 min_value_wei: None,
             }
             .mode()
             .unwrap(),
-            MonadMailboxMode::Disabled
+            EvmMailboxMode::Disabled
         );
         assert_eq!(
-            MonadMailboxConf {
+            EvmMailboxConf {
                 enabled: true,
                 min_value_wei: Some("1000".to_string()),
             }
             .mode()
             .unwrap(),
-            MonadMailboxMode::Enabled {
+            EvmMailboxMode::Enabled {
                 min_value_wei: 1000
             }
         );
-        let missing: MonadMailboxConf = toml::from_str("enabled = true").unwrap();
+        let missing: EvmMailboxConf = toml::from_str("enabled = true").unwrap();
         assert_eq!(
             missing.mode(),
-            Err(MonadMailboxConfigError::InvalidMinValueWei)
+            Err(EvmMailboxConfigError::InvalidMinValueWei)
         );
         // The chain is the relay's network, never a mailbox-local endpoint or chain id.
         for removed in [
@@ -3530,7 +3532,7 @@ continuity_file = "/var/lib/frank/continuity"
             "enabled = true\nmin_value_wei = '1'\nexpected_chain_id = 10143",
         ] {
             assert!(
-                toml::from_str::<MonadMailboxConf>(removed).is_err(),
+                toml::from_str::<EvmMailboxConf>(removed).is_err(),
                 "{removed}"
             );
         }
@@ -3926,7 +3928,7 @@ continuity_file = "/var/lib/frank/continuity"
 
         // Disabled owners are not listed; with all of them off, nothing on FoundationDB is
         // replica-local and cluster mode starts without the preview flag.
-        conf.monad_mailbox.enabled = false;
+        conf.evm_mailbox.enabled = false;
         let directory = conf.directory.take();
         conf.forum = None;
         conf.evm_rpc.enabled = false;
@@ -3944,7 +3946,7 @@ continuity_file = "/var/lib/frank/continuity"
             vec![ReplicaLocalOwner::RegistryDb, ReplicaLocalOwner::Groups]
         );
         // So are direct messages on RocksDB, when the mailbox is enabled.
-        conf.monad_mailbox.enabled = true;
+        conf.evm_mailbox.enabled = true;
         assert_eq!(
             conf.replica_local_owners(),
             vec![
@@ -4082,5 +4084,53 @@ continuity_file = "/var/lib/frank/continuity"
         let conf: ClusterConf = toml::from_str(toml_str).unwrap();
         assert!(conf.is_nats_enabled());
         assert_eq!(conf.nats_url(), Some("nats://nats-cluster:4222"));
+    }
+    #[test]
+    fn retired_monad_config_fields_are_rejected_even_alongside_the_new_fields() {
+        let config = include_str!("../../cashwebd.local.toml");
+        let old_only = config.replace("[registry.evm_mailbox]", "[registry.monad_mailbox]");
+        assert!(parse_conf(&old_only).is_err());
+        let both = format!("{config}\n[registry.monad_mailbox]\nenabled = false\n");
+        let error = parse_conf(&both).unwrap_err().to_string();
+        assert!(error.contains("monad_mailbox"), "{error}");
+
+        let pop = r#"enabled = false
+evm_rpc_url = "http://unused.invalid"
+hmac_secret = "test-only"
+payment_recipient = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+min_value_wei = "0"
+"#;
+        assert!(toml::from_str::<PopConf>(pop).is_ok());
+        assert!(toml::from_str::<PopConf>(&pop.replace("evm_rpc_url", "monad_rpc_url")).is_err());
+        let error =
+            toml::from_str::<PopConf>(&format!("{pop}monad_rpc_url = \"http://unused.invalid\"\n"))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("monad_rpc_url"), "{error}");
+    }
+    #[test]
+    fn actual_ha_relay_template_parses_after_public_placeholder_rendering() {
+        let rendered = include_str!("../../../labs/cluster/relay.toml.in")
+            .replace("@PUBLIC_ORIGIN@", "http://127.0.0.1:18380")
+            .replace("@SOLONET_CHECKPOINT_NUMBER@", "100")
+            .replace(
+                "@SOLONET_CHECKPOINT_HASH@",
+                &format!("0x{}", "11".repeat(32)),
+            );
+        assert!(!rendered.contains('@'));
+        let config =
+            parse_conf(&rendered).expect("the actual rendered three-replica template parses");
+        assert!(config.registry.evm_mailbox.enabled);
+        assert_eq!(
+            config.registry.pop.evm_rpc_url.as_str(),
+            "http://unused.invalid/"
+        );
+        assert!(config.registry.is_cluster_mode());
+        assert!(config.registry.cluster.as_ref().unwrap().is_nats_enabled());
+        assert_eq!(config.registry.network, "monad-regtest");
+        assert_eq!(
+            config.registry.validate_network().unwrap().id,
+            "monad-regtest"
+        );
     }
 }

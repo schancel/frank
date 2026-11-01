@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    monad_evm_tx::{decode_signed_transaction, has_no_trailing_bytes},
-    monad_http::{Address, Hash32},
+    evm_rpc::{Address, Hash32},
+    evm_transaction::{decode_signed_transaction, has_no_trailing_bytes},
     store::groups::{derive_group_id, parse_group_id_hex, verify_secp256k1_sig, GroupError},
 };
 

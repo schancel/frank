@@ -697,8 +697,8 @@ fn mixed_stamp_calls_preserve_errors_and_results_concurrently() {
 #[test]
 #[ignore = "manual before/after release measurement"]
 fn context_reuse_release_workload() {
-    use crate::monad_evm_tx::{recover_sender, test_support::signed_eip1559_tx};
-    use crate::monad_http::Address;
+    use crate::evm_rpc::Address;
+    use crate::evm_transaction::{recover_sender, test_support::signed_eip1559_tx};
     use bitcoinsuite_core::ecc::{Ecc, SecKey};
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
     use std::{hint::black_box, time::Instant};

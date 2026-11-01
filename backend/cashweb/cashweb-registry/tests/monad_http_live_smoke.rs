@@ -1,4 +1,4 @@
-//! Standalone, **not wired into app logic**, live smoke test for [`MonadHttpClient`]
+//! Standalone, **not wired into app logic**, live smoke test for [`EvmHttpClient`]
 //! (ticket #12), proving the read-path JSON-RPC calls (`eth_getLogs`,
 //! `eth_getTransactionReceipt`) actually work against the live Alchemy-hosted Monad testnet
 //! endpoint.
@@ -18,9 +18,9 @@
 //! - It deliberately does **not** call `send_raw_transaction`: broadcasting a real tx needs a
 //!   funded testnet account, which is out of scope for this ticket. `send_raw_transaction`'s
 //!   request-shaping (method name, params encoding) and error classification are covered by
-//!   mocked-transport unit tests in `cashweb-registry/src/monad_http.rs` instead.
+//!   mocked-transport unit tests in `cashweb-registry/src/evm_rpc.rs` instead.
 
-use cashweb_registry::monad_http::{BlockTag, GetLogsFilter, MonadHttpClient};
+use cashweb_registry::evm_rpc::{BlockTag, EvmHttpClient, GetLogsFilter};
 
 /// Alchemy's free tier caps a single `eth_getLogs` call to a 10-block range.
 const MAX_LOG_RANGE_BLOCKS: u64 = 10;
@@ -40,7 +40,7 @@ async fn live_get_logs_and_get_transaction_receipt_round_trip() {
     let rpc_url: url::Url = rpc_url
         .parse()
         .expect("MONAD_TESTNET_HTTP_RPC_URL is not a valid URL");
-    let client = MonadHttpClient::new(rpc_url);
+    let client = EvmHttpClient::new(rpc_url);
 
     // 1. `eth_blockNumber`: prove basic connectivity and get a real, current block number.
     let latest = client

@@ -39,6 +39,20 @@ if retired.returncode not in (0, 1):
     errors.append('could not inspect tracked configuration producers')
 elif retired.returncode == 0:
     errors.append('retired configuration field in tracked producer:\n' + retired.stdout.rstrip())
+# The shared frame owner may inspect opaque bytes, never chain or transport behavior.
+framing = (source / 'canonical_dm_request.rs').read_text()
+for forbidden in ['crate::evm_', 'crate::http', 'crate::store', 'axum::', 'reqwest::', 'tokio::']:
+    if forbidden in framing:
+        errors.append(f'canonical_dm_request: forbidden dependency {forbidden}')
+for relative in ['evm_dm_payment.rs', 'evm_mailbox.rs', 'store/evm_direct_messages.rs']:
+    text = (source / relative).read_text()
+    if re.search(r'(?:crate::http::|(?<![:\w])http::evm_direct_messages)', text):
+        errors.append(f'{relative}: data/family owner depends on HTTP implementation')
+http = (source / 'http/evm_direct_messages.rs').read_text()
+for forbidden in ['decode_signed_transaction', 'send_raw_transaction', 'get_transaction_count',
+                  'get_balance', 'get_transaction_by_hash', 'EvmHttpClient', 'Keccak256']:
+    if forbidden in http:
+        errors.append(f'http/evm_direct_messages.rs: EVM payment behavior belongs to family owner ({forbidden})')
 # Historical protobuf DTOs (proto::MonadProfile and response names), signed domains,
 # persistent namespace/format bytes, public URL paths and canonical monad-* network IDs
 # are deliberately outside this source-ownership rule. No protocol migration is implied.

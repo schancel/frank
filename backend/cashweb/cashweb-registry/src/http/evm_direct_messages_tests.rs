@@ -1,5 +1,7 @@
 //! Independent T public-encoder bytes. These are offline signed bytes, not Directory or receipt authority.
 use super::*;
+use crate::canonical_dm_request::{transaction_ranges, MAX_RAW_TRANSACTION_BYTES};
+use crate::evm_dm_payment::{judge_payments, DeadPayment, SenderState};
 
 // Captured from T8a4a46c public freezeCanonicalRequest, offline key1/chain10143/value1.
 // Every body below was re-signed as a plain transfer with empty calldata (#826) by

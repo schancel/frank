@@ -84,9 +84,11 @@ function validateAnnotations(json: unknown, meta: unknown): void {
 /** Ordinary JSON history keeps its exact representation and JSON normalization semantics. */
 export function stringifyMessageHistory(value: object): string {
   let byteCount = 0
+  let rootInvocation = true
   const normalized = JSON.stringify(value, function (key, current: unknown) {
     // Buffer.toJSON runs before the replacer. Inspect its holder to retain actual bytes.
-    const original: unknown = key === '' ? value : this[key]
+    const original: unknown = rootInvocation ? value : this[key]
+    rootInvocation = false
     if (!(original instanceof Uint8Array)) return current
     byteCount += 1
     return Buffer.from(original).toString('base64')

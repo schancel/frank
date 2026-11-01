@@ -143,6 +143,34 @@ async function snapshot(location: string): Promise<StoredRows> {
 }
 
 describe('LevelMessageStore', () => {
+  it('refuses an unsupported empty byte path before overwriting an existing message', async () => {
+    const location = await mkdtemp(
+      join(tmpdir(), 'frank-history-empty-byte-path-'),
+    )
+    const original = wrapper()
+    await seed(location, {
+      messages: { [original.index]: serializeMessageWrapper(original) },
+      metadata: { schemaVersion: '3' },
+    })
+    const before = await snapshot(location)
+    const store = new LevelMessageStore(location)
+    try {
+      await store.Open()
+      const invalid = {
+        ...original,
+        message: { ...original.message, '': Uint8Array.of(0, 255) },
+      }
+      await expect(store.saveMessage(invalid)).rejects.toThrow(
+        'Unsupported history byte annotation',
+      )
+      expect(await store.getMessage(original.index)).toEqual(original)
+      await store.Close()
+      expect(await snapshot(location)).toEqual(before)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
   it('reopens binary history through get and iteration without changing existing history or metadata', async () => {
     const location = await mkdtemp(join(tmpdir(), 'frank-history-bytes-'))
     const old = wrapper('old-json')

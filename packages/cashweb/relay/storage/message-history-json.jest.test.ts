@@ -27,6 +27,20 @@ it('leaves existing JSON history byte-for-byte unchanged and never revives paylo
   )
 })
 
+it('preserves ordinary empty-string properties without confusing them with the root', () => {
+  const original = wrapper({ '': { '': 'ordinary JSON' } })
+  expect(stringifyMessageHistory(original)).toBe(JSON.stringify(original))
+  expect(parseMessageHistory(stringifyMessageHistory(original))).toEqual(
+    original,
+  )
+})
+
+it('rejects byte values at unsupported empty-string paths instead of silently writing objects', () => {
+  expect(() =>
+    stringifyMessageHistory(wrapper({ '': Uint8Array.of(0, 255) })),
+  ).toThrow('Unsupported history byte annotation')
+})
+
 it('preserves repeated bytes, Buffer, offsets and JSON semantics alongside binary values', () => {
   const repeated = Uint8Array.of(0, 255, 128)
   const original = wrapper({

@@ -1939,6 +1939,28 @@ async fn proxy_ws_connection<S>(
     .await;
 }
 
+/// One fixed-field event per failed attempt. Do not add provider errors, URLs, request IDs,
+/// customers, or payloads: even a transport error's Display/Debug can disclose credentials.
+fn log_rpc_failure(
+    chain_identifier: &str,
+    phase: super::json_rpc::RpcFailurePhase,
+    class: super::json_rpc::RpcFailureClass,
+    attempt: usize,
+    attempt_count: usize,
+    upstream_status: u16,
+) {
+    tracing::warn!(
+        target: "frank::rpc_failure",
+        chainIdentifier = chain_identifier,
+        phase = phase.as_str(),
+        error_class = class.as_str(),
+        attempt,
+        attempt_count,
+        upstream_status,
+        "RPC upstream attempt failed"
+    );
+}
+
 async fn proxy_rpc_inner(
     chain_id: String,
     peer: Option<ConnectInfo<SocketAddr>>,
@@ -1947,6 +1969,8 @@ async fn proxy_rpc_inner(
     body: Bytes,
     capability: Option<String>,
 ) -> Result<Response, RpcRejection> {
+    use super::json_rpc::{RpcFailureClass, RpcFailurePhase};
+
     let Some(runtime) = server
         .evm_rpc
         .as_deref()
@@ -2070,6 +2094,10 @@ async fn proxy_rpc_inner(
             ));
         }
 
+        let mut failure_phase = RpcFailurePhase::UpstreamRequest;
+        let mut failure_class = RpcFailureClass::Other;
+        // Zero means no upstream response headers were received.
+        let mut upstream_status = 0;
         let upstream = async {
             let response = runtime
                 .client
@@ -2078,7 +2106,8 @@ async fn proxy_rpc_inner(
                 .body(body.clone())
                 .send()
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
+                    failure_class = RpcFailureClass::from_reqwest(&error);
                     runtime.cooldowns.mark_failure(upstream_url);
                     broadcast_error(
                         StatusCode::BAD_GATEWAY,
@@ -2088,6 +2117,9 @@ async fn proxy_rpc_inner(
                     )
                 })?;
             let status = response.status();
+            upstream_status = status.as_u16();
+            failure_phase = RpcFailurePhase::UpstreamStatus;
+            failure_class = RpcFailureClass::Status;
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 runtime.cooldowns.mark_failure(upstream_url);
                 // Throttling is a transport signal even when the provider sends HTML/text.
@@ -2111,10 +2143,17 @@ async fn proxy_rpc_inner(
                     ));
                 }
             }
-            let spool = super::json_rpc::spool_response(
+            // A deadline cancellation can interrupt any spool step before its failure observer
+            // runs. Report that broader phase rather than guessing a read or filesystem cause.
+            failure_phase = RpcFailurePhase::ResponseSpool;
+            let spool = super::json_rpc::spool_response_with_diagnostics(
                 response,
                 runtime.max_response_bytes,
                 remaining_time,
+                |phase, class| {
+                    failure_phase = phase;
+                    failure_class = class;
+                },
             )
             .await
             .map_err(|error| match error {
@@ -2146,6 +2185,7 @@ async fn proxy_rpc_inner(
             // A successful HTTP exchange is not a usable RPC response until its envelope
             // and request IDs are validated. Keep that validation inside this attempt so
             // a malformed upstream cannot prevent trying another verified node.
+            failure_phase = RpcFailurePhase::ResponseInspect;
             let inspected = spool
                 .inspect(
                     super::json_rpc::JsonRpcVersion::V2,
@@ -2155,13 +2195,12 @@ async fn proxy_rpc_inner(
                     },
                 )
                 .await
-                .map_err(|_| {
+                .map_err(|error| {
                     runtime.cooldowns.mark_failure(upstream_url);
-                    tracing::warn!(
-                        chain_identifier = %chain_id,
-                        upstream_status = status.as_u16(),
-                        "Rejected invalid upstream JSON-RPC response"
-                    );
+                    failure_class = match error {
+                        super::json_rpc::StreamInspectError::Io(_) => RpcFailureClass::Io,
+                        _ => RpcFailureClass::InvalidResponse,
+                    };
                     broadcast_error(
                         StatusCode::BAD_GATEWAY,
                         "invalid_rpc_upstream_response",
@@ -2177,10 +2216,18 @@ async fn proxy_rpc_inner(
 
         match tokio::time::timeout_at(deadline, upstream).await {
             Ok(Ok(s)) => {
-                spool = Some(s);
+                spool = Some((s, attempt + 1, upstream_status));
                 break;
             }
             Ok(Err(err)) => {
+                log_rpc_failure(
+                    &chain_id,
+                    failure_phase,
+                    failure_class,
+                    attempt + 1,
+                    ordered_upstreams.len(),
+                    upstream_status,
+                );
                 // A malformed broadcast response may follow a successful submission. Do not
                 // replace that uncertainty with a later node's apparently definitive rejection.
                 if cost.broadcast && err.code == "invalid_rpc_upstream_response" {
@@ -2189,6 +2236,14 @@ async fn proxy_rpc_inner(
                 last_error = Some(err);
             }
             Err(_) => {
+                log_rpc_failure(
+                    &chain_id,
+                    failure_phase,
+                    RpcFailureClass::Timeout,
+                    attempt + 1,
+                    ordered_upstreams.len(),
+                    upstream_status,
+                );
                 runtime.cooldowns.mark_failure(upstream_url);
                 last_error = Some(broadcast_error(
                     StatusCode::GATEWAY_TIMEOUT,
@@ -2200,7 +2255,7 @@ async fn proxy_rpc_inner(
         }
     }
 
-    let (spool, inspected) = match spool {
+    let ((spool, inspected), attempt, upstream_status) = match spool {
         Some(s) => s,
         None => {
             return Err(last_error.unwrap_or_else(|| {
@@ -2217,6 +2272,14 @@ async fn proxy_rpc_inner(
         .into_body(inspected.error_rewrites)
         .await
         .map_err(|_| {
+            log_rpc_failure(
+                &chain_id,
+                RpcFailurePhase::ResponseDelivery,
+                RpcFailureClass::Io,
+                attempt,
+                ordered_upstreams.len(),
+                upstream_status,
+            );
             broadcast_error(
                 StatusCode::BAD_GATEWAY,
                 "rpc_upstream_unavailable",
@@ -2313,6 +2376,164 @@ mod tests {
             ws_customers: Arc::new(Mutex::new(HashMap::new())),
             ws_per_customer_limit: 1,
             cooldowns: UpstreamCooldownTracker::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_failure_diagnostics_distinguish_transport_boundaries_without_secrets() {
+        use std::collections::BTreeMap;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tracing::{field::Visit, span, Event, Metadata, Subscriber};
+
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+        struct Fields(BTreeMap<String, String>);
+        impl Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+                self.0
+                    .insert(field.name().to_string(), format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.insert(field.name().to_string(), value.to_string());
+            }
+        }
+        impl Subscriber for Capture {
+            fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+                metadata.target() == "frank::rpc_failure"
+            }
+            fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+            fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+            fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+            fn enter(&self, _: &span::Id) {}
+            fn exit(&self, _: &span::Id) {}
+            fn event(&self, event: &Event<'_>) {
+                let mut fields = Fields(BTreeMap::new());
+                event.record(&mut fields);
+                self.0.lock().unwrap().push(fields.0);
+            }
+        }
+
+        let capture = Capture::default();
+        // This current-thread runtime keeps the thread-local subscriber over each await.
+        let _subscriber = tracing::subscriber::set_default(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            for response in [
+                None,
+                Some("HTTP/1.1 200 OK\r\nContent-Length: 256\r\nConnection: close\r\n\r\n{"),
+                Some("HTTP/1.1 503 Unavailable\r\nContent-Length: 20\r\nConnection: close\r\n\r\nprovider-body-secret"),
+                Some("HTTP/1.1 200 OK\r\nContent-Length: 55\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":\"request-secret\",\"result\":\"0x2a\"}"),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                loop {
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(n, 0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let len: usize = headers.lines().find_map(|line| {
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                                .map(|value| value.trim().parse().unwrap())
+                        }).unwrap();
+                        if request.len() >= end + 4 + len { break; }
+                    }
+                }
+                if let Some(response) = response {
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                }
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let mut runtime = runtime();
+        runtime.chains = Arc::new(RelayChains::for_test("monad-testnet").with_evm(
+            EvmChainAdapter::assume_verified(
+                "monad-testnet",
+                vec![
+                    format!("http://{address}/provider-url-secret?token=provider-token-secret")
+                        .parse()
+                        .unwrap(),
+                ],
+            ),
+        ));
+        let token = runtime
+            .auth
+            .issue_capability(customer_address(), "monad-testnet", now_ms(), 60_000)
+            .0;
+        let (_directory, server) = registered_server(Arc::new(runtime));
+        let body = Bytes::from_static(
+            br#"{"jsonrpc":"2.0","id":"request-secret","method":"eth_blockNumber","params":[]}"#,
+        );
+        for expected in [
+            Some("rpc_upstream_unavailable"),
+            Some("rpc_upstream_unavailable"),
+            Some("invalid_rpc_upstream_response"),
+            None,
+        ] {
+            let response = proxy_rpc_inner(
+                "monad-testnet".into(),
+                None,
+                HeaderMap::new(),
+                server.clone(),
+                body.clone(),
+                Some(token.clone()),
+            )
+            .await
+            .unwrap_or_else(IntoResponse::into_response);
+            if let Some(error) = expected {
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+                assert_eq!(response_json(response).await, json!({"error":error}));
+            } else {
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(
+                    response_json(response).await,
+                    json!({"jsonrpc":"2.0","id":"request-secret","result":"0x2a"})
+                );
+            }
+        }
+        upstream.await.unwrap();
+        let events = capture.0.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            3,
+            "one event per failed attempt, none on recovery"
+        );
+        assert_eq!(events[0]["phase"], "upstream_request");
+        assert_eq!(events[1]["phase"], "upstream_read");
+        assert_eq!(events[2]["phase"], "response_inspect");
+        assert_eq!(events[0]["upstream_status"], "0");
+        assert_eq!(events[1]["upstream_status"], "200");
+        assert_eq!(events[2]["upstream_status"], "503");
+        for event in events.iter() {
+            assert_eq!(event["chainIdentifier"], "monad-testnet");
+            assert_eq!(event["attempt"], "1");
+            assert_eq!(event["attempt_count"], "1");
+            assert!(event.contains_key("error_class"));
+            assert!(event.keys().all(|key| [
+                "message",
+                "phase",
+                "error_class",
+                "chainIdentifier",
+                "attempt",
+                "attempt_count",
+                "upstream_status"
+            ]
+            .contains(&key.as_str())));
+        }
+        let serialized = format!("{events:?}");
+        for secret in [
+            "provider-url-secret",
+            "provider-token-secret",
+            "provider-body-secret",
+            "request-secret",
+            token.as_str(),
+            address.to_string().as_str(),
+        ] {
+            assert!(!serialized.contains(secret), "secret escaped diagnostics");
         }
     }
 

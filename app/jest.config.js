@@ -5,6 +5,9 @@ const esModules = [
   'vue-router',
   'nostics',
   'perfect-debounce',
+  'superjson',
+  'copy-anything',
+  'is-what',
 ].join('|')
 
 /* eslint-env node */

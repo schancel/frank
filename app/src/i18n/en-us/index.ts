@@ -2134,6 +2134,7 @@ export const rawEnUS = {
     checkForUpdates: 'Check for update',
     checkingForUpdates: 'Checking for updates…',
     alreadyLatestVersion: 'You are on the latest version.',
+    updateCheckUnavailable: 'Could not check for updates. Please try again.',
     reloadAndClearCache: 'Reload & clear cache',
     clearCacheConfirm: 'Are you sure you want to clear cache and reload?',
     frankTitle: 'About Frank',

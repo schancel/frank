@@ -254,6 +254,7 @@ export default defineComponent({
 
       try {
         let updateFound = false
+        let checkSucceeded = false
         if (isUpdateAvailable()) {
           updateFound = true
           checkingForUpdate.value = false
@@ -262,6 +263,7 @@ export default defineComponent({
 
         const checkPromise = checkForAppUpdate()
           .then(reg => {
+            checkSucceeded = reg !== null
             if (reg?.waiting || isUpdateAvailable()) {
               updateFound = true
             }
@@ -277,9 +279,13 @@ export default defineComponent({
 
         if (!updateFound) {
           Notify.create({
-            message: translateMessage('about.alreadyLatestVersion'),
-            color: 'positive',
-            icon: 'check_circle',
+            message: translateMessage(
+              checkSucceeded
+                ? 'about.alreadyLatestVersion'
+                : 'about.updateCheckUnavailable',
+            ),
+            color: checkSucceeded ? 'positive' : 'warning',
+            icon: checkSucceeded ? 'check_circle' : 'cloud_off',
             timeout: 2500,
           })
         }

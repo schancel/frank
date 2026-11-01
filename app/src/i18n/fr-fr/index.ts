@@ -2184,6 +2184,8 @@ export const rawFrFR = {
     checkForUpdates: 'Vérifier les mises à jour',
     checkingForUpdates: 'Vérification des mises à jour…',
     alreadyLatestVersion: 'Vous utilisez la dernière version.',
+    updateCheckUnavailable:
+      'Impossible de vérifier les mises à jour. Veuillez réessayer.',
     reloadAndClearCache: 'Recharger et vider le cache',
     clearCacheConfirm: 'Voulez-vous vraiment vider le cache et recharger ?',
     frankTitle: 'À propos de Frank',

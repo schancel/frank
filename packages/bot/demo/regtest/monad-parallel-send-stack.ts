@@ -15,11 +15,11 @@ import { createServer, connect, type Server, type Socket } from 'net'
 import { FetchRequest, JsonRpcProvider } from 'ethers'
 
 import type { CheckStack } from '../../parallel-send.livecheck'
-import { openRealWallet, type RealWallet } from '../real-stack'
-import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID, MONAD_REGTEST_NETWORK_TAG, ensureSolonet } from './monad-regtest'
-import { monadOf, openMonadWallet } from './monad-wallets'
+import { fundsLine, openRealWallet, type RealWallet, type SweepOutcome } from '../real-stack'
+import { MONAD_REGTEST_CHAIN, MONAD_REGTEST_CHAIN_ID, MONAD_REGTEST_NETWORK_TAG, ensureSolonet, payAtFreshNonce } from './monad-regtest'
+import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
 import { freePort } from './regtest-chain'
-import { startRegtestStack } from './regtest-stack'
+import { startRegtestStack, type RegtestStack } from './regtest-stack'
 
 /** A TCP relay to `target` that can be switched off (connection refused, live ones cut) and on. */
 async function switchablePort(target: { host: string; port: number }) {
@@ -57,7 +57,7 @@ async function switchablePort(target: { host: string; port: number }) {
 }
 
 export async function startCheckStack(options: { relayUrl?: string } = {}): Promise<CheckStack> {
-  const { rpcUrl } = await ensureSolonet({ ...process.env, FRANK_SOLONET_RPC_URL: undefined })
+  const { rpcUrl } = await ensureSolonet(process.env)
   // Reads for the check's own assertions: straight to the chain.
   // The solonet's port is forwarded from a VM, and that forward now and then drops a connection
   // in the middle of an answer ("socket hang up"): such a request is made again.
@@ -119,45 +119,72 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
 
   const target = new URL(rpcUrl)
   const gate = await switchablePort({ host: target.hostname, port: Number(target.port) })
-  const stack = await startRegtestStack({
-    chains: ['monad-regtest'],
-    // The relay's upstream and the faucet go through the gate.
-    env: { ...process.env, FRANK_SOLONET_RPC_URL: gate.url, FRANK_REGTEST_KEEP: process.env.FRANK_REGTEST_KEEP },
-  })
+  let stack: RegtestStack
+  try {
+    stack = await startRegtestStack({
+      chains: ['monad-regtest'],
+      // The relay's upstream reaches the chain through the switchable gate.
+      env: { ...process.env, FRANK_SOLONET_RPC_URL: gate.url, FRANK_REGTEST_KEEP: '1' },
+    })
+  } catch (error) {
+    provider.destroy()
+    await gate.down()
+    throw error
+  }
   const monad = monadOf(stack)
   // The faucet pays straight to the chain, not through the gate (whose connections are cut
   // when a check closes it), one payment at a time.
   const faucet = monad.faucet.connect(provider)
   let paying: Promise<unknown> = Promise.resolve()
-  // The node's count can lag a block behind a payment just mined: never reuse a nonce.
-  let lastNonce = -1
+  let fundedWei = 0n
+  let unresolvedFunding = false
   const fund = (to: string, valueWei: bigint): Promise<string> => {
     const next = paying.then(async () => {
-      const nonce = Math.max(await provider.getTransactionCount(faucet.address, 'pending'), lastNonce + 1)
-      lastNonce = nonce
-      const tx = await faucet.sendTransaction({ to, value: valueWei, nonce, gasLimit: 21_000n })
-      for (const deadline = Date.now() + 120_000; ; ) {
-        const receipt = await provider.getTransactionReceipt(tx.hash)
-        if (receipt) {
-          if (receipt.status !== 1) throw new Error(`faucet payment ${tx.hash} did not succeed`)
-          return tx.hash
-        }
-        if (Date.now() > deadline) throw new Error(`faucet payment ${tx.hash} was not mined in time`)
-        await new Promise(resolveWait => setTimeout(resolveWait, 150))
+      if (unresolvedFunding) throw new Error('original setup funding is unresolved; no new funding authorized')
+      try {
+        const hash = await payAtFreshNonce(faucet, { to, value: valueWei, gasLimit: 21_000n })
+        fundedWei += valueWei
+        return hash
+      } catch (error) {
+        unresolvedFunding = true
+        throw error
       }
     })
     paying = next.catch(() => undefined)
     return next
   }
+  let closed: Promise<void> | undefined
+  const closeWallets = () => (closed ??= (async () => {
+    const results = await Promise.allSettled(wallets.map(wallet => wallet.close()))
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failure) throw failure.reason
+  })())
+  let swept: Promise<SweepOutcome> | undefined
+  const sweep = () => (swept ??= (async () => {
+    await paying
+    await gate.up()
+    await closeWallets()
+    const result = await returnToFaucet(stack)
+    if (result.unswept !== 0 || unresolvedFunding)
+      throw new Error(`original setup remains unresolved: ${result.unswept} return checks failed; state retained at ${stack.stateDir}`)
+    return { returnedWei: result.returnedWei, floatWei: 0n, left: result.left }
+  })())
   let stopped: Promise<void> | undefined
   const stop = () =>
     (stopped ??= (async () => {
-      for (const wallet of wallets) await wallet.close().catch(() => undefined)
-      provider.destroy()
-      await gate.up().catch(() => undefined)
-      await stack.stop()
-      await gate.down()
+      try { await closeWallets() }
+      finally {
+        try { await stack.stop() }
+        finally { provider.destroy(); await gate.down() }
+      }
     })())
+  let finished: Promise<void> | undefined
+  const finish = () => (finished ??= (async () => {
+    try {
+      const outcome = await sweep()
+      console.log(fundsLine({ fundedWei, outcome, to: monad.faucetAddress, where: stack.stateDir }))
+    } finally { await stop() }
+  })())
   return {
     relayUrl: stack.relayUrl,
     rpcUrl,
@@ -167,12 +194,8 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
     openWallet: async (label, walletOptions) =>
       track(await openMonadWallet(stack, label, { stampValueWei: walletOptions?.stampValueWei })),
     fund,
-    // Faucet money on a chain that is thrown away: nothing to return.
-    sweep: async () => none,
-    finish: async () => {
-      console.log('[funds] local Monad chain: funded from its faucet, nothing to return')
-      await stop()
-    },
+    sweep,
+    finish,
     stop,
     chainOutage: { down: gate.down, up: gate.up },
   }

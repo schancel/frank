@@ -171,10 +171,13 @@ describe('About: Frank & Stamp protocol overview', () => {
 
 describe('About: Update and cache actions', () => {
   beforeEach(() => {
-    jest.useFakeTimers()
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    mockNotifyCreate.mockClear()
+    jest.spyOn(pwaUtils, 'isUpdateAvailable').mockReturnValue(false)
   })
 
   afterEach(() => {
+    jest.restoreAllMocks()
     jest.useRealTimers()
   })
 
@@ -184,24 +187,90 @@ describe('About: Update and cache actions', () => {
     expect(en.find('[data-test="reload-clear-cache-btn"]').exists()).toBe(true)
   })
 
-  it('notifies user if no update is found within 2 seconds', async () => {
-    mockNotifyCreate.mockClear()
-    const checkSpy = jest
-      .spyOn(pwaUtils, 'checkForAppUpdate')
-      .mockResolvedValue(null)
-    const en = mountAbout(enUS)
-
-    const updatePromise = (en.vm as any).handleCheckForUpdate()
+  async function clickCheck(wrapper: ReturnType<typeof mountAbout>) {
+    await wrapper.find('[data-test="check-for-update-btn"]').trigger('click')
     jest.advanceTimersByTime(2000)
-    await updatePromise
+    await Promise.resolve()
+    await Promise.resolve()
+  }
 
+  it('reports latest only after a successful registration check without an update', async () => {
+    jest.spyOn(pwaUtils, 'checkForAppUpdate').mockResolvedValue({
+      waiting: null,
+    } as ServiceWorkerRegistration)
+    const wrapper = mountAbout(enUS)
+    await clickCheck(wrapper)
+
+    expect(mockNotifyCreate).toHaveBeenCalledTimes(1)
     expect(mockNotifyCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         message: 'You are on the latest version.',
         color: 'positive',
       }),
     )
-    checkSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  it.each(['unavailable', 'rejected'] as const)(
+    'offers retry instead of claiming latest when the check is %s',
+    async outcome => {
+      const check = jest.spyOn(pwaUtils, 'checkForAppUpdate')
+      if (outcome === 'unavailable') check.mockResolvedValue(null)
+      else check.mockRejectedValue(new Error('Network unavailable'))
+      const wrapper = mountAbout(enUS)
+      await clickCheck(wrapper)
+
+      expect(mockNotifyCreate).toHaveBeenCalledTimes(1)
+      expect(mockNotifyCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Could not check for updates. Please try again.',
+          color: 'warning',
+        }),
+      )
+      // An unsuccessful check releases the button for a real subsequent check.
+      check.mockResolvedValue({ waiting: null } as ServiceWorkerRegistration)
+      await clickCheck(wrapper)
+      expect(check).toHaveBeenCalledTimes(2)
+      expect(mockNotifyCreate).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          message: 'You are on the latest version.',
+          color: 'positive',
+        }),
+      )
+      wrapper.unmount()
+    },
+  )
+
+  it('leaves the existing waiting-worker update notice in charge', async () => {
+    jest.spyOn(pwaUtils, 'checkForAppUpdate').mockResolvedValue({
+      waiting: {} as ServiceWorker,
+    } as ServiceWorkerRegistration)
+    const wrapper = mountAbout(enUS)
+    await clickCheck(wrapper)
+    expect(mockNotifyCreate).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not start a check when an update is already offered', async () => {
+    jest.spyOn(pwaUtils, 'isUpdateAvailable').mockReturnValue(true)
+    const check = jest.spyOn(pwaUtils, 'checkForAppUpdate')
+    const wrapper = mountAbout(enUS)
+    await clickCheck(wrapper)
+    expect(check).not.toHaveBeenCalled()
+    expect(mockNotifyCreate).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('leaves an update discovered during the check in charge even if the check returns null', async () => {
+    jest
+      .spyOn(pwaUtils, 'isUpdateAvailable')
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true)
+    jest.spyOn(pwaUtils, 'checkForAppUpdate').mockResolvedValue(null)
+    const wrapper = mountAbout(enUS)
+    await clickCheck(wrapper)
+    expect(mockNotifyCreate).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('triggers confirmation dialog on reload and clear cache', () => {

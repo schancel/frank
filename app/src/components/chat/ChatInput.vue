@@ -29,14 +29,14 @@
         @remove="removeAttachment(att.id)"
       >
         <q-avatar
-          v-if="att.dataUrl"
+          v-if="/^data:image\/(png|jpeg|gif|webp);/.test(att.dataUrl)"
           square
           size="20px"
           class="q-mr-xs rounded-borders"
         >
           <img :src="att.dataUrl" alt="" style="object-fit: cover" />
         </q-avatar>
-        <q-icon v-else name="image" class="q-mr-xs" />
+        <q-icon v-else name="attach_file" class="q-mr-xs" />
         <span class="ellipsis" style="max-width: 140px">{{ att.name }}</span>
         <span class="q-ml-xs text-caption"
           >({{ formatAttachmentSize(att.sizeBytes) }})</span
@@ -548,7 +548,7 @@
     <input
       ref="filePicker"
       type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp,.ics,text/calendar,.vcf,text/vcard,text/x-vcard"
+      accept="*/*"
       multiple
       style="display: none"
       data-testid="chat-attachment-picker"
@@ -558,6 +558,7 @@
 </template>
 
 <script lang="ts">
+import { attachmentByteLength } from '../../utils/chat-binary'
 import { defineComponent, type PropType } from 'vue'
 import emoji from 'node-emoji'
 import {
@@ -600,11 +601,9 @@ function isCalendarOrVcardFile(f: File): boolean {
   )
 }
 
-/** The pictures or calendar/contact files among pasted or dropped data. */
+/** Local files are admitted by the attachment preparer; plain pasted text stays in the editor. */
 function supportedTransferFiles(data: DataTransfer | null | undefined): File[] {
-  return Array.from(data?.files ?? []).filter(
-    f => f.type.startsWith('image/') || isCalendarOrVcardFile(f),
-  )
+  return Array.from(data?.files ?? [])
 }
 
 // Tenths keep fractional presets exact even when the quote exceeds Number's safe range.
@@ -874,9 +873,7 @@ export default defineComponent({
             id,
             name: prepared.name,
             dataUrl: prepared.dataUrl,
-            sizeBytes: Math.round(
-              ((prepared.dataUrl.split(',')[1] || '').length * 3) / 4,
-            ),
+            sizeBytes: attachmentByteLength(prepared.dataUrl),
           },
         ]
         const inserted = insertImageMarkdown(

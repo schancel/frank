@@ -24,7 +24,7 @@ Both run `packages/frank-codec/scripts/vectors.mts`. The `typecheck` workflow ru
    ephemeral scalar 3 and the original salt and padding).
 2. `packages/frank-codec/scripts/vectors-builders.ts` writes the corpora built from
    `packages/frank-codec/fixtures/` (`manifest.json`, `topic-commitments.json`,
-   `stealth-assets.json`, `blackjack-hand*.json`, `forum-content-read.json`,
+   `stealth-assets.json`, `blob-message-item.json`, `blackjack-hand*.json`, `forum-content-read.json`,
    `directory-preview.json`, the experimental Solana stealth vectors),
    `packages/frank-codec/scripts/dm-sealed-sender-corpus.mts` writes `dm-sealed-sender.json`
    (the sealed-sender context, type-12 content, 7-entry crypto-box envelope and type-11

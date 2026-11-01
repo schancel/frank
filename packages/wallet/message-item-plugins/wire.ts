@@ -266,8 +266,9 @@ function itemFrame(
   const rule = itemFrameRule(type, addressing)
   if (rule.carried === 'no' || !registry.has(type))
     throw new MessageItemNotCarriedError(type)
-  const { bytes } = registry.encodeItem(item)
+  const { bytes, mimeType } = registry.encodeItem(item)
   if (rule.carried === 'dedicated') {
+    if (mimeType !== undefined) throw new MessageItemEncodeError(type, 'MIME metadata requires the generic plugin carrier')
     if (frameTypeOf(bytes) !== rule.frameType)
       throw new MessageItemEncodeError(
         type,
@@ -281,7 +282,7 @@ function itemFrame(
   try {
     return {
       type,
-      frame: encodePluginMessageItem({ itemType: type, data: bytes }),
+      frame: encodePluginMessageItem({ itemType: type, data: bytes, mimeType }),
     }
   } catch (error) {
     throw new MessageItemEncodeError(type, detailOf(error))
@@ -389,9 +390,11 @@ function readItemFrame(
   let type: string
   let bytes: Uint8Array
   let frame: ParsedFrame | undefined
+  let mimeType: string | undefined
   if (isPluginMessageItemFrame(child)) {
     type = child.typed.itemType
     bytes = child.typed.data
+    mimeType = child.typed.mimeType
     // One wire form per type: a type with a dedicated frame is not read from the generic one.
     if (DEDICATED_ITEM_FRAMES.has(type))
       return unsupported(
@@ -427,6 +430,7 @@ function readItemFrame(
   try {
     const decoded = registry.decodeItem(type, bytes, {
       budget: watched.budget,
+      ...(mimeType === undefined ? {} : { mimeType }),
       ...(frame === undefined ? {} : { frame }),
     })
     if (decoded.kind !== 'item') return unsupported(child, 'unknown-type', type)

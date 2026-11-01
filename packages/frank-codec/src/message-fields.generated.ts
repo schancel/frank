@@ -1445,11 +1445,12 @@ export const PAYMENT_MEMBER_SHAPE: MapShape = {
 export const PLUGIN_MESSAGE_ITEM = {
   itemType: 0,
   data: 1,
+  mimeType: 2,
 } as const
 /** `plugin-message-item` map shape (docs/protocol/cbor/direct-message.cddl#plugin-message-item). */
 export const PLUGIN_MESSAGE_ITEM_SHAPE: MapShape = {
   required: [PLUGIN_MESSAGE_ITEM.itemType, PLUGIN_MESSAGE_ITEM.data],
-  optional: [],
+  optional: [PLUGIN_MESSAGE_ITEM.mimeType],
   open: true,
   openFrom: 0,
 }

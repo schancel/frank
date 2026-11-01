@@ -488,7 +488,8 @@ export function cborItemCodec<T extends { type: string }>(
       try {
         if ((item as { type?: unknown } | null)?.type !== type)
           fail('item.type', `expected ${type}`)
-        return encodeCanonical(encodeStruct(entries, item, 'item', 'type'))
+        const { mimeType: _mimeType, ...content } = item as T & { mimeType?: string }
+        return encodeCanonical(encodeStruct(entries, content, 'item', 'type'))
       } catch (error) {
         throw new MessageItemEncodeError(type, detailOf(error))
       }

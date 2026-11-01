@@ -9,6 +9,7 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
+import type { ChatImageAttachment } from '../../../utils/chat-binary'
 import { getActiveChain, onActiveChainChange } from '@frank/wallet/chain'
 import { fetchContactProfile } from '../../../utils/directory-peer'
 import { openContactProfile } from '../../../utils/routes'
@@ -19,25 +20,7 @@ import {
   purify,
 } from '../../../utils/markdown'
 import { vExternalImages } from '../../../utils/external-images'
-import {
-  replaceAttachmentReferences,
-  type PostAttachment,
-} from '../../../utils/post-editor'
-
-/** A picture's bytes as an object URL, so every reference to it shares one copy. */
-function objectUrl(dataUrl: string): string | undefined {
-  if (typeof URL.createObjectURL !== 'function') return undefined
-  try {
-    const comma = dataUrl.indexOf(',')
-    const type = /^data:([^;,]+)/.exec(dataUrl)?.[1] ?? ''
-    const binary = atob(dataUrl.slice(comma + 1))
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    return URL.createObjectURL(new Blob([bytes], { type }))
-  } catch {
-    return undefined
-  }
-}
+import { replaceAttachmentReferences } from '../../../utils/post-editor'
 
 export default defineComponent({
   name: 'ChatMessageText',
@@ -50,7 +33,7 @@ export default defineComponent({
     // The same message's pictures that may be shown, with their position as ID. The text shows
     // one wherever it says `![name](attachment:N)`.
     attachments: {
-      type: Array as PropType<PostAttachment[]>,
+      type: Array as PropType<ChatImageAttachment[]>,
       default: () => [],
     },
     isReply: {
@@ -62,7 +45,7 @@ export default defineComponent({
   data() {
     return {
       // Object URLs made for this message's pictures, by data URI; revoked on unmount.
-      urls: new Map<string, string>(),
+      urls: new Map<Uint8Array, string>(),
       mentionNames: {} as Record<string, string>,
       mentionGeneration: 0,
       removeChainListener: undefined as (() => void) | undefined,
@@ -93,6 +76,12 @@ export default defineComponent({
     },
   },
   watch: {
+    attachments: {
+      handler() {
+        this.showPictures()
+      },
+      flush: 'post',
+    },
     text() {
       void this.refreshMentions()
     },
@@ -144,7 +133,7 @@ export default defineComponent({
         }),
       )
     },
-    attachmentOf(image: Element): PostAttachment | undefined {
+    attachmentOf(image: Element): ChatImageAttachment | undefined {
       const id = image.getAttribute(ATTACHMENT_ATTRIBUTE)
       return this.attachments.find(a => a.id === id)
     },
@@ -152,6 +141,13 @@ export default defineComponent({
     showPictures() {
       const root = this.$el as HTMLElement | undefined
       if (!root?.querySelectorAll) return
+      const retained = new Set(this.attachments.map(a => a.data))
+      this.urls.forEach((url, data) => {
+        if (!retained.has(data)) {
+          URL.revokeObjectURL(url)
+          this.urls.delete(data)
+        }
+      })
       root
         .querySelectorAll<HTMLImageElement>(`img[${ATTACHMENT_ATTRIBUTE}]`)
         .forEach(image => {
@@ -160,10 +156,14 @@ export default defineComponent({
             image.remove()
             return
           }
-          let url = this.urls.get(attachment.dataUrl)
+          let url = this.urls.get(attachment.data)
           if (url === undefined) {
-            url = objectUrl(attachment.dataUrl) ?? attachment.dataUrl
-            this.urls.set(attachment.dataUrl, url)
+            url = URL.createObjectURL(
+              new Blob([new Uint8Array(attachment.data)], {
+                type: attachment.mimeType,
+              }),
+            )
+            this.urls.set(attachment.data, url)
           }
           if (image.getAttribute('src') !== url) image.setAttribute('src', url)
         })
@@ -181,7 +181,7 @@ export default defineComponent({
       }
       if (target?.tagName !== 'IMG') return
       const attachment = this.attachmentOf(target)
-      if (attachment) this.$emit('imageClick', attachment.dataUrl)
+      if (attachment) this.$emit('imageClick', this.urls.get(attachment.data))
     },
   },
 })

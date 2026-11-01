@@ -1,3 +1,4 @@
+import { testBlob } from '../message-item-plugins/blob/blob.testutil'
 /**
  * Every carried message item type crosses the real canonical path between two real wallets:
  * `directMessages.send` at A (funding, intent, sealing, relay submission) and `fetchSince` at B
@@ -25,7 +26,7 @@ import {
   pluginCapabilitiesNotYetAvailable,
 } from '@frank/cashweb/message-items/registry'
 import * as wire from '../message-item-plugins/wire'
-import { MAX_IMAGE_BYTES } from '../message-item-plugins/image/codec'
+import { MAX_BLOB_BYTES } from '../message-item-plugins/blob/codec'
 import {
   DEDICATED_SAMPLES,
   GENERIC_SAMPLES,
@@ -156,6 +157,7 @@ describe('message items across the canonical path, two wallets', () => {
           encodePluginMessageItem({
             itemType: type,
             data: registry.encodeItem(item).bytes,
+            mimeType: registry.encodeItem(item).mimeType,
           }),
         ),
       )
@@ -225,7 +227,7 @@ describe('message items across the canonical path, two wallets', () => {
   it('a bot reply of several items (a purchase: fulfilment, picture, text) arrives whole and in order', async () => {
     const items: MessageItem[] = [
       { type: 'digital-goods', action: 'fulfill', itemId: 'sticker_1' },
-      { type: 'image', image: 'data:image/png;base64,AAAA' },
+      testBlob('data:image/png;base64,AAAA'),
       { type: 'text', text: 'Thanks for your purchase!' },
     ]
     const { message } = await roundTrip(items)
@@ -247,9 +249,9 @@ describe('message items across the canonical path, two wallets', () => {
     const items: MessageItem[] = [
       { type: 'reply', payloadDigest: 'ab'.repeat(32) },
       { type: 'text', text },
-      { type: 'image', image: 'A'.repeat(third) },
-      { type: 'image', image: 'B'.repeat(third) },
-      { type: 'image', image: 'C'.repeat(pictures - 2 * third) },
+      testBlob('A'.repeat(third)),
+      testBlob('B'.repeat(third)),
+      testBlob('C'.repeat(pictures - 2 * third)),
     ]
     const { message, frames } = await roundTrip(items)
     expect(message.items).toEqual(items)
@@ -260,7 +262,7 @@ describe('message items across the canonical path, two wallets', () => {
 
   it('one picture as large as the composer allows, alone, arrives whole', async () => {
     const items: MessageItem[] = [
-      { type: 'image', image: 'A'.repeat(512_000 - 64) },
+      testBlob('A'.repeat(512_000 - 64)),
     ]
     const { message } = await roundTrip(items)
     expect(message.items).toEqual(items)
@@ -268,8 +270,8 @@ describe('message items across the canonical path, two wallets', () => {
 
   it('one picture as large as an image item holds (the composer per-picture limit) arrives whole', async () => {
     const items: MessageItem[] = [
-      // The app's SENT_IMAGE_LIMITS: the image plugin's limit less one item allowance.
-      { type: 'image', image: 'A'.repeat(MAX_IMAGE_BYTES - 64) },
+      // The blob's native payload reaches its full plugin limit; framing is counted separately.
+      testBlob('A'.repeat(MAX_BLOB_BYTES)),
     ]
     const { message } = await roundTrip(items)
     expect(message.items).toEqual(items)
@@ -277,10 +279,7 @@ describe('message items across the canonical path, two wallets', () => {
 
   it('as many small pictures as the composer bound allows arrive whole', async () => {
     // 200 pictures of 2,496 bytes: 200 * (2,496 + 64) = 512,000.
-    const items: MessageItem[] = Array.from({ length: 200 }, (_, i) => ({
-      type: 'image' as const,
-      image: String.fromCharCode(65 + (i % 26)).repeat(2_496),
-    }))
+    const items: MessageItem[] = Array.from({ length: 200 }, (_, i) => (testBlob(String.fromCharCode(65 + (i % 26)).repeat(2_496))))
     const { message } = await roundTrip(items)
     expect(message.items).toEqual(items)
   })
@@ -399,6 +398,7 @@ describe('message items across the canonical path, two wallets', () => {
       const forged = encodePluginMessageItem({
         itemType: type,
         data: registry.encodeItem(item).bytes,
+        mimeType: registry.encodeItem(item).mimeType,
       })
       const peer = jest
         .spyOn(wire, 'encodeItemFrames')

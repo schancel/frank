@@ -639,6 +639,7 @@ export interface PluginMessageItem {
   type: typeof TYPE_PLUGIN_MESSAGE_ITEM
   itemType: string
   data: Uint8Array
+  mimeType?: string
   unknownFields: UnknownFields
 }
 

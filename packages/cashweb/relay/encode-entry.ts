@@ -50,9 +50,6 @@ export function encodeEntry(
   if (item.type === 'reply') {
     return [messageConstructor.constructReplyEntry({ ...item }), [], [], []]
   }
-  if (item.type === 'image') {
-    return [messageConstructor.constructImageEntry({ ...item }), [], [], []]
-  }
   if (item.type === 'p2pkh') {
     const { entry, transaction, usedUtxos } =
       messageConstructor.constructP2PKHEntry({

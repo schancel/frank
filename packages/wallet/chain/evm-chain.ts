@@ -802,7 +802,7 @@ export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
 /** JSON-serializes `items` for use as a direct message's plaintext.
  * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
  * Stealth items are supported across chains (Monad, Solana, eCash). */
-export function serializeMessageItems(items: MessageItem[]): string {
+export function serializeMessageItems(items: Exclude<MessageItem, { type: 'blob' }>[]): string {
   for (const item of items) {
     if (item.type === "p2pkh") {
       throw new Error(

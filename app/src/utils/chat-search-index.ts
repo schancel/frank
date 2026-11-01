@@ -635,17 +635,13 @@ function extractMessageFields(
       if (anyItem.title) bodyParts.push(String(anyItem.title))
       if (anyItem.summary) bodyParts.push(String(anyItem.summary))
       if (anyItem.description) bodyParts.push(String(anyItem.description))
-    } else if (
-      anyItem.type === 'image' ||
-      anyItem.type === 'attachment' ||
-      anyItem.type === 'blob'
-    ) {
+    } else if (anyItem.type === 'blob' || anyItem.type === 'attachment') {
       hasAttachment = true
       const filename =
         anyItem.filename ||
         anyItem.blobManifest?.filename ||
         anyItem.name ||
-        (anyItem.type === 'image' ? 'image' : '')
+        (anyItem.type === 'blob' ? anyItem.mimeType || 'attachment' : '')
       if (filename) attachmentNames.push(String(filename))
     }
 

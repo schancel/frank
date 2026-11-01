@@ -1,3 +1,4 @@
+import { isMimeType } from '@frank/codec'
 /**
  * The message-item registry contract: what a message-item plugin is, what a registry offers, and
  * what a plugin is lent when it is installed.
@@ -48,6 +49,7 @@ export interface MessageItemContext {
  */
 export interface MessageItemDecodeContext {
   budget: NestedItemBudget
+  mimeType?: string
   /** For an item that travels in its own dedicated frame: that frame as the enclosing validation
    * already parsed it. The plugin projects from it and does not parse the bytes again. */
   frame?: ParsedFrame
@@ -390,6 +392,7 @@ export class MessageItemDecodeError extends Error {
 
 /** An item's type identifier with the plugin's own bytes for it. */
 export interface EncodedMessageItem {
+  mimeType?: string
   type: string
   bytes: Uint8Array
 }
@@ -542,6 +545,7 @@ export function createMessageItemRegistry(): MessageItemRegistry {
       if (!plugin) throw new MessageItemUnsupportedError(messageItemType(item))
       let bytes: Uint8Array
       try {
+        if (item.mimeType !== undefined && !isMimeType(item.mimeType)) throw new Error('Invalid MIME metadata')
         bytes = plugin.encode(item)
       } catch (error) {
         if (error instanceof MessageItemEncodeError) throw error
@@ -555,7 +559,7 @@ export function createMessageItemRegistry(): MessageItemRegistry {
           messageItemType(item),
           'the plugin wrote no bytes',
         )
-      return { type: messageItemType(item), bytes }
+      return { type: messageItemType(item), bytes, ...(item.mimeType === undefined ? {} : { mimeType: item.mimeType }) }
     },
     decodeItem(type, bytes, context) {
       const plugin = plugins.get(type)
@@ -563,6 +567,7 @@ export function createMessageItemRegistry(): MessageItemRegistry {
       let item: MessageItem
       try {
         item = plugin.decode(bytes, context) as MessageItem
+        if (context.mimeType !== undefined) item = { ...item, mimeType: context.mimeType }
         if (
           item === null ||
           typeof item !== 'object' ||

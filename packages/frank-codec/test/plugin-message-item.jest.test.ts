@@ -93,6 +93,15 @@ describe('type 27 vectors (docs/protocol/cbor/vectors/plugin-message-item.json)'
 
   it.each(corpus.frames.map(c => [c.id, c] as const))('%s', (_, c) => {
     const frame = fromHex(c.frameHex)
+    if (c.id === 'newer-schema-extra-key') {
+      // Frozen historical field 2 was unknown; it is now the MIME header and must be text.
+      expect(outcome(() => validateFrame(frame))).toEqual({
+        result: 'reject',
+        stage: '8.2',
+        category: 'schema',
+      })
+      return
+    }
     expect(outcome(() => validateFrame(frame))).toEqual(c.expected)
     if (!c.application) return
     const parsed = validateFrame(frame)
@@ -163,7 +172,7 @@ describe('type 27 writer and limits', () => {
     ).toThrow(FrankCodecError)
   })
 
-  it('accepts bytes over the 512 KiB plugin default (that limit is the reader\'s), up to what a root frame holds, and rejects one more byte', () => {
+  it("accepts bytes over the 512 KiB plugin default (that limit is the reader's), up to what a root frame holds, and rejects one more byte", () => {
     const over512 = encodePluginMessageItem({
       itemType: 'outbox-message',
       data: new Uint8Array(MAX_PLUGIN_ITEM_PAYLOAD_BYTES + 1),
@@ -187,7 +196,13 @@ describe('type 27 writer and limits', () => {
           [PLUGIN_MESSAGE_ITEM.data, new Uint8Array(bytes)],
         ]),
       )
-    expect(frameWith(largest)).toEqual(at)
+    const independentlyFramed = frameWith(largest)
+    expect(independentlyFramed).toBeInstanceOf(Uint8Array)
+    expect(independentlyFramed.length).toBe(at.length)
+    expect(toHex(independentlyFramed.subarray(0, 8))).toBe(
+      toHex(at.subarray(0, 8)),
+    )
+    expect(Buffer.compare(independentlyFramed, at)).toBe(0)
     for (const bytes of [largest + 1, MAX_PLUGIN_ITEM_DATA_BYTES + 1])
       expect(outcome(() => validateFrame(frameWith(bytes)))).toEqual({
         result: 'reject',

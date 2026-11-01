@@ -33,7 +33,11 @@
         </div>
         <!-- Image Message -- pull to the right -->
         <div v-if="items.image !== undefined" class="col-auto">
-          <chat-message-image :image="items.image.image" :is-reply="true" />
+          <chat-message-image
+            :data="items.image.data"
+            :mime-type="items.image.mimeType"
+            :is-reply="true"
+          />
         </div>
       </div>
     </div>
@@ -49,7 +53,7 @@ import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
 import type {
   TextItem,
-  ImageItem,
+  BlobItem,
   StealthItem,
 } from '@frank/cashweb/types/messages'
 
@@ -97,7 +101,7 @@ export default defineComponent({
     items() {
       const sorted: {
         text?: TextItem
-        image?: ImageItem
+        image?: BlobItem
         stealth?: StealthItem
       } = {}
       for (const item of this.message.items) {
@@ -105,8 +109,9 @@ export default defineComponent({
           case 'text':
             sorted.text = item
             break
-          case 'image':
-            sorted.image = item
+          case 'blob':
+            if (/^image\/(png|jpeg|gif|webp)$/.test(item.mimeType))
+              sorted.image = item
             break
           case 'stealth':
             sorted.stealth = item

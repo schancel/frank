@@ -754,41 +754,6 @@ export class RelayClient extends ReadOnlyRelayClient {
     await this.sendMessageImpl({ address, items, stampAmount })
   }
 
-  async sendImage({
-    address,
-    image,
-    caption,
-    replyDigest,
-    stampAmount,
-  }: {
-    address: string
-    image: string
-    caption: string
-    replyDigest?: string
-    stampAmount: number
-  }) {
-    const items: MessageItem[] = [
-      {
-        type: 'image',
-        image,
-      },
-    ]
-    if (caption !== '') {
-      items.push({
-        type: 'text',
-        text: caption,
-      })
-    }
-    if (replyDigest) {
-      items.unshift({
-        type: 'reply',
-        payloadDigest: replyDigest,
-      })
-    }
-
-    await this.sendMessageImpl({ address, items, stampAmount })
-  }
-
   // Stub for original API
   // TODO: Fix clients to not use these APIs at all
   async sendToPubKeyHash({

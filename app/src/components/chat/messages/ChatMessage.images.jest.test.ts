@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { testBlob } from '../../../../../packages/wallet/message-item-plugins/blob/blob.testutil'
 
 /**
  * A message's pictures in its bubble: the text shows each one where it refers to it
@@ -49,6 +50,14 @@ const second = gif(3, 3)
 const third = png(4, 4)
 const refused = png(9000, 9000)
 
+beforeEach(() => {
+  let next = 0
+  Object.assign(URL, {
+    createObjectURL: jest.fn(() => `blob:test/${++next}`),
+    revokeObjectURL: jest.fn(),
+  })
+})
+
 // Quasar's image as a plain <img>, marked so a picture shown after the text can be told from
 // one shown inside it.
 const QImg = defineComponent({
@@ -79,6 +88,7 @@ function bubble(items: MessageItem[]) {
         QChatMessage: { template: '<div><slot /></div>' },
         ChatMessageText: false,
         ChatMessageImage: false,
+        ChatMessageBlob: false,
         QImg,
         QDialog: { template: '<i />' },
       },
@@ -103,58 +113,55 @@ describe('pictures in a received message', () => {
         type: 'text',
         text: 'first ![b](attachment:2) then ![a](attachment:1) done',
       },
-      { type: 'image', image: first },
-      { type: 'image', image: second },
+      testBlob(first),
+      testBlob(second),
     ])
     expect(images).toEqual([
-      { src: second, inText: true },
-      { src: first, inText: true },
+      { src: 'blob:test/1', inText: true },
+      { src: 'blob:test/2', inText: true },
     ])
     const html = body.html()
-    expect(html.indexOf('first')).toBeLessThan(html.indexOf(second))
-    expect(html.indexOf(second)).toBeLessThan(html.indexOf('then'))
-    expect(html.indexOf('then')).toBeLessThan(html.indexOf(first))
-    expect(html.indexOf(first)).toBeLessThan(html.indexOf('done'))
+    expect(html.indexOf('first')).toBeLessThan(html.indexOf('blob:test/1'))
+    expect(html.indexOf('blob:test/1')).toBeLessThan(html.indexOf('then'))
+    expect(html.indexOf('then')).toBeLessThan(html.indexOf('blob:test/2'))
+    expect(html.indexOf('blob:test/2')).toBeLessThan(html.indexOf('done'))
   })
 
   it('a picture the text does not refer to shows after the text', () => {
     const { images } = bubble([
       { type: 'text', text: 'see ![a](attachment:1)' },
-      { type: 'image', image: first },
-      { type: 'image', image: third },
+      testBlob(first),
+      testBlob(third),
     ])
     expect(images).toEqual([
-      { src: first, inText: true },
-      { src: third, inText: false },
+      { src: 'blob:test/2', inText: true },
+      { src: 'blob:test/1', inText: false },
     ])
   })
 
   it('a message of pictures alone shows them', () => {
-    const { images } = bubble([
-      { type: 'image', image: first },
-      { type: 'image', image: second },
-    ])
+    const { images } = bubble([testBlob(first), testBlob(second)])
     expect(images).toEqual([
-      { src: first, inText: false },
-      { src: second, inText: false },
+      { src: 'blob:test/1', inText: false },
+      { src: 'blob:test/2', inText: false },
     ])
   })
 
   it('a reference to a picture that is not there stays the text it was', () => {
     const { body, images } = bubble([
       { type: 'text', text: 'see ![a](attachment:2) and ![b](attachment:0)' },
-      { type: 'image', image: first },
+      testBlob(first),
     ])
     expect(body.text()).toContain(
       'see ![a](attachment:2) and ![b](attachment:0)',
     )
-    expect(images).toEqual([{ src: first, inText: false }])
+    expect(images).toEqual([{ src: 'blob:test/1', inText: false }])
   })
 
   it('a reference to a refused picture stays text, and the picture is reported, not decoded', () => {
     const { body, images } = bubble([
       { type: 'text', text: 'see ![a](attachment:1)' },
-      { type: 'image', image: refused },
+      testBlob(refused),
     ])
     expect(body.text()).toContain('see ![a](attachment:1)')
     expect(body.text()).toContain('chatImage.notShown')
@@ -176,16 +183,16 @@ describe('pictures in a received message', () => {
     text => {
       const { images } = bubble([
         { type: 'text', text: `${text}\n\n![a](attachment:1)` },
-        { type: 'image', image: first },
+        testBlob(first),
       ])
-      expect(images).toEqual([{ src: first, inText: true }])
+      expect(images).toEqual([{ src: 'blob:test/1', inText: true }])
     },
   )
 
   it('a click on a picture in the text opens it', async () => {
     const { wrapper, body } = bubble([
       { type: 'text', text: '![a](attachment:1)' },
-      { type: 'image', image: first },
+      testBlob(first),
     ])
     await body.get('.chat-message-text img').trigger('click')
     const vm = wrapper.vm as unknown as {
@@ -193,6 +200,6 @@ describe('pictures in a received message', () => {
       openedImage: string
     }
     expect(vm.imageDialog).toBe(true)
-    expect(vm.openedImage).toBe(first)
+    expect(vm.openedImage).toBe('blob:test/1')
   })
 })

@@ -109,7 +109,7 @@ describe('the dispatch rule', () => {
       'stealth-asset': `dedicated:${TYPE_STEALTH_MESSAGE_ITEM}`,
       'channel-update': `dedicated:${TYPE_CHANNEL_UPDATE}`,
       'email': `dedicated:${TYPE_EMAIL_MESSAGE_ITEM}`,
-      'image': 'generic:27',
+      'blob': 'generic:27',
       'reply': 'generic:27',
       'digital-goods': 'generic:27',
       'raffle': 'generic:27',
@@ -273,6 +273,7 @@ describe('sending', () => {
         encodePluginMessageItem({
           itemType: type,
           data: registry.encodeItem(item).bytes,
+          mimeType: registry.encodeItem(item).mimeType,
         }),
       )
       expect(receive([frame])).toEqual([item])
@@ -791,15 +792,10 @@ describe('items read from the legacy JSON mailbox', () => {
     const mangled = [...DEDICATED_SAMPLES, ...GENERIC_SAMPLES].filter(
       item => !survivesJson(item),
     )
-    expect(mangled.map(item => item.type)).toEqual(['channel-update'])
-    expect(arrive(mangled)).toEqual([
-      {
-        type: 'unsupported',
-        reason: 'malformed',
-        itemType: 'channel-update',
-        frame: jsonHex(mangled[0]),
-      },
-    ])
+    expect(mangled.map(item => item.type)).toEqual(['channel-update', 'blob'])
+    expect(arrive(mangled)).toEqual(mangled.map(item => ({
+      type: 'unsupported', reason: 'malformed', itemType: item.type, frame: jsonHex(item),
+    })))
   })
 
   it('delivers what the plugin read, not the object that arrived', () => {

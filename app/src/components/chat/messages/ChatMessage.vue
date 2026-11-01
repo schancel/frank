@@ -158,10 +158,10 @@
               :stamp-wei="message.outbound ? message.stampValueWei : undefined"
             />
             <!-- A picture the text shows where it is referenced is not shown a second time. -->
-            <template v-else-if="item.type == 'image'">
-              <chat-message-image
+            <template v-else-if="item.type == 'blob'">
+              <chat-message-blob
                 v-if="!inlineImageItems.has(subIndex)"
-                :image="item.image"
+                :item="item"
               />
             </template>
             <chat-message-text
@@ -319,7 +319,7 @@ import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
 import moment from 'moment'
 import ChatMessageReply from './ChatMessageReply.vue'
 import ChatMessageText from './ChatMessageText.vue'
-import ChatMessageImage from './ChatMessageImage.vue'
+import ChatMessageBlob from './ChatMessageBlob.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
@@ -364,7 +364,7 @@ import {
   inlinePositions,
   shownAttachments,
 } from '../../../utils/chat-attachments'
-import type { PostAttachment } from '../../../utils/post-editor'
+import type { ChatImageAttachment } from '../../../utils/chat-binary'
 
 /** Re-exported for the bubble's own tests: how long it keeps reading a stamp it holds no coin for. */
 export { STAMP_NONE_PATIENCE_MS }
@@ -383,7 +383,7 @@ export default defineComponent({
     ChatMessageChannel,
     ChatMessageCalendarInvite,
     ChatMessageContactCard,
-    ChatMessageImage,
+    ChatMessageBlob,
     ChatMessageStealth,
     ChatMessageSuffix,
     TransactionDialog,
@@ -710,7 +710,7 @@ export default defineComponent({
       return joinConsecutiveTextItemsIndexed(this.message.items)
     },
     // This message's pictures that passed vetting, by position among its image items.
-    shownAttachments(): PostAttachment[] {
+    shownAttachments(): ChatImageAttachment[] {
       return shownAttachments(this.message.items)
     },
     // Indexes into `message.items` of the pictures the text shows inline.
@@ -719,7 +719,7 @@ export default defineComponent({
       const indexes = new Set<number>()
       let position = 0
       this.message.items.forEach((item, index) => {
-        if (item.type !== 'image') return
+        if (item.type !== 'blob') return
         position += 1
         if (inline.has(position)) indexes.add(index)
       })

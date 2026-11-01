@@ -1411,11 +1411,11 @@ function addParticipant(
   }
 }
 
-function verifyStoredGroupMessage(
+function projectStoredGroupMessage(
   conv: Conversation,
   message: Message,
   index: string,
-): void {
+): MessageItem[] {
   const state = conv.groupState
   const envelope = message.groupEnvelope
   if (!state || !envelope)
@@ -1439,14 +1439,10 @@ function verifyStoredGroupMessage(
     throw new Error(
       'Stored group message requires its original signed envelope',
     )
-  if (
-    !sameCanonicalAddress(opened.senderAddress, message.senderAddress) ||
-    JSON.stringify(decodeGroupItems(opened.payload)) !==
-      JSON.stringify(message.items)
-  )
-    throw new Error(
-      'Stored group message content or sender differs from its signature',
-    )
+  if (!sameCanonicalAddress(opened.senderAddress, message.senderAddress))
+    throw new Error('Stored group message sender differs from its signature')
+  // The signed payload owns content; stored items are only a derived display cache.
+  return decodeGroupItems(opened.payload)
 }
 
 function isThirdPartyDirectClaim(
@@ -2391,7 +2387,17 @@ export async function rehydrateChat(
       })
     }
     if (conv?.kind === 'group' && !row.internal) {
-      verifyStoredGroupMessage(conv, row.wrapper.message, row.wrapper.index)
+      row.wrapper = {
+        ...row.wrapper,
+        message: {
+          ...row.wrapper.message,
+          items: projectStoredGroupMessage(
+            conv,
+            row.wrapper.message,
+            row.wrapper.index,
+          ),
+        },
+      }
       if (
         row.wrapper.message.outbound &&
         row.wrapper.message.status !== 'confirmed'
@@ -6838,6 +6844,8 @@ export const useChatStore = defineStore('chats', {
       checkGroup()
       const timestampMs = Date.now()
       const payload = encodeGroupItems(items)
+      // Persist the same projection a receiver derives from these exact signed bytes.
+      const projectedItems = decodeGroupItems(payload)
       const innerDigest = computeInnerMessageSigningHash({
         groupIdHex,
         epoch,
@@ -6865,7 +6873,7 @@ export const useChatStore = defineStore('chats', {
         conversationId: conv.id,
         senderAddress,
         index: payloadDigest,
-        items,
+        items: projectedItems,
         outpoints: [],
         status: 'pending',
         previousHash: null,

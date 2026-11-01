@@ -7,13 +7,13 @@
       fit="cover"
       height="100%"
       width="80px"
-      :src="image"
+      :src="url"
       @click="showImageDialog"
     />
   </template>
   <template v-else>
     <q-dialog v-model="imageDialog">
-      <image-dialog :image="image" />
+      <image-dialog :image="url" />
     </q-dialog>
     <!-- Capped so a large delivered picture does not fill the whole chat column. -->
     <q-img
@@ -21,57 +21,57 @@
       style="max-width: 320px; max-height: 320px"
       width="100%"
       fit="contain"
-      :src="image"
+      :src="url"
       @click="showImageDialog"
     />
   </template>
 </template>
 
 <script lang="ts">
-import { ref } from 'vue'
-
+import { defineComponent, type PropType } from 'vue'
 import {
-  DELIVERED_IMAGE_LIMITS,
+  inspectImageBytes,
   IMAGE_REASON_KEYS,
-  inspectImageDataUri,
 } from '../../../utils/image-data-uri'
 import ImageDialog from '../../../components/dialogs/ImageDialog.vue'
-
-export default {
+export default defineComponent({
   props: {
-    image: {
-      type: String,
-      default: () => '',
-    },
-    isReply: {
-      type: Boolean,
-      default: () => false,
-    },
+    data: { type: Object as PropType<Uint8Array>, required: true },
+    mimeType: { type: String, required: true },
+    isReply: { type: Boolean, default: false },
   },
-  components: {
-    ImageDialog,
-  },
+  components: { ImageDialog },
+  data: () => ({ url: '', imageDialog: false }),
   computed: {
-    // Untrusted peer content: size and declared dimensions are checked from the header BEFORE
-    // the browser is asked to decode it (see utils/image-data-uri.ts).
     vetted() {
-      return inspectImageDataUri(this.image, DELIVERED_IMAGE_LIMITS)
+      return inspectImageBytes(this.data, this.mimeType)
     },
     reasonText(): string {
-      const v = this.vetted
-      if (v.ok) return ''
-      const key = IMAGE_REASON_KEYS[v.reason]
-      return key ? this.$t(`chatImage.${key}`) : v.reason
+      return this.vetted.ok
+        ? ''
+        : this.$t(`chatImage.${IMAGE_REASON_KEYS[this.vetted.reason]}`)
     },
   },
-  setup() {
-    const imageDialog = ref(false)
-    return {
-      showImageDialog() {
-        imageDialog.value = true
-      },
-      imageDialog,
-    }
+  watch: {
+    data: { handler: 'refreshUrl', immediate: true },
+    mimeType: 'refreshUrl',
   },
-}
+  beforeUnmount() {
+    if (this.url) URL.revokeObjectURL(this.url)
+  },
+  methods: {
+    showImageDialog() {
+      this.imageDialog = true
+    },
+    refreshUrl() {
+      if (this.url) URL.revokeObjectURL(this.url)
+      this.url =
+        this.vetted.ok && typeof URL.createObjectURL === 'function'
+          ? URL.createObjectURL(
+              new Blob([new Uint8Array(this.data)], { type: this.mimeType }),
+            )
+          : ''
+    },
+  },
+})
 </script>

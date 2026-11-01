@@ -1,3 +1,4 @@
+import { testBlob } from '../blob/blob.testutil'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import { MAX_TEXT_STRING_BYTES } from '@frank/codec'
 
@@ -154,7 +155,7 @@ describe('textItemsOf', () => {
 })
 
 describe('joinConsecutiveTextItems', () => {
-  const image: MessageItem = { type: 'image', image: 'data:image/png;base64,AAAA' }
+  const image: MessageItem = testBlob('data:image/png;base64,AAAA')
   const reply: MessageItem = { type: 'reply', payloadDigest: 'ab'.repeat(32) }
 
   it('joins each run of consecutive text items with nothing between them, keeping the rest in order', () => {

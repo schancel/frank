@@ -56,7 +56,9 @@
             "decimals",
             "symbol"
           ],
-          "optional": ["raw-tx-or-permit"],
+          "optional": [
+            "raw-tx-or-permit"
+          ],
           "open": false
         }
       ]
@@ -70,7 +72,10 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#message-content-revision",
-          "required": ["network", "items"],
+          "required": [
+            "network",
+            "items"
+          ],
           "optional": [],
           "open": true
         }
@@ -84,7 +89,9 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#container-message-item",
-          "required": ["items"],
+          "required": [
+            "items"
+          ],
           "optional": [],
           "open": true
         }
@@ -98,7 +105,9 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#text-message-item",
-          "required": ["text"],
+          "required": [
+            "text"
+          ],
           "optional": [],
           "open": true
         }
@@ -123,7 +132,9 @@
             "transactions",
             "amount"
           ],
-          "optional": ["memo"],
+          "optional": [
+            "memo"
+          ],
           "open": true
         }
       ]
@@ -138,8 +149,12 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-asset-message-item",
-          "required": ["transfers"],
-          "optional": ["memo"],
+          "required": [
+            "transfers"
+          ],
+          "optional": [
+            "memo"
+          ],
           "open": true
         }
       ]
@@ -156,8 +171,15 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-asset-transfer",
-          "required": ["transfer", "derivation-scheme", "recipient-spend-key"],
-          "optional": ["token-program", "derivation-context"],
+          "required": [
+            "transfer",
+            "derivation-scheme",
+            "recipient-spend-key"
+          ],
+          "optional": [
+            "token-program",
+            "derivation-context"
+          ],
           "open": false
         }
       ]
@@ -184,7 +206,9 @@
             "app-state",
             "signatures"
           ],
-          "optional": ["settlement-ref"],
+          "optional": [
+            "settlement-ref"
+          ],
           "open": true
         }
       ]
@@ -199,7 +223,11 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#chain-allocation",
-          "required": ["network-tag", "token", "balances"],
+          "required": [
+            "network-tag",
+            "token",
+            "balances"
+          ],
           "optional": [],
           "open": false
         }
@@ -214,7 +242,10 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#participant-balance",
-          "required": ["participant", "balance"],
+          "required": [
+            "participant",
+            "balance"
+          ],
           "optional": [],
           "open": false
         }
@@ -233,8 +264,16 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#dice-game-payload",
-          "required": ["round", "action", "seed-commitment", "wager"],
-          "optional": ["reveal-seed", "target-roll"],
+          "required": [
+            "round",
+            "action",
+            "seed-commitment",
+            "wager"
+          ],
+          "optional": [
+            "reveal-seed",
+            "target-roll"
+          ],
           "open": true
         }
       ]
@@ -251,8 +290,15 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#poker-game-payload",
-          "required": ["hand-id", "phase", "action"],
-          "optional": ["card-commitments", "keys"],
+          "required": [
+            "hand-id",
+            "phase",
+            "action"
+          ],
+          "optional": [
+            "card-commitments",
+            "keys"
+          ],
           "open": true
         }
       ]
@@ -279,7 +325,9 @@
             "taker-amount",
             "expiration"
           ],
-          "optional": ["htlc-hash"],
+          "optional": [
+            "htlc-hash"
+          ],
           "open": true
         }
       ]
@@ -295,8 +343,14 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#raffle-payload",
-          "required": ["raffle-id", "ticket-price", "tickets-sold"],
-          "optional": ["winning-hash"],
+          "required": [
+            "raffle-id",
+            "ticket-price",
+            "tickets-sold"
+          ],
+          "optional": [
+            "winning-hash"
+          ],
           "open": true
         }
       ]
@@ -319,7 +373,13 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#email-message-item",
-          "required": ["message-id", "from", "to", "subject", "text-body"],
+          "required": [
+            "message-id",
+            "from",
+            "to",
+            "subject",
+            "text-body"
+          ],
           "optional": [
             "cc",
             "html-body",
@@ -342,8 +402,13 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#email-party",
-          "required": ["address"],
-          "optional": ["name", "frank-account"],
+          "required": [
+            "address"
+          ],
+          "optional": [
+            "name",
+            "frank-account"
+          ],
           "open": true
         }
       ]
@@ -359,8 +424,14 @@
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#email-attachment",
-          "required": ["filename", "content-type", "content"],
-          "optional": ["content-id"],
+          "required": [
+            "filename",
+            "content-type",
+            "content"
+          ],
+          "optional": [
+            "content-id"
+          ],
           "open": true
         }
       ]
@@ -369,13 +440,19 @@
       "key": "plugin-message-item",
       "fields": {
         "item-type": 0,
-        "data": 1
+        "data": 1,
+        "mime-type": 2
       },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#plugin-message-item",
-          "required": ["item-type", "data"],
-          "optional": [],
+          "required": [
+            "item-type",
+            "data"
+          ],
+          "optional": [
+            "mime-type"
+          ],
           "open": true
         }
       ]

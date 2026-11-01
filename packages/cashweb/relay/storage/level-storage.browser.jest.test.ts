@@ -68,11 +68,24 @@ describe('actual browser message-store application records', () => {
       })
   })
 
+  it('preserves malformed financial history and metadata after browser reads reject byte annotations', async () => {
+    const json = JSON.parse(serializeMessageWrapper(message))
+    json.message.stampValueWei = 'MQ=='
+    const corrupt = JSON.stringify({ json, meta: { v: 1, values: { 'message.stampValueWei': [['custom', 'frank-history-bytes']] } } })
+    const before = await raw(location, { messages: { [message.index]: corrupt }, metadata: { schemaVersion: '3' } })
+    await store.Open()
+    await expect(store.getMessage(message.index)).rejects.toThrow('Stored wei value must be text or a safe integer')
+    const iterator = await store.getIterator()
+    await expect(iterator.next()).rejects.toThrow('Stored wei value must be text or a safe integer')
+    await store.Close()
+    expect(await raw(location)).toEqual(before)
+  })
   it('reopens binary values with the installed browser backend and preserves existing metadata and JSON', async () => {
     const repeated = Uint8Array.of(0, 255, 128)
     const binary = Object.assign(
       { ...message, index: 'browser-bytes' },
       {
+        message: { ...message.message, items: [{ type: 'blob' as const, mimeType: 'application/octet-stream', data: repeated }] },
         binaryFixture: {
           first: repeated,
           second: repeated,

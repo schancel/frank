@@ -593,7 +593,17 @@ async fn forward(
                     reply!(ws_error(id, -32005, "relay busy"));
                     continue;
                 };
-                if !runtime.charge_electrum(payer, cost, broadcast).await {
+                let quota_deadline = request_deadline.unwrap_or(session_deadline).min(session_deadline);
+                if tokio::time::Instant::now() >= quota_deadline { continue; }
+                let charged = tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(quota_deadline) => continue,
+                    result = runtime.charge_electrum(payer, cost, broadcast) => result,
+                };
+                // Returning to the biased outer loop preserves existing close handling.
+                // The blocking transaction retains its worker permit until real completion.
+                if tokio::time::Instant::now() >= quota_deadline { continue; }
+                if !charged {
                     reply!(ws_error(id, -32005, "hourly quota exceeded"));
                     continue;
                 }
@@ -605,7 +615,11 @@ async fn forward(
                         _permit: permit,
                     },
                 );
-                if upstream.send(text).await.is_err() {
+                let send_deadline = pending.values().map(|request| request.deadline)
+                    .min().unwrap_or(session_deadline).min(session_deadline);
+                if tokio::time::Instant::now() >= send_deadline { continue; }
+                if !matches!(tokio::time::timeout_at(send_deadline, upstream.send(text)).await, Ok(Ok(())))
+                    || tokio::time::Instant::now() >= send_deadline {
                     break;
                 }
             }
@@ -795,3 +809,7 @@ mod tests {
         assert_eq!(id_key(&json!([1])), None);
     }
 }
+
+#[cfg(test)]
+#[path = "electrum_quota_deadline_tests.rs"]
+mod quota_deadline_tests;

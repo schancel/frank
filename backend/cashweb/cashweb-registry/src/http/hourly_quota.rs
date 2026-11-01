@@ -323,7 +323,7 @@ pub(crate) fn normalize_quota_ip(ip: IpAddr) -> IpAddr {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[tokio::test]
@@ -488,12 +488,79 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct PausedTransaction {
+    pub(crate) struct PausedTransaction {
         store: Arc<dyn RelayKvStore>,
         first: std::sync::atomic::AtomicBool,
         entered: tokio::sync::Notify,
         released: Mutex<bool>,
         release: std::sync::Condvar,
+    }
+
+    impl PausedTransaction {
+        pub(crate) fn pause_next(&self) {
+            *self.released.lock().unwrap() = false;
+            self.first.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        pub(crate) async fn wait_entered(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.entered.notified())
+                .await
+                .unwrap();
+        }
+        pub(crate) fn resume(&self) {
+            *self.released.lock().unwrap() = true;
+            self.release.notify_all();
+        }
+    }
+
+    pub(crate) fn paused_backend() -> (tempfile::TempDir, Arc<PausedTransaction>, QuotaBackend) {
+        let (directory, store, _) = shared_store();
+        let paused = Arc::new(PausedTransaction {
+            store,
+            first: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            released: Mutex::new(false),
+            release: std::sync::Condvar::new(),
+        });
+        let backend = QuotaBackend::shared("monad-testnet", paused.clone(), 2).unwrap();
+        (directory, paused, backend)
+    }
+
+    /// Real loopback sockets; the upgraded Axum half is handed to the production proxy loop.
+    pub(crate) async fn websocket_pair() -> (
+        axum::extract::ws::WebSocket,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        use axum::{extract::ws::WebSocketUpgrade, routing::get, Router};
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        let router = Router::new().route(
+            "/",
+            get(move |ws: WebSocketUpgrade| {
+                let sender = sender.lock().unwrap().take().unwrap();
+                async move {
+                    ws.on_upgrade(move |socket| async move {
+                        let _ = sender.send(socket);
+                    })
+                }
+            }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router.into_make_service()),
+        );
+        let (client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
+            .await
+            .unwrap();
+        let socket = receiver.await.unwrap();
+        server.abort();
+        let _ = server.await;
+        (socket, client)
     }
 
     impl RelayKvStore for PausedTransaction {

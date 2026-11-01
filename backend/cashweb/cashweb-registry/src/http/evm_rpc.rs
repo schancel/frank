@@ -1634,10 +1634,15 @@ async fn bounded_ws_send<S, M>(sink: &mut S, message: M, deadline: tokio::time::
 where
     S: futures::Sink<M> + Unpin,
 {
+    // Tokio polls a ready send before its timeout: reject an elapsed deadline before
+    // touching the sink, and retain the absolute bound across an asynchronous send.
+    if tokio::time::Instant::now() >= deadline {
+        return false;
+    }
     matches!(
         tokio::time::timeout_at(deadline, sink.send(message)).await,
         Ok(Ok(()))
-    )
+    ) && tokio::time::Instant::now() < deadline
 }
 
 pub(crate) async fn handle_proxy_ws(
@@ -1827,7 +1832,17 @@ async fn proxy_ws_connection<S>(
                                 continue;
                             }
                         };
-                        if quota.charge(customer, cost.units, now_seconds()).await.is_err() {
+                        // Quota storage may outlive this wait after cancellation. It must not
+                        // suspend capability expiry or an older pending request's deadline.
+                        let quota_deadline = deadline.min(expiry_deadline);
+                        if tokio::time::Instant::now() >= quota_deadline { continue; }
+                        let charged = tokio::select! {
+                            biased;
+                            _ = tokio::time::sleep_until(quota_deadline) => continue,
+                            result = quota.charge(customer, cost.units, now_seconds()) => result,
+                        };
+                        if tokio::time::Instant::now() >= quota_deadline { continue; }
+                        if charged.is_err() {
                             if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "hourly quota exceeded"), ws_write_deadline(&pending, request_timeout, expiry_deadline)).await { return; }
                             continue;
                         }
@@ -1911,7 +1926,22 @@ async fn proxy_ws_connection<S>(
                             if !active_subscriptions.contains(subscription) {
                                 break;
                             }
-                            if quota.charge(customer, 1, now_seconds()).await.is_err() {
+                            if tokio::time::Instant::now() >= delivery_deadline { continue; }
+                            let charged = tokio::select! {
+                                biased;
+                                _ = tokio::time::sleep_until(delivery_deadline) => {
+                                    // Existing pending/session timers keep their normal handling;
+                                    // an expired notification write window closes this stream.
+                                    if tokio::time::Instant::now() >= deadline.min(expiry_deadline) { continue; }
+                                    break;
+                                },
+                                result = quota.charge(customer, 1, now_seconds()) => result,
+                            };
+                            if tokio::time::Instant::now() >= delivery_deadline {
+                                if tokio::time::Instant::now() >= deadline.min(expiry_deadline) { continue; }
+                                break;
+                            }
+                            if charged.is_err() {
                                 let _ = bounded_ws_send(
                                     &mut client_write,
                                     ClientWsMessage::Close(None),
@@ -5319,3 +5349,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "evm_rpc_quota_deadline_tests.rs"]
+mod quota_deadline_tests;

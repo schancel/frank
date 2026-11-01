@@ -80,6 +80,9 @@ when the calling request is cancelled. Admission never queues waiting for a quot
 The bound is shared across quota domains and cleanup, derived from existing directory queue
 and enabled proxy inflight limits (plus one cleanup slot); it introduces no new quota setting.
 Shutdown stops quota admission and drains those transactions before dropping the FDB network.
+WebSocket quota waits remain subordinate to session expiry and the earliest pending-request
+deadline. Cancelling that wait closes or resumes existing deadline handling; it neither
+refunds a committed charge nor releases the blocking worker permit early.
 
 Each successful repeat-payer charge adds one conflict read and one small write; a new payer
 also reads and writes its bucket count. With all seven domains saturated, each network adds

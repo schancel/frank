@@ -31,7 +31,7 @@ use crate::{
             quota_error, rpc_error, RpcAuthState, RpcBinding, RpcCapabilityBody, RpcChallengeBody,
             RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
-        hourly_quota::{normalize_quota_ip, FixedHourQuota},
+        hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaBackend, QuotaDomain},
         server::RegistryServer,
         upstream_cooldown::UpstreamCooldownTracker,
     },
@@ -115,6 +115,7 @@ impl SolanaProxyRuntime {
         conf: &SolanaProxyConf,
         chains: Arc<RelayChains>,
         session: &crate::evm_mailbox::SessionSecret,
+        quota_backend: QuotaBackend,
     ) -> Result<Option<Arc<Self>>, SolanaProxyStartError> {
         conf.validate()
             .map_err(SolanaProxyStartError::InvalidConfig)?;
@@ -136,8 +137,16 @@ impl SolanaProxyRuntime {
             max_batch_len: conf.max_batch_len,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
-            customer_quota: FixedHourQuota::new(conf.customer_units_per_hour),
-            anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
+            customer_quota: FixedHourQuota::with_backend(
+                conf.customer_units_per_hour,
+                QuotaDomain::SolanaCustomer,
+                quota_backend.clone(),
+            ),
+            anonymous_quota: FixedHourQuota::with_backend(
+                conf.anonymous_units_per_hour,
+                QuotaDomain::SolanaAnonymous,
+                quota_backend.clone(),
+            ),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
         })))
@@ -158,10 +167,13 @@ impl SolanaProxyRuntime {
             env,
         )?);
         chains.start_verifying().await;
-        Ok(
-            Self::new(conf, chains, &crate::evm_mailbox::SessionSecret::random())
-                .expect("validated by RelayChains"),
+        Ok(Self::new(
+            conf,
+            chains,
+            &crate::evm_mailbox::SessionSecret::random(),
+            QuotaBackend::local(),
         )
+        .expect("validated by RelayChains"))
     }
 }
 
@@ -679,6 +691,7 @@ async fn proxy_rpc_inner(
         runtime
             .customer_quota
             .charge(customer, cost.units, unix_seconds())
+            .await
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     } else {
         if !cost.anonymous {
@@ -692,6 +705,7 @@ async fn proxy_rpc_inner(
         runtime
             .anonymous_quota
             .charge(peer_ip, cost.units, unix_seconds())
+            .await
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     }
 
@@ -961,6 +975,7 @@ mod tests {
         let event_bus = registry.event_bus().clone();
         let auth = Arc::clone(&runtime);
         let router = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -1219,6 +1234,44 @@ mod tests {
         assert_eq!(
             validate_call(&forbidden).unwrap_err().status(),
             StatusCode::FORBIDDEN
+        );
+    }
+    #[tokio::test]
+    async fn shared_quota_constructor_preserves_solana_customer_and_anonymous_domains() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::store::kv_store::RocksDbKvStore::open(directory.path().join("quotas")).unwrap(),
+        );
+        let backend = QuotaBackend::shared("monad-testnet", store, 64).unwrap();
+        backend.probe().unwrap();
+        let session = crate::evm_mailbox::SessionSecret::random();
+
+        let conf = SolanaProxyConf {
+            enabled: true,
+            customer_units_per_hour: 2,
+            anonymous_units_per_hour: 2,
+            chains: vec![chain("solana-devnet", "TEST_SOLANA", DEVNET)],
+            ..Default::default()
+        };
+        let chains = Arc::new(RelayChains::for_test("monad-testnet"));
+        let a = SolanaProxyRuntime::new(&conf, chains.clone(), &session, backend.clone())
+            .unwrap()
+            .unwrap();
+        let b = SolanaProxyRuntime::new(&conf, chains, &session, backend)
+            .unwrap()
+            .unwrap();
+        let customer = Address([6; 20]);
+        a.customer_quota.charge(customer, 2, 3600).await.unwrap();
+        assert!(b.customer_quota.charge(customer, 1, 3600).await.is_err());
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        a.anonymous_quota.charge(ip, 1, 3600).await.unwrap();
+        assert_eq!(
+            b.anonymous_quota
+                .charge(ip, 1, 3600)
+                .await
+                .unwrap()
+                .remaining,
+            0
         );
     }
 }

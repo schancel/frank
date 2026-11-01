@@ -180,6 +180,7 @@ async fn main() -> Result<()> {
 
     let event_bus = registry.event_bus().clone();
     let server = RegistryServer {
+        quota_backend: cashweb_registry::http::hourly_quota::QuotaBackend::local(),
         registry,
         peers,
         pop_gate,

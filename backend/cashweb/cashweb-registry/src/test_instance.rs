@@ -83,6 +83,7 @@ impl RegistryTestInstance {
         let peers = Arc::new(Peers::new(url.clone(), peers));
         let pop_gate = Arc::new(PopGate::from_conf_if_enabled(&pop_conf));
         let server = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::clone(&registry),
             peers: Arc::clone(&peers),
             pop_gate,

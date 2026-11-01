@@ -469,6 +469,7 @@ pub(super) fn server_with_floor(
         ),
     };
     super::super::server::RegistryServer {
+        quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
         registry: fixture.registry.clone(),
         peers: Arc::new(crate::p2p::peers::Peers::new(
             "http://127.0.0.1:1".into(),
@@ -885,6 +886,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         crate::store::notification_policy::VapidKeyPair::generate(),
     );
     let server = super::super::server::RegistryServer {
+        quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
         registry: fixture.registry.clone(),
         peers: Arc::new(crate::p2p::peers::Peers::new(
             "http://127.0.0.1:1".into(),

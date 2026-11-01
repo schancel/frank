@@ -98,6 +98,7 @@ async fn serve_until_stdin_closes(dir: std::path::PathBuf, subspace: String) {
     ready.await.unwrap().unwrap();
     let event_bus = registry.event_bus().clone();
     let router = RegistryServer {
+        quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
         registry,
         peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
         pop_gate: Arc::new(None),

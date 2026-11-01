@@ -187,8 +187,8 @@ service).
 **What it is for today:** the app and the bots through the proxy (see "The app and the bots
 on the cluster" below), the HTTP contract, and the direct-message livecheck. Groups, direct
 messages (the solonet mailbox, paid with stamps), profiles, usernames, metadata, topics, the
-directory and the forum are shared through FoundationDB. The hourly RPC proxy quotas and the
-directory's per-source enrollment quota are still replica-local (HA step 10).
+directory and the forum are shared through FoundationDB. The existing directory and
+RPC/WS/Electrum hourly quotas also share one cluster allowance through FoundationDB.
 
 Overrides, all optional:
 
@@ -236,9 +236,10 @@ Services:
   address), large values in the MinIO bucket above, the open directory with the proxy origin
   as its endpoint, and the forum with the burn address. Each keeps its own RocksDB volume.
   Groups, direct messages, the registry database, the directory and the forum are shared
-  through FoundationDB, and large values through MinIO. The hourly quotas and the
-  directory's per-source hourly enrollment quota are still replica-local, so the preview
-  flag is set, and each relay's startup log names exactly those two:
+  through FoundationDB, and large values through MinIO. The existing hourly quotas are
+  shared as well. The lab retains its explicit preview escape hatch for experimentation;
+  strict configuration still refuses any enabled owner that is actually replica-local.
+  No quota owner should appear in this inspection:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'

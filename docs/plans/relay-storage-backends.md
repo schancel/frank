@@ -60,10 +60,38 @@ replicas share data. Clients recover missed notifications by reading durable sta
 | Registry metadata, profiles, topics, usernames and derived indexes | `store/db.rs` and its typed stores over `RelayKvStore` | RocksDB at the registry path, or FoundationDB (`driver = "foundationdb"`); one transaction per claim or replace, including its index rows (key layout in `store/db.rs`) |
 | Canonical messages, payment claims, inboxes, challenges, notification policies and VAPID identity (the provisioned `registry.vapid_private_key_file` when set) | `store/evm_direct_messages.rs::Owner` | Separate RocksDB database, lazy opening and process-local mutation locks |
 | Directory preview history, self-published subjects and continuity, address and first-accepted indexes, subject counters, forwards and their bodies, federation lease | `store/directory_store.rs` (`directory_preview.rs`, `directory_subjects.rs`) over `RelayKvStore` | RocksDB `directory-kv-v1.rocksdb` inside the registry path, or FoundationDB (`driver = "foundationdb"`); values over 64 KiB in the object store (`[registry.large_values]`) |
-| Directory enrollment quota per source per hour | `http/directory.rs` (`FixedHourQuota`) | Process memory, per replica |
+| Existing directory enrollment and RPC/WS/Electrum hourly quotas | `http/hourly_quota.rs::FixedHourQuota`, composed explicitly into every consumer | Standalone process memory; FoundationDB under `<fdb_subspace_prefix>hourly-quotas-v1/` in cluster mode |
 | Shared group mailboxes | `store/groups.rs::GroupStore` over `RelayKvStore` | RocksDB beside the registry database, or FoundationDB (`driver = "foundationdb"`) |
 | Session signing secret for challenges, cursors and RPC capabilities | Daemon composition / `SessionSecret` | `registry.session_secret_file` (required in cluster mode), else a file beside the registry database |
 | Notification delivery hints | `events::RelayEventBus` | In-memory broadcast or Core NATS; no durable authority |
+
+The shared quota store uses `format = frank-hourly-quotas-v1` and hourly `q/` rows,
+scoped by canonical relay network and the existing quota domain. Charging conflict-reads
+usage and the distinct-payer count, then commits checked counters before any upstream
+request. Failure or an unknown commit denies admission without local fallback. Directory
+publishing retains its existing signed-attempt precharge; a later refusal does not refund it.
+The current and previous UTC buckets remain; cleanup clears at most 128 rows per transaction,
+eight pages per turn, with a short yield while expired pages remain. Cleanup failures retain
+rows and back off; they never reset active allowances. No old quota maps or other stores are
+migrated or cleared. A future quota identity/format change needs a new quota namespace.
+
+Shared quota blocking transactions hold one host-configured permit through completion, even
+when the calling request is cancelled. Admission never queues waiting for a quota permit.
+The bound is shared across quota domains and cleanup, derived from existing directory queue
+and enabled proxy inflight limits (plus one cleanup slot); it introduces no new quota setting.
+Shutdown stops quota admission and drains those transactions before dropping the FDB network.
+WebSocket quota waits remain subordinate to session expiry and the earliest pending-request
+deadline. Cancelling that wait closes or resumes existing deadline handling; it neither
+refunds a committed charge nor releases the blocking worker permit early.
+
+Each successful repeat-payer charge adds one conflict read and one small write; a new payer
+also reads and writes its bucket count. With all seven domains saturated, each network adds
+at most 700,000 payer rows plus seven count rows per hour. Healthy cleanup retains the
+current and previous hour plus its drain backlog; outage retention grows until cleanup
+recovers. Eight 128-row pages per turn with a 10 ms yield is a work bound, not a measured
+throughput claim. Sustained cleanup must exceed new expired-row arrival (about 195 rows/s
+per fully saturated network). Reversing to local accounting loses shared enforcement and
+requires the strict cluster guard again; no counter conversion or key deletion is implied.
 
 `RelayKvStore` is a component transaction interface. Its existence does not replace the
 owners above: `GroupStore`, the registry `Db` and the directory use it today, so it is not

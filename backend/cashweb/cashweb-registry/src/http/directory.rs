@@ -2,7 +2,7 @@
 //!
 //! Publishing is open: any key may PUT its own signed entry. The only gates are the signature,
 //! the chain rules, a relay-wide subject cap and a per-source limit on first publications.
-use super::hourly_quota::{normalize_quota_ip, FixedHourQuota};
+use super::hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaBackend, QuotaDomain};
 use crate::directory_runtime::{
     DirectoryRuntime, Evidence, Operation, RuntimeError, FIRST_ACCEPTED_POSITION_BYTES,
 };
@@ -228,6 +228,7 @@ async fn put(
         if routes
             .enrollments
             .charge(routes.source(peer, &headers), 1, now_seconds())
+            .await
             .is_err()
         {
             return error(RuntimeError::Resource);
@@ -335,9 +336,13 @@ async fn new_accounts(
         .into_response()
 }
 /// Mount the open directory. Present whenever the relay has a `[registry.directory]` tuple.
-pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
+pub fn router(runtime: Arc<DirectoryRuntime>, quota_backend: QuotaBackend) -> Router {
     let routes = Arc::new(Routes {
-        enrollments: FixedHourQuota::new(runtime.enrollments_per_source_per_hour()),
+        enrollments: FixedHourQuota::with_backend(
+            runtime.enrollments_per_source_per_hour(),
+            QuotaDomain::DirectoryEnrollment,
+            quota_backend,
+        ),
         runtime,
     });
     Router::new()

@@ -36,7 +36,10 @@ async fn relay_reserving(
             .unwrap();
     ready.await.unwrap().unwrap();
     let shared = Arc::new(runtime.clone());
-    let routes = super::router(Arc::clone(&shared)).merge(crate::http::directory::router(shared));
+    let routes = super::router(Arc::clone(&shared)).merge(crate::http::directory::router(
+        shared,
+        crate::http::hourly_quota::QuotaBackend::local(),
+    ));
     (runtime, routes)
 }
 

@@ -830,19 +830,15 @@ impl RegistryConf {
         if self.evm_mailbox.enabled && local_driver {
             owners.push(ReplicaLocalOwner::DirectMessages);
         }
-        if self.directory.is_some() {
-            // On FoundationDB the directory's state is shared; only the per-source hourly
-            // enrollment quota is still counted by each replica (step 10 makes it shared).
-            owners.push(if local_driver {
-                ReplicaLocalOwner::Directory
-            } else {
-                ReplicaLocalOwner::DirectoryEnrollmentQuotas
-            });
+        if self.directory.is_some() && local_driver {
+            owners.push(ReplicaLocalOwner::Directory);
         }
         if self.forum.is_some() && local_driver {
             owners.push(ReplicaLocalOwner::Forum);
         }
-        if self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled {
+        if local_driver
+            && (self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled)
+        {
             owners.push(ReplicaLocalOwner::HourlyQuotas);
         }
         if local_driver {
@@ -974,9 +970,6 @@ pub enum ReplicaLocalOwner {
     /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`) on
     /// the RocksDB driver.
     Directory,
-    /// The directory's per-source hourly enrollment quota, counted in process memory, when the
-    /// rest of the directory is on FoundationDB.
-    DirectoryEnrollmentQuotas,
     /// Forum (`registry.forum`).
     Forum,
     /// Hourly RPC proxy quotas, counted in process memory.
@@ -995,9 +988,6 @@ impl ReplicaLocalOwner {
             Self::DirectMessages => "direct messages (registry.evm_mailbox)",
             Self::Directory => {
                 "directory (registry.directory, registry.cluster.driver = \"rocksdb\")"
-            }
-            Self::DirectoryEnrollmentQuotas => {
-                "directory enrollment quotas per source per hour (registry.directory)"
             }
             Self::Forum => "forum (registry.forum)",
             Self::HourlyQuotas => {
@@ -1115,7 +1105,8 @@ pub struct DirectoryConf {
     /// Seconds between rounds of comparing entries with peers and retrying forwards.
     #[serde(default = "default_directory_sync_interval_s")]
     pub sync_interval_s: u64,
-    /// First-time publications accepted from one source address per clock hour.
+    /// Signed first-publication attempts from one source address per clock hour. Charged before
+    /// directory admission; later refusal does not refund an attempt. Existing publications skip it.
     #[serde(default = "default_directory_enrollments_per_source_per_hour")]
     pub enrollments_per_source_per_hour: u32,
     /// Addresses of reverse proxies in front of this relay. Only a connection from one of
@@ -3903,28 +3894,12 @@ continuity_file = "/var/lib/frank/continuity"
 
     #[test]
     fn cluster_mode_refuses_replica_local_owners_without_the_preview_flag() {
-        use super::{ClusterConfigError, ReplicaLocalOwner};
+        use super::ReplicaLocalOwner;
         let mut conf = cluster_mode_conf();
-        // The shipped local config enables the mailbox, directory, forum and the RPC proxies.
-        // The registry database, direct messages, groups, the directory and the forum are on
-        // FoundationDB here, so none is listed; the directory's per-source hourly quota is not
-        // yet shared.
-        let every_enabled = vec![
-            ReplicaLocalOwner::DirectoryEnrollmentQuotas,
-            ReplicaLocalOwner::HourlyQuotas,
-        ];
-        assert_eq!(conf.replica_local_owners(), every_enabled);
+        // Every enabled owner, including every public quota consumer, is shared on FDB.
+        assert_eq!(conf.replica_local_owners(), vec![]);
         conf.cluster.as_mut().unwrap().preview_replica_local_owners = false;
-        let error = conf.validate_cluster().unwrap_err();
-        assert_eq!(
-            error,
-            ClusterConfigError::ReplicaLocalOwners(every_enabled.clone())
-        );
-        let text = error.to_string();
-        for owner in &every_enabled {
-            assert!(text.contains(owner.name()), "{text}");
-        }
-        assert!(text.contains("preview_replica_local_owners"));
+        assert_eq!(conf.validate_cluster(), Ok(()));
 
         // Disabled owners are not listed; with all of them off, nothing on FoundationDB is
         // replica-local and cluster mode starts without the preview flag.

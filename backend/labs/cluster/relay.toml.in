@@ -36,8 +36,8 @@ fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
 # Groups, direct messages, large values, the registry database, the directory and the forum are
-# shared; the hourly quotas (and the directory's per-source enrollment quota) still keep their
-# state on each replica, and the startup log names them.
+# shared, including the directory and proxy hourly quotas. The preview escape hatch remains
+# explicit for lab-only configurations; strict mode still refuses any remaining local owner.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]
@@ -54,8 +54,8 @@ relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4
 endpoint = "@PUBLIC_ORIGIN@"
 # 2028-01-01T00:00:00Z
 binding_expiry_ns = "1830297600000000000"
-# The contract publishes hundreds of accounts from one container; the per-source hourly
-# quota is still counted by each replica (HA step 10).
+# The contract publishes hundreds of accounts from one container; its per-source hourly
+# allowance is shared across all three replicas.
 enrollments_per_source_per_hour = 100000
 
 # Every new group write carries one signed transaction on solonet paying the payee at least the

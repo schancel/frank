@@ -41,7 +41,10 @@ impl Replicas {
             },
         ));
         let runtime = start(registry, relay_config(), clock).await;
-        let routes = router(Arc::new(runtime.clone()));
+        let routes = router(
+            Arc::new(runtime.clone()),
+            crate::http::hourly_quota::QuotaBackend::local(),
+        );
         (runtime, routes)
     }
 }
@@ -265,7 +268,10 @@ async fn the_relay_wide_subject_cap_holds_across_replicas() {
             },
         ));
         let runtime = start(registry, config.clone(), &clock).await;
-        routes.push(router(Arc::new(runtime.clone())));
+        routes.push(router(
+            Arc::new(runtime.clone()),
+            crate::http::hourly_quota::QuotaBackend::local(),
+        ));
         runtimes.push(runtime);
     }
     // Nine first publications at once over three replicas, against a cap of three.

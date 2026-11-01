@@ -1296,6 +1296,46 @@ mod spa_tests {
         (tempdir, server)
     }
 
+    /// Serves the real router for the bounded, opt-in pinned-nginx lab regression. No custody,
+    /// upstream RPC, or persisted application data is opened by this synthetic test composition.
+    #[tokio::test]
+    #[ignore = "run through backend/labs/nginx_connection_reuse.py with its owned fixture directory"]
+    async fn nginx_connection_reuse_fixture() {
+        let directory = std::path::PathBuf::from(
+            std::env::var_os("FRANK_LOCAL_HTTP_FIXTURE_DIR")
+                .expect("owned fixture directory required"),
+        );
+        assert!(directory.is_absolute());
+        assert_eq!(
+            std::fs::read_to_string(directory.join("owner"))
+                .unwrap()
+                .trim(),
+            std::env::var("FRANK_LOCAL_HTTP_FIXTURE_OWNER").unwrap(),
+        );
+        let (_db_directory, server) = test_server(None);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::fs::write(
+            directory.join("address"),
+            listener.local_addr().unwrap().to_string(),
+        )
+        .unwrap();
+        axum::Server::from_tcp(listener)
+            .unwrap()
+            .serve(server.into_router().into_make_service())
+            .with_graceful_shutdown(async {
+                tokio::time::timeout(std::time::Duration::from_secs(25), async {
+                    while !directory.join("stop").exists() {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                })
+                .await
+                .ok();
+            })
+            .await
+            .unwrap();
+    }
+
     async fn response_bytes(response: axum::response::Response) -> Vec<u8> {
         hyper::body::to_bytes(response.into_body())
             .await

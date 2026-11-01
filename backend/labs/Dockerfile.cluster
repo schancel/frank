@@ -6,7 +6,9 @@ FROM rust:1-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends gcc-12 g++-12 libclang-dev protobuf-compiler python3 && rm -rf /var/lib/apt/lists/*
 COPY --from=fdb-client /usr/lib/libfdb_c.so /usr/local/lib/libfdb_c.so
 RUN ldconfig
-ENV CC=gcc-12 CXX=g++-12 CARGO_BUILD_JOBS=4
+# Keep local builds within the shared memory budget; larger builders can opt in.
+ARG CARGO_BUILD_JOBS=1
+ENV CC=gcc-12 CXX=g++-12 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 WORKDIR /build
 COPY backend/bitcoinsuite backend/bitcoinsuite
 COPY backend/cashweb backend/cashweb
